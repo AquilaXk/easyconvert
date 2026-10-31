@@ -1,310 +1,259 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { Sun, Moon, ChevronDown, Menu, X } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
-import {
-  Sun,
-  Moon,
-  ChevronDown,
-  Menu,
-  X,
-  RefreshCw,
-  Sparkles,
-  Layers,
-  Globe,
-  Archive,
-  Calculator,
-  Activity,
-  Key,
-} from 'lucide-react';
+
+interface ToolRoute {
+  label: string;
+  href: string;
+}
+
+const TOOL_ROUTES: readonly ToolRoute[] = [
+  { label: 'PDF Converter', href: '/pdf-converter' },
+  { label: 'Image Converter', href: '/image-converter' },
+  { label: 'Video Converter', href: '/video-converter' },
+  { label: 'Audio Converter', href: '/audio-converter' },
+  { label: 'Archive Converter', href: '/archive-converter' },
+  { label: 'Spreadsheet Converter', href: '/spreadsheet-converter' },
+  { label: 'Unit Converter', href: '/unit-converter' },
+  { label: 'PDF OCR', href: '/pdf-ocr' },
+  { label: 'Compress PDF', href: '/compress-pdf' },
+  { label: 'Merge PDF', href: '/merge-pdf' },
+  { label: 'System Status', href: '/status' },
+];
+
+const PRIMARY_LINKS: readonly ToolRoute[] = [
+  { label: 'Formats', href: '/#format-catalog' },
+  { label: 'How It Works', href: '/#how-it-works' },
+  { label: 'API Docs', href: '/api-docs' },
+  { label: 'Dashboard', href: '/dashboard' },
+];
+
+interface ThemeEventDetail {
+  theme?: string;
+}
+
+function MobileMenuDialog({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && typeof dialog.showModal === 'function' && !dialog.open) {
+      dialog.showModal();
+    }
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-label="Navigation menu"
+      onClose={onClose}
+      onClick={(e) => {
+        if (e.target === dialogRef.current) onClose();
+      }}
+      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl"
+    >
+      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-border dark:border-dark-border">
+        <BrandLogo size="sm" />
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close menu"
+          className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 transition-colors cursor-pointer"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(100dvh-6rem)]">
+        <nav aria-label="Mobile primary" className="flex flex-col gap-1">
+          {PRIMARY_LINKS.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={onClose}
+              className="min-h-[44px] px-3 inline-flex items-center rounded-md text-sm font-semibold text-brand-950 dark:text-white hover:bg-neutral-subtle dark:hover:bg-white/5 transition-colors"
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="pt-3 border-t border-neutral-border dark:border-dark-border">
+          <p className="px-3 pb-1.5 text-xs font-semibold uppercase tracking-wider text-ink-muted dark:text-dark-muted">
+            Tools
+          </p>
+          <div className="grid grid-cols-1 gap-0.5">
+            {TOOL_ROUTES.map((tool) => (
+              <Link
+                key={tool.href}
+                href={tool.href}
+                onClick={onClose}
+                className="min-h-[44px] px-3 inline-flex items-center rounded-md text-sm text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/5 transition-colors"
+              >
+                {tool.label}
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        <div className="pt-3 border-t border-neutral-border dark:border-dark-border">
+          <UserNav mobile onItemClick={onClose} />
+        </div>
+      </div>
+    </dialog>
+  );
+}
 
 export default function Header() {
   const [isDark, setIsDark] = useState(false);
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const toolsContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const isDarkMode = document.documentElement.classList.contains('dark');
-    setIsDark(isDarkMode);
+    setIsDark(document.documentElement.classList.contains('dark'));
 
-    const handleThemeChange = (e: CustomEvent) => {
-      if (e.detail?.theme) {
-        setIsDark(e.detail.theme === 'dark');
+    const handleThemeChange: EventListener = (event) => {
+      const custom = event as CustomEvent<ThemeEventDetail>;
+      if (custom.detail?.theme) {
+        setIsDark(custom.detail.theme === 'dark');
       }
     };
-    window.addEventListener('easyconvert-theme-change' as any, handleThemeChange);
+
+    window.addEventListener('easyconvert-theme-change', handleThemeChange);
     return () => {
-      window.removeEventListener('easyconvert-theme-change' as any, handleThemeChange);
+      window.removeEventListener('easyconvert-theme-change', handleThemeChange);
     };
   }, []);
 
+  useEffect(() => {
+    if (!isToolsOpen) return;
+
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (toolsContainerRef.current && !toolsContainerRef.current.contains(event.target as Node)) {
+        setIsToolsOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsToolsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isToolsOpen]);
+
   const toggleDarkMode = () => {
     const nextTheme = isDark ? 'light' : 'dark';
-    if (nextTheme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    document.documentElement.classList.toggle('dark', nextTheme === 'dark');
     localStorage.theme = nextTheme;
-    setIsDark(!isDark);
+    setIsDark(nextTheme === 'dark');
     window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
   };
 
   return (
-    <header className="sticky top-0 z-50 backdrop-blur-md bg-white/95 dark:bg-dark-surface/95 border-b border-neutral-border dark:border-dark-border text-brand-950 dark:text-white transition-colors duration-150">
-      {/* Invisible backdrop to dismiss menus */}
-      {isToolsOpen && (
-        <div
-          className="fixed inset-0 z-30"
-          onClick={() => {
-            setIsToolsOpen(false);
-          }}
-        />
-      )}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between relative z-40">
-        {/* Brand Logo & Navigation */}
-        <div className="flex items-center gap-8">
-          <Link aria-label="EasyConvert Home" href="/" className="outline-none group shrink-0">
-            <BrandLogo size="md" />
+    <header className="bg-brand-950 dark:bg-[#111526] text-white border-b border-white/10 sticky top-0 z-40 h-16">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
+        <div className="flex items-center gap-6 min-w-0">
+          <Link
+            href="/"
+            aria-label="EasyConvert Home"
+            className="min-h-[44px] inline-flex items-center shrink-0 rounded-md"
+          >
+            <BrandLogo size="md" textClassName="text-white" />
           </Link>
 
-          {/* Desktop Navigation: Tools dropdown, Formats, How It Works, 100% Free badge */}
-          <nav className="hidden lg:flex items-center gap-1.5">
-            {/* Tools Mega-Menu */}
-            <div className="relative">
+          <nav aria-label="Primary" className="hidden lg:flex items-center gap-1 whitespace-nowrap">
+            <div className="relative" ref={toolsContainerRef}>
               <button
                 type="button"
-                onClick={() => {
-                  setIsToolsOpen(!isToolsOpen);
-                }}
-                aria-expanded={isToolsOpen}
+                onClick={() => setIsToolsOpen((open) => !open)}
                 aria-haspopup="true"
-                className={`group relative flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                aria-expanded={isToolsOpen}
+                className={`min-h-[44px] px-3 inline-flex items-center gap-1.5 text-sm font-medium rounded-md transition-colors cursor-pointer ${
                   isToolsOpen
-                    ? 'text-brand-900 bg-brand-100 dark:text-white dark:bg-white/10'
-                    : 'text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5'
+                    ? 'bg-white/15 text-white'
+                    : 'text-slate-200 hover:text-white hover:bg-white/10'
                 }`}
               >
                 <span>Tools</span>
                 <ChevronDown
-                  className={`w-3.5 h-3.5 transition-transform duration-200 ${
-                    isToolsOpen ? 'rotate-180 text-brand-700 dark:text-white' : 'text-ink-muted dark:text-neutral-400'
+                  className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                    isToolsOpen ? 'rotate-180 text-white' : 'text-slate-300'
                   }`}
                 />
               </button>
 
               {isToolsOpen && (
-                <div
-                  className="absolute top-full left-0 mt-2 w-[840px] max-w-4xl rounded-2xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-2xl p-6 z-50 animate-in fade-in slide-in-from-top-2 duration-150"
-                >
-                  {/* Top section: Convert Files (2 cols) & Optimize Files (1 col) */}
-                  <div className="grid grid-cols-3 gap-6">
-                    {/* Convert Files */}
-                    <div className="col-span-2 space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
-                        <RefreshCw className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                        <span>Convert Files</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs text-ink-secondary dark:text-neutral-300 pt-1">
-                        <Link href="/unit-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-brand-400 font-semibold flex items-center gap-1.5 py-0.5 text-brand-700 dark:text-brand-300">
-                          <Calculator className="w-3.5 h-3.5" />
-                          <span>Unit Converter</span>
-                        </Link>
-                        <Link href="/archive-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Archive Converter</Link>
-                        <Link href="/audio-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Audio Converter</Link>
-                        <Link href="/cad-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">CAD Converter</Link>
-                        <Link href="/document-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Document Converter</Link>
-                        <Link href="/ebook-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Ebook Converter</Link>
-                        <Link href="/font-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Font Converter</Link>
-                        <Link href="/image-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Image Converter</Link>
-                        <Link href="/presentation-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Presentation Converter</Link>
-                        <Link href="/spreadsheet-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Spreadsheet Converter</Link>
-                        <Link href="/vector-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Vector Converter</Link>
-                        <Link href="/video-converter" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors py-0.5">Video Converter</Link>
-                      </div>
-                    </div>
-
-                    {/* Optimize Files */}
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
-                        <Sparkles className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                        <span>Optimize Files</span>
-                      </div>
-                      <div className="space-y-1.5 text-xs text-ink-secondary dark:text-neutral-300 pt-1">
-                        <Link href="/compress-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Compress PDF</Link>
-                        <Link href="/compress-png" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Compress PNG</Link>
-                        <Link href="/compress-jpg" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Compress JPG</Link>
-                        <Link href="/pdf-ocr" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">PDF OCR</Link>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Decorative Brand Divider */}
-                  <div className="border-t border-brand-300/60 dark:border-dark-border my-5" />
-
-                  {/* Bottom section: Merge Files, Capture Websites, Archives */}
-                  <div className="grid grid-cols-3 gap-6">
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
-                        <Layers className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                        <span>Merge Files</span>
-                      </div>
-                      <div className="space-y-1 text-xs text-ink-secondary dark:text-neutral-300">
-                        <Link href="/merge-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Merge PDF</Link>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
-                        <Globe className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                        <span>Capture Websites</span>
-                      </div>
-                      <div className="space-y-1 text-xs text-ink-secondary dark:text-neutral-300">
-                        <Link href="/save-website-as-pdf" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Save Website as PDF</Link>
-                        <Link href="/website-png-screenshot" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Website PNG Screenshot</Link>
-                        <Link href="/website-jpg-screenshot" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Website JPG Screenshot</Link>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white mb-2">
-                        <Archive className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                        <span>Archives</span>
-                      </div>
-                      <div className="space-y-1 text-xs text-ink-secondary dark:text-neutral-300">
-                        <Link href="/create-archive" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Create Archive</Link>
-                        <Link href="/extract-archive" onClick={() => setIsToolsOpen(false)} className="hover:text-brand-700 dark:hover:text-white transition-colors block py-0.5">Extract Archive</Link>
-                      </div>
-                    </div>
+                <div className="absolute top-full left-0 mt-2 max-w-[calc(100dvw-2rem)] w-[380px] rounded-xl bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-xl p-3 z-50">
+                  <div className="grid grid-cols-2 gap-1">
+                    {TOOL_ROUTES.map((tool) => (
+                      <Link
+                        key={tool.href}
+                        href={tool.href}
+                        onClick={() => setIsToolsOpen(false)}
+                        className="min-h-[40px] px-2.5 py-2 rounded-md text-xs font-medium text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 inline-flex items-center transition-colors"
+                      >
+                        {tool.label}
+                      </Link>
+                    ))}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Supported Formats */}
-            <Link
-              href="/#format-catalog"
-              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors"
-            >
-              Formats
-            </Link>
-
-            {/* How It Works */}
-            <Link
-              href="/#how-it-works"
-              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors"
-            >
-              How It Works
-            </Link>
-
-            {/* Developer API & Dashboard */}
-            <Link
-              href="/dashboard"
-              className="px-3 py-1.5 text-sm font-medium text-ink-secondary hover:text-brand-950 hover:bg-brand-100/70 dark:text-neutral-300 dark:hover:text-white dark:hover:bg-white/5 rounded-lg transition-colors"
-            >
-              API
-            </Link>
-
-            {/* 100% Free Static Edge Badge */}
-            <span className="ml-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
-              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              100% Free
-            </span>
+            {PRIMARY_LINKS.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="min-h-[44px] px-3 inline-flex items-center text-sm font-medium text-slate-200 hover:text-white hover:bg-white/10 rounded-md transition-colors"
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
         </div>
 
-        {/* Right Section: Auth State, Theme Toggle & Mobile Menu */}
-        <div className="flex items-center gap-2">
-          {/* User Auth Buttons (Desktop) */}
-          <div className="hidden sm:flex items-center gap-2 mr-1">
-            <UserNav />
-          </div>
-
-          {/* Theme switch button */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={toggleDarkMode}
-            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-            className="p-2 rounded-lg text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md text-slate-200 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
             {isDark ? (
-              <Sun className="size-4 shrink-0 text-amber-400" />
+              <Sun className="size-4 shrink-0 text-amber-300" />
             ) : (
-              <Moon className="size-4 shrink-0 text-brand-700" />
+              <Moon className="size-4 shrink-0 text-slate-200" />
             )}
           </button>
 
-          {/* Mobile hamburger */}
+          <div className="hidden lg:flex items-center gap-1.5 whitespace-nowrap">
+            <UserNav />
+          </div>
+
           <button
             type="button"
-            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
+            onClick={() => setIsMobileMenuOpen(true)}
+            aria-label="Open menu"
             aria-expanded={isMobileMenuOpen}
-            className="lg:hidden p-2 text-ink-secondary hover:text-brand-950 dark:text-neutral-300 dark:hover:text-white rounded-lg hover:bg-brand-100/70 dark:hover:bg-white/5 transition-colors"
+            className="lg:hidden min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md text-slate-200 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
           >
-            {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            <Menu className="w-5 h-5" />
           </button>
         </div>
       </div>
 
-      {/* Mobile Drawer */}
-      {isMobileMenuOpen && (
-        <div className="lg:hidden bg-brand-50 dark:bg-dark-surface border-b border-neutral-border dark:border-dark-border px-4 py-4 space-y-3">
-          <div className="font-bold text-xs text-brand-700 dark:text-brand-400 uppercase tracking-wider">Quick Tools</div>
-          <div className="grid grid-cols-2 gap-2 text-xs text-ink-secondary dark:text-neutral-300 pb-2">
-            <Link href="/unit-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white font-medium flex items-center gap-1 text-brand-700 dark:text-brand-300">
-              <Calculator className="w-3.5 h-3.5" />
-              <span>Unit Converter</span>
-            </Link>
-            <Link href="/pdf-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">PDF Converter</Link>
-            <Link href="/video-converter" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">Video Converter</Link>
-            <Link href="/merge-pdf" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">Merge PDF</Link>
-            <Link href="/compress-pdf" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white">Compress PDF</Link>
-            <Link href="/status" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-brand-700 dark:hover:text-white flex items-center gap-1">
-              <Activity className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Edge Status</span>
-            </Link>
-          </div>
-          <div className="border-t border-brand-300/60 dark:border-dark-border pt-2 flex flex-col gap-1">
-            <Link
-              href="/#format-catalog"
-              onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
-            >
-              Formats
-            </Link>
-            <Link
-              href="/#how-it-works"
-              onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1.5 text-sm text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white"
-            >
-              How It Works
-            </Link>
-            <Link
-              href="/dashboard"
-              onClick={() => setIsMobileMenuOpen(false)}
-              className="px-2 py-1.5 text-sm text-brand-700 dark:text-brand-300 font-semibold flex items-center gap-1.5"
-            >
-              <Key className="w-3.5 h-3.5" />
-              <span>Developer API & Dashboard</span>
-            </Link>
-
-            {/* Mobile Auth actions */}
-            <div className="pt-2 border-t border-brand-300/60 dark:border-dark-border">
-              <UserNav mobile onItemClick={() => setIsMobileMenuOpen(false)} />
-            </div>
-
-            <div className="pt-2 flex items-center justify-between px-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold tracking-wide uppercase bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
-                <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                100% Free • Zero-Server
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+      {isMobileMenuOpen && <MobileMenuDialog onClose={() => setIsMobileMenuOpen(false)} />}
     </header>
   );
 }

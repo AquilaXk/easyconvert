@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'EasyConvert — File Converter Online',
+  title: 'EasyConvert | Online File Converter',
   description:
-    'Universal online file converter supporting images, documents, spreadsheets, data structures, and archives with modern high-fidelity conversion engine.',
+    'Convert documents, images, audio, video, spreadsheets, structured data, and archives online with encrypted ephemeral processing.',
   icons: {
     icon: '/icon.svg',
     shortcut: '/icon.svg',
@@ -20,6 +20,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <meta name="color-scheme" content="light dark" />
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -35,6 +36,12 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen flex flex-col antialiased bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text selection:bg-brand-200 selection:text-brand-900">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2.5 focus:rounded-md focus:bg-brand-700 focus:text-white focus:text-sm focus:font-semibold focus:shadow-lg"
+        >
+          Skip to main content
+        </a>
         {children}
       </body>
     </html>

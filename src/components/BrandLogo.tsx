@@ -34,14 +34,26 @@ export function BrandIcon({ size = 32, className = '' }: { size?: number | strin
     >
       <circle cx="60" cy="60" r="50" fill="#F4F5FD" stroke="#5C6BC0" strokeWidth="3.75" />
       <g id="brand-signature-icon" transform="translate(60, 60) scale(0.00743, -0.00743) translate(-7200, -7200)">
-        {/* Soft Lavender (#B4BCFB) Accent & Forward Arrow */}
         <path fill="#B4BCFB" d={LAVENDER_ACCENT_AND_ARROW_PATH} />
-
-        {/* Stylized Rounded EC Monogram in #5C6BC0 (brand.700) */}
         <path fill="#5C6BC0" d={EC_MONOGRAM_PATH} />
       </g>
     </svg>
   );
+}
+
+type LogoSizePreset = 'sm' | 'md' | 'lg' | 'xl';
+
+const SIZE_MAP: Record<LogoSizePreset, { pixelSize: number; textClass: string }> = {
+  sm: { pixelSize: 26, textClass: 'text-lg' },
+  md: { pixelSize: 34, textClass: 'text-xl md:text-2xl' },
+  lg: { pixelSize: 44, textClass: 'text-2xl md:text-3xl' },
+  xl: { pixelSize: 56, textClass: 'text-3xl md:text-4xl' },
+};
+
+function resolveNumericTextClass(size: number): string {
+  if (size >= 40) return 'text-2xl md:text-3xl';
+  if (size >= 32) return 'text-xl md:text-2xl';
+  return 'text-lg';
 }
 
 export default function BrandLogo({
@@ -51,41 +63,19 @@ export default function BrandLogo({
   textClassName = '',
   iconClassName = '',
 }: BrandLogoProps) {
-  let pixelSize = 34;
-  let textClass = 'text-xl md:text-2xl';
-
-  if (typeof size === 'number') {
-    pixelSize = size;
-    textClass = size >= 40 ? 'text-2xl md:text-3xl' : size >= 32 ? 'text-xl md:text-2xl' : 'text-lg';
-  } else {
-    switch (size) {
-      case 'sm':
-        pixelSize = 26;
-        textClass = 'text-lg';
-        break;
-      case 'md':
-        pixelSize = 34;
-        textClass = 'text-xl md:text-2xl';
-        break;
-      case 'lg':
-        pixelSize = 44;
-        textClass = 'text-2xl md:text-3xl';
-        break;
-      case 'xl':
-        pixelSize = 56;
-        textClass = 'text-3xl md:text-4xl';
-        break;
-    }
-  }
+  const resolved =
+    typeof size === 'number'
+      ? { pixelSize: size, textClass: resolveNumericTextClass(size) }
+      : SIZE_MAP[size];
 
   const effectiveTextClass = textClassName || 'text-[#1F2340] dark:text-white';
 
   return (
     <div className={`inline-flex items-center gap-2.5 select-none ${className}`}>
-      <BrandIcon size={pixelSize} className={iconClassName} />
+      <BrandIcon size={resolved.pixelSize} className={iconClassName} />
       {showText && (
         <span
-          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${textClass} ${effectiveTextClass}`}
+          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} ${effectiveTextClass}`}
         >
           EasyConvert
         </span>

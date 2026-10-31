@@ -264,25 +264,417 @@ const POPULAR_CONVERSIONS = [
   { label: 'Bar to PSI', category: 'pressure', from: 'bar', to: 'psi' },
 ];
 
+const REFERENCE_VALUES = [1, 5, 10, 20, 50, 100, 250, 500, 1000];
+
 export function convertValue(val: number, fromDef: UnitDefinition, toDef: UnitDefinition): number {
   if (isNaN(val)) return 0;
-  // Base conversion
-  let baseVal = 0;
-  if (typeof fromDef.toBase === 'function') {
-    baseVal = fromDef.toBase(val);
-  } else {
-    baseVal = val * fromDef.toBase;
-  }
+  const baseVal = typeof fromDef.toBase === 'function' ? fromDef.toBase(val) : val * fromDef.toBase;
+  return typeof toDef.fromBase === 'function' ? toDef.fromBase(baseVal) : baseVal * toDef.fromBase;
+}
 
-  // Target conversion
-  let targetVal = 0;
-  if (typeof toDef.fromBase === 'function') {
-    targetVal = toDef.fromBase(baseVal);
-  } else {
-    targetVal = baseVal * toDef.fromBase;
+function getBreakdownCardClass(isTarget: boolean, isSelf: boolean): string {
+  if (isTarget) {
+    return 'bg-brand-50 dark:bg-dark-elevated border-brand-400 dark:border-brand-500/60 shadow-sm';
   }
+  if (isSelf) {
+    return 'bg-neutral-subtle dark:bg-dark-elevated/60 border-neutral-border dark:border-dark-border opacity-80';
+  }
+  return 'bg-neutral-scaffold dark:bg-dark-elevated border-neutral-border dark:border-dark-border hover:border-brand-400';
+}
 
-  return targetVal;
+function resolveStartingCategory(initialCategory: string, initialSrc?: string, initialTgt?: string): string {
+  if (initialSrc && initialTgt) {
+    const srcLower = initialSrc.toLowerCase();
+    const tgtLower = initialTgt.toLowerCase();
+    for (const [catKey, catDef] of Object.entries(UNIT_CATEGORIES)) {
+      if (catDef.units[srcLower] && catDef.units[tgtLower]) {
+        return catKey;
+      }
+    }
+  }
+  return UNIT_CATEGORIES[initialCategory] ? initialCategory : 'weight';
+}
+
+function CategorySelectorBar({
+  activeCategoryKey,
+  onSelectCategory,
+}: {
+  activeCategoryKey: string;
+  onSelectCategory: (key: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Unit categories">
+      {Object.entries(UNIT_CATEGORIES).map(([key, cat]) => {
+        const Icon = cat.icon;
+        const isActive = activeCategoryKey === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={isActive}
+            onClick={() => onSelectCategory(key)}
+            className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 py-2 rounded-md text-xs sm:text-sm font-semibold border transition-colors cursor-pointer ${
+              isActive
+                ? 'bg-brand-700 text-white border-brand-700'
+                : 'bg-white dark:bg-dark-surface border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-400'
+            }`}
+          >
+            <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-brand-700 dark:text-brand-400'}`} aria-hidden="true" />
+            <span>{cat.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface UnitWorkbenchProps {
+  currentCategory: UnitCategory;
+  fromDef: UnitDefinition;
+  toDef: UnitDefinition;
+  fromUnitKey: string;
+  toUnitKey: string;
+  inputStr: string;
+  formattedResult: string;
+  rawCopyValue: string;
+  precision: number;
+  formulaText: string;
+  isCopied: boolean;
+  onChangeInput: (next: string) => void;
+  onChangeFromUnit: (next: string) => void;
+  onChangeToUnit: (next: string) => void;
+  onChangePrecision: (next: number) => void;
+  onSwap: () => void;
+  onCopyResult: (value: string) => void;
+}
+
+function UnitWorkbenchCard({ props }: { props: UnitWorkbenchProps }) {
+  const {
+    currentCategory,
+    fromDef,
+    toDef,
+    fromUnitKey,
+    toUnitKey,
+    inputStr,
+    formattedResult,
+    rawCopyValue,
+    precision,
+    formulaText,
+    isCopied,
+    onChangeInput,
+    onChangeFromUnit,
+    onChangeToUnit,
+    onChangePrecision,
+    onSwap,
+    onCopyResult,
+  } = props;
+
+  return (
+    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-border dark:border-dark-border pb-5">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-brand-950 dark:text-white">
+            {fromDef.name} to {toDef.name} Converter
+          </h2>
+          <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mt-1">
+            High-precision client calculation with zero network round-trips.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <label
+            htmlFor="unit-precision-select"
+            className="text-xs font-semibold text-ink-secondary dark:text-neutral-300"
+          >
+            Decimals
+          </label>
+          <select
+            id="unit-precision-select"
+            value={precision}
+            onChange={(e) => onChangePrecision(parseInt(e.target.value, 10))}
+            className="min-h-[44px] px-3 py-2 rounded-md bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border text-base text-brand-950 dark:text-white font-medium focus:border-brand-700 outline-none cursor-pointer"
+          >
+            <option value={2}>2 decimals</option>
+            <option value={4}>4 decimals</option>
+            <option value={6}>6 decimals</option>
+            <option value={8}>8 decimals</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-5">
+        <div className="space-y-3 p-5 rounded-lg bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border">
+          <label
+            htmlFor="unit-from-value"
+            className="block text-xs font-semibold uppercase tracking-wider text-ink-secondary dark:text-neutral-300"
+          >
+            From Value
+          </label>
+          <input
+            id="unit-from-value"
+            type="text"
+            inputMode="decimal"
+            value={inputStr}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === '' || val === '-' || /^-?\d*\.?\d*$/.test(val)) {
+                onChangeInput(val);
+              }
+            }}
+            placeholder="0"
+            className="w-full min-h-[48px] px-4 py-2.5 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-950 dark:text-white font-mono text-lg sm:text-xl font-bold focus:border-brand-700 outline-none transition-colors"
+          />
+
+          <label
+            htmlFor="unit-from-select"
+            className="block text-xs font-semibold text-ink-secondary dark:text-neutral-300 pt-1"
+          >
+            Source Unit
+          </label>
+          <select
+            id="unit-from-select"
+            value={fromUnitKey}
+            onChange={(e) => onChangeFromUnit(e.target.value)}
+            className="w-full min-h-[44px] px-3.5 py-2 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-base font-medium text-brand-950 dark:text-white focus:border-brand-700 outline-none cursor-pointer"
+          >
+            {Object.entries(currentCategory.units).map(([key, def]) => (
+              <option key={key} value={key}>
+                {def.name} ({def.symbol})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={onSwap}
+            aria-label="Swap source and target units"
+            className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2.5 rounded-md bg-neutral-scaffold hover:bg-brand-50 dark:bg-dark-elevated dark:hover:bg-dark-border text-brand-700 dark:text-brand-300 border border-neutral-border dark:border-dark-border transition-colors cursor-pointer"
+          >
+            <ArrowRightLeft className="w-5 h-5" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="space-y-3 p-5 rounded-lg bg-brand-50/50 dark:bg-dark-elevated border border-brand-200 dark:border-dark-border">
+          <div className="flex items-center justify-between gap-2">
+            <label
+              htmlFor="unit-to-value"
+              className="block text-xs font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-400"
+            >
+              Converted Result ({toDef.symbol})
+            </label>
+            <button
+              type="button"
+              onClick={() => onCopyResult(rawCopyValue)}
+              aria-label="Copy converted result"
+              className="inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-md text-xs font-semibold bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-700 dark:text-brand-300 hover:border-brand-400 transition-colors cursor-pointer"
+            >
+              {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
+              <span>{isCopied ? 'Copied' : 'Copy'}</span>
+            </button>
+          </div>
+
+          <input
+            id="unit-to-value"
+            type="text"
+            readOnly
+            value={`${formattedResult} ${toDef.symbol}`}
+            className="w-full min-h-[48px] px-4 py-2.5 rounded-md bg-white dark:bg-dark-surface border border-brand-300 dark:border-dark-border text-brand-700 dark:text-brand-300 font-mono text-lg sm:text-xl font-bold outline-none"
+          />
+
+          <label
+            htmlFor="unit-to-select"
+            className="block text-xs font-semibold text-ink-secondary dark:text-neutral-300 pt-1"
+          >
+            Target Unit
+          </label>
+          <select
+            id="unit-to-select"
+            value={toUnitKey}
+            onChange={(e) => onChangeToUnit(e.target.value)}
+            className="w-full min-h-[44px] px-3.5 py-2 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-base font-medium text-brand-950 dark:text-white focus:border-brand-700 outline-none cursor-pointer"
+          >
+            {Object.entries(currentCategory.units).map(([key, def]) => (
+              <option key={key} value={key}>
+                {def.name} ({def.symbol})
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="p-4 rounded-lg bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-ink-secondary dark:text-neutral-300">
+          <HelpCircle className="w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0" aria-hidden="true" />
+          <span className="px-2 py-0.5 rounded bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border font-semibold text-brand-950 dark:text-white">
+            Formula
+          </span>
+          <code className="font-mono text-brand-700 dark:text-brand-300 font-semibold">{formulaText}</code>
+        </div>
+        <span className="text-emerald-700 dark:text-emerald-400 font-semibold self-start sm:self-auto">
+          100% In-Browser &amp; Private
+        </span>
+      </div>
+    </section>
+  );
+}
+
+interface ConversionRow {
+  key: string;
+  name: string;
+  symbol: string;
+  value: number;
+}
+
+function CategoryBreakdownSection({
+  inputVal,
+  fromName,
+  categoryName,
+  rows,
+  fromUnitKey,
+  toUnitKey,
+  precision,
+  copiedKey,
+  onCopyRow,
+}: {
+  inputVal: number;
+  fromName: string;
+  categoryName: string;
+  rows: ConversionRow[];
+  fromUnitKey: string;
+  toUnitKey: string;
+  precision: number;
+  copiedKey: string | null;
+  onCopyRow: (text: string, key: string) => void;
+}) {
+  return (
+    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+          {inputVal} {fromName} Converted to All {categoryName} Units
+        </h2>
+        <span className="text-xs text-ink-muted dark:text-neutral-400">
+          {rows.length} units
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {rows.map((conv) => {
+          const formatted = Number.isFinite(conv.value)
+            ? conv.value.toLocaleString(undefined, { maximumFractionDigits: precision })
+            : '0';
+          const copyText = Number.isFinite(conv.value)
+            ? parseFloat(conv.value.toFixed(precision)).toString()
+            : '0';
+          const cardClass = getBreakdownCardClass(conv.key === toUnitKey, conv.key === fromUnitKey);
+
+          return (
+            <div
+              key={conv.key}
+              className={`p-3.5 rounded-lg border transition-colors flex items-center justify-between gap-2 ${cardClass}`}
+            >
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-brand-950 dark:text-white truncate">
+                  {conv.name}
+                </div>
+                <div className="text-sm font-mono font-bold text-brand-700 dark:text-brand-300 truncate">
+                  {formatted} <span className="text-xs text-ink-muted font-sans">{conv.symbol}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => onCopyRow(copyText, conv.key)}
+                aria-label={`Copy ${conv.name} value`}
+                className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2 rounded-md text-ink-muted hover:text-brand-700 dark:hover:text-white hover:bg-brand-100 dark:hover:bg-dark-border transition-colors shrink-0 cursor-pointer"
+              >
+                {copiedKey === conv.key ? (
+                  <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+                ) : (
+                  <Copy className="w-4 h-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function QuickReferenceSection({
+  fromDef,
+  toDef,
+  precision,
+}: {
+  fromDef: UnitDefinition;
+  toDef: UnitDefinition;
+  precision: number;
+}) {
+  return (
+    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
+      <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+        {fromDef.name} to {toDef.name} Quick Reference Table
+      </h2>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-xs sm:text-sm">
+          <thead>
+            <tr className="border-b border-neutral-border dark:border-dark-border text-ink-muted dark:text-neutral-400">
+              <th scope="col" className="py-2.5 px-4 font-bold">{fromDef.name} ({fromDef.symbol})</th>
+              <th scope="col" className="py-2.5 px-4 font-bold">{toDef.name} ({toDef.symbol})</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-border dark:divide-dark-border">
+            {REFERENCE_VALUES.map((refVal) => {
+              const converted = convertValue(refVal, fromDef, toDef);
+              return (
+                <tr key={refVal} className="hover:bg-neutral-subtle/50 dark:hover:bg-dark-elevated transition-colors">
+                  <td className="py-2.5 px-4 font-mono font-semibold text-brand-950 dark:text-white">
+                    {refVal} {fromDef.symbol}
+                  </td>
+                  <td className="py-2.5 px-4 font-mono text-brand-700 dark:text-brand-300 font-bold">
+                    {converted.toLocaleString(undefined, { maximumFractionDigits: precision })} {toDef.symbol}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function PopularConversionsSection({
+  onSelectPreset,
+}: {
+  onSelectPreset: (category: string, from: string, to: string) => void;
+}) {
+  return (
+    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
+      <div className="flex items-center gap-2">
+        <TrendingUp className="w-4 h-4 text-brand-700 dark:text-brand-400" aria-hidden="true" />
+        <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+          Popular Unit Conversions
+        </h2>
+      </div>
+
+      <div className="flex flex-wrap gap-2.5">
+        {POPULAR_CONVERSIONS.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={() => onSelectPreset(item.category, item.from, item.to)}
+            className="min-h-[44px] px-3.5 py-2 rounded-md text-xs font-semibold bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-400 transition-colors cursor-pointer"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 interface UnitConverterProps {
@@ -296,21 +688,13 @@ export default function UnitConverter({
   initialSrc,
   initialTgt,
 }: UnitConverterProps) {
-  // Determine starting category and units
-  const resolvedCategory = useMemo(() => {
-    if (initialSrc && initialTgt) {
-      for (const [catKey, catDef] of Object.entries(UNIT_CATEGORIES)) {
-        if (catDef.units[initialSrc.toLowerCase()] && catDef.units[initialTgt.toLowerCase()]) {
-          return catKey;
-        }
-      }
-    }
-    return UNIT_CATEGORIES[initialCategory] ? initialCategory : 'weight';
-  }, [initialCategory, initialSrc, initialTgt]);
+  const resolvedCategory = useMemo(
+    () => resolveStartingCategory(initialCategory, initialSrc, initialTgt),
+    [initialCategory, initialSrc, initialTgt]
+  );
 
   const [activeCategoryKey, setActiveCategoryKey] = useState<string>(resolvedCategory);
   const currentCategory = UNIT_CATEGORIES[activeCategoryKey] || UNIT_CATEGORIES.weight;
-
   const [inputStr, setInputStr] = useState<string>('1');
 
   const inputVal = useMemo(() => {
@@ -333,7 +717,6 @@ export default function UnitConverter({
   const [isCopied, setIsCopied] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Switch category
   const handleSelectCategory = (catKey: string) => {
     setActiveCategoryKey(catKey);
     const cat = UNIT_CATEGORIES[catKey];
@@ -346,9 +729,17 @@ export default function UnitConverter({
   const fromDef = currentCategory.units[fromUnitKey] || Object.values(currentCategory.units)[0];
   const toDef = currentCategory.units[toUnitKey] || Object.values(currentCategory.units)[1];
 
-  const calculatedResult = useMemo(() => {
-    return convertValue(inputVal, fromDef, toDef);
-  }, [inputVal, fromDef, toDef]);
+  const calculatedResult = useMemo(
+    () => convertValue(inputVal, fromDef, toDef),
+    [inputVal, fromDef, toDef]
+  );
+
+  const formattedResult = useMemo(() => {
+    if (!Number.isFinite(calculatedResult)) return '0';
+    return parseFloat(calculatedResult.toFixed(precision)).toLocaleString(undefined, {
+      maximumFractionDigits: precision,
+    });
+  }, [calculatedResult, precision]);
 
   const rawCopyValue = useMemo(() => {
     if (!Number.isFinite(calculatedResult)) return '0';
@@ -356,12 +747,10 @@ export default function UnitConverter({
   }, [calculatedResult, precision]);
 
   const handleSwap = () => {
-    const tmp = fromUnitKey;
     setFromUnitKey(toUnitKey);
-    setToUnitKey(tmp);
+    setToUnitKey(fromUnitKey);
     if (Number.isFinite(calculatedResult) && calculatedResult !== 0) {
-      const fixed = parseFloat(calculatedResult.toFixed(precision));
-      setInputStr(String(fixed));
+      setInputStr(String(parseFloat(calculatedResult.toFixed(precision))));
     }
   };
 
@@ -378,23 +767,17 @@ export default function UnitConverter({
     }
   };
 
-  // Common reference lookup table (1, 5, 10, 20, 50, 100, 250, 500, 1000)
-  const referenceValues = [1, 5, 10, 20, 50, 100, 250, 500, 1000];
-
-  // All other units in the current category
-  const allCategoryConversions = useMemo(() => {
-    return Object.entries(currentCategory.units).map(([key, def]) => {
-      const val = convertValue(inputVal, fromDef, def);
-      return {
+  const allCategoryConversions = useMemo(
+    () =>
+      Object.entries(currentCategory.units).map(([key, def]) => ({
         key,
         name: def.name,
         symbol: def.symbol,
-        value: val,
-      };
-    });
-  }, [inputVal, fromDef, currentCategory]);
+        value: convertValue(inputVal, fromDef, def),
+      })),
+    [inputVal, fromDef, currentCategory]
+  );
 
-  // Dynamic formula generation
   const formulaText = useMemo(() => {
     if (currentCategory.formulaDescription) {
       return currentCategory.formulaDescription(fromUnitKey, toUnitKey, inputVal, calculatedResult);
@@ -404,278 +787,55 @@ export default function UnitConverter({
   }, [currentCategory, fromDef, toDef, fromUnitKey, toUnitKey, inputVal, calculatedResult]);
 
   return (
-    <div className="w-full space-y-10">
-      {/* Category Switcher Tabs */}
-      <div className="flex items-center overflow-x-auto pb-2 scrollbar-none gap-2">
-        {Object.entries(UNIT_CATEGORIES).map(([key, cat]) => {
-          const Icon = cat.icon;
-          const isActive = activeCategoryKey === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => handleSelectCategory(key)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all cursor-pointer ${
-                isActive
-                  ? 'bg-brand-700 text-white shadow-md shadow-brand-700/25 scale-[1.02]'
-                  : 'bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-400'
-              }`}
-            >
-              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-brand-700 dark:text-brand-400'}`} />
-              <span>{cat.name}</span>
-            </button>
-          );
-        })}
-      </div>
+    <div className="w-full space-y-8">
+      <CategorySelectorBar
+        activeCategoryKey={activeCategoryKey}
+        onSelectCategory={handleSelectCategory}
+      />
 
-      {/* Main Interactive Dual Conversion Card */}
-      <div className="rounded-3xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-10 shadow-xl space-y-8">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-border dark:border-dark-border pb-6">
-          <div>
-            <h2 className="text-xl sm:text-2xl font-extrabold text-brand-950 dark:text-white">
-              {fromDef.name} to {toDef.name} Converter
-            </h2>
-            <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mt-1">
-              Real-time high-precision client calculation with zero network latency.
-            </p>
-          </div>
+      <UnitWorkbenchCard
+        props={{
+          currentCategory,
+          fromDef,
+          toDef,
+          fromUnitKey,
+          toUnitKey,
+          inputStr,
+          formattedResult,
+          rawCopyValue,
+          precision,
+          formulaText,
+          isCopied,
+          onChangeInput: setInputStr,
+          onChangeFromUnit: setFromUnitKey,
+          onChangeToUnit: setToUnitKey,
+          onChangePrecision: setPrecision,
+          onSwap: handleSwap,
+          onCopyResult: (val) => handleCopy(val),
+        }}
+      />
 
-          {/* Precision Selector */}
-          <div className="flex items-center gap-2 self-start sm:self-auto text-xs text-ink-secondary dark:text-neutral-400">
-            <span>Decimals:</span>
-            <select
-              value={precision}
-              onChange={(e) => setPrecision(parseInt(e.target.value, 10))}
-              className="px-2.5 py-1 rounded-lg bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border text-brand-950 dark:text-white font-medium outline-none cursor-pointer"
-            >
-              <option value={2}>2 decimals</option>
-              <option value={4}>4 decimals</option>
-              <option value={6}>6 decimals</option>
-              <option value={8}>8 decimals</option>
-            </select>
-          </div>
-        </div>
+      <CategoryBreakdownSection
+        inputVal={inputVal}
+        fromName={fromDef.name}
+        categoryName={currentCategory.name}
+        rows={allCategoryConversions}
+        fromUnitKey={fromUnitKey}
+        toUnitKey={toUnitKey}
+        precision={precision}
+        copiedKey={copiedKey}
+        onCopyRow={(text, key) => handleCopy(text, key)}
+      />
 
-        {/* Dual Input Conversion Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-6">
-          {/* FROM Input & Unit */}
-          <div className="space-y-2.5 p-5 rounded-2xl bg-neutral-scaffold dark:bg-white/5 border border-neutral-border dark:border-dark-border">
-            <label className="block text-xs font-bold uppercase tracking-wider text-ink-muted dark:text-neutral-400">
-              From
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={inputStr}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val === '' || val === '-' || /^-?\d*\.?\d*$/.test(val)) {
-                  setInputStr(val);
-                }
-              }}
-              placeholder="0"
-              className="w-full px-4 py-3 rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-950 dark:text-white font-mono text-xl sm:text-2xl font-bold focus:border-brand-700 outline-none transition-colors"
-            />
-            <select
-              value={fromUnitKey}
-              onChange={(e) => setFromUnitKey(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-xs sm:text-sm font-semibold text-brand-950 dark:text-white focus:border-brand-700 outline-none cursor-pointer"
-            >
-              {Object.entries(currentCategory.units).map(([key, def]) => (
-                <option key={key} value={key}>
-                  {def.name} ({def.symbol})
-                </option>
-              ))}
-            </select>
-          </div>
+      <QuickReferenceSection fromDef={fromDef} toDef={toDef} precision={precision} />
 
-          {/* Swap Button */}
-          <div className="flex justify-center -my-2 lg:my-0">
-            <button
-              type="button"
-              onClick={handleSwap}
-              aria-label="Swap source and target units"
-              className="p-3.5 rounded-full bg-brand-100 hover:bg-brand-200 dark:bg-white/10 dark:hover:bg-white/15 text-brand-700 dark:text-brand-300 border border-brand-600/30 dark:border-white/15 shadow-sm transition-transform hover:rotate-180 duration-200 cursor-pointer"
-            >
-              <ArrowRightLeft className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* TO Output & Unit */}
-          <div className="space-y-2.5 p-5 rounded-2xl bg-brand-50/60 dark:bg-white/5 border border-brand-300/60 dark:border-dark-border">
-            <div className="flex items-center justify-between">
-              <label className="block text-xs font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
-                To (Calculated)
-              </label>
-              <button
-                type="button"
-                onClick={() => handleCopy(rawCopyValue)}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-700 dark:text-brand-300 hover:underline cursor-pointer"
-              >
-                {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{isCopied ? 'Copied!' : 'Copy'}</span>
-              </button>
-            </div>
-            <div className="w-full px-4 py-3 rounded-xl bg-white dark:bg-dark-surface border border-brand-300 dark:border-dark-border text-brand-700 dark:text-brand-300 font-mono text-xl sm:text-2xl font-bold truncate flex items-center justify-between">
-              <span>
-                {Number.isFinite(calculatedResult)
-                  ? parseFloat(calculatedResult.toFixed(precision)).toLocaleString(undefined, {
-                      maximumFractionDigits: precision,
-                    })
-                  : '0'}
-              </span>
-              <span className="text-xs font-normal text-ink-muted dark:text-neutral-400 font-sans ml-2">
-                {toDef.symbol}
-              </span>
-            </div>
-            <select
-              value={toUnitKey}
-              onChange={(e) => setToUnitKey(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-xs sm:text-sm font-semibold text-brand-950 dark:text-white focus:border-brand-700 outline-none cursor-pointer"
-            >
-              {Object.entries(currentCategory.units).map(([key, def]) => (
-                <option key={key} value={key}>
-                  {def.name} ({def.symbol})
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Formula & Explanation Ribbon */}
-        <div className="p-4 rounded-2xl bg-neutral-scaffold dark:bg-white/5 border border-neutral-border dark:border-dark-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 text-ink-secondary dark:text-neutral-300">
-            <HelpCircle className="w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0" />
-            <span className="font-semibold text-brand-950 dark:text-white">Conversion Formula:</span>
-            <span className="font-mono text-brand-700 dark:text-brand-300 font-bold">{formulaText}</span>
-          </div>
-          <span className="text-emerald-700 dark:text-emerald-400 font-semibold self-start sm:self-auto">
-            100% In-Browser & Private
-          </span>
-        </div>
-      </div>
-
-      {/* Multi-Unit Breakdown: Convert [Value] [FromUnit] into ALL other units in category */}
-      <div className="rounded-3xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
-            {inputVal} {fromDef.name} Converted to All {currentCategory.name} Units
-          </h3>
-          <span className="text-xs text-ink-muted dark:text-neutral-400">
-            {allCategoryConversions.length} units
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {allCategoryConversions.map((conv) => {
-            const formatted = Number.isFinite(conv.value)
-              ? conv.value.toLocaleString(undefined, { maximumFractionDigits: precision })
-              : '0';
-            const isTarget = conv.key === toUnitKey;
-            const isSelf = conv.key === fromUnitKey;
-
-            return (
-              <div
-                key={conv.key}
-                className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-2 ${
-                  isTarget
-                    ? 'bg-brand-50 dark:bg-white/10 border-brand-400 dark:border-brand-400/50 shadow-sm'
-                    : isSelf
-                    ? 'bg-neutral-subtle dark:bg-white/5 border-neutral-border dark:border-dark-border opacity-70'
-                    : 'bg-neutral-scaffold dark:bg-white/5 border-neutral-border dark:border-dark-border hover:border-brand-300'
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="text-xs font-bold text-brand-950 dark:text-white truncate">
-                    {conv.name}
-                  </div>
-                  <div className="text-sm font-mono font-bold text-brand-700 dark:text-brand-300 truncate">
-                    {formatted} <span className="text-xs text-ink-muted font-sans">{conv.symbol}</span>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleCopy(
-                      Number.isFinite(conv.value) ? parseFloat(conv.value.toFixed(precision)).toString() : '0',
-                      conv.key
-                    )
-                  }
-                  title="Copy value"
-                  className="p-1.5 rounded-lg text-ink-muted hover:text-brand-700 dark:hover:text-white hover:bg-brand-100 dark:hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
-                >
-                  {copiedKey === conv.key ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-500" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" />
-                  )}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Quick Lookup Reference Matrix */}
-      <div className="rounded-3xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
-        <h3 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
-          {fromDef.name} to {toDef.name} Quick Reference Table
-        </h3>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs sm:text-sm">
-            <thead>
-              <tr className="border-b border-neutral-border dark:border-dark-border text-ink-muted dark:text-neutral-400">
-                <th className="py-2.5 px-4 font-bold">{fromDef.name} ({fromDef.symbol})</th>
-                <th className="py-2.5 px-4 font-bold">{toDef.name} ({toDef.symbol})</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-border dark:divide-dark-border">
-              {referenceValues.map((refVal) => {
-                const converted = convertValue(refVal, fromDef, toDef);
-                return (
-                  <tr key={refVal} className="hover:bg-neutral-subtle/50 dark:hover:bg-white/5 transition-colors">
-                    <td className="py-2 px-4 font-mono font-semibold text-brand-950 dark:text-white">
-                      {refVal} {fromDef.symbol}
-                    </td>
-                    <td className="py-2 px-4 font-mono text-brand-700 dark:text-brand-300 font-bold">
-                      {converted.toLocaleString(undefined, { maximumFractionDigits: precision })} {toDef.symbol}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Popular Unit Conversions Fast Selector */}
-      <div className="rounded-3xl bg-neutral-scaffold dark:bg-white/5 border border-neutral-border dark:border-dark-border p-6 sm:p-8 space-y-4">
-        <div className="flex items-center gap-2">
-          <TrendingUp className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-          <h3 className="text-sm sm:text-base font-bold text-brand-950 dark:text-white">
-            Popular Unit Conversions
-          </h3>
-        </div>
-
-        <div className="flex flex-wrap gap-2.5">
-          {POPULAR_CONVERSIONS.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => {
-                setActiveCategoryKey(item.category);
-                setFromUnitKey(item.from);
-                setToUnitKey(item.to);
-              }}
-              className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-400 shadow-sm transition-all cursor-pointer"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <PopularConversionsSection
+        onSelectPreset={(category, from, to) => {
+          setActiveCategoryKey(category);
+          setFromUnitKey(from);
+          setToUnitKey(to);
+        }}
+      />
     </div>
   );
 }

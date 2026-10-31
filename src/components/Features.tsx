@@ -1,408 +1,397 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import {
-  FileText,
-  FileImage,
-  Video,
-  Music,
-  Database,
-  Presentation,
-  BookOpen,
-  Archive,
   ArrowRight,
-  Type,
-  Compass,
+  Check,
+  Copy,
+  Lock,
+  Cpu,
+  Clock,
+  Terminal,
 } from 'lucide-react';
+import type { FormatCategory } from '@/lib/types';
+import { CategoryRegistryStat, REGISTRY_STATS } from '@/lib/registry-stats';
 
-interface FeaturesProps {
+export interface FeaturesProps {
   onSelectPreset?: (source: string, target: string) => void;
 }
 
-interface CategoryData {
-  id: string;
-  name: string;
-  count: number;
-  icon: React.ReactNode;
-  formats: string[];
-  commonConversions: Array<{ from: string; to: string; desc: string }>;
+interface PopularPair {
+  from: string;
+  to: string;
+  summary: string;
 }
 
-export default function Features({ onSelectPreset }: FeaturesProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string>('documents');
+const POPULAR_PAIRS_BY_CATEGORY: Record<FormatCategory, ReadonlyArray<PopularPair>> = {
+  image: [
+    { from: 'png', to: 'webp', summary: 'Web image compression with alpha support' },
+    { from: 'heic', to: 'jpg', summary: 'Camera photo compatibility across devices' },
+    { from: 'jpg', to: 'pdf', summary: 'Printable single-page document export' },
+  ],
+  document: [
+    { from: 'pdf', to: 'docx', summary: 'Editable Word document output' },
+    { from: 'docx', to: 'pdf', summary: 'Fixed-layout PDF distribution' },
+    { from: 'hwp', to: 'pdf', summary: 'Hangul office document rendering' },
+  ],
+  archive: [
+    { from: 'rar', to: 'zip', summary: 'Standard ZIP archive repackaging' },
+    { from: '7z', to: 'zip', summary: 'Cross-platform archive compatibility' },
+    { from: 'tar', to: 'zip', summary: 'Compressed bundle conversion' },
+  ],
+  video: [
+    { from: 'mp4', to: 'mp3', summary: 'Audio track extraction from video' },
+    { from: 'mkv', to: 'mp4', summary: 'Browser and mobile playback container' },
+    { from: 'mov', to: 'mp4', summary: 'Standard H.264 MP4 container export' },
+  ],
+  audio: [
+    { from: 'wav', to: 'mp3', summary: 'Compact MP3 audio encoding' },
+    { from: 'flac', to: 'mp3', summary: 'Lossless source to portable MP3' },
+    { from: 'm4a', to: 'wav', summary: 'Uncompressed PCM waveform output' },
+  ],
+  ebook: [
+    { from: 'epub', to: 'pdf', summary: 'Paginated PDF layout from e-book' },
+    { from: 'mobi', to: 'epub', summary: 'Open EPUB e-reader format' },
+    { from: 'fb2', to: 'txt', summary: 'Plain UTF-8 text extraction' },
+  ],
+  spreadsheet: [
+    { from: 'xlsx', to: 'csv', summary: 'Delimited plain-text table export' },
+    { from: 'xlsx', to: 'pdf', summary: 'Formatted spreadsheet printout' },
+    { from: 'ods', to: 'xlsx', summary: 'Excel workbook compatibility' },
+  ],
+  presentation: [
+    { from: 'pptx', to: 'pdf', summary: 'Portable slide deck handout' },
+    { from: 'pptx', to: 'html', summary: 'Browser-viewable slide markup' },
+    { from: 'odp', to: 'pptx', summary: 'PowerPoint slide deck export' },
+  ],
+  data: [
+    { from: 'csv', to: 'json', summary: 'Structured JSON record array' },
+    { from: 'yaml', to: 'json', summary: 'Configuration file normalization' },
+    { from: 'json', to: 'csv', summary: 'Tabular row and column export' },
+  ],
+  vector: [
+    { from: 'svg', to: 'png', summary: 'Crisp rasterized PNG graphic' },
+    { from: 'ai', to: 'pdf', summary: 'Vector artwork preservation in PDF' },
+    { from: 'eps', to: 'svg', summary: 'Web-ready scalable SVG vector' },
+  ],
+  font: [
+    { from: 'ttf', to: 'woff2', summary: 'Compressed WOFF2 web font' },
+    { from: 'otf', to: 'ttf', summary: 'TrueType desktop font binary' },
+    { from: 'woff', to: 'ttf', summary: 'Installable TrueType font output' },
+  ],
+  cad: [
+    { from: 'dwg', to: 'pdf', summary: 'Technical drawing PDF sheet' },
+    { from: 'step', to: 'stl', summary: 'Triangle mesh for 3D printing' },
+    { from: 'dxf', to: 'svg', summary: '2D vector CAD plot export' },
+  ],
+};
 
-  const categories: CategoryData[] = [
-    {
-      id: 'documents',
-      name: 'Documents',
-      count: 40,
-      icon: <FileText className="w-3.5 h-3.5" />,
-      formats: [
-        'ABW', 'AZW4', 'DJVU', 'DOC', 'DOCM', 'DOCX', 'DOT', 'DOTX', 'EPUB', 'HTML', 'HWP', 'HWPX',
-        'LWP', 'MD', 'ODT', 'PAGES', 'PDF', 'RST', 'RTF', 'SDW', 'TEX', 'TXT', 'WPD', 'WPS', 'XPS', 'ZABW',
-      ],
-      commonConversions: [
-        { from: 'PDF', to: 'DOCX', desc: 'editable Word document' },
-        { from: 'DOCX', to: 'PDF', desc: 'print-ready PDF' },
-        { from: 'HWP', to: 'PDF', desc: 'Korean office document' },
-      ],
-    },
-    {
-      id: 'images',
-      name: 'Images',
-      count: 49,
-      icon: <FileImage className="w-3.5 h-3.5" />,
-      formats: [
-        '3FR', 'ARW', 'AVIF', 'BMP', 'CR2', 'CRW', 'DNG', 'EPS', 'GIF', 'HEIC', 'ICO', 'ICNS',
-        'JPEG', 'JPG', 'NEF', 'PNG', 'PSD', 'RAF', 'RAW', 'RW2', 'SVG', 'TIF', 'TIFF', 'WEBP',
-      ],
-      commonConversions: [
-        { from: 'PNG', to: 'WEBP', desc: 'next-gen lightweight web image' },
-        { from: 'HEIC', to: 'JPG', desc: 'universal photo format' },
-        { from: 'SVG', to: 'PNG', desc: 'rasterized high-DPI graphic' },
-      ],
-    },
-    {
-      id: 'video',
-      name: 'Video',
-      count: 38,
-      icon: <Video className="w-3.5 h-3.5" />,
-      formats: [
-        '3GP', 'AVI', 'FLV', 'M4V', 'MKV', 'MOV', 'MP4', 'MPEG', 'OGV', 'TS', 'VOB', 'WEBM', 'WMV',
-      ],
-      commonConversions: [
-        { from: 'MP4', to: 'MP3', desc: 'extract audio track' },
-        { from: 'MKV', to: 'MP4', desc: 'universal streaming playback' },
-        { from: 'MOV', to: 'MP4', desc: 'cross-platform web compatibility' },
-      ],
-    },
-    {
-      id: 'audio',
-      name: 'Audio',
-      count: 29,
-      icon: <Music className="w-3.5 h-3.5" />,
-      formats: [
-        'AAC', 'AC3', 'AIFF', 'AMR', 'FLAC', 'M4A', 'MID', 'MP3', 'OGG', 'OPUS', 'WAV', 'WMA',
-      ],
-      commonConversions: [
-        { from: 'WAV', to: 'MP3', desc: 'compressed 320 kbps stream' },
-        { from: 'FLAC', to: 'MP3', desc: 'lossless to universal audio' },
-        { from: 'M4A', to: 'WAV', desc: 'uncompressed audio stream' },
-      ],
-    },
-    {
-      id: 'spreadsheets',
-      name: 'Spreadsheets',
-      count: 18,
-      icon: <Database className="w-3.5 h-3.5" />,
-      formats: ['CSV', 'ET', 'JSON', 'NUMBERS', 'ODS', 'TSV', 'XLS', 'XLSB', 'XLSM', 'XLSX', 'XML'],
-      commonConversions: [
-        { from: 'XLSX', to: 'CSV', desc: 'comma-delimited data' },
-        { from: 'CSV', to: 'JSON', desc: 'structured records' },
-        { from: 'XLSX', to: 'PDF', desc: 'formatted report' },
-      ],
-    },
-    {
-      id: 'slides',
-      name: 'Slides',
-      count: 18,
-      icon: <Presentation className="w-3.5 h-3.5" />,
-      formats: ['DPS', 'KEY', 'ODP', 'POT', 'POTX', 'PPS', 'PPSX', 'PPT', 'PPTX', 'SXI', 'VSDX'],
-      commonConversions: [
-        { from: 'PPTX', to: 'PDF', desc: 'printable slide deck' },
-        { from: 'PPTX', to: 'HTML', desc: 'interactive presentation' },
-        { from: 'ODP', to: 'PPTX', desc: 'PowerPoint compatibility' },
-      ],
-    },
-    {
-      id: 'ebooks',
-      name: 'E-books',
-      count: 24,
-      icon: <BookOpen className="w-3.5 h-3.5" />,
-      formats: ['AZW', 'AZW3', 'CBZ', 'CBR', 'EPUB', 'FB2', 'LIT', 'LRF', 'MOBI', 'PDB', 'TCR'],
-      commonConversions: [
-        { from: 'EPUB', to: 'PDF', desc: 'printable book pages' },
-        { from: 'MOBI', to: 'EPUB', desc: 'open standard reader' },
-        { from: 'FB2', to: 'TXT', desc: 'plain text transcript' },
-      ],
-    },
-    {
-      id: 'archives',
-      name: 'Archives',
-      count: 41,
-      icon: <Archive className="w-3.5 h-3.5" />,
-      formats: ['7Z', 'ACE', 'ARJ', 'BZ2', 'CAB', 'GZ', 'ISO', 'RAR', 'TAR', 'TBZ2', 'TGZ', 'XZ', 'Z', 'ZIP'],
-      commonConversions: [
-        { from: 'RAR', to: 'ZIP', desc: 'open standard bundle' },
-        { from: 'TAR', to: 'ZIP', desc: 'compressed folder' },
-        { from: '7Z', to: 'ZIP', desc: 'standard extraction' },
-      ],
-    },
-    {
-      id: 'vector',
-      name: 'Vector',
-      count: 10,
-      icon: <Compass className="w-3.5 h-3.5" />,
-      formats: ['AI', 'CDR', 'CGM', 'DXF', 'EMF', 'EPS', 'SK', 'SK1', 'SVG', 'WMF'],
-      commonConversions: [
-        { from: 'SVG', to: 'PNG', desc: 'rasterized graphic' },
-        { from: 'AI', to: 'PDF', desc: 'vector document' },
-        { from: 'EPS', to: 'SVG', desc: 'scalable web vector' },
-      ],
-    },
-    {
-      id: 'cad',
-      name: 'CAD',
-      count: 9,
-      icon: <Compass className="w-3.5 h-3.5" />,
-      formats: ['DGN', 'DWF', 'DWG', 'DXF', 'IGES', 'OBJ', 'PLY', 'STEP', 'STL'],
-      commonConversions: [
-        { from: 'DWG', to: 'PDF', desc: 'printable technical drawing' },
-        { from: 'STEP', to: 'STL', desc: '3D printing mesh' },
-        { from: 'DXF', to: 'SVG', desc: 'scalable CAD vector' },
-      ],
-    },
-    {
-      id: 'fonts',
-      name: 'Fonts',
-      count: 10,
-      icon: <Type className="w-3.5 h-3.5" />,
-      formats: ['EOT', 'OTF', 'PFA', 'PFB', 'SVG', 'TTF', 'WOFF', 'WOFF2'],
-      commonConversions: [
-        { from: 'TTF', to: 'WOFF2', desc: 'modern optimized web font' },
-        { from: 'OTF', to: 'TTF', desc: 'TrueType desktop font' },
-      ],
-    },
-    {
-      id: 'data',
-      name: 'Data',
-      count: 9,
-      icon: <Database className="w-3.5 h-3.5" />,
-      formats: ['CSV', 'JSON', 'JSONL', 'NDJSON', 'PLIST', 'SQL', 'TOML', 'TSV', 'YAML'],
-      commonConversions: [
-        { from: 'CSV', to: 'JSON', desc: 'structured records' },
-        { from: 'YAML', to: 'JSON', desc: 'parse config data' },
-        { from: 'JSON', to: 'CSV', desc: 'tabular export' },
-      ],
-    },
-  ];
+const API_CURL_EXAMPLE = [
+  'curl -X POST https://easyconvert.com/api/v1/convert \\',
+  '  -H "Authorization: Bearer $EASYCONVERT_API_KEY" \\',
+  '  -F "file=@report.pdf" \\',
+  '  -F "targetFormat=docx" \\',
+  '  -o report.docx',
+].join('\n');
 
-  const activeCat = categories.find((c) => c.id === selectedCategory) || categories[0];
+function FormatDirectoryCard({
+  activeCategory,
+  onSelectCategory,
+}: {
+  activeCategory: CategoryRegistryStat;
+  onSelectCategory: (id: FormatCategory) => void;
+}) {
+  const popularPairs = POPULAR_PAIRS_BY_CATEGORY[activeCategory.id];
 
   return (
-    <div className="space-y-16 py-12 md:py-16">
-      {/* 1. Categorized Converter Directory */}
-      <section id="format-catalog" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-3xl mx-auto mb-10">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
-            Comprehensive Directory
-          </span>
-          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-brand-950 dark:text-white mt-1">
-            Supported Formats &amp; Conversions
-          </h2>
-          <p className="mt-2.5 text-sm sm:text-base text-ink-secondary dark:text-neutral-300">
-            EasyConvert supports <span className="font-semibold text-brand-950 dark:text-white">292</span> formats across 12 categories with instant browser-based processing.
-          </p>
+    <div className="lg:col-span-8 min-w-0 rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface p-6 sm:p-7">
+      <div className="border-b border-neutral-border dark:border-dark-border pb-5">
+        <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-brand-950 dark:text-white">
+          Supported Format Directory
+        </h2>
+        <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-300">
+          Browse {REGISTRY_STATS.formatCount} formats across {REGISTRY_STATS.categoryCount} categories
+          covering {REGISTRY_STATS.pairCount.toLocaleString('en-US')} registered conversion pairs.
+        </p>
 
-          {/* Category Tabs */}
-          <div className="mt-6 flex flex-wrap justify-center gap-2">
-            {categories.map((cat) => {
-              const isSelected = selectedCategory === cat.id;
-              return (
-                <button
-                  key={cat.id}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat.id)}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-brand-700 text-white shadow-md shadow-brand-700/25 font-semibold'
-                      : 'bg-white dark:bg-[#181D30] text-ink-secondary dark:text-neutral-300 border border-neutral-border dark:border-[#283252] hover:border-brand-400 hover:text-brand-700 dark:hover:text-white'
-                  }`}
-                >
-                  <span>{cat.icon}</span>
-                  <span>{cat.name}</span>
-                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full ${
-                    isSelected ? 'bg-white/20 text-white' : 'bg-neutral-100 dark:bg-white/10 text-ink-muted dark:text-neutral-400'
-                  }`}>
-                    {cat.count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <div className="mt-5 flex flex-wrap gap-2">
+          {REGISTRY_STATS.categories.map((cat) => {
+            const isSelected = cat.id === activeCategory.id;
+            const buttonStyle = isSelected
+              ? 'bg-brand-700 text-white border-brand-700 font-semibold'
+              : 'bg-neutral-scaffold dark:bg-dark-scaffold text-ink-secondary dark:text-neutral-300 border-neutral-border dark:border-dark-border hover:border-brand-700 hover:text-brand-950 dark:hover:text-white';
+            const badgeStyle = isSelected
+              ? 'bg-white/20 text-white'
+              : 'bg-white dark:bg-dark-surface text-ink-muted dark:text-neutral-400';
 
-        {/* Selected Category Details Card */}
-        <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-8 shadow-sm">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
-            {/* Formats Grid */}
-            <div className="lg:col-span-2 space-y-4">
-              <div className="flex items-center justify-between border-b border-neutral-100 dark:border-[#252E4B] pb-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-brand-700 dark:text-brand-300">{activeCat.icon}</span>
-                  <h3 className="font-bold text-brand-950 dark:text-white text-base">
-                    {activeCat.name} Formats ({activeCat.formats.length})
-                  </h3>
-                </div>
-                <span className="text-xs text-ink-muted dark:text-neutral-400 font-medium">
-                  Click format to start
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => onSelectCategory(cat.id)}
+                className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-md border text-xs transition-colors cursor-pointer ${buttonStyle}`}
+              >
+                <span>{cat.label}</span>
+                <span className={`px-1.5 py-0.5 rounded font-mono text-[11px] ${badgeStyle}`}>
+                  {cat.count}
                 </span>
-              </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
-              <div className="flex flex-wrap gap-2 pt-1 max-h-56 overflow-y-auto pr-1">
-                {activeCat.formats.map((fmt) => (
-                  <button
-                    key={fmt}
-                    type="button"
-                    onClick={() => {
-                      onSelectPreset?.(fmt.toLowerCase(), 'pdf');
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className="inline-flex items-center bg-neutral-50 dark:bg-[#181D30] hover:bg-brand-50 dark:hover:bg-brand-700/20 border border-neutral-border dark:border-[#283252] hover:border-brand-700 dark:hover:border-brand-400 px-3 py-1.5 font-mono text-xs uppercase tracking-wide text-brand-950 dark:text-neutral-200 hover:text-brand-700 dark:hover:text-brand-300 transition-colors rounded-xl shadow-xs cursor-pointer"
-                  >
-                    {fmt}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Popular Conversion Pairs for Active Category */}
-            <div className="space-y-4 border-t lg:border-t-0 lg:border-l border-neutral-100 dark:border-[#252E4B] pt-6 lg:pt-0 lg:pl-8">
-              <div className="border-b border-neutral-100 dark:border-[#252E4B] pb-3">
-                <h4 className="font-bold text-brand-950 dark:text-white text-sm">
-                  Popular {activeCat.name} Conversions
-                </h4>
-              </div>
-
-              <div className="space-y-2.5">
-                {activeCat.commonConversions.map((conv, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => {
-                      onSelectPreset?.(conv.from.toLowerCase(), conv.to.toLowerCase());
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    className="w-full text-left p-3 rounded-2xl bg-neutral-50 hover:bg-brand-50/70 dark:bg-[#181D30] dark:hover:bg-brand-900/30 border border-neutral-border dark:border-[#283252] hover:border-brand-300 dark:hover:border-brand-700 transition-all group cursor-pointer"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 font-mono font-bold text-xs text-brand-950 dark:text-white group-hover:text-brand-700 dark:group-hover:text-brand-300">
-                        <span>{conv.from}</span>
-                        <ArrowRight className="size-3 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-300" />
-                        <span>{conv.to}</span>
-                      </div>
-                      <span className="text-[11px] font-semibold text-brand-700 dark:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        Convert &rarr;
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-ink-secondary dark:text-neutral-400 mt-1 truncate">
-                      {conv.desc}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
+      <div className="pt-5 space-y-6">
+        <div>
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+              {activeCategory.label} Extensions ({activeCategory.count})
+            </h3>
+            <span className="text-xs text-ink-muted dark:text-neutral-400">
+              Select an extension to open its converter
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {activeCategory.formats.map((fmt) => (
+              <Link
+                key={fmt.id}
+                href={`/${fmt.id}-converter`}
+                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-md bg-neutral-scaffold dark:bg-dark-scaffold hover:bg-brand-50 dark:hover:bg-dark-elevated border border-neutral-border dark:border-dark-border hover:border-brand-700 dark:hover:border-brand-400 font-mono text-xs font-semibold uppercase text-brand-950 dark:text-neutral-200 transition-colors"
+              >
+                {fmt.extension}
+              </Link>
+            ))}
           </div>
         </div>
-      </section>
 
-      {/* 3. Standardized 3-Step Conversion Workflow */}
-      <section id="how-it-works" className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
-        <div className="text-center max-w-2xl mx-auto mb-10">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
-            Effortless 3-Step Process
-          </span>
-          <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-brand-950 dark:text-white mt-1">
-            How to Convert Files with EasyConvert
-          </h2>
-          <p className="mt-2 text-sm text-ink-secondary dark:text-neutral-300">
-            Convert your documents, media, and archives in seconds with zero complicated settings.
+        <div className="pt-5 border-t border-neutral-border dark:border-dark-border">
+          <h3 className="text-sm font-bold text-brand-950 dark:text-white mb-3">
+            Common {activeCategory.label} Pairs
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {popularPairs.map((pair) => (
+              <Link
+                key={`${pair.from}-${pair.to}`}
+                href={`/${pair.from}-to-${pair.to}`}
+                className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-lg bg-neutral-scaffold dark:bg-dark-scaffold border border-neutral-border dark:border-dark-border hover:border-brand-700 dark:hover:border-brand-400 transition-colors"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-brand-950 dark:text-white group-hover:text-brand-700 dark:group-hover:text-brand-300">
+                    <span>{pair.from}</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-ink-muted" />
+                    <span>{pair.to}</span>
+                  </span>
+                </div>
+                <span className="mt-1.5 text-xs text-ink-secondary dark:text-neutral-400 leading-snug">
+                  {pair.summary}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SecurityDataHandlingCard() {
+  return (
+    <div className="lg:col-span-4 min-w-0 rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface p-6 sm:p-7">
+      <h2 className="text-xl font-bold tracking-tight text-brand-950 dark:text-white">
+        Security &amp; Data Handling
+      </h2>
+      <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-300">
+        Built around isolated execution and short-lived storage boundaries.
+      </p>
+
+      <div className="mt-5 divide-y divide-neutral-border dark:divide-dark-border">
+        <div className="py-4 first:pt-0">
+          <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white">
+            <Lock className="w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0" />
+            <h3>TLS 1.3 Transport Encryption</h3>
+          </div>
+          <p className="mt-1.5 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+            Uploads, signed storage transfers, and result downloads run strictly over encrypted HTTPS
+            channels.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Step 1 */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4 hover:border-brand-400 transition-all">
-            <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center font-black text-base shadow-sm">
-              1
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-brand-950 dark:text-white">1. Choose Files</h3>
-              <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Select files from your device, drag &amp; drop them directly into the dropzone, or paste from your clipboard.
-              </p>
-            </div>
+        <div className="py-4">
+          <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white">
+            <Cpu className="w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0" />
+            <h3>Sandboxed Browser &amp; Worker Execution</h3>
           </div>
-
-          {/* Step 2 */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4 hover:border-brand-400 transition-all">
-            <div className="size-11 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200/80 dark:border-brand-700/40 text-brand-700 dark:text-brand-300 flex items-center justify-center font-black text-base shadow-sm">
-              2
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-brand-950 dark:text-white">2. Select Target Format</h3>
-              <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Choose your desired output format from 290+ standards. Optionally tune quality, bitrate, or page settings.
-              </p>
-            </div>
-          </div>
-
-          {/* Step 3 */}
-          <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-7 shadow-sm flex flex-col items-start gap-4 hover:border-brand-400 transition-all">
-            <div className="size-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-black text-base shadow-sm">
-              3
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-brand-950 dark:text-white">3. Download Result</h3>
-              <p className="mt-1.5 text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-                Click Convert and immediately download your converted file, or package all finished items into a single ZIP archive.
-              </p>
-            </div>
-          </div>
+          <p className="mt-1.5 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+            Supported pairs run locally in browser memory, while complex formats execute inside
+            isolated worker sandboxes.
+          </p>
         </div>
+
+        <div className="py-4 last:pb-0">
+          <div className="flex items-center gap-2 text-sm font-bold text-brand-950 dark:text-white">
+            <Clock className="w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0" />
+            <h3>Automatic TTL File Cleanup</h3>
+          </div>
+          <p className="mt-1.5 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+            Temporary job inputs and converted outputs expire automatically after short retention
+            windows.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RestApiWorkflowCard() {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(API_CURL_EXAMPLE);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        setCopied(false);
+      }
+    }
+  };
+
+  return (
+    <div className="lg:col-span-8 min-w-0 rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface p-6 sm:p-7">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-2xl">
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-brand-950 dark:text-white">
+            REST API &amp; Batch Workflows
+          </h2>
+          <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+            Automate single-file conversions via <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-neutral-subtle dark:bg-dark-elevated">POST /api/v1/convert</code> or submit multi-step DAG pipelines to <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-neutral-subtle dark:bg-dark-elevated">POST /api/v1/jobs</code> with signed webhook delivery.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-lg bg-brand-950 dark:bg-[#111526] text-slate-100 border border-white/10 overflow-hidden">
+        <div className="px-4 py-2 border-b border-white/10 flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-2 text-xs font-mono text-slate-300">
+            <Terminal className="w-3.5 h-3.5 text-brand-400" />
+            <span>POST /api/v1/convert</span>
+          </span>
+          <button
+            type="button"
+            aria-label="Copy API example"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-md text-xs font-medium text-slate-200 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+          >
+            {copied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Copied</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copy</span>
+              </>
+            )}
+          </button>
+        </div>
+        <pre className="p-4 text-xs font-mono text-slate-100 overflow-x-auto leading-relaxed">
+          <code>{API_CURL_EXAMPLE}</code>
+        </pre>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        <Link
+          href="/api-docs"
+          className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 rounded-md bg-brand-700 hover:bg-brand-800 text-white text-sm font-semibold transition-colors"
+        >
+          <span>OpenAPI 3.1 Reference</span>
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link
+          href="/dashboard"
+          className="inline-flex items-center justify-center min-h-[44px] px-4 rounded-md border border-neutral-border dark:border-dark-border bg-neutral-scaffold dark:bg-dark-scaffold hover:border-brand-700 text-sm font-medium text-brand-950 dark:text-neutral-200 transition-colors"
+        >
+          Manage API Keys
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function HowConversionWorksCard() {
+  return (
+    <div className="lg:col-span-4 min-w-0 rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface p-6 sm:p-7">
+      <h2 className="text-xl font-bold tracking-tight text-brand-950 dark:text-white">
+        How Conversion Works
+      </h2>
+      <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-300">
+        Three direct steps without account walls or watermarks.
+      </p>
+
+      <div className="mt-5 divide-y divide-neutral-border dark:divide-dark-border">
+        <div className="py-4 first:pt-0">
+          <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+            1. Add source files
+          </h3>
+          <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+            Select files from your device, drag them onto the workbench, paste from clipboard, or
+            import from a public HTTP URL.
+          </p>
+        </div>
+
+        <div className="py-4">
+          <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+            2. Pick format &amp; options
+          </h3>
+          <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+            Choose any compatible target extension and optionally tune codecs, dimensions, page
+            ranges, or delimiters.
+          </p>
+        </div>
+
+        <div className="py-4 last:pb-0">
+          <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+            3. Convert &amp; download
+          </h3>
+          <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
+            Download converted files individually as soon as they finish, or bundle multi-file
+            batches into one ZIP archive.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function Features(_props: FeaturesProps = {}) {
+  const [selectedCategory, setSelectedCategory] = useState<FormatCategory>('document');
+
+  const activeCategory =
+    REGISTRY_STATS.categories.find((cat) => cat.id === selectedCategory) ||
+    REGISTRY_STATS.categories[0];
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 space-y-12">
+      <section
+        id="format-catalog"
+        className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
+      >
+        <FormatDirectoryCard
+          activeCategory={activeCategory}
+          onSelectCategory={setSelectedCategory}
+        />
+        <SecurityDataHandlingCard />
       </section>
 
-      {/* 3. Trust & Core Capabilities */}
-      <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pt-4">
-        <div className="rounded-3xl border border-neutral-border dark:border-[#2B3556] bg-white dark:bg-[#151A2E] p-6 sm:p-10 shadow-sm">
-          <div className="max-w-3xl">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">
-              Why EasyConvert
-            </span>
-            <h2 className="text-xl sm:text-2xl font-black tracking-tight text-brand-950 dark:text-white mt-1">
-              Fast, Private, and Universal File Conversion
-            </h2>
-            <p className="mt-2 text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
-              Convert documents, images, audio, and videos directly in your browser with zero file retention, no account requirement, and no software installation.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8 pt-6 border-t border-neutral-100 dark:border-[#242C48]">
-            <div>
-              <h3 className="text-sm font-bold text-brand-950 dark:text-white">
-                Strict Privacy Guarantee
-              </h3>
-              <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
-                Files are processed securely and discarded immediately. No documents, media, or archives are stored on remote servers.
-              </p>
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-brand-950 dark:text-white">
-                High-Speed In-Browser Processing
-              </h3>
-              <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
-                Enjoy instant conversions without waiting in slow upload queues. Supports batch processing for files up to 1 GB.
-              </p>
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-brand-950 dark:text-white">
-                Universal Format Coverage
-              </h3>
-              <p className="mt-1 text-xs text-ink-secondary dark:text-neutral-400 leading-relaxed">
-                Easily convert between 292 formats across documents, vector graphics, audio, video, spreadsheets, and archives.
-              </p>
-            </div>
-          </div>
-        </div>
+      <section
+        id="how-it-works"
+        className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
+      >
+        <RestApiWorkflowCard />
+        <HowConversionWorksCard />
       </section>
     </div>
   );

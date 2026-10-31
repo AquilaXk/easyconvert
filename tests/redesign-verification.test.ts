@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
 import Footer from '../src/components/Footer';
 import Hero from '../src/components/Hero';
@@ -92,21 +93,20 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const header = render(Header, {});
     const hrefs = hrefsOf(header);
 
-    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works'])).toEqual([]);
+    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works', '/api-docs', '/dashboard'])).toEqual([]);
     // Bare fragments only resolve on the home page.
     expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
-    expect(visibleText(header)).toMatch(/100% Free/);
   });
 
   it('verifies Header offers sign-in through /auth only, with no link to the retired login and register routes', () => {
     const header = render(Header, {});
 
-    // The visible navigation, in order: brand, catalog and how-it-works anchors, API console, then the two auth entries.
     expect(links(header)).toEqual([
       { text: 'EasyConvert', href: '/' },
       { text: 'Formats', href: '/#format-catalog' },
       { text: 'How It Works', href: '/#how-it-works' },
-      { text: 'API', href: '/dashboard' },
+      { text: 'API Docs', href: '/api-docs' },
+      { text: 'Dashboard', href: '/dashboard' },
       { text: 'Log In', href: '/auth' },
       { text: 'Sign Up', href: '/auth?tab=register' },
     ]);
@@ -120,7 +120,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const mobileMenu = select(header, 'button', 'aria-label', 'Open menu');
     expect(mobileMenu.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['false']);
     expect(select(header, 'a', 'aria-label', 'EasyConvert Home')).toHaveLength(1);
-    expect(visibleText(header)).toMatch(/100% Free/);
   });
 
   it('verifies the subpage capture script only visits live routes, none of the retired auth routes', () => {
@@ -151,8 +150,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     // Privacy badge and copyright
     const text = visibleText(footer);
-    expect(text).toMatch(/100% Client-Side & Zero-Server Retention/);
+    expect(text).toMatch(/Encrypted Transfer & Ephemeral Processing/);
     expect(text).toMatch(/© 2026 EasyConvert\.com/);
+    expect(missingFrom(hrefs, ['/accessibility', '/api-docs'])).toEqual([]);
   });
 
   it('verifies Terms of Service has no obsolete daily quotas or paid credits mentions', () => {
@@ -169,22 +169,28 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(phrasesMissing(text, ['100% free with unlimited conversions'])).toEqual([]);
   });
 
-  it('verifies Hero synchronizes target format on file drop and selection', () => {
-    // Drop and selection are browser events, so the data flow is read from the module's structure: both handlers
-    // pass the file list and the effective target to onFilesSelected, and the effective target is derived from the
-    // ref that follows the selected format (a ref avoids a stale closure when the format changes mid-drag).
+  it('verifies Hero synchronizes target format on paste, file selection, drop, and URL import', () => {
     const hero = parseSource(sourcePath('src', 'components', 'Hero.tsx'));
     const handlerCalls = callArguments(hero, 'onFilesSelected').filter((args) => args[1] === 'effectiveTarget');
 
     expect(handlerCalls).toEqual([
       ['files', 'effectiveTarget'],
       ['files', 'effectiveTarget'],
+      ['files', 'effectiveTarget'],
+      ['[file]', 'effectiveTarget'],
     ]);
     expect(initializersOf(hero, 'effectiveTarget')).toEqual([
       'getEffectiveTargetFormat(chosen, activeTargetFormat)',
       'getEffectiveTargetFormat(chosen, activeTargetFormat)',
+      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
+      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
     ]);
-    expect(initializersOf(hero, 'chosen')).toEqual(['targetFormatRef.current', 'targetFormatRef.current']);
+    expect(initializersOf(hero, 'chosen')).toEqual([
+      'targetFormatRef.current',
+      'targetFormatRef.current',
+      'targetFormatRef.current',
+      'targetFormatRef.current',
+    ]);
     expect(initializersOf(hero, 'targetFormatRef')).toEqual(['useRef(targetFormat)']);
   });
 
@@ -207,9 +213,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       ).toBe(true);
     }
 
-    // The presets are the ones the Hero renders, in this order.
     const hero = render(Hero, { onFilesSelected: noop, hasActiveQueue: false });
-    expect(visibleText(hero)).toMatch(/POPULAR: PDF to Word Word to PDF Image to WebP Video to MP3 HEIC to JPG EPUB to PDF$/);
+    expect(visibleText(hero)).toMatch(/Popular PDF to Word Word to PDF Image to WebP Video to MP3 HEIC to JPG EPUB to PDF$/);
     expect(popularPresets.map((p) => p.label)).toEqual(['PDF to Word', 'Word to PDF', 'Image to WebP', 'Video to MP3', 'HEIC to JPG', 'EPUB to PDF']);
   });
 
@@ -278,35 +283,35 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(grids.map((g) => classAttr(g))).toEqual([
       expect.stringContaining('grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8'),
     ]);
-    expect(allElements(grids[0]).filter((e) => e.tagName === 'h3' || e.tagName === 'h4').length).toBe(FOOTER_SECTION_HEADINGS.length);
+    expect(allElements(grids[0]).filter((e) => e.tagName === 'h2' || e.tagName === 'h3' || e.tagName === 'h4').length).toBe(FOOTER_SECTION_HEADINGS.length);
 
     // The footer follows the theme the header toggle announces on the window; both ends use the same event name.
     const footerSource = parseSource(sourcePath('src', 'components', 'Footer.tsx'));
-    expect(firstStringArguments(footerSource, 'addEventListener')).toEqual(['easyconvert-theme-change', 'mousedown']);
+    expect(firstStringArguments(footerSource, 'addEventListener')).toEqual(['easyconvert-theme-change']);
     expect(firstStringArguments(footerSource, 'CustomEvent')).toEqual(['easyconvert-theme-change']);
   });
 
-  it('verifies Hero implements spacious converter architecture with Choose Files CTA and eliminates 2-card console box', () => {
+  it('verifies Hero implements workbench architecture with Select File CTA and interactive format tiles', () => {
     const hero = render(Hero, { onFilesSelected: noop, hasActiveQueue: false });
     const text = visibleText(hero);
 
-    // Spacious hero structure with prominent Choose Files CTA
-    const chooseFiles = select(hero, 'button').filter((b) => visibleText(b) === 'Choose Files');
-    expect(chooseFiles).toHaveLength(1);
-    expect(classAttr(chooseFiles[0])).toMatch(/\bbg-brand-700\b/);
-    expect(phrasesMissing(text, ['Choose Files to Convert', '292 Formats Supported', 'POPULAR:'])).toEqual([]);
+    const selectFile = select(hero, 'button').filter((b) => visibleText(b) === 'Select File');
+    expect(selectFile).toHaveLength(1);
+    expect(classAttr(selectFile[0])).toMatch(/\bbg-brand-700\b/);
+    expect(phrasesMissing(text, ['Select your file to convert', `${REGISTRY_STATS.formatCount} Formats Supported`, 'Popular'])).toEqual([]);
+    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(1);
+    expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(1);
 
-    // 2-card converter box and obsolete animations completely eliminated
-    expect(phrasesPresent(text, ['Conversion Console'])).toEqual([]);
-    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
+    expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
+    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast', 'border-dashed'])).toEqual([]);
   });
 
-  it('verifies design token alignment across Console, FormatSelector, and Features', () => {
+  it('verifies semantic design token alignment across FormatSelector and Features', () => {
     const selector = classTokens(render(FormatSelector, {} as never));
-    expect(missingFrom(selector, ['dark:bg-[#14182B]', 'dark:border-[#2B3556]'])).toEqual([]);
+    expect(missingFrom(selector, ['bg-white', 'dark:bg-dark-surface', 'border-neutral-border', 'dark:border-dark-border'])).toEqual([]);
 
     const features = classTokens(render(Features, {} as never));
-    expect(missingFrom(features, ['dark:bg-[#151A2E]', 'dark:border-[#2B3556]'])).toEqual([]);
+    expect(missingFrom(features, ['bg-white', 'dark:bg-dark-surface', 'border-neutral-border', 'dark:border-dark-border'])).toEqual([]);
   });
 
   it('verifies Dynamic Converter Page implements dynamic breadcrumb navigation', () => {
@@ -349,7 +354,10 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const text = visibleText(page);
 
     expect(phrasesMissing(text, ['Technical Specifications', 'PDF vs DOCX Specifications', 'SOURCE FORMAT'])).toEqual([]);
-    expect(headings(page).filter((h) => /—/.test(h))).toEqual(['PDF — Portable Document Format', 'DOCX — Microsoft Word Document']);
+    expect(headings(page).filter((h) => /\((?:Portable Document Format|Microsoft Word Document)\)/.test(h))).toEqual([
+      'PDF (Portable Document Format)',
+      'DOCX (Microsoft Word Document)',
+    ]);
     // Every dossier card lists the same fields for the source and the target.
     const fieldLabels = ['Full Name', 'Developer', 'MIME Type', 'Category'];
     for (const label of fieldLabels) {
@@ -534,7 +542,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(presentIn(tokens, ['bg-[#1F2340]'])).toEqual([]);
 
     // The dock: subtle light surface with its dark-mode surface, a rounded bottom edge and a top rule
-    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-[#F8F9FD]'));
+    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-neutral-subtle') && (attrOf(e, 'class') ?? '').includes('rounded-b-xl'));
     expect(classAttr(dock)).toMatch(/dark:bg-\[#121629\]/);
 
     // Tactile "Add more files" button and legible helper text tokens

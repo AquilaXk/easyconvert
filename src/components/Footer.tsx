@@ -1,16 +1,16 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { Moon, Sun, ShieldCheck } from 'lucide-react';
 import BrandLogo from './BrandLogo';
-import { Globe, ChevronDown, Moon, Sun, ShieldCheck } from 'lucide-react';
 
 interface DirectoryCategory {
   title: string;
   links: { label: string; href: string }[];
 }
 
-const DIRECTORY_CATEGORIES: DirectoryCategory[] = [
+const DIRECTORY_CATEGORIES: readonly DirectoryCategory[] = [
   {
     title: 'Video Converter',
     links: [
@@ -42,7 +42,7 @@ const DIRECTORY_CATEGORIES: DirectoryCategory[] = [
   {
     title: 'Document & Ebook',
     links: [
-      { label: 'PDF to WORD', href: '/pdf-to-docx' },
+      { label: 'PDF to Word', href: '/pdf-to-docx' },
       { label: 'EPUB to PDF', href: '/epub-to-pdf' },
       { label: 'Document Converter', href: '/document-converter' },
     ],
@@ -50,8 +50,8 @@ const DIRECTORY_CATEGORIES: DirectoryCategory[] = [
   {
     title: 'Archive & Compression',
     links: [
-      { label: 'RAR to Zip', href: '/rar-to-zip' },
-      { label: '7Z to Zip', href: '/7z-to-zip' },
+      { label: 'RAR to ZIP', href: '/rar-to-zip' },
+      { label: '7Z to ZIP', href: '/7z-to-zip' },
       { label: 'Compress PDF', href: '/compress-pdf' },
       { label: 'Archive Converter', href: '/archive-converter' },
     ],
@@ -71,93 +71,82 @@ const DIRECTORY_CATEGORIES: DirectoryCategory[] = [
       { label: 'Save Website as PDF', href: '/save-website-as-pdf' },
       { label: 'Image Resizer', href: '/image-converter' },
       { label: 'Website Screenshot', href: '/website-png-screenshot' },
-      { label: 'PDF OCR Studio', href: '/pdf-ocr' },
+      { label: 'PDF OCR', href: '/pdf-ocr' },
     ],
   },
   {
     title: 'Client & Edge Tools',
     links: [
-      { label: 'In-Memory Muxer', href: '/mp4-converter' },
-      { label: 'Lossless Optimizer', href: '/compress-png' },
-      { label: 'Vector Graphic Studio', href: '/vector-converter' },
-      { label: 'Zero-Retention Pipeline', href: '/security' },
+      { label: 'MP4 Remuxer', href: '/mp4-converter' },
+      { label: 'Lossless PNG', href: '/compress-png' },
+      { label: 'Vector Converter', href: '/vector-converter' },
+      { label: 'Security Architecture', href: '/security' },
     ],
   },
 ];
 
-
-const AVAILABLE_LANGUAGES = [
-  { code: 'en', label: 'English' },
-  { code: 'ko', label: '한국어' },
-  { code: 'ja', label: '日本語' },
-  { code: 'es', label: 'Español' },
-  { code: 'fr', label: 'Français' },
-  { code: 'de', label: 'Deutsch' },
+const SECONDARY_LINKS: readonly { label: string; href: string }[] = [
+  { label: 'About Us', href: '/about' },
+  { label: 'How It Works', href: '/#how-it-works' },
+  { label: 'Formats', href: '/#format-catalog' },
+  { label: 'API Docs', href: '/api-docs' },
+  { label: 'Privacy', href: '/privacy' },
+  { label: 'Terms', href: '/terms' },
+  { label: 'Security', href: '/security' },
+  { label: 'Accessibility', href: '/accessibility' },
+  { label: 'Contact', href: '/contact' },
+  { label: 'Status', href: '/status' },
 ];
+
+interface ThemeEventDetail {
+  theme?: string;
+}
 
 export default function Footer() {
   const [isDark, setIsDark] = useState(false);
-  const [currentLang, setCurrentLang] = useState('English');
-  const [isLangOpen, setIsLangOpen] = useState(false);
-  const langRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const isDarkMode = document.documentElement.classList.contains('dark');
-    setIsDark(isDarkMode);
+    setIsDark(document.documentElement.classList.contains('dark'));
 
-    const savedLang = localStorage.getItem('easyconvert_lang');
-    if (savedLang) setCurrentLang(savedLang);
-
-    const handleThemeChange = (e: CustomEvent) => {
-      if (e.detail?.theme) {
-        setIsDark(e.detail.theme === 'dark');
+    const handleThemeChange: EventListener = (event) => {
+      const custom = event as CustomEvent<ThemeEventDetail>;
+      if (custom.detail?.theme) {
+        setIsDark(custom.detail.theme === 'dark');
       }
     };
-    window.addEventListener('easyconvert-theme-change' as any, handleThemeChange);
 
-    const handleClickOutside = (event: MouseEvent) => {
-      if (langRef.current && !langRef.current.contains(event.target as Node)) {
-        setIsLangOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
+    window.addEventListener('easyconvert-theme-change', handleThemeChange);
     return () => {
-      window.removeEventListener('easyconvert-theme-change' as any, handleThemeChange);
-      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('easyconvert-theme-change', handleThemeChange);
     };
   }, []);
 
   const toggleDarkMode = () => {
     const nextTheme = isDark ? 'light' : 'dark';
-    if (nextTheme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    document.documentElement.classList.toggle('dark', nextTheme === 'dark');
     localStorage.theme = nextTheme;
-    setIsDark(!isDark);
+    setIsDark(nextTheme === 'dark');
     window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
   };
 
   return (
-    <footer className="bg-white dark:bg-[#0B0F19] text-ink-secondary dark:text-slate-300 border-t border-neutral-border dark:border-[#1E2640] transition-colors mt-auto font-sans">
-      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-14 pb-10">
-        {/* Categorized Converter Directory Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-x-8 gap-y-10">
+    <footer className="bg-white dark:bg-[#0E111D] text-ink-secondary dark:text-slate-300 border-t border-neutral-border dark:border-dark-border transition-colors mt-auto font-sans">
+      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-x-6 gap-y-8">
           {DIRECTORY_CATEGORIES.map((category) => (
-            <div key={category.title} className="flex flex-col">
-              <h3 className="text-brand-950 dark:text-white font-semibold text-[15px] mb-3.5 tracking-tight">
+            <div key={category.title} className="flex flex-col min-w-0">
+              <h2 className="text-brand-950 dark:text-white font-semibold text-sm mb-3 tracking-tight">
                 {category.title}
-              </h3>
-              <ul className="space-y-2.5">
+              </h2>
+              <ul className="space-y-2">
                 {category.links.map((link) => (
-                  <li key={link.label}>
-                    <a
+                  <li key={`${category.title}-${link.label}`}>
+                    <Link
                       href={link.href}
-                      className="text-ink-secondary hover:text-brand-700 dark:text-slate-400 dark:hover:text-[#8E9CE6] text-[13.5px] transition-colors duration-150 block leading-snug"
+                      className="text-ink-secondary hover:text-brand-700 dark:text-slate-400 dark:hover:text-white text-[13px] transition-colors block leading-snug py-0.5"
                     >
                       {link.label}
-                    </a>
+                    </Link>
                   </li>
                 ))}
               </ul>
@@ -165,100 +154,47 @@ export default function Footer() {
           ))}
         </div>
 
-        {/* Secondary Navigation Row */}
-        <div className="pt-10 mt-10 border-t border-neutral-border dark:border-[#1E2640]">
-          <nav className="flex flex-wrap items-center gap-x-7 gap-y-3 text-[13.5px]">
-            <Link href="/about" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">About Us</Link>
-            <Link href="/#how-it-works" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">How It Works</Link>
-            <Link href="/#format-catalog" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Formats</Link>
-            <Link href="/privacy" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Privacy</Link>
-            <Link href="/terms" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Terms</Link>
-            <Link href="/security" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Security</Link>
-            <Link href="/contact" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Contact</Link>
-            <Link href="/status" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Status</Link>
+        <div className="pt-8 mt-10 border-t border-neutral-border dark:border-dark-border">
+          <nav aria-label="Footer secondary" className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
+            {SECONDARY_LINKS.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="min-h-[36px] inline-flex items-center text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors font-medium"
+              >
+                {item.label}
+              </Link>
+            ))}
           </nav>
         </div>
 
-        {/* Bottom Bar: Brand, Privacy Badge, Copyright, Language, Theme */}
-        <div className="pt-8 mt-6 border-t border-neutral-border/80 dark:border-[#1E2640]/80 flex flex-col md:flex-row items-center justify-between gap-5">
-          {/* Brand & Identity */}
-          <div className="flex items-center gap-3">
-            <Link href="/" className="flex items-center gap-2.5 group">
-              <BrandLogo size="sm" textClassName="text-brand-950 dark:text-white" />
-            </Link>
-          </div>
+        <div className="pt-6 mt-6 border-t border-neutral-border/80 dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-4">
+          <Link href="/" className="inline-flex items-center gap-2.5 min-h-[44px] rounded-md">
+            <BrandLogo size="sm" textClassName="text-brand-950 dark:text-white" />
+          </Link>
 
-          {/* Privacy Badge & Copyright */}
-          <div className="flex flex-wrap items-center justify-center gap-3 text-[13px] text-ink-muted dark:text-slate-400">
-            <span>© 2026 EasyConvert.com v2.30 All rights reserved.</span>
-            <span className="hidden sm:inline-block text-neutral-300 dark:text-slate-600">•</span>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-brand-50 border border-brand-200 text-brand-700 dark:bg-[#131726] dark:border-[#2A3558] dark:text-[#8E9CE6] shadow-sm">
-              <ShieldCheck className="w-3.5 h-3.5 text-[#5C6BC0]" />
-              <span>100% Client-Side &amp; Zero-Server Retention</span>
+          <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-ink-muted dark:text-slate-400">
+            <span>© 2026 EasyConvert.com</span>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-subtle dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-slate-300">
+              <ShieldCheck className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400 shrink-0" />
+              <span>Encrypted Transfer &amp; Ephemeral Processing</span>
             </div>
           </div>
 
-          {/* Controls: Language Selector & Theme Toggle */}
-          <div className="flex items-center gap-3">
-            {/* Language Selector Dropdown */}
-            <div className="relative" ref={langRef}>
-              <button
-                type="button"
-                onClick={() => setIsLangOpen(!isLangOpen)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-ink-secondary hover:text-brand-950 bg-neutral-50 hover:bg-neutral-100 border border-neutral-border dark:bg-[#131726] dark:border-[#1E2640] dark:text-slate-300 dark:hover:text-white dark:hover:border-[#2A3558] transition-colors cursor-pointer"
-                aria-label="Select Language"
-              >
-                <Globe className="w-3.5 h-3.5 text-ink-muted dark:text-slate-400" />
-                <span>{currentLang}</span>
-                <ChevronDown
-                  className={`w-3.5 h-3.5 text-ink-muted dark:text-slate-400 transition-transform duration-150 ${
-                    isLangOpen ? 'rotate-180' : ''
-                  }`}
-                />
-              </button>
-
-              {isLangOpen && (
-                <div className="absolute right-0 bottom-full mb-2 w-36 rounded-lg bg-white dark:bg-[#181E30] border border-neutral-border dark:border-[#2A3558] shadow-xl py-1 z-50 animate-in fade-in duration-100">
-                  {AVAILABLE_LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.code}
-                      type="button"
-                      onClick={() => {
-                        setCurrentLang(lang.label);
-                        localStorage.setItem('easyconvert_lang', lang.label);
-                        setIsLangOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors flex items-center justify-between ${
-                        currentLang === lang.label
-                          ? 'text-brand-700 font-semibold bg-brand-50 dark:text-[#8E9CE6] dark:bg-[#202740]'
-                          : 'text-ink-secondary hover:text-brand-950 hover:bg-neutral-50 dark:text-slate-300 dark:hover:text-white dark:hover:bg-[#202740]/60'
-                      }`}
-                    >
-                      {lang.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Dark / Light Mode Switch */}
-            <button
-              type="button"
-              onClick={toggleDarkMode}
-              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="p-1.5 rounded-lg text-ink-secondary hover:text-brand-950 bg-neutral-50 hover:bg-neutral-100 border border-neutral-border dark:bg-[#131726] dark:border-[#1E2640] dark:text-slate-400 dark:hover:text-white dark:hover:border-[#2A3558] transition-colors cursor-pointer"
-            >
-              {isDark ? (
-                <Sun className="w-4 h-4 text-amber-400" />
-              ) : (
-                <Moon className="w-4 h-4 text-ink-secondary" />
-              )}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={toggleDarkMode}
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md text-ink-secondary hover:text-brand-950 bg-neutral-subtle hover:bg-neutral-border/60 border border-neutral-border dark:bg-dark-surface dark:border-dark-border dark:text-slate-300 dark:hover:text-white transition-colors cursor-pointer"
+          >
+            {isDark ? (
+              <Sun className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Moon className="w-4 h-4 text-ink-secondary" />
+            )}
+          </button>
         </div>
       </div>
     </footer>
   );
 }
-
-

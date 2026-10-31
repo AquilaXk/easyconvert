@@ -3,12 +3,12 @@
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
-interface FaqItem {
+export interface FaqItem {
   q: string;
   a: string;
 }
 
-interface FaqSectionProps {
+export interface FaqSectionProps {
   customFaqs?: FaqItem[];
   title?: string;
   subtitle?: string;
@@ -16,24 +16,24 @@ interface FaqSectionProps {
 
 const DEFAULT_FAQS: FaqItem[] = [
   {
-    q: 'Is EasyConvert 100% free to use?',
-    a: 'Yes, EasyConvert is completely free. There are no paywalls, credit systems, hidden subscriptions, or watermarks. You can convert files without even creating an account.',
+    q: 'Is EasyConvert free to use?',
+    a: 'Yes, EasyConvert is completely free. There are no paywalls, credit packs, hidden subscriptions, or watermarks, and no account is required to convert files.',
   },
   {
-    q: 'Are my files safe and private?',
-    a: 'Yes. Conversions are processed locally in your browser whenever supported, meaning your files never leave your device. Files are never stored, logged, or shared with third parties.',
+    q: 'How are my files handled during conversion?',
+    a: 'Supported image, audio, and data pairs run directly inside browser memory on your device. Formats that require native codecs or document engines are transmitted over TLS 1.3 to isolated worker sandboxes and deleted automatically when their short retention TTL expires.',
   },
   {
     q: 'What is the maximum file size limit?',
-    a: 'EasyConvert supports file sizes up to 1 GB free of charge. Larger files process quickly on modern devices without waiting on slow network uploads.',
+    a: 'EasyConvert supports individual files up to 1 GB. Browser-executed conversions start immediately without waiting for network uploads.',
   },
   {
-    q: 'Can I convert multiple files simultaneously?',
-    a: 'Yes! Select or drop multiple files into the conversion queue. You can configure individual target formats and options for each file, convert them all in parallel, and download them individually or as a single consolidated ZIP archive.',
+    q: 'Can I convert multiple files in one batch?',
+    a: 'Yes. Drop or select multiple files to queue them together, assign a shared or per-file output format, tune optional parameters, and download finished files individually or as one ZIP archive.',
   },
   {
-    q: 'Do I need to install any software or plugins?',
-    a: 'No installation required! EasyConvert runs entirely inside modern web browsers on macOS, Windows, Linux, iOS, and Android.',
+    q: 'Do I need to install desktop software or browser plugins?',
+    a: 'No installation is needed. EasyConvert runs in modern web browsers across macOS, Windows, Linux, iOS, and Android.',
   },
 ];
 
@@ -42,33 +42,34 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
   const faqs = customFaqs && customFaqs.length > 0 ? customFaqs : DEFAULT_FAQS;
 
   return (
-    <section className="py-16 md:py-24 border-t border-neutral-border dark:border-dark-border bg-neutral-scaffold/30 dark:bg-dark-scaffold/30">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6">
-        <div className="text-center mb-12">
-          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-brand-950 dark:text-white mb-3">
+    <section className="py-14 border-t border-neutral-border dark:border-dark-border">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mb-8">
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-brand-950 dark:text-white">
             {title || 'Frequently Asked Questions'}
           </h2>
-          <p className="text-sm text-ink-secondary dark:text-dark-muted">
-            {subtitle || 'Everything you need to know about formats, privacy, and processing.'}
+          <p className="mt-1.5 text-sm text-ink-secondary dark:text-dark-muted">
+            {subtitle || 'Answers about format support, execution boundaries, and batch limits.'}
           </p>
         </div>
 
-        <div className="space-y-3">
+        <div className="rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface divide-y divide-neutral-border dark:divide-dark-border overflow-hidden">
           {faqs.map((faq, idx) => {
             const isOpen = openIndex === idx;
+            const questionId = `faq-question-${idx}`;
+            const answerId = `faq-answer-${idx}`;
+
             return (
-              <div
-                key={idx}
-                className="rounded-2xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface overflow-hidden transition-all"
-              >
+              <div key={questionId}>
                 <button
+                  id={questionId}
                   type="button"
                   onClick={() => setOpenIndex(isOpen ? null : idx)}
                   aria-expanded={isOpen}
-                  aria-controls={`faq-answer-${idx}`}
-                  className="w-full p-5 text-left flex items-center justify-between gap-4"
+                  aria-controls={answerId}
+                  className="w-full min-h-[52px] px-5 py-4 text-left flex items-center justify-between gap-4 hover:bg-neutral-scaffold/70 dark:hover:bg-dark-elevated/40 transition-colors cursor-pointer"
                 >
-                  <span className="text-sm sm:text-base font-bold text-brand-950 dark:text-dark-text">
+                  <span className="text-sm sm:text-base font-semibold text-brand-950 dark:text-dark-text">
                     {faq.q}
                   </span>
                   <ChevronDown
@@ -79,9 +80,10 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                 </button>
                 {isOpen && (
                   <div
-                    id={`faq-answer-${idx}`}
+                    id={answerId}
                     role="region"
-                    className="px-5 pb-5 pt-4 text-xs sm:text-sm text-ink-secondary dark:text-dark-muted leading-relaxed border-t border-neutral-border/50 dark:border-dark-border/50"
+                    aria-labelledby={questionId}
+                    className="px-5 pb-5 text-sm text-ink-secondary dark:text-dark-muted leading-relaxed"
                   >
                     {faq.a}
                   </div>

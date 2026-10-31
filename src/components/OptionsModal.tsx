@@ -1,27 +1,109 @@
 'use client';
 
-import React, { useState } from 'react';
-import {
-  X,
-  FileText,
-  Lock,
-  ChevronDown,
-  ChevronUp,
-  Image as ImageIcon,
-  Video,
-  Music,
-  ShieldCheck,
-} from 'lucide-react';
-import { ConversionOptions } from '@/lib/types';
+import React, { useEffect, useRef, useState } from 'react';
+import { X } from 'lucide-react';
+import { ConversionOptions, FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
+import {
+  ArchiveOptionsSection,
+  AudioOptionsSection,
+  DataOptionsSection,
+  DocumentOptionsSection,
+  ImageOptionsSection,
+  PasswordOptionsSection,
+  VideoOptionsSection,
+} from './workbench/OptionsSections';
 
-interface OptionsModalProps {
+export interface OptionsModalProps {
   filename: string;
   sourceFormat: string;
   targetFormat: string;
   initialOptions: ConversionOptions;
   onSave: (options: ConversionOptions) => void;
   onClose: () => void;
+}
+
+const DEFAULT_OPTIONS: ConversionOptions = {
+  quality: 85,
+  fit: 'contain',
+  stripMetadata: false,
+  orientation: 'portrait',
+  delimiter: ',',
+  compressionLevel: 6,
+};
+
+const PASSWORD_CAPABLE_SOURCES = new Set([
+  'pdf',
+  'docx',
+  'doc',
+  'xlsx',
+  'xls',
+  'pptx',
+  'ppt',
+  'odt',
+  'ods',
+  'odp',
+  'zip',
+  '7z',
+  'rar',
+]);
+
+const IMAGE_CATEGORIES: ReadonlyArray<FormatCategory> = ['image', 'vector', 'cad'];
+const DOCUMENT_CATEGORIES: ReadonlyArray<FormatCategory> = ['document', 'ebook', 'presentation'];
+const DATA_CATEGORIES: ReadonlyArray<FormatCategory> = ['spreadsheet', 'data'];
+
+function inCategories(
+  category: FormatCategory | undefined,
+  allowed: ReadonlyArray<FormatCategory>
+): boolean {
+  return Boolean(category && allowed.includes(category));
+}
+
+function computeVisibleSections(sourceFormat: string, targetFormat: string) {
+  const src = sourceFormat.toLowerCase();
+  const tgt = (targetFormat || '').toLowerCase();
+  const sourceCategory = FORMAT_REGISTRY[src]?.category;
+  const targetCategory = tgt ? FORMAT_REGISTRY[tgt]?.category : undefined;
+
+  const showVideo = targetCategory === 'video' || (sourceCategory === 'video' && tgt === 'gif');
+  const showImage =
+    !showVideo &&
+    (inCategories(sourceCategory, IMAGE_CATEGORIES) || inCategories(targetCategory, IMAGE_CATEGORIES));
+  const showDocument =
+    inCategories(sourceCategory, DOCUMENT_CATEGORIES) ||
+    inCategories(targetCategory, DOCUMENT_CATEGORIES) ||
+    src === 'pdf' ||
+    tgt === 'pdf' ||
+    src === 'tiff' ||
+    src === 'tif';
+  const showPassword = PASSWORD_CAPABLE_SOURCES.has(src) || tgt === 'pdf';
+  const showAudio =
+    sourceCategory === 'audio' || targetCategory === 'audio' || targetCategory === 'video';
+  const showData =
+    inCategories(sourceCategory, DATA_CATEGORIES) || inCategories(targetCategory, DATA_CATEGORIES);
+  const showArchive = targetCategory === 'archive';
+
+  const hasAny =
+    showImage ||
+    showDocument ||
+    showPassword ||
+    showVideo ||
+    showAudio ||
+    showData ||
+    showArchive;
+
+  return {
+    src,
+    targetCategory,
+    showImage,
+    showDocument,
+    showPassword,
+    showVideo,
+    showAudio,
+    showData,
+    showArchive,
+    hasAny,
+  };
 }
 
 export default function OptionsModal({
@@ -32,358 +114,102 @@ export default function OptionsModal({
   onSave,
   onClose,
 }: OptionsModalProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [options, setOptions] = useState<ConversionOptions>({ ...initialOptions });
 
-  // Section open/closed state
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
-    pages: true,
-    security: true,
-    domain: true,
-    privacy: true,
-  });
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open && typeof dialog.showModal === 'function') {
+      dialog.showModal();
+    }
+  }, []);
 
-  const toggleSection = (sec: string) => {
-    setOpenSections((prev) => ({ ...prev, [sec]: !prev[sec] }));
-  };
-
-  const tgtDef = FORMAT_REGISTRY[targetFormat.toLowerCase()];
-
-  const isAudio = tgtDef?.category === 'audio' || ['mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'].includes(targetFormat.toLowerCase());
-  const isVideo = tgtDef?.category === 'video' || ['mp4', 'webm', 'mkv', 'avi', 'mov'].includes(targetFormat.toLowerCase());
-  const isImage = tgtDef?.category === 'image';
-  const isDocument = !isAudio && !isVideo && !isImage;
-
-  const isSourcePdf = sourceFormat.toLowerCase() === 'pdf';
+  const visible = computeVisibleSections(sourceFormat, targetFormat);
+  const targetLabel = (targetFormat || 'target').toUpperCase();
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in duration-150"
-      onClick={onClose}
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="options-modal-title"
+      onClose={onClose}
+      onClick={(e) => {
+        if (e.target === dialogRef.current) {
+          onClose();
+        }
+      }}
+      className="w-full max-w-2xl rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl"
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-4xl bg-white dark:bg-[#18191d] border border-neutral-border dark:border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-brand-950 dark:text-white transition-colors"
-      >
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-neutral-border dark:border-neutral-800 flex items-center justify-between">
-          <h3 className="text-base font-bold text-brand-950 dark:text-white tracking-wide">
-            Options &bull; {filename}
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-lg border border-neutral-border dark:border-neutral-700 hover:border-brand-400 text-ink-muted hover:text-brand-950 dark:hover:text-white transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+      <div className="px-5 sm:px-6 py-4 border-b border-neutral-border dark:border-dark-border flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 id="options-modal-title" className="text-base font-bold text-brand-950 dark:text-white">
+            Conversion Options
+          </h2>
+          <p className="text-xs text-ink-secondary dark:text-neutral-400 mt-0.5 truncate">
+            {filename} ({sourceFormat.toUpperCase()} to {targetLabel})
+          </p>
         </div>
-
-        {/* Scrollable Content */}
-        <div className="divide-y divide-neutral-border dark:divide-neutral-800 overflow-y-auto">
-          {/* 1. Pages Section */}
-          <div className="p-6">
-            <button
-              type="button"
-              onClick={() => toggleSection('pages')}
-              className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
-            >
-              <div className="flex items-center gap-2.5">
-                <FileText className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                <span>Pages</span>
-              </div>
-              {openSections.pages ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
-            </button>
-
-            {openSections.pages && (
-              <div className="mt-4 space-y-2">
-                <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Pages</label>
-                <input
-                  type="text"
-                  value={options.pages || ''}
-                  onChange={(e) => setOptions({ ...options, pages: e.target.value })}
-                  placeholder="e.g. 1-3"
-                  className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white focus:outline-none focus:border-brand-700"
-                />
-                <p className="text-xs text-ink-secondary dark:text-neutral-400">Page range to convert (e.g. 1-3).</p>
-              </div>
-            )}
-          </div>
-
-          {/* 2. Security Section */}
-          <div className="p-6">
-            <button
-              type="button"
-              onClick={() => toggleSection('security')}
-              className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
-            >
-              <div className="flex items-center gap-2.5">
-                <Lock className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                <span>Security</span>
-              </div>
-              {openSections.security ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
-            </button>
-
-            {openSections.security && (
-              <div className="mt-4 space-y-2">
-                <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">Password</label>
-                <input
-                  type="password"
-                  value={options.password || ''}
-                  onChange={(e) => setOptions({ ...options, password: e.target.value })}
-                  placeholder="Optional decryption password"
-                  className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white focus:outline-none focus:border-brand-700"
-                />
-                <p className="text-xs text-ink-secondary dark:text-neutral-400">
-                  Password to open the {isSourcePdf ? 'PDF' : sourceFormat.toUpperCase()} file.
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* 3. Document Format Specific Settings */}
-          {isDocument && (
-            <div className="p-6">
-              <button
-                type="button"
-                onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
-              >
-                <div className="flex items-center gap-2.5">
-                  <FileText className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                  <span>Document Settings</span>
-                </div>
-                {openSections.domain ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
-              </button>
-
-              {openSections.domain && (
-                <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-6">
-
-
-                  {/* OCR Images */}
-                  <div className="space-y-2 sm:col-span-2">
-                    <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">OCR Images</label>
-                    <div className="flex items-center gap-4 text-xs text-ink-secondary dark:text-neutral-300">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="ocrImages"
-                          checked={options.ocrEnabled !== false}
-                          onChange={() => setOptions({ ...options, ocrEnabled: true })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>Yes</span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="ocrImages"
-                          checked={options.ocrEnabled === false}
-                          onChange={() => setOptions({ ...options, ocrEnabled: false })}
-                          className="w-4 h-4 accent-[#5C6BC0]"
-                        />
-                        <span>No</span>
-                      </label>
-                    </div>
-                    <p className="text-xs text-ink-secondary dark:text-neutral-400">
-                      Specifies whether OCR will be performed on images to extract readable text.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {isImage && (
-            <div className="p-6">
-              <button
-                type="button"
-                onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
-              >
-                <div className="flex items-center gap-2.5">
-                  <ImageIcon className="w-4 h-4 text-brand-700 dark:text-brand-400" />
-                  <span>Image Settings</span>
-                </div>
-                {openSections.domain ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
-              </button>
-
-              {openSections.domain && (
-                <div className="mt-5 space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Width (px)</label>
-                      <input
-                        type="number"
-                        value={options.width || ''}
-                        onChange={(e) => setOptions({ ...options, width: e.target.value ? Number(e.target.value) : undefined })}
-                        placeholder="Auto"
-                        className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Height (px)</label>
-                      <input
-                        type="number"
-                        value={options.height || ''}
-                        onChange={(e) => setOptions({ ...options, height: e.target.value ? Number(e.target.value) : undefined })}
-                        placeholder="Auto"
-                        className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between text-xs font-semibold text-brand-950 dark:text-neutral-200 mb-1">
-                      <span>Quality</span>
-                      <span className="font-mono text-brand-700 dark:text-brand-400">{options.quality || 85}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="1"
-                      max="100"
-                      value={options.quality || 85}
-                      onChange={(e) => setOptions({ ...options, quality: Number(e.target.value) })}
-                      className="w-full accent-[#5C6BC0] cursor-pointer"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {(isAudio || isVideo) && (
-            <div className="p-6">
-              <button
-                type="button"
-                onClick={() => toggleSection('domain')}
-                className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
-              >
-                <div className="flex items-center gap-2.5">
-                  {isVideo ? <Video className="w-4 h-4 text-brand-700 dark:text-brand-400" /> : <Music className="w-4 h-4 text-brand-700 dark:text-brand-400" />}
-                  <span>{isVideo ? 'Video Settings' : 'Audio Settings'}</span>
-                </div>
-                {openSections.domain ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
-              </button>
-
-              {openSections.domain && (
-                <div className="mt-5 space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Audio Bitrate</label>
-                      <select
-                        value={options.audioBitrate || '192k'}
-                        onChange={(e) => setOptions({ ...options, audioBitrate: e.target.value as any })}
-                        className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
-                      >
-                        <option value="320k">320 kbps</option>
-                        <option value="256k">256 kbps</option>
-                        <option value="192k">192 kbps</option>
-                        <option value="128k">128 kbps</option>
-                      </select>
-                    </div>
-
-                    {isVideo && (
-                      <div>
-                        <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block mb-1">Video Codec</label>
-                        <select
-                          value={options.videoCodec || 'h264'}
-                          onChange={(e) => setOptions({ ...options, videoCodec: e.target.value as any })}
-                          className="w-full px-3.5 py-2 text-sm bg-neutral-50 dark:bg-neutral-950 border border-neutral-border dark:border-neutral-800 rounded-xl text-brand-950 dark:text-white"
-                        >
-                          <option value="h264">H.264 / AVC</option>
-                          <option value="hevc">H.265 / HEVC</option>
-                          <option value="vp9">VP9</option>
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* 4. Universal Execution & Privacy Section */}
-          <div className="p-6">
-            <button
-              type="button"
-              onClick={() => toggleSection('privacy')}
-              className="flex items-center justify-between w-full text-left font-bold text-sm text-brand-950 dark:text-neutral-100 hover:text-brand-700 dark:hover:text-white"
-            >
-              <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                <span>Execution & Privacy</span>
-              </div>
-              {openSections.privacy ? <ChevronUp className="w-4 h-4 text-ink-muted" /> : <ChevronDown className="w-4 h-4 text-ink-muted" />}
-            </button>
-
-            {openSections.privacy && (
-              <div className="mt-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-brand-950 dark:text-neutral-200 block">
-                    Client-Side Edge Mode (Zero-Data Retention)
-                  </label>
-                  <span className="text-[10px] px-2 py-0.5 font-bold uppercase rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">
-                    100% Local RAM
-                  </span>
-                </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 text-xs text-ink-secondary dark:text-neutral-300">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="clientEdgeMode"
-                      checked={options.clientEdgeMode === undefined}
-                      onChange={() => {
-                        const updated = { ...options };
-                        delete updated.clientEdgeMode;
-                        setOptions(updated);
-                      }}
-                      className="w-4 h-4 accent-[#5C6BC0]"
-                    />
-                    <span>Adaptive Auto</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="clientEdgeMode"
-                      checked={options.clientEdgeMode === true}
-                      onChange={() => setOptions({ ...options, clientEdgeMode: true })}
-                      className="w-4 h-4 accent-[#5C6BC0]"
-                    />
-                    <span>Client-Only Edge</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="clientEdgeMode"
-                      checked={options.clientEdgeMode === false}
-                      onChange={() => setOptions({ ...options, clientEdgeMode: false })}
-                      className="w-4 h-4 accent-[#5C6BC0]"
-                    />
-                    <span>Server Only</span>
-                  </label>
-                </div>
-                <p className="text-xs text-ink-secondary dark:text-neutral-400">
-                  Adaptive Auto executes conversions directly inside browser memory when supported, and falls back to Zero-Retention Cloud for complex server-required formats.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Footer with Apply button */}
-        <div className="px-6 py-4 bg-neutral-50 dark:bg-[#18191d] border-t border-neutral-border dark:border-neutral-800 flex items-center justify-end">
-          <button
-            type="button"
-            onClick={() => {
-              onSave(options);
-              onClose();
-            }}
-            className="bg-brand-700 hover:bg-brand-800 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-md shadow-brand-700/25 cursor-pointer"
-          >
-            Apply
-          </button>
-        </div>
+        <button
+          type="button"
+          aria-label="Close options"
+          onClick={onClose}
+          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md border border-neutral-border dark:border-dark-border text-ink-muted hover:text-brand-950 dark:hover:text-white hover:border-brand-700 transition-colors cursor-pointer shrink-0"
+        >
+          <X className="w-4 h-4" />
+        </button>
       </div>
-    </div>
+
+      <div className="px-5 sm:px-6 py-5 space-y-6 max-h-[70dvh] overflow-y-auto divide-y divide-neutral-border dark:divide-dark-border [&>section:not(:first-child)]:pt-5">
+        {visible.showImage && <ImageOptionsSection options={options} onChange={setOptions} />}
+        {visible.showDocument && <DocumentOptionsSection options={options} onChange={setOptions} />}
+        {visible.showPassword && (
+          <PasswordOptionsSection
+            options={options}
+            onChange={setOptions}
+            sourceFormat={visible.src}
+          />
+        )}
+        {visible.showVideo && (
+          <VideoOptionsSection
+            options={options}
+            onChange={setOptions}
+            showCodec={visible.targetCategory === 'video'}
+          />
+        )}
+        {visible.showAudio && (
+          <AudioOptionsSection
+            options={options}
+            onChange={setOptions}
+            includeTrim={!visible.showVideo}
+          />
+        )}
+        {visible.showData && <DataOptionsSection options={options} onChange={setOptions} />}
+        {visible.showArchive && <ArchiveOptionsSection options={options} onChange={setOptions} />}
+        {!visible.hasAny && (
+          <p className="text-sm text-ink-secondary dark:text-neutral-300">
+            Standard lossless conversion parameters apply for this format pair.
+          </p>
+        )}
+      </div>
+
+      <div className="px-5 sm:px-6 py-4 bg-neutral-subtle dark:bg-[#121629] border-t border-neutral-border dark:border-dark-border rounded-b-xl flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => setOptions({ ...DEFAULT_OPTIONS })}
+          className="min-h-[44px] px-4 rounded-md border border-neutral-300 dark:border-dark-border bg-white dark:bg-dark-surface text-sm font-medium text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-700 transition-colors cursor-pointer"
+        >
+          Reset
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            onSave(options);
+            onClose();
+          }}
+          className="min-h-[44px] px-5 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold transition-colors cursor-pointer"
+        >
+          Apply Options
+        </button>
+      </div>
+    </dialog>
   );
 }

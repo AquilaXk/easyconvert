@@ -83,18 +83,10 @@ const config: Config = {
         ],
       },
       animation: {
-        "orbit-slow": "orbit-spin 90s linear infinite",
-        "orbit-fast": "orbit-spin 60s linear infinite reverse",
         "spin-pulse": "spin-pulse 3s ease-in-out infinite",
         "arrow-sweep": "arrow-sweep 2.4s ease-in-out infinite",
-        "output-pulse": "output-pulse 3s ease-in-out infinite",
-        "card-flip": "card-flip 0.45s cubic-bezier(0.34, 1.4, 0.6, 1) both",
       },
       keyframes: {
-        "orbit-spin": {
-          "0%": { transform: "rotate(0deg)" },
-          "100%": { transform: "rotate(360deg)" },
-        },
         "spin-pulse": {
           "0%, 100%": { opacity: "0.85", transform: "rotate(0deg)" },
           "50%": { opacity: "1", transform: "rotate(180deg)" },
@@ -102,18 +94,6 @@ const config: Config = {
         "arrow-sweep": {
           "0%, 100%": { opacity: "0", transform: "translateX(-100%)" },
           "50%": { opacity: "1", transform: "translateX(100%)" },
-        },
-        "output-pulse": {
-          "0%, 100%": {
-            boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 32px rgba(92, 107, 192, 0.22)",
-          },
-          "50%": {
-            boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 38px rgba(92, 107, 192, 0.38)",
-          },
-        },
-        "card-flip": {
-          "0%": { opacity: "0", transform: "rotateX(-70deg) translateY(8px)" },
-          "100%": { opacity: "1", transform: "rotateX(0deg) translateY(0px)" },
         },
       },
     },
