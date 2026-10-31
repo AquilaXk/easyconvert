@@ -1,6 +1,7 @@
 import { redisKeyStore } from './redis-key-store';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
+import { anonymousUserId } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
@@ -402,7 +403,7 @@ async function verifyAnonymousAccess(
   }
 
   // 2. Check anonymous daily quota
-  const anonUserId = `anon:${anonBucket}`;
+  const anonUserId = anonymousUserId(anonBucket);
   if (clientIp === UNATTRIBUTED_CLIENT_KEY) {
     // No daily quota for the shared identity: it would let a single client exhaust it for every caller
     // (docs/client-ip-trust.md, item 5). Only the shared burst limiter above applies until TRUSTED_PROXIES is declared.

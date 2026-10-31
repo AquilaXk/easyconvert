@@ -1,0 +1,299 @@
+import { createElement } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Plan } from '../src/lib/plan-limits';
+import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
+import {
+  getViewerAccount,
+  getViewerMaxFileBytes,
+  getViewerPlan,
+  refreshViewerPlan,
+  setViewerPlan,
+  subscribeViewerPlan,
+} from '../src/lib/viewer-plan';
+import type { ConversionQueueItem } from '../src/lib/types';
+import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
+
+const shownPlan = vi.hoisted(() => ({ current: 'anonymous' as Plan }));
+const shownAccount = vi.hoisted(() => ({ current: null as { name: string; tier: string } | null }));
+
+vi.mock('../src/hooks/useViewerPlan', () => ({
+  useViewerPlan: () => shownPlan.current,
+  useViewerAccount: () => shownAccount.current,
+  useRefreshViewerPlan: () => undefined,
+}));
+
+import HeroDropzoneCard from '../src/components/workbench/HeroDropzoneCard';
+import QueueItemRow from '../src/components/workbench/QueueItemRow';
+import UserNav from '../src/components/UserNav';
+import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
+
+const GIB = 1024 * 1024 * 1024;
+
+function claimedFile(name: string, size: number): File {
+  const file = new File([], name);
+  Object.defineProperty(file, 'size', { value: size });
+  return file;
+}
+
+function sessionAnswer(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+beforeEach(() => {
+  shownPlan.current = 'anonymous';
+  shownAccount.current = null;
+  setViewerPlan('anonymous');
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setViewerPlan('anonymous');
+});
+
+describe('the plan of the viewer', () => {
+  it('starts anonymous, so the smallest limit applies before the session answers', () => {
+    expect(getViewerPlan()).toBe('anonymous');
+    expect(getViewerMaxFileBytes()).toBe(PLAN_MAX_FILE_BYTES.anonymous);
+  });
+
+  it.each([
+    ['free', PLAN_MAX_FILE_BYTES.free],
+    ['pro', PLAN_MAX_FILE_BYTES.pro],
+    ['enterprise', PLAN_MAX_FILE_BYTES.enterprise],
+  ] as const)('becomes the %s plan when the session says so', async (tier, bytes) => {
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', tier } })));
+    await refreshViewerPlan();
+    expect(getViewerPlan()).toBe(tier);
+    expect(getViewerMaxFileBytes()).toBe(bytes);
+  });
+
+  it('returns to anonymous when the session endpoint answers 401 after a sign-out', async () => {
+    setViewerPlan('pro');
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(401, { success: false })));
+    await refreshViewerPlan();
+    expect(getViewerPlan()).toBe('anonymous');
+  });
+
+  it('keeps the plan it had when the network fails', async () => {
+    setViewerPlan('pro');
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('offline'))));
+    await refreshViewerPlan();
+    expect(getViewerPlan()).toBe('pro');
+  });
+
+  it('asks the session endpoint once for callers that overlap', async () => {
+    const fetchMock = vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', tier: 'pro' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await Promise.all([refreshViewerPlan(), refreshViewerPlan(), refreshViewerPlan()]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await refreshViewerPlan();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('tells subscribers once per change and stops after unsubscribing', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeViewerPlan(listener);
+    setViewerPlan('pro');
+    setViewerPlan('pro');
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    setViewerPlan('free');
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the signed-in person of the viewer', () => {
+  it('is read from the same session answer as the plan, and cleared when the session ends', async () => {
+    expect(getViewerAccount()).toBeNull();
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', name: 'Ada Lovelace', tier: 'pro' } })));
+    await refreshViewerPlan();
+    expect(getViewerAccount()).toEqual({ name: 'Ada Lovelace', tier: 'pro' });
+    expect(getViewerPlan()).toBe('pro');
+
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(401, { success: false })));
+    await refreshViewerPlan();
+    expect(getViewerAccount()).toBeNull();
+    expect(getViewerPlan()).toBe('anonymous');
+  });
+
+  it('keeps the person it had when the network fails and tells subscribers once for the same answer', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', name: 'Ada', tier: 'free' } })));
+    await refreshViewerPlan();
+    const listener = vi.fn();
+    const unsubscribe = subscribeViewerPlan(listener);
+
+    await refreshViewerPlan();
+    expect(listener).not.toHaveBeenCalled();
+
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('offline'))));
+    await refreshViewerPlan();
+    expect(getViewerAccount()).toEqual({ name: 'Ada', tier: 'free' });
+    unsubscribe();
+  });
+
+  it('is named by the header from the store, without a request of its own', () => {
+    const fetchMock = vi.fn(async () => sessionAnswer(401, { success: false }));
+    vi.stubGlobal('fetch', fetchMock);
+    shownAccount.current = { name: 'Ada Lovelace', tier: 'pro' };
+
+    const signedIn = visibleText(renderDom(createElement(UserNav, {})));
+    expect(signedIn).toContain('Ada');
+    expect(signedIn).toContain('pro');
+    expect(signedIn).not.toContain('Log In');
+
+    shownAccount.current = null;
+    const visitor = visibleText(renderDom(createElement(UserNav, { mobile: true })));
+    expect(visitor).toContain('Log In');
+    expect(visitor).toContain('Sign Up');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('the drop zone states the limit of the plan', () => {
+  const noop = () => undefined;
+  const dropzoneText = () =>
+    visibleText(
+      renderDom(
+        createElement(HeroDropzoneCard, {
+          isDragOver: false,
+          onDragOver: noop,
+          onDragLeave: noop,
+          onDrop: noop,
+          onOpenFileDialog: noop,
+          onOpenUrlModal: noop,
+        })
+      )
+    );
+
+  it.each([
+    ['anonymous', 'Up to 1 GiB per file'],
+    ['free', 'Up to 1 GiB per file'],
+    ['pro', 'Up to 5 GiB per file'],
+    ['enterprise', 'Up to 10 GiB per file'],
+  ] as const)('shows "%s" viewers %s', (plan, copy) => {
+    shownPlan.current = plan;
+    const text = dropzoneText();
+    expect(text).toContain(copy);
+    expect(text).not.toMatch(/2 GB|100 MB|OPFS|\bGB\b/);
+  });
+});
+
+describe('a file over the limit', () => {
+  it('is queued ready whatever its size, since the plan of the session may answer after the drop', () => {
+    const item = buildQueuedFileItem(claimedFile('big.mp4', 11 * GIB));
+    expect(item.status).toBe('ready');
+    expect(item.error).toBeUndefined();
+  });
+
+  function rowFor(size: number, error?: string) {
+    const item: ConversionQueueItem = {
+      id: 'row-1',
+      file: claimedFile('clip.mp4', size),
+      name: 'clip.mp4',
+      size,
+      sourceFormat: 'mp4',
+      targetFormat: 'webm',
+      status: error ? 'error' : 'ready',
+      error,
+      progress: 0,
+      options: {},
+    };
+    const noop = () => undefined;
+    return renderDom(
+      createElement(QueueItemRow, {
+        item,
+        isFormatSelectorOpen: false,
+        onToggleFormatSelector: noop,
+        onCloseFormatSelector: noop,
+        onSelectTargetFormat: noop,
+        onOpenOptions: noop,
+        onRetry: noop,
+        onRemove: noop,
+      })
+    );
+  }
+
+  it.each([
+    ['anonymous', GIB + 1, 'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use.'],
+    ['free', 3 * GIB, 'File size 3 GiB exceeds the 1 GiB limit for the free plan.'],
+    ['pro', 6 * GIB, 'File size 6 GiB exceeds the 5 GiB limit for the Pro plan.'],
+    ['enterprise', 11 * GIB, 'File size 11 GiB exceeds the 10 GiB limit for the Enterprise plan.'],
+  ] as const)('shows the %s viewer the size and the limit on the row and offers no plan', (plan, size, message) => {
+    shownPlan.current = plan;
+    const dom = rowFor(size);
+    const text = visibleText(dom);
+    expect(text).toContain(message);
+    expect(text).not.toContain('allows files up to');
+    expect(text).toContain('Failed');
+    expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBe('');
+    expect(attrOf(select(dom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')).toBe('');
+  });
+
+  function alertOf(dom: ReturnType<typeof rowFor>): string | null {
+    const alert = select(dom, 'p', 'role', 'alert')[0];
+    return alert ? visibleText(alert) : null;
+  }
+
+  function formatButtonDisabled(dom: ReturnType<typeof rowFor>): string | null {
+    return attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled');
+  }
+
+  it('reads the limit at render, so a row dropped before the session answered follows the plan it names', () => {
+    const size = 2 * GIB;
+    const anonymous = rowFor(size);
+    expect(alertOf(anonymous)).toBe('File size 2 GiB exceeds the 1 GiB limit for anonymous use.');
+    expect(formatButtonDisabled(anonymous)).toBe('');
+
+    shownPlan.current = 'pro';
+    const pro = rowFor(size);
+    expect(alertOf(pro)).toBeNull();
+    expect(formatButtonDisabled(pro)).toBeNull();
+  });
+
+  it('is ready at the limit itself and refused one byte past it', () => {
+    shownPlan.current = 'pro';
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro))).toBeNull();
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro + 1))).toBe('File size 5,368,709,121 bytes exceeds the 5 GiB limit for the Pro plan.');
+  });
+
+  it('lets the viewer cancel a file on its way to the server and names the step', () => {
+    const item: ConversionQueueItem = {
+      id: 'row-2',
+      file: claimedFile('clip.mp4', 200 * 1024 * 1024),
+      name: 'clip.mp4',
+      size: 200 * 1024 * 1024,
+      sourceFormat: 'mp4',
+      targetFormat: 'webm',
+      status: 'uploading',
+      progress: 22,
+      options: {},
+    };
+    const removed = vi.fn();
+    const noop = () => undefined;
+    const props = {
+      item,
+      isFormatSelectorOpen: false,
+      onToggleFormatSelector: noop,
+      onCloseFormatSelector: noop,
+      onSelectTargetFormat: noop,
+      onOpenOptions: noop,
+      onRetry: noop,
+      onRemove: removed,
+    };
+
+    const uploading = renderDom(createElement(QueueItemRow, props));
+    expect(select(uploading, 'progress', 'aria-label', 'Uploading clip.mp4')).toHaveLength(1);
+    const cancel = select(uploading, 'button', 'aria-label', 'Cancel clip.mp4')[0];
+    expect(attrOf(cancel, 'disabled')).toBeNull();
+
+    const converting = renderDom(createElement(QueueItemRow, { ...props, item: { ...item, status: 'converting' } }));
+    expect(select(converting, 'progress', 'aria-label', 'Converting clip.mp4')).toHaveLength(1);
+    expect(select(converting, 'button', 'aria-label', 'Remove clip.mp4')).toHaveLength(0);
+  });
+
+  it('leaves the same file convertible for a viewer on the Pro plan', () => {
+    shownPlan.current = 'pro';
+    const dom = rowFor(2 * GIB);
+    expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBeNull();
+  });
+});

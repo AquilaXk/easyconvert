@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import JSZip from 'jszip';
 import { NextRequest } from 'next/server';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
+import { SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import {
   convertFile,
   quantizeMedianCut,
@@ -28,6 +29,7 @@ import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
+
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
@@ -368,60 +370,17 @@ The voyage was recorded.`;
     });
   });
 
-  describe('Domain: Zero-Retention Batch 100MB Gate', () => {
-    it('blocks batch requests when any single file exceeds 100MB', async () => {
-      const req = {
-        formData: async () => {
-          const map = new Map<string, any>();
-          map.set('files', [
-            {
-              name: 'huge_archive.zip',
-              size: 105 * 1024 * 1024,
-              arrayBuffer: async () => new ArrayBuffer(0),
-            },
-          ]);
-          return {
-            getAll: (key: string) => map.get(key) || [],
-            get: () => null,
-          };
-        },
-      } as unknown as NextRequest;
+  describe('Domain: Batch Request Size Gate', () => {
+    it('refuses a batch past what one request carries before it reads the form, with the way in parts', async () => {
+      const formData = vi.fn();
+      const req = { headers: new Headers({ 'content-length': String(SINGLE_REQUEST_BODY_MAX_BYTES + 1) }), formData } as unknown as NextRequest;
 
       const res = await batchRoute(req);
-      expect(res.status).toBe(400);
       const json = await res.json();
+      expect(res.status, JSON.stringify(json)).toBe(413);
       expect(json.success).toBe(false);
-      expect(json.error).toMatch(/exceeds real-time in-memory conversion limit/i);
-    });
-
-    it('blocks batch requests when cumulative size exceeds 100MB', async () => {
-      const req = {
-        formData: async () => {
-          const map = new Map<string, any>();
-          map.set('files', [
-            {
-              name: 'file1.zip',
-              size: 60 * 1024 * 1024,
-              arrayBuffer: async () => new ArrayBuffer(0),
-            },
-            {
-              name: 'file2.zip',
-              size: 50 * 1024 * 1024,
-              arrayBuffer: async () => new ArrayBuffer(0),
-            },
-          ]);
-          return {
-            getAll: (key: string) => map.get(key) || [],
-            get: () => null,
-          };
-        },
-      } as unknown as NextRequest;
-
-      const res = await batchRoute(req);
-      expect(res.status).toBe(400);
-      const json = await res.json();
-      expect(json.success).toBe(false);
-      expect(json.error).toMatch(/exceeds real-time in-memory conversion limit/i);
+      expect(json.error).toContain('POST /api/storage/multipart');
+      expect(formData).not.toHaveBeenCalled();
     });
   });
 });

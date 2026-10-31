@@ -1,9 +1,10 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
-import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, ConversionTier } from './edge/tier-router';
+import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } from './edge/tier-router';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
-import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
+import { formatBytes } from './format-bytes';
+import { getViewerMaxFileBytes } from './viewer-plan';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { canvasToBlob } from './edge/pipelines/canvas-blob';
 import { assertEncodedBlob, BMP_MIME_TYPE, canvasMimeType } from './edge/canvas-encoding';
@@ -13,6 +14,8 @@ import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { deriveQuantizerLevels } from './edge/quantizer-levels';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
+import { executeResumableCloudConversion, type ResumableStage } from './edge/pipelines/resumable-cloud-pipeline';
+import { needsUploadInParts } from './plan-limits';
 import {
   executeWebGpuCompute,
   isWebGpuComputeSupported,
@@ -27,6 +30,8 @@ export interface EdgeTierFallback {
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
+  /** Called when a file sent to the server in parts moves from its upload to its conversion. */
+  onStage?: (stage: ResumableStage) => void;
   onSuccess: (
     resultUrl: string,
     resultSize: number,
@@ -48,6 +53,9 @@ export interface ClientEdgeResult {
   escalationReason?: string;
 }
 
+const CLOUD_TIER_NAME = 'Cloud (Zero-Retention)';
+const CLOUD_PARTS_TIER_NAME = 'Cloud (Upload in parts)';
+
 /** Reason recorded when a tier returned no result without raising an error. */
 const L1A_NO_RESULT_REASON = 'L1A returned no result';
 
@@ -67,17 +75,6 @@ export class ClientEdgeEscalationError extends Error {
 
 function describeEdgeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Returns dynamic maximum file size limit.
- * If browser supports OPFS, expands up to 2GB streaming limit; otherwise default 100MB.
- */
-export function getEffectiveMaxFileSize(baseMax: number = 100 * 1024 * 1024): number {
-  if (typeof window !== 'undefined' && checkOpfsSupport()) {
-    return OPFS_MAX_FILE_BYTES; // 2 GB OPFS VFS ceiling
-  }
-  return baseMax;
 }
 
 /**
@@ -580,7 +577,8 @@ async function processL2Conversion(
  */
 export async function executeItemConversion(
   item: ConversionQueueItem,
-  callbacks: ConvertItemCallbacks
+  callbacks: ConvertItemCallbacks,
+  signal?: AbortSignal
 ): Promise<void> {
   // 1. Check for client-side Edge processing (L0 pure, L2 OCR, etc.)
   let escalation: EdgeTierFallback | undefined;
@@ -618,16 +616,20 @@ export async function executeItemConversion(
     return;
   }
 
-  // 3. Server-side conversion pipeline with Zero-Data Retention guarantee
+  // 3. Server-side conversion pipeline: one request with the Zero-Data Retention guarantee, or for a file too large
+  // for one request an upload in parts and a job (entry 137), whose input and result are deleted after the download.
+  const inParts = needsUploadInParts(item.file.size);
   try {
-    const cloudRes = await executeServerlessCloudFallback(
-      item.file,
-      item.targetFormat,
-      item.options,
-      callbacks.onProgress
-    );
-    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, 'Cloud (Zero-Retention)', escalation);
+    const cloudRes = inParts
+      ? await executeResumableCloudConversion(item.file, item.targetFormat, item.options, {
+          onProgress: callbacks.onProgress,
+          onStage: callbacks.onStage,
+          signal,
+        })
+      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress, signal);
+    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: any) {
+    if (signal?.aborted) return;
     callbacks.onError(err.message || 'Conversion failed. Please try another format.');
   }
 }
@@ -640,13 +642,12 @@ export function createItemConverter(
   maxFileSize?: number
 ) {
   return async (item: ConversionQueueItem): Promise<void> => {
-    const effectiveLimit = maxFileSize !== undefined ? maxFileSize : getEffectiveMaxFileSize();
+    const effectiveLimit = maxFileSize !== undefined ? maxFileSize : getViewerMaxFileBytes();
     if (item.file.size > effectiveLimit) {
-      const limitMb = Math.round(effectiveLimit / (1024 * 1024));
       setQueue((prev) =>
         prev.map((i) =>
           i.id === item.id
-            ? { ...i, status: 'error', error: `File size exceeds ${limitMb} MB limit.` }
+            ? { ...i, status: 'error', error: `File size exceeds the ${formatBytes(effectiveLimit)} limit.` }
             : i
         )
       );

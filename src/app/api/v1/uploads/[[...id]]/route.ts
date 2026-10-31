@@ -7,7 +7,6 @@ import {
   LocalFsStorage,
   MULTIPART_MAX_PART_BYTES,
   MULTIPART_MAX_PARTS,
-  MULTIPART_MAX_TOTAL_BYTES,
   objectStorage,
   storageProvider,
   type LocalMultipartSession,
@@ -24,6 +23,9 @@ import {
 } from '@/lib/storage/tus-engine';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
+import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
+import type { User } from '@/lib/auth/types';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { POST as directPostHandler } from '../direct/route';
@@ -34,7 +36,6 @@ import { DELETE as directDeleteHandler } from '../direct/[id]/route';
 export const dynamic = 'force-dynamic';
 
 const TUS_RESUMABLE_VERSION = '1.0.0';
-const TUS_MAX_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
 
 function checkTusVersion(req: NextRequest): NextResponse | null {
   const clientVersion = req.headers.get('tus-resumable');
@@ -142,6 +143,8 @@ async function handlePartUpload(
     );
   }
 
+  const lengthProblem = partBodyProblem(req, instanceUri);
+  if (lengthProblem) return lengthProblem;
   if (!req.body) {
     return createProblemDetailsResponse(400, 'Empty part payload body.', instanceUri);
   }
@@ -166,8 +169,9 @@ async function handlePartUpload(
 async function handleInitiateUpload(
   req: NextRequest,
   instanceUri: string,
-  userId: string
+  user: User
 ): Promise<Response> {
+  const userId = user.id;
   const body: InitiateUploadBody = await req.json().catch(() => ({}));
   const { filename, mimeType = 'application/octet-stream', totalSize } = body;
 
@@ -179,13 +183,8 @@ async function handleInitiateUpload(
     return createProblemDetailsResponse(400, 'Missing or invalid "totalSize" in request body.', instanceUri);
   }
 
-  if (totalSize > MULTIPART_MAX_TOTAL_BYTES) {
-    return createProblemDetailsResponse(
-      413,
-      `totalSize ${totalSize} exceeds maximum allowed upload size ${MULTIPART_MAX_TOTAL_BYTES} bytes.`,
-      instanceUri
-    );
-  }
+  const tooLarge = fileSizeLimitProblem(user, totalSize, instanceUri);
+  if (tooLarge) return tooLarge;
 
   const chosenPartSize = computeChosenPartSize(totalSize, body.partSize);
   const totalParts = Math.max(1, Math.ceil(totalSize / chosenPartSize));
@@ -388,7 +387,7 @@ export function OPTIONS() {
   const headers = createTusHeaders({
     'Tus-Version': TUS_RESUMABLE_VERSION,
     'Tus-Extension': 'creation,creation-with-upload,termination,expiration,checksum',
-    'Tus-Max-Size': String(TUS_MAX_SIZE),
+    'Tus-Max-Size': String(LARGEST_PLAN_FILE_BYTES),
     'Tus-Checksum-Algorithm': 'sha256',
     'Access-Control-Allow-Methods': 'POST, GET, HEAD, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers':
@@ -453,7 +452,7 @@ export const POST = admittingNewFiles(async function POST(
         case 'part':
           return await handlePartUpload(req, searchParams, instanceUri, auth.user.id);
         case 'initiate':
-          return await handleInitiateUpload(req, instanceUri, auth.user.id);
+          return await handleInitiateUpload(req, instanceUri, auth.user);
         case 'complete':
           return await handleCompleteUpload(req, instanceUri, auth.user.id);
         case 'abort':
@@ -484,16 +483,8 @@ export const POST = admittingNewFiles(async function POST(
     });
   }
 
-  if (uploadLength > TUS_MAX_SIZE) {
-    return createProblemDetailsResponse(
-      413,
-      `Upload-Length exceeds maximum size of ${TUS_MAX_SIZE} bytes.`,
-      instanceUri,
-      undefined,
-      undefined,
-      { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
-    );
-  }
+  const tooLarge = fileSizeLimitProblem(auth.user, uploadLength, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+  if (tooLarge) return tooLarge;
 
   const metadataHeader = req.headers.get('upload-metadata') || undefined;
 

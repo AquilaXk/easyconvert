@@ -73,7 +73,8 @@ export async function executeServerlessCloudFallback(
   file: File | Blob,
   targetFormat: string,
   options: ConversionOptions = {},
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal
 ): Promise<CloudConversionResult> {
   const formData = new FormData();
   formData.append('file', file);
@@ -88,6 +89,7 @@ export async function executeServerlessCloudFallback(
       'X-Zero-Retention': 'true',
     },
     body: formData,
+    signal,
   });
 
   onProgress?.(80);

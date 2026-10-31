@@ -10,19 +10,23 @@ import {
   resolveClientIp,
   type ResolvedClientIp,
 } from '@/lib/security/client-ip';
+import { requestBodyVerdict } from '@/lib/api/request-body-limit';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
  * 1. Cross-Site Request Forgery (CSRF) Protection: Enforces strict Origin / Referer validation
  *    on cookie-authenticated state-changing requests (POST, PUT, PATCH, DELETE).
  * 2. Anonymous IP Edge Rate Limiting: Protective token bucket guard against burst abuse.
+ * 3. Request body size: a declared body over what the route takes is refused before it is buffered.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
+const PROBLEM_PAYLOAD_TOO_LARGE = 'https://api.easyconvert.io/problems/payload-too-large';
 const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
 const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
 
@@ -247,7 +251,16 @@ export function middleware(request: NextRequest) {
     );
   }
 
-  // 2. CSRF Protection for Cookie-Authenticated State Mutations
+  // 2. Body size: a malformed or oversize Content-Length is refused before any route buffers the body. A route that
+  // takes files takes one request of a file (entry 137); every other route takes a small JSON or form body.
+  const bodyVerdict = requestBodyVerdict(pathname, request.headers.get('content-length'));
+  if (bodyVerdict) {
+    return bodyVerdict.status === HTTP_BAD_REQUEST
+      ? problemResponse(HTTP_BAD_REQUEST, PROBLEM_BAD_REQUEST, 'Bad Request', bodyVerdict.detail, pathname)
+      : problemResponse(HTTP_PAYLOAD_TOO_LARGE, PROBLEM_PAYLOAD_TOO_LARGE, 'Payload Too Large', bodyVerdict.detail, pathname);
+  }
+
+  // 3. CSRF Protection for Cookie-Authenticated State Mutations
   if (MUTATING_METHODS.has(request.method.toUpperCase())) {
     const hasSessionCookie =
       request.cookies.has('easyconvert_session') || request.cookies.has('session');

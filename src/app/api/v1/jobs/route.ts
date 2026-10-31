@@ -31,6 +31,8 @@ import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secre
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
+import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -47,25 +49,31 @@ import { tusEngine } from '@/lib/storage/tus-engine';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_INLINE_PAYLOAD_SIZE = 32 * 1024 * 1024; // 32 MiB ceiling for inline multipart and base64 payloads
-
-const STORAGE_TIER_PAYLOAD_LIMITS: Record<string, number> = {
-  free: 1024 * 1024 * 1024, // 1 GiB
-  pro: 5 * 1024 * 1024 * 1024, // 5 GiB
-  enterprise: 10 * 1024 * 1024 * 1024, // 10 GiB
-};
-
-/** Whether the caller may use every stored file a job reads: the top-level `storageKey` and each `import.upload` node of its graph. */
-async function mayUseStoredInputs(storageKey: string | undefined, graph: JobGraph | undefined, callerUserId: string): Promise<boolean> {
-  const keys = new Set(graph ? graphInputKeys(normalizeGraphNodes(graph)) : []);
+/** The refusal of a job whose stored files the caller may not use, or that a graph reads over the limit of the caller's plan; undefined when every stored file passes. */
+async function storedInputRefusal(
+  storageKey: string | undefined,
+  graph: JobGraph | undefined,
+  caller: PlanCaller & { id: string }
+): Promise<{ status: number; message: string; title: string } | undefined> {
+  const graphKeys = graph ? graphInputKeys(normalizeGraphNodes(graph)) : [];
+  const keys = new Set(graphKeys);
   if (storageKey) keys.add(storageKey);
   for (const key of keys) {
-    if (!isInlineInputKey(key) && !(await mayUseStorageKeyAsJobInput(key, callerUserId))) return false;
+    if (!isInlineInputKey(key) && !(await mayUseStorageKeyAsJobInput(key, caller.id))) {
+      return { status: 404, message: STORAGE_OBJECT_NOT_FOUND, title: 'Not Found' };
+    }
   }
-  return true;
+  const plan = planOfCaller(caller);
+  for (const key of graphKeys) {
+    const info = isInlineInputKey(key) ? undefined : await s3Storage.stat(key);
+    if (info && info.size > maxFileBytes(plan)) {
+      return { status: 413, message: fileTooLargeMessage(plan, info.size), title: 'Payload Too Large' };
+    }
+  }
+  return undefined;
 }
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
@@ -230,7 +238,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       }
 
       if (file && file instanceof Blob && file.size > 0) {
-        if (file.size > MAX_INLINE_PAYLOAD_SIZE) {
+        if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) {
           return reply(
             createProblemDetailsResponse(
               413,
@@ -286,7 +294,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
 
       if (inputBufferBase64) {
         const approxBytes = Math.floor((inputBufferBase64.length * 3) / 4);
-        if (approxBytes > MAX_INLINE_PAYLOAD_SIZE) {
+        if (approxBytes > INLINE_JOB_PAYLOAD_MAX_BYTES) {
           return reply(
             createProblemDetailsResponse(
               413,
@@ -481,10 +489,11 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       );
     }
 
-    // Authorize a caller-supplied key before anything reads the object.
-    if (!(await mayUseStoredInputs(storageKey, graph, auth.user.id))) {
-      return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
-    }
+    // Authorize a caller-supplied key, and hold every stored file of a graph to the plan limit, before anything reads the object.
+    const inputRefusal = await storedInputRefusal(storageKey, graph, auth.user);
+    if (inputRefusal) return await failWithRollback(inputRefusal.status, inputRefusal.message, inputRefusal.title);
+
+    const callerPlan = planOfCaller(auth.user);
 
     // Resolve source format definition
     let sourceDef = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
@@ -526,14 +535,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         if (!fileSize) {
           fileSize = info.size;
         }
-        const userTier = auth.user.tier || 'free';
-        const tierMaxBytes = STORAGE_TIER_PAYLOAD_LIMITS[userTier] || STORAGE_TIER_PAYLOAD_LIMITS.free;
-        if (fileSize > tierMaxBytes) {
-          return await failWithRollback(
-            413,
-            `Storage payload size (${fileSize} bytes) exceeds the ${tierMaxBytes} bytes limit for tier '${userTier}'.`,
-            'Payload Too Large'
-          );
+        if (info.size > maxFileBytes(callerPlan)) {
+          return await failWithRollback(413, fileTooLargeMessage(callerPlan, info.size), 'Payload Too Large');
         }
         if (s3Storage.kind === 'remote') {
           // The object lives in the object store: check its first bytes without downloading the rest.
@@ -751,7 +754,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');
   }
-});
+}));
 
 export async function GET(req: NextRequest) {
   return withQueueErrors(req.nextUrl?.pathname || '/api/v1/jobs', () => listJobs(req));

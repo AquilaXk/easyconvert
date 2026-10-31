@@ -1,29 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
+import { SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 
 describe('Zero-Retention & In-Memory Pipeline Tests', () => {
-  it('blocks files exceeding 100MB limit with descriptive error', async () => {
-    // Mock NextRequest formData returning a file with size > 100MB
+  it('refuses a request past what one request carries before it reads the body, and names the way in parts', async () => {
+    const formData = vi.fn();
     const req = {
-      formData: async () => {
-        const map = new Map<string, any>();
-        map.set('file', {
-          name: 'large_dataset.zip',
-          size: 105 * 1024 * 1024,
-          arrayBuffer: async () => new ArrayBuffer(0),
-        });
-        map.set('targetFormat', 'tar');
-        return map;
-      },
+      formData,
+      headers: new Headers({ 'content-length': String(SINGLE_REQUEST_BODY_MAX_BYTES + 1) }),
     } as unknown as NextRequest;
 
     const res = await convertRoute(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(413);
+    expect(formData).not.toHaveBeenCalled();
 
     const json = await res.json();
     expect(json.success).toBe(false);
-    expect(json.error).toMatch(/exceeds real-time in-memory conversion limit/i);
+    expect(json.error).toContain('POST /api/storage/multipart');
   });
 
   it('verifies Zero-Data-Retention headers on successful conversion', async () => {

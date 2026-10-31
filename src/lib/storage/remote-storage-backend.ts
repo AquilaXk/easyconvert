@@ -26,6 +26,7 @@ import {
   getMaxInMemoryBytes,
 } from './errors';
 import { PART_URL_TTL_SECONDS } from './presign-limits';
+import { multipartUploadKey } from './key-namespace';
 import { buildPutOptions, isObjectExpired, isValidContentType, limitFilename, toStoredObjectMetadata } from './object-attributes';
 import type {
   IStorageBackend,
@@ -253,9 +254,7 @@ export class RemoteStorageBackend implements IStorageBackend {
     const now = Date.now();
     const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, MAX_FILENAME_KEY_LENGTH);
     const unique = `${now}_${crypto.randomBytes(8).toString('hex')}`;
-    const key = ownerUserId
-      ? `conversions/${ownerUserId}/${unique}_${safeName}`
-      : `uploads/${unique}_${safeName}`;
+    const key = multipartUploadKey(ownerUserId, `${unique}_${safeName}`);
 
     const rawUploadId = await this.client.createMultipartUpload(
       key,

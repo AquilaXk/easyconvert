@@ -7,6 +7,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
@@ -30,9 +31,6 @@ import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
-// Maximum allowed payload for real-time zero-retention in-memory conversion
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
-
 /**
  * The options every file of the batch is converted with, from the multipart `options` field, or the 400 that refuses
  * them: JSON that is not an object, or an object the options schema rejects (a server-only key among them).
@@ -52,7 +50,7 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
   return problem ? { problem } : { options: parsed };
 }
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   let reservationId: string | undefined;
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
@@ -112,25 +110,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
     releaseSlot = slot.release;
 
-    let totalBatchSize = 0;
     for (const f of files) {
       if (f.size === 0) {
         return await failWithRollback(400, `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.`);
       }
-      if (f.size > MAX_FILE_SIZE) {
-        return await failWithRollback(
-          400,
-          `File "${f.name}" exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, files larger than 100 MB are not supported.`
-        );
-      }
-      totalBatchSize += f.size;
-    }
-
-    if (totalBatchSize > MAX_FILE_SIZE) {
-      return await failWithRollback(
-        400,
-        'Total batch payload size exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, batch conversions exceeding 100 MB are not supported.'
-      );
     }
 
     let targetFormatsMap: Record<string, string> = {};
@@ -281,4 +264,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-});
+}));

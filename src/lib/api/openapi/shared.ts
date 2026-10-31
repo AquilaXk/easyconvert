@@ -3,6 +3,8 @@ import { ENGINE_USED_HEADER, FALLBACK_REASON_HEADER, MAX_FALLBACK_REASON_CHARS }
 import { CONVERSION_WARNINGS_HEADER } from '@/lib/api/conversion-warnings';
 import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
+import { formatBytes } from '@/lib/format-bytes';
+import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
@@ -89,6 +91,24 @@ export const createPdfaProblemResponse = (description: string) => ({
 });
 const PIXELS_PER_MEGAPIXEL = 1_000_000;
 
+/** The most one file may have, by plan, as the API documents it: the free limit, and the paid plans once they are on sale. */
+const PLAN_FILE_LIMITS_TEXT = PAID_PLANS_ON_SALE
+  ? `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} for Pro, ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} for Enterprise`
+  : `${formatBytes(PLAN_MAX_FILE_BYTES.free)} for anonymous callers and accounts`;
+
+/** Description of the 413 answer for a file over the limit of the caller's plan. */
+export const PLAN_FILE_LIMIT_DESCRIPTION = `Payload Too Large: the file is over the limit of the caller's plan (${PLAN_FILE_LIMITS_TEXT}). The detail states the size and the limit.`;
+
+/** Description of the 413 answer of a public route for a request body past what one request may carry. */
+export const SINGLE_REQUEST_LIMIT_DESCRIPTION = `Payload Too Large: the request body is over ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} of file and form fields. A larger file is uploaded in parts through \`/api/v1/uploads\` and converted by \`POST /api/v1/jobs\` on the stored file.`;
+
+/** The same answer of a route of the web application, which names its own upload flow. */
+export const WEB_SINGLE_REQUEST_LIMIT_DESCRIPTION = `Payload Too Large: the request body is over ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} of file and form fields. The web application uploads a larger file in parts through \`/api/storage/multipart\` and converts it by \`POST /api/queue/jobs\` on the stored key.`;
+
+/** Description of the 413 answer for a file that would decode past a size limit of the engines. */
+export const DECODE_LIMIT_DESCRIPTION =
+  'Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
+
 /** Description of the 413 answer for a picture that declares more pixels than the input limit. */
 export const INPUT_PIXEL_LIMIT_DESCRIPTION = `Payload Too Large: an image (or an image inside the document) declares more than ${
   DEFAULT_MAX_INPUT_PIXELS / PIXELS_PER_MEGAPIXEL
@@ -165,7 +185,7 @@ export const CONVERT_OPTIONS_DESCRIPTION =
 
 /** Form fields of a single-file conversion request. */
 export const CONVERT_FORM_PROPERTIES = {
-  file: { type: 'string', format: 'binary', description: 'Source input file binary (up to 100 MB).' },
+  file: { type: 'string', format: 'binary', description: `Source input file binary (up to ${PLAN_FILE_LIMITS_TEXT}).` },
   targetFormat: { type: 'string', description: 'Target format extension or identifier (e.g., "pdf", "step", "webp").' },
   sourceFormat: { type: 'string', description: 'Explicit source format override. If omitted, inferred from filename.' },
   options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },

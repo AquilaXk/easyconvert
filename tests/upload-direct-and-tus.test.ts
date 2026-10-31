@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { LARGEST_PLAN_FILE_BYTES } from '../src/lib/plan-limits';
 import {
   POST as uploadsHandler,
   OPTIONS as tusOptionsHandler,
@@ -254,7 +255,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
     expect(res.headers.get('Tus-Extension')).toContain('checksum');
     expect(res.headers.get('Tus-Extension')).toContain('expiration');
     expect(res.headers.get('Tus-Checksum-Algorithm')).toContain('sha256');
-    expect(res.headers.get('Tus-Max-Size')).toBe(String(5 * 1024 * 1024 * 1024));
+    expect(res.headers.get('Tus-Max-Size')).toBe(String(LARGEST_PLAN_FILE_BYTES));
   });
 
   it('parses and serializes TUS metadata headers correctly', () => {

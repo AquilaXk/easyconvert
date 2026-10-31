@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { partBodyProblem } from '@/lib/api/file-size-limit';
 import { multipartPartByteLimit, storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
@@ -50,6 +51,9 @@ export async function PUT(req: NextRequest) {
       'Bad Request'
     );
   }
+
+  const lengthProblem = partBodyProblem(req, instanceUri);
+  if (lengthProblem) return lengthProblem;
 
   // Against an object store the client PUTs each part straight to the presigned object-store URL;
   // this route only exists to receive the parts of local storage.

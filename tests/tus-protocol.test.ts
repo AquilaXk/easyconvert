@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
+import { LARGEST_PLAN_FILE_BYTES } from '../src/lib/plan-limits';
 import {
   OPTIONS as tusOptionsHandler,
   POST as tusPostHandler,
@@ -71,7 +72,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     expect(extensions).toContain('checksum');
 
     expect(res.headers.get('Tus-Checksum-Algorithm')).toContain('sha256');
-    expect(res.headers.get('Tus-Max-Size')).toBe(String(5 * 1024 * 1024 * 1024));
+    expect(res.headers.get('Tus-Max-Size')).toBe(String(LARGEST_PLAN_FILE_BYTES));
 
     const exposed = res.headers.get('Access-Control-Expose-Headers') || '';
     expect(exposed).toContain('EasyConvert-Storage-Key');

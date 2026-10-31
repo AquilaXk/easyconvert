@@ -3,6 +3,8 @@
 import React, { useState, useRef } from 'react';
 import { Globe, X, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
+import { formatBytes } from '@/lib/format-bytes';
+import { URL_IMPORT_MAX_BYTES } from '@/lib/plan-limits';
 
 export interface UrlImportModalProps {
   isOpen?: boolean;
@@ -85,7 +87,7 @@ export default function UrlImportModal({
               Add File from URL
             </h2>
             <p className="text-xs text-ink-muted dark:text-dark-muted">
-              Enter a direct HTTP or HTTPS link to a file
+              Enter a direct HTTP or HTTPS link to a file of up to {formatBytes(URL_IMPORT_MAX_BYTES)}
             </p>
           </div>
         </div>
