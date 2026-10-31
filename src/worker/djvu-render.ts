@@ -294,7 +294,7 @@ async function recordedDigests(digestsFile: string): Promise<Map<string, string>
 
 /** An error of the file system (a missing file, a link to nothing, no permission): the build cannot be read, which is not a fault of the worker. */
 function isFileSystemError(err: unknown): err is NodeJS.ErrnoException {
-  return err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string';
+  return err instanceof Error && typeof (err as NodeJS.ErrnoException).syscall === 'string';
 }
 
 /**
@@ -488,7 +488,7 @@ function busyError(): EngineUnavailableError {
  * that is shorter (the deadline's error), and by the signal of the job.
  */
 async function inRunSlot<T>(run: DjvuRun, task: () => Promise<T>): Promise<T> {
-  const waitMs = Math.min(DJVU_SLOT_WAIT_MS, run.limitMs);
+  const waitMs = Math.ceil(Math.min(DJVU_SLOT_WAIT_MS, run.limitMs));
   const waitBound = AbortSignal.timeout(waitMs);
   const { signal } = run.job.options;
   try {
