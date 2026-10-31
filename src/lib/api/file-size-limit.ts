@@ -22,8 +22,8 @@ function verdictProblem(verdict: BodyLengthVerdict, instanceUri: string, extra?:
 }
 
 /**
- * The 400 for a malformed `Content-Length`, the 411 for a body sent without one, or the 413 for a declared body larger
- * than a route takes whole; null when the body may be read. It is answered before the route reads the body, so no route holds more than
+ * The 400 for a malformed `Content-Length`, or the 413 for a declared body larger than a route takes whole; null when the
+ * body may be read (the middleware refuses a body without a length). It is answered before the route reads the body, so no route holds more than
  * `SINGLE_REQUEST_BODY_MAX_BYTES` of one request. The 413 names the way to send the file: in parts, then a job on the
  * stored file.
  */
@@ -32,7 +32,7 @@ function singleRequestBodyProblem(req: Request, instanceUri: string): NextRespon
   return verdictProblem(verdict, instanceUri, verdict?.status === 413 ? { maxRequestBytes: SINGLE_REQUEST_BODY_MAX_BYTES } : undefined);
 }
 
-/** The 400 for a malformed `Content-Length` of a part, the 411 for a part without one, or the 413 for a part declared over the largest part; null when it may be read. */
+/** The 400 for a malformed `Content-Length` of a part, or the 413 for a part declared over the largest part; null when it may be read. */
 export function partBodyProblem(req: Request, instanceUri: string): NextResponse | null {
   return verdictProblem(partBodyVerdict(req.headers), instanceUri);
 }

@@ -4,6 +4,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { storageProvider } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
+import { forgetUploadParts } from '@/lib/storage/part-admission';
 import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 
@@ -114,6 +115,7 @@ export async function POST(req: NextRequest) {
       createProblemDetailsResponse(400, err?.message || 'Failed to complete multipart assembly.', instanceUri, 'Bad Request')
     );
   }
+  forgetUploadParts(uploadId);
 
   // Parts can reach the store past this application's size limits, and parts stored side by side
   // can add up to more than was declared, so the assembled object must be exactly the declared size.

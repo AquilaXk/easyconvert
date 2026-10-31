@@ -463,6 +463,55 @@ describe('cancelling stops the upload and the job', () => {
     expect(abort?.keepalive).toBe(true);
   });
 
+  describe('when the page is left', () => {
+    let page: EventTarget;
+    const leave = (persisted: boolean) => page.dispatchEvent(Object.assign(new Event('pagehide'), { persisted }));
+
+    beforeEach(() => {
+      page = new EventTarget();
+      vi.stubGlobal('addEventListener', page.addEventListener.bind(page));
+      vi.stubGlobal('removeEventListener', page.removeEventListener.bind(page));
+    });
+
+    it('sends the abort once, though the call then fails and closes what it left too', async () => {
+      installFetch(happyServer([COMPLETED], (call) => {
+        if (!call.url.includes('action=chunk')) return undefined;
+        leave(false);
+        return json({ detail: 'gone' }, 404);
+      }));
+      const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+      await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('gone');
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(calls.filter((c) => c.url.includes('action=abort'))).toHaveLength(1);
+    });
+
+    it('closes nothing when the page is kept for the back button, since the call goes on when the page comes back', async () => {
+      let parts = 0;
+      installFetch(happyServer([COMPLETED], (call) => {
+        if (call.url.includes('action=chunk') && parts++ === 0) leave(true);
+        return undefined;
+      }));
+      const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+      await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).resolves.toMatchObject({ url: RESULT_URL });
+      expect(calls.some((c) => c.url.includes('action=abort'))).toBe(false);
+    });
+
+    it('sends only requests that need no answer: a completion on the way is left to the call', async () => {
+      installFetch(happyServer([COMPLETED], (call) => {
+        if (call.url.includes('action=complete') && !call.keepalive) leave(false);
+        return undefined;
+      }));
+      const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+      await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).resolves.toMatchObject({ url: RESULT_URL });
+      expect(calls.filter((c) => c.url.includes('action=complete'))).toHaveLength(1);
+      expect(calls.some((c) => c.url.includes('action=abort') || c.url.includes('action=discard'))).toBe(false);
+    });
+  });
+
   it('does not start when it is already cancelled', async () => {
     const aborter = new AbortController();
     aborter.abort();

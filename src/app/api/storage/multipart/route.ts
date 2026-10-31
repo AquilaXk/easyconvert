@@ -22,7 +22,7 @@ import {
   resumeUploadReservation,
   type BudgetRefusal,
 } from '@/lib/api-keys/anonymous-upload-budget';
-import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
+import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, forgetUploadParts, partFailureResponse, receivePart } from '@/lib/storage/part-admission';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { formatBytes } from '@/lib/format-bytes';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
@@ -43,6 +43,10 @@ const UNATTRIBUTED_UPLOAD_DETAIL =
   'Uploads without an account are off until this server can tell visitors apart: set TRUSTED_PROXIES to the proxies in front of it. Sign in to upload meanwhile.';
 const ANONYMOUS_PRESIGN_REFUSED =
   'An upload without an account sends its parts through action=chunk, which holds them to the size it declared; it gets no signed part link.';
+
+/** The detail of a failure the caller may not send again; the error itself, which can name a host or a path, stays in the log. */
+const FAILURE_DETAIL = 'Storage operation error';
+const UNRECORDED_UPLOAD_DETAIL = 'The upload could not be recorded, so it cannot be converted. Upload the file again.';
 
 const PRESIGN_UNSUPPORTED = 'Storage provider does not support presigned URLs or invalid type specified.';
 const RETAINED_DOWNLOAD_PRESIGN_REFUSED =
@@ -68,7 +72,7 @@ interface ActionContext {
 
 type Body = Record<string, unknown>;
 
-function readJson(req: NextRequest): Promise<Body> {
+function readJson(req: Request): Promise<Body> {
   return req.json().then(
     (body: unknown) => (body && typeof body === 'object' ? (body as Body) : {}),
     () => ({})
@@ -256,9 +260,17 @@ async function openSession({ req, storage, user, instanceUri }: ActionContext): 
     await reserved.reservation.bind(initResult.uploadId, initResult.expiresAt);
     return NextResponse.json({ success: true, ...initResult });
   } catch (error) {
-    // Nothing the failed opening made stays: the session is aborted and the budget given back.
-    if (uploadId) await storage.abortMultipartUpload(uploadId);
-    await reserved.reservation.release();
+    // Nothing the failed opening made stays: the session is aborted and the budget given back, each whatever the other
+    // does, and the answer names the opening's own error. A session whose abort failed ends when it expires.
+    try {
+      if (uploadId) await storage.abortMultipartUpload(uploadId);
+    } catch (abortError) {
+      console.warn('[multipart] Could not abort the session of a failed opening; it ends when it expires:', abortError);
+    } finally {
+      await reserved.reservation.release().catch((releaseError: unknown) => {
+        console.warn('[multipart] Could not give back the budget of a failed opening; it returns when the reservation expires:', releaseError);
+      });
+    }
     throw error;
   }
 }
@@ -292,28 +304,15 @@ function parsePartNumber(raw: string): number | undefined {
 /** Actions that change an open session and may be sent again: a part, the completion, the abort. */
 const RETRYABLE_ACTIONS: ReadonlySet<string> = new Set(['chunk', 'complete', 'abort']);
 
-/** The message of `error` when it names no path, else `fallback`: a path on this host stays in the server log. */
-function safeErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message && !error.message.includes('/') && !error.message.includes('\\') ? error.message : fallback;
-}
-
 /**
  * The answer to a request that failed with an error no HTTP status was given to: the store or the budget could not be
  * reached, so it is worth sending again (503), except on the actions that create something new (500).
  */
 function unexpectedFailure(error: unknown, action: string, instanceUri: string): NextResponse {
   console.error(`[multipart] ${action} failed:`, error);
-  const detail = safeErrorMessage(error, 'Storage operation error');
   return RETRYABLE_ACTIONS.has(action)
-    ? createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, detail, instanceUri, undefined, undefined, { 'Retry-After': String(STORAGE_RETRY_AFTER_SECONDS) })
-    : createProblemDetailsResponse(500, detail, instanceUri);
-}
-
-/** The answer to a failed part write: the store's own status (413 for a bound the stream passed), else 503. */
-function partFailure(error: unknown, instanceUri: string): NextResponse {
-  const status = (error as { statusCode?: unknown } | null)?.statusCode;
-  if (typeof status !== 'number') return unexpectedFailure(error, 'chunk', instanceUri);
-  return createProblemDetailsResponse(status, safeErrorMessage(error, 'Error processing multipart chunk'), instanceUri);
+    ? createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, UPLOAD_UNAVAILABLE_DETAIL, instanceUri, undefined, undefined, { 'Retry-After': String(STORAGE_RETRY_AFTER_SECONDS) })
+    : createProblemDetailsResponse(500, FAILURE_DETAIL, instanceUri);
 }
 
 /**
@@ -328,12 +327,6 @@ async function openSessionRefusal(uploadId: string, instanceUri: string): Promis
     console.warn(`[multipart] Could not note the activity of an upload; the part is taken:`, error);
     return null;
   }
-}
-
-/** The length a request declared in a well-formed Content-Length (partBodyProblem refuses any other), if it declared one. */
-function declaredLengthOf(req: NextRequest): number | undefined {
-  const header = req.headers.get('content-length');
-  return header === null ? undefined : Number(header);
 }
 
 /** Stores one part, held to the largest part and to what the declared size leaves after the other parts, stored and on the way. */
@@ -356,12 +349,12 @@ async function storePart({ req, storage, user, instanceUri }: ActionContext): Pr
   try {
     const partResult = await receivePart(
       storage,
-      { uploadId, partNumber, declaredBytes: declaredLengthOf(req), totalSize: session.totalSize, maxPartBytes: MAX_PART_BYTES },
+      { uploadId, partNumber, declaredBytes: declaredPartBytes(req.headers), totalSize: session.totalSize, maxPartBytes: MAX_PART_BYTES },
       req.body
     );
     return NextResponse.json({ success: true, ...partResult });
   } catch (error: unknown) {
-    return storageErrorResponse(error, instanceUri) ?? partFailure(error, instanceUri);
+    return partFailureResponse(error, instanceUri);
   }
 }
 
@@ -439,14 +432,37 @@ async function finishSession({ req, storage, user, instanceUri }: ActionContext)
     return badRequest(`The assembled upload holds ${completeResult.size} bytes, but the upload declared ${session.totalSize} bytes.`, instanceUri);
   }
   forgetUploadParts(uploadId);
-  await registerCompletedUpload(storage, completeResult.key);
-  await endUploadReservation(uploadId, 'completed');
+  // The store consumed the session, so from here every answer is final: a repeat would find no session to complete.
+  try {
+    await registerCompletedUpload(storage, completeResult.key);
+  } catch (error) {
+    console.error('[multipart] Could not record a completed upload, which was removed:', error);
+    await closeReservation(uploadId, 'aborted');
+    return createProblemDetailsResponse(500, UNRECORDED_UPLOAD_DETAIL, instanceUri);
+  }
+  await closeReservation(uploadId, 'completed');
   return NextResponse.json({ success: true, ...completeResult });
 }
 
-/** An `Idempotency-Key` lets a client whose answer was lost ask again which file the completion stored. */
-function completeUpload(context: ActionContext): Promise<Response> {
-  return onceForCaller(context, finishSession);
+/**
+ * An `Idempotency-Key` lets a client whose answer was lost ask again which file the completion stored. The key is scoped
+ * to the upload and the owner its session records, not to the address bucket: an anonymous visitor holds the upload by
+ * its id, and keeps getting the first answer when its address moves to another bucket.
+ */
+async function completeUpload(context: ActionContext): Promise<Response> {
+  const { uploadId } = await readJson(context.req.clone());
+  if (typeof uploadId !== 'string' || !uploadId) return finishSession(context);
+  return respondOnce(context.req, `${uploadOwnerOf(context.user.id)}:${uploadId}`, context.instanceUri, () => finishSession(context));
+}
+
+/**
+ * Ends the budget reservation of a session the store already closed. A budget that cannot be reached does not change the
+ * answer: the reservation then ends when it expires, which returns the bytes of a completed upload too.
+ */
+async function closeReservation(uploadId: string, outcome: 'completed' | 'aborted'): Promise<void> {
+  await endUploadReservation(uploadId, outcome).catch((error: unknown) => {
+    console.warn(`[multipart] Could not close the budget of the ${outcome} upload; it ends when the reservation expires:`, error);
+  });
 }
 
 /**
@@ -463,11 +479,7 @@ async function abortUpload({ req, storage, user, instanceUri }: ActionContext): 
     return NextResponse.json({ success: aborted });
   } finally {
     forgetUploadParts(uploadId);
-    if (aborted) {
-      await endUploadReservation(uploadId, 'aborted').catch((error: unknown) => {
-        console.warn('[multipart] Could not give back the budget of an aborted upload; it returns when the reservation expires:', error);
-      });
-    }
+    if (aborted) await closeReservation(uploadId, 'aborted');
   }
 }
 

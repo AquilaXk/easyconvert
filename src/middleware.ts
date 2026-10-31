@@ -10,15 +10,15 @@ import {
   resolveClientIp,
   type ResolvedClientIp,
 } from '@/lib/security/client-ip';
-import { requestBodyVerdict } from '@/lib/api/request-body-limit';
+import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-limit';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
  * 1. Cross-Site Request Forgery (CSRF) Protection: Enforces strict Origin / Referer validation
  *    on cookie-authenticated state-changing requests (POST, PUT, PATCH, DELETE).
  * 2. Anonymous IP Edge Rate Limiting: Protective token bucket guard against burst abuse.
- * 3. Request body size: a declared body over what the route takes is refused before it is buffered, a file sent without a
- *    length is refused, and any other body sent without one is counted as it arrives.
+ * 3. Request body size: a declared body over what the route takes is refused before the route reads it, and a body sent
+ *    without a length is counted as it arrives: a file route refuses its first byte, any other route takes 1 MiB.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -140,19 +140,18 @@ function bodyProblem(status: number, detail: string, pathname: string): NextResp
 }
 
 /**
- * Reads a body sent without a length as it arrives, and answers 413 once more than `limit` bytes came; the route then
- * reads the same bytes from the copy the framework keeps for it.
+ * Reads a body sent without a length as it arrives, and refuses it once more than `count.countUpTo` bytes came; the route
+ * then reads the same bytes from the copy the framework keeps for it. The count decides the answer only: the framework
+ * keeps its copy of what arrived either way, up to its own body limit.
  */
-async function countedBody(request: NextRequest, limit: number, detail: string, pathname: string): Promise<NextResponse> {
-  const reader = request.body?.getReader();
-  if (reader) {
-    let received = 0;
-    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
-      received += chunk.value.byteLength;
-      if (received > limit) {
-        await reader.cancel();
-        return bodyProblem(HTTP_PAYLOAD_TOO_LARGE, detail, pathname);
-      }
+async function countedBody(body: ReadableStream<Uint8Array>, count: CountedBody, pathname: string): Promise<NextResponse> {
+  const reader = body.getReader();
+  let received = 0;
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+    received += chunk.value.byteLength;
+    if (received > count.countUpTo) {
+      await reader.cancel();
+      return bodyProblem(count.status, count.detail, pathname);
     }
   }
   return NextResponse.next();
@@ -280,11 +279,11 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
     );
   }
 
-  // 2. Body size: a malformed or oversize Content-Length, or a file without one, is refused before any route buffers the
-  // body. A route that takes files takes one request of a file (entry 137); every other route takes a small JSON or
-  // form body, counted as it arrives when it comes without a length (after the CSRF check below).
+  // 2. Body size: a malformed or oversize Content-Length is refused before any route reads the body. A route that takes
+  // files takes one request of a file (entry 137); every other route takes a small JSON or form body. A body without a
+  // length is counted as it arrives, after the CSRF check below.
   const bodyCheck = requestBodyVerdict(request.nextUrl, request.headers);
-  if (bodyCheck && 'status' in bodyCheck) return bodyProblem(bodyCheck.status, bodyCheck.detail, pathname);
+  if (bodyCheck && !('countUpTo' in bodyCheck)) return bodyProblem(bodyCheck.status, bodyCheck.detail, pathname);
 
   // 3. CSRF Protection for Cookie-Authenticated State Mutations
   if (MUTATING_METHODS.has(request.method.toUpperCase())) {
@@ -345,7 +344,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
     }
   }
 
-  if (bodyCheck && 'countUpTo' in bodyCheck) return countedBody(request, bodyCheck.countUpTo, bodyCheck.detail, pathname);
+  if (bodyCheck && request.body) return countedBody(request.body, bodyCheck, pathname);
   return NextResponse.next();
 }
 

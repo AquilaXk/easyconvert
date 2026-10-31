@@ -363,6 +363,12 @@ async function askAgain(request: CreationRequest, field: string): Promise<string
   }
 }
 
+/**
+ * The stages whose closing is one request that needs no answer. A page that is being left sends only these: its later
+ * work does not run, so a closing that first asks again what a creation request made cannot finish there.
+ */
+const CLOSED_BY_ONE_REQUEST: ReadonlySet<ServerStage['kind']> = new Set(['uploading', 'stored', 'queued']);
+
 /** Closes what a cancelled or failed call left on the server. */
 async function releaseServerState(stage: ServerStage): Promise<void> {
   switch (stage.kind) {
@@ -403,8 +409,14 @@ export async function executeResumableCloudConversion(
   timing: ResumableTiming = DEFAULT_RESUMABLE_TIMING
 ): Promise<ResumableConversionResult> {
   const call: CallState = { stage: { kind: 'none' } };
-  // A page that is closed or left mid-call closes what the call made; the requests go out with keepalive.
-  const onPageHide = () => void releaseServerState(call.stage);
+  // What the call made is closed once, by the page being left or by the failure that leaving it causes, whichever comes first.
+  let released: Promise<void> | undefined;
+  const release = () => (released ??= releaseServerState(call.stage));
+  // A page that is closed or reloaded mid-call closes what the call made with keepalive requests, a queued job included.
+  // A page kept for the back button (`persisted`) closes nothing: the call goes on when it comes back.
+  const onPageHide = (event: Event) => {
+    if (!(event as PageTransitionEvent).persisted && CLOSED_BY_ONE_REQUEST.has(call.stage.kind)) void release();
+  };
   globalThis.addEventListener?.('pagehide', onPageHide);
   try {
     hooks.onStage?.('uploading');
@@ -415,7 +427,7 @@ export async function executeResumableCloudConversion(
     hooks.onProgress(FULL_PROGRESS);
     return result;
   } catch (err) {
-    void releaseServerState(call.stage);
+    void release();
     throw err;
   } finally {
     globalThis.removeEventListener?.('pagehide', onPageHide);

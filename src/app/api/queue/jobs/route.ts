@@ -84,12 +84,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 /** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */
 async function startJob(req: NextRequest, user: User, instanceUri: string): Promise<Response> {
   const unit = await reserveConversionUnit(user);
-  if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
+  if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType, authErrorHeaders(unit));
   let res: Response | undefined;
   try {
     res = await queueJob(req, user, unit.reservationId, instanceUri);
     return res;
   } finally {
+    // queueJob answers ok only once the queue took the job, which then owns the unit (the worker commits it or gives it
+    // back when the job ends); any other answer, and a throw, comes from a step before that, so the unit goes back here.
     if (!res?.ok && unit.reservationId) await rollbackQuota(unit.reservationId);
   }
 }

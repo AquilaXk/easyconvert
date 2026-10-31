@@ -3,9 +3,10 @@ import { SINGLE_REQUEST_BODY_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PA
 
 /**
  * How large a request body each API route takes (docs/policy-decisions.md, entry 137), read from the `Content-Length`
- * before any body is read. A body sent without a length (`Transfer-Encoding: chunked`) is refused with 411 by a route
- * that takes a file, since the framework would cut such a body short at one request without an error, and counted by
- * the middleware against the small limit everywhere else. Pure, so the edge middleware and the routes share it.
+ * before any body is read. A body that comes without a length (chunked, or framed by HTTP/2 alone) is counted by the
+ * middleware as it arrives: a route that takes a file refuses it with 411 at its first byte, since the framework would
+ * cut such a body short at one request without an error, and every other route takes it up to the small limit. Pure,
+ * so the edge middleware and the routes share it.
  */
 
 const MIB = 1024 * 1024;
@@ -49,10 +50,10 @@ function isFileRoute({ pathname, searchParams }: RequestTarget): boolean {
   );
 }
 
-type DeclaredLength = { kind: 'absent' } | { kind: 'malformed' } | { kind: 'bytes'; bytes: number };
+export type DeclaredLength = { kind: 'absent' } | { kind: 'malformed' } | { kind: 'bytes'; bytes: number };
 
 /** A `Content-Length` value: one or more digits (RFC 9110, section 8.6) that fit an exact integer. */
-function parseContentLength(header: string | null): DeclaredLength {
+export function parseContentLength(header: string | null): DeclaredLength {
   if (header === null) return { kind: 'absent' };
   const value = header.trim();
   if (!/^\d+$/.test(value)) return { kind: 'malformed' };
@@ -63,11 +64,6 @@ function parseContentLength(header: string | null): DeclaredLength {
 const MALFORMED_CONTENT_LENGTH_DETAIL = 'The Content-Length header is not a whole number of bytes.';
 const LENGTH_REQUIRED_DETAIL =
   'A request that carries a file must declare its Content-Length; send the body with its length instead of in chunks.';
-
-/** Whether a body comes without a declared length: chunked, the one framing that names none (RFC 9112, section 6). */
-function isChunkedWithoutLength(headers: HeaderSource): boolean {
-  return headers.get('content-length') === null && headers.get('transfer-encoding') !== null;
-}
 
 /** The upload flow a client of `pathname` uses for a larger file: the public one under /api/v1, the web application's elsewhere. */
 function partsFlowOf(pathname: string): { upload: string; job: string } {
@@ -99,7 +95,7 @@ function partOverflowDetail(declaredBytes: number): string {
   return `This part carries ${exactBytes(declaredBytes)}, over the largest part of ${formatBytes(UPLOAD_PART_MAX_BYTES)}.`;
 }
 
-export type BodyLengthVerdict = { status: 400 | 411 | 413; detail: string } | null;
+export type BodyLengthVerdict = { status: 400 | 413; detail: string } | null;
 
 function verdictFor(headers: HeaderSource, limit: number, overflowDetail: (declaredBytes: number) => string): BodyLengthVerdict {
   const declared = parseContentLength(headers.get('content-length'));
@@ -108,27 +104,36 @@ function verdictFor(headers: HeaderSource, limit: number, overflowDetail: (decla
   return { status: 413, detail: overflowDetail(declared.bytes) };
 }
 
-/** `verdictFor` for a body that carries a file: one without a declared length is refused with 411. */
-function fileVerdictFor(headers: HeaderSource, limit: number, overflowDetail: (declaredBytes: number) => string): BodyLengthVerdict {
-  return isChunkedWithoutLength(headers) ? { status: 411, detail: LENGTH_REQUIRED_DETAIL } : verdictFor(headers, limit, overflowDetail);
+/** A body without a declared length, read as it arrives: past `countUpTo` bytes the request is refused with `status`. */
+export interface CountedBody {
+  countUpTo: number;
+  status: 411 | 413;
+  detail: string;
 }
 
-/** What the middleware does with a body before the route reads it: refuse it, count it up to a limit as it arrives, or let it pass (null). */
-export type RequestBodyCheck = NonNullable<BodyLengthVerdict> | { countUpTo: number; detail: string } | null;
+/** What the middleware does with a body before the route reads it: refuse it, count it as it arrives, or let it pass (null). */
+export type RequestBodyCheck = NonNullable<BodyLengthVerdict> | CountedBody | null;
 
-/** The check of the body of a request to `target`. */
+/**
+ * The check of the body of a request to `target`. A body without a declared length is counted: a route that takes a file
+ * takes none of it (411 at its first byte, which an empty body never reaches), and every other route takes the small limit.
+ */
 export function requestBodyVerdict(target: RequestTarget, headers: HeaderSource): RequestBodyCheck {
-  if (isFileRoute(target)) return singleRequestVerdict(target.pathname, headers);
-  if (isChunkedWithoutLength(headers)) return { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, detail: COUNTED_OVERFLOW_DETAIL };
-  return verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
+  const fileRoute = isFileRoute(target);
+  if (headers.get('content-length') === null) {
+    return fileRoute
+      ? { countUpTo: 0, status: 411, detail: LENGTH_REQUIRED_DETAIL }
+      : { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, status: 413, detail: COUNTED_OVERFLOW_DETAIL };
+  }
+  return fileRoute ? singleRequestVerdict(target.pathname, headers) : verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
 }
 
 /** The refusal of a request to `pathname`, a route that takes a file whole, by its declared length, or null when it may be read. */
 export function singleRequestVerdict(pathname: string, headers: HeaderSource): BodyLengthVerdict {
-  return fileVerdictFor(headers, SINGLE_REQUEST_BODY_MAX_BYTES, (declared) => singleRequestOverflowDetail(declared, pathname));
+  return verdictFor(headers, SINGLE_REQUEST_BODY_MAX_BYTES, (declared) => singleRequestOverflowDetail(declared, pathname));
 }
 
 /** The refusal of a part by its declared length, or null when it may be read. */
 export function partBodyVerdict(headers: HeaderSource): BodyLengthVerdict {
-  return fileVerdictFor(headers, UPLOAD_PART_MAX_BYTES, partOverflowDetail);
+  return verdictFor(headers, UPLOAD_PART_MAX_BYTES, partOverflowDetail);
 }

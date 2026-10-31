@@ -79,12 +79,16 @@ export interface RetentionRecord {
   holds?: Record<string, number>;
   /** A sweep could not delete the object; the next attempt waits until then, so the key does not block the others. */
   retryAt?: number;
-  /**
-   * Set on the record of a file an account uploaded in parts. It is not a result: it is kept only for the jobs that read
-   * it, its owner may still get a signed link to it, a download does not deliver it, and it is not deleted for space.
-   */
-  accountUpload?: true;
+  /** What the record is of, set when it is created; a record written before the field existed is read by its key (`recordKind`). */
+  kind?: RecordKind;
 }
+
+/**
+ * What a record is of. A result follows the retention rule. An upload (ownerless, in `uploads/`) is kept for the jobs that
+ * read it. An account's upload, under the account's own key, is kept for its jobs too, and is not a result: its owner may
+ * still get a signed link to it, a download does not deliver it, and it is not deleted for space.
+ */
+export type RecordKind = 'result' | 'upload' | 'account-upload';
 
 export type RetentionReason = 'delivered' | 'expired' | 'capacity';
 
@@ -109,18 +113,23 @@ export function isRetainedKey(key: string): boolean {
   return namespace === 'job-result' || namespace === 'user-conversion';
 }
 
-/** Whether `record` is of an upload, ownerless or an account's, not of a result. */
-export function isUploadRecord(record: RetentionRecord): boolean {
-  return record.accountUpload === true || isUploadKey(record.key);
+/** What `record` is of: its kind, or for a record written before kinds existed, what its key says (no account upload had one). */
+export function recordKind(record: RetentionRecord): RecordKind {
+  return record.kind ?? (isUploadKey(record.key) ? 'upload' : 'result');
 }
 
-/** Whether `record` is of a result the retention rule tracks: a retained key that holds no account's upload. */
+/** Whether `record` is of an upload, ownerless or an account's, not of a result. */
+export function isUploadRecord(record: RetentionRecord): boolean {
+  return recordKind(record) !== 'result';
+}
+
+/** Whether `record` is of a result the retention rule tracks. */
 export function isResultRecord(record: RetentionRecord): boolean {
-  return isRetainedKey(record.key) && record.accountUpload !== true;
+  return recordKind(record) === 'result' && isRetainedKey(record.key);
 }
 
 export function newRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
-  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [] };
+  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [], kind: 'result' };
 }
 
 /** `intervals` with `[first, last]` added; ranges that overlap or touch become one. Undefined when it would exceed MAX_RECEIVED_RANGES. */
@@ -218,7 +227,7 @@ export function releaseHold(record: RetentionRecord, holder: string): RetentionR
  * JOB_INPUT_HOLD_MAX_MS, which is as long as an upload lives anyway: a job whose end is never reported cannot keep it longer.
  */
 export function newUploadRecord(key: string, now: number): RetentionRecord {
-  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [] };
+  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [], kind: 'upload' };
 }
 
 /**
@@ -226,7 +235,7 @@ export function newUploadRecord(key: string, now: number): RetentionRecord {
  * (JOB_INPUT_HOLD_MAX_MS), which is the lifetime the store gives the completed object.
  */
 export function newAccountUploadRecord(key: string, now: number): RetentionRecord {
-  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [], accountUpload: true };
+  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [], kind: 'account-upload' };
 }
 
 /**
@@ -234,7 +243,7 @@ export function newAccountUploadRecord(key: string, now: number): RetentionRecor
  * undelivered time of a result means it is abandoned, so it is deleted then, as a result nobody downloads is.
  */
 export function newUnclaimedUploadRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
-  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [] };
+  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [], kind: 'upload' };
 }
 
 /**

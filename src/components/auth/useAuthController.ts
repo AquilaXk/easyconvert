@@ -7,6 +7,7 @@ import {
   validateRegistrationInput,
   type AuthTab,
 } from './AuthForms';
+import { refreshViewerPlan } from '@/lib/viewer-plan';
 
 export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 
@@ -128,6 +129,8 @@ export function useAuthController() {
         return;
       }
 
+      // The header and the queue keep their plan across the client-side navigation, so they learn the new session here.
+      await refreshViewerPlan();
       setSuccessMessage(
         activeTab === 'register' ? 'Account created. Redirecting...' : 'Signed in. Redirecting...'
       );

@@ -23,6 +23,7 @@ import {
 import { MemoryBudgetStore, RECORD_TTL_MS } from '../src/lib/api-keys/upload-budget-store';
 
 const BASE_URL = 'http://localhost:3000';
+const UNAVAILABLE_DETAIL = 'A service this upload needs is temporarily unavailable. Retry the request shortly.';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const HOUR = 60 * 60 * 1000;
@@ -327,11 +328,75 @@ describe('a budget store that cannot be reached', () => {
     const failedPart = await multipartPost(part(uploadId, Buffer.from('a,b\n1,2\n'), visitor));
     expect(failedPart.status).toBe(503);
     expect(failedPart.headers.get('retry-after')).toBe('5');
-    expect((await failedPart.json()).detail).toBe('Storage operation error');
+    expect((await failedPart.json()).detail).toBe(UNAVAILABLE_DETAIL);
 
     const failedAbort = await multipartPost(multipart('abort', { uploadId }, visitor));
     expect(failedAbort.status).toBe(503);
-    expect((await failedAbort.json()).detail).toBe('store unreachable');
+    expect((await failedAbort.json()).detail).toBe(UNAVAILABLE_DETAIL);
+  });
+
+  it('names no message of the store or the budget to the caller, only a fixed sentence', async () => {
+    const visitor = from('203.0.113.69');
+    const { uploadId } = await (await initiate(visitor, 8)).json();
+    vi.spyOn(s3Storage, 'abortMultipartUpload').mockImplementationOnce(() => {
+      throw new Error('connect ECONNREFUSED 10.0.0.7:6379');
+    });
+
+    const res = await multipartPost(multipart('abort', { uploadId }, visitor));
+
+    expect(res.status).toBe(503);
+    expect(JSON.stringify(await res.json())).not.toContain('10.0.0.7');
+  });
+
+  it('answers a completion the store took with the stored file even when the budget cannot be closed', async () => {
+    const visitor = from('203.0.113.70');
+    const bytes = Buffer.from('a,b\n1,2\n');
+    const { uploadId } = await (await initiate(visitor, bytes.length)).json();
+    const { etag } = await (await multipartPost(part(uploadId, bytes, visitor))).json();
+    down();
+
+    const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+
+    expect(res.status).toBe(200);
+    const { key } = await res.json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(key);
+    });
+    expect(await s3Storage.stat(key)).toMatchObject({ size: bytes.length });
+  });
+
+  it('answers a completion whose upload could not be recorded with a refusal not worth sending again, and the file is gone', async () => {
+    const visitor = from('203.0.113.71');
+    const bytes = Buffer.from('a,b\n1,2\n');
+    const { uploadId } = await (await initiate(visitor, bytes.length)).json();
+    const { etag } = await (await multipartPost(part(uploadId, bytes, visitor))).json();
+    const ledger = getRetentionLedger();
+    vi.spyOn(ledger, 'update').mockRejectedValueOnce(new Error('ledger down at /var/lib/easyconvert/retention'));
+    const deleted = vi.spyOn(s3Storage, 'deleteObject');
+
+    const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+
+    expect(res.status).toBe(500);
+    expect(res.headers.get('retry-after')).toBeNull();
+    expect((await res.json()).detail).toBe('The upload could not be recorded, so it cannot be converted. Upload the file again.');
+    expect(deleted).toHaveBeenCalledTimes(1);
+    expect(await s3Storage.stat(deleted.mock.calls[0][0])).toBeNull();
+  });
+
+  it('gives the bytes back when an opening fails and so does the abort of its session, and answers with the error of the opening', async () => {
+    const visitor = from('203.0.113.73');
+    vi.spyOn(MemoryBudgetStore.prototype, 'link').mockRejectedValueOnce(new Error('link failed'));
+    vi.spyOn(s3Storage, 'abortMultipartUpload').mockImplementationOnce(() => {
+      throw new Error('abort failed');
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const failed = await initiate(visitor, MIB);
+
+    expect(failed.status).toBe(500);
+    expect(logged.mock.calls.find(([message]) => String(message).includes('initiate failed'))?.[1]).toMatchObject({ message: 'link failed' });
+    expect((await initiate(visitor, MIB)).status).toBe(200);
+    expect((await initiate(visitor, MIB)).status).toBe(200);
   });
 
   it('refuses to open an upload, since it cannot reserve the bytes', async () => {
@@ -545,6 +610,24 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     const repeat = await complete();
 
     expect(repeat.status).toBe(200);
+    expect((await repeat.json()).key).toBe(first.key);
+  });
+
+  it('answers a repeat of the completion from another address of the visitor with the file the first one stored', async () => {
+    const bytes = Buffer.from('a,b\n1,2\n');
+    const { uploadId } = await (await initiate(from('203.0.113.72'), bytes.length)).json();
+    const { etag } = await (await multipartPost(part(uploadId, bytes, from('203.0.113.72')))).json();
+    const complete = (address: string) =>
+      multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, { ...from(address), 'Idempotency-Key': `moved-${uploadId}` }));
+
+    const first = await (await complete('203.0.113.72')).json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(first.key);
+    });
+    const repeat = await complete('198.51.100.72');
+
+    expect(repeat.status).toBe(200);
+    expect(repeat.headers.get('idempotent-replayed')).toBe('true');
     expect((await repeat.json()).key).toBe(first.key);
   });
 });

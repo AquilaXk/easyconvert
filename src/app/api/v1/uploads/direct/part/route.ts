@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { partBodyProblem } from '@/lib/api/file-size-limit';
 import { MULTIPART_MAX_PART_BYTES, storageProvider } from '@/lib/storage';
-import { receivePart } from '@/lib/storage/part-admission';
+import { declaredPartBytes, partFailureResponse, receivePart } from '@/lib/storage/part-admission';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
 
@@ -164,16 +164,9 @@ export async function PUT(req: NextRequest) {
 
   try {
     // The part may hold what the declared total leaves after the other parts, stored and on the way, and at most a part.
-    const declared = req.headers.get('content-length');
     const part = await receivePart(
       storage,
-      {
-        uploadId,
-        partNumber,
-        declaredBytes: declared === null ? undefined : Number(declared),
-        totalSize: session.totalSize,
-        maxPartBytes: MULTIPART_MAX_PART_BYTES,
-      },
+      { uploadId, partNumber, declaredBytes: declaredPartBytes(req.headers), totalSize: session.totalSize, maxPartBytes: MULTIPART_MAX_PART_BYTES },
       req.body
     );
     const headers = new Headers();
@@ -192,12 +185,7 @@ export async function PUT(req: NextRequest) {
         headers,
       }
     );
-  } catch (err: any) {
-    const statusCode = err?.statusCode || 400;
-    return createProblemDetailsResponse(
-      statusCode,
-      err?.message || 'Failed to stream chunk to storage.',
-      instanceUri
-    );
+  } catch (error: unknown) {
+    return partFailureResponse(error, instanceUri);
   }
 }

@@ -24,6 +24,7 @@ import {
   newUnclaimedUploadRecord,
   newUploadRecord,
   reasonOf,
+  recordKind,
   recordServedRange,
   releaseHold,
   reopenAfterFailedDelete,
@@ -209,7 +210,7 @@ export async function mayPresignDownload(key: string): Promise<boolean> {
   if (classifyStorageKey(key).namespace === 'job-result') return false;
   try {
     const record = await getRetentionLedger().get(key);
-    return record === undefined || record.accountUpload === true;
+    return record === undefined || recordKind(record) === 'account-upload';
   } catch (error) {
     console.warn(`[Retention] Could not read the record of "${key}"; refusing a signed link for it:`, error);
     return false;
@@ -225,7 +226,7 @@ export async function recordServed(key: string, range: { first: number; last: nu
   const now = Date.now();
   const policy = resolveRetentionPolicy();
   await getRetentionLedger().update(key, (current) =>
-    current?.accountUpload ? undefined : recordServedRange(current ?? newRecord(key, now, policy), range, now, policy)
+    current && recordKind(current) === 'account-upload' ? undefined : recordServedRange(current ?? newRecord(key, now, policy), range, now, policy)
   );
 }
 

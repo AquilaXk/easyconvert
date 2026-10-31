@@ -90,19 +90,6 @@ describe('the plan of the viewer', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('reads the session once for the page, however far apart the queue and the header mount', async () => {
-    const fetchMock = vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', tier: 'pro' } }));
-    vi.stubGlobal('fetch', fetchMock);
-    vi.resetModules();
-    const fresh = await import('../src/lib/viewer-plan');
-
-    await fresh.readViewerPlanOnce();
-    await fresh.readViewerPlanOnce();
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fresh.getViewerPlan()).toBe('pro');
-  });
-
   it('tells subscribers once per change and stops after unsubscribing', () => {
     const listener = vi.fn();
     const unsubscribe = subscribeViewerPlan(listener);

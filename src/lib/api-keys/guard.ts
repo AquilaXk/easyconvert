@@ -184,11 +184,37 @@ function checkPreExpiryNotification(key: ApiKey): void {
   }
 }
 
-async function checkQuotaAndReserve(
-  userId: string,
-  tier: string,
-  requiredUnits: number
-): Promise<{ allowed: boolean; error?: string; reservationId?: string; remaining?: number; serviceUnavailable?: boolean }> {
+interface QuotaCheck {
+  allowed: boolean;
+  error?: string;
+  reservationId?: string;
+  remaining?: number;
+  serviceUnavailable?: boolean;
+}
+
+/** Why the quota of a caller could not be reserved: the quota store is offline (503), or the conversions of the day are used up (429). */
+type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining' | 'retryAfterSeconds'>;
+
+/** The refusal of `userId` for a quota check that did not allow it; an anonymous caller is told how to get more. */
+function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
+  const anonymous = isAnonymousUserId(userId);
+  if (quota.serviceUnavailable) {
+    return {
+      error: anonymous ? QUOTA_ENGINE_OFFLINE : quota.error || 'Service Unavailable',
+      status: HTTP_SERVICE_UNAVAILABLE,
+      remaining: 0,
+      problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE,
+    };
+  }
+  return {
+    error: anonymous ? ANONYMOUS_QUOTA_EXCEEDED : quota.error ?? '',
+    status: HTTP_TOO_MANY_REQUESTS,
+    remaining: quota.remaining,
+    problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
+  };
+}
+
+async function checkQuotaAndReserve(userId: string, tier: string, requiredUnits: number): Promise<QuotaCheck> {
   if (requiredUnits > 0) {
     const reservation = await redisKeyStore.reserveQuota(userId, requiredUnits);
     if (!reservation.allowed) {
@@ -299,25 +325,7 @@ async function verifyKeyAccess(
 
   const quota = await checkQuotaAndReserve(verification.user.id, verification.user.tier, requiredUnits);
   if (!quota.allowed) {
-    if (quota.serviceUnavailable) {
-      return {
-        authorized: false,
-        user: verification.user,
-        apiKey: verification.key,
-        error: quota.error || 'Service Unavailable',
-        status: 503,
-        remaining: 0,
-        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
-      };
-    }
-    return {
-      authorized: false,
-      user: verification.user,
-      apiKey: verification.key,
-      error: quota.error,
-      status: 429,
-      remaining: quota.remaining,
-    };
+    return { authorized: false, user: verification.user, apiKey: verification.key, ...quotaRefusal(quota, verification.user.id) };
   }
 
   return {
@@ -417,24 +425,7 @@ async function verifyAnonymousAccess(
     return { authorized: true, user: buildAnonymousUser(anonUserId), authMethod: 'session' };
   }
   const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', requiredUnits);
-  if (!quota.allowed) {
-    if (quota.serviceUnavailable) {
-      return {
-        authorized: false,
-        error: QUOTA_ENGINE_OFFLINE,
-        status: HTTP_SERVICE_UNAVAILABLE,
-        remaining: 0,
-        problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE,
-      };
-    }
-    return {
-      authorized: false,
-      error: ANONYMOUS_QUOTA_EXCEEDED,
-      status: HTTP_TOO_MANY_REQUESTS,
-      remaining: quota.remaining,
-      problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
-    };
-  }
+  if (!quota.allowed) return { authorized: false, ...quotaRefusal(quota, anonUserId) };
 
   return {
     authorized: true,
@@ -476,25 +467,7 @@ export async function validateApiAccess(
   const sessionUser = await getSessionFromRequest(request);
   if (sessionUser) {
     const quota = await checkQuotaAndReserve(sessionUser.id, sessionUser.tier, requiredUnits);
-    if (!quota.allowed) {
-      if (quota.serviceUnavailable) {
-        return {
-          authorized: false,
-          user: sessionUser,
-          error: quota.error || 'Service Unavailable',
-          status: 503,
-          remaining: 0,
-          problemType: 'https://api.easyconvert.io/problems/service-unavailable',
-        };
-      }
-      return {
-        authorized: false,
-        user: sessionUser,
-        error: quota.error,
-        status: 429,
-        remaining: quota.remaining,
-      };
-    }
+    if (!quota.allowed) return { authorized: false, user: sessionUser, ...quotaRefusal(quota, sessionUser.id) };
     return {
       authorized: true,
       user: sessionUser,
@@ -532,9 +505,7 @@ export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
 }
 
 /** One conversion unit of a caller, reserved after the request was authenticated with none; or why it was refused. */
-export type ConversionUnit =
-  | { reserved: true; reservationId?: string }
-  | { reserved: false; status: number; error: string; problemType: string };
+export type ConversionUnit = { reserved: true; reservationId?: string } | ({ reserved: false } & QuotaRefusal);
 
 /**
  * Reserves one conversion unit for `user`, whose request was authenticated with no unit so that a repeat answered from
@@ -544,12 +515,7 @@ export type ConversionUnit =
 export async function reserveConversionUnit(user: User): Promise<ConversionUnit> {
   if (isUnattributedAnonymous(user.id)) return { reserved: true };
   const quota = await checkQuotaAndReserve(user.id, user.tier, 1);
-  if (quota.allowed) return { reserved: true, reservationId: quota.reservationId };
-  if (quota.serviceUnavailable) {
-    return { reserved: false, status: HTTP_SERVICE_UNAVAILABLE, error: QUOTA_ENGINE_OFFLINE, problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE };
-  }
-  const error = isAnonymousUserId(user.id) ? ANONYMOUS_QUOTA_EXCEEDED : String(quota.error);
-  return { reserved: false, status: HTTP_TOO_MANY_REQUESTS, error, problemType: QUOTA_EXCEEDED_PROBLEM_TYPE };
+  return quota.allowed ? { reserved: true, reservationId: quota.reservationId } : { reserved: false, ...quotaRefusal(quota, user.id) };
 }
 
 /**

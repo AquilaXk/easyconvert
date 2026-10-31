@@ -7,6 +7,7 @@ import {
   LocalFsStorage,
   MULTIPART_MAX_PART_BYTES,
   MULTIPART_MAX_PARTS,
+  MULTIPART_MAX_TOTAL_BYTES,
   objectStorage,
   storageProvider,
   type LocalMultipartSession,
@@ -28,6 +29,7 @@ import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { PartRefusedError, declaredPartBytes, forgetUploadParts, partFailureResponse, receivePart, type PartStore } from '@/lib/storage/part-admission';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -158,12 +160,32 @@ async function handlePartUpload(
       instanceUri
     );
   }
-  if (!(await findOwnLocalSession(uploadId, userId))) {
+  const session = await findOwnLocalSession(uploadId, userId);
+  if (!session) {
     return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
   }
 
-  const part = await objectStorage.savePartStream(uploadId, partNumber, req.body);
+  // Parts sent at once are held together to the declared size, as on the other part routes (entry 137).
+  const part = await receivePart(
+    localPartStore(objectStorage),
+    {
+      uploadId,
+      partNumber,
+      declaredBytes: declaredPartBytes(req.headers),
+      totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
+      maxPartBytes: MULTIPART_MAX_PART_BYTES,
+    },
+    req.body
+  );
   return NextResponse.json({ success: true, part });
+}
+
+/** The part operations of local storage in the shape the part ledger takes. */
+function localPartStore(storage: LocalFsStorage): PartStore {
+  return {
+    getUploadedParts: (uploadId) => storage.listPartSizes(uploadId),
+    uploadPartStream: (uploadId, partNumber, stream, maxPartBytes) => storage.savePartStream(uploadId, partNumber, stream, maxPartBytes),
+  };
 }
 
 async function handleInitiateUpload(
@@ -311,6 +333,7 @@ async function completeLocalUpload(
   }
 
   const completedObject = await objectStorage.completeMultipart(session.key, session.uploadId, parts);
+  forgetUploadParts(session.uploadId);
 
   return NextResponse.json({
     success: true,
@@ -358,10 +381,12 @@ async function handleAbortUpload(
     return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
   }
   const aborted = await objectStorage.abortMultipart(session.key, session.uploadId);
+  forgetUploadParts(session.uploadId);
   return NextResponse.json({ success: true, aborted });
 }
 
 function uploadActionErrorResponse(err: unknown, instanceUri: string): Response {
+  if (err instanceof PartRefusedError) return partFailureResponse(err, instanceUri);
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }

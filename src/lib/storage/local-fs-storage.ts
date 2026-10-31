@@ -189,15 +189,24 @@ export class LocalFsStorage implements IObjectStorage {
     return this.readSession(this.sessionDirFor(uploadId));
   }
 
-  private async otherPartsBytes(sessionDir: string, partNumber: number): Promise<number> {
-    const sizes = await Promise.all(
+  private async partSizesIn(sessionDir: string): Promise<Array<{ partNumber: number; size: number }>> {
+    const parts = await Promise.all(
       (await fs.promises.readdir(sessionDir)).map(async (name) => {
         const match = PART_FILE_PATTERN.exec(name);
-        if (!match || Number(match[1]) === partNumber) return 0;
-        return (await fs.promises.stat(path.join(sessionDir, name))).size;
+        return match ? { partNumber: Number(match[1]), size: (await fs.promises.stat(path.join(sessionDir, name))).size } : undefined;
       })
     );
-    return sizes.reduce((sum, size) => sum + size, 0);
+    return parts.filter((part) => part !== undefined);
+  }
+
+  private async otherPartsBytes(sessionDir: string, partNumber: number): Promise<number> {
+    return (await this.partSizesIn(sessionDir)).reduce((sum, part) => (part.partNumber === partNumber ? sum : sum + part.size), 0);
+  }
+
+  /** The stored parts of the session `uploadId`, by number and size; undefined when the id names no session. */
+  async listPartSizes(uploadId: string): Promise<Array<{ partNumber: number; size: number }> | undefined> {
+    if (!(await this.getMultipartSession(uploadId))) return undefined;
+    return this.partSizesIn(this.sessionDirFor(uploadId));
   }
 
   private toNodeReadable(stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>): NodeJS.ReadableStream {
@@ -364,17 +373,19 @@ export class LocalFsStorage implements IObjectStorage {
     return session;
   }
 
+  /** Stores part `partNumber` of the session `uploadId`, at most `maxPartBytes` and what the declared total leaves after the other parts. */
   async savePartStream(
     uploadId: string,
     partNumber: number,
-    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>
-  ): Promise<CompletedPart> {
+    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+    maxPartBytes: number = MULTIPART_MAX_PART_BYTES
+  ): Promise<Required<CompletedPart>> {
     const sessionDir = this.sessionDirFor(uploadId);
     assertPartNumber(partNumber);
     const session = await this.readSession(sessionDir);
     if (!session) throw noSuchUpload();
     const declaredTotal = session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES;
-    const limit = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
+    const limit = Math.min(maxPartBytes, multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber)));
 
     const partPath = path.join(sessionDir, `part-${partNumber}.bin`);
     const tempPartPath = uniqueTempPath(partPath, 'tmp');

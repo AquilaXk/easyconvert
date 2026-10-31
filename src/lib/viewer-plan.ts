@@ -65,8 +65,10 @@ async function readSession(): Promise<void> {
 }
 
 /**
- * Asks the session endpoint who the viewer is and what plan the session has. Callers that overlap share one request. A network failure keeps
- * the plan the viewer already had, which starts as the anonymous one, the smallest limit.
+ * Asks the session endpoint who the viewer is and what plan the session has. Callers that overlap share one request; a
+ * request that ended is not kept, so the next caller asks again: a component that mounts on a new page, and the sign-in
+ * and sign-out that change the session. A network failure keeps the plan the viewer already had, which starts as the
+ * anonymous one, the smallest limit.
  */
 export function refreshViewerPlan(): Promise<void> {
   refreshing ??= readSession()
@@ -75,15 +77,4 @@ export function refreshViewerPlan(): Promise<void> {
       refreshing = undefined;
     });
   return refreshing;
-}
-
-let pageRead: Promise<void> | undefined;
-
-/**
- * Reads the session once for the page: the queue and the header's account menu both need the plan when they mount, and
- * share this one read however far apart they mount.
- */
-export function readViewerPlanOnce(): Promise<void> {
-  pageRead ??= refreshViewerPlan();
-  return pageRead;
 }

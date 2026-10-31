@@ -131,12 +131,6 @@
     "count": 1
   },
   {
-    "file": "src/app/api/v1/uploads/direct/part/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "PUT",
-    "count": 1
-  },
-  {
     "file": "src/lib/api-keys/guard.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "checkQuotaAndReserve",

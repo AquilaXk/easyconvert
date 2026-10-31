@@ -10,6 +10,7 @@ import {
   type KeyExpiryOption,
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
+import { refreshViewerPlan } from '@/lib/viewer-plan';
 
 export function buildKeyCreationRequest(
   newKeyName: string,
@@ -237,6 +238,7 @@ export function useDashboardController() {
     } catch {
       setActionError('Network error while signing out.');
     }
+    await refreshViewerPlan();
     router.push('/auth');
     router.refresh();
   };
