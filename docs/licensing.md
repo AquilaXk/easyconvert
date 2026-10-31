@@ -80,6 +80,11 @@ Certain format conversions require specialized external command-line utilities. 
 
 ---
 
+### 2.12 libeot `eot2ttf` (MPL-2.0, with Monotype's MTX licence for the LZCOMP files)
+- **Role**: Decompresses the font data of an EOT (Embedded OpenType) file that is compressed with MicroType Express (header flag 0x4) and writes it as a TrueType font, which the in-process font engine then converts to every target (EOT input, `src/lib/conversions/font-eot-mtx.ts`).
+- **Process Isolation**: `eot2ttf` is built from the unmodified upstream source at one commit (`scripts/install-libeot.sh`, fetched by its full hash) as a statically linked program, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size (`src/lib/conversions/font-sandboxed-program.ts`). Nothing links `libeot` into the application, and the application code does not incorporate or modify libeot source. Data is exchanged through a scratch directory that is removed after each run. The Debian package (0.01-5) is not used: its release writes six composite glyphs of each of the two corpus fonts with misplaced instruction bytes.
+- **Compliance**: MPL-2.0 is file-level copyleft; running an unmodified, separate program keeps EasyConvert's own code outside it, and the worker image carries the licence text with libeot's patent note (`/licenses/libeot.copyright`) and a `SOURCE` note (`/licenses/libeot.SOURCE`) that names the commit, so the source of the binary is that commit. Most files of `src/lzcomp` are Monotype's code from the W3C member submission of MicroType Express, which Monotype licenses to everyone without charge, for its copyright and for its patents on the format (the MTX licence statement that libeot's `LICENSE` names). A modified `eot2ttf`, or one linked into the application, would need the source of the changed files published and a reviewed exception.
+
 ## 3. LGPL Relinking & On-Premises Container Images
 
 Under the terms of the GNU Lesser General Public License (LGPLv3, Section 4), when distributing a work that uses an LGPL library in binary form (such as an on-premises container image), users must be provided with:

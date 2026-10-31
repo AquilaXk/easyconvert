@@ -1413,6 +1413,7 @@ const SCHEMA_ENTRIES = [
   toolPath('CAD_CONVERT_PATH', 'Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).', BOTH),
   toolPath('QPDF_RUNNER_PATH', 'Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.', BOTH),
   toolPath('FONTFORGE_PATH', 'Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).', BOTH),
+  toolPath('EOT2TTF_PATH', 'Path of the libeot `eot2ttf` executable that decompresses EOT fonts compressed with MicroType Express; searched in the standard locations when unset. Such an EOT font cannot be converted without it (HTTP 503).', BOTH),
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   {

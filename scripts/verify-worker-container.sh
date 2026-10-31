@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; eot2ttf starting; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
@@ -261,6 +261,15 @@ if HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fontforge -l
 else
   fail "fontforge did not convert a Type 1 font inside the sandbox: $(tail -c 300 "$work_dir/fontforge.err" 2>/dev/null)"
 fi
+
+# eot2ttf (libeot) decompresses EOT fonts compressed with MicroType Express. Run without arguments it prints its usage and exits 1; that it does so
+# inside the sandbox shows that the static program starts under the worker's namespaces and address-space cap. The decompression itself is checked
+# against the real fonts by tests/font-eot-mtx.test.ts.
+eot2ttf_start="$(sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" eot2ttf 2>&1 || true)"
+case "$eot2ttf_start" in
+  "Usage: "*) pass "eot2ttf started inside the sandbox" ;;
+  *) fail "eot2ttf did not start inside the sandbox: $(printf '%s' "$eot2ttf_start" | head -c 300)" ;;
+esac
 
 # calibre writes MOBI, AZW3, PDB, LRF and OEB books: it converts a text file to each of the five started as the worker starts it (Qt without a
 # display, its configuration, cache and temporary directories in the scratch directory, the options of the worker's route), and each result must

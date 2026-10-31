@@ -68,3 +68,31 @@ export function expectSameOutlines(actual: FontFacts, truth: FontFacts, toleranc
     }
   });
 }
+
+/** Header, character map and metric facts of a TTF, OTF, WOFF or WOFF2 file read by fontTools (tests/helpers/python/font_table_facts.py). */
+export interface FontTableFacts {
+  flavor: string;
+  glyphCount: number;
+  familyName: string;
+  unitsPerEm: number;
+  ascent: number;
+  descent: number;
+  cmapSize: number;
+  /** SHA-256 of the sorted character-to-glyph-index pairs of the best Unicode map. */
+  cmapDigest: string;
+  advanceSum: number;
+  advanceOfA: number | null;
+  /** TrueType glyphs whose instructions do not disassemble. */
+  undecodableGlyphPrograms: number;
+}
+
+export function readFontTableFacts(bytes: Buffer, extension: string): FontTableFacts {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'font-table-facts-'));
+  try {
+    const file = path.join(directory, `font.${extension}`);
+    fs.writeFileSync(file, bytes);
+    return runPythonHelper<FontTableFacts>('font_table_facts.py', [file]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}

@@ -10,7 +10,7 @@ import {
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
 import { eotFontData } from './font-eot';
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
-import { isType1Format, type1FileToOpenType } from './font-fontforge';
+import { readWithExternalProgram } from './font-external-readers';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
 import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
@@ -152,9 +152,9 @@ export async function convertFont(
     }
   }
 
-  // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation (a Type 1 font is first read by FontForge into an OpenType font with the same outlines)
-  const parsedFont = isType1Format(src) ? decodeSfnt(await type1FileToOpenType(inputBuffer, options), baseName) : parseFontToSfnt(inputBuffer, src, baseName);
-
+  // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation (a font only a program can read is first turned into an sfnt by it)
+  const external = await readWithExternalProgram(inputBuffer, src, options);
+  const parsedFont = external ? decodeSfnt(external, baseName) : parseFontToSfnt(inputBuffer, src, baseName);
   // 2. Synthesize requested target format
   let outputBuffer: Buffer;
   let mimeType: string;

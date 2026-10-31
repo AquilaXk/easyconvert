@@ -135,6 +135,22 @@ COPY scripts/install-ffmpeg.sh /tmp/install-ffmpeg.sh
 RUN /tmp/install-ffmpeg.sh /opt/ffmpeg
 
 # ==============================================================================
+# Stage 3d: Pinned libeot decompressor (eot2ttf)
+# ==============================================================================
+# EOT fonts compressed with MicroType Express. libeot is MPL-2.0 (its LZCOMP files are Monotype's code under the MTX licence) and is built
+# here from the unmodified source at the commit pinned in scripts/install-libeot.sh, as a statically linked program that the worker runs
+# as a separate sandboxed process; nothing links it into the application. The Debian package (libeot0 and eot2ttf 0.01-5) is not used:
+# that release writes six composite glyphs of each corpus font with misplaced instruction bytes. The stage fails the build if the program
+# does not start.
+FROM ${NODE_IMAGE} AS libeot
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-libeot.sh /tmp/install-libeot.sh
+RUN /tmp/install-libeot.sh /opt/libeot
+
+# ==============================================================================
 # Stage 4: Open CASCADE program (cad-convert)
 # ==============================================================================
 # STEP and IGES input and output. native/cad-convert is our own small program, built here against the unmodified Open CASCADE
@@ -323,6 +339,12 @@ COPY --from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf
 COPY --from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg
 RUN dwg2dxf --version
 
+# EOT decompressor (pinned commit built in the libeot stage). Its licence text goes to /usr/share/doc/libeot/copyright, which the notices step
+# below collects into /licenses with the system packages; the SOURCE file names the commit it was built from.
+COPY --from=libeot /opt/libeot/bin/eot2ttf /usr/local/bin/eot2ttf
+COPY --from=libeot /opt/libeot/share/doc/libeot /usr/share/doc/libeot
+RUN eot2ttf 2>&1 | grep -q '^Usage: '
+
 # XPS renderer (pinned release built in the ghostxps stage). Its licence text goes to /usr/share/doc/ghostxps/copyright, which the
 # notices step below collects into /licenses with the system packages; the SOURCE file names the release archive it was built from.
 COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
@@ -427,6 +449,7 @@ RUN mkdir -p /licenses \
     && if [ "$copied" -eq 0 ]; then echo "no copyright files found under /usr/share/doc" >&2; exit 1; fi
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
+RUN cp /usr/share/doc/libeot/SOURCE /licenses/libeot.SOURCE
 RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
