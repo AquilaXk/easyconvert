@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import Redis from 'ioredis';
+import { readyGatedRedis } from '../src/lib/redis/when-ready';
 import { Readable } from 'node:stream';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
@@ -954,35 +955,30 @@ async function closedPort(): Promise<number> {
 
 describe('the Redis ledger while Redis cannot be reached', () => {
   const PARALLEL_CALLS = 50;
-  const CONNECT_WAIT_MS = 2_000;
-  const FAIL_FAST_MS = 300;
 
-  it('fails every call after one short wait, then at once, without piling up listeners', async () => {
-    const redis = new Redis(`redis://127.0.0.1:${await closedPort()}`, { maxRetriesPerRequest: 2, enableOfflineQueue: false });
-    redis.on('error', () => undefined);
+  // The wait for the connection and the hold after it are the shared gate's, timed in tests/redis-when-ready.test.ts.
+  it('fails every call through the shared ready gate, with one listener for all of them', async () => {
+    const redis = readyGatedRedis(new Redis(`redis://127.0.0.1:${await closedPort()}`, { maxRetriesPerRequest: 2, enableOfflineQueue: false }));
     const warnings: string[] = [];
     const onWarning = (warning: Error) => warnings.push(warning.name);
     process.on('warning', onWarning);
     const ledger = new RedisRetentionLedger(redis);
     const reads = () => Promise.allSettled(Array.from({ length: PARALLEL_CALLS }, (_, i) => ledger.get(`conversions/outage/f${i}`)));
     try {
-      let start = Date.now();
-      const first = await reads();
-      const firstMs = Date.now() - start;
-      start = Date.now();
+      const pending = reads();
+      const readyListeners = redis.listenerCount('ready');
+      const first = await pending;
       const second = await reads();
-      const secondMs = Date.now() - start;
       await new Promise((resolve) => setImmediate(resolve));
 
       expect([...first, ...second].every((result) => result.status === 'rejected')).toBe(true);
-      expect(firstMs).toBeLessThan(CONNECT_WAIT_MS + FAIL_FAST_MS);
-      expect(secondMs).toBeLessThan(FAIL_FAST_MS);
+      expect(readyListeners).toBeLessThanOrEqual(2);
       expect(warnings).not.toContain('MaxListenersExceededWarning');
     } finally {
       process.off('warning', onWarning);
       redis.disconnect();
     }
-  });
+  }, 30_000);
 });
 
 describe('the ledger of a test file', () => {
