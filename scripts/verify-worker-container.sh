@@ -391,6 +391,19 @@ else
   fi
 fi
 
+# The application refuses every ImageMagick conversion (503) when its policy cannot be read by the user it runs as. The build checks it
+# too, on the layer of that step; this checks the image as shipped, as that user.
+magick_bin="$(command -v magick || command -v magick-im7.q16 || true)"
+if [ ! -r /etc/easyconvert/imagemagick/policy.xml ]; then
+  fail "the ImageMagick policy /etc/easyconvert/imagemagick/policy.xml is not readable by $(id -un): every ImageMagick conversion answers 503"
+elif [ -z "$magick_bin" ]; then
+  fail "ImageMagick is not installed"
+elif TMPDIR="$work_dir" verify-imagemagick-policy "$magick_bin" /etc/easyconvert/imagemagick >"$work_dir/magick-policy.out" 2>&1; then
+  pass "ImageMagick lists only the repository policy for $(id -un)"
+else
+  fail "the ImageMagick policy does not verify for $(id -un): $(head -c 300 "$work_dir/magick-policy.out")"
+fi
+
 if [ "$failures" -eq 0 ]; then
   printf 'All worker container checks passed.\n'
   exit 0
