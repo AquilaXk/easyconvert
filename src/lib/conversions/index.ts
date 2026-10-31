@@ -42,8 +42,6 @@ import {
   convertHwp,
   parseHwpDocument,
   buildHwpCompoundFile,
-  isCfbfContainer,
-  parseCfbf,
   parseHwpRecords,
   buildHwpRecord,
   decodeHwpText,
@@ -51,6 +49,7 @@ import {
   HWP_TAGS,
   convertHwpDocument,
 } from './hwp';
+import { isCfbfContainer, parseCfbf } from './cfbf-reader';
 import {
   applyPdfWatermark,
   protectPdf,

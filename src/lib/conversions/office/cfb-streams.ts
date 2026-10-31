@@ -1,5 +1,5 @@
 import { CFBF_MAX_FILE_BYTES } from '../../compound-file-kind';
-import { isCfbfContainer, parseCfbf, type CfbfContainer } from '../hwp';
+import { isCfbfContainer, parseCfbf, type CfbfContainer } from '../cfbf-reader';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 
 // [MS-CFB] 2.2 header fields: byte order mark, major version and sector shifts.

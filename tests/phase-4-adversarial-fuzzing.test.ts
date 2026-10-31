@@ -24,12 +24,8 @@ import {
   parseFvarTable,
   parseStatTable,
 } from '../src/lib/conversions/font';
-import {
-  parseCfbf,
-  parseHwpDocument,
-  parseHwpRecords,
-  isCfbfContainer,
-} from '../src/lib/conversions/hwp';
+import { isCfbfContainer, parseCfbf } from '../src/lib/conversions/cfbf-reader';
+import { parseHwpDocument, parseHwpRecords } from '../src/lib/conversions/hwp';
 import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
 import { ConversionFailedError, CorruptStreamError, DataParseError } from '../src/lib/types';
 import { buildRleBombFrame } from './helpers/zstd-frames';

@@ -10,7 +10,7 @@ import { decodeWoff2 } from '../src/lib/conversions/font';
 import { Woff2FormatError } from '../src/lib/conversions/font-woff2';
 import { CorruptStreamError } from '../src/lib/types';
 import { applyFloydSteinbergDither } from '../src/lib/conversions/quantize';
-import { parseCfbf } from '../src/lib/conversions/hwp';
+import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { countVideoPackets, ffmpegTestVideoMp4, toArrayBuffer } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';

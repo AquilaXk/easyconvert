@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { CFBF_DIRECTORY_ENTRY_BYTES, CFBF_MAX_DIRECTORY_ENTRIES, CFBF_MAX_FILE_BYTES, CFBF_MAX_PATH_CHARS, CFBF_MAX_STORAGE_DEPTH, readCompoundFileRoot } from '../src/lib/compound-file-kind';
 import { buildCfbfContainer, type CfbfNode } from '../src/lib/conversions/cfbf-writer';
-import { parseCfbf, parseHwpDocument } from '../src/lib/conversions/hwp';
+import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
+import { parseHwpDocument } from '../src/lib/conversions/hwp';
 import { convertXlsSource, xlsHasFilePass } from '../src/lib/conversions/office';
 import { readCfbContainer } from '../src/lib/conversions/office/cfb-streams';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
