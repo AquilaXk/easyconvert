@@ -68,13 +68,13 @@ const PAGE_COUNT_RUN_TIMEOUT_MS = 30_000;
  */
 const SIZE_RUN_TIMEOUT_MS = 120_000;
 /**
- * The budget of `ddjvu`: `max(15 s, 8 x the two reports) + the drawn pixels at 12.5 megapixels a second`, at most what is left
+ * The budget of `ddjvu`: `max(15 s, 16 x the two reports) + the drawn pixels at 4 megapixels a second`, at most what is left
  * of the deadline. A chain of shared files makes the program create a thread for each file and wait on them; `size` opens
- * the same chain in milliseconds, so the floor ends it in 15 s, while a real document keeps at least the margins of entry 134.
+ * the same chain in milliseconds, so the floor ends it in 15 s, while every measured real document keeps three times its time.
  */
 const DRAW_BUDGET_FLOOR_MS = 15_000;
-const DRAW_BUDGET_REPORT_FACTOR = 8;
-const DRAW_PIXELS_PER_MS = 12_500;
+const DRAW_BUDGET_REPORT_FACTOR = 16;
+const DRAW_PIXELS_PER_MS = 4_000;
 /**
  * One glibc heap for the program's threads. Each thread that decodes an included file otherwise gets an arena of its own, 64 MiB
  * of address space each, and from about 30 of them the 2 GiB limit is met and the program waits forever: a plain chain of 32

@@ -20,7 +20,7 @@ const START_MS = 1_000_000;
 const LONG_JOB_MS = 600_000;
 const SHORT_JOB_MS = 20_000;
 const BUDGET_FLOOR_MS = 15_000;
-const PIXELS_PER_MS = 12_500;
+const PIXELS_PER_MS = 4_000;
 const SIZE_RUN_LIMIT_MS = 120_000;
 const MEMORY_LIMIT_MB = 2048;
 
@@ -113,7 +113,7 @@ const PAGES: readonly Sizes[] = [
 const pixels = (pages: readonly Sizes[]) => pages.reduce((sum, page) => sum + page.width * page.height, 0);
 
 describe('the budget of ddjvu', () => {
-  it('is the 15 s floor and the drawn pixels at 12.5 megapixels a second: every page for a PDF, the selected ones for images', async () => {
+  it('is the 15 s floor and the drawn pixels at 4 megapixels a second: every page for a PDF, the selected ones for images', async () => {
     given({ sizes: PAGES });
     await convert('pdf', { timeoutMs: LONG_JOB_MS });
     expect(drawLimitMs()).toBe(Math.ceil(BUDGET_FLOOR_MS + pixels(PAGES) / PIXELS_PER_MS));
@@ -123,11 +123,11 @@ describe('the budget of ddjvu', () => {
     expect(drawLimitMs()).toBe(BUDGET_FLOOR_MS + pixels([PAGES[1]]) / PIXELS_PER_MS);
   });
 
-  it('is eight times what the djvused runs took, when that is more than the floor', async () => {
+  it('is sixteen times what the djvused runs took, when that is more than the floor', async () => {
     const countMs = 3_000;
     given({ sizes: PAGES, countMs });
     await convert('pdf', { timeoutMs: LONG_JOB_MS });
-    expect(drawLimitMs()).toBe(Math.ceil(8 * countMs + pixels(PAGES) / PIXELS_PER_MS));
+    expect(drawLimitMs()).toBe(Math.ceil(16 * countMs + pixels(PAGES) / PIXELS_PER_MS));
     expect(drawBudgetMs(countMs, pixels(PAGES))).toBe(drawLimitMs());
   });
 
