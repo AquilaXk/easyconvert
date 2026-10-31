@@ -30,8 +30,27 @@
 
 /** Sector numbers from here up are markers (free, end of chain, FAT, DIFAT), not positions in the file ([MS-CFB] 2.1). */
 export const CFBF_FIRST_RESERVED_SECTOR = 0xfffffffa;
-/** The most directory entries a compound file may declare before the parser that reads it in full refuses it. */
+/** The size of a directory entry ([MS-CFB] 2.6.1); a directory sector holds as many as divide it. */
+export const CFBF_DIRECTORY_ENTRY_BYTES = 128;
+/**
+ * The most 128-byte slots the directory chain of a compound file may hold, the free ones included, before the parser that reads it
+ * in full refuses it. The number is ours: olefile allows as many as the stream holds and Apache POI sets no count.
+ */
 export const CFBF_MAX_DIRECTORY_ENTRIES = 65_536;
+/** The largest compound file the parser that reads it in full accepts: every stream is copied out, so the file is held in memory several times over. */
+export const CFBF_MAX_FILE_BYTES = 256 * 1024 * 1024;
+/**
+ * How deep storages may nest before the parser that reads the file in full refuses it: Apache POI `PropertyTable.MAX_PROPERTY_DEPTH`
+ * (`populatePropertyTree` throws "Property tree too deep" for a directory below it), trunk of 2026-10-31.
+ */
+export const CFBF_MAX_STORAGE_DEPTH = 1000;
+/**
+ * The most characters the full paths of all directory entries may spell out together. No reference builds paths (POI, olefile and
+ * LibreOffice walk the tree), so the budget is ours: it keeps a file of 900 KiB, 1,000 storages deep with 4,000 streams in the last,
+ * from holding 74 MiB of path strings. 65,536 entries under four levels of names of 31 characters spell out 8.4 million characters,
+ * half the budget, and the paths of a real file are a small fraction of that.
+ */
+export const CFBF_MAX_PATH_CHARS = 16 * 1024 * 1024;
 /** The sector shifts of version 3 and 4 files; Apache POI `HeaderBlock` refuses any other ("Expected 2^9 or 2^12"). */
 export const CFBF_SECTOR_SHIFTS: ReadonlySet<number> = new Set([9, 12]);
 
@@ -45,7 +64,6 @@ const HEADER_FAT_OFFSET = 76;
 const HEADER_FAT_ENTRIES = 109;
 const FAT_ENTRY_BYTES = 4;
 
-const DIRECTORY_ENTRY_BYTES = 128;
 const NAME_LENGTH_OFFSET = 64;
 const ENTRY_TYPE_OFFSET = 66;
 const LEFT_SIBLING_OFFSET = 68;
@@ -242,7 +260,7 @@ function* readDirectoryChain(
     if (bytes.length < sectorBytes) return { entries, classId, chainEnded: false };
     const view = new DataView(bytes.buffer, bytes.byteOffset, sectorBytes);
     if (sector === firstSector) classId = guidText(bytes.subarray(CLASS_ID_OFFSET, CLASS_ID_OFFSET + CLASS_ID_BYTES));
-    for (let at = 0; at < sectorBytes; at += DIRECTORY_ENTRY_BYTES) {
+    for (let at = 0; at < sectorBytes; at += CFBF_DIRECTORY_ENTRY_BYTES) {
       if (entries.length === CFBF_MAX_DIRECTORY_ENTRIES) throw new MalformedDirectory();
       entries.push(decodeEntry(bytes, view, at));
     }

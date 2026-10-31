@@ -1,23 +1,33 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import {
-  ChevronDown,
-  Globe,
-  HardDrive,
-  Sparkles,
-} from 'lucide-react';
-import { FORMAT_REGISTRY } from '@/lib/registry';
+import { getAvailableTargetFormats } from '@/lib/registry';
 import UrlImportModal from './UrlImportModal';
-import { BrandIcon } from './BrandLogo';
+import HeroFormatTiles from './workbench/HeroFormatTiles';
+import HeroDropzoneCard from './workbench/HeroDropzoneCard';
+import {
+  computeHeroSubtitle,
+  computeHeroTitle,
+  QueueSummaryInput,
+  resolveQueueSummary,
+} from './workbench/hero-copy';
 
-interface HeroProps {
+export interface HeroProps {
   onFilesSelected: (files: File[], defaultTarget?: string) => void;
   hasActiveQueue: boolean;
   activeSourceFormat?: string;
   activeTargetFormat?: string;
+  initialSourceFormat?: string;
+  initialTargetFormat?: string;
   categoryTitle?: string;
   categoryDescription?: string;
+  activeQueueSummary?: QueueSummaryInput;
+}
+
+function getEffectiveTargetFormat(chosen?: string, fallback?: string): string | undefined {
+  if (chosen && chosen.toLowerCase() !== 'any') return chosen.toLowerCase();
+  if (fallback && fallback.toLowerCase() !== 'any') return fallback.toLowerCase();
+  return undefined;
 }
 
 export default function Hero({
@@ -25,42 +35,69 @@ export default function Hero({
   hasActiveQueue,
   activeSourceFormat,
   activeTargetFormat,
+  initialSourceFormat,
+  initialTargetFormat,
   categoryTitle,
   categoryDescription,
-}: HeroProps) {
-  const [sourceFormat, setSourceFormat] = useState(activeSourceFormat || 'pdf');
-  const [targetFormat, setTargetFormat] = useState(activeTargetFormat || 'docx');
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  activeQueueSummary,
+}: Readonly<HeroProps>) {
+  const seedSource = activeSourceFormat ?? initialSourceFormat;
+  const seedTarget = activeTargetFormat ?? initialTargetFormat;
+  const [sourceFormat, setSourceFormat] = useState(seedSource ? seedSource.toLowerCase() : 'any');
+  const [targetFormat, setTargetFormat] = useState(seedTarget ? seedTarget.toLowerCase() : 'any');
+  const [userChangedTiles, setUserChangedTiles] = useState(false);
   const [isUrlModalOpen, setIsUrlModalOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const targetFormatRef = useRef(targetFormat);
+  const prevHasActiveQueueRef = useRef(hasActiveQueue);
 
   useEffect(() => {
     targetFormatRef.current = targetFormat;
   }, [targetFormat]);
 
   useEffect(() => {
-    if (activeSourceFormat) setSourceFormat(activeSourceFormat);
-  }, [activeSourceFormat]);
+    if (seedSource) setSourceFormat(seedSource.toLowerCase());
+  }, [seedSource]);
 
   useEffect(() => {
-    if (activeTargetFormat) {
-      setTargetFormat(activeTargetFormat);
-      targetFormatRef.current = activeTargetFormat;
+    if (seedTarget) {
+      const normalized = seedTarget.toLowerCase();
+      setTargetFormat(normalized);
+      targetFormatRef.current = normalized;
     }
-  }, [activeTargetFormat]);
+  }, [seedTarget]);
 
-  const getEffectiveTargetFormat = (chosen?: string, fallback?: string): string | undefined => {
-    if (chosen && chosen.toLowerCase() !== 'any') {
-      return chosen.toLowerCase();
+  useEffect(() => {
+    const wasActive = prevHasActiveQueueRef.current;
+    prevHasActiveQueueRef.current = hasActiveQueue;
+    if (wasActive && !hasActiveQueue && !seedSource && !seedTarget) {
+      setSourceFormat('any');
+      setTargetFormat('any');
+      targetFormatRef.current = 'any';
+      setUserChangedTiles(false);
     }
-    if (fallback && fallback.toLowerCase() !== 'any') {
-      return fallback.toLowerCase();
-    }
-    return undefined;
-  };
+  }, [hasActiveQueue, seedSource, seedTarget]);
+
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      const pastedFiles = e.clipboardData?.files;
+      if (pastedFiles && pastedFiles.length > 0) {
+        e.preventDefault();
+        const files = Array.from(pastedFiles);
+        const chosen = targetFormatRef.current;
+        const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
+        onFilesSelected(files, effectiveTarget);
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [activeTargetFormat, onFilesSelected]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -70,16 +107,6 @@ export default function Hero({
       onFilesSelected(files, effectiveTarget);
       e.target.value = '';
     }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -93,253 +120,122 @@ export default function Hero({
     }
   };
 
-  const getHeroTitle = () => {
-    if (categoryTitle) return categoryTitle;
-    if (activeSourceFormat && (!targetFormat || targetFormat.toLowerCase() === 'any')) {
-      return `${activeSourceFormat.toUpperCase()} Converter`;
-    }
-    if (activeSourceFormat && activeTargetFormat && activeTargetFormat.toLowerCase() !== 'any') {
-      const srcName = activeSourceFormat.toUpperCase();
-      const tgtName = activeTargetFormat.toUpperCase();
-      return `${srcName} to ${tgtName} Converter`;
-    }
-    if (!hasActiveQueue && !activeSourceFormat) return 'File Converter';
-    if (sourceFormat && targetFormat && targetFormat.toLowerCase() !== 'any') {
-      const srcName = sourceFormat.toUpperCase();
-      const tgtName = targetFormat.toUpperCase();
-      if (srcName === 'PDF' && tgtName === 'DOCX') return 'PDF to Word Converter';
-      return `${srcName} to ${tgtName} Converter`;
-    }
-    if (sourceFormat) {
-      return `${sourceFormat.toUpperCase()} Converter`;
-    }
-    return 'File Converter';
-  };
-
-  const getHeroSubtitle = () => {
-    if (categoryDescription) return categoryDescription;
-    if (!hasActiveQueue && !activeSourceFormat) {
-      return 'Convert your files to any format online and free. Fast, private conversion for 292 formats with zero server data retention.';
-    }
-
-    const src = (activeSourceFormat || sourceFormat || '').toLowerCase();
-    const tgt = (activeTargetFormat || targetFormat || '').toLowerCase();
-    const srcDef = FORMAT_REGISTRY[src];
-    const cat = srcDef?.category || 'document';
-
-    if (!tgt || tgt === 'any') {
-      return `EasyConvert is a high-fidelity online ${cat} and file converter. Supporting 292 formats directly in your browser with zero server data retention.`;
-    }
-
-    const srcUpper = src.toUpperCase();
-    const tgtUpper = tgt.toUpperCase();
-
-    switch (cat) {
-      case 'audio':
-      case 'video':
-        return `Convert ${srcUpper} to ${tgtUpper} online and free. High-fidelity audio and video processing directly in your browser with zero server retention.`;
-      case 'image':
-      case 'vector':
-        return `Convert ${srcUpper} to ${tgtUpper} online and free. Lossless rendering and rasterization straight from your browser.`;
-      case 'archive':
-        return `Extract and convert ${srcUpper} to ${tgtUpper} archives safely in your browser with zero cloud storage.`;
-      case 'spreadsheet':
-      case 'data':
-        return `Convert ${srcUpper} to ${tgtUpper} datasets and tables directly in your browser. Clean data structure preserved with zero retention.`;
-      default:
-        return `EasyConvert offers advanced, high-fidelity ${srcUpper} to ${tgtUpper} conversions. Preserves layouts, typography, and structure straight from your browser.`;
+  const handleSourceChange = (nextSource: string) => {
+    const normalized = nextSource.toLowerCase();
+    setSourceFormat(normalized);
+    setUserChangedTiles(true);
+    if (normalized !== 'any' && targetFormat !== 'any') {
+      const isCompatible = getAvailableTargetFormats(normalized).some(
+        (fmt) => fmt.id.toLowerCase() === targetFormat.toLowerCase()
+      );
+      if (!isCompatible) {
+        setTargetFormat('any');
+        targetFormatRef.current = 'any';
+      }
     }
   };
 
-  const popularPresets = [
-    { label: 'PDF to Word', src: 'pdf', tgt: 'docx' },
-    { label: 'Word to PDF', src: 'docx', tgt: 'pdf' },
-    { label: 'Image to WebP', src: 'png', tgt: 'webp' },
-    { label: 'Video to MP3', src: 'mp4', tgt: 'mp3' },
-    { label: 'HEIC to JPG', src: 'heic', tgt: 'jpg' },
-    { label: 'EPUB to PDF', src: 'epub', tgt: 'pdf' },
-  ];
+  const handleTargetChange = (nextTarget: string) => {
+    const normalized = nextTarget.toLowerCase();
+    setTargetFormat(normalized);
+    targetFormatRef.current = normalized;
+    setUserChangedTiles(true);
+  };
+
+  const title = computeHeroTitle({
+    categoryTitle,
+    hasActiveQueue,
+    activeSourceFormat: seedSource,
+    activeTargetFormat: seedTarget,
+    sourceFormat,
+    targetFormat,
+    userChangedTiles,
+  });
+  const subtitle = computeHeroSubtitle(
+    categoryDescription,
+    hasActiveQueue,
+    sourceFormat,
+    targetFormat,
+    userChangedTiles
+  );
+  const queueSummaryText = resolveQueueSummary(activeQueueSummary);
 
   return (
     <>
-      {/* Hidden file input */}
       <input
+        id="main-file-input"
         ref={fileInputRef}
         type="file"
         multiple
+        className="sr-only"
+        aria-label="Select files to convert"
         onChange={handleFileChange}
-        className="hidden"
-        id="main-file-input"
       />
 
-      {/* Spacious, Human-Crafted Hero Section */}
-      <section
-        className={`relative overflow-hidden bg-neutral-scaffold dark:bg-dark-scaffold transition-colors ${
-          hasActiveQueue ? 'pt-8 pb-4' : 'pt-12 pb-16 sm:pt-16 sm:pb-24'
-        }`}
-      >
-        {/* Soft luminous ambient backdrop */}
-        <div
-          aria-hidden="true"
-          className="absolute inset-0 bg-[radial-gradient(ellipse_70%_50%_at_50%_0%,rgba(92,107,192,0.09),transparent_75%)] pointer-events-none"
-        />
-
-        <div className="relative mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 text-center">
-          {/* Clean Hero Title */}
-          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight text-brand-950 dark:text-white leading-[1.12]">
-            {getHeroTitle()}
-          </h1>
-
-          {/* Subtitle */}
-          <p className="mt-4 text-base sm:text-lg sm:leading-relaxed text-ink-secondary dark:text-neutral-300 max-w-2xl mx-auto">
-            {getHeroSubtitle()}
-          </p>
-
-          {/* Converter Dropzone & Massive CTA Box (Idle State) */}
-          {!hasActiveQueue && (
-            <>
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`relative mx-auto mt-8 sm:mt-10 w-full max-w-3xl rounded-3xl border-2 border-dashed p-8 sm:p-12 text-center transition-all duration-300 ease-out shadow-xl ${
-                  isDragOver
-                    ? 'border-brand-700 border-solid ring-4 ring-brand-700/20 bg-brand-50/70 dark:bg-brand-950/40 scale-[1.01]'
-                    : 'bg-white border-brand-300 hover:border-brand-600 shadow-brand-700/5 dark:bg-[#181D30] dark:border-[#2C375A] dark:hover:border-brand-500/50 dark:shadow-black/50'
-                }`}
-              >
-                {/* Official Brand Vector Mark on Tactile Squircle */}
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  aria-label="Select files to convert"
-                  className="group/icon relative inline-flex items-center justify-center p-4 rounded-2xl bg-brand-50 dark:bg-brand-900/40 border border-brand-200 dark:border-brand-700/30 shadow-md shadow-brand-700/10 hover:shadow-lg hover:shadow-brand-700/20 transition-all duration-200 hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 cursor-pointer mx-auto mb-5 text-brand-700 dark:text-brand-300"
-                >
-                  <BrandIcon size={44} />
-                </button>
-
-                {/* Main Instruction */}
-                <div className="space-y-1 mb-6">
-                  <h2 className="text-xl font-bold tracking-tight text-brand-950 dark:text-white sm:text-2xl">
-                    Choose Files to Convert
-                  </h2>
-                  <p className="text-sm text-ink-muted dark:text-neutral-400 sm:text-base">
-                    Drop files here, or paste from clipboard
+      {hasActiveQueue ? (
+        <section className="bg-brand-950 dark:bg-[#111526] masthead-grid text-white py-6 sm:py-7 border-b border-white/10">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">{title}</h1>
+              {queueSummaryText?.includes('files') && (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-mono font-medium bg-white/10 text-slate-200 border border-white/15">
+                  {queueSummaryText}
+                </span>
+              )}
+            </div>
+            <p className="mt-1.5 text-sm text-slate-300 max-w-2xl">{subtitle}</p>
+          </div>
+        </section>
+      ) : (
+        <div>
+          <section className="bg-brand-950 dark:bg-[#111526] masthead-grid text-white border-b border-white/10 pt-10 pb-24 lg:pt-14 lg:pb-28">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="lg:grid lg:grid-cols-12 lg:items-center lg:gap-10">
+                <div className="lg:col-span-7 text-center lg:text-left">
+                  <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-bold tracking-tight text-white leading-[1.15]">
+                    {title}
+                  </h1>
+                  <p className="mt-3 text-sm sm:text-base text-slate-300 max-w-2xl mx-auto lg:mx-0 leading-relaxed">
+                    {subtitle}
                   </p>
                 </div>
-
-                {/* Massive Tactile Choose Files Split Button */}
-                <div className="inline-flex relative z-10">
-                  <div className="relative inline-flex -space-x-px shadow-lg shadow-brand-700/25 hover:shadow-brand-700/40 rounded-2xl overflow-visible transition-shadow">
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="rounded-l-2xl font-bold inline-flex items-center transition-all px-8 sm:px-10 py-4 text-base sm:text-lg gap-3 text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 outline-none cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-700"
-                    >
-                      <svg className="size-5 fill-current shrink-0" viewBox="0 0 384 512">
-                        <path d="M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM192 240c-13.3 0-24 10.7-24 24l0 48-48 0c-13.3 0-24 10.7-24 24s10.7 24 24 24l48 0 0 48c0 13.3 10.7 24 24 24s24-10.7 24-24l0-48 48 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-48 0 0-48c0-13.3-10.7-24-24-24z" />
-                      </svg>
-                      <span>Choose Files</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                      aria-label="Select file source"
-                      className="rounded-r-2xl font-bold inline-flex items-center transition-all text-base border-l border-white/20 text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 px-4 py-4 outline-none cursor-pointer"
-                    >
-                      <ChevronDown
-                        className={`size-5 transition-transform duration-200 ${
-                          isDropdownOpen ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </button>
-
-                    {/* Source Selector Dropdown */}
-                    {isDropdownOpen && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-40"
-                          onClick={() => setIsDropdownOpen(false)}
-                        />
-                        <div className="absolute top-full right-0 mt-2 w-60 bg-white dark:bg-[#161B2E] rounded-2xl shadow-2xl border border-neutral-border dark:border-[#283252] p-1.5 z-50 animate-in fade-in duration-150 text-left">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsDropdownOpen(false);
-                              fileInputRef.current?.click();
-                            }}
-                            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-sm font-medium text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                          >
-                            <HardDrive className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                            <span>From my computer</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsDropdownOpen(false);
-                              setIsUrlModalOpen(true);
-                            }}
-                            className="flex items-center gap-2.5 w-full px-3.5 py-2.5 text-sm font-medium text-brand-950 dark:text-neutral-200 hover:bg-brand-50 dark:hover:bg-brand-700/20 hover:text-brand-700 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
-                          >
-                            <Globe className="w-4 h-4 text-ink-muted dark:text-neutral-400" />
-                            <span>By URL</span>
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Format & Architecture Summary */}
-                <div className="mt-8 flex items-center justify-center flex-wrap gap-x-4 gap-y-2 text-xs text-ink-secondary dark:text-neutral-400 pt-4 border-t border-neutral-100 dark:border-[#242C48] font-medium">
-                  <span className="font-semibold text-brand-950 dark:text-white">292 Formats Supported</span>
-                  <span className="text-neutral-300 dark:text-neutral-600">&bull;</span>
-                  <span>100% Free &amp; In-Browser</span>
-                  <span className="text-neutral-300 dark:text-neutral-600">&bull;</span>
-                  <span>Zero Server Storage</span>
-                  <span className="text-neutral-300 dark:text-neutral-600">&bull;</span>
-                  <span>Files Never Leave Your Device</span>
+                <div className="lg:col-span-5 mt-7 lg:mt-0 flex justify-center lg:justify-end">
+                  <HeroFormatTiles
+                    sourceFormat={sourceFormat}
+                    targetFormat={targetFormat}
+                    onSourceChange={handleSourceChange}
+                    onTargetChange={handleTargetChange}
+                  />
                 </div>
               </div>
+            </div>
+          </section>
 
-              {/* Popular Workflows Quick Presets */}
-              <div className="max-w-3xl mx-auto mt-6 px-2">
-                <div className="flex items-center justify-center flex-wrap gap-2 text-xs">
-                  <span className="text-[11px] font-mono font-bold tracking-wider uppercase text-ink-muted dark:text-neutral-400 mr-1 flex items-center gap-1">
-                    <Sparkles className="size-3 text-brand-700 dark:text-brand-400 shrink-0" />
-                    <span>POPULAR:</span>
-                  </span>
-                  {popularPresets.map((preset) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => {
-                        setSourceFormat(preset.src);
-                        setTargetFormat(preset.tgt);
-                        targetFormatRef.current = preset.tgt;
-                        fileInputRef.current?.click();
-                      }}
-                      className="px-3 py-1.5 text-xs font-medium rounded-xl bg-white dark:bg-white/[0.04] text-brand-950 dark:text-neutral-300 hover:text-brand-700 dark:hover:text-white border border-neutral-border dark:border-white/10 hover:border-brand-500 hover:bg-brand-50 dark:hover:bg-brand-700/20 shadow-sm transition-all cursor-pointer"
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
+          <HeroDropzoneCard
+            isDragOver={isDragOver}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragOver(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              setIsDragOver(false);
+            }}
+            onDrop={handleDrop}
+            onOpenFileDialog={() => fileInputRef.current?.click()}
+            onOpenUrlModal={() => setIsUrlModalOpen(true)}
+          />
         </div>
-      </section>
+      )}
 
-      {/* URL Import Modal */}
       {isUrlModalOpen && (
         <UrlImportModal
           isOpen={isUrlModalOpen}
-          onAddFile={(file) =>
-            onFilesSelected([file], targetFormat === 'any' ? 'mp3' : targetFormat)
-          }
+          onAddFile={(file) => {
+            const chosen = targetFormatRef.current;
+            const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
+            onFilesSelected([file], effectiveTarget);
+          }}
           onClose={() => setIsUrlModalOpen(false)}
         />
       )}

@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: light;
   --brand-50: #F8F9FF;
   --brand-100: #F0F2FE;
   --brand-200: #E2E5FD;
@@ -25,6 +26,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --bg-scaffold: #141724;
   --surface-card: #1B2032;
   --surface-subtle: #242B42;
@@ -42,7 +44,35 @@ body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Custom scrollbar */
+:focus-visible {
+  outline: 2px solid #5C6BC0;
+  outline-offset: 2px;
+}
+
+.masthead-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+dialog:modal {
+  max-width: min(calc(100dvw - 1.5rem), 48rem);
+  max-height: calc(100dvh - 2rem);
+  overscroll-behavior: contain;
+  margin: auto;
+}
+
+dialog::backdrop {
+  background: rgb(10 13 24 / 0.62);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+html:has(dialog:modal) {
+  overflow: hidden;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -65,143 +95,14 @@ body {
   background: #5C6BC0;
 }
 
-/* Glowing lavender effect */
-.lavender-glow,
-.red-glow {
-  box-shadow: 0 0 25px -5px rgba(92, 107, 192, 0.35);
-}
-
-.lavender-glow-sm,
-.red-glow-sm {
-  box-shadow: 0 0 15px -3px rgba(92, 107, 192, 0.25);
-}
-
-/* Authentic Keyframes & Animations */
-@keyframes orbit-spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-@keyframes spin-pulse {
-  0%, 100% { opacity: 0.85; transform: rotate(0deg); }
-  50% { opacity: 1; transform: rotate(180deg); }
-}
-
-@keyframes arrow-sweep {
-  0%, 100% { opacity: 0; transform: translateX(-100%); }
-  50% { opacity: 1; transform: translateX(100%); }
-}
-
-@keyframes output-pulse {
-  0%, 100% {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 32px rgba(92, 107, 192, 0.22);
-  }
-  50% {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 38px rgba(92, 107, 192, 0.38);
+@media (prefers-reduced-motion: reduce) {
+  html:root:root,
+  html:root:root:root *,
+  html:root:root:root *::before,
+  html:root:root:root *::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
   }
 }
-
-@keyframes card-flip {
-  0% {
-    opacity: 0;
-    transform: rotateX(-70deg) translateY(8px);
-  }
-  100% {
-    opacity: 1;
-    transform: rotateX(0deg) translateY(0px);
-  }
-}
-
-.animate-orbit-slow {
-  animation: 90s linear 0s infinite normal none running orbit-spin;
-}
-
-.animate-orbit-fast {
-  animation: 60s linear 0s infinite reverse none running orbit-spin;
-}
-
-.animate-spin-pulse {
-  animation: 3s ease-in-out 0s infinite normal none running spin-pulse;
-}
-
-.animate-arrow-sweep {
-  animation: 2.4s ease-in-out 0s infinite normal none running arrow-sweep;
-}
-
-.animate-output-pulse {
-  animation: 3s ease-in-out 0s infinite normal none running output-pulse;
-}
-
-.animate-card-flip {
-  animation: 0.45s cubic-bezier(0.34, 1.4, 0.6, 1) 0s 1 normal both running card-flip;
-  transform-style: preserve-3d;
-  perspective: 600px;
-}
-
-/* Pricing Volume Slider */
-input[type="range"].pricing-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 9px;
-  border-radius: 9999px;
-  outline: none;
-}
-
-input[type="range"].pricing-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 2px solid #5C6BC0;
-  cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-  transition: transform 0.15s ease;
-}
-
-input[type="range"].pricing-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
-}
-
-input[type="range"].pricing-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 2px solid #5C6BC0;
-  cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-}
-
-/* Table Slider */
-input[type="range"].table-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 6px;
-  border-radius: 9999px;
-  outline: none;
-}
-
-input[type="range"].table-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 2px solid #5C6BC0;
-  cursor: pointer;
-}
-
-input[type="range"].table-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #ffffff;
-  border: 2px solid #5C6BC0;
-  cursor: pointer;
-}
-

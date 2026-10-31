@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildCfbfContainer } from '../src/lib/conversions/cfbf-writer';
-import { parseCfbf } from '../src/lib/conversions/hwp';
+import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { repairPptPersistIdSeed } from '../src/lib/conversions/office/ppt-reader';
 import { withLegacyOfficeRecovery } from '../src/worker/office-suite-route';

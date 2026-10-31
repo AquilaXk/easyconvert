@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
-import { parseCfbf } from '../src/lib/conversions/hwp';
+import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import { buildCompoundFile } from './helpers/cfb-craft';
 import { parseOpenXmlChart } from '../src/lib/conversions/office';
 import { requireOracleTool } from './helpers/differential-oracle';

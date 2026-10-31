@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildCfbfContainer, type CfbfNode } from '../src/lib/conversions/cfbf-writer';
-import { parseCfbf } from '../src/lib/conversions/hwp';
+import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
