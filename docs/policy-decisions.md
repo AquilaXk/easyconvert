@@ -139,6 +139,7 @@ Delivery
 122. [Shared OCI host: one stack inside a hard budget of 3.5 cpus and 20 GiB, local storage on a capped mount, and deploys from a runner of its own](#122-shared-oci-host-one-stack-inside-a-hard-budget-of-35-cpus-and-20-gib-local-storage-on-a-capped-mount-and-deploys-from-a-runner-of-its-own)
 123. [Speed parity runs nightly on main, and a pull request runs its checks once per head commit](#123-speed-parity-runs-nightly-on-main-and-a-pull-request-runs-its-checks-once-per-head-commit)
 125. [Results are deleted after delivery: a result goes ten minutes after its first complete download or an hour after it was stored, and an upload goes ten minutes after the last job that reads it ends](#125-results-are-deleted-after-delivery-a-result-goes-ten-minutes-after-its-first-complete-download-or-an-hour-after-it-was-stored-and-an-upload-goes-ten-minutes-after-the-last-job-that-reads-it-ends)
+126. [A legacy workbook is always handed to the office suite, which decrypts the default password; an encrypted workbook or Word document the suite cannot load is named as encrypted](#126-a-legacy-workbook-is-always-handed-to-the-office-suite-which-decrypts-the-default-password-an-encrypted-workbook-or-word-document-the-suite-cannot-load-is-named-as-encrypted)
 
 Quality evidence
 
