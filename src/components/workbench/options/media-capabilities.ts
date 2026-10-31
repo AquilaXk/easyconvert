@@ -204,12 +204,14 @@ function resolveVideoCodecContext(
   return { tgt, nextVideoCodec, nextNestedCodec, effectiveCodec, dropCodecContext };
 }
 
+export type VideoTargetOptionsSlice = Pick<ConversionOptions, 'videoCodec' | 'videoFps' | 'video'>;
+
 export function sanitizeVideoOptionsForTarget(
-  options: Pick<ConversionOptions, 'videoCodec' | 'videoFps' | 'video'>,
+  options: VideoTargetOptionsSlice,
   targetFormat: string
-): Pick<ConversionOptions, 'videoCodec' | 'videoFps' | 'video'> {
+): VideoTargetOptionsSlice {
   const ctx = resolveVideoCodecContext(options, targetFormat.toLowerCase());
-  const result: Pick<ConversionOptions, 'videoCodec' | 'videoFps' | 'video'> = {};
+  const result: VideoTargetOptionsSlice = {};
   if (ctx.nextVideoCodec) result.videoCodec = ctx.nextVideoCodec;
   if (options.videoFps !== undefined) result.videoFps = options.videoFps;
   if (!options.video) return result;
