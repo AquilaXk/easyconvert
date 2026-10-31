@@ -129,8 +129,8 @@ const CFBF_MINI_SECTOR_SHIFT = 6;
  * The mini stream cutoff [MS-CFB] 2.2 requires: a stream below it lives in the mini stream. Apache POI never reads the header field
  * (`POIFSDocument.java` line 64 compares with `POIFSConstants.BIG_BLOCK_MINIMUM_DOCUMENT_SIZE`, 4096), olefile notes a defect for
  * another value and fixes it at 4096 (`olefile.py` lines 1368 to 1379) and LibreOffice takes any positive value (`StgHeader::Check`,
- * `stgelem.cxx` line 205). Refusing another value is this parser's own rule, so that no header can turn one stream into a chain of
- * millions of mini sectors.
+ * `stgelem.cxx` line 205). This parser does as POI and olefile do: the header field is not read and the cutoff is 4096, so that no
+ * header can turn one stream into a chain of millions of mini sectors.
  */
 const CFBF_MINI_STREAM_CUTOFF = 4096;
 /** Owner of a FAT or DIFAT sector in the table of who read each sector; the chains are numbered from 1. */
@@ -286,10 +286,6 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
 
   const fatSectorCount = buffer.readUInt32LE(44);
   const firstDirSector = buffer.readUInt32LE(48);
-  const miniStreamCutoff = buffer.readUInt32LE(56);
-  if (miniStreamCutoff !== CFBF_MINI_STREAM_CUTOFF) {
-    throw new CorruptStreamError(`Corrupt CFBF container: the mini stream cutoff is ${miniStreamCutoff}, not ${CFBF_MINI_STREAM_CUTOFF}.`);
-  }
   const firstMiniFatSector = buffer.readUInt32LE(60);
   const miniFatSectorCount = buffer.readUInt32LE(64);
   const firstDifatSector = buffer.readUInt32LE(68);

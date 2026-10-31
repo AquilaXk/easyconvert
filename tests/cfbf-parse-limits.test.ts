@@ -13,8 +13,8 @@ import { expectNoHang } from './helpers/timing';
 /**
  * What a compound file ([MS-CFB]) may not make the parser do: read one sector for two chains or for a chain and the FAT, follow a
  * chain, a FAT sector list, a DIFAT chain or a directory tree around a loop, end a directory or mini FAT chain outside the file or
- * the FAT, copy more stream bytes than the file's sectors hold, read a directory of more slots than the limit, take a mini stream
- * cutoff other than 4096, nest storages deeper than the limit or spell out more path characters than the budget, or read a file
+ * the FAT, copy more stream bytes than the file's sectors hold, read a directory of more slots than the limit, take the mini stream
+ * cutoff from the header, nest storages deeper than the limit or spell out more path characters than the budget, or read a file
  * larger than the legacy Office readers accept. Each is refused with the typed corrupt-stream error (status 400), so a hostile file
  * cannot make the parser loop or hold many times its own size.
  */
@@ -450,10 +450,13 @@ describe('the mini stream cutoff', () => {
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(MINI_STREAM_BYTES, 0x41));
   });
 
-  it.each([0, 512, 4095, 4097, 0x7fffffff, 0xffffffff])('refuses a header that gives %i', async (cutoff) => {
+  it.each([0, 512, 4095, 4097, 0x7fffffff, 0xffffffff])('reads with the cutoff of 4096 whatever the header gives: %i', (cutoff) => {
     const file = threeStreams(MINI_STREAM_BYTES);
+    const control = parseCfbf(file);
     file.writeUInt32LE(cutoff, MINI_STREAM_CUTOFF_OFFSET);
-    await expectRefused(`cutoff ${cutoff}`, file, new RegExp(`the mini stream cutoff is ${cutoff}, not 4096`));
+    const parsed = parseCfbf(file);
+    expect([...parsed.paths.keys()]).toEqual([...control.paths.keys()]);
+    for (const [name, bytes] of control.paths) expect(parsed.paths.get(name), name).toEqual(bytes);
   });
 });
 
