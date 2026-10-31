@@ -288,7 +288,10 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
     && groupadd -g 10001 -r easyconvert \
     && useradd -u 10001 -r -g easyconvert -G video,render -m -d /home/easyconvert -s /bin/bash easyconvert
 
-# ImageMagick runs only under this policy (MAGICK_CONFIGURE_PATH names its directory on every run): root-owned and read-only.
+# ImageMagick runs only under this policy (MAGICK_CONFIGURE_PATH names its directory on every run): root-owned and read-only. The
+# directories are made first: `COPY --chmod` gives the mode of the file to the parents it creates, and a directory without the search
+# bit hides the policy from the user the application runs as, which then refuses every ImageMagick conversion (503).
+RUN install -d -o root -g root -m 0555 /etc/easyconvert /etc/easyconvert/imagemagick
 COPY --chmod=0444 docker/imagemagick/policy.xml /etc/easyconvert/imagemagick/policy.xml
 COPY --chmod=0555 scripts/verify-imagemagick-policy.sh /usr/local/bin/verify-imagemagick-policy
 
@@ -304,6 +307,7 @@ RUN MAGICK="$(command -v magick || command -v magick-im7.q16)" \
     && dpkg -s libheif-plugin-libde265 > /dev/null \
     && for policy in /etc/ImageMagick-*/policy.xml; do if [ -e "${policy}" ]; then cp /etc/easyconvert/imagemagick/policy.xml "${policy}"; fi; done \
     && verify-imagemagick-policy "${MAGICK}" /etc/easyconvert/imagemagick \
+    && runuser -u easyconvert -- verify-imagemagick-policy "${MAGICK}" /etc/easyconvert/imagemagick \
     && opj_decompress -h 2>&1 | grep -q 'OpenJPEG' \
     && dpkg-query -W -f='${binary:Package} ${Version}\n' 'libheif-plugin-*' 'libheif1*'
 

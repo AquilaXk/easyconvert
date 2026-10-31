@@ -22,6 +22,16 @@ describe('the Dockerfile step that fixes the ImageMagick policy', () => {
     expect(DOCKERFILE).toContain('COPY --chmod=0555 scripts/verify-imagemagick-policy.sh /usr/local/bin/verify-imagemagick-policy');
   });
 
+  it('makes the policy directories searchable before the copy, which would give them the mode of the file', () => {
+    const directories = DOCKERFILE.indexOf(`RUN install -d -o root -g root -m 0555 /etc/easyconvert ${POLICY_DIR}`);
+    expect(directories).toBeGreaterThan(-1);
+    expect(directories).toBeLessThan(DOCKERFILE.indexOf(`COPY --chmod=0444 docker/imagemagick/policy.xml ${POLICY_DIR}/policy.xml`));
+  });
+
+  it('verifies the policy again as the user the application runs as', () => {
+    expect(DOCKERFILE).toContain(`&& runuser -u easyconvert -- verify-imagemagick-policy "\${MAGICK}" ${POLICY_DIR}`);
+  });
+
   it('overwrites every distribution policy file with ours, then verifies, in one step that fails the build', () => {
     const step = DOCKERFILE.split('\n\n').find((block) => block.includes('verify-imagemagick-policy "')) ?? '';
     const overwrite = step.indexOf(`cp ${POLICY_DIR}/policy.xml "\${policy}"`);
