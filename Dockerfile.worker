@@ -166,6 +166,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-djvulibre.sh /tmp/install-djvulibre.sh
 COPY scripts/djvulibre-patches /tmp/djvulibre-patches
+COPY scripts/lib/djvulibre-gates.sh /tmp/lib/djvulibre-gates.sh
 RUN DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu /tmp/install-djvulibre.sh /opt/djvulibre
 
 # ==============================================================================

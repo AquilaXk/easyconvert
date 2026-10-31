@@ -8,11 +8,12 @@ import {
   OCR_CLI_LOGGED_STDERR_CHARS,
   OCR_CLI_MAX_CONCURRENCY,
   OCR_CLI_MAX_TSV_ROWS,
-  CliSemaphore,
+  ocrQueue,
   parseTesseractTsv,
   recognizeWithCli,
 } from '../src/lib/conversions/ocr-cli';
 import { OcrEngineUnavailableError } from '../src/lib/types';
+import { Semaphore } from '../src/lib/workers/semaphore';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
@@ -391,66 +392,20 @@ describe('recognizeWithCli', () => {
   });
 });
 
-describe('CliSemaphore', () => {
-  it('runs at most `limit` tasks at once and releases waiting tasks in order', async () => {
-    const semaphore = new CliSemaphore(2, 10);
-    const order: number[] = [];
-    let active = 0;
-    let peak = 0;
-    const task = (id: number) =>
-      semaphore.run(async () => {
-        active++;
-        peak = Math.max(peak, active);
-        order.push(id);
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        active--;
-      });
-    await Promise.all([1, 2, 3, 4, 5].map(task));
-    expect(peak).toBe(2);
-    expect(order).toEqual([1, 2, 3, 4, 5]);
-  });
-
-  it('rejects with the engine-unavailable error when too many tasks are queued', async () => {
-    const semaphore = new CliSemaphore(1, 1);
+describe('the OCR queue bound', () => {
+  it('refuses a run past the queue with the engine-unavailable error that names what waits', async () => {
+    const semaphore = new Semaphore(1, ocrQueue(1));
     const gate = new Promise<void>((resolve) => setTimeout(resolve, 30));
     const first = semaphore.run(() => gate);
     const second = semaphore.run(() => gate);
-    await expect(semaphore.run(() => gate)).rejects.toThrow(
-      new OcrEngineUnavailableError('OCR is saturated: 1 native runs are already waiting.')
-    );
+    await expect(semaphore.run(() => gate)).rejects.toThrow(new OcrEngineUnavailableError('OCR is saturated: 1 native runs are already waiting.'));
     await Promise.all([first, second]);
   });
 
-  it('ends a wait at its time limit with the error it names, and hands the slot to the next task still waiting', async () => {
-    const semaphore = new CliSemaphore(1, 10);
-    let release = (): void => undefined;
-    const held = semaphore.run(() => new Promise<void>((resolve) => (release = resolve)));
-    const late = semaphore.run(async () => 'late', { timeoutMs: 10, timedOut: () => new Error('waited too long') });
-    const next = semaphore.run(async () => 'next', { timeoutMs: 60_000, timedOut: () => new Error('never') });
-    await expect(late).rejects.toThrow('waited too long');
-    release();
+  it('names the unit of the queue it bounds', async () => {
+    const semaphore = new Semaphore(1, ocrQueue(0, 'page preparations'));
+    const held = semaphore.run(() => new Promise<void>((resolve) => setTimeout(resolve, 30)));
+    await expect(semaphore.run(async () => undefined)).rejects.toThrow('OCR is saturated: 0 page preparations are already waiting.');
     await held;
-    await expect(next).resolves.toBe('next');
-    await expect(semaphore.run(async () => 'free')).resolves.toBe('free');
-  });
-
-  it('ends a wait when its signal aborts, and at once when it has already aborted', async () => {
-    const semaphore = new CliSemaphore(1, 10);
-    let release = (): void => undefined;
-    const held = semaphore.run(() => new Promise<void>((resolve) => (release = resolve)));
-    const cancel = new AbortController();
-    const waiting = semaphore.run(async () => 'ran', { timeoutMs: 60_000, timedOut: () => new Error('never'), signal: cancel.signal });
-    cancel.abort(new Error('cancelled'));
-    await expect(waiting).rejects.toThrow('cancelled');
-    await expect(semaphore.run(async () => 'ran', { timeoutMs: 60_000, timedOut: () => new Error('never'), signal: cancel.signal })).rejects.toThrow('cancelled');
-    release();
-    await held;
-    await expect(semaphore.run(async () => 'free')).resolves.toBe('free');
-  });
-
-  it('frees its slot when a task fails', async () => {
-    const semaphore = new CliSemaphore(1, 1);
-    await expect(semaphore.run(() => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
-    await expect(semaphore.run(async () => 'next')).resolves.toBe('next');
   });
 });

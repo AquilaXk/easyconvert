@@ -9,6 +9,7 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
+import { Semaphore, type SemaphoreQueue } from '../workers/semaphore';
 import { parseTesseractBlocks, type OcrResult } from './ocr-pdf-combiner';
 import { groupAtBoundaries, wordBoundariesAfter, type OcrWordMerge } from './ocr-word-merge';
 import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
@@ -280,80 +281,12 @@ export function parseTesseractTsv(tsv: string, language?: string, pageText?: str
   };
 }
 
-/** How long a task may wait for a slot: until `timeoutMs` has passed, with the error of `timedOut`, or until `signal` aborts. */
-export interface SlotWait {
-  readonly timeoutMs: number;
-  readonly timedOut: () => Error;
-  readonly signal?: AbortSignal;
+/** The queue bound of an OCR semaphore: past `maxQueued` waiting `unit`s a run is refused as an unavailable engine. */
+export function ocrQueue(maxQueued: number, unit: string = 'native runs'): SemaphoreQueue {
+  return { maxQueued, onSaturated: () => new OcrEngineUnavailableError(`OCR is saturated: ${maxQueued} ${unit} are already waiting.`) };
 }
 
-/** Bounds concurrent native runs and the queue behind them. */
-export class CliSemaphore {
-  private active = 0;
-  private readonly waiting: Array<() => void> = [];
-
-  constructor(
-    private readonly limit: number,
-    private readonly maxQueued: number,
-    /** What is queued, for the saturation message. */
-    private readonly unit: string = 'native runs'
-  ) {}
-
-  async run<T>(task: () => Promise<T>, wait?: SlotWait): Promise<T> {
-    if (this.active >= this.limit) {
-      if (this.waiting.length >= this.maxQueued) {
-        throw new OcrEngineUnavailableError(
-          `OCR is saturated: ${this.maxQueued} ${this.unit} are already waiting.`
-        );
-      }
-      // The slot is handed over directly, so `active` stays counted across the hand-off.
-      await this.handedOver(wait);
-    } else {
-      this.active++;
-    }
-    try {
-      return await task();
-    } finally {
-      const next = this.waiting.shift();
-      if (next) next();
-      else this.active--;
-    }
-  }
-
-  /** Resolves when a finishing task hands its slot over; a task that stops waiting leaves the queue, so no slot is handed to it. */
-  private handedOver(wait: SlotWait | undefined): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      if (!wait) {
-        this.waiting.push(resolve);
-        return;
-      }
-      const { signal } = wait;
-      if (signal?.aborted) {
-        reject(signal.reason || new Error('The operation was aborted'));
-        return;
-      }
-      const settle = () => {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-      };
-      const take = () => {
-        settle();
-        resolve();
-      };
-      const leave = (error: Error) => {
-        settle();
-        this.waiting.splice(this.waiting.indexOf(take), 1);
-        reject(error);
-      };
-      const onAbort = () => leave(signal?.reason || new Error('The operation was aborted'));
-      const timer = setTimeout(() => leave(wait.timedOut()), wait.timeoutMs);
-      signal?.addEventListener('abort', onAbort, { once: true });
-      this.waiting.push(take);
-    });
-  }
-}
-
-const cliSemaphore = new CliSemaphore(OCR_CLI_MAX_CONCURRENCY, OCR_CLI_MAX_QUEUED);
+const cliSemaphore = new Semaphore(OCR_CLI_MAX_CONCURRENCY, ocrQueue(OCR_CLI_MAX_QUEUED));
 
 export interface CliOcrRequest {
   cliPath: string;

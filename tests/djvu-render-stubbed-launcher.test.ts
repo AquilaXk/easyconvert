@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   convertDjvu,
   DJVU_CONCURRENT_RUNS,
+  DJVU_SLOT_WAIT_MS,
   DJVULIBRE_DIGESTS_FILE,
   DJVULIBRE_REQUIRED_PATCHES,
   drawBudgetMs,
@@ -16,6 +17,7 @@ import {
 } from '../src/worker/djvu-render';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/worker/sandbox';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { classifyJobFailure } from '../src/lib/queue/job-failure';
 import { EngineUnavailableError } from '../src/lib/types';
 import { chunk, singlePage } from './helpers/djvu-builder';
 import { recordDigests, stampedBinDir } from './helpers/djvulibre-build';
@@ -276,17 +278,76 @@ describe('the DjVu runs of a worker at once', () => {
     await Promise.all(running);
     expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS);
   });
+
+  it(`refuses a document that waited ${DJVU_SLOT_WAIT_MS} ms for a slot as busy, a retryable unavailable engine, and starts none of its programs`, async () => {
+    given({ sizes: PAGES });
+    const requested: number[] = [];
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      requested.push(ms);
+      const wait = new AbortController();
+      setTimeout(() => wait.abort(new DOMException('The operation timed out.', 'TimeoutError')), QUIET_MS);
+      return wait.signal;
+    });
+    const release = holdFirstPrograms();
+    const running = Array.from({ length: DJVU_CONCURRENT_RUNS }, () => convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    await vi.waitFor(() => expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS));
+    const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    expect(error).toBeInstanceOf(EngineUnavailableError);
+    expect(error).toMatchObject({ engineName: 'ddjvu', message: expect.stringContaining('stayed busy') });
+    expect(classifyJobFailure(error)).toEqual({ code: 'EngineUnavailableError', status: 503, retryable: true });
+    expect(requested.at(-1)).toBe(DJVU_SLOT_WAIT_MS);
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS);
+    release();
+    await Promise.all(running);
+    await expect(convert('pdf', { timeoutMs: LONG_JOB_MS })).resolves.toBeDefined();
+  });
+
+  it('frees the slot once ddjvu has drawn, so that the page count of the PDF holds no slot', async () => {
+    given({ sizes: PAGES });
+    let finishCounting = (): void => undefined;
+    const counting = new Promise<void>((resolve) => (finishCounting = resolve));
+    countPdfPages.mockReset();
+    countPdfPages.mockImplementation(async () => {
+      await counting;
+      return drawnPages;
+    });
+    const conversions = Array.from({ length: DJVU_CONCURRENT_RUNS + 1 }, () =>
+      convertDjvu({ input: singlePage(64, 64), src: 'djvu', tgt: 'pdf', options: { timeoutMs: LONG_JOB_MS }, originalFilename: 'stubbed.djvu', interpreter: path.join(dir, 'ddjvu'), convertPdfPages: async () => null, countPdfPages })
+    );
+    await vi.waitFor(() => expect(countPdfPages).toHaveBeenCalledTimes(DJVU_CONCURRENT_RUNS + 1));
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS + 1);
+    finishCounting();
+    await Promise.all(conversions);
+  });
+
+  it('refuses a document that waited while a program was replaced, once its turn comes, and starts none of its programs', async () => {
+    given({ sizes: PAGES });
+    const release = holdFirstPrograms();
+    const running = Array.from({ length: DJVU_CONCURRENT_RUNS }, () => convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    await vi.waitFor(() => expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS));
+    const waiting = refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+    fs.writeFileSync(path.join(dir, 'djvused'), 'djvused replaced while the document waited');
+    release();
+    await Promise.all(running);
+    expect(await waiting).toBeInstanceOf(EngineUnavailableError);
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS);
+  });
 });
 
 describe('the djvulibre build that is run', () => {
   const patchesDir = () => path.join(root, 'share', 'doc', 'djvulibre', 'patches');
+  let warn: MockInstance<typeof console.warn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
 
   it.each(DJVULIBRE_REQUIRED_PATCHES)('refuses a ddjvu whose build lacks %s as an unavailable engine, before any program starts', async (patch) => {
     fs.rmSync(path.join(patchesDir(), patch));
     given({ sizes: PAGES });
     const error = await refusalOf(convert('pdf'));
     expect(error).toBeInstanceOf(EngineUnavailableError);
-    expect(error).toMatchObject({ engineName: 'ddjvu' });
+    expect(error).toMatchObject({ engineName: 'ddjvu', message: expect.stringContaining(`its build has no ${patch}`) });
     expect(launch).not.toHaveBeenCalled();
   });
 
@@ -295,7 +356,9 @@ describe('the djvulibre build that is run', () => {
     given({ sizes: PAGES });
     const error = await refusalOf(convert('pdf'));
     expect(error).toBeInstanceOf(EngineUnavailableError);
-    expect(error.message).toContain(`is not the ${program} its build recorded in ${DJVULIBRE_DIGESTS_FILE}`);
+    expect(error.message).toContain(`the ${program} program differs from the one its build recorded in ${DJVULIBRE_DIGESTS_FILE}`);
+    expect(error.message).not.toContain(root);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(path.join(dir, program)));
     expect(launch).not.toHaveBeenCalled();
   });
 
@@ -324,6 +387,8 @@ describe('the djvulibre build that is run', () => {
     const error = await refusalOf(convert('pdf'));
     expect(error).toBeInstanceOf(EngineUnavailableError);
     expect(error).toMatchObject({ engineName: 'ddjvu' });
+    expect(error.message).not.toContain(root);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(root));
     expect(launch).not.toHaveBeenCalled();
   });
 

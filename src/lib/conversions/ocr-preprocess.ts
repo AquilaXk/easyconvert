@@ -3,7 +3,8 @@ import { OcrPreprocessError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
 import { identityGeometry, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
-import { CliSemaphore } from './ocr-cli';
+import { ocrQueue } from './ocr-cli';
+import { Semaphore } from '../workers/semaphore';
 import { countTextRows, OCR_SMALL_CROP_MAX_HEIGHT_PX } from './ocr-config';
 import { encodePbm, encodePgm, encodePpm, isBitonal } from './pnm';
 import { measureInk, OCR_BAND_MIN_LINES, type OcrInkProfile } from './ocr-bands';
@@ -332,7 +333,7 @@ function quarterTurnGeometry(
   };
 }
 
-const preparationSlots = new CliSemaphore(OCR_PREPROCESS_MAX_CONCURRENCY, OCR_PREPROCESS_MAX_QUEUED, 'page preparations');
+const preparationSlots = new Semaphore(OCR_PREPROCESS_MAX_CONCURRENCY, ocrQueue(OCR_PREPROCESS_MAX_QUEUED, 'page preparations'));
 
 /**
  * Decodes the page, measures its text and applies the enabled steps. The page is decoded upright

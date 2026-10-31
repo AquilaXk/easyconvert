@@ -44,7 +44,7 @@ const CHAIN_HANG_GUARD_MS = 40_000;
  * silicon (measured); the unpatched 3.5.28 takes about 50 s for the first and waits on the second until its budget ends it.
  */
 const PATCHED_CHAIN_EXPECTED_LOCAL_MS = 1_500;
-const patchedBuild = patchedDdjvu();
+const patchedBuild = await patchedDdjvu();
 const notPatched = skipUnless('the djvulibre build of scripts/install-djvulibre.sh', patchedBuild !== undefined);
 const runsCannotStart = skipUnless('a user namespace of its own and prlimit for each DjVu run (Linux)', djvuRunsCanStart());
 /** The worker draws only with the patched build, in runs that can have their task limit. */

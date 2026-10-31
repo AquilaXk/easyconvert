@@ -15,9 +15,9 @@ import { getOracleToolPath } from './differential-oracle';
 export const DISTRIBUTION_DDJVU = '/usr/bin/ddjvu';
 
 /** The `ddjvu` the oracles resolve when it is the patched build, or undefined for another build or none. */
-export function patchedDdjvu(): string | undefined {
+export async function patchedDdjvu(): Promise<string | undefined> {
   const ddjvu = getOracleToolPath('ddjvu');
-  return ddjvu !== null && isPatchedDjvulibre(ddjvu) ? ddjvu : undefined;
+  return ddjvu !== null && (await isPatchedDjvulibre(ddjvu)) ? ddjvu : undefined;
 }
 
 /** Whether a DjVu run can start here: the worker refuses one that cannot have a user namespace of its own and prlimit (Linux). */

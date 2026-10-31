@@ -16,6 +16,7 @@ import { parseDockerfile } from './helpers/dockerfile';
 const ROOT = path.resolve(__dirname, '..');
 const DOCKERFILE = fs.readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8');
 const INSTALL = fs.readFileSync(path.join(ROOT, 'scripts', 'install-djvulibre.sh'), 'utf-8');
+const GATES = fs.readFileSync(path.join(ROOT, 'scripts', 'lib', 'djvulibre-gates.sh'), 'utf-8');
 const PATCH_DIR = path.join(ROOT, 'scripts', 'djvulibre-patches');
 const ACTION_DIR = path.join(ROOT, '.github', 'actions', 'ci-setup');
 const stages = parseDockerfile(DOCKERFILE);
@@ -34,7 +35,7 @@ describe('the djvulibre stage of the worker image', () => {
     }
     expect(run).toContain('DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu /tmp/install-djvulibre.sh /opt/djvulibre');
     const copies = stage?.instructions.filter((instruction) => instruction.keyword === 'COPY').map((instruction) => instruction.argument) ?? [];
-    expect(copies).toEqual(['scripts/install-djvulibre.sh /tmp/install-djvulibre.sh', 'scripts/djvulibre-patches /tmp/djvulibre-patches']);
+    expect(copies).toEqual(['scripts/install-djvulibre.sh /tmp/install-djvulibre.sh', 'scripts/djvulibre-patches /tmp/djvulibre-patches', 'scripts/lib/djvulibre-gates.sh /tmp/lib/djvulibre-gates.sh']);
   });
 
   it('leaves the distribution package out of the runner, copies the build and its notes, and fails unless the two programs load and draw a page', () => {
@@ -77,14 +78,12 @@ describe('the install script of djvulibre', () => {
     expect(INSTALL).toMatch(/^DJVULIBRE_SNAPSHOT="https:\/\/snapshot\.debian\.org\/archive\/debian\/\d{8}T\d{6}Z\/pool\/main\/d\/djvulibre"$/m);
     expect(INSTALL).toMatch(/^DJVULIBRE_POOL="https:\/\/deb\.debian\.org\/debian\/pool\/main\/d\/djvulibre"$/m);
     expect(INSTALL).toContain('DJVULIBRE_SOURCES=("$DJVULIBRE_SNAPSHOT" "$DJVULIBRE_POOL")');
-    expect(INSTALL).toContain("--proto '=https'");
-    const fetch = INSTALL.slice(INSTALL.indexOf('fetch_checked() {'), INSTALL.indexOf('\n}\n', INSTALL.indexOf('fetch_checked() {')));
-    expect(fetch).toContain('for source in "${DJVULIBRE_SOURCES[@]}"; do');
-    expect(fetch).toContain('-o "$work/$1" "$source/$1" \\\n      && echo "${2}  $work/$1" | sha256sum --check --strict - >&2; then');
-    expect(fetch).toContain('rm -f "$work/$1"');
-    expect(INSTALL).toContain('orig_source="$(fetch_checked "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256")"');
-    expect(INSTALL).toContain('debian_source="$(fetch_checked "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256")"');
-    expect(INSTALL.match(/\bcurl /g)).toHaveLength(1);
+    expect(INSTALL).toContain('orig_source="$(fetch_checked "$work" "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256" "${DJVULIBRE_SOURCES[@]}")"');
+    expect(INSTALL).toContain('debian_source="$(fetch_checked "$work" "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256" "${DJVULIBRE_SOURCES[@]}")"');
+    expect(INSTALL).toContain('source "$script_dir/lib/djvulibre-gates.sh"');
+    expect(INSTALL.match(/\bcurl /g)).toBeNull();
+    expect(GATES.match(/\bcurl /g)).toHaveLength(1);
+    expect(GATES).toContain("--proto '=https'");
     expect(INSTALL.indexOf('tar -xJf')).toBeGreaterThan(INSTALL.indexOf('debian_source="$(fetch_checked'));
   });
 
@@ -146,32 +145,26 @@ describe('the install script of djvulibre', () => {
     expect(INSTALL).toMatch(/^CHAIN_LEVELS=40$/m);
     expect(INSTALL).toMatch(/^MASK_CHAIN_LEVELS="40 60"$/m);
     expect(INSTALL).toMatch(/^THREAD_CHAIN_LEVELS=100$/m);
-    expect(INSTALL).toMatch(/^THREAD_STACK_KIB=8192$/m);
-    expect(INSTALL).toMatch(/^DDJVU_FAILED=10$/m);
-    expect(INSTALL).toMatch(/^TIMED_OUT=124$/m);
-    expect(INSTALL).toMatch(/^DDJVU_CRASHED_AT_EXIT=139$/m);
-    expect(INSTALL).toMatch(/^KILLED=137$/m);
-    expect(INSTALL).toMatch(/^DECODE_FAILED_TEXT="Decode of an included file failed"$/m);
+    expect(GATES).toMatch(/^THREAD_STACK_KIB=8192$/m);
+    expect(GATES).toMatch(/^DDJVU_FAILED=10$/m);
+    expect(GATES).toMatch(/^TIMED_OUT=124$/m);
+    expect(GATES).toMatch(/^DDJVU_CRASHED_AT_EXIT=139$/m);
+    expect(GATES).toMatch(/^KILLED=137$/m);
+    expect(GATES).toMatch(/^DECODE_FAILED_TEXT="Decode of an included file failed"$/m);
+    expect(GATES).toMatch(/^GATE_LANGUAGE=C$/m);
+    expect(GATES).toMatch(/^GATE_LOCALE=C\.UTF-8$/m);
     expect(INSTALL).toContain('write_chain "$check_dir/fan-out" "$CHAIN_LEVELS" 2 "$check_dir/info"');
     expect(INSTALL).toContain('write_chain "$check_dir/mask$levels" "$levels" 2 "$check_dir/mask/info" "$check_dir/mask/sjbz"');
     expect(INSTALL).toContain('write_chain "$check_dir/dictionary" "$last_levels" 2 "$check_dir/mask/info" "$check_dir/mask/sjbz" "$check_dir/mask/djbz"');
     expect(INSTALL).toContain('write_chain "$check_dir/deep" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/info"');
     expect(INSTALL).toContain('[ "$status" -eq "$DDJVU_FAILED" ] || { echo "ddjvu ended with status $status on a mask over $levels shared files without its dictionary: the search patch is not in the build"');
-    const threadGate = INSTALL.slice(INSTALL.indexOf('case "$deep_status" in'), INSTALL.indexOf('esac', INSTALL.indexOf('case "$deep_status" in')));
-    expect(threadGate).toContain('"$DDJVU_FAILED" | "$DDJVU_CRASHED_AT_EXIT")\n    grep -q "$DECODE_FAILED_TEXT" "$check_dir/deep/stderr"');
-    expect(threadGate).toContain('"$TIMED_OUT" | "$KILLED")\n    echo "ddjvu was stopped with status $deep_status on a chain whose threads cannot all start: the thread patch is not in the build"');
-    expect(threadGate.match(/cat "\$check_dir\/deep\/stderr" >&2; exit 1/g)).toHaveLength(3);
+    expect(INSTALL).toContain('thread_gate "$tools/ddjvu" "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf" "$check_dir/deep/stderr" || exit 1');
     expect(INSTALL.match(/\[ "\$status" -eq "\$TIMED_OUT" \]/g)).toHaveLength(2);
-    expect(INSTALL).toContain('(ulimit -s "$THREAD_STACK_KIB" && exec timeout --signal=KILL "$CHAIN_DRAW_SECONDS" prlimit');
-    expect(INSTALL).toContain('2> "$check_dir/deep/stderr"');
-    const samePixels = INSTALL.slice(INSTALL.indexOf('same_pixels() {'), INSTALL.indexOf('\n}\n', INSTALL.indexOf('same_pixels() {')));
-    expect(samePixels).toContain('for pdf in "$1" "$2"; do');
-    expect(samePixels).toContain('[ "$rendered" -eq "$3" ]');
     expect(INSTALL).toContain('same_pixels "$check_dir/dictionary/chain.pdf" "$check_dir/dictionary/reference.pdf" 1');
     expect(INSTALL).toContain('same_pixels "$check_dir/patched.pdf" "$check_dir/reference.pdf" "$("$tools/djvused" -e n "$manual")"');
     expect(INSTALL).not.toMatch(/\|\| \{ echo "ddjvu did not draw/);
     const install = INSTALL.indexOf('install -m 0755 --strip');
-    for (const gate of ['"$tools/cjb2"', 'write_chain "$check_dir/fan-out"', 'write_chain "$check_dir/mask$levels"', 'write_chain "$check_dir/dictionary"', 'write_chain "$check_dir/deep"', 'same_pixels "$check_dir/patched.pdf"']) {
+    for (const gate of ['"$tools/cjb2"', 'write_chain "$check_dir/fan-out"', 'write_chain "$check_dir/mask$levels"', 'write_chain "$check_dir/dictionary"', 'thread_gate "$tools/ddjvu"', 'same_pixels "$check_dir/patched.pdf"']) {
       expect(INSTALL.indexOf(gate), gate).toBeLessThan(install);
     }
   });
@@ -196,7 +189,7 @@ describe('the install script of djvulibre', () => {
 });
 
 describe('the djvulibre of CI', () => {
-  it('is built by the same script in a task of its own after the packages it links, checked against the distribution program, and cached by the image, the script and the patches', () => {
+  it('is built by the same script in a task of its own after the packages it links, checked against the distribution program, and cached by the image, the script, its gates library and the patches', () => {
     const tools = fs.readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
     const task = tools.slice(tools.indexOf('task_djvulibre() {'), tools.indexOf('task_verapdf() {'));
     const apt = tools.slice(tools.indexOf('task_apt() {'));
@@ -207,7 +200,7 @@ describe('the djvulibre of CI', () => {
     const packages = fs.readFileSync(path.join(ACTION_DIR, 'apt-packages.txt'), 'utf-8').split('\n');
     for (const pkg of ['djvulibre-bin', 'autoconf', 'automake', 'libtool', 'libjpeg-dev', 'libtiff-dev', 'poppler-utils']) expect(packages, pkg).toContain(pkg);
     const action = fs.readFileSync(path.join(ACTION_DIR, 'action.yml'), 'utf-8');
-    expect(action).toContain("key: djvulibre-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('scripts/install-djvulibre.sh', 'scripts/djvulibre-patches/*') }}");
+    expect(action).toContain("key: djvulibre-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('scripts/install-djvulibre.sh', 'scripts/lib/djvulibre-gates.sh', 'scripts/djvulibre-patches/*') }}");
     expect(action).toContain('DJVULIBRE_CACHE_HIT: ${{ steps.djvulibre-cache.outputs.cache-hit }}');
   });
 });

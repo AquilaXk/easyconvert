@@ -14,6 +14,8 @@
 # this build.
 #
 # Usage: DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu install-djvulibre.sh [install-dir]   (default /opt/djvulibre)
+# The checks that read the output of other programs (the download, the pixels of two PDFs, the status of the thread gate) are in
+# scripts/lib/djvulibre-gates.sh, which this script sources and tests/djvulibre-gates.test.ts runs against stand-ins for those programs.
 # Needs a C++ compiler, make, autoconf, automake, libtool, pkg-config, patch, curl, xz, dpkg-buildflags (dpkg-dev), the development
 # packages of libjpeg and libtiff, pdftoppm, and the distribution's ddjvu of the same version (djvulibre-bin), the reference of the
 # checks: on Debian, the system the worker image is built on, its package must be the revision pinned here, so that a Debian update of
@@ -47,14 +49,18 @@ DJVULIBRE_PATCHES=(
   "include-search-visit-once.patch f5fed030a06452278288fac3583cab8a107fca1351303fd8f2b49cd90a437dfe"
   "decode-thread-start-failure.patch 68fd3f8c5bcc10dc46a92280b5501f1812f15a47c6a29e04b13b0bee543c4480"
 )
-patch_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/djvulibre-patches"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+patch_dir="$script_dir/djvulibre-patches"
+# The gates that read the output of other programs, which tests/djvulibre-gates.test.ts runs against stand-ins for them.
+# shellcheck source=lib/djvulibre-gates.sh
+source "$script_dir/lib/djvulibre-gates.sh"
 # The programs the worker runs; the others the build makes are not installed.
 PROGRAMS="ddjvu djvused"
 # The packages the programs are built with, recorded in tool-version.txt.
 BUILD_PACKAGES=(g++ libjpeg-dev libtiff-dev autoconf automake libtool)
-# A chain of shared files that each include the next two: drawn in 0.04 s with the patch and in about 50 s without it.
+# A chain of shared files that each include the next two: drawn in 0.04 s with the patch and in about 50 s without it; CHAIN_DRAW_SECONDS of the
+# gates library is how long every chain may take.
 CHAIN_LEVELS=40
-CHAIN_DRAW_SECONDS=10
 # The JB2 mask of a page of the reference manual over chains of shared files that each include the next two: the patched program
 # reports the missing shape dictionary in 0.02 s at 40 and 60 files, where the distribution's takes 8.2 s at 30 files and about 1.7
 # times as long for each file more.
@@ -62,19 +68,9 @@ MASK_CHAIN_LEVELS="40 60"
 # How long the distribution's program still searches a chain of CHAIN_LEVELS files when it is stopped, which shows that the chains
 # exercise the search the patch changes.
 REFERENCE_SEARCH_SECONDS=5
-# A chain of shared files that each include the next, under an address space that holds the stacks of about 64 threads of 8 MiB.
+# A chain of shared files that each include the next, under an address space that holds the stacks of about 64 threads (THREAD_CHAIN_ADDRESS_SPACE
+# and THREAD_STACK_KIB of the gates library).
 THREAD_CHAIN_LEVELS=100
-THREAD_CHAIN_ADDRESS_SPACE=$((512 * 1024 * 1024))
-THREAD_STACK_KIB=8192
-# The exit status of ddjvu when it cannot decode a page (tools/ddjvu.cpp `die`), and of `timeout` when it stops a command.
-DDJVU_FAILED=10
-TIMED_OUT=124
-# The status of a ddjvu that crashed (SIGSEGV) after it printed the error, when the threads of a chain fail together and still look up
-# their messages while `exit` destroys the catalog (entry 135 of docs/policy-decisions.md), and of one that `timeout --signal=KILL` stopped.
-DDJVU_CRASHED_AT_EXIT=139
-KILLED=137
-# What ddjvu prints when the decoding of an included file failed (DjVuFile.decode_fail of share/djvu/osi/en/libdjvu++.xml).
-DECODE_FAILED_TEXT="Decode of an included file failed"
 
 reference_file="$(readlink -f "$REFERENCE_DDJVU")"
 reference_package="$(dpkg-query -S "$reference_file" | cut -d: -f1)"
@@ -92,23 +88,8 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# fetch_checked <archive> <sha256>: downloads <archive> into the work directory from the first of DJVULIBRE_SOURCES that serves it with that
-# SHA-256, and prints that source.
-fetch_checked() {
-  local source
-  for source in "${DJVULIBRE_SOURCES[@]}"; do
-    rm -f "$work/$1"
-    if curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 -o "$work/$1" "$source/$1" \
-      && echo "${2}  $work/$1" | sha256sum --check --strict - >&2; then
-      echo "$source"
-      return 0
-    fi
-    echo "$source/$1 did not give the file of SHA-256 $2" >&2
-  done
-  return 1
-}
-orig_source="$(fetch_checked "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256")"
-debian_source="$(fetch_checked "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256")"
+orig_source="$(fetch_checked "$work" "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256" "${DJVULIBRE_SOURCES[@]}")"
+debian_source="$(fetch_checked "$work" "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256" "${DJVULIBRE_SOURCES[@]}")"
 tar -xJf "$work/$DJVULIBRE_ORIG" -C "$work"
 source_dir="$work/djvulibre-${DJVULIBRE_VERSION}"
 tar -xJf "$work/$DJVULIBRE_DEBIAN" -C "$source_dir"
@@ -226,19 +207,6 @@ status_of() {
   "$@" > /dev/null 2>&1 || status=$?
   echo "$status"
 }
-# same_pixels <a.pdf> <b.pdf> <pages>: whether pdftoppm renders each of the two PDFs to <pages> pages, and both to the same pixels.
-same_pixels() {
-  local pdf page rendered
-  for pdf in "$1" "$2"; do
-    mkdir "$pdf.pages"
-    pdftoppm -r 50 "$pdf" "$pdf.pages/page"
-    rendered="$(find "$pdf.pages" -name '*.ppm' | wc -l)"
-    [ "$rendered" -eq "$3" ] || { echo "$pdf rendered to $rendered pages, not $3" >&2; return 1; }
-  done
-  for page in "$1.pages"/*.ppm; do
-    cmp -s "$page" "$2.pages/$(basename "$page")" || { echo "$(basename "$page") differs" >&2; return 1; }
-  done
-}
 
 # The INFO chunk of a page of 8 x 8 pixels at 300 dpi (libdjvu/DjVuInfo.cpp `decode`).
 printf 'INFO\000\000\000\012\000\010\000\010\030\000\054\001\026\000' > "$check_dir/info"
@@ -277,19 +245,7 @@ same_pixels "$check_dir/dictionary/chain.pdf" "$check_dir/dictionary/reference.p
 # The thread patch fails the drawing with the decode failure (status 10), or the program crashes at exit after printing it; without the
 # patch it waits until it is killed.
 write_chain "$check_dir/deep" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/info"
-deep_status=0
-(ulimit -s "$THREAD_STACK_KIB" && exec timeout --signal=KILL "$CHAIN_DRAW_SECONDS" prlimit --as="$THREAD_CHAIN_ADDRESS_SPACE" -- \
-  env MALLOC_ARENA_MAX=1 "$tools/ddjvu" -format=pdf "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf") > /dev/null 2> "$check_dir/deep/stderr" \
-  || deep_status=$?
-case "$deep_status" in
-  "$DDJVU_FAILED" | "$DDJVU_CRASHED_AT_EXIT")
-    grep -q "$DECODE_FAILED_TEXT" "$check_dir/deep/stderr" \
-      || { echo "ddjvu ended with status $deep_status on a chain whose threads cannot all start, without the decode failure:" >&2; cat "$check_dir/deep/stderr" >&2; exit 1; } ;;
-  "$TIMED_OUT" | "$KILLED")
-    echo "ddjvu was stopped with status $deep_status on a chain whose threads cannot all start: the thread patch is not in the build" >&2; cat "$check_dir/deep/stderr" >&2; exit 1 ;;
-  *)
-    echo "ddjvu ended with status $deep_status on a chain whose threads cannot all start:" >&2; cat "$check_dir/deep/stderr" >&2; exit 1 ;;
-esac
+thread_gate "$tools/ddjvu" "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf" "$check_dir/deep/stderr" || exit 1
 
 # The patches change no pixel: the reference manual is drawn by the patched program and by the distribution's program of the same version,
 # and pdftoppm renders both PDFs to the same pages.

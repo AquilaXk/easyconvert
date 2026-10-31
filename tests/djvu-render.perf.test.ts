@@ -36,7 +36,7 @@ import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 const toolsMissing = skipWithoutTools('ddjvu', 'djvused', 'c44', 'djvm');
 const notLinux = skipUnless('Linux, which enforces the address space and task limits of the sandbox', process.platform === 'linux');
-const notPatched = skipUnless('the djvulibre build of scripts/install-djvulibre.sh', patchedDdjvu() !== undefined);
+const notPatched = skipUnless('the djvulibre build of scripts/install-djvulibre.sh', (await patchedDdjvu()) !== undefined);
 const runsCannotStart = skipUnless('a user namespace of its own and prlimit for each DjVu run (Linux)', djvuRunsCanStart());
 const noDistributionBuild = skipUnless(`the distribution's ddjvu at ${DISTRIBUTION_DDJVU}, the reference of the patched build`, fs.existsSync(DISTRIBUTION_DDJVU));
 const TEST_TIMEOUT_MS = 300_000;

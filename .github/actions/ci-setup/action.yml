@@ -88,7 +88,7 @@ runs:
         key: ghostxps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-ghostxps.sh') }}
 
     # The patched djvulibre is built from the Debian source pinned in scripts/install-djvulibre.sh with the patches beside it, and links
-    # the libjpeg and libtiff of the runner image, so the image version, the script and the patches are the key.
+    # the libjpeg and libtiff of the runner image, so the image version, the script, its gates library and the patches are the key.
     - name: Prepare the DjVu renderer directory
       shell: bash
       run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/djvulibre
@@ -98,7 +98,7 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: /opt/djvulibre
-        key: djvulibre-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('scripts/install-djvulibre.sh', 'scripts/djvulibre-patches/*') }}
+        key: djvulibre-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('scripts/install-djvulibre.sh', 'scripts/lib/djvulibre-gates.sh', 'scripts/djvulibre-patches/*') }}
 
     - name: Restore RAW sample cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
