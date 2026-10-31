@@ -37,48 +37,36 @@ function sessionHeaders(user: User, extraHeaders: Record<string, string> = {}): 
 }
 
 describe('Security: Multipart Upload Authentication and Ownership Guard', () => {
-  it('(a) rejects unauthenticated initiate, chunk, and complete requests with 401', async () => {
-    // 1. initiate
-    const initReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename: 'test.dat', totalSize: 1024 }),
-    });
-    const initRes = await multipartPost(initReq);
-    expect(initRes.status).toBe(401);
-    const initJson = await initRes.json();
-    expect(initJson.status).toBe(401);
-    expect(initJson.detail).toContain('Authentication required');
+  it('(a) lets a visitor without an account open an upload, and answers 404 for every session that is not its own', async () => {
+    const initRes = await multipartPost(
+      new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: 'test.dat', totalSize: 1024 }),
+      })
+    );
+    expect(initRes.status).toBe(200);
+    s3Storage.abortMultipartUpload((await initRes.json()).uploadId);
 
-    // 2. chunk
-    const chunkReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
-      method: 'POST',
-      headers: {
-        'x-upload-id': 'up_fake_123',
-        'x-part-number': '1',
-      },
-      body: Buffer.from('chunk data'),
-    });
-    const chunkRes = await multipartPost(chunkReq);
-    expect(chunkRes.status).toBe(401);
+    const chunkRes = await multipartPost(
+      new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
+        method: 'POST',
+        headers: { 'x-upload-id': 'up_fake_123', 'x-part-number': '1' },
+        body: Buffer.from('chunk data'),
+      })
+    );
+    expect(chunkRes.status).toBe(404);
 
-    // 3. complete
-    const completeReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId: 'up_fake_123', parts: [] }),
-    });
-    const completeRes = await multipartPost(completeReq);
-    expect(completeRes.status).toBe(401);
-
-    // 4. abort
-    const abortReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=abort`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId: 'up_fake_123' }),
-    });
-    const abortRes = await multipartPost(abortReq);
-    expect(abortRes.status).toBe(401);
+    for (const action of ['complete', 'abort']) {
+      const res = await multipartPost(
+        new NextRequest(`${BASE_URL}/api/storage/multipart?action=${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uploadId: 'up_fake_123', parts: [] }),
+        })
+      );
+      expect(res.status, action).toBe(404);
+    }
   });
 
   it('(b) answers a chunk upload from user B with 404 when using user A uploadId', async () => {

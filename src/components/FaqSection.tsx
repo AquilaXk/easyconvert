@@ -19,7 +19,7 @@ export interface FaqSectionProps {
 const DEFAULT_FAQS: FaqItem[] = [
   {
     q: 'Is EasyConvert free to use?',
-    a: 'Yes, EasyConvert is completely free. There are no paywalls, credit packs, hidden subscriptions, or watermarks, and no account is required to convert files.',
+    a: `Yes. You can convert without an account, up to ${formatBytes(PLAN_MAX_FILE_BYTES.anonymous)} per file and within a daily conversion limit. The Pro plan raises the file size to ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} and the Enterprise plan to ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)}.`,
   },
   {
     q: 'How are my files handled during conversion?',
@@ -27,7 +27,7 @@ const DEFAULT_FAQS: FaqItem[] = [
   },
   {
     q: 'What is the maximum file size limit?',
-    a: `EasyConvert supports individual files up to ${formatBytes(PLAN_MAX_FILE_BYTES.anonymous)} without an account. Browser-executed conversions start immediately without waiting for network uploads.`,
+    a: `EasyConvert supports individual files up to ${formatBytes(PLAN_MAX_FILE_BYTES.anonymous)} without an account or on the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} on Pro and ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} on Enterprise. Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled.`,
   },
   {
     q: 'Can I convert multiple files in one batch?',

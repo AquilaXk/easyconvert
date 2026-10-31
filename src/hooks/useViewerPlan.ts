@@ -2,7 +2,13 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 import type { Plan } from '@/lib/plan-limits';
-import { getViewerPlan, refreshViewerPlan, subscribeViewerPlan } from '@/lib/viewer-plan';
+import {
+  getViewerAccount,
+  getViewerPlan,
+  refreshViewerPlan,
+  subscribeViewerPlan,
+  type ViewerAccount,
+} from '@/lib/viewer-plan';
 
 const SERVER_PLAN: Plan = 'anonymous';
 
@@ -12,4 +18,12 @@ export function useViewerPlan(): Plan {
     void refreshViewerPlan();
   }, []);
   return useSyncExternalStore(subscribeViewerPlan, getViewerPlan, () => SERVER_PLAN);
+}
+
+/** The signed-in person of the page, from the same session read as `useViewerPlan`; null for a visitor. */
+export function useViewerAccount(): ViewerAccount | null {
+  useEffect(() => {
+    void refreshViewerPlan();
+  }, []);
+  return useSyncExternalStore(subscribeViewerPlan, getViewerAccount, () => null);
 }

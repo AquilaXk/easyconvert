@@ -17,6 +17,8 @@ import { middleware } from '../src/middleware';
 import { POST as convertHandler } from '../src/app/api/convert/route';
 import { POST as multipartHandler } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsHandler } from '../src/app/api/queue/jobs/route';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 
 describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware', () => {
   beforeEach(() => {
@@ -329,7 +331,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       });
     });
 
-    it('rejects unauthenticated multipart upload initiation with 401', async () => {
+    it('opens an upload for an anonymous caller within the anonymous limit, and refuses one past it', async () => {
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
         method: 'POST',
         headers: {
@@ -344,7 +346,18 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       });
 
       const res = await multipartHandler(req);
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(200);
+      const { uploadId } = await res.json();
+      s3Storage.abortMultipartUpload(uploadId);
+
+      const tooLarge = await multipartHandler(
+        new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.99' },
+          body: JSON.stringify({ filename: 'document.pdf', totalSize: PLAN_MAX_FILE_BYTES.anonymous + 1 }),
+        })
+      );
+      expect(tooLarge.status).toBe(413);
     });
 
     it('permits authenticated multipart upload initiation within tier limit', async () => {

@@ -4,7 +4,7 @@ import { CONVERSION_WARNINGS_HEADER } from '@/lib/api/conversion-warnings';
 import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 import { formatBytes } from '@/lib/format-bytes';
-import { PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
+import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
@@ -96,6 +96,9 @@ export const PLAN_FILE_LIMITS_TEXT = `${formatBytes(PLAN_MAX_FILE_BYTES.free)} f
 
 /** Description of the 413 answer for a file over the limit of the caller's plan. */
 export const PLAN_FILE_LIMIT_DESCRIPTION = `Payload Too Large: the file is over the limit of the caller's plan (${PLAN_FILE_LIMITS_TEXT}). The detail states the size, the limit and the next plan that allows more.`;
+
+/** Description of the 413 answer for a request body past what one request may carry. */
+export const SINGLE_REQUEST_LIMIT_DESCRIPTION = `Or: the request body is over ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} of file and form fields. A larger file is sent in parts (\`/api/v1/uploads\` or the \`/api/storage/multipart\` flow of the web application) and converted by a job on the stored file.`;
 
 /** Description of the 413 answer for a picture that declares more pixels than the input limit. */
 export const INPUT_PIXEL_LIMIT_DESCRIPTION = `Payload Too Large: an image (or an image inside the document) declares more than ${

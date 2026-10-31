@@ -87,7 +87,7 @@ function RowStatusDisplay({
     return (
       <div className="flex items-center gap-2 min-w-[140px]">
         <progress
-          value={rounded} max={100} aria-label={`Converting ${item.name}`}
+          value={rounded} max={100} aria-label={`${item.status === 'uploading' ? 'Uploading' : 'Converting'} ${item.name}`}
           className="flex-1 h-2 w-full rounded-full overflow-hidden accent-brand-700 [&::-webkit-progress-bar]:bg-neutral-200 dark:[&::-webkit-progress-bar]:bg-dark-elevated [&::-webkit-progress-value]:bg-brand-700 [&::-moz-progress-bar]:bg-brand-700"
         />
         <span className="text-xs font-mono text-ink-secondary dark:text-neutral-300 tabular-nums">{rounded}%</span>
@@ -229,10 +229,9 @@ export default function QueueItemRow({
 
         <button
           type="button"
-          aria-label={`Remove ${item.name}`}
-          disabled={isBusy}
+          aria-label={`${isBusy ? 'Cancel' : 'Remove'} ${item.name}`}
           onClick={onRemove}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
         >
           <X className="w-4 h-4" />
         </button>

@@ -4,7 +4,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { inspectArchive } from '@/lib/conversions';
@@ -38,7 +38,7 @@ async function readMultipartArchive(req: NextRequest, instanceUri: string): Prom
   };
 }
 
-export async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/archives/inspect';
 
   // 1. Guard check: Authenticate
@@ -188,4 +188,4 @@ export async function POST(req: NextRequest) {
       'Internal Server Error'
     );
   }
-}
+});

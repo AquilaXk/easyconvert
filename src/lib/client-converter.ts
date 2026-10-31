@@ -14,6 +14,8 @@ import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { deriveQuantizerLevels } from './edge/quantizer-levels';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
+import { executeResumableCloudConversion, type ResumableStage } from './edge/pipelines/resumable-cloud-pipeline';
+import { needsUploadInParts } from './plan-limits';
 import {
   executeWebGpuCompute,
   isWebGpuComputeSupported,
@@ -28,6 +30,8 @@ export interface EdgeTierFallback {
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
+  /** Called when a file sent to the server in parts moves from its upload to its conversion. */
+  onStage?: (stage: ResumableStage) => void;
   onSuccess: (
     resultUrl: string,
     resultSize: number,
@@ -48,6 +52,9 @@ export interface ClientEdgeResult {
   fallbackFrom?: ConversionTier;
   escalationReason?: string;
 }
+
+const CLOUD_TIER_NAME = 'Cloud (Zero-Retention)';
+const CLOUD_PARTS_TIER_NAME = 'Cloud (Upload in parts)';
 
 /** Reason recorded when a tier returned no result without raising an error. */
 const L1A_NO_RESULT_REASON = 'L1A returned no result';
@@ -570,7 +577,8 @@ async function processL2Conversion(
  */
 export async function executeItemConversion(
   item: ConversionQueueItem,
-  callbacks: ConvertItemCallbacks
+  callbacks: ConvertItemCallbacks,
+  signal?: AbortSignal
 ): Promise<void> {
   // 1. Check for client-side Edge processing (L0 pure, L2 OCR, etc.)
   let escalation: EdgeTierFallback | undefined;
@@ -608,16 +616,20 @@ export async function executeItemConversion(
     return;
   }
 
-  // 3. Server-side conversion pipeline with Zero-Data Retention guarantee
+  // 3. Server-side conversion pipeline: one request with the Zero-Data Retention guarantee, or for a file too large
+  // for one request an upload in parts and a job (entry 137), whose input and result are deleted after the download.
+  const inParts = needsUploadInParts(item.file.size);
   try {
-    const cloudRes = await executeServerlessCloudFallback(
-      item.file,
-      item.targetFormat,
-      item.options,
-      callbacks.onProgress
-    );
-    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, 'Cloud (Zero-Retention)', escalation);
+    const cloudRes = inParts
+      ? await executeResumableCloudConversion(item.file, item.targetFormat, item.options, {
+          onProgress: callbacks.onProgress,
+          onStage: callbacks.onStage,
+          signal,
+        })
+      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress);
+    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: any) {
+    if (signal?.aborted) return;
     callbacks.onError(err.message || 'Conversion failed. Please try another format.');
   }
 }

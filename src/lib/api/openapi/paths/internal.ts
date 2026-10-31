@@ -20,6 +20,7 @@ import {
   CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
   PLAN_FILE_LIMIT_DESCRIPTION,
+  SINGLE_REQUEST_LIMIT_DESCRIPTION,
   PLAN_FILE_LIMITS_TEXT,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
@@ -33,7 +34,7 @@ const INTERNAL = { 'x-internal': true };
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).${PDFA_ENGINE_NOTE}`;
 const PAYLOAD_LIMIT_DESCRIPTION =
-  `${PLAN_FILE_LIMIT_DESCRIPTION} Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.`;
+  `${PLAN_FILE_LIMIT_DESCRIPTION} ${SINGLE_REQUEST_LIMIT_DESCRIPTION} Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.`;
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -319,7 +320,7 @@ export const internalPaths = {
         '400': createErrorResponse('Missing or invalid URL, or the remote server returned 4xx.'),
         '401': createProblemResponse('Authentication required.'),
         '403': createErrorResponse('URL resolves to a private address.'),
-        '413': createErrorResponse('Remote file exceeds the 100 MB limit of the import.'),
+        '413': createErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.'),
         '502': createErrorResponse('Redirect failure, remote 5xx, or empty body.'),
       },
     },
@@ -475,9 +476,9 @@ export const internalPaths = {
       ...INTERNAL,
       summary: 'Legacy Multipart Upload',
       description:
-        'Web application upload flow selected by `action`: `initiate`, `chunk` (raw body with `x-upload-id` and `x-part-number`), `complete`, `abort`, or `presign`. Public clients use `/api/v1/uploads`.',
+        'Web application upload flow selected by `action`: `initiate` (JSON `filename`, `totalSize`, optional `mimeType` and `partSize` from 5 MiB to 64 MiB), `chunk` (raw body of at most 64 MiB with `x-upload-id` and `x-part-number`), `complete`, `abort`, or `presign`. The browser sends a file over 64 MiB this way, then starts a job with `POST /api/queue/jobs` on the stored `key`. An anonymous visitor may use it; the session belongs to the address that opened it. Public clients use `/api/v1/uploads`.',
       operationId: 'legacyMultipartUpload',
-      security: requireScope('convert:write'),
+      security: ANONYMOUS_OR_SCOPE('convert:write'),
       parameters: [
         {
           name: 'action',

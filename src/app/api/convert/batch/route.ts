@@ -7,7 +7,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { refuseOversizeFile } from '@/lib/api/file-size-limit';
+import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
@@ -50,7 +50,7 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
   return problem ? { problem } : { options: parsed };
 }
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   let reservationId: string | undefined;
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
@@ -270,4 +270,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-});
+}));

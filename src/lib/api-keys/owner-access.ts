@@ -5,13 +5,16 @@ import { storageProvider } from '../storage';
 import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
 import { isResultDeleted } from '../storage/retention-service';
 import { QueueUnavailableError } from '../types';
+import { isAnonymousUserId } from '../plan-limits';
 
 /** Response detail for a job input key that is missing or that the caller may not use. */
 export const STORAGE_OBJECT_NOT_FOUND = 'Storage object not found.';
 
 /**
  * Restricts a resource to the user that owns it.
- * Resources without an owner (anonymous uploads) keep capability-URL access.
+ * Resources without an owner keep capability-URL access, and so do those of an anonymous caller: an anonymous
+ * identity is the address bucket of the client, which no request can prove to be the same person, so the job id and
+ * the storage key (a random token each) are the capability.
  * For an owned resource, any caller other than the owner gets the route's regular not-found
  * response so resource identifiers cannot be probed; the owner still sees the guard's own
  * rejection (missing scope, burst limit) so the request can be fixed.
@@ -23,7 +26,7 @@ export async function denyUnlessOwner(
   requiredScope: string,
   notFound: () => NextResponse
 ): Promise<NextResponse | null> {
-  if (!ownerUserId) {
+  if (!ownerUserId || isAnonymousUserId(ownerUserId)) {
     return null;
   }
 

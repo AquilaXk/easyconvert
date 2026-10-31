@@ -373,6 +373,7 @@ The voyage was recorded.`;
   describe('Domain: Batch Plan File Size Gate', () => {
     it('blocks a batch with a file over the 1 GB limit of an anonymous caller with 413', async () => {
       const req = {
+        headers: new Headers(),
         formData: async () => {
           const map = new Map<string, any>();
           map.set('files', [
@@ -398,6 +399,7 @@ The voyage was recorded.`;
 
     it('blocks a batch whose files together pass the 1 GB limit with 413', async () => {
       const req = {
+        headers: new Headers(),
         formData: async () => {
           const map = new Map<string, any>();
           map.set('files', [

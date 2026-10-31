@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import type { User } from '@/lib/auth/types';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { mayPresignDownload } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
@@ -8,12 +9,15 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { callerMaxFileBytes, fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_PART_BYTES = 64 * 1024 * 1024; // 64 MiB
+const MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
+/** The smallest part an object store takes for a part that is not the last (the S3 rule). */
+const MIN_PART_BYTES = 5 * 1024 * 1024;
 
 const PRESIGN_UNSUPPORTED = 'Storage provider does not support presigned URLs or invalid type specified.';
 const RETAINED_DOWNLOAD_PRESIGN_REFUSED =
@@ -129,6 +133,51 @@ async function presignDownload(
   return NextResponse.json({ success: true, ...presigned });
 }
 
+/** The reason a requested part size cannot be used, or undefined when it is absent or in range. */
+function partSizeProblemOf(partSize: unknown): string | undefined {
+  if (partSize === undefined) return undefined;
+  if (typeof partSize !== 'number' || !Number.isInteger(partSize) || partSize < MIN_PART_BYTES || partSize > MAX_PART_BYTES) {
+    return `"partSize" must be an integer from ${MIN_PART_BYTES} to ${MAX_PART_BYTES} bytes.`;
+  }
+  return undefined;
+}
+
+/** Opens an upload session for the caller: the declared size is held to the plan limit and the part size to the bounds of a part. */
+async function initiateUpload(
+  req: NextRequest,
+  storage: MultipartCapableStorage,
+  currentUser: User,
+  instanceUri: string
+): Promise<Response> {
+  const body = await req.json().catch(() => ({}));
+  const { filename, mimeType, totalSize, partSize } = body;
+
+  if (!filename || typeof totalSize !== 'number' || !Number.isFinite(totalSize)) {
+    return createProblemDetailsResponse(400, 'Missing "filename" or "totalSize" in initiation payload.', instanceUri);
+  }
+
+  if (totalSize < 0) {
+    return createProblemDetailsResponse(400, 'totalSize cannot be negative.', instanceUri);
+  }
+
+  const tooLarge = fileSizeLimitProblem(currentUser, totalSize, instanceUri);
+  if (tooLarge) return tooLarge;
+
+  const partSizeProblem = partSizeProblemOf(partSize);
+  if (partSizeProblem) {
+    return createProblemDetailsResponse(400, partSizeProblem, instanceUri);
+  }
+
+  const initResult = await storage.initiateMultipartUpload(
+    filename,
+    mimeType || 'application/octet-stream',
+    totalSize,
+    currentUser.id,
+    partSize
+  );
+  return NextResponse.json({ success: true, ...initResult });
+}
+
 function sameEtag(a: string, b: string): boolean {
   return a.replace(/"/g, '') === b.replace(/"/g, '');
 }
@@ -143,10 +192,13 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get('action') || 'initiate';
 
-  // 1. Guard check: Authenticate and enforce 'convert:write' scope on all multipart actions
+  // 1. Guard check: Authenticate and enforce 'convert:write' scope on all multipart actions. An anonymous visitor may
+  // upload in parts like a signed-in one: the burst limit of the address applies to every request, and a session is
+  // reachable only by the caller that opened it (the same address bucket for an anonymous one).
   const auth = await validateApiAccess(req, {
     requiredUnits: 0,
     requiredScope: 'convert:write',
+    allowAnonymous: true,
   });
   if (!auth.authorized || !auth.user) {
     const headers = authErrorHeaders(auth);
@@ -174,35 +226,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   try {
     // 1. Initiate Multipart Upload
     if (action === 'initiate') {
-      const body = await req.json().catch(() => ({}));
-      const { filename, mimeType, totalSize } = body;
-
-      if (!filename || typeof totalSize !== 'number' || !Number.isFinite(totalSize)) {
-        return createProblemDetailsResponse(
-          400,
-          'Missing "filename" or "totalSize" in initiation payload.',
-          instanceUri
-        );
-      }
-
-      if (totalSize < 0) {
-        return createProblemDetailsResponse(
-          400,
-          'totalSize cannot be negative.',
-          instanceUri
-        );
-      }
-
-      const tooLarge = fileSizeLimitProblem(currentUser, totalSize, instanceUri);
-      if (tooLarge) return tooLarge;
-
-      const initResult = await storage.initiateMultipartUpload(
-        filename,
-        mimeType || 'application/octet-stream',
-        totalSize,
-        currentUser.id
-      );
-      return NextResponse.json({ success: true, ...initResult });
+      return await initiateUpload(req, storage, currentUser, instanceUri);
     }
 
     // 2. Upload Chunk Part

@@ -16,6 +16,7 @@ describe('Zero-Retention & In-Memory Pipeline Tests', () => {
         map.set('targetFormat', 'tar');
         return map;
       },
+      headers: new Headers(),
     } as unknown as NextRequest;
 
     const res = await convertRoute(req);

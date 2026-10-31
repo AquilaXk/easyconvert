@@ -164,6 +164,15 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
   return zipUrl;
 }
 
+function isRunning(item: ConversionQueueItem): boolean {
+  return item.status === 'uploading' || item.status === 'converting';
+}
+
+function abortAll(aborters: Map<string, AbortController>): void {
+  for (const controller of aborters.values()) controller.abort();
+  aborters.clear();
+}
+
 function clearTimersAndBlobs(
   timers: Set<ReturnType<typeof setTimeout>>,
   urls: Set<string>
@@ -182,6 +191,7 @@ function useQueueLifecycleEffects(
   mountedRef: React.MutableRefObject<boolean>,
   blobUrlsRef: React.MutableRefObject<Set<string>>,
   timersRef: React.MutableRefObject<Set<ReturnType<typeof setTimeout>>>,
+  abortersRef: React.MutableRefObject<Map<string, AbortController>>,
   handleFilesSelectedRef: React.MutableRefObject<(files: File[], overrideTarget?: string) => void>,
   handleFilesSelected: (files: File[], overrideTarget?: string) => void
 ): void {
@@ -193,11 +203,13 @@ function useQueueLifecycleEffects(
     mountedRef.current = true;
     const urls = blobUrlsRef.current;
     const timers = timersRef.current;
+    const aborters = abortersRef.current;
     return () => {
       mountedRef.current = false;
+      abortAll(aborters);
       clearTimersAndBlobs(timers, urls);
     };
-  }, [mountedRef, blobUrlsRef, timersRef]);
+  }, [mountedRef, blobUrlsRef, timersRef, abortersRef]);
 
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') return;
@@ -216,6 +228,8 @@ export interface QueueMutationContext {
   queueRef: React.MutableRefObject<ConversionQueueItem[]>;
   generationRef: React.MutableRefObject<Map<string, number>>;
   inFlightIdsRef: React.MutableRefObject<Set<string>>;
+  /** The cancellation of each running conversion: removing the item ends its upload and cancels its job. */
+  abortersRef: React.MutableRefObject<Map<string, AbortController>>;
   blobUrlsRef: React.MutableRefObject<Set<string>>;
   timersRef: React.MutableRefObject<Set<ReturnType<typeof setTimeout>>>;
   batchGenRef: React.MutableRefObject<number>;
@@ -250,6 +264,8 @@ export function createQueueMutators(ctx: QueueMutationContext) {
   const handleRemoveItem = (id: string) => {
     ctx.revokeBlobUrl(ctx.queueRef.current.find((i) => i.id === id)?.resultUrl);
     ctx.generationRef.current.set(id, (ctx.generationRef.current.get(id) ?? 0) + 1);
+    ctx.abortersRef.current.get(id)?.abort();
+    ctx.abortersRef.current.delete(id);
     ctx.inFlightIdsRef.current.delete(id);
     ctx.syncInFlight();
     ctx.updateQueue((prev) => prev.filter((i) => i.id !== id));
@@ -269,6 +285,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
       ctx.revokeBlobUrl(item.resultUrl);
       ctx.generationRef.current.set(item.id, (ctx.generationRef.current.get(item.id) ?? 0) + 1);
     }
+    abortAll(ctx.abortersRef.current);
     clearTimersAndBlobs(ctx.timersRef.current, ctx.blobUrlsRef.current);
     ctx.batchGenRef.current += 1;
     ctx.batchRunningRef.current = false;
@@ -388,15 +405,21 @@ export function createConversionRunners(ctx: QueueMutationContext) {
     const gen = (ctx.generationRef.current.get(id) ?? 0) + 1;
     ctx.generationRef.current.set(id, gen);
     ctx.inFlightIdsRef.current.add(id);
+    const aborter = new AbortController();
+    ctx.abortersRef.current.set(id, aborter);
     ctx.syncInFlight();
     ctx.revokeBlobUrl(current.resultUrl);
     ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'converting', progress: 15, error: undefined, resultUrl: undefined } : i)));
     const isFresh = () => ctx.mountedRef.current && ctx.generationRef.current.get(id) === gen && ctx.queueRef.current.some((i) => i.id === id);
+    const setStage = (status: 'uploading' | 'converting') => {
+      if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, status } : i)));
+    };
     try {
       await executeItemConversion(current, {
         onProgress: (progress) => {
-          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && i.status === 'converting' ? { ...i, progress } : i)));
+          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, progress } : i)));
         },
+        onStage: setStage,
         onSuccess: (resultUrl, resultSize, edgeProcessed, edgeTier) => {
           if (!isFresh()) { ctx.revokeBlobUrl(resultUrl); return; }
           if (resultUrl.startsWith('blob:')) ctx.blobUrlsRef.current.add(resultUrl);
@@ -405,9 +428,10 @@ export function createConversionRunners(ctx: QueueMutationContext) {
         onError: (msg) => {
           if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: msg, progress: 0 } : i)));
         },
-      });
+      }, aborter.signal);
     } finally {
       if (ctx.generationRef.current.get(id) === gen) {
+        ctx.abortersRef.current.delete(id);
         ctx.inFlightIdsRef.current.delete(id);
         ctx.syncInFlight();
       }
@@ -470,6 +494,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const queueRef = useRef<ConversionQueueItem[]>(queue);
   const generationRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());
+  const abortersRef = useRef<Map<string, AbortController>>(new Map());
   const blobUrlsRef = useRef<Set<string>>(new Set());
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const mountedRef = useRef(true);
@@ -485,17 +510,17 @@ export function useClientQueue(options?: UseClientQueueOptions) {
     blobUrlsRef.current.delete(url);
   };
   const isItemBusy = (i: ConversionQueueItem) =>
-    i.status === 'uploading' || i.status === 'converting' || inFlightIdsRef.current.has(i.id);
+    isRunning(i) || inFlightIdsRef.current.has(i.id);
   const handleFilesSelected = (files: File[], overrideTarget?: string) => {
     const plan = getViewerPlan();
     const def = overrideTarget || options?.defaultTarget;
     updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, plan, def))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
-  useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, handleFilesSelectedRef, handleFilesSelected);
+  useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, abortersRef, handleFilesSelectedRef, handleFilesSelected);
 
   const mutationCtx: QueueMutationContext = {
-    bundlePrefix: options?.bundlePrefix, mountedRef, queueRef, generationRef, inFlightIdsRef,
+    bundlePrefix: options?.bundlePrefix, mountedRef, queueRef, generationRef, inFlightIdsRef, abortersRef,
     blobUrlsRef, timersRef, batchGenRef, batchRunningRef, updateQueue, revokeBlobUrl, isItemBusy,
     syncInFlight, setIsBatchRunning, setInFlightCount, setZipError,
   };

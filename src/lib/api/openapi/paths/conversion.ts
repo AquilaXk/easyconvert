@@ -19,12 +19,13 @@ import {
   CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
   PLAN_FILE_LIMIT_DESCRIPTION,
+  SINGLE_REQUEST_LIMIT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).${PDFA_ENGINE_NOTE}`;
 const PAYLOAD_LIMIT_DESCRIPTION =
-  `${PLAN_FILE_LIMIT_DESCRIPTION} Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows (quota reservation rolled back).`;
+  `${PLAN_FILE_LIMIT_DESCRIPTION} ${SINGLE_REQUEST_LIMIT_DESCRIPTION} Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows (quota reservation rolled back).`;
 
 /** Conversion, archive inspection, job, and format catalog operations. */
 export const conversionPaths = {

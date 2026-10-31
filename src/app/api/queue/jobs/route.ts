@@ -16,7 +16,7 @@ import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-respo
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { refuseOversizeFile } from '@/lib/api/file-size-limit';
+import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
@@ -32,7 +32,9 @@ function parseOptionsField(raw: string): { options: ConversionOptions } | { erro
   return isConversionOptionsObject(parsed) ? { options: parsed } : { error: 'The "options" field must be a JSON object.' };
 }
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+  const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
+
   // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
   const auth = await validateApiAccess(req, {
     requiredUnits: 1,
@@ -55,8 +57,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
     return NextResponse.json({ success: false, error }, { status });
   };
-
-  const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
 
   /** A 400 problem, after releasing the quota reservation, for a file name the registry has no format for. */
   const failUnknownSource = async (filename: string) => {
@@ -213,7 +213,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
-});
+}));
 
 const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled']);
 const DEFAULT_LISTED_STATES: JobState[] = ['waiting', 'active', 'completed', 'failed', 'cancelled'];

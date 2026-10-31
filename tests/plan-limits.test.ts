@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   LARGEST_PLAN_FILE_BYTES,
+  SINGLE_REQUEST_BODY_MAX_BYTES,
+  SINGLE_REQUEST_FILE_MAX_BYTES,
+  UPLOAD_PART_MAX_BYTES,
+  URL_IMPORT_MAX_BYTES,
+  isAnonymousUserId,
+  needsUploadInParts,
   PLAN_MAX_FILE_BYTES,
   fileLimitCopy,
   fileTooLargeMessage,
@@ -117,5 +123,36 @@ describe('fileSizeLimitProblem', () => {
   it('carries the extra headers of the route on the refusal', () => {
     const refusal = fileSizeLimitProblem({ id: 'u', tier: 'free' }, GIB + 1, '/api/v1/uploads', { 'Tus-Resumable': '1.0.0' });
     expect(refusal?.headers.get('tus-resumable')).toBe('1.0.0');
+  });
+});
+
+describe('the size of one request', () => {
+  const MIB = 1024 * 1024;
+
+  it('allows a file of 64 MiB in one request and sends one byte more in parts', () => {
+    expect(SINGLE_REQUEST_FILE_MAX_BYTES).toBe(64 * MIB);
+    expect(needsUploadInParts(SINGLE_REQUEST_FILE_MAX_BYTES)).toBe(false);
+    expect(needsUploadInParts(SINGLE_REQUEST_FILE_MAX_BYTES + 1)).toBe(true);
+    expect(needsUploadInParts(0)).toBe(false);
+  });
+
+  it('leaves 1 MiB of form fields beyond the file and holds a part to the same size as a request', () => {
+    expect(SINGLE_REQUEST_BODY_MAX_BYTES - SINGLE_REQUEST_FILE_MAX_BYTES).toBe(MIB);
+    expect(UPLOAD_PART_MAX_BYTES).toBe(SINGLE_REQUEST_FILE_MAX_BYTES);
+  });
+
+  it('keeps the import from a link under the plan limit of every plan', () => {
+    expect(URL_IMPORT_MAX_BYTES).toBe(100 * MIB);
+    for (const plan of PLANS) expect(URL_IMPORT_MAX_BYTES).toBeLessThanOrEqual(maxFileBytes(plan));
+  });
+});
+
+describe('isAnonymousUserId', () => {
+  it('names the address buckets of visitors and no account', () => {
+    expect(isAnonymousUserId('anon:203.0.113.7')).toBe(true);
+    expect(isAnonymousUserId('anon:2001:db8::')).toBe(true);
+    expect(isAnonymousUserId('user_1')).toBe(false);
+    expect(isAnonymousUserId('')).toBe(false);
+    expect(isAnonymousUserId(undefined)).toBe(false);
   });
 });

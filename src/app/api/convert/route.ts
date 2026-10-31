@@ -6,7 +6,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { refuseOversizeFile } from '@/lib/api/file-size-limit';
+import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {
@@ -35,7 +35,7 @@ import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/convert';
 
@@ -271,4 +271,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-});
+}));

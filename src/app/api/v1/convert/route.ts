@@ -26,7 +26,7 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
-import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
@@ -123,7 +123,7 @@ function parseConvertFormData(
   return { data: { file: file as File, sourceDef, targetDef, options } };
 }
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
@@ -539,4 +539,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-});
+}));

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Plan } from '../src/lib/plan-limits';
 import { fileTooLargeMessage, PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 import {
+  getViewerAccount,
   getViewerMaxFileBytes,
   getViewerPlan,
   refreshViewerPlan,
@@ -13,11 +14,16 @@ import type { ConversionQueueItem } from '../src/lib/types';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
 
 const shownPlan = vi.hoisted(() => ({ current: 'anonymous' as Plan }));
+const shownAccount = vi.hoisted(() => ({ current: null as { name: string; tier: string } | null }));
 
-vi.mock('../src/hooks/useViewerPlan', () => ({ useViewerPlan: () => shownPlan.current }));
+vi.mock('../src/hooks/useViewerPlan', () => ({
+  useViewerPlan: () => shownPlan.current,
+  useViewerAccount: () => shownAccount.current,
+}));
 
 import HeroDropzoneCard from '../src/components/workbench/HeroDropzoneCard';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
+import UserNav from '../src/components/UserNav';
 import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
 
 const GIB = 1024 * 1024 * 1024;
@@ -34,6 +40,7 @@ function sessionAnswer(status: number, body: unknown): Response {
 
 beforeEach(() => {
   shownPlan.current = 'anonymous';
+  shownAccount.current = null;
   setViewerPlan('anonymous');
 });
 
@@ -91,6 +98,53 @@ describe('the plan of the viewer', () => {
     unsubscribe();
     setViewerPlan('free');
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the signed-in person of the viewer', () => {
+  it('is read from the same session answer as the plan, and cleared when the session ends', async () => {
+    expect(getViewerAccount()).toBeNull();
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', name: 'Ada Lovelace', tier: 'pro' } })));
+    await refreshViewerPlan();
+    expect(getViewerAccount()).toEqual({ name: 'Ada Lovelace', tier: 'pro' });
+    expect(getViewerPlan()).toBe('pro');
+
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(401, { success: false })));
+    await refreshViewerPlan();
+    expect(getViewerAccount()).toBeNull();
+    expect(getViewerPlan()).toBe('anonymous');
+  });
+
+  it('keeps the person it had when the network fails and tells subscribers once for the same answer', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => sessionAnswer(200, { success: true, user: { id: 'u1', name: 'Ada', tier: 'free' } })));
+    await refreshViewerPlan();
+    const listener = vi.fn();
+    const unsubscribe = subscribeViewerPlan(listener);
+
+    await refreshViewerPlan();
+    expect(listener).not.toHaveBeenCalled();
+
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('offline'))));
+    await refreshViewerPlan();
+    expect(getViewerAccount()).toEqual({ name: 'Ada', tier: 'free' });
+    unsubscribe();
+  });
+
+  it('is named by the header from the store, without a request of its own', () => {
+    const fetchMock = vi.fn(async () => sessionAnswer(401, { success: false }));
+    vi.stubGlobal('fetch', fetchMock);
+    shownAccount.current = { name: 'Ada Lovelace', tier: 'pro' };
+
+    const signedIn = visibleText(renderDom(createElement(UserNav, {})));
+    expect(signedIn).toContain('Ada');
+    expect(signedIn).toContain('pro');
+    expect(signedIn).not.toContain('Log In');
+
+    shownAccount.current = null;
+    const visitor = visibleText(renderDom(createElement(UserNav, { mobile: true })));
+    expect(visitor).toContain('Log In');
+    expect(visitor).toContain('Sign Up');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -175,6 +229,41 @@ describe('a file over the limit', () => {
     expect(visibleText(dom)).toContain('File size 2 GB exceeds the 1 GB limit for anonymous use. Pro allows files up to 5 GB.');
     expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBe('');
     expect(attrOf(select(dom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')).toBe('');
+  });
+
+  it('lets the viewer cancel a file on its way to the server and names the step', () => {
+    const item: ConversionQueueItem = {
+      id: 'row-2',
+      file: claimedFile('clip.mp4', 200 * 1024 * 1024),
+      name: 'clip.mp4',
+      size: 200 * 1024 * 1024,
+      sourceFormat: 'mp4',
+      targetFormat: 'webm',
+      status: 'uploading',
+      progress: 22,
+      options: {},
+    };
+    const removed = vi.fn();
+    const noop = () => undefined;
+    const props = {
+      item,
+      isFormatSelectorOpen: false,
+      onToggleFormatSelector: noop,
+      onCloseFormatSelector: noop,
+      onSelectTargetFormat: noop,
+      onOpenOptions: noop,
+      onRetry: noop,
+      onRemove: removed,
+    };
+
+    const uploading = renderDom(createElement(QueueItemRow, props));
+    expect(select(uploading, 'progress', 'aria-label', 'Uploading clip.mp4')).toHaveLength(1);
+    const cancel = select(uploading, 'button', 'aria-label', 'Cancel clip.mp4')[0];
+    expect(attrOf(cancel, 'disabled')).toBeNull();
+
+    const converting = renderDom(createElement(QueueItemRow, { ...props, item: { ...item, status: 'converting' } }));
+    expect(select(converting, 'progress', 'aria-label', 'Converting clip.mp4')).toHaveLength(1);
+    expect(select(converting, 'button', 'aria-label', 'Remove clip.mp4')).toHaveLength(0);
   });
 
   it('leaves the same file convertible for a viewer on the Pro plan', () => {

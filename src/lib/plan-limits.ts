@@ -10,7 +10,8 @@ import { formatBytes } from './format-bytes';
  */
 export type Plan = 'anonymous' | UserTier;
 
-const GIB = 1024 * 1024 * 1024;
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
 
 const PLAN_ORDER: readonly Plan[] = ['anonymous', 'free', 'pro', 'enterprise'];
 
@@ -24,7 +25,34 @@ export const PLAN_MAX_FILE_BYTES: Readonly<Record<Plan, number>> = Object.freeze
 /** The ceiling of the table: what a transport (resumable upload, multipart session) must be able to carry. */
 export const LARGEST_PLAN_FILE_BYTES = PLAN_MAX_FILE_BYTES.enterprise;
 
+/**
+ * The largest file one request may carry. A file over it goes to the server in parts of at most `UPLOAD_PART_MAX_BYTES`
+ * and is converted by a job (docs/policy-decisions.md, entry 137). The edge in front of the web process takes a body of
+ * 100 MB at most, and the framework holds a request body in memory up to `SINGLE_REQUEST_BODY_MAX_BYTES` before the
+ * route reads it, so one number bounds both.
+ */
+export const SINGLE_REQUEST_FILE_MAX_BYTES = 64 * MIB;
+
+/** The largest request body any route takes whole: a file of `SINGLE_REQUEST_FILE_MAX_BYTES` and 1 MiB of form fields. */
+export const SINGLE_REQUEST_BODY_MAX_BYTES = SINGLE_REQUEST_FILE_MAX_BYTES + MIB;
+
+/** The largest file the server takes from a link (`/api/fetch-url`), which it reads whole before the browser has it. */
+export const URL_IMPORT_MAX_BYTES = 100 * MIB;
+
+/** The largest part of an upload in parts, and the size the browser sends. */
+export const UPLOAD_PART_MAX_BYTES = 64 * MIB;
+
 const ANONYMOUS_USER_PREFIX = 'anon:';
+
+/** Whether `userId` names an anonymous caller (a client address bucket), not a signed-in account. */
+export function isAnonymousUserId(userId: string | undefined): boolean {
+  return userId?.startsWith(ANONYMOUS_USER_PREFIX) ?? false;
+}
+
+/** Whether a file of `sizeBytes` is too large for one request and must go to the server in parts. */
+export function needsUploadInParts(sizeBytes: number): boolean {
+  return sizeBytes > SINGLE_REQUEST_FILE_MAX_BYTES;
+}
 
 const PLAN_PHRASE: Readonly<Record<Plan, string>> = {
   anonymous: 'anonymous use',
@@ -42,7 +70,7 @@ const PLAN_NAME: Readonly<Record<Plan, string>> = {
 
 /** The plan of a caller. An anonymous identity, a missing tier and a tier this table does not know get the smallest limit. */
 export function planOfCaller(caller: { id?: string; tier?: string } | null | undefined): Plan {
-  if (!caller || caller.id?.startsWith(ANONYMOUS_USER_PREFIX)) return 'anonymous';
+  if (!caller || isAnonymousUserId(caller.id)) return 'anonymous';
   return caller.tier === 'pro' || caller.tier === 'enterprise' ? caller.tier : 'free';
 }
 
