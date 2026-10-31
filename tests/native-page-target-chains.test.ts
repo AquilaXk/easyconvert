@@ -523,18 +523,27 @@ describe('PostScript sources become DXF geometry', () => {
     });
   }, NATIVE_TIMEOUT_MS);
 
-  oracleTest('a page that holds a picture cannot be written as DXF: a typed 400 error naming the element', ['pdftocairo'], async () => {
-    const image: CraftObject[] = [
-      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
-      { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
-      { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /XObject << /Im 5 0 R >> >>' },
-      { id: 4, stream: Buffer.from('q 100 0 0 50 10 10 cm /Im Do Q', 'latin1') },
-      { id: 5, dict: '/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8', stream: Buffer.from([0, 255, 255, 0]) },
-    ];
-    await withPs2pdfShim(buildPdf(image, 1).buffer, async () => {
+  const pictureWith = (content: string): CraftObject[] => [
+    { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+    { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+    { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /XObject << /Im 5 0 R >> >>' },
+    { id: 4, stream: Buffer.from(content, 'latin1') },
+    { id: 5, dict: '/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8', stream: Buffer.from([0, 255, 255, 0]) },
+  ];
+
+  oracleTest('a page that holds a picture and a line is written as the line, and the conversion says the picture was left out', ['pdftocairo'], async () => {
+    await withPs2pdfShim(buildPdf(pictureWith('q 100 0 0 50 10 10 cm /Im Do Q 1 w 10 10 m 150 80 l S'), 1).buffer, async () => {
+      const result = await dispatchConversion(POSTSCRIPT_SOURCE, 'ps', 'dxf', {}, 'picture.ps');
+      expect(readDxf(result.buffer.toString('utf-8')).entities).toHaveLength(1);
+      expect(result.metadata?.warnings).toEqual(['Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.']);
+    });
+  }, NATIVE_TIMEOUT_MS);
+
+  oracleTest('a page that holds only a picture has no vector geometry: a typed 400 error, never a stand-in line', ['pdftocairo'], async () => {
+    await withPs2pdfShim(buildPdf(pictureWith('q 100 0 0 50 10 10 cm /Im Do Q'), 1).buffer, async () => {
       const run = dispatchConversion(POSTSCRIPT_SOURCE, 'ps', 'dxf', {}, 'picture.ps');
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(/cannot be written as DXF.*<image>/);
+      await expect(run).rejects.toThrow(/no vector geometry/);
     });
   }, NATIVE_TIMEOUT_MS);
 });
