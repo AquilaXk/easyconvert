@@ -150,76 +150,181 @@ function trailingHyphen(tail: string): string | null {
  */
 const TAIL_UNITS = 8;
 
-/** Joins the lines of a paragraph, rejoining words that a hyphen broke at the end of a line. */
-function joinLines(lines: LayoutLine[]): { runs: StyledRun[]; text: string } {
-  const runs: StyledRun[] = [];
-  const pieces: string[] = [];
-  let tail = '';
-  const append = (piece: string): void => {
-    pieces.push(piece);
-    tail = (tail + piece).slice(-TAIL_UNITS);
+/** What `continuesInNextFlow` reads of the paragraph that ends a flow. */
+export interface OpenParagraph {
+  full: boolean;
+  size: number;
+  bold: boolean;
+  italic: boolean;
+  monospace: boolean;
+  lineCount: number;
+  lastLine: LayoutLine;
+  leftX: number;
+  x1: number;
+  /** The text, white space at its end aside, ends in terminal punctuation. */
+  endsSentence: boolean;
+}
+
+function endsSentence(text: string): boolean {
+  return SENTENCE_END.test(text.trimEnd());
+}
+
+/** The end of a paragraph that is built already. */
+export function openParagraph(paragraph: Paragraph): OpenParagraph {
+  return {
+    full: paragraph.full,
+    size: paragraph.size,
+    bold: paragraph.bold,
+    italic: paragraph.italic,
+    monospace: paragraph.monospace,
+    lineCount: paragraph.lines.length,
+    lastLine: paragraph.lines[paragraph.lines.length - 1],
+    leftX: paragraph.leftX,
+    x1: paragraph.box.x1,
+    endsSentence: endsSentence(paragraph.text),
   };
-  lines.forEach((line, index) => {
-    const lineRuns = line.runs.map((run) => ({ ...run }));
+}
+
+/**
+ * A paragraph built line by line: the lines are joined (rejoining words that a hyphen broke at the end of a line) and the
+ * box and the dominant style kept as each line comes. A run of paragraphs that continue into one another is added to one
+ * builder and finished once, so a continuation costs its own lines and not those before it.
+ */
+export class ParagraphBuilder {
+  private readonly lines: LayoutLine[] = [];
+  private readonly runs: StyledRun[] = [];
+  /** The text of each run as the pieces it was given, joined once in `finish`: cutting a hyphen then costs the last piece, not the run. */
+  private readonly runPieces: string[][] = [];
+  private readonly pieces: string[] = [];
+  private tail = '';
+  private sentenceEnd = false;
+  private dominant: LayoutLine | undefined;
+  private x0 = 0;
+  private x1 = 0;
+  private y0 = 0;
+  private y1 = 0;
+
+  constructor(
+    private readonly flow: number,
+    private readonly pageNumber: number,
+    private readonly full: boolean
+  ) {}
+
+  private append(piece: string): void {
+    this.pieces.push(piece);
+    this.tail = (this.tail + piece).slice(-TAIL_UNITS);
+    const visible = piece.trimEnd();
+    if (visible !== '') this.sentenceEnd = endsSentence(visible.slice(-2));
+  }
+
+  /** Drops the hyphen that ends the text so far: "adminis-" and "tration" are one word. */
+  private dropHyphen(hyphen: string): void {
+    cutEnd(this.pieces, hyphen.length);
+    this.tail = this.tail.slice(0, this.tail.length - hyphen.length);
+    cutEnd(this.runPieces[this.runPieces.length - 1], hyphen.length);
+  }
+
+  add(line: LayoutLine): void {
     const lineText = line.text;
-    if (index > 0) {
-      const hyphen = trailingHyphen(tail);
+    if (this.lines.length > 0) {
+      const hyphen = trailingHyphen(this.tail);
       const startsLower = isLowercase(firstChar(lineText));
       if (hyphen !== null && startsLower) {
-        // Rejoin "adminis-" and "tration": drop the hyphen from the previous run and the text so far.
-        let remaining = hyphen.length;
-        while (remaining > 0 && pieces.length > 0) {
-          const piece = pieces[pieces.length - 1];
-          const keep = Math.max(0, piece.length - remaining);
-          remaining -= piece.length - keep;
-          pieces[pieces.length - 1] = piece.slice(0, keep);
-        }
-        tail = tail.slice(0, tail.length - hyphen.length);
-        const last = runs[runs.length - 1];
-        last.text = last.text.slice(0, last.text.length - hyphen.length);
+        this.dropHyphen(hyphen);
       } else if (hyphen !== null) {
         // A hyphen before a capital letter or a digit is part of the compound ("Anglo-Saxon"): kept, with no space after it.
-      } else if (needsSpaceBetween(tail, lineText)) {
-        append(' ');
-        runs[runs.length - 1].text += ' ';
+      } else if (needsSpaceBetween(this.tail, lineText)) {
+        this.append(' ');
+        this.runPieces[this.runPieces.length - 1].push(' ');
       }
     }
-    for (const run of lineRuns) {
-      const last = runs[runs.length - 1];
-      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace) last.text += run.text;
-      else runs.push(run);
+    for (const run of line.runs) {
+      const last = this.runs[this.runs.length - 1];
+      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace) {
+        this.runPieces[this.runPieces.length - 1].push(run.text);
+      } else {
+        this.runs.push({ ...run });
+        this.runPieces.push([run.text]);
+      }
     }
-    append(lineText);
-  });
-  return { runs, text: pieces.join('') };
+    this.append(lineText);
+    if (this.lines.length === 0) {
+      this.x0 = line.box.x0;
+      this.x1 = line.box.x1;
+      this.y0 = line.box.y0;
+      this.y1 = line.box.y1;
+    } else {
+      this.x0 = Math.min(this.x0, line.box.x0);
+      this.x1 = Math.max(this.x1, line.box.x1);
+      this.y0 = Math.min(this.y0, line.box.y0);
+      this.y1 = Math.max(this.y1, line.box.y1);
+    }
+    if (!this.dominant || line.text.length > this.dominant.text.length) this.dominant = line;
+    this.lines.push(line);
+  }
+
+  addAll(lines: readonly LayoutLine[]): void {
+    for (const line of lines) this.add(line);
+  }
+
+  /** The end of the paragraph so far, as `continuesInNextFlow` reads it. */
+  end(): OpenParagraph {
+    const dominant = this.dominant!;
+    return {
+      full: this.full,
+      size: dominant.size,
+      bold: dominant.bold,
+      italic: dominant.italic,
+      monospace: dominant.monospace,
+      lineCount: this.lines.length,
+      lastLine: this.lines[this.lines.length - 1],
+      leftX: this.x0,
+      x1: this.x1,
+      endsSentence: this.sentenceEnd,
+    };
+  }
+
+  finish(): Paragraph {
+    const dominant = this.dominant!;
+    return {
+      runs: this.runs.map((run, index) => ({ ...run, text: this.runPieces[index].join('') })),
+      text: this.pieces.join(''),
+      lines: this.lines,
+      box: { x0: this.x0, x1: this.x1, y0: this.y0, y1: this.y1 },
+      size: dominant.size,
+      bold: dominant.bold,
+      italic: dominant.italic,
+      monospace: dominant.monospace,
+      rtl: dominant.rtl,
+      fontKey: dominant.fontKey,
+      firstLineX: this.lines[0].box.x0,
+      leftX: this.x0,
+      flow: this.flow,
+      pageNumber: this.pageNumber,
+      full: this.full,
+    };
+  }
+}
+
+/** Removes the last `count` code units of the text that `parts` joins to, dropping parts it empties. */
+function cutEnd(parts: string[], count: number): void {
+  let remaining = count;
+  while (remaining > 0 && parts.length > 0) {
+    const last = parts[parts.length - 1];
+    if (last.length <= remaining) {
+      remaining -= last.length;
+      parts.pop();
+    } else {
+      parts[parts.length - 1] = last.slice(0, last.length - remaining);
+      remaining = 0;
+    }
+  }
 }
 
 function paragraphOf(lines: LayoutLine[], flow: number, pageNumber: number, full: boolean): Paragraph {
-  const { runs, text } = joinLines(lines);
-  const first = lines[0];
-  const dominant = lines.reduce((best, line) => (line.text.length > best.text.length ? line : best), first);
-  return {
-    runs,
-    text,
-    lines,
-    box: {
-      x0: Math.min(...lines.map((line) => line.box.x0)),
-      x1: Math.max(...lines.map((line) => line.box.x1)),
-      y0: Math.min(...lines.map((line) => line.box.y0)),
-      y1: Math.max(...lines.map((line) => line.box.y1)),
-    },
-    size: dominant.size,
-    bold: dominant.bold,
-    italic: dominant.italic,
-    monospace: dominant.monospace,
-    rtl: dominant.rtl,
-    fontKey: dominant.fontKey,
-    firstLineX: first.box.x0,
-    leftX: Math.min(...lines.map((line) => line.box.x0)),
-    flow,
-    pageNumber,
-    full,
-  };
+  const builder = new ParagraphBuilder(flow, pageNumber, full);
+  builder.addAll(lines);
+  return builder.finish();
 }
 
 /** Paragraphs of one flow of lines (top to bottom). */
@@ -244,22 +349,15 @@ export function paragraphsOfFlow(lines: LayoutLine[], flow: number, pageNumber: 
  * Whether a paragraph that ends a flow carries on in the next flow (the next column or page): it filled its lines to the
  * right edge, did not end a sentence (or the next one starts in lower case), and both share size and weight.
  */
-export function continuesInNextFlow(last: Paragraph, next: Paragraph, flowRight: number): boolean {
+export function continuesInNextFlow(last: OpenParagraph, next: Paragraph, flowRight: number): boolean {
   if (last.full || next.full) return false;
   if (Math.abs(last.size - next.size) > SIZE_CHANGE_SHARE * last.size) return false;
   if (last.bold !== next.bold || last.italic !== next.italic || last.monospace !== next.monospace) return false;
-  if (last.lines.length < 2 && last.text.length < 40) return false;
-  const lastLine = last.lines[last.lines.length - 1];
-  const reachesEdge = flowRight - lastLine.box.x1 <= SHORT_LINE_SHARE * (flowRight - last.leftX);
+  if (last.lineCount < 2 && last.lastLine.text.length < 40) return false;
+  const reachesEdge = flowRight - last.lastLine.box.x1 <= SHORT_LINE_SHARE * (flowRight - last.leftX);
   if (!reachesEdge) return false;
   if (parseListMarker(next.text) !== null) return false;
   const lowerStart = isLowercase(firstChar(next.text));
-  const open = !SENTENCE_END.test(last.text.trimEnd());
+  const open = !last.endsSentence;
   return open || lowerStart;
-}
-
-/** Appends `next` to `last` as one paragraph. */
-export function mergeParagraphs(last: Paragraph, next: Paragraph): Paragraph {
-  const lines = [...last.lines, ...next.lines];
-  return paragraphOf(lines, last.flow, last.pageNumber, last.full);
 }
