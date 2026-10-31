@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds sharp's libvips-cpp.so with the upstream build (build/posix.sh of sharp-libvips at UPSTREAM_SHA, unpacked by
-# toolchain.sh into /packaging), changed by four patches:
+# toolchain.sh into /packaging), changed by five patches:
 #   option-f.patch        mozjpeg, libpng and libwebp at -O3 (posix.sh lines 204, 212 and 225) instead of the -Os default of
 #                         lines 44-46; the other libraries keep the upstream flags;
 #   aom-release.patch     aom as a Release build (libaom's own default build type) at -O3 instead of MinSizeRel at -Os

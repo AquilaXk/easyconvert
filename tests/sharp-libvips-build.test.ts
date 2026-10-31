@@ -404,6 +404,7 @@ describe('option-f.patch and aom-release.patch, the optimisation level of the co
     expect(build.split('\n').filter((line) => line.includes('aom-release.patch') && !line.startsWith('#'))).toEqual([
       'patch -p1 --forward --fuzz=0 < "$here/aom-release.patch"',
     ]);
+    expect(dockerfile).toMatch(/docker\/sharp-libvips\/aom-release\.patch /);
   });
 
   it('leaves aom out of option-f.patch, which keeps the -O3 of mozjpeg, libpng and libwebp that entry 84 measured', () => {

@@ -175,8 +175,8 @@ RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
 # sharp loads libvips from its @img/sharp-libvips-linux-<arch> package, which the upstream sharp-libvips release builds with
 # libwebp, mozjpeg and libpng at -Os. This stage runs that release's own build, at its commit and in its own build container
 # (Rocky Linux 8, pinned here by the digest of its multi-architecture index), with those three at -O3: the outputs are
-# byte-identical and WebP and JPEG encodes are 6 to 31% faster (docs/policy-decisions.md, entry 84). On x64 only, aom is
-# built as a Release at -O3 instead of MinSizeRel at -Os (entry 121). The scripts, the patches
+# byte-identical and WebP and JPEG encodes are 6 to 31% faster (docs/policy-decisions.md, entry 84). On both platforms, aom
+# is built as a Release at -O3 instead of MinSizeRel at -Os (entries 121 and 130). The scripts, the patches
 # and the pins are in docker/sharp-libvips/. Every source the build script downloads with curl is pinned by SHA-256 and the
 # toolchain downloads by digest or version, Meson may use only the subprojects its tarballs unpack, and git answers only local
 # queries; the entry says what that does not cover. The runtime stage takes only libvips-cpp.so and its digest file from this stage, and
