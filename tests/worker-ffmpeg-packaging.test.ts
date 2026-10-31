@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseDockerfile } from './helpers/dockerfile';
@@ -48,9 +49,14 @@ describe('the ffmpeg stage of the worker image', () => {
     expect(instructions(stage, 'COPY')).toContain('scripts/install-ffmpeg.sh /tmp/install-ffmpeg.sh');
   });
 
+  it('copies the patch directory next to the install script, which looks for it beside itself', () => {
+    expect(instructions(stage, 'COPY')).toEqual(['scripts/install-ffmpeg.sh /tmp/install-ffmpeg.sh', 'scripts/ffmpeg-patches /tmp/ffmpeg-patches']);
+    expect(INSTALL.match(/^patch_dir="(.*)"$/m)?.[1]).toBe('$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ffmpeg-patches');
+  });
+
   it('installs the compiler, the assembler and the development package of every library the build links', () => {
     const install = aptInstall(stage);
-    for (const tool of ['build-essential', 'nasm', 'pkg-config', 'curl', 'xz-utils']) expect(install, tool).toMatch(new RegExp(`\\b${tool}\\b`));
+    for (const tool of ['build-essential', 'patch', 'nasm', 'pkg-config', 'curl', 'xz-utils']) expect(install, tool).toMatch(new RegExp(`\\b${tool}\\b`));
     for (const { dev } of CODEC_LIBRARIES) expect(install, dev).toMatch(new RegExp(`\\b${dev}\\b`));
     expect(install).toMatch(/\blibffmpeg-nvenc-dev\b/);
   });
@@ -109,7 +115,45 @@ describe('the install script of FFmpeg', () => {
     const unpack = INSTALL.indexOf('tar -xJf');
     expect(check).toBeGreaterThan(0);
     expect(unpack).toBeGreaterThan(check);
-    expect(INSTALL).not.toMatch(/\bpatch\b|\bgit apply\b|\bsed -i\b/);
+    expect(INSTALL).not.toMatch(/\bgit apply\b|\bsed -i\b/);
+  });
+
+  it('applies only the patch files it names, each checked against its SHA-256 before it is applied, with no fuzz, after the unpacking and before the configure', () => {
+    const named = [...INSTALL.matchAll(/^ {2}"([\w.-]+\.patch) ([0-9a-f]{64})"$/gm)].map((match) => ({ name: match[1], sha256: match[2] }));
+    const onDisk = fs.readdirSync(path.join(ROOT, 'scripts', 'ffmpeg-patches')).sort();
+    expect(named.map((entry) => entry.name).sort()).toEqual(onDisk);
+    expect(named.length).toBeGreaterThan(0);
+    for (const { name, sha256 } of named) {
+      const bytes = fs.readFileSync(path.join(ROOT, 'scripts', 'ffmpeg-patches', name));
+      expect(createHash('sha256').update(bytes).digest('hex'), name).toBe(sha256);
+    }
+    const apply = INSTALL.indexOf('patch -p1 --forward --fuzz=0 --no-backup-if-mismatch --input=');
+    expect(apply).toBeGreaterThan(INSTALL.indexOf('tar -xJf'));
+    expect(apply).toBeLessThan(INSTALL.indexOf('./configure'));
+    expect(INSTALL.indexOf('sha256sum --check --strict -', INSTALL.indexOf('for entry in'))).toBeLessThan(apply);
+    expect(INSTALL.match(/\bpatch -p1\b/g)).toHaveLength(1);
+  });
+
+  it('keeps the libvorbis patch to the one file and the one property: frames of any size, cut into the calls the encoder always made', () => {
+    const patch = fs.readFileSync(path.join(ROOT, 'scripts', 'ffmpeg-patches', 'libvorbis-whole-frames.patch'), 'utf-8');
+    expect([...patch.matchAll(/^--- (\S+)$/gm)].map((match) => match[1])).toEqual(['a/libavcodec/libvorbisenc.c']);
+    expect(patch).toContain('+#define LIBVORBIS_CHUNK_SIZE 64');
+    expect(patch).toContain('+    FF_CODEC_RECEIVE_PACKET_CB(libvorbis_receive_packet),');
+    expect(patch).toContain('AV_CODEC_CAP_VARIABLE_FRAME_SIZE');
+    // The encoder owns frame_size as before: a size the caller set is cleared, not left for fftools to act on.
+    expect(patch).toContain('+    avctx->frame_size = 0;');
+    expect(patch).not.toMatch(/^\+\s*avctx->frame_size = (?!0;)/m);
+  });
+
+  it('fails the build when the patch is missing from the encoder or when the stream depends on the frame size', () => {
+    expect(INSTALL).toContain("grep -Eq 'General capabilities:.*\\bvariable\\b'");
+    expect(INSTALL).toContain('for size in 64 7 100 100000; do vorbis_stream "$size"; done');
+    expect(INSTALL).toContain('the libvorbis encoder writes another stream for frames of $size samples');
+    // A run that fails, or writes no Ogg stream, stops the build: equal empty outputs would otherwise compare equal.
+    expect(INSTALL).toContain('the libvorbis encoder failed for frames of $1 samples');
+    expect(INSTALL).toContain('[ "$(head -c 4 "$out")" = "OggS" ] && [ "$(wc -c < "$out")" -gt 10000 ]');
+    expect(INSTALL).toMatch(/aevalsrc=exprs=[^"]*:c=5\.1:/);
+    expect(INSTALL.indexOf('vorbis_stream "$size"')).toBeGreaterThan(INSTALL.indexOf('make -j"$jobs"'));
   });
 
   it('links the libraries the conversions name and only those, with no nonfree component and no network', () => {
@@ -141,5 +185,12 @@ describe('the install script of FFmpeg', () => {
   it('installs the licence text and the note that names the archive the build came from', () => {
     expect(INSTALL).toContain('install -m 0644 COPYING.GPLv2 "$INSTALL_DIR/share/doc/ffmpeg/copyright"');
     expect(INSTALL).toMatch(/> "\$INSTALL_DIR\/share\/doc\/ffmpeg\/SOURCE"/);
+  });
+
+  it('names each applied patch in the source note and in the tool-versions line, so that the build is not called unmodified', () => {
+    expect(INSTALL).toMatch(/>> "\$INSTALL_DIR\/share\/doc\/ffmpeg\/SOURCE"/);
+    expect(INSTALL).toMatch(/>> "\$INSTALL_DIR\/share\/doc\/ffmpeg\/tool-version\.txt"/);
+    expect(INSTALL).toContain('install -m 0644 "${patch_dir}/${patch_name}" "$INSTALL_DIR/share/doc/ffmpeg/patches/${patch_name}"');
+    expect(INSTALL).not.toMatch(/unmodified/);
   });
 });
