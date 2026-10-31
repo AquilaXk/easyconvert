@@ -1,12 +1,15 @@
 import fs from 'node:fs';
-import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
+import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
+import { isEncryptedWordDocument } from '../lib/conversions/office/doc-reader';
+import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
 import type { WorkerVfsPayload } from './worker-types';
 
 /**
  * What the worker proves about an office input before LibreOffice starts, and the form it is handed over in: a macro-enabled
- * package without its macros, a drawing that is an OpenDocument drawing package, a legacy workbook that is not encrypted.
+ * package without its macros, a drawing that is an OpenDocument drawing package; and, once LibreOffice could not load a legacy
+ * binary workbook or document, whether the file is encrypted.
  */
 
 /** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
@@ -39,15 +42,15 @@ export async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src
   if (buffer) await assertOpenDocumentGraphic(buffer, src);
 }
 
-/** Sources that are Excel 97-2003 workbooks (BIFF8): the workbook and its template. */
-const BIFF_WORKBOOK_SOURCES: ReadonlySet<string> = new Set(['xls', 'xlt']);
 /**
- * Answers an encrypted legacy workbook with the same typed error (HTTP 422) on every route. The in-process reader
- * raises it for the text targets; LibreOffice would only report that the source could not be loaded, which is
- * indistinguishable from a damaged file, so the FilePass record is looked for before it starts.
+ * Whether a legacy workbook (a FilePass record) or Word document (the encrypted flag of its file information block) is encrypted. LibreOffice
+ * decrypts the workbooks that use the default password of the format and cannot load the others, and it reports those like a
+ * damaged file, so this is asked after it failed. A file that is not held in memory, or is another format, is not judged.
  */
-export function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: string): void {
-  if (!BIFF_WORKBOOK_SOURCES.has(src)) return;
+export function isEncryptedLegacyOffice(input: Buffer | WorkerVfsPayload, src: string): boolean {
+  const reading = officeReadingFormat(src);
+  if (reading !== 'xls' && reading !== 'doc') return false;
   const buffer = inputAsBuffer(input);
-  if (buffer) assertXlsNotEncrypted(buffer);
+  if (buffer === undefined) return false;
+  return reading === 'xls' ? xlsHasFilePass(buffer) : isEncryptedWordDocument(buffer);
 }

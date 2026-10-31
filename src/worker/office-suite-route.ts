@@ -6,6 +6,7 @@ import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
 import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
+import { isEncryptedLegacyOffice } from './office-input-checks';
 import {
   CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -159,7 +160,7 @@ export function presentationRetryInput(input: Buffer | WorkerVfsPayload, src: st
   return Buffer.isBuffer(input) ? repaired : { outputPath: input.outputPath, inputBuffer: repaired };
 }
 
-type OfficeSuiteRun = (input: Buffer | WorkerVfsPayload, sourceFormat: string, targetFormat: string, options?: WorkerEngineOptions, originalFilename?: string) => Promise<WorkerConversionResult | null>;
+export type OfficeSuiteRun = (input: Buffer | WorkerVfsPayload, sourceFormat: string, targetFormat: string, options?: WorkerEngineOptions, originalFilename?: string) => Promise<WorkerConversionResult | null>;
 
 /** `run`, and once more on the input `presentationRetryInput` returns when the office suite could not load a presentation. */
 export function withPresentationRetry(run: OfficeSuiteRun): OfficeSuiteRun {
@@ -170,6 +171,25 @@ export function withPresentationRetry(run: OfficeSuiteRun): OfficeSuiteRun {
       const retry = presentationRetryInput(input, sourceFormat, err);
       if (retry === undefined) throw err;
       return run(retry, sourceFormat, targetFormat, options, originalFilename);
+    }
+  };
+}
+
+/**
+ * `run`, with the typed 422 for an encrypted legacy workbook or Word document in place of the "damaged" answer of the office suite.
+ * The suite decrypts a workbook that uses the default password of the format and loads it like any other (`xlroot.cxx`
+ * `RequestEncryptionData` tries it first), so the file goes to the suite whatever its FilePass record says. When the suite cannot
+ * load it, a file that is encrypted is intact and needs a password: the answer is the one the in-process readers give.
+ */
+export function withEncryptedAnswer(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    try {
+      return await run(input, sourceFormat, targetFormat, options, originalFilename);
+    } catch (err) {
+      if (asUnreadableDocument(err, sourceFormat) !== err && isEncryptedLegacyOffice(input, sourceFormat)) {
+        throw new EncryptedOfficeDocumentError(`The ${sourceFormat.toUpperCase()} file is encrypted or password protected, so its content cannot be read.`);
+      }
+      throw err;
     }
   };
 }
@@ -411,9 +431,14 @@ export function officeSuiteReadsInputAndWrites(src: string, tgt: string, input: 
   return officeSuiteReadsInput(src, input) && officeSuiteWritesTarget(src, tgt);
 }
 
+/** The in-process reader's refusal of an encrypted workbook, which the office suite may still read: it decrypts one that uses the default password of the format. */
+function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
+  return refusal instanceof EncryptedOfficeDocumentError && officeReadingFormat(src) === 'xls';
+}
+
 /**
  * A legacy binary Office document (Word, Excel, PowerPoint, and their templates and slide shows) that the strict in-process
- * reader refuses as malformed is read by the office suite instead, which reads damaged files the way the application that
+ * reader refuses as malformed, or a workbook it refuses as encrypted, is read by the office suite instead, which reads damaged files the way the application that
  * wrote them does. Only a file that starts like a legacy binary document is handed over: the office suite also loads the
  * HTML, RTF and text that real files carry under these extensions, and those bodies go through the staged HTML path (with its
  * image fetch guard) or the reader of their own format, never straight to the suite. When the office suite cannot read the
@@ -421,7 +446,7 @@ export function officeSuiteReadsInputAndWrites(src: string, tgt: string, input: 
  */
 export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest, refusal: unknown): Promise<WorkerConversionResult | undefined> {
   const interchange = legacyReaderRetryInterchange(request.src, request.tgt);
-  const refused = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError;
+  const refused = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError || isEncryptedWorkbookRefusal(request.src, refusal);
   if (interchange === undefined || !refused || request.options.signal?.aborted) return undefined;
   const head = leadingBytes(request.input);
   if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature))) return undefined;

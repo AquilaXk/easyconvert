@@ -348,6 +348,21 @@ function fileOffsetLocator(pieces: readonly Piece[]): (cp: number) => number {
 }
 
 /**
+ * Whether the file information block of a Word 97-2003 document has its fEncrypted flag set ([MS-DOC] 2.5.2 FibBase). The office
+ * suite cannot load such a document without its password and reports it like a damaged file; this tells the two apart. A file
+ * that is not a readable Word binary is not encrypted as far as this can tell.
+ */
+export function isEncryptedWordDocument(buffer: Buffer): boolean {
+  try {
+    const word = new CheckedReader(requireCfbStream(readCfbStreams(buffer, LABEL), WORD_DOCUMENT_STREAM, LABEL), LABEL);
+    return word.u16(FIB_WIDENT_OFFSET) === FIB_WIDENT && (word.u16(FIB_FLAGS_OFFSET) & FIB_FLAG_ENCRYPTED) !== 0;
+  } catch (err) {
+    if (err instanceof LegacyOfficeFormatError) return false;
+    throw err;
+  }
+}
+
+/**
  * Extracts the text of the main story of a Word 97-2003 document. Throws a LegacyOfficeFormatError for
  * malformed or empty documents and an EncryptedOfficeDocumentError for encrypted ones. A symbol-font character with no
  * Unicode counterpart becomes U+FFFD and is reported to the running conversion's warnings; so does one whose
