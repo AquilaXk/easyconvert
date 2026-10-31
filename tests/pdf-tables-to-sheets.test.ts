@@ -243,6 +243,36 @@ describe('the running header and footer of the pages of a PDF', () => {
     ]);
   });
 
+  describe('a bare number dropped as the page counter of a text sheet', () => {
+    const bareFooters = async (numbers: readonly number[]): Promise<Buffer> => {
+      const document = await PDFDocument.create();
+      numbers.forEach((number, index) => {
+        const sheet = document.addPage([600, 800]);
+        sheet.drawText(`Chapter ${index + 1} text`, { x: 60, y: 700, size: 12 });
+        sheet.drawText(String(number), { x: 280, y: 30, size: 10 });
+      });
+      return Buffer.from(await document.save());
+    };
+
+    it('is reported as a warning that names the pages', async () => {
+      const result = await convertFile(await bareFooters([1, 2, 3]), 'pdf', 'xlsx', {}, 'bare.pdf');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Chapter 1 text']], [['Chapter 2 text']], [['Chapter 3 text']]]);
+      expect(result.metadata?.warnings).toEqual(['Left out the bare number printed on pages 1, 2, 3 as a page counter: a text sheet is named after its page.']);
+    });
+
+    it('is not reported for a number that stays as a row', async () => {
+      const result = await convertFile(await bareFooters([7, 7, 7]), 'pdf', 'xlsx', {}, 'same.pdf');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Chapter 1 text'], ['7']], [['Chapter 2 text'], ['7']], [['Chapter 3 text'], ['7']]]);
+      expect(result.metadata?.warnings).toBeUndefined();
+    });
+
+    it('is not reported for the counters that say they are one: Page N is dropped without a warning', async () => {
+      const result = await convertFile(await pdfWithFooter((number) => `Chapter ${number} text`), 'pdf', 'xlsx', {}, 'decorated.pdf');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Chapter 1 text']], [['Chapter 2 text']], [['Chapter 3 text']]]);
+      expect(result.metadata?.warnings).toBeUndefined();
+    });
+  });
+
   it('leave no warning for a document of tables with only the page number as a footer', () => {
     const { tables, pageText } = layoutPdf([1, 2, 3].map((number) => tablePage(number, `Page ${number}`)), FONTS);
     expect(sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() }).leftOut).toEqual([]);

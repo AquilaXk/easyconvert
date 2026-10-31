@@ -15,7 +15,7 @@ import type {
 import { isRightToLeftRegion, orderRows, type LineGroup } from './columns';
 import { buildRows } from './lines';
 import { LayoutBudget } from './limits';
-import { pageCounterBlocks, type FurnitureLine } from './page-counters';
+import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { continuesInNextFlow, mergeParagraphs, paragraphsOfFlow } from './paragraphs';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
@@ -307,7 +307,7 @@ function furnitureKey(text: string): string {
 }
 
 /** The header and footer lines among `blocks` that print the number of their page (`pageCounterBlocks`). */
-function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>): Set<PageBlock> {
+function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>): Map<PageBlock, CounterForm> {
   const lines = [...blocks].map((block): FurnitureLine<PageBlock> => {
     const { paragraph } = block as ParagraphEntry;
     return { block, key: `${candidates.get(block)}:${furnitureKey(paragraph.text)}`, text: paragraph.text, pageNumber: paragraph.pageNumber };
@@ -315,12 +315,12 @@ function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<Pag
   return pageCounterBlocks(lines);
 }
 
-/** What `splitPageFurniture` takes out of the flow, and which of those blocks are the page counter of their page. */
+/** What `splitPageFurniture` takes out of the flow, and which of those blocks are the page counter of their page, in the form each prints. */
 interface PageFurniture {
   body: PageBlock[];
   header: Paragraph[];
   footer: Paragraph[];
-  counters: ReadonlySet<PageBlock>;
+  counters: ReadonlyMap<PageBlock, CounterForm>;
 }
 
 /**
@@ -336,7 +336,7 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Set() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Map() };
   const accepted = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
@@ -378,8 +378,10 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
 /** The lines of text one page holds in reading order, vertical and angled text included. */
 export interface PdfPageText {
   pageNumber: number;
-  /** Every line of the page, but its page counter (`pageCounterBlocks`): a miss keeps a line. */
+  /** Every line of the page, but its page counter (`pageCounterBlocks`). */
   lines: string[];
+  /** The page counters left out of `lines` that are a bare number, the form that can be text (section numbers that run 1, 2, 3 on pages 1, 2, 3). */
+  bareCounters: string[];
 }
 
 /** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
@@ -394,15 +396,20 @@ export interface LaidOutPdf {
   pageText: PdfPageText[];
 }
 
-function pageTextOf(layout: PageLayout, counters: ReadonlySet<PageBlock>): PdfPageText {
+function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, CounterForm>): PdfPageText {
   const { pageNumber } = layout.page;
   const lines: string[] = [];
+  const bareCounters: string[] = [];
   for (const block of layout.blocks) {
     if (block.kind !== 'paragraph') continue;
-    if (counters.has(block)) continue;
+    const counter = counters.get(block);
+    if (counter !== undefined) {
+      if (counter === 'bare') bareCounters.push(block.paragraph.text);
+      continue;
+    }
     for (const { text } of block.paragraph.lines) lines.push(text);
   }
-  return { pageNumber, lines };
+  return { pageNumber, lines, bareCounters };
 }
 
 /**
