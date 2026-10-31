@@ -480,7 +480,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
     const regions = select(faq, 'div', 'role', 'region');
     expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
-    expect(visibleText(regions[0])).toMatch(/^Yes\. You can convert without an account, up to 1 GB per file/);
+    expect(visibleText(regions[0])).toMatch(/^Yes\. You can convert without an account, up to 1 GiB per file/);
+    expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
   });
 
   it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {

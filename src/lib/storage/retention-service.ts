@@ -13,12 +13,14 @@ import {
 import {
   endUploadUse,
   holdRecord,
+  isHeld,
   isDeleted,
   isHoldableKey,
   isRetainedKey,
   keptUntil,
   markGone,
   newRecord,
+  newUnclaimedUploadRecord,
   newUploadRecord,
   reasonOf,
   recordServedRange,
@@ -108,6 +110,39 @@ export async function registerStoredResult(storage: Pick<IStorageBackend, 'delet
     }
     throw error;
   }
+}
+
+/**
+ * Starts the clock of an upload in the ownerless namespace that was just completed (every upload of an anonymous caller):
+ * nobody converting it within the undelivered time of a result means it was abandoned, so it goes then. An account's
+ * upload keeps the lifetime it was stored with. When the record cannot be written the object is removed again and the
+ * error is rethrown, as for a result.
+ */
+export async function registerCompletedUpload(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
+  if (!isUploadKey(key)) return;
+  try {
+    const now = Date.now();
+    const policy = resolveRetentionPolicy();
+    await getRetentionLedger().update(key, (current) => current ?? newUnclaimedUploadRecord(key, now, policy));
+  } catch (error) {
+    await storage.deleteObject(key);
+    throw error;
+  }
+}
+
+/**
+ * Deletes the completed upload under `key` at once, for a client that gave it up: unless a job holds it, it is due now
+ * and taken out of service like any other. Returns false, leaving it as it was, while a job reads it.
+ */
+export async function discardUpload(storage: DeletableStorage, key: string, now: number = Date.now()): Promise<boolean> {
+  let held = false;
+  await getRetentionLedger().update(key, (current) => {
+    held = current !== undefined && isHeld(current, now);
+    return current && !held ? { ...current, deleteAt: Math.min(current.deleteAt, now) } : undefined;
+  });
+  if (held) return false;
+  await deleteRecordedResult(storage, key, now, undefined);
+  return true;
 }
 
 /** Stores a result that lives for the undelivered time and registers it, so that the sweep and the download route know it. */

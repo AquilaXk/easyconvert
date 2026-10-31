@@ -626,7 +626,7 @@ export async function executeItemConversion(
           onStage: callbacks.onStage,
           signal,
         })
-      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress);
+      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress, signal);
     callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: any) {
     if (signal?.aborted) return;

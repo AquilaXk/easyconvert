@@ -15,7 +15,7 @@ import { tusEngine } from '../src/lib/storage/tus-engine';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
-import { LARGEST_PLAN_FILE_BYTES, PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
+import { LARGEST_PLAN_FILE_BYTES, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 
 const BASE_URL = 'http://localhost:3000';
 const GIB = 1024 * 1024 * 1024;
@@ -26,14 +26,13 @@ type SignedInPlan = 'free' | 'pro' | 'enterprise';
 interface PlanCase {
   plan: 'anonymous' | SignedInPlan;
   limit: number;
-  upgradeHint: string | null;
 }
 
 const PLAN_CASES: readonly PlanCase[] = [
-  { plan: 'anonymous', limit: PLAN_MAX_FILE_BYTES.anonymous, upgradeHint: 'Pro allows files up to 5 GB.' },
-  { plan: 'free', limit: PLAN_MAX_FILE_BYTES.free, upgradeHint: 'Pro allows files up to 5 GB.' },
-  { plan: 'pro', limit: PLAN_MAX_FILE_BYTES.pro, upgradeHint: 'Enterprise allows files up to 10 GB.' },
-  { plan: 'enterprise', limit: PLAN_MAX_FILE_BYTES.enterprise, upgradeHint: null },
+  { plan: 'anonymous', limit: PLAN_MAX_FILE_BYTES.anonymous },
+  { plan: 'free', limit: PLAN_MAX_FILE_BYTES.free },
+  { plan: 'pro', limit: PLAN_MAX_FILE_BYTES.pro },
+  { plan: 'enterprise', limit: PLAN_MAX_FILE_BYTES.enterprise },
 ];
 const SIGNED_IN_CASES = PLAN_CASES.filter((c): c is PlanCase & { plan: SignedInPlan } => c.plan !== 'anonymous');
 
@@ -87,51 +86,33 @@ function jsonRequest(path: string, headers: Record<string, string>, body: unknow
   });
 }
 
-async function expectTooLarge(res: Response, planCase: PlanCase): Promise<void> {
+/** The 413 of a file over the plan limit: the size and the limit, and no plan offered while none is on sale. */
+async function expectTooLarge(res: Response): Promise<void> {
   const body = await res.json();
   expect(res.status, JSON.stringify(body)).toBe(PAYLOAD_TOO_LARGE);
   expect(res.headers.get('content-type')).toContain('application/problem+json');
   expect(body).toMatchObject({ status: PAYLOAD_TOO_LARGE, title: 'Payload Too Large', success: false });
-  expect(body.detail).toMatch(/exceeds the \d+ GB limit for /);
-  if (planCase.upgradeHint) expect(body.detail).toContain(planCase.upgradeHint);
-  else expect(body.detail).not.toContain('allows files up to');
+  expect(body.detail).toMatch(/exceeds the \d+ GiB limit for /);
+  expect(body.detail).not.toContain('allows files up to');
 }
 
-describe('/api/convert holds a file to the plan limit', () => {
-  it.each(PLAN_CASES)('refuses one byte past the $plan limit with 413 and passes the limit itself', async (planCase) => {
-    const headers = await headersFor(planCase.plan);
-
-    const over = await convertPost(formRequest('/api/convert', headers, { field: 'file', name: 'a.csv', size: planCase.limit + 1 }));
-    await expectTooLarge(over, planCase);
-
-    const atLimit = await convertPost(formRequest('/api/convert', headers, { field: 'file', name: 'a.csv', size: planCase.limit }));
-    expect(atLimit.status).toBe(400);
-    expect((await atLimit.json()).error).toBe('Missing required "targetFormat" parameter.');
+describe('the routes that take a file in one request reach no plan limit', () => {
+  it('carry at most 64 MiB, which every plan allows, so their 413 is the one of the request size', () => {
+    for (const planCase of PLAN_CASES) expect(SINGLE_REQUEST_BODY_MAX_BYTES).toBeLessThan(planCase.limit);
   });
-});
 
-describe('/api/convert/batch holds the files of a batch to the plan limit together', () => {
-  it.each(PLAN_CASES)('refuses a batch one byte past the $plan limit and passes one of the limit', async (planCase) => {
-    const headers = await headersFor(planCase.plan);
-
-    const over = await batchPost(formRequest('/api/convert/batch', headers, { field: 'files', name: 'a.csv', size: planCase.limit + 1 }));
-    await expectTooLarge(over, planCase);
-
-    const atLimit = await batchPost(
-      formRequest('/api/convert/batch', headers, { field: 'files', name: 'a.csv', size: planCase.limit }, { targetFormats: '{' })
-    );
-    expect(atLimit.status).toBe(400);
-    expect((await atLimit.json()).error).toBe('Invalid JSON for targetFormats map.');
+  it.each([
+    ['/api/convert', convertPost, 'file'],
+    ['/api/convert/batch', batchPost, 'files'],
+  ] as const)('%s does not refuse a form file on the plan limit', async (path, post, field) => {
+    const res = await post(formRequest(path, {}, { field, name: 'a.csv', size: PLAN_MAX_FILE_BYTES.anonymous + 1 }));
+    expect(res.status).not.toBe(PAYLOAD_TOO_LARGE);
   });
-});
 
-describe('/api/v1/convert holds a file to the plan limit', () => {
-  it.each(SIGNED_IN_CASES)('refuses one byte past the $plan limit with 413', async (planCase) => {
-    const headers = await headersFor(planCase.plan);
-    const res = await v1ConvertPost(
-      formRequest('/api/v1/convert', headers, { field: 'file', name: 'a.png', size: planCase.limit + 1 }, { targetFormat: 'jpg' })
-    );
-    await expectTooLarge(res, planCase);
+  it('/api/v1/convert does not refuse a form file on the plan limit', async () => {
+    const headers = await headersFor('free');
+    const res = await v1ConvertPost(formRequest('/api/v1/convert', headers, { field: 'file', name: 'a.png', size: PLAN_MAX_FILE_BYTES.free + 1 }, { targetFormat: 'nope' }));
+    expect(res.status).not.toBe(PAYLOAD_TOO_LARGE);
   });
 });
 
@@ -147,7 +128,7 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
         })
       );
 
-    await expectTooLarge(await initiate(planCase.limit + 1), planCase);
+    await expectTooLarge(await initiate(planCase.limit + 1));
 
     const accepted = await initiate(planCase.limit);
     expect(accepted.status).toBe(200);
@@ -157,7 +138,7 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
     });
   });
 
-  it('counts the parts already stored against the same limit, with the plan of the caller', async () => {
+  it('refuses a part that would bring the stored bytes past the declared size before it reads the part', async () => {
     const headers = await headersFor('free', { 'Content-Type': 'application/json' });
     const init = await multipartPost(
       new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
@@ -170,7 +151,7 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
     cleanups.push(() => {
       s3Storage.abortMultipartUpload(uploadId);
     });
-    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e', size: GIB - 10 }]);
+    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e', size: 1014 }]);
 
     const part = await multipartPost(
       new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
@@ -179,7 +160,8 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
         body: Buffer.from('x'),
       })
     );
-    await expectTooLarge(part, PLAN_CASES[1]);
+    expect(part.status).toBe(PAYLOAD_TOO_LARGE);
+    expect((await part.json()).detail).toBe('This part would bring the upload to 1025 bytes, past the 1024 bytes it declared.');
   });
 });
 
@@ -189,7 +171,7 @@ describe('/api/v1/uploads/direct sizes an upload by the plan limit', () => {
     const res = await directPost(
       jsonRequest('/api/v1/uploads/direct', headers, { filename: 'big.bin', totalSize: planCase.limit + 1 })
     );
-    await expectTooLarge(res, planCase);
+    await expectTooLarge(res);
   });
 
   it.each(SIGNED_IN_CASES)('does not refuse a total of exactly the $plan limit on size', async (planCase) => {
@@ -208,7 +190,7 @@ describe('/api/v1/uploads (multipart sessions and resumable uploads) size an upl
       jsonRequest('/api/v1/uploads?action=initiate', headers, { filename: 'big.bin', totalSize: planCase.limit + 1 }),
       ROUTE_CONTEXT
     );
-    await expectTooLarge(res, planCase);
+    await expectTooLarge(res);
   });
 
   const tusCreate = (headers: Record<string, string>, length: number) =>
@@ -224,7 +206,7 @@ describe('/api/v1/uploads (multipart sessions and resumable uploads) size an upl
     const headers = await headersFor(planCase.plan);
 
     const over = await tusCreate(headers, planCase.limit + 1);
-    await expectTooLarge(over, planCase);
+    await expectTooLarge(over);
     expect(over.headers.get('tus-resumable')).toBe('1.0.0');
 
     const created = await tusCreate(headers, planCase.limit);
@@ -259,7 +241,7 @@ describe('job routes size a stored input by the plan limit', () => {
     const res = await v1JobsPost(
       jsonRequest('/api/v1/jobs', { Cookie: `easyconvert_session=${createSessionToken(user)}` }, { originalFilename: 'a.csv', targetFormat: 'json', storageKey: key })
     );
-    await expectTooLarge(res, planCase);
+    await expectTooLarge(res);
   });
 
   it.each(SIGNED_IN_CASES)('refuses a stored input one byte past the $plan limit on /api/queue/jobs', async (planCase) => {
@@ -271,7 +253,7 @@ describe('job routes size a stored input by the plan limit', () => {
     const res = await legacyJobsPost(
       jsonRequest('/api/queue/jobs', { Cookie: `easyconvert_session=${createSessionToken(user)}` }, { filename: 'a.csv', targetFormat: 'json', storageKey: key })
     );
-    await expectTooLarge(res, planCase);
+    await expectTooLarge(res);
   });
 
   it.each(SIGNED_IN_CASES)('queues a stored input of exactly the $plan limit on /api/v1/jobs', async (planCase) => {

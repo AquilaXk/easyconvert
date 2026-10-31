@@ -4,7 +4,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 36
+    "maxValue": 35
   },
   {
     "file": "src/app/api/convert/route.ts",
@@ -17,7 +17,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 53
+    "maxValue": 52
   },
   {
     "file": "src/app/api/fetch-url/route.ts",
@@ -40,36 +40,10 @@
     "maxValue": 32
   },
   {
-    "file": "src/app/api/queue/jobs/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "POST",
-    "count": 1
-  },
-  {
-    "file": "src/app/api/queue/jobs/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 41
-  },
-  {
     "file": "src/app/api/storage/file/[...key]/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "GET",
     "count": 2
-  },
-  {
-    "file": "src/app/api/storage/multipart/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "POST",
-    "count": 3
-  },
-  {
-    "file": "src/app/api/storage/multipart/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 68
   },
   {
     "file": "src/app/api/v1/archives/inspect/route.ts",

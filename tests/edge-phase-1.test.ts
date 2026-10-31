@@ -632,7 +632,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       await converter(queueItem);
 
       expect(queue[0].status).toBe('error');
-      expect(queue[0].error).toContain('File size exceeds the 50 MB limit.');
+      expect(queue[0].error).toContain('File size exceeds the 50 MiB limit.');
     });
   });
 });

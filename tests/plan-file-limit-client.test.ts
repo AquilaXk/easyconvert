@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Plan } from '../src/lib/plan-limits';
-import { fileTooLargeMessage, PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
+import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 import {
   getViewerAccount,
   getViewerMaxFileBytes,
@@ -19,6 +19,7 @@ const shownAccount = vi.hoisted(() => ({ current: null as { name: string; tier: 
 vi.mock('../src/hooks/useViewerPlan', () => ({
   useViewerPlan: () => shownPlan.current,
   useViewerAccount: () => shownAccount.current,
+  useRefreshViewerPlan: () => undefined,
 }));
 
 import HeroDropzoneCard from '../src/components/workbench/HeroDropzoneCard';
@@ -165,34 +166,23 @@ describe('the drop zone states the limit of the plan', () => {
     );
 
   it.each([
-    ['anonymous', 'Up to 1 GB per file'],
-    ['free', 'Up to 1 GB per file'],
-    ['pro', 'Up to 5 GB per file'],
-    ['enterprise', 'Up to 10 GB per file'],
+    ['anonymous', 'Up to 1 GiB per file'],
+    ['free', 'Up to 1 GiB per file'],
+    ['pro', 'Up to 5 GiB per file'],
+    ['enterprise', 'Up to 10 GiB per file'],
   ] as const)('shows "%s" viewers %s', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
     expect(text).toContain(copy);
-    expect(text).not.toMatch(/2 GB|100 MB|OPFS/);
+    expect(text).not.toMatch(/2 GB|100 MB|OPFS|\bGB\b/);
   });
 });
 
 describe('a file over the limit', () => {
-  it.each([
-    ['anonymous', GIB + 1, 'File size 1,073,741,825 bytes exceeds the 1 GB limit for anonymous use. Pro allows files up to 5 GB.'],
-    ['free', 3 * GIB, 'File size 3 GB exceeds the 1 GB limit for the free plan. Pro allows files up to 5 GB.'],
-    ['pro', 6 * GIB, 'File size 6 GB exceeds the 5 GB limit for the Pro plan. Enterprise allows files up to 10 GB.'],
-    ['enterprise', 11 * GIB, 'File size 11 GB exceeds the 10 GB limit for the Enterprise plan.'],
-  ] as const)('is queued as an error naming the limit and the next plan for %s', (plan, size, message) => {
-    const item = buildQueuedFileItem(claimedFile('big.mp4', size), plan);
-    expect(item.status).toBe('error');
-    expect(item.error).toBe(message);
-  });
-
-  it('is queued ready at the limit itself and as an error one byte past it', () => {
-    expect(buildQueuedFileItem(claimedFile('a.mp4', PLAN_MAX_FILE_BYTES.pro), 'pro').status).toBe('ready');
-    expect(buildQueuedFileItem(claimedFile('a.mp4', PLAN_MAX_FILE_BYTES.pro + 1), 'pro').status).toBe('error');
-    expect(buildQueuedFileItem(claimedFile('a.mp4', PLAN_MAX_FILE_BYTES.free + 1), 'free').status).toBe('error');
+  it('is queued ready whatever its size, since the plan of the session may answer after the drop', () => {
+    const item = buildQueuedFileItem(claimedFile('big.mp4', 11 * GIB));
+    expect(item.status).toBe('ready');
+    expect(item.error).toBeUndefined();
   });
 
   function rowFor(size: number, error?: string) {
@@ -223,12 +213,47 @@ describe('a file over the limit', () => {
     );
   }
 
-  it('shows the message on the row and disables the controls for an anonymous viewer', () => {
-    const size = 2 * GIB;
-    const dom = rowFor(size, fileTooLargeMessage('anonymous', size));
-    expect(visibleText(dom)).toContain('File size 2 GB exceeds the 1 GB limit for anonymous use. Pro allows files up to 5 GB.');
+  it.each([
+    ['anonymous', GIB + 1, 'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use.'],
+    ['free', 3 * GIB, 'File size 3 GiB exceeds the 1 GiB limit for the free plan.'],
+    ['pro', 6 * GIB, 'File size 6 GiB exceeds the 5 GiB limit for the Pro plan.'],
+    ['enterprise', 11 * GIB, 'File size 11 GiB exceeds the 10 GiB limit for the Enterprise plan.'],
+  ] as const)('shows the %s viewer the size and the limit on the row and offers no plan', (plan, size, message) => {
+    shownPlan.current = plan;
+    const dom = rowFor(size);
+    const text = visibleText(dom);
+    expect(text).toContain(message);
+    expect(text).not.toContain('allows files up to');
+    expect(text).toContain('Failed');
     expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBe('');
     expect(attrOf(select(dom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')).toBe('');
+  });
+
+  function alertOf(dom: ReturnType<typeof rowFor>): string | null {
+    const alert = select(dom, 'p', 'role', 'alert')[0];
+    return alert ? visibleText(alert) : null;
+  }
+
+  function formatButtonDisabled(dom: ReturnType<typeof rowFor>): string | null {
+    return attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled');
+  }
+
+  it('reads the limit at render, so a row dropped before the session answered follows the plan it names', () => {
+    const size = 2 * GIB;
+    const anonymous = rowFor(size);
+    expect(alertOf(anonymous)).toBe('File size 2 GiB exceeds the 1 GiB limit for anonymous use.');
+    expect(formatButtonDisabled(anonymous)).toBe('');
+
+    shownPlan.current = 'pro';
+    const pro = rowFor(size);
+    expect(alertOf(pro)).toBeNull();
+    expect(formatButtonDisabled(pro)).toBeNull();
+  });
+
+  it('is ready at the limit itself and refused one byte past it', () => {
+    shownPlan.current = 'pro';
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro))).toBeNull();
+    expect(alertOf(rowFor(PLAN_MAX_FILE_BYTES.pro + 1))).toBe('File size 5,368,709,121 bytes exceeds the 5 GiB limit for the Pro plan.');
   });
 
   it('lets the viewer cancel a file on its way to the server and names the step', () => {

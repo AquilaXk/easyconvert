@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { formatBytes } from '@/lib/format-bytes';
-import { PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
+import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
 
 export interface FaqItem {
   q: string;
@@ -16,10 +16,16 @@ export interface FaqSectionProps {
   subtitle?: string;
 }
 
+const FREE_FILE_LIMIT = formatBytes(PLAN_MAX_FILE_BYTES.free);
+/** The paid plans are named only once they can be bought (`PAID_PLANS_ON_SALE`). */
+const PAID_FILE_LIMITS = PAID_PLANS_ON_SALE
+  ? ` The Pro plan raises it to ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} and the Enterprise plan to ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)}.`
+  : '';
+
 const DEFAULT_FAQS: FaqItem[] = [
   {
     q: 'Is EasyConvert free to use?',
-    a: `Yes. You can convert without an account, up to ${formatBytes(PLAN_MAX_FILE_BYTES.anonymous)} per file and within a daily conversion limit. The Pro plan raises the file size to ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} and the Enterprise plan to ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)}.`,
+    a: `Yes. You can convert without an account, up to ${FREE_FILE_LIMIT} per file and within a daily conversion limit.${PAID_FILE_LIMITS}`,
   },
   {
     q: 'How are my files handled during conversion?',
@@ -27,7 +33,7 @@ const DEFAULT_FAQS: FaqItem[] = [
   },
   {
     q: 'What is the maximum file size limit?',
-    a: `EasyConvert supports individual files up to ${formatBytes(PLAN_MAX_FILE_BYTES.anonymous)} without an account or on the free plan, ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} on Pro and ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)} on Enterprise. Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled.`,
+    a: `EasyConvert takes files of up to ${FREE_FILE_LIMIT} each, with or without an account.${PAID_FILE_LIMITS} Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled.`,
   },
   {
     q: 'Can I convert multiple files in one batch?',

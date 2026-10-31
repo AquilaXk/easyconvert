@@ -6,7 +6,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {
@@ -87,9 +87,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     if (file.size === 0) {
       return await failWithRollback(400, 'Conversion payload is empty. File buffer has 0 bytes.');
     }
-
-    const tooLarge = await refuseOversizeFile(auth.user, file.size, instanceUri, reservationId);
-    if (tooLarge) return tooLarge;
 
     if (!targetFormat) {
       return NextResponse.json(

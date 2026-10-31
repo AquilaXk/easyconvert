@@ -5,7 +5,7 @@ import { storageProvider } from '../storage';
 import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
 import { isResultDeleted } from '../storage/retention-service';
 import { QueueUnavailableError } from '../types';
-import { isAnonymousUserId } from '../plan-limits';
+import { isAnonymousUserId } from '../auth/anonymous-identity';
 
 /** Response detail for a job input key that is missing or that the caller may not use. */
 export const STORAGE_OBJECT_NOT_FOUND = 'Storage object not found.';

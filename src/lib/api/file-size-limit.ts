@@ -1,26 +1,12 @@
 import type { NextRequest, NextResponse } from 'next/server';
 import { rollbackQuota } from '../api-keys/guard';
-import { formatBytes } from '../format-bytes';
-import {
-  SINGLE_REQUEST_BODY_MAX_BYTES,
-  SINGLE_REQUEST_FILE_MAX_BYTES,
-  UPLOAD_PART_MAX_BYTES,
-  fileTooLargeMessage,
-  maxFileBytes,
-  planOfCaller,
-} from '../plan-limits';
+import { SINGLE_REQUEST_BODY_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type PlanCaller } from '../plan-limits';
 import { createProblemDetailsResponse } from './problem-details';
-
-type Caller = Parameters<typeof planOfCaller>[0];
-
-/** The most bytes one file of `caller` may have, by the plan table. */
-export function callerMaxFileBytes(caller: Caller): number {
-  return maxFileBytes(planOfCaller(caller));
-}
+import { partBodyVerdict, singleRequestVerdict, type BodyLengthVerdict } from './request-body-limit';
 
 /** The 413 for a file of `sizeBytes` over the plan limit of `caller`, or null when the file fits (or has no known size). */
 export function fileSizeLimitProblem(
-  caller: Caller,
+  caller: PlanCaller,
   sizeBytes: number | undefined,
   instanceUri: string,
   extraHeaders?: Record<string, string>
@@ -33,7 +19,7 @@ export function fileSizeLimitProblem(
 
 /** `fileSizeLimitProblem` for a route that has reserved quota: the reservation is released when the file is refused. */
 export async function refuseOversizeFile(
-  caller: Caller,
+  caller: PlanCaller,
   sizeBytes: number | undefined,
   instanceUri: string,
   reservationId: string | undefined
@@ -43,21 +29,25 @@ export async function refuseOversizeFile(
   return problem;
 }
 
+function verdictProblem(verdict: BodyLengthVerdict, instanceUri: string, extra?: Record<string, unknown>): NextResponse | null {
+  if (!verdict) return null;
+  return createProblemDetailsResponse(verdict.status, verdict.detail, instanceUri, undefined, undefined, undefined, undefined, extra);
+}
+
 /**
- * The 413 for a request whose declared body is larger than a route takes whole, or null when it fits or declares no
- * length. It is answered before the route reads the body, so no route holds more than `SINGLE_REQUEST_BODY_MAX_BYTES`
- * of one request. The detail names the way to send the file: in parts, then a job on the stored file.
+ * The 400 for a malformed `Content-Length`, or the 413 for a declared body larger than a route takes whole; null when
+ * the body may be read. It is answered before the route reads the body, so no route holds more than
+ * `SINGLE_REQUEST_BODY_MAX_BYTES` of one request. The 413 names the way to send the file: in parts, then a job on the
+ * stored file.
  */
-export function singleRequestBodyProblem(req: Request, instanceUri: string): NextResponse | null {
-  const declared = Number.parseInt(req.headers.get('content-length') ?? '', 10);
-  if (!Number.isFinite(declared) || declared <= SINGLE_REQUEST_BODY_MAX_BYTES) return null;
-  const detail =
-    `This request carries ${formatBytes(declared)}, over the ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} one request may carry. ` +
-    `Send a larger file in parts of at most ${formatBytes(UPLOAD_PART_MAX_BYTES)}: open an upload with POST /api/storage/multipart ` +
-    '(or /api/v1/uploads), send the parts, then start the conversion with POST /api/queue/jobs (or /api/v1/jobs) on the stored file.';
-  return createProblemDetailsResponse(413, detail, instanceUri, undefined, undefined, undefined, undefined, {
-    maxRequestBytes: SINGLE_REQUEST_BODY_MAX_BYTES,
-  });
+function singleRequestBodyProblem(req: Request, instanceUri: string): NextResponse | null {
+  const verdict = singleRequestVerdict(instanceUri, req.headers.get('content-length'));
+  return verdictProblem(verdict, instanceUri, verdict?.status === 413 ? { maxRequestBytes: SINGLE_REQUEST_BODY_MAX_BYTES } : undefined);
+}
+
+/** The 400 for a malformed `Content-Length` of a part, or the 413 for a part declared over the largest part; null when it may be read. */
+export function partBodyProblem(req: Request, instanceUri: string): NextResponse | null {
+  return verdictProblem(partBodyVerdict(req.headers.get('content-length')), instanceUri);
 }
 
 /** The instance of a problem for a request built without a URL, as some callers in tests do. */

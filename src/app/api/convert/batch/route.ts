@@ -7,7 +7,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
@@ -110,17 +110,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     releaseSlot = slot.release;
 
-    let totalBatchSize = 0;
     for (const f of files) {
       if (f.size === 0) {
         return await failWithRollback(400, `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.`);
       }
-      totalBatchSize += f.size;
     }
-
-    // The files are converted from memory and zipped together, so the whole batch is held to one file's limit.
-    const tooLarge = await refuseOversizeFile(auth.user, totalBatchSize, instanceUri, reservationId);
-    if (tooLarge) return tooLarge;
 
     let targetFormatsMap: Record<string, string> = {};
     if (targetFormatsRaw) {

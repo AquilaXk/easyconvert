@@ -8,7 +8,6 @@ import { resolveObjectOwnership, mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
-import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 
 const BASE_URL = 'http://localhost:3000';
 const createdKeys: string[] = [];
@@ -130,7 +129,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(overTierRes.status).toBe(413);
     const overTierJson = await overTierRes.json();
     expect(overTierJson.status).toBe(413);
-    expect(overTierJson.detail).toContain('exceeds the 1 GB limit for the free plan');
+    expect(overTierJson.detail).toContain('exceeds the 1 GiB limit for the free plan');
 
     // 2. Part size exceeds 64 MiB
     const validInitReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
@@ -161,7 +160,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(overPartRes.status).toBe(413);
     const overPartJson = await overPartRes.json();
     expect(overPartJson.status).toBe(413);
-    expect(overPartJson.detail).toContain('exceeds maximum allowed part size');
+    expect(overPartJson.detail).toContain('over the largest part of 64 MiB');
 
     s3Storage.abortMultipartUpload(uploadId);
   });
@@ -255,7 +254,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const nanRes = await multipartPost(nanReq);
     expect(nanRes.status).toBe(400);
 
-    // 2. Reject cumulative bytes exceeding the plan limit (free: 1 GiB)
+    // 2. Reject a part that would bring the stored bytes past the size declared at initiate
     const largeInitReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
       method: 'POST',
       headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
@@ -265,8 +264,8 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(largeInitRes.status).toBe(200);
     const largeSession = await largeInitRes.json();
 
-    // The session already holds a part that leaves 10 bytes below the limit; a part of 11 bytes passes it.
-    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e1', size: PLAN_MAX_FILE_BYTES.free - 10 }]);
+    // The session already holds a part that leaves 10 bytes below the declared size; a part of 11 bytes passes it.
+    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e1', size: 90 * 1024 * 1024 - 10 }]);
     const part2Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
       method: 'POST',
       headers: sessionHeaders(alice, {
@@ -279,7 +278,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const part2Res = await multipartPost(part2Req);
     expect(part2Res.status).toBe(413);
     const part2Json = await part2Res.json();
-    expect(part2Json.detail).toContain('exceeds the 1 GB limit for the free plan');
+    expect(part2Json.detail).toBe('This part would bring the upload to 94371841 bytes, past the 94371840 bytes it declared.');
 
     s3Storage.abortMultipartUpload(largeSession.uploadId);
   });
@@ -291,7 +290,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const initReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
       method: 'POST',
       headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ filename: 'multi-part.bin', totalSize: 2048 }),
+      body: JSON.stringify({ filename: 'multi-part.bin', totalSize: 'part-1-content'.length }),
     });
     const initRes = await multipartPost(initReq);
     expect(initRes.status).toBe(200);

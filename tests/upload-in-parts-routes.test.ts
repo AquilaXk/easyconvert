@@ -48,16 +48,18 @@ function declaring(path: string, bytes: number): NextRequest {
 }
 
 describe('a route that takes a body whole refuses one past a single request before it reads it', () => {
+  const WEB_FLOW = ['POST /api/storage/multipart', 'POST /api/queue/jobs'];
+  const PUBLIC_FLOW = ['POST /api/v1/uploads', 'POST /api/v1/jobs'];
   const ROUTES = [
-    ['/api/convert', convertPost],
-    ['/api/convert/batch', batchPost],
-    ['/api/v1/convert', v1ConvertPost],
-    ['/api/v1/archives/inspect', inspectPost],
-    ['/api/v1/jobs', v1JobsPost],
-    ['/api/queue/jobs', queueJobsPost],
+    ['/api/convert', convertPost, WEB_FLOW],
+    ['/api/convert/batch', batchPost, WEB_FLOW],
+    ['/api/v1/convert', v1ConvertPost, PUBLIC_FLOW],
+    ['/api/v1/archives/inspect', inspectPost, PUBLIC_FLOW],
+    ['/api/v1/jobs', v1JobsPost, PUBLIC_FLOW],
+    ['/api/queue/jobs', queueJobsPost, WEB_FLOW],
   ] as const;
 
-  it.each(ROUTES)('%s answers 413 with the way to send the file in parts', async (path, post) => {
+  it.each(ROUTES)('%s answers 413 with the way to send the file in parts that its clients use', async (path, post, flow) => {
     const res = await post(declaring(path, SINGLE_REQUEST_BODY_MAX_BYTES + 1));
 
     expect(res.status).toBe(PAYLOAD_TOO_LARGE);
@@ -65,13 +67,11 @@ describe('a route that takes a body whole refuses one past a single request befo
     const body = await res.json();
     expect(body).toMatchObject({ status: PAYLOAD_TOO_LARGE, title: 'Payload Too Large', success: false, instance: path });
     expect(body.maxRequestBytes).toBe(SINGLE_REQUEST_BODY_MAX_BYTES);
-    expect(body.detail).toContain('64 MB');
-    expect(body.detail).toContain('/api/storage/multipart');
-    expect(body.detail).toContain('/api/v1/uploads');
-    expect(body.detail).toContain('/api/queue/jobs');
+    expect(body.detail).toContain('64 MiB');
+    for (const step of flow) expect(body.detail).toContain(step);
   });
 
-  it.each(ROUTES)('%s does not refuse a body of exactly the single request limit on its size', async (path, post) => {
+  it.each(ROUTES)('%s does not refuse a body of exactly the single request limit on its size', async (path, post, _flow) => {
     const res = await post(declaring(path, SINGLE_REQUEST_BODY_MAX_BYTES));
 
     expect(res.status).not.toBe(PAYLOAD_TOO_LARGE);
@@ -237,7 +237,7 @@ describe('a file over a single request goes up in parts and is converted by a jo
     const res = await multipartPost(part(uploadId, 1, csvBytes(10), { 'content-length': String(UPLOAD_PART_MAX_BYTES + 1) }));
 
     expect(res.status).toBe(PAYLOAD_TOO_LARGE);
-    expect((await res.json()).detail).toContain('Part size exceeds');
+    expect((await res.json()).detail).toContain('over the largest part of 64 MiB');
   });
 });
 
@@ -283,6 +283,6 @@ describe('/api/v1/jobs holds every stored file of a graph to the plan limit', ()
     const body = await res.json();
     expect(res.status, JSON.stringify(body)).toBe(PAYLOAD_TOO_LARGE);
     expect(body.title).toBe('Payload Too Large');
-    expect(body.detail).toMatch(/exceeds the 1 GB limit for the free plan\. Pro allows files up to 5 GB\./);
+    expect(body.detail).toMatch(/exceeds the 1 GiB limit for the free plan\.$/);
   });
 });

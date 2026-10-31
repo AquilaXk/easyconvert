@@ -19,11 +19,15 @@ import { lazySingleton } from './lazy-singleton';
 import { isProductionRuntime, resolveLocalStorageDir, resolveSigningSecret } from './storage-config';
 import { resolveDeclaredFormat } from './declared-format';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
-import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
+import { LARGEST_PLAN_FILE_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
 
-/** Part numbers run from 1 to 10,000 and one part holds at most 5 GiB, as in the S3 multipart limits. */
+/** Part numbers run from 1 to 10,000, as in the S3 multipart limits. */
 export const MULTIPART_MAX_PARTS = 10_000;
-export const MULTIPART_MAX_PART_BYTES = 5 * 1024 * 1024 * 1024;
+/**
+ * A part reaches this application in one request, so it holds at most what one request may carry (entry 137), not the
+ * 5 GiB of an object store part: a larger body would be cut short by the framework before the route reads it.
+ */
+export const MULTIPART_MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
 /** The most one multipart upload may hold in all, and the cap of a session that declared no size. */
 export const MULTIPART_MAX_TOTAL_BYTES = LARGEST_PLAN_FILE_BYTES;
 

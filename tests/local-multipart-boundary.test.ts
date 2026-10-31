@@ -145,10 +145,11 @@ describe('LocalFsStorage multipart boundary', () => {
     }
   });
 
-  it('caps one part at the S3 maximum of 5 GiB even when the declared total is larger', async () => {
+  it('caps one part at what one request carries even when the declared total is larger', async () => {
     const { multipartPartByteLimit } = await import('../src/lib/storage/local-fs-storage');
-    expect(multipartPartByteLimit(10 * GIB, 0)).toBe(5 * GIB);
-    expect(multipartPartByteLimit(10 * GIB, 7 * GIB)).toBe(3 * GIB);
+    const { UPLOAD_PART_MAX_BYTES } = await import('../src/lib/plan-limits');
+    expect(multipartPartByteLimit(10 * GIB, 0)).toBe(UPLOAD_PART_MAX_BYTES);
+    expect(multipartPartByteLimit(10 * GIB, 10 * GIB - 1000)).toBe(1000);
     expect(multipartPartByteLimit(4, 6)).toBe(0);
   });
 

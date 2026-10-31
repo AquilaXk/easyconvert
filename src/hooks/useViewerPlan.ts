@@ -12,18 +12,20 @@ import {
 
 const SERVER_PLAN: Plan = 'anonymous';
 
-/** The plan of the person using the page: anonymous at first, the plan of the session once `/api/auth/me` answers. */
-export function useViewerPlan(): Plan {
+/** Reads the session once when the component that owns the page's plan mounts: the queue, and the header's account menu. */
+export function useRefreshViewerPlan(): void {
   useEffect(() => {
     void refreshViewerPlan();
   }, []);
+}
+
+/** The plan of the person using the page: anonymous at first, the plan of the session once `/api/auth/me` answers. */
+export function useViewerPlan(): Plan {
   return useSyncExternalStore(subscribeViewerPlan, getViewerPlan, () => SERVER_PLAN);
 }
 
 /** The signed-in person of the page, from the same session read as `useViewerPlan`; null for a visitor. */
 export function useViewerAccount(): ViewerAccount | null {
-  useEffect(() => {
-    void refreshViewerPlan();
-  }, []);
+  useRefreshViewerPlan();
   return useSyncExternalStore(subscribeViewerPlan, getViewerAccount, () => null);
 }

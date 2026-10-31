@@ -5,13 +5,11 @@ import {
   SINGLE_REQUEST_FILE_MAX_BYTES,
   UPLOAD_PART_MAX_BYTES,
   URL_IMPORT_MAX_BYTES,
-  isAnonymousUserId,
   needsUploadInParts,
   PLAN_MAX_FILE_BYTES,
   fileLimitCopy,
   fileTooLargeMessage,
   maxFileBytes,
-  nextLargerPlan,
   planOfCaller,
   type Plan,
 } from '../src/lib/plan-limits';
@@ -21,7 +19,7 @@ const GIB = 1024 * 1024 * 1024;
 const PLANS: readonly Plan[] = ['anonymous', 'free', 'pro', 'enterprise'];
 
 describe('plan file size limits', () => {
-  it('gives anonymous and free callers 1 GB, Pro 5 GB and Enterprise 10 GB', () => {
+  it('gives anonymous and free callers 1 GiB, Pro 5 GiB and Enterprise 10 GiB', () => {
     expect(PLAN_MAX_FILE_BYTES).toEqual({ anonymous: GIB, free: GIB, pro: 5 * GIB, enterprise: 10 * GIB });
     expect(LARGEST_PLAN_FILE_BYTES).toBe(10 * GIB);
   });
@@ -58,49 +56,40 @@ describe('planOfCaller', () => {
   });
 });
 
-describe('nextLargerPlan', () => {
-  it('names the first plan with a larger limit, skipping a plan with the same one', () => {
-    expect(nextLargerPlan('anonymous')).toBe('pro');
-    expect(nextLargerPlan('free')).toBe('pro');
-    expect(nextLargerPlan('pro')).toBe('enterprise');
-    expect(nextLargerPlan('enterprise')).toBeUndefined();
-  });
-});
-
 describe('copy', () => {
-  it('states the limit of the plan under the drop zone', () => {
-    expect(fileLimitCopy('anonymous')).toBe('Up to 1 GB per file');
-    expect(fileLimitCopy('free')).toBe('Up to 1 GB per file');
-    expect(fileLimitCopy('pro')).toBe('Up to 5 GB per file');
-    expect(fileLimitCopy('enterprise')).toBe('Up to 10 GB per file');
+  it('states the limit of the plan under the drop zone in binary units with their own names', () => {
+    expect(fileLimitCopy('anonymous')).toBe('Up to 1 GiB per file');
+    expect(fileLimitCopy('free')).toBe('Up to 1 GiB per file');
+    expect(fileLimitCopy('pro')).toBe('Up to 5 GiB per file');
+    expect(fileLimitCopy('enterprise')).toBe('Up to 10 GiB per file');
   });
 
-  it('names the size, the limit and the next plan in a too-large message', () => {
-    expect(fileTooLargeMessage('anonymous', GIB + 1)).toBe(
-      'File size 1,073,741,825 bytes exceeds the 1 GB limit for anonymous use. Pro allows files up to 5 GB.'
-    );
-    expect(fileTooLargeMessage('free', 3 * GIB)).toBe(
-      'File size 3 GB exceeds the 1 GB limit for the free plan. Pro allows files up to 5 GB.'
-    );
-    expect(fileTooLargeMessage('pro', 6 * GIB)).toBe(
-      'File size 6 GB exceeds the 5 GB limit for the Pro plan. Enterprise allows files up to 10 GB.'
-    );
+  it('names the size and the limit, and offers no plan while none can be bought', () => {
+    expect(fileTooLargeMessage('anonymous', GIB + 1)).toBe('File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use.');
+    expect(fileTooLargeMessage('free', 3 * GIB)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan.');
   });
 
-  it('adds no upgrade hint for the plan with the largest limit', () => {
-    expect(fileTooLargeMessage('enterprise', 11 * GIB)).toBe('File size 11 GB exceeds the 10 GB limit for the Enterprise plan.');
+  it('names the first plan on sale with a larger limit once the paid plans are on sale', () => {
+    expect(fileTooLargeMessage('anonymous', GIB + 1, true)).toBe(
+      'File size 1,073,741,825 bytes exceeds the 1 GiB limit for anonymous use. Pro allows files up to 5 GiB.'
+    );
+    expect(fileTooLargeMessage('free', 3 * GIB, true)).toBe('File size 3 GiB exceeds the 1 GiB limit for the free plan. Pro allows files up to 5 GiB.');
+    expect(fileTooLargeMessage('pro', 6 * GIB, true)).toBe(
+      'File size 6 GiB exceeds the 5 GiB limit for the Pro plan. Enterprise allows files up to 10 GiB.'
+    );
+    expect(fileTooLargeMessage('enterprise', 11 * GIB, true)).toBe('File size 11 GiB exceeds the 10 GiB limit for the Enterprise plan.');
   });
 });
 
 describe('fileSizeLimitProblem', () => {
   const callers = [
-    { plan: 'anonymous', caller: { id: 'anon:198.51.100.0', tier: 'free' }, limit: GIB, nextLimit: '5 GB' },
-    { plan: 'free', caller: { id: 'u-free', tier: 'free' }, limit: GIB, nextLimit: '5 GB' },
-    { plan: 'pro', caller: { id: 'u-pro', tier: 'pro' }, limit: 5 * GIB, nextLimit: '10 GB' },
-    { plan: 'enterprise', caller: { id: 'u-ent', tier: 'enterprise' }, limit: 10 * GIB, nextLimit: undefined },
+    { plan: 'anonymous', caller: { id: 'anon:198.51.100.0', tier: 'free' }, limit: GIB },
+    { plan: 'free', caller: { id: 'u-free', tier: 'free' }, limit: GIB },
+    { plan: 'pro', caller: { id: 'u-pro', tier: 'pro' }, limit: 5 * GIB },
+    { plan: 'enterprise', caller: { id: 'u-ent', tier: 'enterprise' }, limit: 10 * GIB },
   ] as const;
 
-  it.each(callers)('accepts a file of exactly the limit and refuses one byte more for $plan', async ({ caller, limit, nextLimit }) => {
+  it.each(callers)('accepts a file of exactly the limit and refuses one byte more for $plan', async ({ caller, limit }) => {
     expect(fileSizeLimitProblem(caller, limit, '/api/convert')).toBeNull();
     expect(fileSizeLimitProblem(caller, 0, '/api/convert')).toBeNull();
 
@@ -116,8 +105,7 @@ describe('fileSizeLimitProblem', () => {
       success: false,
     });
     expect(body.error).toBe(body.detail);
-    if (nextLimit) expect(body.detail).toContain(`allows files up to ${nextLimit}`);
-    else expect(body.detail).not.toContain('allows files up to');
+    expect(body.detail).not.toContain('allows files up to');
   });
 
   it('carries the extra headers of the route on the refusal', () => {
@@ -144,15 +132,5 @@ describe('the size of one request', () => {
   it('keeps the import from a link under the plan limit of every plan', () => {
     expect(URL_IMPORT_MAX_BYTES).toBe(100 * MIB);
     for (const plan of PLANS) expect(URL_IMPORT_MAX_BYTES).toBeLessThanOrEqual(maxFileBytes(plan));
-  });
-});
-
-describe('isAnonymousUserId', () => {
-  it('names the address buckets of visitors and no account', () => {
-    expect(isAnonymousUserId('anon:203.0.113.7')).toBe(true);
-    expect(isAnonymousUserId('anon:2001:db8::')).toBe(true);
-    expect(isAnonymousUserId('user_1')).toBe(false);
-    expect(isAnonymousUserId('')).toBe(false);
-    expect(isAnonymousUserId(undefined)).toBe(false);
   });
 });

@@ -207,6 +207,14 @@ export function newUploadRecord(key: string, now: number): RetentionRecord {
 }
 
 /**
+ * The record of an upload that was just completed and that no job reads yet. Nobody converting it within the
+ * undelivered time of a result means it is abandoned, so it is deleted then, as a result nobody downloads is.
+ */
+export function newUnclaimedUploadRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [] };
+}
+
+/**
  * The record of an upload once the job `holder` that read it ended. When no other job holds it, it is deleted after
  * the grace period of a delivered result, counted from this end and not later than JOB_INPUT_HOLD_MAX_MS after the
  * upload was first read, so that a client that asks for another format a moment later still finds it, however

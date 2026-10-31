@@ -286,6 +286,33 @@ export async function acquireIdempotency(
 }
 
 /**
+ * Runs `handler` once per `Idempotency-Key` of `scopeUserId` on this route. A repeat of the same request gets the first
+ * answer, so a client may send it again after a network error and learns what the first one created; a repeat while the
+ * first runs gets 409 with `Retry-After`. Only a success is kept: after a refusal the same request may be sent again.
+ * Without the header the handler just runs.
+ */
+export async function respondOnce(
+  req: NextRequest | Request,
+  scopeUserId: string,
+  instanceUri: string,
+  handler: () => Promise<Response>
+): Promise<Response> {
+  const rawKey = req.headers.get('idempotency-key');
+  if (rawKey === null) return handler();
+  const { response, context } = await acquireIdempotency(req, scopeUserId, rawKey, instanceUri);
+  if (!context) return response as Response;
+  try {
+    const res = await handler();
+    if (res.ok) await context.complete(res);
+    else await context.abort();
+    return res;
+  } catch (error) {
+    await context.abort();
+    throw error;
+  }
+}
+
+/**
  * Next.js Route Handler wrapper enforcing IETF Idempotency-Key HTTP semantics.
  */
 export function withIdempotency(

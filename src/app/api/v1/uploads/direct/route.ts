@@ -3,6 +3,7 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { storageProvider } from '@/lib/storage';
@@ -10,7 +11,8 @@ import { storageProvider } from '@/lib/storage';
 export const dynamic = 'force-dynamic';
 
 const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB S3 minimum
-const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
+/** A part goes through one request, so it holds at most what one request may carry (entry 137). */
+const MAX_PART_SIZE = UPLOAD_PART_MAX_BYTES;
 const MAX_PARTS_COUNT = 10000;
 
 interface DirectUploadInitiateBody {

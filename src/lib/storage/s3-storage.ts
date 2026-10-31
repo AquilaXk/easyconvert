@@ -29,8 +29,13 @@ import {
   resolveSigningSecret,
 } from './storage-config';
 import { presignSigV4QueryUrl, verifySigV4QueryUrl } from './sigv4-presigner';
+import { multipartUploadKey } from './key-namespace';
 
 export * from './oci-storage';
+
+const TEMP_NAME_RANDOM_BYTES = 6;
+/** Opens a new file and fails when one of that name exists. */
+const EXCLUSIVE_CREATE = 'wx';
 
 interface S3MultipartSession {
   uploadId: string;
@@ -104,9 +109,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     const randomHex = crypto.randomBytes(8).toString('hex');
     const uploadId = `oci_mp_s3_${timestamp}_${randomHex}`;
     const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = ownerUserId
-      ? `conversions/${ownerUserId}/${timestamp}_${randomHex}_${sanitizedFilename}`
-      : `uploads/${timestamp}_${randomHex}_${sanitizedFilename}`;
+    const key = multipartUploadKey(ownerUserId, `${timestamp}_${randomHex}_${sanitizedFilename}`);
 
     const resolvedPartSize = partSize && partSize > 0 ? partSize : this.DEFAULT_PART_SIZE;
     const totalParts = Math.max(1, Math.ceil(totalSize / resolvedPartSize));
@@ -216,14 +219,16 @@ export class S3ObjectStorageService implements IStorageBackend {
 
     const partFileName = `part-${partNumber}.bin`;
     const partFilePath = path.join(session.diskDir, partFileName);
-    const tempPartFilePath = `${partFilePath}.tmp`;
+    // Each request writes a temporary file of its own: a retry of a part that races the first attempt must not
+    // write into, or remove, the file the other one is still writing.
+    const tempPartFilePath = `${partFilePath}.tmp.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
 
     const nodeStream =
       'pipe' in (stream as any) && typeof (stream as any).pipe === 'function'
         ? (stream as NodeJS.ReadableStream)
         : Readable.fromWeb(stream as any);
 
-    const outStream = fs.createWriteStream(tempPartFilePath);
+    const outStream = fs.createWriteStream(tempPartFilePath, { flags: EXCLUSIVE_CREATE });
     const hasher = crypto.createHash('sha256');
     let partSize = 0;
     let limitExceededMessage: string | null = null;

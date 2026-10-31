@@ -1,4 +1,5 @@
-const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+/** Binary multiples, so they carry the IEC names: a 1 GiB limit reads "1 GiB", never "1 GB". */
+const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const;
 const UNIT_BASE = 1024;
 
 export function formatBytes(bytes: number): string {

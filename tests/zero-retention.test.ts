@@ -1,30 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
+import { SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 
 describe('Zero-Retention & In-Memory Pipeline Tests', () => {
-  it('blocks a file one byte past the 1 GB limit of an anonymous caller with a 413 that names the limit', async () => {
-    // Mock NextRequest formData returning a file one byte past the 1 GiB limit
+  it('refuses a request past what one request carries before it reads the body, and names the way in parts', async () => {
+    const formData = vi.fn();
     const req = {
-      formData: async () => {
-        const map = new Map<string, any>();
-        map.set('file', {
-          name: 'large_dataset.zip',
-          size: 1024 * 1024 * 1024 + 1,
-          arrayBuffer: async () => new ArrayBuffer(0),
-        });
-        map.set('targetFormat', 'tar');
-        return map;
-      },
-      headers: new Headers(),
+      formData,
+      headers: new Headers({ 'content-length': String(SINGLE_REQUEST_BODY_MAX_BYTES + 1) }),
     } as unknown as NextRequest;
 
     const res = await convertRoute(req);
     expect(res.status).toBe(413);
+    expect(formData).not.toHaveBeenCalled();
 
     const json = await res.json();
     expect(json.success).toBe(false);
-    expect(json.error).toContain('exceeds the 1 GB limit for anonymous use');
+    expect(json.error).toContain('POST /api/storage/multipart');
   });
 
   it('verifies Zero-Data-Retention headers on successful conversion', async () => {

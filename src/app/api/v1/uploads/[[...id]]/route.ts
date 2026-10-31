@@ -23,7 +23,7 @@ import {
 } from '@/lib/storage/tus-engine';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -143,6 +143,8 @@ async function handlePartUpload(
     );
   }
 
+  const lengthProblem = partBodyProblem(req, instanceUri);
+  if (lengthProblem) return lengthProblem;
   if (!req.body) {
     return createProblemDetailsResponse(400, 'Empty part payload body.', instanceUri);
   }

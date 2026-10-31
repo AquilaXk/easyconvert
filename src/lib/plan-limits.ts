@@ -1,14 +1,27 @@
 import type { UserTier } from './auth/types';
 import { formatBytes } from './format-bytes';
+import { isAnonymousUserId } from './auth/anonymous-identity';
 
 /**
  * The largest file one conversion may take, by plan. Every server entry point that accepts file bytes and every
  * client check reads this table, so the number shown to a visitor is the number the server enforces.
  *
- * Anonymous callers and the free plan share the limit of entry 16 of docs/policy-decisions.md (1 GB). The paid
+ * Anonymous callers and the free plan share the limit of entry 16 of docs/policy-decisions.md (1 GiB). The paid
  * plans follow the values the upload and job routes already gave them (5 GiB and 10 GiB).
  */
 export type Plan = 'anonymous' | UserTier;
+
+/** Who a limit is for: an id (anonymous ids get the anonymous plan) and the tier of an account. */
+export interface PlanCaller {
+  id?: string;
+  tier?: string;
+}
+
+/**
+ * Whether the paid plans can be bought. The launch is free-tier only (QA decision of 2026-10-30), so the copy names only
+ * the free limit and never offers a larger plan; the server table above stays as it is. Turning this on shows them.
+ */
+export const PAID_PLANS_ON_SALE = false;
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -42,12 +55,8 @@ export const URL_IMPORT_MAX_BYTES = 100 * MIB;
 /** The largest part of an upload in parts, and the size the browser sends. */
 export const UPLOAD_PART_MAX_BYTES = 64 * MIB;
 
-const ANONYMOUS_USER_PREFIX = 'anon:';
-
-/** Whether `userId` names an anonymous caller (a client address bucket), not a signed-in account. */
-export function isAnonymousUserId(userId: string | undefined): boolean {
-  return userId?.startsWith(ANONYMOUS_USER_PREFIX) ?? false;
-}
+/** The largest file a job takes in its own request (multipart form or base64): it is copied into the job record. */
+export const INLINE_JOB_PAYLOAD_MAX_BYTES = 32 * MIB;
 
 /** Whether a file of `sizeBytes` is too large for one request and must go to the server in parts. */
 export function needsUploadInParts(sizeBytes: number): boolean {
@@ -69,7 +78,7 @@ const PLAN_NAME: Readonly<Record<Plan, string>> = {
 };
 
 /** The plan of a caller. An anonymous identity, a missing tier and a tier this table does not know get the smallest limit. */
-export function planOfCaller(caller: { id?: string; tier?: string } | null | undefined): Plan {
+export function planOfCaller(caller: PlanCaller | null | undefined): Plan {
   if (!caller || isAnonymousUserId(caller.id)) return 'anonymous';
   return caller.tier === 'pro' || caller.tier === 'enterprise' ? caller.tier : 'free';
 }
@@ -78,17 +87,14 @@ export function maxFileBytes(plan: Plan): number {
   return PLAN_MAX_FILE_BYTES[plan];
 }
 
-/** The first plan after `plan` that allows a larger file, or undefined when `plan` has the largest limit. */
-export function nextLargerPlan(plan: Plan): Plan | undefined {
+/** The first plan after `plan` that allows a larger file and can be bought, or undefined when there is none. */
+function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): Plan | undefined {
+  if (!paidPlansOnSale) return undefined;
   const limit = PLAN_MAX_FILE_BYTES[plan];
   return PLAN_ORDER.slice(PLAN_ORDER.indexOf(plan) + 1).find((candidate) => PLAN_MAX_FILE_BYTES[candidate] > limit);
 }
 
-export function planName(plan: Plan): string {
-  return PLAN_NAME[plan];
-}
-
-/** The line a visitor sees under the drop zone, for example `Up to 1 GB per file`. */
+/** The line a visitor sees under the drop zone, for example `Up to 1 GiB per file`. */
 export function fileLimitCopy(plan: Plan): string {
   return `Up to ${formatBytes(PLAN_MAX_FILE_BYTES[plan])} per file`;
 }
@@ -99,11 +105,11 @@ function sizeForMessage(sizeBytes: number, limitBytes: number): string {
   return rounded === formatBytes(limitBytes) ? `${sizeBytes.toLocaleString('en-US')} bytes` : rounded;
 }
 
-/** What to tell the caller of a file over their limit: the size, the limit, and the next plan's limit when there is one. */
-export function fileTooLargeMessage(plan: Plan, sizeBytes: number): string {
+/** What to tell the caller of a file over their limit: the size, the limit, and the next plan's limit when one is on sale. */
+export function fileTooLargeMessage(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): string {
   const limitBytes = PLAN_MAX_FILE_BYTES[plan];
   const limit = `File size ${sizeForMessage(sizeBytes, limitBytes)} exceeds the ${formatBytes(limitBytes)} limit for ${PLAN_PHRASE[plan]}.`;
-  const next = nextLargerPlan(plan);
+  const next = nextLargerPlan(plan, paidPlansOnSale);
   if (!next) return limit;
   return `${limit} ${PLAN_NAME[next]} allows files up to ${formatBytes(PLAN_MAX_FILE_BYTES[next])}.`;
 }

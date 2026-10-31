@@ -8,7 +8,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
-import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, rollbackQuota } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -17,6 +17,11 @@ import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { respondOnce } from '@/lib/api/with-idempotency';
+import { uploadOwnerOf } from '@/lib/auth/anonymous-identity';
+import type { User } from '@/lib/auth/types';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES } from '@/lib/plan-limits';
+import { formatBytes } from '@/lib/format-bytes';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +36,27 @@ function parseOptionsField(raw: string): { options: ConversionOptions } | { erro
   }
   return isConversionOptionsObject(parsed) ? { options: parsed } : { error: 'The "options" field must be a JSON object.' };
 }
+
+/** What a job request names: the input (a stored key, inline bytes or none yet), the target and the options. */
+interface JobRequest {
+  originalFilename: string;
+  targetFormat: string;
+  options: ConversionOptions;
+  storageKey?: string;
+  inputBufferBase64?: string;
+  fileSize: number;
+}
+
+type ParsedJobRequest = { request: JobRequest } | { refusal: Response };
+
+/** The bytes a base64 text decodes to, near enough to hold it to a limit (padding and line breaks ignored). */
+function decodedBase64Bytes(text: string): number {
+  return Math.floor((text.length * 3) / 4);
+}
+
+const INLINE_PAYLOAD_DETAIL =
+  `A file sent inside a job request may be at most ${formatBytes(INLINE_JOB_PAYLOAD_MAX_BYTES)}, as it is copied into the job. ` +
+  'Upload a larger file through /api/storage/multipart and start the job on its stored key.';
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
@@ -48,9 +74,21 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
     );
   }
-
+  const user = auth.user;
   const reservationId = auth.reservationId;
 
+  // An Idempotency-Key makes the request safe to send again: a repeat answers with the job the first one queued, and
+  // the unit the repeat reserved is given back, since no second job runs.
+  let queuedHere = false;
+  const res = await respondOnce(req, uploadOwnerOf(user.id), instanceUri, () => {
+    queuedHere = true;
+    return queueJob(req, user, reservationId, instanceUri);
+  });
+  if (!queuedHere && reservationId) await rollbackQuota(reservationId);
+  return res;
+}));
+
+async function queueJob(req: NextRequest, user: User, reservationId: string | undefined, instanceUri: string): Promise<Response> {
   const failWithRollback = async (status: number, error: string) => {
     if (reservationId) {
       await rollbackQuota(reservationId);
@@ -58,92 +96,26 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     return NextResponse.json({ success: false, error }, { status });
   };
 
-  /** A 400 problem, after releasing the quota reservation, for a file name the registry has no format for. */
-  const failUnknownSource = async (filename: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return createProblemDetailsResponse(400, `Could not identify source format for file "${filename}".`, instanceUri);
-  };
-
-  /** The 400 problem for options that break ConversionOptionsSchema, after releasing the quota reservation. */
-  const rejectInvalidOptions = async (candidate: ConversionOptions) => {
-    const problem = legacyOptionsProblem(candidate, instanceUri);
-    if (problem && reservationId) {
-      await rollbackQuota(reservationId);
-    }
+  /** A problem answer, after releasing the quota reservation. */
+  const refuse = async (problem: Response) => {
+    if (reservationId) await rollbackQuota(reservationId);
     return problem;
   };
 
-  /** The 400 or 413 problem for an uploaded file this route cannot take: a name with no format, or a size over the plan limit. */
-  const refuseUploadedFile = (file: File) =>
-    detectFormatFromFilename(file.name)
-      ? refuseOversizeFile(auth.user, file.size, instanceUri, reservationId)
-      : failUnknownSource(file.name);
-
   try {
     // At most five conversions in flight (queued plus running) for an anonymous or free caller.
-    const room = await mayEnqueue(auth.user.id, auth.user.tier);
-    if (!room.allowed) {
-      if (reservationId) await rollbackQuota(reservationId);
-      return concurrencyLimitResponse(room.limit, instanceUri);
-    }
-    const contentType = req.headers.get('content-type') || '';
+    const room = await mayEnqueue(user.id, user.tier);
+    if (!room.allowed) return await refuse(concurrencyLimitResponse(room.limit, instanceUri));
 
-    let originalFilename = '';
-    let targetFormat = '';
-    let options: ConversionOptions = {};
-    let storageKey: string | undefined;
-    let inputBufferBase64: string | undefined;
-    let fileSize = 0;
-
-    if (contentType.includes('multipart/form-data')) {
-      const formData = await req.formData();
-      const file = formData.get('file') as File | null;
-      targetFormat = (formData.get('targetFormat') as string) || '';
-      const optionsRaw = formData.get('options') as string | null;
-      storageKey = (formData.get('storageKey') as string) || undefined;
-
-      if (optionsRaw) {
-        const parsed = parseOptionsField(optionsRaw);
-        if ('error' in parsed) return await failWithRollback(400, parsed.error);
-        options = parsed.options;
-        const optionsProblem = await rejectInvalidOptions(options);
-        if (optionsProblem) return optionsProblem;
-      }
-
-      if (file) {
-        const refusal = await refuseUploadedFile(file);
-        if (refusal) return refusal;
-        originalFilename = file.name;
-        fileSize = file.size;
-        const arrayBuffer = await file.arrayBuffer();
-        // Save to S3 chunk storage directly
-        const init = await storageProvider.initiateMultipartUpload(file.name, file.type, file.size);
-        await storageProvider.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
-        const completed = await storageProvider.completeMultipartUpload(init.uploadId);
-        storageKey = completed.key;
-      }
-    } else {
-      // JSON body
-      const body = await req.json();
-      originalFilename = body.filename || '';
-      targetFormat = body.targetFormat || '';
-      if (body.options !== undefined && !isConversionOptionsObject(body.options)) {
-        return await failWithRollback(400, 'The "options" field must be a JSON object.');
-      }
-      options = body.options ?? {};
-      const optionsProblem = await rejectInvalidOptions(options);
-      if (optionsProblem) return optionsProblem;
-      storageKey = body.storageKey;
-      inputBufferBase64 = body.inputBufferBase64;
-      fileSize = body.fileSize || 0;
-    }
+    const parsed = await readJobRequest(req, instanceUri);
+    if ('refusal' in parsed) return await refuse(parsed.refusal);
+    const { targetFormat, options, storageKey, inputBufferBase64, fileSize } = parsed.request;
+    let { originalFilename } = parsed.request;
 
     // Authorize caller against storage key
     if (
       storageKey &&
-      (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id)))
+      (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, user.id)))
     ) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND);
     }
@@ -157,11 +129,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     const detected = detectFormatFromFilename(originalFilename);
-    if (!detected) return await failUnknownSource(originalFilename);
+    if (!detected) return await refuse(unknownSourceProblem(originalFilename, instanceUri));
     const sourceFormat = detected.extension;
 
     const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider);
-    const oversize = await refuseOversizeFile(auth.user, inputBytes, instanceUri, reservationId);
+    const oversize = await refuseOversizeFile(user, inputBytes, instanceUri, reservationId);
     if (oversize) return oversize;
 
     // Add conversion task to BullMQ Distributed Queue
@@ -177,14 +149,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         storageKey,
         inputBufferBase64,
         options: stripEngineControls(options),
-        userId: auth.user.id,
+        userId: user.id,
         reservationId,
       },
       {
         attempts: 2,
         backoff: { type: 'fixed', delay: 1500 },
       },
-      { tier: auth.user.tier, inputBytes }
+      { tier: user.tier, inputBytes }
     );
 
     return NextResponse.json({
@@ -195,13 +167,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       createdAt: job.timestamp,
       queue: conversionQueue.name,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    const queueProblem = queueErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
+    const queueProblem = queueErrorResponse(error, instanceUri);
     if (queueProblem) return queueProblem;
-    const storageProblem = storageErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
+    const storageProblem = storageErrorResponse(error, instanceUri);
     if (storageProblem) return storageProblem;
     if (error instanceof JobDeadlineError) {
       // The detail names a deadline setting, so it stays in the server log.
@@ -213,7 +185,79 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       { status: 500 }
     );
   }
-}));
+}
+
+/** The 400 problem for a file name the registry has no format for. */
+function unknownSourceProblem(filename: string, instanceUri: string): Response {
+  return createProblemDetailsResponse(400, `Could not identify source format for file "${filename}".`, instanceUri);
+}
+
+function inlinePayloadProblem(instanceUri: string): Response {
+  return createProblemDetailsResponse(413, INLINE_PAYLOAD_DETAIL, instanceUri);
+}
+
+/** A job request from a multipart form: a file in it is stored first and held to the inline limit. */
+async function readFormJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+  const formData = await req.formData();
+  const file = formData.get('file') as File | null;
+  const optionsRaw = formData.get('options') as string | null;
+  const request: JobRequest = {
+    originalFilename: '',
+    targetFormat: (formData.get('targetFormat') as string) || '',
+    options: {},
+    storageKey: (formData.get('storageKey') as string) || undefined,
+    fileSize: 0,
+  };
+
+  if (optionsRaw) {
+    const parsed = parseOptionsField(optionsRaw);
+    if ('error' in parsed) return { refusal: NextResponse.json({ success: false, error: parsed.error }, { status: 400 }) };
+    const optionsProblem = legacyOptionsProblem(parsed.options, instanceUri);
+    if (optionsProblem) return { refusal: optionsProblem };
+    request.options = parsed.options;
+  }
+
+  if (file) {
+    if (!detectFormatFromFilename(file.name)) return { refusal: unknownSourceProblem(file.name, instanceUri) };
+    if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) return { refusal: inlinePayloadProblem(instanceUri) };
+    request.originalFilename = file.name;
+    request.fileSize = file.size;
+    const init = await storageProvider.initiateMultipartUpload(file.name, file.type, file.size);
+    await storageProvider.uploadPart(init.uploadId, 1, Buffer.from(await file.arrayBuffer()));
+    request.storageKey = (await storageProvider.completeMultipartUpload(init.uploadId)).key;
+  }
+  return { request };
+}
+
+/** A job request from a JSON body: inline bytes are held to the inline limit. */
+async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+  const body = await req.json();
+  if (body.options !== undefined && !isConversionOptionsObject(body.options)) {
+    return { refusal: NextResponse.json({ success: false, error: 'The "options" field must be a JSON object.' }, { status: 400 }) };
+  }
+  const options: ConversionOptions = body.options ?? {};
+  const optionsProblem = legacyOptionsProblem(options, instanceUri);
+  if (optionsProblem) return { refusal: optionsProblem };
+  const inputBufferBase64: unknown = body.inputBufferBase64;
+  if (typeof inputBufferBase64 === 'string' && decodedBase64Bytes(inputBufferBase64) > INLINE_JOB_PAYLOAD_MAX_BYTES) {
+    return { refusal: inlinePayloadProblem(instanceUri) };
+  }
+  return {
+    request: {
+      originalFilename: body.filename || '',
+      targetFormat: body.targetFormat || '',
+      options,
+      storageKey: body.storageKey,
+      inputBufferBase64: body.inputBufferBase64,
+      fileSize: body.fileSize || 0,
+    },
+  };
+}
+
+function readJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+  const contentType = req.headers.get('content-type') || '';
+  return contentType.includes('multipart/form-data') ? readFormJobRequest(req, instanceUri) : readJsonJobRequest(req, instanceUri);
+}
 
 const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled']);
 const DEFAULT_LISTED_STATES: JobState[] = ['waiting', 'active', 'completed', 'failed', 'cancelled'];

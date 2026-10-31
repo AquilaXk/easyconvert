@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
-import { maxFileBytes } from '@/lib/plan-limits';
+import { fileTooLargeMessage, maxFileBytes } from '@/lib/plan-limits';
 import { formatBytes } from '@/lib/format-bytes';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
@@ -59,7 +59,8 @@ function resolveOptionError(item: ConversionQueueItem): string | null {
   return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password);
 }
 
-function resolveRowError(item: ConversionQueueItem, optionError: string | null): string | null {
+function resolveRowError(item: ConversionQueueItem, optionError: string | null, oversizeError: string | null): string | null {
+  if (oversizeError) return oversizeError;
   if (optionError) return optionError;
   return item.status === 'error' ? item.error || 'Conversion failed.' : null;
 }
@@ -110,7 +111,7 @@ function RowStatusDisplay({
       </div>
     );
   }
-  if (item.status === 'error' || optionError !== null) {
+  if (item.status === 'error' || isOversize || optionError !== null) {
     return (
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-dangerSoft text-status-danger dark:bg-red-950/40 dark:text-red-300 border border-red-500/30">Failed</span>
@@ -141,11 +142,13 @@ export default function QueueItemRow({
 }: Readonly<QueueItemRowProps>) {
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const plan = useViewerPlan();
-  const isOversize = item.size > maxFileBytes(plan);
+  const isIdle = !isBusy && item.status !== 'completed';
+  // Read at render, not when the file was dropped: the plan of the session may answer after the drop.
+  const isOversize = isIdle && item.size > maxFileBytes(plan);
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
-  const optionError = !isBusy && item.status !== 'completed' ? resolveOptionError(item) : null;
-  const rowError = !isBusy && item.status !== 'completed' ? resolveRowError(item, optionError) : null;
+  const optionError = isIdle ? resolveOptionError(item) : null;
+  const rowError = isIdle ? resolveRowError(item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null) : null;
 
   const iconTileClass = isPdf
     ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40'

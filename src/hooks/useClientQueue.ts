@@ -5,9 +5,8 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
-import { fileTooLargeMessage, maxFileBytes, type Plan } from '@/lib/plan-limits';
-import { getViewerMaxFileBytes, getViewerPlan } from '@/lib/viewer-plan';
-import { useViewerPlan } from './useViewerPlan';
+import { getViewerMaxFileBytes } from '@/lib/viewer-plan';
+import { useRefreshViewerPlan, useViewerPlan } from './useViewerPlan';
 import {
   DEFAULT_OPTIONS,
   getPasswordValidationError,
@@ -121,11 +120,11 @@ function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Se
   return candidate;
 }
 
-export function buildQueuedFileItem(file: File, plan: Plan, effectiveDefault?: string): ConversionQueueItem {
+/** A queue item for a dropped file. Whether it is over the viewer's limit is read when the row renders, since the plan can still change. */
+export function buildQueuedFileItem(file: File, effectiveDefault?: string): ConversionQueueItem {
   const detected = detectFormatFromFilename(file.name);
   const ext = detected?.extension ?? (file.name.split('.').pop() || 'bin');
   const sourceFormat = ext.toLowerCase();
-  const isOverSize = file.size > maxFileBytes(plan);
   return {
     id: createQueueItemId(file.name),
     file,
@@ -133,8 +132,7 @@ export function buildQueuedFileItem(file: File, plan: Plan, effectiveDefault?: s
     size: file.size,
     sourceFormat,
     targetFormat: resolveInitialTargetFormat(sourceFormat, effectiveDefault),
-    status: isOverSize ? 'error' : 'ready',
-    error: isOverSize ? fileTooLargeMessage(plan, file.size) : undefined,
+    status: 'ready',
     progress: 0,
     options: { ...DEFAULT_OPTIONS },
   };
@@ -486,6 +484,8 @@ const updateQueueState = (
 };
 
 export function useClientQueue(options?: UseClientQueueOptions) {
+  // The queue owns the page's read of the session: its rows only follow the plan.
+  useRefreshViewerPlan();
   useViewerPlan();
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [inFlightCount, setInFlightCount] = useState(0);
@@ -512,9 +512,8 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const isItemBusy = (i: ConversionQueueItem) =>
     isRunning(i) || inFlightIdsRef.current.has(i.id);
   const handleFilesSelected = (files: File[], overrideTarget?: string) => {
-    const plan = getViewerPlan();
     const def = overrideTarget || options?.defaultTarget;
-    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, plan, def))]);
+    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, def))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
   useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, abortersRef, handleFilesSelectedRef, handleFilesSelected);

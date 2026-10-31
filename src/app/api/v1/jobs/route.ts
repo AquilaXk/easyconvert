@@ -31,7 +31,7 @@ import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secre
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan } from '@/lib/plan-limits';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
@@ -49,13 +49,11 @@ import { tusEngine } from '@/lib/storage/tus-engine';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_INLINE_PAYLOAD_SIZE = 32 * 1024 * 1024; // 32 MiB ceiling for inline multipart and base64 payloads
-
 /** The refusal of a job whose stored files the caller may not use, or that a graph reads over the limit of the caller's plan; undefined when every stored file passes. */
 async function storedInputRefusal(
   storageKey: string | undefined,
   graph: JobGraph | undefined,
-  caller: Parameters<typeof planOfCaller>[0] & { id: string }
+  caller: PlanCaller & { id: string }
 ): Promise<{ status: number; message: string; title: string } | undefined> {
   const graphKeys = graph ? graphInputKeys(normalizeGraphNodes(graph)) : [];
   const keys = new Set(graphKeys);
@@ -240,7 +238,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
 
       if (file && file instanceof Blob && file.size > 0) {
-        if (file.size > MAX_INLINE_PAYLOAD_SIZE) {
+        if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) {
           return reply(
             createProblemDetailsResponse(
               413,
@@ -296,7 +294,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
       if (inputBufferBase64) {
         const approxBytes = Math.floor((inputBufferBase64.length * 3) / 4);
-        if (approxBytes > MAX_INLINE_PAYLOAD_SIZE) {
+        if (approxBytes > INLINE_JOB_PAYLOAD_MAX_BYTES) {
           return reply(
             createProblemDetailsResponse(
               413,

@@ -26,7 +26,7 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
-import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
@@ -62,7 +62,6 @@ type ParsedConvertForm = { problem: NextResponse; data?: undefined } | { data: V
 /** The validated input of a convert request, or the problem answer for the first thing wrong with it. */
 function parseConvertFormData(
   formData: FormData,
-  caller: Parameters<typeof fileSizeLimitProblem>[0],
   instanceUri: string,
   headers: Record<string, string>
 ): ParsedConvertForm {
@@ -78,9 +77,6 @@ function parseConvertFormData(
   if (file.size === 0) {
     return badRequest('File payload is empty (0 bytes).');
   }
-
-  const tooLarge = fileSizeLimitProblem(caller, file.size, instanceUri, headers);
-  if (tooLarge) return { problem: tooLarge };
 
   const targetFormatEntry = formData.get('targetFormat');
   if (!targetFormatEntry || typeof targetFormatEntry !== 'string') {
@@ -203,7 +199,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     releaseSlot = slot.release;
     const formData = await req.formData();
-    const validation = parseConvertFormData(formData, auth.user, instanceUri, rateLimitHeaders);
+    const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders);
     if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;

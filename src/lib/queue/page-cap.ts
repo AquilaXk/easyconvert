@@ -1,5 +1,5 @@
 import { redisUserStore } from '../auth/redis-user-store';
-import { isAnonymousUserId } from '../plan-limits';
+import { isAnonymousUserId } from '../auth/anonymous-identity';
 import { tierMaxPages, withTierPageCap } from '../conversions/page-range';
 import type { ConversionEnginePort } from './engine-port';
 

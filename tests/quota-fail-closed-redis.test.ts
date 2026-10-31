@@ -401,7 +401,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(res.status).toBe(413);
       const json = await res.json();
       expect(json.status).toBe(413);
-      expect(json.detail).toBe('File size 1,073,741,825 bytes exceeds the 1 GB limit for the free plan. Pro allows files up to 5 GB.');
+      expect(json.detail).toBe('File size 1,073,741,825 bytes exceeds the 1 GiB limit for the free plan.');
     });
   });
 
