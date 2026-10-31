@@ -77,6 +77,18 @@ export function entryFields(file: Buffer, id: number): Required<EntryFields> {
   };
 }
 
+/** Sets the FAT entry of `sector` to `next`: the sector after it in its chain, or a marker. */
+export function setFatEntry(file: Buffer, sector: number, next: number): void {
+  const fat = fatSectors(file);
+  file.writeUInt32LE(next, sectorOffset(fat[Math.floor(sector / TABLE_ENTRIES_PER_SECTOR)]) + (sector % TABLE_ENTRIES_PER_SECTOR) * 4);
+}
+
+/** Sets the mini FAT entry of `miniSector` to `next`. */
+export function setMiniFatEntry(file: Buffer, miniSector: number, next: number): void {
+  const sectors = miniFatSectors(file);
+  file.writeUInt32LE(next, sectorOffset(sectors[Math.floor(miniSector / TABLE_ENTRIES_PER_SECTOR)]) + (miniSector % TABLE_ENTRIES_PER_SECTOR) * 4);
+}
+
 /** Id of the directory entry named `name`, searched in the directory sectors in order. */
 export function entryId(file: Buffer, name: string): number {
   const entryCount = chainOf(readFat(file), file.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET)).length * ENTRIES_PER_SECTOR;

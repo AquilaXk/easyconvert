@@ -32,6 +32,18 @@
 export const CFBF_FIRST_RESERVED_SECTOR = 0xfffffffa;
 /** The most directory entries a compound file may declare before the parser that reads it in full refuses it. */
 export const CFBF_MAX_DIRECTORY_ENTRIES = 65_536;
+/**
+ * How deep storages may nest before the parser that reads the file in full refuses it: Apache POI `PropertyTable.MAX_PROPERTY_DEPTH`
+ * (`populatePropertyTree` throws "Property tree too deep" for a directory below it), trunk of 2026-10-31.
+ */
+export const CFBF_MAX_STORAGE_DEPTH = 1000;
+/**
+ * The most characters the full paths of all directory entries may spell out together. No reference builds paths (POI, olefile and
+ * LibreOffice walk the tree), so the budget is ours: it keeps a file of 900 KiB, 1,000 storages deep with 4,000 streams in the last,
+ * from holding 74 MiB of path strings. 65,536 entries under four levels of names of 31 characters spell out 8.4 million characters,
+ * half the budget, and the paths of a real file are a small fraction of that.
+ */
+export const CFBF_MAX_PATH_CHARS = 16 * 1024 * 1024;
 /** The sector shifts of version 3 and 4 files; Apache POI `HeaderBlock` refuses any other ("Expected 2^9 or 2^12"). */
 export const CFBF_SECTOR_SHIFTS: ReadonlySet<number> = new Set([9, 12]);
 

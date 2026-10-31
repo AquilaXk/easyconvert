@@ -7,7 +7,8 @@ import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
 import { renderHwpToSvg } from './hwp-render';
 import { buildCfbfContainer } from './cfbf-writer';
-import { CFBF_FIRST_RESERVED_SECTOR, CFBF_MAX_DIRECTORY_ENTRIES, CFBF_SECTOR_SHIFTS } from '../compound-file-kind';
+import { CFBF_FIRST_RESERVED_SECTOR, CFBF_MAX_DIRECTORY_ENTRIES, CFBF_MAX_PATH_CHARS, CFBF_MAX_STORAGE_DEPTH, CFBF_SECTOR_SHIFTS } from '../compound-file-kind';
+import { LEGACY_OFFICE_MAX_INPUT_BYTES } from './office/legacy-office-limits';
 import { readHwpSections } from './hwp-reader';
 import { renderModelTarget } from './document-targets';
 import { BlockSink, DocumentContext, assembleDocument, type TableDraftCell } from './document-model/build';
@@ -165,6 +166,9 @@ function assertStreamSizesFit(entries: readonly CfbfDirectoryEntry[], miniStream
  * 512-byte header, SAT/FAT sectors, Directory Entries, MiniFAT and MiniStream.
  */
 export function parseCfbf(buffer: Buffer): CfbfContainer {
+  if (buffer.length > LEGACY_OFFICE_MAX_INPUT_BYTES) {
+    throw new CorruptStreamError(`Corrupt CFBF container: the file exceeds the ${LEGACY_OFFICE_MAX_INPUT_BYTES}-byte limit.`);
+  }
   if (!isCfbfContainer(buffer)) {
     throw new CorruptStreamError('Invalid CFBF container: Missing OLE2 magic signature.');
   }
@@ -354,15 +358,20 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   const paths = new Map<string, Buffer>();
   const entriesByPath = new Map<string, CfbfDirectoryEntry>();
 
-  /** Full path of every entry reachable from the root through the child / sibling links of the directory tree. */
+  /**
+   * Full path of every entry reachable from the root through the child / sibling links of the directory tree. Storages nest at most
+   * `CFBF_MAX_STORAGE_DEPTH` deep (the walk is iterative, so the depth bounds the length of a path and not the stack) and the paths
+   * together spell out at most `CFBF_MAX_PATH_CHARS` characters.
+   */
   function resolveEntryPaths(): Map<number, string> {
     const resolved = new Map<number, string>();
     const root = directoryEntries.find((d) => d.type === CFBF_ROOT_ENTRY);
     if (!root) return resolved;
     const byId = new Map(directoryEntries.map((d) => [d.id, d]));
-    const pending: { id: number; prefix: string }[] = [{ id: root.childId, prefix: '' }];
+    const pending: { id: number; prefix: string; depth: number }[] = [{ id: root.childId, prefix: '', depth: 0 }];
+    let pathChars = 0;
     while (pending.length > 0) {
-      const { id, prefix } = pending.pop() as { id: number; prefix: string };
+      const { id, prefix, depth } = pending.pop() as { id: number; prefix: string; depth: number };
       if (id === CFBF_NO_STREAM) continue;
       const entry = byId.get(id);
       if (!entry) continue;
@@ -370,9 +379,18 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
         throw new CorruptStreamError(`Corrupt CFBF container: the directory tree reaches entry ${id} twice.`);
       }
       const entryPath = `${prefix}${entry.name}`;
+      pathChars += entryPath.length;
+      if (pathChars > CFBF_MAX_PATH_CHARS) {
+        throw new CorruptStreamError(`Corrupt CFBF container: the paths of its entries spell out more than ${CFBF_MAX_PATH_CHARS} characters.`);
+      }
       resolved.set(id, entryPath);
-      pending.push({ id: entry.leftSiblingId, prefix }, { id: entry.rightSiblingId, prefix });
-      if (entry.type === CFBF_STORAGE_ENTRY) pending.push({ id: entry.childId, prefix: `${entryPath}/` });
+      pending.push({ id: entry.leftSiblingId, prefix, depth }, { id: entry.rightSiblingId, prefix, depth });
+      if (entry.type === CFBF_STORAGE_ENTRY) {
+        if (depth + 1 > CFBF_MAX_STORAGE_DEPTH) {
+          throw new CorruptStreamError(`Corrupt CFBF container: storages are nested more than ${CFBF_MAX_STORAGE_DEPTH} deep.`);
+        }
+        pending.push({ id: entry.childId, prefix: `${entryPath}/`, depth: depth + 1 });
+      }
     }
     return resolved;
   }

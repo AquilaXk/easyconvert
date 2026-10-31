@@ -43,11 +43,14 @@ export function legacyOfficeInput(input: Buffer | WorkerVfsPayload): Buffer | un
   return boundedInput(input, LEGACY_OFFICE_MAX_INPUT_BYTES);
 }
 
+/** Whether the input is a file that is not there; the checks run after or before the office suite, which answers for a missing input. */
+function isMissingFile(input: Buffer | WorkerVfsPayload): boolean {
+  return !Buffer.isBuffer(input) && !input.inputBuffer && input.inputPath !== undefined && !fs.existsSync(input.inputPath);
+}
+
 /** The input of a package that is read whole before the office suite sees it: as large as a job holds in memory. */
 function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
-  // The checks before the office suite starts leave a missing input to the suite, as they always did.
-  if (!Buffer.isBuffer(input) && !input.inputBuffer && input.inputPath !== undefined && !fs.existsSync(input.inputPath)) return undefined;
-  return boundedInput(input, getMaxInMemoryBytes());
+  return isMissingFile(input) ? undefined : boundedInput(input, getMaxInMemoryBytes());
 }
 
 /** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package. */
@@ -66,7 +69,7 @@ export function isEncryptedLegacyOffice(input: Buffer | WorkerVfsPayload, src: s
   const reading = officeReadingFormat(src);
   if (reading !== 'xls' && reading !== 'doc') return false;
   // Asked after the suite failed: a file that is gone is not called encrypted, and the suite's own error stands.
-  if (!Buffer.isBuffer(input) && !input.inputBuffer && input.inputPath !== undefined && !fs.existsSync(input.inputPath)) return false;
+  if (isMissingFile(input)) return false;
   const buffer = legacyOfficeInput(input);
   if (buffer === undefined) return false;
   return reading === 'xls' ? xlsHasFilePass(buffer) : isEncryptedWordDocument(buffer);
