@@ -84,7 +84,12 @@ export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): PdfSheets {
     return textSheet(pageNumber, linesOfPage.get(pageNumber) ?? []);
   });
   const leftOut = withTables ? pageNumbers.filter((pageNumber) => !recognized.has(pageNumber) && (linesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
-  const bareCounterPages = withTables ? [] : (layout?.pageText ?? []).filter((page) => !recognized.has(page.pageNumber) && page.bareCounters.length > 0).map((page) => page.pageNumber);
+  // Only pages that get a text sheet, and only a bare number at the head of a page: one at its foot is the page number and goes silently.
+  const bareCounterPages = withTables
+    ? []
+    : (layout?.pageText ?? [])
+        .filter((page) => !recognized.has(page.pageNumber) && page.hasHeaderBareCounter && page.lines.some((line) => line.trim() !== ''))
+        .map((page) => page.pageNumber);
   return { sheets, leftOut, bareCounterPages };
 }
 

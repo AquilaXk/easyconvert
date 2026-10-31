@@ -103,22 +103,24 @@ function continuesData(next: number): boolean {
 function skipEntropyCodedData(buffer: Buffer, from: number): number {
   const { length } = buffer;
   let pos = from;
-  let closeHits = 0;
+  // Bytes the searches still owe: each call is charged DENSE_GAP_BYTES and credited the bytes it skipped, so a run of calls that skip
+  // little (however their gaps alternate) builds a debt that hands over to the loop, and only calls that skip enough pay it back.
+  let debt = 0;
   while (pos + 1 < length) {
-    if (closeHits >= DENSE_HITS) {
+    if (debt >= DENSE_HITS * DENSE_GAP_BYTES) {
       const stop = Math.min(length - 1, pos + BYTE_LOOP_SPAN);
       for (; pos < stop; pos += 1) {
         if (buffer[pos] !== JPEG_MARKER_PREFIX) continue;
         if (!continuesData(buffer[pos + 1])) return pos;
         pos += 1;
       }
-      closeHits = 0;
+      debt = 0;
       continue;
     }
     const hit = buffer.indexOf(JPEG_MARKER_PREFIX, pos);
     if (hit === NO_OFFSET || hit + 1 >= length) return length;
     if (!continuesData(buffer[hit + 1])) return hit;
-    closeHits = hit - pos < DENSE_GAP_BYTES ? closeHits + 1 : 0;
+    debt = Math.max(0, debt + DENSE_GAP_BYTES - (hit + JPEG_MARKER_BYTES - pos));
     pos = hit + JPEG_MARKER_BYTES;
   }
   return length;

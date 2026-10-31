@@ -244,24 +244,38 @@ describe('the running header and footer of the pages of a PDF', () => {
   });
 
   describe('a bare number dropped as the page counter of a text sheet', () => {
-    const bareFooters = async (numbers: readonly number[]): Promise<Buffer> => {
+    // pdf-lib draws from the bottom of the page: y 30 is in the footer band, y 780 in the header band.
+    const FOOTER_Y = 30;
+    const HEADER_Y = 780;
+    const bareNumbers = async (numbers: readonly number[], y: number, bodyOnPage: (index: number) => boolean = () => true): Promise<Buffer> => {
       const document = await PDFDocument.create();
       numbers.forEach((number, index) => {
         const sheet = document.addPage([600, 800]);
-        sheet.drawText(`Chapter ${index + 1} text`, { x: 60, y: 700, size: 12 });
-        sheet.drawText(String(number), { x: 280, y: 30, size: 10 });
+        if (bodyOnPage(index)) sheet.drawText(`Chapter ${index + 1} text`, { x: 60, y: 700, size: 12 });
+        sheet.drawText(String(number), { x: 280, y, size: 10 });
       });
       return Buffer.from(await document.save());
     };
 
-    it('is reported as a warning that names the pages', async () => {
-      const result = await convertFile(await bareFooters([1, 2, 3]), 'pdf', 'xlsx', {}, 'bare.pdf');
+    it('is dropped silently at the foot of the page, where a bare number is the page number', async () => {
+      const result = await convertFile(await bareNumbers([1, 2, 3], FOOTER_Y), 'pdf', 'xlsx', {}, 'bare.pdf');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Chapter 1 text']], [['Chapter 2 text']], [['Chapter 3 text']]]);
+      expect(result.metadata?.warnings).toBeUndefined();
+    });
+
+    it('is reported with its pages at the head of the page, where a run of numbers can be section numbers', async () => {
+      const result = await convertFile(await bareNumbers([1, 2, 3], HEADER_Y), 'pdf', 'xlsx', {}, 'sections.pdf');
       expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Chapter 1 text']], [['Chapter 2 text']], [['Chapter 3 text']]]);
       expect(result.metadata?.warnings).toEqual(['Left out the bare number printed on pages 1, 2, 3 as a page counter: a text sheet is named after its page.']);
     });
 
+    it('names only the pages that get a text sheet', async () => {
+      const result = await convertFile(await bareNumbers([1, 2, 3], HEADER_Y, (index) => index !== 1), 'pdf', 'xlsx', {}, 'gap.pdf');
+      expect(result.metadata?.warnings).toEqual(['Left out the bare number printed on pages 1, 3 as a page counter: a text sheet is named after its page.']);
+    });
+
     it('is not reported for a number that stays as a row', async () => {
-      const result = await convertFile(await bareFooters([7, 7, 7]), 'pdf', 'xlsx', {}, 'same.pdf');
+      const result = await convertFile(await bareNumbers([7, 7, 7], FOOTER_Y), 'pdf', 'xlsx', {}, 'same.pdf');
       expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Chapter 1 text'], ['7']], [['Chapter 2 text'], ['7']], [['Chapter 3 text'], ['7']]]);
       expect(result.metadata?.warnings).toBeUndefined();
     });

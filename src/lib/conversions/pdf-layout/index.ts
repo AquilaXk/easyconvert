@@ -333,6 +333,8 @@ interface PageFurniture {
   header: Paragraph[];
   footer: Paragraph[];
   counters: ReadonlyMap<PageBlock, CounterForm>;
+  /** The counters that are a bare number in the header band: a bare number at the foot of a page is its page number, one at its head can be text. */
+  headerBareCounters: ReadonlySet<PageBlock>;
 }
 
 /**
@@ -348,7 +350,7 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Map() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Map(), headerBareCounters: new Set() };
   const accepted = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
@@ -377,14 +379,15 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
   // A one-page document has no recurrence to show a header or footer by, and a table page has no body text to compare its size with: the line
   // that prints the page's own number in a band is its counter whether or not it is furniture.
   const counters = pageCountersOf(pages.length === 1 ? candidates.keys() : accepted, candidates);
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters };
+  const headerBareCounters = new Set([...counters].filter(([block, form]) => form === 'bare' && candidates.get(block) === 'header').map(([block]) => block));
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters, headerBareCounters };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), counters };
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), counters, headerBareCounters };
 }
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
@@ -392,8 +395,8 @@ export interface PdfPageText {
   pageNumber: number;
   /** Every line of the page, but its page counter (`pageCounterBlocks`). */
   lines: string[];
-  /** The page counters left out of `lines` that are a bare number, the form that can be text (section numbers that run 1, 2, 3 on pages 1, 2, 3). */
-  bareCounters: string[];
+  /** Whether a page counter left out of `lines` is a bare number in the header band, the form that can be text (section numbers that run 1, 2, 3 on pages 1, 2, 3). */
+  hasHeaderBareCounter: boolean;
 }
 
 /** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
@@ -408,20 +411,19 @@ export interface LaidOutPdf {
   pageText: PdfPageText[];
 }
 
-function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, CounterForm>): PdfPageText {
+function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, CounterForm>, headerBareCounters: ReadonlySet<PageBlock>): PdfPageText {
   const { pageNumber } = layout.page;
   const lines: string[] = [];
-  const bareCounters: string[] = [];
+  let hasHeaderBareCounter = false;
   for (const block of layout.blocks) {
     if (block.kind !== 'paragraph') continue;
-    const counter = counters.get(block);
-    if (counter !== undefined) {
-      if (counter === 'bare') bareCounters.push(block.paragraph.text);
+    if (counters.has(block)) {
+      hasHeaderBareCounter ||= headerBareCounters.has(block);
       continue;
     }
     for (const { text } of block.paragraph.lines) lines.push(text);
   }
-  return { pageNumber, lines, bareCounters };
+  return { pageNumber, lines, hasHeaderBareCounter };
 }
 
 /**
@@ -528,7 +530,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
-  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters)) };
+  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters, furniture.headerBareCounters)) };
 }
 
 export type { DocumentModel, LayoutLine };

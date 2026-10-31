@@ -68,6 +68,28 @@ describe('the end of a JPEG stream whose scan holds stuffed bytes', () => {
     expect(search.mock.calls.length).toBeLessThan(stuffedPairs / 100);
   });
 
+  it('bounds the searches for three close pairs and a far gap, repeated, which no run of close pairs alone reveals', () => {
+    const unit = Buffer.concat([Buffer.from([0xff, 0x00, 0xff, 0x00, 0xff, 0x00]), Buffer.alloc(16, PLAIN)]);
+    const data = Buffer.concat(Array.from({ length: Math.floor((4 * MEBIBYTE) / unit.length) }, () => unit));
+    const buffer = stream(data);
+    const search = vi.spyOn(buffer, 'indexOf');
+    expect(walkJpegStream(buffer, 0).end).toBe(buffer.length);
+    // One call per pair would be about 570,000 calls; the loop takes these stretches over.
+    expect(search.mock.calls.length).toBeLessThan(data.length / 100);
+  });
+
+  it('finds a marker at every offset around the edge of a loop span', () => {
+    for (let offset = 1018; offset <= 1030; offset += 1) {
+      const data = Buffer.concat([scanData(4096, 2), Buffer.alloc(offset, PLAIN), Buffer.from([0xff, 0xc4]), scanData(64, 2)]);
+      const walk = walkJpegStream(stream(data, []), 0);
+      expect(walk.end, `offset ${offset}`).toBe(-1);
+    }
+    for (let offset = 1018; offset <= 1030; offset += 1) {
+      const data = Buffer.concat([scanData(4096, 2), Buffer.alloc(offset, PLAIN), Buffer.from([0xff, 0xd0]), scanData(64, 2)]);
+      expect(walkJpegStream(stream(data), 0).end, `restart at offset ${offset}`).toBe(SCAN_AT + data.length + END_OF_IMAGE.length);
+    }
+  });
+
   it('keeps the native search for data in which 0xFF is rare', () => {
     const buffer = stream(scanData(4 * MEBIBYTE, 4096));
     const search = vi.spyOn(buffer, 'indexOf');
