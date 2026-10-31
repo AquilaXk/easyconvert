@@ -27,5 +27,7 @@ export async function withConversionWarnings<T extends Pick<ConversionResult, 'm
   if (lines.size === 0) return result;
   const existing = Array.isArray(result.metadata?.warnings) ? (result.metadata.warnings as string[]) : [];
   const merged = [...existing, ...[...lines].filter((line) => !existing.includes(line))].slice(0, MAX_WARNING_LINES);
-  return { ...result, metadata: { ...result.metadata, warnings: merged } };
+  // Set on the result itself: a worker result reads its buffer lazily from disk, and a copy would read it into memory.
+  result.metadata = { ...result.metadata, warnings: merged };
+  return result;
 }
