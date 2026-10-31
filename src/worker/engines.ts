@@ -27,7 +27,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEncryptedAnswer, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEncryptedAnswer, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -35,7 +35,7 @@ import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
-import { isSvgPageTarget, svgPageEncoder } from './svg-page-encoders';
+import { isSvgPageTarget, withSvgPageEncoder } from './svg-page-encoders';
 import { isCalibreEbookTarget } from '../lib/conversions/calibre-ebook-targets';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { decodeHtmlInput } from '../lib/conversions/html-encoding';
@@ -456,7 +456,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withEncryptedAnswer(withPresentationRetry(runHeadlessOffice))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withEncryptedAnswer(runHeadlessOffice)), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.
@@ -1666,7 +1666,7 @@ async function convertPdfToSvgPageFormat(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
   if (!rendered) return null;
-  return withConversionWarnings(() => reencodeRenderedPages(rendered, SVG_FORMAT, tgt, svgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options), context));
+  return withConversionWarnings(() => withSvgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options, (encode) => reencodeRenderedPages(rendered, SVG_FORMAT, tgt, encode, context)));
 }
 
 /** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */

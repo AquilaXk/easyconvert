@@ -2,6 +2,7 @@ import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
+import { isDrawnPicture, type LeftOutPictures } from './svg-picture';
 import { ActiveClips } from './svg-clip-region';
 import { parseLength, requireFinite, rootUnitPx } from './svg-length';
 import { createPageClipCheck, type ClipNode } from './svg-page-clip';
@@ -36,17 +37,22 @@ export interface SvgGeometryElement {
   strokeDash: readonly number[] | null;
 }
 
-/** What a reader does with an `<image>` the page draws: `refuse` the page, or `leave-out` the picture (a DXF holds no bitmaps) and count it. */
-export type SvgPictureMode = 'refuse' | 'leave-out';
-
 export interface ParsedSvgVectorDocument {
   width: number;
   height: number;
   /** CSS pixels in a unit of the root's width, else height, attribute: the unit a DXF is written in (vector-dxf.ts). */
   unitPx: number;
   elements: SvgGeometryElement[];
-  /** The pictures drawn on the page that were left out (always 0 unless the pictures are read as `leave-out`). */
-  leftOutPictures: number;
+}
+
+/** What a caller sets apart from the SVG text itself when it reads a page. */
+export interface SvgReadOptions {
+  /** Where the bitmap-font characters go; by default a new collector, which refuses them. */
+  bitmapGlyphs?: BitmapGlyphs;
+  /** What the target does with the pen attributes it cannot paint; `metafile` by default (svg-pen.ts). */
+  pens?: SvgPenMode;
+  /** Given, the pictures of the page are left out and counted there (a DXF holds no bitmaps); else the page is refused at its first picture. */
+  pictures?: LeftOutPictures;
 }
 
 /**
@@ -1053,8 +1059,7 @@ interface RenderState {
   sheet: CssRule[];
   depth: number;
   pens: SvgPenMode;
-  pictures: SvgPictureMode;
-  leftOutPictures: number;
+  pictures: LeftOutPictures | undefined;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
   /** The other clips, measured against what is drawn under them and cut where they hide more than the tolerance of the pens. */
@@ -1168,9 +1173,9 @@ function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): vo
 type RenderedKind = 'shape' | 'use' | 'group' | 'picture';
 
 /** Classifies an element for rendering: null for non-rendering content, otherwise its kind; unsupported elements throw. */
-function classifyElement(node: SvgNode, pictures: SvgPictureMode): RenderedKind | null {
+function classifyElement(node: SvgNode, leavesPicturesOut: boolean): RenderedKind | null {
   if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return null;
-  if (node.name === 'image' && pictures === 'leave-out') return 'picture';
+  if (node.name === 'image' && leavesPicturesOut) return 'picture';
   if (node.name === 'svg') {
     throw new CadGeometryUnavailableError('Nested <svg> viewports are not supported by the metafile encoders.');
   }
@@ -1181,13 +1186,13 @@ function classifyElement(node: SvgNode, pictures: SvgPictureMode): RenderedKind 
 }
 
 function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderState): void {
-  const kind = classifyElement(node, state.pictures);
+  const kind = classifyElement(node, state.pictures !== undefined);
   if (kind === null) return;
   if (++state.renderedNodes > MAX_RENDERED_NODES) {
     throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
   }
   if (kind === 'picture') {
-    if (declaredProperties(node.attrs, node.name, state.sheet).get('display') !== 'none') state.leftOutPictures += 1;
+    if (state.pictures !== undefined && isDrawnPicture(declaredProperties(node.attrs, node.name, state.sheet), parent.visibility)) state.pictures.count += 1;
     return;
   }
   const declared = declaredProperties(node.attrs, node.name, state.sheet);
@@ -1218,20 +1223,15 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
  * drawing when it is one convex polygon (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them
  * aside (svg-bitmap-glyph.ts); `pens` says
  * what the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused. A picture is refused
- * too unless `pictures` leaves it out.
+ * too unless `pictures` collects it.
  */
-export function parseSvgGeometries(
-  svgContent: string,
-  bitmapGlyphs = new BitmapGlyphs(),
-  pens: SvgPenMode = 'metafile',
-  pictures: SvgPictureMode = 'refuse'
-): ParsedSvgVectorDocument {
+export function parseSvgGeometries(svgContent: string, { bitmapGlyphs = new BitmapGlyphs(), pens = 'metafile', pictures }: SvgReadOptions = {}): ParsedSvgVectorDocument {
   if (svgContent.length > MAX_SVG_INPUT_CHARS) {
     throw new CadGeometryUnavailableError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
   }
   const root = buildSvgTree(svgContent);
   if (!root) {
-    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, unitPx: 1, elements: [], leftOutPictures: 0 };
+    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, unitPx: 1, elements: [] };
   }
   const viewport = resolveViewport(root.attrs);
   const sheet = extractStylesheets(svgContent);
@@ -1254,8 +1254,8 @@ export function parseSvgGeometries(
     },
     pens
   );
-  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, pictures, leftOutPictures: 0, clipsNothing, clips };
+  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, pictures, clipsNothing, clips };
   indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
-  return { width: viewport.width, height: viewport.height, unitPx: rootUnitPx(root.attrs), elements: state.elements, leftOutPictures: state.leftOutPictures };
+  return { width: viewport.width, height: viewport.height, unitPx: rootUnitPx(root.attrs), elements: state.elements };
 }

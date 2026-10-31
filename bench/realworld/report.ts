@@ -69,6 +69,10 @@ export interface KnownRefusal {
   file: string;
   /** Regular expression the job detail must match. */
   detail: string;
+  /** The source format of the jobs the row explains; absent for every source (the rows written before the pair was named). */
+  source?: string;
+  /** The target formats of the jobs the row explains, one or a list; absent for every target. */
+  target?: string | readonly string[];
   /** Why the file is refused and where it converts, in a sentence. */
   reason: string;
   /** The open issue whose checklist tracks the row. */
@@ -133,8 +137,12 @@ export function knownIssue(job: JobRecord, known: readonly KnownFailure[]): numb
   return match === undefined ? null : match.issue;
 }
 
+const targetsOf = (entry: KnownRefusal): readonly string[] | undefined => (entry.target === undefined ? undefined : [entry.target].flat());
+
 export function knownRefusal(job: JobRecord, known: readonly KnownRefusal[]): KnownRefusal | null {
-  return known.find((k) => job.verdict === 'refused' && k.file === job.file && new RegExp(k.detail).test(job.detail ?? '')) ?? null;
+  const explains = (k: KnownRefusal): boolean =>
+    k.file === job.file && (k.source === undefined || k.source === job.source) && (targetsOf(k)?.includes(job.target) ?? true) && new RegExp(k.detail).test(job.detail ?? '');
+  return job.verdict === 'refused' ? (known.find(explains) ?? null) : null;
 }
 
 function splitFatal(jobs: readonly JobRecord[], knownFailures: readonly KnownFailure[]): Pick<GateResult, 'fatal' | 'known'> {
@@ -192,12 +200,17 @@ export function readKnownFailures(file = KNOWN_FAILURES_PATH): KnownFailure[] {
   return list;
 }
 
+const isFormatName = (value: unknown): value is string => typeof value === 'string' && value !== '';
+
 export function readKnownRefusals(file = KNOWN_REFUSALS_PATH): KnownRefusal[] {
   if (!fs.existsSync(file)) return [];
   const list = JSON.parse(fs.readFileSync(file, 'utf8')) as KnownRefusal[];
   for (const entry of list) {
     if (!Number.isInteger(entry.issue) || entry.issue <= 0) throw new Error(`${file}: every known refusal needs the issue that tracks it`);
     if (entry.reason.trim() === '') throw new Error(`${file}: the known refusal of ${entry.file} needs its reason`);
+    if (entry.source !== undefined && !isFormatName(entry.source)) throw new Error(`${file}: the known refusal of ${entry.file} needs a source that is a format name`);
+    const targets = targetsOf(entry);
+    if (targets !== undefined && (targets.length === 0 || !targets.every(isFormatName))) throw new Error(`${file}: the known refusal of ${entry.file} needs a target that is a format name or a list of them`);
     entry.detail = new RegExp(entry.detail).source;
   }
   return list;

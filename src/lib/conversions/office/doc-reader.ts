@@ -101,15 +101,25 @@ interface FibInfo {
   formatting: CharacterFormattingLocations;
 }
 
+/** Whether the stream opens with the Word binary signature (wIdent) of the file information block ([MS-DOC] 2.5.2 FibBase). */
+function hasFibSignature(word: CheckedReader): boolean {
+  return word.u16(FIB_WIDENT_OFFSET) === FIB_WIDENT;
+}
+
+/** Whether the flags of the file information block have fEncrypted set ([MS-DOC] 2.5.2 FibBase): the document needs its password. */
+function fibFlagsEncrypted(flags: number): boolean {
+  return (flags & FIB_FLAG_ENCRYPTED) !== 0;
+}
+
 function readFib(word: CheckedReader): FibInfo {
-  if (word.u16(FIB_WIDENT_OFFSET) !== FIB_WIDENT) {
+  if (!hasFibSignature(word)) {
     throw new LegacyOfficeFormatError(`${LABEL}: the WordDocument stream has no Word binary signature.`);
   }
   if (word.u16(FIB_NFIB_OFFSET) < FIB_MIN_NFIB) {
     throw new LegacyOfficeFormatError(`${LABEL}: documents older than Word 97 are not supported.`);
   }
   const flags = word.u16(FIB_FLAGS_OFFSET);
-  if (flags & FIB_FLAG_ENCRYPTED) {
+  if (fibFlagsEncrypted(flags)) {
     throw new EncryptedOfficeDocumentError(`${LABEL}: the document is encrypted or password protected.`);
   }
   if (word.u16(FIB_CSW_OFFSET) !== FIB_CSW_VALUE || word.u16(FIB_CSLW_OFFSET) !== FIB_CSLW_VALUE) {
@@ -355,7 +365,7 @@ function fileOffsetLocator(pieces: readonly Piece[]): (cp: number) => number {
 export function isEncryptedWordDocument(buffer: Buffer): boolean {
   try {
     const word = new CheckedReader(requireCfbStream(readCfbStreams(buffer, LABEL), WORD_DOCUMENT_STREAM, LABEL), LABEL);
-    return word.u16(FIB_WIDENT_OFFSET) === FIB_WIDENT && (word.u16(FIB_FLAGS_OFFSET) & FIB_FLAG_ENCRYPTED) !== 0;
+    return hasFibSignature(word) && fibFlagsEncrypted(word.u16(FIB_FLAGS_OFFSET));
   } catch (err) {
     if (err instanceof LegacyOfficeFormatError) return false;
     throw err;
