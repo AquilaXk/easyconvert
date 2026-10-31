@@ -258,6 +258,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libheif-plugin-libde265 \
         libopenjp2-tools \
         poppler-utils \
+        djvulibre-bin \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-kor \
@@ -328,6 +329,17 @@ RUN dwg2dxf --version
 COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
 COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
 RUN gxps -v
+
+# DjVu renderer (the distribution's djvulibre-bin, GPL-2.0-or-later, started as a separate program like the other GPL tools above; its
+# licence text is collected by the notices step below). The build fails when the program does not start or cannot write a PDF: a page
+# is encoded with cjb2 from a bitmap written here and drawn again with ddjvu, which goes through its TIFF and PDF writers.
+RUN ddjvu --help 2>&1 | grep -q 'DjVuLibre-3' \
+    && dir="$(mktemp -d)" \
+    && printf 'P4\n8 8\n\252\125\252\125\252\125\252\125' > "$dir/page.pbm" \
+    && cjb2 "$dir/page.pbm" "$dir/page.djvu" \
+    && ddjvu -format=pdf "$dir/page.djvu" "$dir/page.pdf" \
+    && head -c 5 "$dir/page.pdf" | grep -q '%PDF-' \
+    && rm -rf "$dir"
 
 # FFmpeg (pinned release built in the ffmpeg stage). It loads its own libav* libraries from /opt/ffmpeg/lib (RUNPATH) and the codec
 # libraries installed above, and is found by the worker as /usr/local/bin/ffmpeg and ffprobe; the distribution's ffmpeg package is not

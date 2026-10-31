@@ -178,5 +178,11 @@
     "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
     "reason": "The body is empty; the only words are the header line \"blabal\" and the footer line \"blabla\", which LibreOffice's plain-text export does not write, and slides hold the text of the body (tests/docx-to-slides-text.test.ts).",
     "issue": 783
+  },
+  {
+    "file": "tika-testdjvu.djvu",
+    "detail": "^ConversionFailedError: The DjVu document is indirect: ",
+    "reason": "The 89 bytes are the index of an indirect document: a directory that names eight page files (page0001.djvu to page0008.djvu) which the corpus does not hold (djvudump: 'Document directory (indirect, 8 files 8 pages)'). ddjvu 3.5.28 answers \"Failed to open 'page0001.djvu'\" and \"Cannot access page 1\" on it, so there is no page to draw; the converter refuses it before the program starts, because the program would read such files from the directory next to the input (tests/djvu-render.test.ts).",
+    "issue": 783
   }
 ]

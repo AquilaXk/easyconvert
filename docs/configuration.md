@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 129 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 130 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -283,6 +283,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `PDFTOPS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `PS2PDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `GXPS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `DDJVU_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `GS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DCRAW_EMU_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `EBOOK_CONVERT_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -317,6 +318,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `PDFTOPS_PATH`: Path of the poppler `pdftops` executable.
 - `PS2PDF_PATH`: Path of the Ghostscript `ps2pdf` executable.
 - `GXPS_PATH`: Path of the GhostXPS `gxps` executable that draws an XPS or OpenXPS document as a PDF; searched in the standard locations when unset. XPS to PDF and to page images cannot be converted without it (HTTP 503).
+- `DDJVU_PATH`: Path of the djvulibre `ddjvu` executable that draws a DjVu document as a PDF; searched in the standard locations when unset. DjVu to PDF and to page images cannot be converted without it (HTTP 503).
 - `GS_PATH`: Path of the Ghostscript `gs` executable that the PDF optimize operation runs.
 - `DCRAW_EMU_PATH`: Path of the LibRaw `dcraw_emu` executable.
 - `EBOOK_CONVERT_PATH`: Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503); a value that is not an absolute path is rejected at start-up.

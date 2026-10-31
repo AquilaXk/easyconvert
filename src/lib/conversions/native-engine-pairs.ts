@@ -4,12 +4,14 @@ import { isCalibreEbookTarget } from './calibre-ebook-targets';
 /**
  * Pairs that only a native engine converts: the in-process engine has no code path for them.
  * LibreOffice converts between Office formats and, chained with Poppler, renders Office
- * documents to raster images; Poppler renders PDF to SVG; GhostXPS draws XPS documents. When the native engine is missing,
+ * documents to raster images; Poppler renders PDF to SVG; GhostXPS draws XPS documents; ddjvu draws DjVu documents. When the native engine is missing,
  * these pairs fail with EngineUnavailableError instead of falling back to the in-process engine.
  */
 const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'doc->jpg', 'doc->png', 'doc->rtf',
   'eps->avif', 'eps->bmp', 'eps->dxf', 'eps->eps', 'eps->gif', 'eps->jpg', 'eps->pdf', 'eps->png', 'eps->ps', 'eps->svg', 'eps->tiff', 'eps->webp',
+  'djv->avif', 'djv->bmp', 'djv->eps', 'djv->gif', 'djv->ico', 'djv->jpg', 'djv->pdf', 'djv->png', 'djv->ps', 'djv->psd', 'djv->svg', 'djv->tiff', 'djv->webp',
+  'djvu->avif', 'djvu->bmp', 'djvu->eps', 'djvu->gif', 'djvu->ico', 'djvu->jpg', 'djvu->pdf', 'djvu->png', 'djvu->ps', 'djvu->psd', 'djvu->svg', 'djvu->tiff', 'djvu->webp',
   'docx->doc', 'docx->jpg', 'docx->png', 'docx->rtf',
   'key->html', 'key->pdf', 'key->pptx',
   'odd->avif', 'odd->bmp', 'odd->eps', 'odd->gif', 'odd->ico', 'odd->jpg', 'odd->odd', 'odd->pdf', 'odd->png', 'odd->ps', 'odd->psd', 'odd->tiff', 'odd->webp',

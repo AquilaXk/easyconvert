@@ -62,6 +62,12 @@ export type ExternalOracleTool =
   | 'ps2pdf'
   | 'gs'
   | 'gxps'
+  | 'ddjvu'
+  | 'djvutxt'
+  | 'djvused'
+  | 'djvmcvt'
+  | 'djvm'
+  | 'cjb2'
   | 'ebook-convert'
   | 'rsvg-convert'
   | 'inkscape'
@@ -104,7 +110,7 @@ export class OracleToolMissingError extends Error {
 const toolCache = new Map<string, string | null>();
 
 /** Tools that are not on PATH on a typical host and are located through the environment variable the worker also reads. */
-const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH', epubcheck: 'EPUBCHECK_PATH', dwg2dxf: 'DWG2DXF_PATH', gxps: 'GXPS_PATH', 'ebook-convert': 'EBOOK_CONVERT_PATH', 'cad-convert': 'CAD_CONVERT_PATH', fontforge: 'FONTFORGE_PATH', inkscape: 'INKSCAPE_PATH' };
+const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH', epubcheck: 'EPUBCHECK_PATH', dwg2dxf: 'DWG2DXF_PATH', gxps: 'GXPS_PATH', ddjvu: 'DDJVU_PATH', 'ebook-convert': 'EBOOK_CONVERT_PATH', 'cad-convert': 'CAD_CONVERT_PATH', fontforge: 'FONTFORGE_PATH', inkscape: 'INKSCAPE_PATH' };
 
 export function getOracleToolPath(tool: ExternalOracleTool): string | null {
   // The override is read on every call: a test may point the variable at a different binary.

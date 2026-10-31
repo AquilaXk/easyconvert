@@ -1406,6 +1406,7 @@ const SCHEMA_ENTRIES = [
   toolPath('PDFTOPS_PATH', 'Path of the poppler `pdftops` executable.', BOTH),
   toolPath('PS2PDF_PATH', 'Path of the Ghostscript `ps2pdf` executable.', BOTH),
   toolPath('GXPS_PATH', 'Path of the GhostXPS `gxps` executable that draws an XPS or OpenXPS document as a PDF; searched in the standard locations when unset. XPS to PDF and to page images cannot be converted without it (HTTP 503).', BOTH),
+  toolPath('DDJVU_PATH', 'Path of the djvulibre `ddjvu` executable that draws a DjVu document as a PDF; searched in the standard locations when unset. DjVu to PDF and to page images cannot be converted without it (HTTP 503).', BOTH),
   toolPath('GS_PATH', 'Path of the Ghostscript `gs` executable that the PDF optimize operation runs.', BOTH),
   toolPath('DCRAW_EMU_PATH', 'Path of the LibRaw `dcraw_emu` executable.', BOTH),
   absoluteToolPath('EBOOK_CONVERT_PATH', 'Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),

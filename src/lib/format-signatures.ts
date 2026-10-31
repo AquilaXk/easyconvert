@@ -210,6 +210,13 @@ export function sniffAacContainer(buf: Uint8Array): 'audio/aac' | undefined {
   return id3v2Payload(buf) === 'adts' ? 'audio/aac' : undefined;
 }
 
+/** `AT&TFORM`, the magic of a DjVu file (libdjvu/IFFByteStream.cpp `get_chunk`, lines 221 to 226, then the `FORM` chunk; shared-mime-info `image/vnd.djvu` and libmagic `djvu` match the same bytes). */
+const DJVU_MAGIC = [0x41, 0x54, 0x26, 0x54, 0x46, 0x4f, 0x52, 0x4d];
+/** The `FORM` types of a file that is a page (`DJVU`) or a document (`DJVM`), at offset 12 after the magic, the chunk size and no more. */
+const DJVU_FORM_TYPES: readonly string[] = ['DJVU', 'DJVM'];
+const DJVU_FORM_TYPE_OFFSET = 12;
+const DJVU_FORM_TYPE_BYTES = 4;
+
 /**
  * Formats that open with a fixed byte string no other kind shares, by the MIME type the registry sniffs for them (the
  * signatures of the format specifications, as listed by shared-mime-info and libmagic). The executable signatures (ELF, DOS
@@ -357,6 +364,11 @@ function includesBytes(buf: Uint8Array, needle: readonly number[]): boolean {
     if (startsWithBytes(buf, needle, offset)) return true;
   }
   return false;
+}
+
+/** A DjVu page or document: the `AT&TFORM` magic, then the chunk size and the form type `DJVU` or `DJVM`. */
+function isDjvu(buf: Uint8Array): boolean {
+  return startsWithBytes(buf, DJVU_MAGIC) && buf.length >= DJVU_FORM_TYPE_OFFSET + DJVU_FORM_TYPE_BYTES && DJVU_FORM_TYPES.includes(LATIN1.decode(buf.subarray(DJVU_FORM_TYPE_OFFSET, DJVU_FORM_TYPE_OFFSET + DJVU_FORM_TYPE_BYTES)));
 }
 
 function isEmf(buf: Uint8Array): boolean {
@@ -530,6 +542,8 @@ const COMPOUND_FILE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
 
 /** The sources the office suite imports that open with a signature of their own, so that no other kind of file reaches the suite under their name. */
 const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
+  djvu: isDjvu,
+  djv: isDjvu,
   emf: isEmf,
   wmf: isWmf,
   cgm: isCgm,
@@ -538,7 +552,11 @@ const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
   ...COMPOUND_FILE_CHECKS,
 };
 
-/** Whether the bytes carry the signature of `ext`; undefined for a format whose signature is not checked here. */
+/**
+ * Whether the bytes carry the signature of `ext`; undefined for a format whose signature is not checked here. A DjVu file
+ * is no other format, so it is refused under any other name whose signature is not checked here.
+ */
 export function ownSignatureVerdict(ext: string, buf: Uint8Array): boolean | undefined {
-  return Object.hasOwn(OWN_SIGNATURE_CHECKS, ext) ? OWN_SIGNATURE_CHECKS[ext](buf) : undefined;
+  if (Object.hasOwn(OWN_SIGNATURE_CHECKS, ext)) return OWN_SIGNATURE_CHECKS[ext](buf);
+  return isDjvu(buf) ? false : undefined;
 }
