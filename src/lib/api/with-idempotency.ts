@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateApiAccess, authErrorHeaders, ApiAuthResult } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import {
   IdempotencyStore,
@@ -13,16 +12,6 @@ import {
 
 export const IDEMPOTENCY_KEY_REUSED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-reused';
 export const IDEMPOTENCY_KEY_IN_FLIGHT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-in-flight';
-
-export interface WithIdempotencyOptions {
-  requiredScope?: string;
-  store?: IdempotencyStore;
-}
-
-export type IdempotentRouteHandler = (
-  req: NextRequest,
-  authOrContext?: any
-) => Promise<NextResponse | Response>;
 
 /**
  * Extracts non-file fields and hashes file blobs from multipart form data.
@@ -228,14 +217,16 @@ export interface AcquireIdempotencyResult {
 }
 
 /**
- * Acquires idempotency lock or returns early replay/conflict response.
+ * Acquires idempotency lock or returns early replay/conflict response. A caller that already read the JSON body of `req`
+ * passes it as `parsedBody`, which is then fingerprinted as it is and the request is not read again.
  */
 export async function acquireIdempotency(
   req: NextRequest | Request,
   userId: string,
   rawKey: string,
   instanceUri: string,
-  store?: IdempotencyStore
+  store?: IdempotencyStore,
+  parsedBody?: unknown
 ): Promise<AcquireIdempotencyResult> {
   if (!isValidIdempotencyKey(rawKey)) {
     return {
@@ -248,8 +239,8 @@ export async function acquireIdempotency(
     };
   }
 
-  const cloned = req.clone();
-  const { bodyWithoutFile, fileSha256 } = await extractFingerprintData(cloned);
+  const { bodyWithoutFile, fileSha256 } =
+    parsedBody === undefined ? await extractFingerprintData(req.clone()) : { bodyWithoutFile: parsedBody, fileSha256: '' };
   const fingerprint = computeFingerprint(req.method, instanceUri, bodyWithoutFile, fileSha256);
   const scopedKey = buildScopedKey(userId, instanceUri, rawKey);
   const activeStore = store || getIdempotencyStore();
@@ -289,98 +280,48 @@ export async function acquireIdempotency(
  * Runs `handler` once per `Idempotency-Key` of `scopeUserId` on this route. A repeat of the same request gets the first
  * answer, so a client may send it again after a network error and learns what the first one created; a repeat while the
  * first runs gets 409 with `Retry-After`. Only a success is kept: after a refusal the same request may be sent again.
- * Without the header the handler just runs. Once the handler returned, its answer is returned even when the store cannot
- * record it (a warning in the log); a handler that threw releases the key first.
+ * Without the header the handler just runs. A caller that read the JSON body already passes it as `parsedBody`.
+ *
+ * Once the handler returned, its answer is returned even when the store cannot record it: the key is then released, so a
+ * repeat runs the handler again instead of waiting out a lock nothing will settle. A handler that threw releases the key
+ * and its own error is thrown. A release that fails is logged; the lock then ends when its time runs out.
  */
 export async function respondOnce(
   req: NextRequest | Request,
   scopeUserId: string,
   instanceUri: string,
-  handler: () => Promise<Response>
+  handler: () => Promise<Response>,
+  parsedBody?: Record<string, unknown>
 ): Promise<Response> {
   const rawKey = req.headers.get('idempotency-key');
   if (rawKey === null) return handler();
-  const { response, context } = await acquireIdempotency(req, scopeUserId, rawKey, instanceUri);
+  const { response, context } = await acquireIdempotency(req, scopeUserId, rawKey, instanceUri, undefined, parsedBody);
   if (!context) return response as Response;
   let res: Response;
   try {
     res = await handler();
   } catch (error) {
-    await context.abort();
+    await releaseQuietly(context, instanceUri);
     throw error;
   }
-  // The handler is done, so what it did cannot be undone: a store that cannot keep the answer costs a repeat its replay,
-  // not the caller the answer.
+  if (!res.ok) {
+    await releaseQuietly(context, instanceUri);
+    return res;
+  }
   try {
-    if (res.ok) await context.complete(res);
-    else await context.abort();
+    await context.complete(res);
   } catch (error) {
-    console.warn(`[idempotency] Could not settle the idempotency key of ${instanceUri}; the answer is returned without a replay:`, error);
+    console.warn(`[idempotency] Could not record the answer of ${instanceUri}; the answer is returned without a replay:`, error);
+    await releaseQuietly(context, instanceUri);
   }
   return res;
 }
 
-/**
- * Next.js Route Handler wrapper enforcing IETF Idempotency-Key HTTP semantics.
- */
-export function withIdempotency(
-  handler: IdempotentRouteHandler,
-  options?: WithIdempotencyOptions
-): (req: NextRequest, context?: any) => Promise<NextResponse | Response> {
-  return async function wrappedRouteHandler(
-    req: NextRequest,
-    context?: any
-  ): Promise<NextResponse | Response> {
-    const rawKey = req.headers.get('idempotency-key');
-    if (rawKey === null) {
-      return handler(req, context);
-    }
-
-    const instanceUri = req.nextUrl?.pathname || new URL(req.url).pathname;
-
-    const auth: ApiAuthResult =
-      context && typeof context === 'object' && 'authorized' in context
-        ? context
-        : await validateApiAccess(req, {
-            requiredUnits: 0,
-            requiredScope: options?.requiredScope ?? 'convert:write',
-          });
-
-    if (!auth.authorized || !auth.user) {
-      return createProblemDetailsResponse(
-        auth.status ?? 401,
-        auth.error ?? 'Unauthorized',
-        instanceUri,
-        undefined,
-        auth.problemType,
-        authErrorHeaders(auth)
-      );
-    }
-
-    const acquired = await acquireIdempotency(
-      req,
-      auth.user.id,
-      rawKey,
-      instanceUri,
-      options?.store
-    );
-
-    if (acquired.response) {
-      return acquired.response;
-    }
-
-    const ctx = acquired.context!;
-    try {
-      const handlerContext =
-        context && typeof context === 'object' && 'params' in context
-          ? { ...context, auth }
-          : auth;
-      const res = await handler(req, handlerContext);
-      await ctx.complete(res);
-      return res;
-    } catch (err) {
-      await ctx.abort();
-      throw err;
-    }
-  };
+/** Releases the lock of a key, whatever the store does: the answer or the error the caller is about to give must not change. */
+async function releaseQuietly(context: IdempotencyContext, instanceUri: string): Promise<void> {
+  try {
+    await context.abort();
+  } catch (error) {
+    console.warn(`[idempotency] Could not release the idempotency key of ${instanceUri}; it ends when its lock expires:`, error);
+  }
 }

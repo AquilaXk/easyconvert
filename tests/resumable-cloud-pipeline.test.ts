@@ -6,14 +6,23 @@ vi.mock('../src/lib/edge/pipelines/fallback-pipeline', async (importOriginal) =>
   return { ...actual, executeServerlessCloudFallback: vi.fn() };
 });
 
-import { executeResumableCloudConversion, type ResumableStage, type ResumableTiming } from '../src/lib/edge/pipelines/resumable-cloud-pipeline';
+import {
+  PART_IN_FLIGHT_WAIT_MS,
+  executeResumableCloudConversion,
+  type ResumableStage,
+  type ResumableTiming,
+} from '../src/lib/edge/pipelines/resumable-cloud-pipeline';
+import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../src/lib/api/part-in-flight';
+import { partFailureResponse } from '../src/lib/api/part-response';
+import { forgetUploadParts, receivePart, type PartStore } from '../src/lib/storage/part-admission';
+import { DEFAULT_MAX_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT_MS } from '../src/lib/storage/adapters/s3';
 import { executeServerlessCloudFallback } from '../src/lib/edge/pipelines/fallback-pipeline';
 import { executeItemConversion } from '../src/lib/client-converter';
 import { SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
 
 const MIB = 1024 * 1024;
 const NO_WAIT: ResumableTiming = { pollIntervalMs: 0, retryDelayMs: 0, maxWaitMs: 60_000, partInFlightWaitMs: 5_000 };
-const PART_IN_FLIGHT = 'https://api.easyconvert.io/problems/part-in-flight';
+const PART_IN_FLIGHT = PART_IN_FLIGHT_PROBLEM_TYPE;
 
 interface Call {
   method: string;
@@ -92,6 +101,34 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function isJobStart(call: Call): boolean {
   return call.url === '/api/queue/jobs' && call.method === 'POST';
+}
+
+/** The answer the routes give a part sent again while its earlier attempt is still being written, made by their own code. */
+async function refusalOfARepeatedPart(): Promise<Response> {
+  const uploadId = 'up_binding';
+  let release: () => void = () => undefined;
+  const store: PartStore = {
+    getUploadedParts: async () => [],
+    uploadPartStream: async (_id, partNumber) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return { partNumber, size: 1, etag: 'e' };
+    },
+  };
+  const request = { uploadId, partNumber: 1, declaredBytes: 1, totalSize: 4, maxPartBytes: UPLOAD_PART_MAX_BYTES };
+  const emptyBody = () => new ReadableStream<Uint8Array>({ start: (controller) => controller.close() });
+  const earlier = receivePart(store, request, emptyBody());
+  try {
+    return await receivePart(store, request, emptyBody()).then(
+      () => {
+        throw new Error('the repeat of a part on the way was not refused');
+      },
+      (error: unknown) => partFailureResponse(error, '/api/storage/multipart')
+    );
+  } finally {
+    release();
+    await earlier;
+    forgetUploadParts(uploadId);
+  }
 }
 
 beforeEach(() => {
@@ -277,6 +314,36 @@ describe('a file over a single request is converted through parts and a job', ()
 
     expect(calls.filter((c) => c.url.includes('action=chunk') && c.url.includes('partNumber=1'))).toHaveLength(7);
     expect(calls.filter((c) => c.url.includes('action=complete'))).toHaveLength(1);
+  });
+
+  it('waits behind the refusal the routes themselves give a repeated part, without spending an attempt', async () => {
+    const refusal = await refusalOfARepeatedPart();
+    expect(refusal.status).toBe(PART_IN_FLIGHT_STATUS);
+    expect(Number(refusal.headers.get('retry-after'))).toBeGreaterThan(0);
+    const body = await refusal.text();
+    let behind = 6;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=chunk') || behind-- <= 0) return undefined;
+      return new Response(body, { status: refusal.status, headers: { 'Content-Type': 'application/problem+json', 'Retry-After': '0' } });
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
+
+    expect(calls.filter((c) => c.url.includes('action=chunk') && c.url.includes('partNumber=1'))).toHaveLength(7);
+  });
+
+  it('does not wait behind that refusal for a request that is not a part, which keeps its four attempts', async () => {
+    installFetch(() => json({ type: PART_IN_FLIGHT, detail: 'still on the way' }, PART_IN_FLIGHT_STATUS, { 'Retry-After': '0' }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('still on the way');
+
+    expect(calls).toHaveLength(4);
+  });
+
+  it('waits behind an earlier attempt for longer than the object store lets that attempt run', () => {
+    expect(PART_IN_FLIGHT_WAIT_MS).toBeGreaterThan(DEFAULT_MAX_ATTEMPTS * DEFAULT_REQUEST_TIMEOUT_MS);
   });
 
   it('gives up on a part still on the way once the wait for it is over, and closes the upload', async () => {

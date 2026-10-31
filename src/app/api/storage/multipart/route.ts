@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { User } from '@/lib/auth/types';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { discardUpload, mayPresignDownload, registerCompletedUpload } from '@/lib/storage/retention-service';
+import { discardUpload, mayPresignDownload, registerCompletedUpload, removeUnregistered } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { isUploadKey } from '@/lib/storage/key-namespace';
@@ -24,7 +24,7 @@ import {
 } from '@/lib/api-keys/anonymous-upload-budget';
 import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
 import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
-import { MAX_UPLOAD_TOKEN_LENGTH } from '@/lib/storage/remote-storage-backend';
+import { isUploadIdShape } from '@/lib/storage/upload-id';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { formatBytes } from '@/lib/format-bytes';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
@@ -76,15 +76,12 @@ interface ActionContext {
 
 type Body = Record<string, unknown>;
 
-/** The JSON body of `req` as an object, or an empty one. It reads a copy, so the idempotency key can still read the request. */
+/** The JSON body of `req` as an object, or an empty one: a body that is not an object names no field any action reads. */
 function readJson(req: Request): Promise<Body> {
-  return req
-    .clone()
-    .json()
-    .then(
-      (body: unknown) => (body && typeof body === 'object' ? (body as Body) : {}),
-      () => ({})
-    );
+  return req.json().then(
+    (body: unknown) => (body && typeof body === 'object' ? (body as Body) : {}),
+    () => ({})
+  );
 }
 
 function badRequest(detail: string, instanceUri: string): NextResponse {
@@ -289,7 +286,7 @@ async function openSession({ storage, user, instanceUri, body }: ActionContext):
  * another visitor chose never answers with this visitor's upload.
  */
 function onceForCaller(context: ActionContext, handler: (context: ActionContext) => Promise<Response>): Promise<Response> {
-  return respondOnce(context.req, context.user.id, context.instanceUri, () => handler(context));
+  return respondOnce(context.req, context.user.id, context.instanceUri, () => handler(context), context.body);
 }
 
 function initiateUpload(context: ActionContext): Promise<Response> {
@@ -438,7 +435,7 @@ async function finishSession({ storage, user, instanceUri, body }: ActionContext
   forgetUploadParts(uploadId);
   // A part can be replaced between the listing above and the completion, so the assembled size is checked again.
   if (completeResult.size !== session.totalSize) {
-    await storage.deleteObject(completeResult.key);
+    await removeUnregistered(storage, completeResult.key);
     await closeReservation(uploadId, 'aborted');
     return badRequest(`The assembled upload holds ${completeResult.size} bytes, but the upload declared ${session.totalSize} bytes.`, instanceUri);
   }
@@ -453,11 +450,6 @@ async function finishSession({ storage, user, instanceUri, body }: ActionContext
   return NextResponse.json({ success: true, ...completeResult });
 }
 
-/** Whether `uploadId` can be an id a store handed out: printable ASCII within the longest of them, so no junk becomes part of a key. */
-function isUploadIdShape(uploadId: unknown): uploadId is string {
-  return typeof uploadId === 'string' && uploadId.length <= MAX_UPLOAD_TOKEN_LENGTH && /^[\x21-\x7E]+$/.test(uploadId);
-}
-
 /**
  * An `Idempotency-Key` lets a client whose answer was lost ask again which file the completion stored. The key is scoped
  * to the upload and the owner its session records, not to the address bucket: an anonymous visitor holds the upload by
@@ -467,7 +459,7 @@ function isUploadIdShape(uploadId: unknown): uploadId is string {
 async function completeUpload(context: ActionContext): Promise<Response> {
   const { uploadId } = context.body;
   if (!isUploadIdShape(uploadId)) return finishSession(context);
-  return respondOnce(context.req, `${uploadOwnerOf(context.user.id)}:${uploadId}`, context.instanceUri, () => finishSession(context));
+  return respondOnce(context.req, `${uploadOwnerOf(context.user.id)}:${uploadId}`, context.instanceUri, () => finishSession(context), context.body);
 }
 
 /**
@@ -530,13 +522,19 @@ async function presign({ storage, user, instanceUri, body }: ActionContext): Pro
   return badRequest(PRESIGN_UNSUPPORTED, instanceUri);
 }
 
-const ACTIONS: ReadonlyMap<string, (context: ActionContext) => Promise<Response>> = new Map([
-  ['initiate', initiateUpload],
-  ['chunk', storePart],
-  ['complete', completeUpload],
-  ['abort', abortUpload],
-  ['discard', discardCompletedUpload],
-  ['presign', presign],
+interface ActionSpec {
+  run: (context: ActionContext) => Promise<Response>;
+  /** The body of the request is the bytes of a part, which the action streams: the dispatcher leaves it unread. */
+  streamsBody?: boolean;
+}
+
+const ACTIONS: ReadonlyMap<string, ActionSpec> = new Map([
+  ['initiate', { run: initiateUpload }],
+  ['chunk', { run: storePart, streamsBody: true }],
+  ['complete', { run: completeUpload }],
+  ['abort', { run: abortUpload }],
+  ['discard', { run: discardCompletedUpload }],
+  ['presign', { run: presign }],
 ]);
 
 function actionOf(req: NextRequest): string {
@@ -569,10 +567,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   if (!supportsMultipartSessions(storageProvider)) {
     return createProblemDetailsResponse(501, 'The configured storage provider does not support multipart upload sessions.', instanceUri);
   }
-  const handler = ACTIONS.get(action);
-  if (!handler) return badRequest(`Unknown multipart action: "${action}"`, instanceUri);
+  const spec = ACTIONS.get(action);
+  if (!spec) return badRequest(`Unknown multipart action: "${action}"`, instanceUri);
   try {
-    return await handler({ req, storage: storageProvider, user: auth.user, instanceUri, body: action === 'chunk' ? {} : await readJson(req) });
+    return await spec.run({ req, storage: storageProvider, user: auth.user, instanceUri, body: spec.streamsBody ? {} : await readJson(req) });
   } catch (error: unknown) {
     return storageErrorResponse(error, instanceUri) ?? unexpectedFailure(error, action, instanceUri);
   }

@@ -18,6 +18,8 @@ const PART_BYTES = 5 * MIB;
 const OK = 200;
 const PAYLOAD_TOO_LARGE = 413;
 const SERVICE_UNAVAILABLE = 503;
+const NOT_FOUND = 404;
+const INTERNAL_SERVER_ERROR = 500;
 
 const cleanups: Array<() => void> = [];
 
@@ -161,6 +163,57 @@ describe('parts of one upload sent at once are held together to the size it decl
     expect((await res.json()).detail).toBe('A service this upload needs is temporarily unavailable. Retry the request shortly.');
   });
 
+  describe('an error of the operating system on a part', () => {
+    const diskError = (code: string) =>
+      Object.assign(new Error(`${code}: operation failed, open '/srv/easyconvert/data/part-1.bin'`), { code, syscall: 'open' });
+
+    it('is a missing session when the files of the session are gone (404), on the public upload route', async () => {
+      const send = await publicUploadSession();
+      vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValueOnce(diskError('ENOENT'));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await send(1);
+
+      expect(res.status).toBe(NOT_FOUND);
+      expect((await res.json()).detail).toBe('Upload session not found or has expired.');
+    });
+
+    it('is a fixed 500 that names no path, whose message goes to the log, on the public upload route', async () => {
+      const send = await publicUploadSession();
+      vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValueOnce(diskError('EACCES'));
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await send(1);
+      const body = await res.json();
+
+      expect(res.status).toBe(INTERNAL_SERVER_ERROR);
+      expect(body.detail).toBe('Upload storage error');
+      expect(JSON.stringify(body)).not.toContain('/srv/easyconvert');
+      expect(logged.mock.calls.some(([message]) => String(message).includes('EACCES'))).toBe(true);
+    });
+
+    it('is answered the same when it comes from the read of the stored parts', async () => {
+      const send = await publicUploadSession();
+      vi.spyOn(localFsStorage, 'listPartSizes').mockRejectedValueOnce(diskError('ENOENT'));
+
+      const res = await send(1);
+
+      expect(res.status).toBe(NOT_FOUND);
+    });
+
+    it('is answered the same on the part action of /api/storage/multipart', async () => {
+      const visitor = newVisitor();
+      const { uploadId } = await openSession(visitor, PART_BYTES);
+      vi.spyOn(s3Storage, 'uploadPartStream').mockRejectedValueOnce(diskError('EACCES'));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await multipartPost(partRequest(uploadId, 1, Buffer.alloc(MIB, 'x'), visitor));
+
+      expect(res.status).toBe(INTERNAL_SERVER_ERROR);
+      expect(JSON.stringify(await res.json())).not.toContain('/srv/easyconvert');
+    });
+  });
+
   it('holds the parts of the signed part route to the declared size the same way', async () => {
     const init = s3Storage.initiateMultipartUpload('b.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
     cleanups.push(() => {
@@ -296,6 +349,47 @@ describe('the ledger of parts on the way', () => {
     expect(outcomes.filter((outcome) => outcome === 'stored')).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome === PAYLOAD_TOO_LARGE)).toHaveLength(5);
     forgetUploadParts(uploadId);
+  });
+
+  it('keeps the ledger of a session that a part is waiting on from being swept as idle, so a repeat of its part is still refused', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const sessionX = 'up_ledger_swept_x';
+      const sessionY = 'up_ledger_swept_y';
+      const { store, gates } = gatedStore();
+      const listReleases: Array<() => void> = [];
+      const slowList: PartStore = {
+        ...store,
+        getUploadedParts: async (id) => {
+          await new Promise<void>((resolve) => listReleases.push(resolve));
+          return store.getUploadedParts(id);
+        },
+      };
+      const outcome = (attempt: Promise<unknown>) =>
+        attempt.then(
+          () => 'stored',
+          (error: { statusCode?: number }) => error.statusCode
+        );
+
+      const first = outcome(receivePart(slowList, partOf(sessionX, 1, MIB, 4 * MIB), emptyBody()));
+      vi.setSystemTime(Date.now() + 61 * 60 * 1000);
+      const second = outcome(receivePart(slowList, partOf(sessionX, 2, MIB, 4 * MIB), emptyBody()));
+      const other = outcome(receivePart(store, partOf(sessionY, 1, MIB, 4 * MIB), emptyBody()));
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      gates[0]();
+      await other;
+      const repeat = outcome(receivePart(slowList, partOf(sessionX, 1, MIB, 4 * MIB), emptyBody()));
+      listReleases.forEach((release) => release());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      gates.forEach((open) => open());
+
+      expect(await Promise.all([first, second, repeat])).toEqual(['stored', 'stored', SERVICE_UNAVAILABLE]);
+      expect(listReleases).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      forgetUploadParts('up_ledger_swept_x');
+      forgetUploadParts('up_ledger_swept_y');
+    }
   });
 
   it('does not keep a ledger whose part list read failed, so the next part reads the store again', async () => {

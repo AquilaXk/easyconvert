@@ -527,6 +527,27 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     expect((await initiate(from('203.0.113.58'), MIB)).status).toBe(200);
   });
 
+  it('refuses a key sent again with another body', async () => {
+    const visitor = { ...from('203.0.113.59'), 'Idempotency-Key': crypto.randomUUID() };
+    await initiate(visitor, MIB);
+
+    const other = await initiate(visitor, 2 * MIB);
+
+    expect(other.status).toBe(422);
+    expect((await other.json()).type).toBe('https://api.easyconvert.io/problems/idempotency-key-reused');
+  });
+
+  it('answers a body that is not a JSON object like one without the fields, and keeps no key for it', async () => {
+    const visitor = { ...from('203.0.113.60'), 'Idempotency-Key': crypto.randomUUID() };
+
+    const first = await multipartPost(multipart('initiate', [1, 2, 3], visitor));
+    const again = await initiate(visitor, MIB);
+
+    expect(first.status).toBe(400);
+    expect(again.status).toBe(200);
+    expect(again.headers.get('idempotent-replayed')).toBeNull();
+  });
+
   it('keeps the key of one address bucket from answering another with its upload', async () => {
     const idempotencyKey = 'static-key';
     const first = await (await initiate({ ...from('203.0.113.66'), 'Idempotency-Key': idempotencyKey }, MIB)).json();
@@ -659,6 +680,24 @@ describe('a completion the store took is final', () => {
     expect(warned.mock.calls.some(([message]) => String(message).includes('idempotency'))).toBe(true);
   });
 
+  it('leaves no lock on the key of a completion the idempotency store could not record, so a repeat is not told to wait', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.85');
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const complete = () =>
+      multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, { ...visitor, 'Idempotency-Key': `unrecorded-${uploadId}` }));
+
+    const first = await complete();
+    const { key } = await first.json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(key);
+    });
+    const repeat = await complete();
+
+    expect(first.status).toBe(200);
+    expect(repeat.status).not.toBe(409);
+  });
+
   it('answers a completion whose record and whose cleanup both failed with the refusal, and logs the key it could not remove', async () => {
     const { visitor, uploadId, etag } = await stagedUpload('203.0.113.82');
     vi.spyOn(getRetentionLedger(), 'update').mockRejectedValueOnce(new Error('ledger down'));
@@ -689,6 +728,27 @@ describe('a completion the store took is final', () => {
     const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
 
     expect(res.status).toBe(400);
+    expect((await initiate(visitor, MIB)).status).toBe(200);
+    expect((await initiate(visitor, MIB)).status).toBe(200);
+  });
+
+  it('answers the final 400 and closes the budget when the assembled upload is not the declared size and its removal fails, and logs the key', async () => {
+    const { visitor, uploadId, etag, bytes } = await stagedUpload('203.0.113.86');
+    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => ({
+      location: '/api/storage/file/uploads%2Fmismatch-removal.csv',
+      key: 'uploads/mismatch-removal.csv',
+      size: bytes.length + 1,
+      etag: '"e"',
+    }));
+    const removal = vi.spyOn(s3Storage, 'deleteObject').mockRejectedValueOnce(new Error('store down at /var/data'));
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).detail).toContain('assembled upload holds');
+    expect(removal).toHaveBeenCalledWith('uploads/mismatch-removal.csv');
+    expect(warned.mock.calls.some(([message]) => String(message).includes('uploads/mismatch-removal.csv'))).toBe(true);
     expect((await initiate(visitor, MIB)).status).toBe(200);
     expect((await initiate(visitor, MIB)).status).toBe(200);
   });

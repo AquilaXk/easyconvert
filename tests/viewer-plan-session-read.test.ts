@@ -69,36 +69,76 @@ describe('the session read of a component that mounts', () => {
   });
 });
 
-describe('a read after the session changed', () => {
-  it('starts a new read instead of joining one that began before the sign-in, and the older answer does not overwrite it', async () => {
+describe('a session change the page made itself', () => {
+  const ADA = { id: 'u1', name: 'Ada', tier: 'pro' };
+
+  it('names the signed-in person from the sign-in answer without reading the session endpoint', async () => {
+    const fetchMock = vi.fn(() => Promise.reject(new Error('no read expected')));
+    vi.stubGlobal('fetch', fetchMock);
+    const { plan } = await freshModules();
+
+    plan.applySessionChange(ADA);
+
+    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'pro' });
+    expect(plan.getViewerPlan()).toBe('pro');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('signs the viewer out at once, and a session endpoint that then answers 503 does not bring the account back', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(sessionAnswer(SIGNED_IN)).mockResolvedValueOnce(new Response('{}', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { plan } = await freshModules();
+    await plan.refreshViewerPlan();
+    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'free' });
+
+    plan.applySessionChange(null);
+    await plan.refreshViewerPlan();
+
+    expect(plan.getViewerAccount()).toBeNull();
+    expect(plan.getViewerPlan()).toBe('anonymous');
+  });
+
+  it('drops a read that began before a sign-in, whichever order the answers arrive in', async () => {
+    const answers: Array<(response: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => answers.push(resolve))));
+    const { plan } = await freshModules();
+    const mountRead = plan.refreshViewerPlan();
+
+    plan.applySessionChange(ADA);
+    answers[0](sessionAnswer(VISITOR));
+    await mountRead;
+
+    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'pro' });
+  });
+
+  it('drops a read that began before a sign-out, so the account it saw does not come back', async () => {
+    const answers: Array<(response: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => answers.push(resolve))));
+    const { plan } = await freshModules();
+    const mountRead = plan.refreshViewerPlan();
+
+    plan.applySessionChange(null);
+    answers[0](sessionAnswer(SIGNED_IN));
+    await mountRead;
+
+    expect(plan.getViewerAccount()).toBeNull();
+    expect(plan.getViewerPlan()).toBe('anonymous');
+  });
+
+  it('starts a new read for the component that mounts after the change instead of joining the older one', async () => {
     const answers: Array<(response: Response) => void> = [];
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => answers.push(resolve)));
     vi.stubGlobal('fetch', fetchMock);
     const { plan } = await freshModules();
-
-    const mountRead = plan.refreshViewerPlan();
-    const afterSignIn = plan.refreshViewerPlan({ afterSessionChange: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-
-    answers[1](sessionAnswer(SIGNED_IN));
-    await afterSignIn;
-    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'free' });
-
-    answers[0](sessionAnswer(VISITOR));
-    await mountRead;
-    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'free' });
-    expect(plan.getViewerPlan()).toBe('free');
-  });
-
-  it('lets a component that mounts meanwhile join the read after the change', async () => {
-    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
-    vi.stubGlobal('fetch', fetchMock);
-    const { plan } = await freshModules();
-
-    void plan.refreshViewerPlan({ afterSessionChange: true });
     void plan.refreshViewerPlan();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    plan.applySessionChange(ADA);
+    const afterChange = plan.refreshViewerPlan();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    answers[1](sessionAnswer({ success: true, user: { ...ADA, tier: 'enterprise' } }));
+    await afterChange;
+    expect(plan.getViewerPlan()).toBe('enterprise');
   });
 });
 
@@ -119,7 +159,7 @@ describe('a session endpoint that does not answer or does not say', () => {
     );
     const { plan } = await freshModules();
 
-    const read = plan.refreshViewerPlan({ afterSessionChange: true });
+    const read = plan.refreshViewerPlan();
     expired.abort(new DOMException('The operation timed out.', 'TimeoutError'));
     await read;
 

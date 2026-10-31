@@ -110,8 +110,12 @@ export async function registerStoredResult(storage: Pick<IStorageBackend, 'delet
   }
 }
 
-/** Removes an object whose record could not be written, because no sweep would ever find it; a removal that fails is logged with the key, and the error that caused it stays the caller's to throw. */
-async function removeUnregistered(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
+/**
+ * Removes an object nobody will convert or deliver, because its record could not be written or it is not the file that was
+ * asked for: no sweep would ever find it. A removal that fails is logged with the key, and the error that caused the
+ * removal stays the caller's to throw or answer.
+ */
+export async function removeUnregistered(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
   try {
     await storage.deleteObject(key);
   } catch (cleanupError) {

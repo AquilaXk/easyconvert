@@ -62,6 +62,17 @@ interface Viewer {
 
 const SIGNED_OUT: Viewer = { plan: 'anonymous', account: null };
 
+/** The part of a user record that names the viewer; the session endpoint and the sign-in answers carry it. */
+export interface SessionUser {
+  id?: string;
+  name?: string;
+  tier?: string;
+}
+
+function viewerOf(user: SessionUser): Viewer {
+  return { plan: planOfCaller(user), account: { name: user.name ?? '', tier: user.tier ?? '' } };
+}
+
 /**
  * Who the session endpoint says the viewer is: nobody on a 401 or an answer without a user. Undefined when it does not
  * say, as for a 429 or a server error: that answers nothing about the session, so the viewer keeps what it had.
@@ -70,25 +81,18 @@ async function askSession(): Promise<Viewer | undefined> {
   const res = await fetch(SESSION_ENDPOINT, { signal: AbortSignal.timeout(SESSION_READ_TIMEOUT_MS) });
   if (res.status === HTTP_UNAUTHORIZED) return SIGNED_OUT;
   if (!res.ok) return undefined;
-  const body = (await res.json()) as { success?: boolean; user?: { id?: string; name?: string; tier?: string } };
-  const user = body.success ? body.user : undefined;
-  return user ? { plan: planOfCaller(user), account: { name: user.name ?? '', tier: user.tier ?? '' } } : SIGNED_OUT;
-}
-
-export interface RefreshOptions {
-  /** The session changed (a sign-in, a sign-out): read it anew, not from a read that began before the change. */
-  afterSessionChange?: boolean;
+  const body = (await res.json()) as { success?: boolean; user?: SessionUser };
+  return body.success && body.user ? viewerOf(body.user) : SIGNED_OUT;
 }
 
 /**
  * Asks the session endpoint who the viewer is and what plan the session has. Callers that overlap share one request; a
- * request that ended is not kept, so the next caller asks again: a component that mounts on a new page, and the sign-in
- * and sign-out that change the session. A read after such a change always starts its own request, and an older read
- * that answers later does not replace its answer. A network failure, a timeout or an answer that says nothing about the
- * session keeps the plan the viewer already had, which starts as the anonymous one, the smallest limit.
+ * request that ended is not kept, so the next caller asks again, as a component that mounts on a new page does. A
+ * network failure, a timeout or an answer that says nothing about the session keeps the plan the viewer already had,
+ * which starts as the anonymous one, the smallest limit.
  */
-export function refreshViewerPlan({ afterSessionChange = false }: RefreshOptions = {}): Promise<void> {
-  if (reading && !afterSessionChange) return reading;
+export function refreshViewerPlan(): Promise<void> {
+  if (reading) return reading;
   const readId = ++latestRead;
   const read: Promise<void> = askSession()
     .then(
@@ -102,4 +106,16 @@ export function refreshViewerPlan({ afterSessionChange = false }: RefreshOptions
     });
   reading = read;
   return read;
+}
+
+/**
+ * Sets the viewer from a session change the page itself made: the user a sign-in or a registration answered with, or
+ * null once a sign-out was answered ok. That answer is the session, so no second read is needed; a read that began
+ * before the change is dropped when it ends, and the next read starts anew.
+ */
+export function applySessionChange(user: SessionUser | null): void {
+  latestRead++;
+  reading = undefined;
+  const viewer = user ? viewerOf(user) : SIGNED_OUT;
+  setViewer(viewer.plan, viewer.account);
 }

@@ -6,6 +6,7 @@
  */
 
 import { ConversionOptions } from '../../types';
+import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../api/part-in-flight';
 import { UPLOAD_PART_MAX_BYTES } from '../../plan-limits';
 
 const MULTIPART_URL = '/api/storage/multipart';
@@ -31,11 +32,18 @@ export interface ResumableTiming {
   partInFlightWaitMs: number;
 }
 
+/**
+ * The longest a part waits behind an earlier attempt of itself. The earlier attempt ends by itself: the object store gives
+ * each request 60 seconds without activity and four attempts (`DEFAULT_REQUEST_TIMEOUT_MS`, `DEFAULT_MAX_ATTEMPTS` in
+ * storage/adapters/s3.ts), so it can still be writing four minutes after it began, and this wait is longer than that.
+ */
+export const PART_IN_FLIGHT_WAIT_MS = 5 * 60 * 1000;
+
 const DEFAULT_RESUMABLE_TIMING: ResumableTiming = {
   pollIntervalMs: 1000,
   retryDelayMs: 1000,
   maxWaitMs: 2 * 60 * 60 * 1000,
-  partInFlightWaitMs: 2 * 60 * 1000,
+  partInFlightWaitMs: PART_IN_FLIGHT_WAIT_MS,
 };
 
 /** Progress shown while the parts go up; the rest is the conversion on the server. */
@@ -51,8 +59,6 @@ const NOT_TAKEN_STATUSES: ReadonlySet<number> = new Set([429, HTTP_SERVICE_UNAVA
 const UNKNOWN_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 /** The answer to a repeat of a request with an idempotency key while the first one still runs. */
 const IN_FLIGHT_STATUS = 409;
-/** The answer to a part sent again while an earlier attempt of it is still being written. */
-const PART_IN_FLIGHT_TYPE = 'https://api.easyconvert.io/problems/part-in-flight';
 /**
  * Refusals of a status that says "not taken up" that sending again cannot change: the daily quota and the upload budget
  * of a visitor, which last until the next day, and uploads without an account turned off by the server's setup.
@@ -155,7 +161,7 @@ async function isFinalRefusal(res: Response): Promise<boolean> {
 
 /** Whether the server refused a part because an earlier attempt of it is still being written: that attempt ends, one way or the other. */
 async function isPartInFlight(res: Response): Promise<boolean> {
-  return res.status === HTTP_SERVICE_UNAVAILABLE && (await problemTypeOf(res)) === PART_IN_FLIGHT_TYPE;
+  return res.status === PART_IN_FLIGHT_STATUS && (await problemTypeOf(res)) === PART_IN_FLIGHT_PROBLEM_TYPE;
 }
 
 async function shouldSendAgain(res: Response, policy: SendPolicy): Promise<boolean> {
@@ -164,16 +170,24 @@ async function shouldSendAgain(res: Response, policy: SendPolicy): Promise<boole
   return policy === 'idempotent' && res.status === IN_FLIGHT_STATUS;
 }
 
+interface SendOptions {
+  /**
+   * The request is a part: when the server refuses it because an earlier attempt of the same part is still being written,
+   * it waits as the server says, for `partInFlightWaitMs` at most from the first such answer, and spends no attempt.
+   */
+  waitsBehindEarlierAttempt?: boolean;
+}
+
 /**
  * Sends a request, and sends it again as its policy allows, at most MAX_ATTEMPTS times. A cancellation is never sent
- * again. A part refused because an earlier attempt of it is still being written spends no attempt: it waits as the
- * server says, for `partInFlightWaitMs` at most from the first such answer.
+ * again.
  */
 async function sendWithRetry(
   send: () => Promise<Response>,
   signal: AbortSignal | undefined,
   timing: ResumableTiming,
-  policy: SendPolicy
+  policy: SendPolicy,
+  { waitsBehindEarlierAttempt = false }: SendOptions = {}
 ): Promise<Response> {
   let attempt = 1;
   let waitingUntil: number | undefined;
@@ -184,7 +198,7 @@ async function sendWithRetry(
     } catch (err) {
       if (signal?.aborted || attempt === MAX_ATTEMPTS || policy === 'once') throw err;
     }
-    const behindEarlierAttempt = res !== undefined && (await isPartInFlight(res));
+    const behindEarlierAttempt = waitsBehindEarlierAttempt && res !== undefined && (await isPartInFlight(res));
     if (res && behindEarlierAttempt) {
       waitingUntil ??= Date.now() + timing.partInFlightWaitMs;
       if (Date.now() >= waitingUntil) return res;
@@ -266,7 +280,8 @@ async function sendPart(
       }),
     signal,
     timing,
-    'repeatable'
+    'repeatable',
+    { waitsBehindEarlierAttempt: true }
   );
   const body = await readBody(res, `Uploading part ${partNumber}`);
   return { partNumber, etag: readString(body, 'etag', `Uploading part ${partNumber}`) };

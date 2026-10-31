@@ -1,4 +1,5 @@
 import type { UploadedPart } from '../types';
+import { PART_IN_FLIGHT_STATUS } from '../api/part-in-flight';
 import type { MaybePromise } from './oci-storage';
 
 /**
@@ -42,7 +43,6 @@ interface SessionLedger {
 }
 
 const HTTP_PAYLOAD_TOO_LARGE = 413;
-const HTTP_SERVICE_UNAVAILABLE = 503;
 /** A ledger with no part on the way that was not used for this long is dropped; its next part reads the store again. */
 const IDLE_LEDGER_MS = 60 * 60 * 1000;
 const LEDGER_SWEEP_INTERVAL_MS = 60 * 1000;
@@ -54,7 +54,7 @@ let nextSweepAt = 0;
 /** A part this process refused before writing it: 413 when the session has no room for it, 503 when an earlier attempt of the same part is still being written. */
 export class PartRefusedError extends Error {
   constructor(
-    readonly statusCode: typeof HTTP_PAYLOAD_TOO_LARGE | typeof HTTP_SERVICE_UNAVAILABLE,
+    readonly statusCode: typeof HTTP_PAYLOAD_TOO_LARGE | typeof PART_IN_FLIGHT_STATUS,
     message: string
   ) {
     super(message);
@@ -76,12 +76,17 @@ async function readStoredParts(storage: PartStore, uploadId: string, stored: Map
 
 /**
  * The ledger of a session, created by the first request that names it, which starts the one read of the stored parts
- * that all requests of the session wait for. A completion or an abort drops it (`forgetUploadParts`), so a request that
- * already holds it writes against a ledger nobody else sees and fails in the store; a read that failed is not kept.
+ * that all requests of the session wait for. Each request that names it counts as a use, so a ledger whose read is
+ * still pending is not swept as idle while parts wait on it. A completion or an abort drops it (`forgetUploadParts`),
+ * so a request that already holds it writes against a ledger nobody else sees and fails in the store; a read that
+ * failed is not kept.
  */
 function ledgerOf(storage: PartStore, uploadId: string): SessionLedger {
   const known = ledgers.get(uploadId);
-  if (known) return known;
+  if (known) {
+    known.usedAt = Date.now();
+    return known;
+  }
   const stored = new Map<number, number>();
   const ledger: SessionLedger = {
     stored,
@@ -115,7 +120,7 @@ function sumBesides(sizes: ReadonlyMap<number, number>, partNumber: number): num
  * counts with its stored size or the size of its attempt on the way, whichever is larger, since either may land last.
  */
 function admit(ledger: SessionLedger, partNumber: number, declaredBytes: number | undefined, totalSize: number, maxPartBytes: number): PartAdmission | PartRefusedError {
-  if (ledger.onTheWay.has(partNumber)) return new PartRefusedError(HTTP_SERVICE_UNAVAILABLE, PART_IN_FLIGHT_DETAIL);
+  if (ledger.onTheWay.has(partNumber)) return new PartRefusedError(PART_IN_FLIGHT_STATUS, PART_IN_FLIGHT_DETAIL);
   const largest = new Map(ledger.stored);
   for (const [number, bytes] of ledger.onTheWay) largest.set(number, Math.max(largest.get(number) ?? 0, bytes));
   const otherPartsBound = sumBesides(largest, partNumber);

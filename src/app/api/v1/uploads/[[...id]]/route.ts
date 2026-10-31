@@ -27,7 +27,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
-import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { UPLOAD_SESSION_NOT_FOUND, storageErrorResponse, systemErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
@@ -50,7 +50,6 @@ function checkTusVersion(req: NextRequest): NextResponse | null {
 }
 
 const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB
-const UPLOAD_SESSION_NOT_FOUND = 'Upload session not found or has expired.';
 /** Part URLs handed out with an initiate response: at most this many parts, each good for 15 minutes. */
 const MAX_PREGENERATED_PART_URLS = 100;
 const LOCAL_KEY_RANDOM_BYTES = 8;
@@ -181,8 +180,7 @@ async function handlePartUpload(
     );
     return NextResponse.json({ success: true, part });
   } catch (error: unknown) {
-    // An error of the operating system keeps the answers of the other actions (a removed session is 404, anything else a fixed 500).
-    return isSystemError(error) ? uploadActionErrorResponse(error, instanceUri) : partFailureResponse(error, instanceUri);
+    return partFailureResponse(error, instanceUri);
   }
 }
 
@@ -395,22 +393,10 @@ function uploadActionErrorResponse(err: unknown, instanceUri: string): Response 
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }
-  const storageProblem = storageErrorResponse(err, instanceUri);
+  const storageProblem = storageErrorResponse(err, instanceUri) ?? systemErrorResponse(err, instanceUri);
   if (storageProblem) return storageProblem;
-  if (isSystemError(err)) {
-    // A session removed under a running request is a missing session, not a server fault.
-    if (err.code === 'ENOENT') return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
-    console.error(`[uploads] ${err.code} ${err.syscall}: ${err.message}`);
-    return createProblemDetailsResponse(500, 'Upload storage error', instanceUri, 'Internal Server Error');
-  }
   const message = err instanceof Error && err.message ? err.message : 'Error executing upload operation';
   return createProblemDetailsResponse(400, message, instanceUri);
-}
-
-/** An error from the operating system (it carries an errno code and syscall); its message names server paths. */
-function isSystemError(err: unknown): err is NodeJS.ErrnoException & { code: string; syscall: string } {
-  const { code, syscall } = (err ?? {}) as NodeJS.ErrnoException;
-  return err instanceof Error && typeof code === 'string' && typeof syscall === 'string';
 }
 
 export function OPTIONS() {

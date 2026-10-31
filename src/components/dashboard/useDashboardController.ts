@@ -10,7 +10,7 @@ import {
   type KeyExpiryOption,
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
-import { refreshViewerPlan } from '@/lib/viewer-plan';
+import { applySessionChange } from '@/lib/viewer-plan';
 
 export function buildKeyCreationRequest(
   newKeyName: string,
@@ -234,11 +234,11 @@ export function useDashboardController() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      const res = await fetch('/api/auth/logout', { method: 'POST' });
+      if (res.ok) applySessionChange(null);
     } catch {
       setActionError('Network error while signing out.');
     }
-    void refreshViewerPlan({ afterSessionChange: true });
     router.push('/auth');
     router.refresh();
   };
