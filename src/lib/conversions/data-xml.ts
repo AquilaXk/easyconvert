@@ -51,8 +51,6 @@ function entityBudget(inputChars: number): number {
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>';
 /** JsonML position of the optional attributes object, right after the element name. */
 const JSONML_ATTRIBUTES_INDEX = 1;
-/** Repeated sibling elements that make a wrapper element a record list. */
-const MIN_RECORD_LIST_LENGTH = 2;
 const PREDEFINED_ENTITIES: ReadonlyMap<string, string> = new Map([
   ['amp', '&'],
   ['lt', '<'],
@@ -476,21 +474,13 @@ function elementRecord(element: XmlElement): DataObject {
 }
 
 /**
- * Table records of a data document: one per child element of the document element, after
- * descending through single wrapper elements around a repeated list (<root><items><item/>...).
+ * Table records of a data document: one per child element of the document element, or the document element itself when it has none.
+ * A wrapper element around the list (<root><items><item/>...) is a record of its own, as an object around a list is in JSON, YAML and
+ * NDJSON: none of them looks inside a wrapper for the list.
  */
 export function xmlRecords(root: XmlElement): DataObject[] {
-  let container = root;
-  for (;;) {
-    const children = childElements(container);
-    const grandchildren = children.length === 1 ? childElements(children[0]) : [];
-    const isList =
-      grandchildren.length >= MIN_RECORD_LIST_LENGTH && grandchildren.every((child) => child.name === grandchildren[0].name);
-    if (!isList) break;
-    container = children[0];
-  }
-  const records = childElements(container);
-  return records.length === 0 ? [elementRecord(container)] : records.map(elementRecord);
+  const records = childElements(root);
+  return records.length === 0 ? [elementRecord(root)] : records.map(elementRecord);
 }
 
 // ---------------------------------------------------------------------------

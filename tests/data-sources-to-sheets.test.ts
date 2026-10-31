@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { oracleTest } from './helpers/oracle-test';
 import { cellKindsViaLibreOffice, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
@@ -75,4 +76,37 @@ describe('records become the rows of a sheet', () => {
     const result = await dispatchConversion(Buffer.from('{"n":1.5,"ok":true,"s":"00004"}\n'), 'ndjson', 'xlsx', {}, 'typed.ndjson');
     expect(await cellKindsViaLibreOffice(result.buffer, 'xlsx')).toEqual([['string:', 'string:', 'string:'], ['float:1.5', 'boolean:true', 'string:']]);
   }, LONG_TIMEOUT_MS);
+});
+
+describe('a document that is one object around a list is one record in every record format', () => {
+  const ITEMS_JSON = '[{"id":1},{"id":2}]';
+  const WRAPPED: ReadonlyArray<{ format: string; text: string; header: string }> = [
+    { format: 'ndjson', text: `{"items":${ITEMS_JSON}}\n`, header: 'items' },
+    { format: 'yaml', text: 'items:\n  - id: 1\n  - id: 2\n', header: 'items' },
+    { format: 'xml', text: '<root><items><item><id>1</id></item><item><id>2</id></item></items></root>', header: 'item' },
+  ];
+
+  it.each(WRAPPED)('$format to xlsx keeps the wrapper as the row and the list as its cell', async ({ format, text, header }) => {
+    const result = await dispatchConversion(Buffer.from(text, 'utf-8'), format, 'xlsx', {}, `wrapped.${format}`);
+    const [sheet] = await parseAllXlsxWorksheets(result.buffer);
+    expect(sheet.rows).toHaveLength(2);
+    expect(sheet.rows[0]).toEqual([header]);
+    expect(JSON.parse(sheet.rows[1][0])).toEqual(format === 'xml' ? [{ id: '1' }, { id: '2' }] : [{ id: 1 }, { id: 2 }]);
+  });
+
+  it('json to csv does the same, as the json to xlsx route does not take an object for a table at all', async () => {
+    const csv = await dispatchConversion(Buffer.from(`{"items":${ITEMS_JSON}}`), 'json', 'csv', {}, 'wrapped.json');
+    expect(csv.buffer.toString('utf-8').replace(/^\uFEFF/, '')).toBe(`items\r\n"[{""id"":1},{""id"":2}]"`);
+  });
+
+  it.each(WRAPPED)('$format still gives a row for each item of a list that is the document itself', async ({ format }) => {
+    const lists: Record<string, string> = {
+      ndjson: '{"id":1}\n{"id":2}\n',
+      yaml: '- id: 1\n- id: 2\n',
+      xml: '<root><item><id>1</id></item><item><id>2</id></item></root>',
+    };
+    const result = await dispatchConversion(Buffer.from(lists[format], 'utf-8'), format, 'xlsx', {}, `list.${format}`);
+    const [sheet] = await parseAllXlsxWorksheets(result.buffer);
+    expect(sheet.rows).toEqual([['id'], ['1'], ['2']]);
+  });
 });
