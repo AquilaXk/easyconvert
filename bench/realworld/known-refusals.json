@@ -90,12 +90,6 @@
     "issue": 783
   },
   {
-    "file": "govdocs1-004087.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG element <image> is not supported\\.$",
-    "reason": "Most text is outline fonts and the bitmap-font characters of pages 1 and 4 are written as TEXT (policy 77), and the dashed line of page 5 is a line type (policy 79), but pages 2 and 3 hold pictures, which a DXF does not drop without a word (policy 42; tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
     "file": "office-slideshow-2100a8d44da546f97ab7795c500a58bed6cb655d.ppt",
     "detail": "^ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.$",
     "reason": "Damaged: its SlidePersistAtom refers to the persist id 131072 instead of 2 (two bytes swapped against the 9,728-byte `office-slideshow-single_coloured_page.ppt`, which converts), and no persist entry has that id. LibreOffice 24.2 and 26.8 refuse it and Apache POI HSLF 5.4.0 logs \"no core ID for reference ID 131072\" and skips the slide. The text is still read by the in-process reader (tests/ppt-persist-id-seed.test.ts).",
@@ -117,6 +111,72 @@
     "file": "govdocs1-001630.ppt",
     "detail": "^LegacyOfficeFormatError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.$",
     "reason": "Damaged: the FAT chain of a stream returns to sector 0 (the chain from sector 213 reaches sector 0 again), so the compound file has no readable stream. Apache POI 5.4.0 refuses to open it (POIFSFileSystem: \"Potential loop detected - Block 0 was already claimed but was just requested again\"), LibreOffice 24.2.7 does not load it (\"source file could not be loaded\") and LibreOffice 26.8 opens the bytes as a text document, so no reader reads it as a presentation. The refusal names the loop (tests/ppt-cfb-sector-loop.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "qpdf-issue-263.pdf",
+    "detail": "^CorruptStreamError: Invalid PDF document: missing %PDF- header$",
+    "reason": "Damaged beyond repair: a 277-byte fuzzer file whose header is `%PDFn` and whose trailer and cross-reference stream are cut into fragments. `qpdf --check` and a plain rewrite stop with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 1, pdfium answers \"Data format error\", MuPDF cannot open it and PDF.js stops on an illegal character (tests/pdf-unrecoverable-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "qpdf-issue-101.pdf",
+    "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
+    "reason": "Damaged beyond repair: the trailer is gone and the objects hold braces and stray tokens where dictionaries should be. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 99, pdfium answers \"Data format error\", MuPDF repairs the file to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "pdfjs-bug1020226.pdf",
+    "detail": "^PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.$",
+    "reason": "Damaged beyond repair: 184 bytes: a catalog dictionary that is never closed and a content stream that declares 17,863 bytes and stops inside the dictionary of an inline image. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 1, pdfium answers \"Data format error\", MuPDF repairs it to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "qpdf-issue-99.pdf",
+    "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
+    "reason": "Damaged beyond repair: qpdf recovers a trailer with no /Root (\"unable to find any pages while recovering damaged file\"), Poppler's pdfinfo cannot find a trailer dictionary, pdfium answers \"Data format error\", MuPDF repairs it to one page with no text and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "qpdf-issue-120.pdf",
+    "detail": "^PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference\\.$",
+    "reason": "Damaged beyond repair: the only object stream lists itself (\"self-referential object stream 3\") and its dictionaries have lost their key names. `qpdf --check` stops with \"unable to find page tree\", Poppler's pdfinfo finds no catalog, pdfium answers \"Data format error\", MuPDF repairs it to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "qpdf-issue-141b.pdf",
+    "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
+    "reason": "Damaged beyond repair: 92 bytes, a cross-reference stream of size 0 with no trailer keys. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo finds no trailer, pdfium answers \"Data format error\", MuPDF cannot open it and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-document-59378.docx",
+    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
+    "reason": "The file holds no text: the body is six empty paragraphs and the three headers, three footers, footnotes and endnotes it carries are empty, so LibreOffice's plain-text export is white space only (tests/docx-to-slides-text.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-document-bug62859.docx",
+    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
+    "reason": "The file holds no text: the body is a content control with no content (its placeholder text lives in the glossary part, which no export prints) and an empty paragraph, so LibreOffice's plain-text export is white space only (tests/docx-to-slides-text.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-document-headerpic.docx",
+    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
+    "reason": "The file holds no text: its one header holds a picture and the body is empty, and LibreOffice's plain-text export writes nothing for a header or a picture (tests/docx-to-slides-text.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-document-issue_51265_3.docx",
+    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
+    "reason": "The file holds no text: the body draws four pictures and the two headers hold no text, and LibreOffice's plain-text export writes nothing for a picture (tests/docx-to-slides-text.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-document-emptydocumentwithheaderfooter.docx",
+    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
+    "reason": "The body is empty; the only words are the header line \"blabal\" and the footer line \"blabla\", which LibreOffice's plain-text export does not write, and slides hold the text of the body (tests/docx-to-slides-text.test.ts).",
     "issue": 783
   }
 ]

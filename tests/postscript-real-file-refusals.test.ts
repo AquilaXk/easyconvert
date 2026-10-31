@@ -22,7 +22,8 @@ import path from 'node:path';
  * DXF writer puts the characters back as TEXT in a stock font, as pstoedit does by default, from the PDF's text layer, and
  * reads the pen attributes a DXF cannot hold (dash arrays become line types, strokes under a skew are their centre lines,
  * opacity is dropped): every page of seven files converts, and the other five are refused for something else their pages
- * draw (clip paths, pictures, pages past the SVG size limit, a text layer without text), each listed in known-refusals.json.
+ * draw (clip paths, pages past the SVG size limit, a text layer without text), each listed in known-refusals.json. A picture on a
+ * page is not one of those: a DXF holds none, the exporters leave it out, and so does the writer (with a warning).
  *
  * Ghostscript. Two files stop the only open-source PostScript interpreter on a value that is legal in an interpreter that is
  * not Ghostscript, in every release from 10.02.1 to the development branch; no argument changes it, and safe mode is not involved.
@@ -57,7 +58,14 @@ const DASHED_PAGES: Readonly<Record<string, readonly number[]>> = {
 };
 
 /** The bitmap-font text is written, but a page also draws something DXF does not hold (known-refusals.json says what). */
-const REFUSED_FOR_OTHER_CONTENT = ['govdocs1-002956.ps', 'govdocs1-003229.ps', 'govdocs1-004087.ps'] as const;
+const REFUSED_FOR_OTHER_CONTENT = ['govdocs1-002956.ps', 'govdocs1-003229.ps'] as const;
+
+/**
+ * Files whose pages draw pictures (Poppler's SVG holds an `<image>`): 004087 also sets pages 1 and 4 in bitmap fonts, 006990 has
+ * one picture page of 36 and 000766 is one page of a map. Every page converts and the conversion says the pictures were left out.
+ */
+const PICTURE_FILES = ['govdocs1-004087.ps', 'govdocs1-006990.ps', 'govdocs1-000766.ps'] as const;
+const PICTURES_LEFT_OUT_WARNING = 'Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.';
 
 /**
  * Files whose pages clip their drawing to a rectangle that is not the page. A clip that hides at most a point is dropped
@@ -70,7 +78,7 @@ const CLIPPED_FILES: Readonly<Record<string, readonly number[]>> = {
   'govdocs1-006137.ps': [20, 21, 30, 32, 35, 36, 43, 46, 49, 50, 52, 53, 56, 57, 60, 62],
 };
 
-const BITMAP_FONT_FILES = [...TEXT_CONVERTED_FILES, ...REFUSED_FOR_OTHER_CONTENT, ...Object.keys(CLIPPED_FILES)];
+const BITMAP_FONT_FILES = [...TEXT_CONVERTED_FILES, ...REFUSED_FOR_OTHER_CONTENT, 'govdocs1-004087.ps', ...Object.keys(CLIPPED_FILES)];
 
 function describeRefusal(error: unknown): string {
   return `${(error as Error).name}: ${(error as Error).message}`;
@@ -288,6 +296,29 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
     );
   });
 
+  describe.each(PICTURE_FILES)('%s', (id) => {
+    oracleTest(
+      'converts every page to DXF, leaves the pictures out and says so, and keeps the geometry of the pages that hold them',
+      ['ps2pdf', 'pdftocairo'],
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        const pdf = (await dispatchConversion(bytes, 'ps', 'pdf', {}, id)).buffer;
+        const result = await dispatchConversion(bytes, 'ps', 'dxf', {}, id);
+        const pages = await dxfPages(result);
+        expect(pages).toHaveLength(pageCount(pdf));
+        const withPictures = picturePages(pdf);
+        expect(withPictures.length, 'pages Poppler draws a picture on').toBeGreaterThan(0);
+        expect(result.metadata?.warnings).toEqual([PICTURES_LEFT_OUT_WARNING]);
+        for (const page of withPictures) expect(readDxf(pages[page - 1]).entities.length, `page ${page} keeps its geometry`).toBeGreaterThan(0);
+        if (PYTHON_WITH_EZDXF !== null) {
+          const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
+          expect(ezdxfAudit(PYTHON_WITH_EZDXF, audited).map((report) => report.errors)).toEqual(pages.map(() => 0));
+        }
+      },
+      SAMPLE_TIMEOUT_MS
+    );
+  });
+
   describe.each(Object.entries(CLIPPED_FILES))('%s', (id, clippedPages) => {
     oracleTest(
       'converts every page, the pages with a clip among them, to a DXF that ezdxf audits without errors',
@@ -332,6 +363,24 @@ function pageCount(pdf: Buffer): number {
     const file = path.join(directory, 'out.pdf');
     fs.writeFileSync(file, pdf);
     return Number(/Pages:\s+(\d+)/.exec(execFileSync('pdfinfo', [file], { encoding: 'utf-8' }))?.[1]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** The pages (from 1) on which Poppler's own SVG for the page holds an `<image>`: the pictures a DXF cannot hold. */
+function picturePages(pdf: Buffer): number[] {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-picture-pages-'));
+  try {
+    const file = path.join(directory, 'out.pdf');
+    fs.writeFileSync(file, pdf);
+    const pages: number[] = [];
+    for (let page = 1; page <= pageCount(pdf); page += 1) {
+      const svg = path.join(directory, `page-${page}.svg`);
+      execFileSync('pdftocairo', ['-svg', '-f', String(page), '-l', String(page), file, svg]);
+      if (fs.readFileSync(svg, 'utf-8').includes('<image ')) pages.push(page);
+    }
+    return pages;
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

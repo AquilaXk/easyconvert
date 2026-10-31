@@ -29,6 +29,7 @@ import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, officeInputWithoutMacros } from './office-input-checks';
 import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEncryptedAnswer, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
+import { withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
@@ -46,7 +47,7 @@ import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resourc
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
+import { groupConsecutiveRanges, pageEntryName, resolvePageSelection } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -89,7 +90,7 @@ import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnserve
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
-import { normalizeSvgForRendering } from '../lib/conversions/svg-geometry';
+import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertWithinPixelCap,
   hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
@@ -112,17 +113,14 @@ import {
 } from '../lib/conversions/archive-stream';
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
-  archivePasswordError,
   MAX_ENCRYPTION_LISTING_BYTES,
   archiveFailureStderr,
   assertArchivePasswordSafe,
   assertListingShowsEncryption,
   assertEncryptedArchiveInputWithinLimits,
   assertZipPasswordSupported,
-  isArchivePasswordError,
   sevenZipCreatePasswordInput,
   sevenZipEncryptionCheckInput,
-  sevenZipReadPasswordInput,
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
@@ -1668,7 +1666,7 @@ async function convertPdfToSvgPageFormat(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
   if (!rendered) return null;
-  return reencodeRenderedPages(rendered, SVG_FORMAT, tgt, svgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options), context);
+  return withConversionWarnings(() => reencodeRenderedPages(rendered, SVG_FORMAT, tgt, svgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options), context));
 }
 
 /** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */
