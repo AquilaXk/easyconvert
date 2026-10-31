@@ -115,66 +115,112 @@
   },
   {
     "file": "qpdf-issue-263.pdf",
+    "source": "pdf",
+    "target": [
+      "docx",
+      "html",
+      "md"
+    ],
     "detail": "^CorruptStreamError: Invalid PDF document: missing %PDF- header$",
     "reason": "Damaged beyond repair: a 277-byte fuzzer file whose header is `%PDFn` and whose trailer and cross-reference stream are cut into fragments. `qpdf --check` and a plain rewrite stop with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 1, pdfium answers \"Data format error\", MuPDF cannot open it and PDF.js stops on an illegal character (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "qpdf-issue-101.pdf",
+    "source": "pdf",
+    "target": [
+      "pptx",
+      "azw3",
+      "svg"
+    ],
     "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: the trailer is gone and the objects hold braces and stray tokens where dictionaries should be. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 99, pdfium answers \"Data format error\", MuPDF repairs the file to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "pdfjs-bug1020226.pdf",
+    "source": "pdf",
+    "target": [
+      "pdf",
+      "rtf",
+      "txt"
+    ],
     "detail": "^PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.$",
     "reason": "Damaged beyond repair: 184 bytes: a catalog dictionary that is never closed and a content stream that declares 17,863 bytes and stops inside the dictionary of an inline image. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 1, pdfium answers \"Data format error\", MuPDF repairs it to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "qpdf-issue-99.pdf",
+    "source": "pdf",
+    "target": [
+      "epub",
+      "xlsx",
+      "png"
+    ],
     "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: qpdf recovers a trailer with no /Root (\"unable to find any pages while recovering damaged file\"), Poppler's pdfinfo cannot find a trailer dictionary, pdfium answers \"Data format error\", MuPDF repairs it to one page with no text and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "qpdf-issue-120.pdf",
+    "source": "pdf",
+    "target": [
+      "lrf",
+      "mobi",
+      "oeb"
+    ],
     "detail": "^PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference\\.$",
     "reason": "Damaged beyond repair: the only object stream lists itself (\"self-referential object stream 3\") and its dictionaries have lost their key names. `qpdf --check` stops with \"unable to find page tree\", Poppler's pdfinfo finds no catalog, pdfium answers \"Data format error\", MuPDF repairs it to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "qpdf-issue-141b.pdf",
+    "source": "pdf",
+    "target": [
+      "pdb",
+      "jpg",
+      "tiff"
+    ],
     "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: 92 bytes, a cross-reference stream of size 0 with no trailer keys. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo finds no trailer, pdfium answers \"Data format error\", MuPDF cannot open it and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "office-document-59378.docx",
+    "source": "docx",
+    "target": "pptx",
     "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
     "reason": "The file holds no text: the body is six empty paragraphs and the three headers, three footers, footnotes and endnotes it carries are empty, so LibreOffice's plain-text export is white space only (tests/docx-to-slides-text.test.ts).",
     "issue": 783
   },
   {
     "file": "office-document-bug62859.docx",
+    "source": "docx",
+    "target": "pptx",
     "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
     "reason": "The file holds no text: the body is a content control with no content (its placeholder text lives in the glossary part, which no export prints) and an empty paragraph, so LibreOffice's plain-text export is white space only (tests/docx-to-slides-text.test.ts).",
     "issue": 783
   },
   {
     "file": "office-document-headerpic.docx",
+    "source": "docx",
+    "target": "pptx",
     "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
     "reason": "The file holds no text: its one header holds a picture and the body is empty, and LibreOffice's plain-text export writes nothing for a header or a picture (tests/docx-to-slides-text.test.ts).",
     "issue": 783
   },
   {
     "file": "office-document-issue_51265_3.docx",
+    "source": "docx",
+    "target": "pptx",
     "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
     "reason": "The file holds no text: the body draws four pictures and the two headers hold no text, and LibreOffice's plain-text export writes nothing for a picture (tests/docx-to-slides-text.test.ts).",
     "issue": 783
   },
   {
     "file": "office-document-emptydocumentwithheaderfooter.docx",
+    "source": "docx",
+    "target": "pptx",
     "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
     "reason": "The body is empty; the only words are the header line \"blabal\" and the footer line \"blabla\", which LibreOffice's plain-text export does not write, and slides hold the text of the body (tests/docx-to-slides-text.test.ts).",
     "issue": 783

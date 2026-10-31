@@ -681,6 +681,22 @@ describe('an OEB book delivered as a ZIP', () => {
     expect(await oebProblem(archive, { emptyInput: true })).toBeNull();
   });
 
+  it('is accepted for an input the corpus marks as empty only while its content documents hold no text', async () => {
+    const empty = await zipOf({ 'content.opf': OPF, 'index.xhtml': '<html><head><title>Only a title</title></head><body><p>&nbsp;</p></body></html>' });
+    expect(await oebProblem(empty, { emptyInput: true })).toBeNull();
+    expect(await oebProblem(await zipOf({ 'content.opf': OPF, 'index.xhtml': XHTML }), { emptyInput: true })).toBe(
+      'oeb archive content documents hold text, but the input has none'
+    );
+    expect(await oebProblem(await zipOf({ 'content.opf': OPF, 'empty.xhtml': '<html><body/></html>', 'later.html': XHTML }), { emptyInput: true })).toBe(
+      'oeb archive content documents hold text, but the input has none'
+    );
+  });
+
+  it('keeps the structure checks for an input the corpus marks as empty', async () => {
+    expect(await oebProblem(await zipOf({ 'index.xhtml': XHTML }), { emptyInput: true })).toBe('oeb archive has no .opf package');
+    expect(await oebProblem(await zipOf({ 'content.opf': OPF }), { emptyInput: true })).toBe('oeb archive has no XHTML content document');
+  });
+
   it('is refused when the ZIP has no entry, and when the bytes are not a ZIP', async () => {
     expect(await oebProblem(await zipOf({}))).toBe('oeb archive has no .opf package');
     expect(await oebProblem(Buffer.from('PK\u0003\u0004 corrupt archive'))).toBe('oeb archive is not a readable ZIP');

@@ -6,7 +6,7 @@ import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
 import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
-import { isEncryptedLegacyOffice } from './office-input-checks';
+import { isEncryptedLegacyOffice, legacyOfficeInput } from './office-input-checks';
 import {
   CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -132,14 +132,6 @@ export function asUnreadableDocument(err: unknown, src: string): unknown {
   return err;
 }
 
-/** The bytes of an input, or undefined when it is a file larger than a legacy Office document may be. */
-function inputBytes(input: Buffer | WorkerVfsPayload): Buffer | undefined {
-  if (Buffer.isBuffer(input)) return input;
-  if (input.inputBuffer) return input.inputBuffer;
-  if (input.inputPath === undefined || fs.statSync(input.inputPath).size > LEGACY_OFFICE_MAX_INPUT_BYTES) return undefined;
-  return fs.readFileSync(input.inputPath);
-}
-
 /**
  * What follows the office suite's failure to load a PowerPoint 97-2003 presentation. An encrypted presentation is intact, so the
  * typed 422 for an encrypted document is thrown in place of the suite's "damaged" answer. A presentation whose persistIdSeed lies
@@ -151,7 +143,7 @@ export function presentationRetryInput(input: Buffer | WorkerVfsPayload, src: st
   if (officeReadingFormat(src) !== 'ppt' || asUnreadableDocument(err, src) === err) return undefined;
   let repaired: Buffer | undefined;
   try {
-    const bytes = inputBytes(input);
+    const bytes = legacyOfficeInput(input);
     repaired = bytes && repairPptPersistIdSeed(bytes);
   } catch (prepareError) {
     if (prepareError instanceof EncryptedOfficeDocumentError) throw prepareError;
@@ -163,34 +155,30 @@ export function presentationRetryInput(input: Buffer | WorkerVfsPayload, src: st
 
 export type OfficeSuiteRun = (input: Buffer | WorkerVfsPayload, sourceFormat: string, targetFormat: string, options?: WorkerEngineOptions, originalFilename?: string) => Promise<WorkerConversionResult | null>;
 
-/** `run`, and once more on the input `presentationRetryInput` returns when the office suite could not load a presentation. */
-export function withPresentationRetry(run: OfficeSuiteRun): OfficeSuiteRun {
+/**
+ * `run`, with what follows the office suite's failure to load a legacy binary document. A presentation whose persist id seed is wrong
+ * runs once more on the input `presentationRetryInput` returns. A workbook or Word document that the suite could not load, or could
+ * not load on that second run, gets the typed 422 for an encrypted document in place of the "damaged" answer when it is encrypted.
+ * The suite decrypts a workbook that uses the default password of the format and loads it like any other (`xlroot.cxx`
+ * `RequestEncryptionData` tries it first), so the file goes to the suite whatever its FilePass record says. A file that is encrypted
+ * and could not be loaded is intact and needs a password: the answer is the one the in-process readers give.
+ */
+export function withEncryptedAnswer(run: OfficeSuiteRun): OfficeSuiteRun {
   return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    const answerFor = (err: unknown): unknown =>
+      officeSuiteCouldNotLoad(err) && OFFICE_NATIVE_SOURCES.has(sourceFormat) && encryptedInput(input, sourceFormat)
+        ? new SuiteEncryptedDocumentError(`The ${sourceFormat.toUpperCase()} file is encrypted or password protected, so its content cannot be read.`)
+        : err;
     try {
       return await run(input, sourceFormat, targetFormat, options, originalFilename);
     } catch (err) {
       const retry = presentationRetryInput(input, sourceFormat, err);
-      if (retry === undefined) throw err;
-      return run(retry, sourceFormat, targetFormat, options, originalFilename);
-    }
-  };
-}
-
-/**
- * `run`, with the typed 422 for an encrypted legacy workbook or Word document in place of the "damaged" answer of the office suite.
- * The suite decrypts a workbook that uses the default password of the format and loads it like any other (`xlroot.cxx`
- * `RequestEncryptionData` tries it first), so the file goes to the suite whatever its FilePass record says. When the suite cannot
- * load it, a file that is encrypted is intact and needs a password: the answer is the one the in-process readers give.
- */
-export function withEncryptedAnswer(run: OfficeSuiteRun): OfficeSuiteRun {
-  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
-    try {
-      return await run(input, sourceFormat, targetFormat, options, originalFilename);
-    } catch (err) {
-      if (officeSuiteCouldNotLoad(err) && OFFICE_NATIVE_SOURCES.has(sourceFormat) && encryptedInput(input, sourceFormat)) {
-        throw new SuiteEncryptedDocumentError(`The ${sourceFormat.toUpperCase()} file is encrypted or password protected, so its content cannot be read.`);
+      if (retry === undefined) throw answerFor(err);
+      try {
+        return await run(retry, sourceFormat, targetFormat, options, originalFilename);
+      } catch (retryErr) {
+        throw answerFor(retryErr);
       }
-      throw err;
     }
   };
 }
@@ -232,7 +220,7 @@ export function withMetafileFrame(run: OfficeSuiteRun): OfficeSuiteRun {
     if (targetFormat !== 'pdf' || !METAFILE_FRAME_SOURCES.has(sourceFormat)) return run(input, sourceFormat, targetFormat, options, originalFilename);
     const format = sourceFormat as MetafileFormat;
     const page = readMetafilePage(leadingBytes(input, metafileLeadingBytes(format)), format);
-    const bytes = page && inputBytes(input);
+    const bytes = page && legacyOfficeInput(input);
     if (!bytes || !page) return run(input, sourceFormat, targetFormat, options, originalFilename);
     options?.signal?.throwIfAborted();
     const drawing = await metafileFrameDocument(bytes, format, page);
@@ -352,7 +340,7 @@ function isOoxmlWorkbook(src: string): boolean {
  * it on unchecked would let the export cut it.
  */
 function workbookBytes(input: Buffer | WorkerVfsPayload): Buffer {
-  const bytes = inputBytes(input);
+  const bytes = legacyOfficeInput(input);
   if (bytes === undefined) {
     throw new SheetLimitError(`The workbook is larger than the ${LEGACY_OFFICE_MAX_INPUT_BYTES} bytes the check against the .xls sheet bounds reads, so it is not exported.`);
   }

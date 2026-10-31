@@ -57,6 +57,20 @@ function axisAlignedCorners(points: Point[]): Point[] | null {
   return corners.every(onBoundsCorner) && distinct.size === RECTANGLE_CORNERS ? corners : null;
 }
 
+/** Whether `subpaths` is one axis-aligned rectangle that reaches within PAGE_CLIP_TOLERANCE_PIXELS of every side of the page. */
+export function isPageSizedRectangle(subpaths: readonly Point[][], page: { width: number; height: number }): boolean {
+  const corners = subpaths.length === 1 ? axisAlignedCorners(subpaths[0]) : null;
+  if (corners === null) return false;
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
+  return (
+    Math.min(...xs) <= PAGE_CLIP_TOLERANCE_PIXELS &&
+    Math.max(...xs) >= page.width - PAGE_CLIP_TOLERANCE_PIXELS &&
+    Math.min(...ys) <= PAGE_CLIP_TOLERANCE_PIXELS &&
+    Math.max(...ys) >= page.height - PAGE_CLIP_TOLERANCE_PIXELS
+  );
+}
+
 /**
  * Builds the check for a document: whether `clip-path: url(#id)` on an element drawn under a matrix is one axis-aligned
  * rectangle that reaches within PAGE_CLIP_TOLERANCE_PIXELS of every side of the page. A smaller rectangle, a rounded one,

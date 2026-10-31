@@ -1,7 +1,7 @@
 import { UNMAPPABLE_CHARACTER, type PdfPageText } from '../lib/conversions/bitmap-glyph-text';
 import { openPdfForReading } from '../lib/conversions/pdf-access';
 import { runPdfTextJob } from '../lib/conversions/pdf-text-geometry';
-import { encodeSvgPageToDxfWithText } from '../lib/conversions/vector-dxf';
+import { encodeSvgPageToDxfWithText, PicturePages } from '../lib/conversions/vector-dxf';
 import { encodeEmf, encodeWmf } from '../lib/conversions/vector-metafile';
 import { ConversionFailedError, type ConversionOptions } from '../lib/types';
 import { pageNumbersOf } from './worker-output';
@@ -18,7 +18,7 @@ import type { WorkerConversionResult } from './worker-types';
 /** Reads the text layer of the PDF page an SVG page was drawn from. */
 type PageTextReader = () => Promise<PdfPageText>;
 
-const SVG_PAGE_ENCODERS: Readonly<Record<string, (svg: Buffer, readText: PageTextReader) => Buffer | Promise<Buffer>>> = {
+const SVG_PAGE_ENCODERS: Readonly<Record<string, (svg: Buffer, readText: PageTextReader, leftOut: PicturePages, page: number) => Buffer | Promise<Buffer>>> = {
   dxf: encodeSvgPageToDxfWithText,
   emf: encodeEmf,
   wmf: encodeWmf,
@@ -59,14 +59,35 @@ function textLayersOf(readPdf: () => Buffer | undefined, pages: readonly number[
 /**
  * The writer of an SVG page target (see `isSvgPageTarget`) for the pages Poppler rendered from a PDF: called with each page
  * and its entry name, it writes the page, reading the PDF (`readPdf`, opened with the password of `access`) only for a page that needs its text layer.
+ * The pages whose pictures a DXF leaves out are noted in `leftOut`, which the caller reports once the last page is written.
  */
-export function svgPageEncoder(target: string, rendered: WorkerConversionResult, readPdf: () => Buffer | undefined, access: PdfAccess = {}): (svg: Buffer, entryName: string) => Promise<Buffer> {
+export function svgPageEncoder(
+  target: string,
+  rendered: WorkerConversionResult,
+  readPdf: () => Buffer | undefined,
+  access: PdfAccess = {},
+  leftOut = new PicturePages()
+): (svg: Buffer, entryName: string) => Promise<Buffer> {
   const encode = SVG_PAGE_ENCODERS[target];
   const pages = pageNumbersOf(rendered);
   const textLayers = textLayersOf(readPdf, pages, access);
   const zipped = rendered.filename.endsWith('.zip');
   return async (svg, entryName) => {
     const page = zipped ? Number(PAGE_ENTRY_NUMBER.exec(entryName)?.[1]) : pages[0];
-    return encode(svg, () => textLayers(page));
+    return encode(svg, () => textLayers(page), leftOut, page);
   };
+}
+
+/** Runs `write` with the writer of `target` for the pages of one render, then reports once the pages whose pictures a DXF left out. */
+export async function withSvgPageEncoder<T>(
+  target: string,
+  rendered: WorkerConversionResult,
+  readPdf: () => Buffer | undefined,
+  access: PdfAccess,
+  write: (encode: (svg: Buffer, entryName: string) => Promise<Buffer>) => Promise<T>
+): Promise<T> {
+  const leftOut = new PicturePages();
+  const written = await write(svgPageEncoder(target, rendered, readPdf, access, leftOut));
+  leftOut.report();
+  return written;
 }

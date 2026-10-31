@@ -142,8 +142,9 @@ async function objArchiveProblem(buffer: Buffer): Promise<string | null> {
 
 /**
  * An OEB book is calibre's OEB folder delivered as one ZIP: an `.opf` package beside XHTML content documents, an NCX and a style sheet. It is accepted
- * when it is a readable ZIP with an `.opf` and at least one `.html` or `.xhtml` file, and, unless the corpus marks the input as empty, the content
- * documents hold text once their markup is taken out (the read-back of oebText in tests/helpers/calibre-books.ts).
+ * when it is a readable ZIP with an `.opf` and at least one `.html` or `.xhtml` file, and the content documents hold text once their markup is taken
+ * out (the read-back of oebText in tests/helpers/calibre-books.ts). For an input the corpus marks as empty, no text is the right answer: the
+ * content documents must hold none, so a book that carries words the input does not have is a bad output.
  */
 async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<string | null> {
   const archive = await archiveEntries(buffer, 'oeb archive');
@@ -152,9 +153,10 @@ async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<s
   if (!entries.some((entry) => hasExtension(entry.name, 'opf'))) return 'oeb archive has no .opf package';
   const pages = entries.filter((entry) => /\.x?html$/i.test(entry.name));
   if (pages.length === 0) return 'oeb archive has no XHTML content document';
-  if (emptyInput) return null;
   const markup = (await Promise.all(pages.map((page) => page.async('string')))).join(' ');
-  return wordsOfMarkup(markup) === '' ? 'oeb archive content documents hold no text' : null;
+  const hasText = wordsOfMarkup(markup) !== '';
+  if (emptyInput) return hasText ? 'oeb archive content documents hold text, but the input has none' : null;
+  return hasText ? null : 'oeb archive content documents hold no text';
 }
 
 /** Why the output is not a readable file of the target type, or null when it is. */
