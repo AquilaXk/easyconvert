@@ -470,13 +470,15 @@ describe('the known gaps', () => {
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     // The one image quality gap is the AVIF curve of a photograph whose bytes depend on the encoder thread count (641, entry 1 of the policy record).
     expect(issuesOf('image/', false)).toEqual([641]);
-    expect(issuesOf('image/', true)).toEqual([641]);
+    // The AVIF speed rows of the screenshot, the line art and the deep dart reached parity in the nightly run of 2026-10-31, as the VP9 row of the clip and the scan to PDF row did.
+    expect(issuesOf('image/', true)).toEqual([]);
     // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
-    // The H.264 row of the clip and the Opus row of the music file reached parity in the nightly run of 2026-10-24; the VP9 row of the clip stays tracked.
+    // The H.264 row of the clip and the Opus row of the music file reached parity in the nightly run of 2026-10-24, and the VP9 row of the clip in that of 2026-10-31.
     expect(issuesOf('audio/', true)).toEqual([]);
-    expect(issuesOf('video/', true)).toEqual([643]);
+    expect(issuesOf('video/', true)).toEqual([]);
     expect(byIdOf('video/clip.mp4->h264/throughput')).toBeUndefined();
-    expect(issuesOf('ocr/', true)).toEqual([644]);
+    expect(byIdOf('video/clip.mp4->vp9/throughput')).toBeUndefined();
+    expect(issuesOf('ocr/', true)).toEqual([]);
     // The document gaps are gone: the PDF text reader reached parity (672), as the slide and sheet pages to PNG did (735).
     expect(issuesOf('document/', true)).toEqual([]);
     // The RAW to GIF rows reached parity on the CI runner (686).
@@ -492,7 +494,7 @@ describe('the known gaps', () => {
     // Every compression row that is a known gap reached parity in the nightly run of 2026-10-24, but the xz decode of the most compressible Silesia file, a row of a public sample that the nightly run times (685).
     expect(issuesOf('compression/', true)).toEqual([685]);
     expect(Object.keys(byId).filter((id) => id.startsWith('compression/'))).toEqual(['compression/silesia-xml.xz->tar/throughput']);
-    expect(byId['image/wm-deep-dart.png->avif/throughput']).toBe(641);
+    expect(byId['image/wm-deep-dart.png->avif/throughput']).toBeUndefined();
     expect(byId['video/clip.mp4->hevc/throughput']).toBeUndefined();
     // The PostScript to PDF, Illustrator to PNG, slide and sheet page rows reached parity on the CI runner (735).
     for (const id of [

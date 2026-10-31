@@ -8849,22 +8849,20 @@ function biffGlobalsHaveFilePass(stream: Buffer): boolean {
 }
 
 /**
- * Throws the encrypted-document error (HTTP 422) for an XLS whose workbook carries a FilePass record, so that the
- * office suite is not started for a file only to report that it cannot load it. A file this cannot read as a
- * BIFF workbook is left to the converter that was asked for.
+ * Whether the workbook of an XLS carries a FilePass record: it is obfuscated or encrypted. The office suite decrypts a workbook that
+ * uses its default password and cannot load one that needs another, which it reports like a damaged file; this tells the two
+ * apart afterwards. A file this cannot read as a BIFF workbook is not encrypted as far as this can tell.
  */
-export function assertXlsNotEncrypted(inputBuffer: Buffer): void {
+export function xlsHasFilePass(inputBuffer: Buffer): boolean {
   let stream: Buffer | undefined = inputBuffer;
   if (isCfbfContainer(inputBuffer)) {
     try {
       stream = selectWorkbookStream(parseCfbf(inputBuffer));
     } catch {
-      return;
+      return false;
     }
   }
-  if (stream && stream.length >= 4 && BIFF_BOF_RECORDS.has(stream.readUInt16LE(0)) && biffGlobalsHaveFilePass(stream)) {
-    throw new EncryptedOfficeDocumentError('The XLS workbook is encrypted or password protected, so its cells cannot be read.');
-  }
+  return stream !== undefined && stream.length >= 4 && BIFF_BOF_RECORDS.has(stream.readUInt16LE(0)) && biffGlobalsHaveFilePass(stream);
 }
 
 /**
