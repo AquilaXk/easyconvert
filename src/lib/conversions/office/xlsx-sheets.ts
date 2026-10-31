@@ -3,17 +3,11 @@ import { PayloadLimitError } from '../../types';
 import { safeExtractXmlElements, type SafeXmlElement } from '../safe-xml-scanner';
 import { readZipEntryText } from '../zip-entry-reader';
 import { forEachRelationship, newRelationshipAllowance, readPartRelationships, streamElementsWithin, type OpcReadOptions, type RelationshipAllowance } from './opc-parts';
+import { WORKBOOK_MAX_SHEETS } from './sheet-bounds';
 import { resolveZipPath } from './zip-path';
 
-/**
- * Most cells and rows the reader builds for one workbook, padding included: the 20 million cells that the data-format readers
- * (Parquet) allow for a table. A sparse sheet inside the bounds of a worksheet can still ask for 16.7 billion padded cells (a cell at XFD
- * on each of 1048576 rows), and each padded cell takes about 53 bytes of heap.
- */
-export const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
-
 /** Sheets of one workbook: LibreOffice Calc holds at most 10,000 (`MAXTABCOUNT`, sc/inc/address.hxx), so a workbook that lists more cannot be opened whole. */
-export const XLSX_MAX_SHEETS = 10_000;
+export const XLSX_MAX_SHEETS = WORKBOOK_MAX_SHEETS;
 
 /**
  * Merged ranges and hyperlinks the reader holds for all sheets of one workbook: one for each row of a worksheet. A merged range

@@ -1,6 +1,8 @@
 /**
  * The page counter of a running header or footer: the line that prints which page it is on. A text sheet of a workbook leaves it out,
- * because the sheet is named after the page. A line counts only when its number follows the page index, and a miss keeps the line.
+ * because the sheet is named after the page. A line counts only when its number follows the page index; a line that does is dropped
+ * whatever it means, and a bare number is the form that can be text (a section number that runs 1, 2, 3 on pages 1, 2, 3), so
+ * `pageCounterBlocks` says which form each dropped line had and the caller reports the bare ones.
  */
 
 /** How a counter line is written: the number alone, a fraction ("3 / 9"), or with a word or paired marks around it ("Page 3", "3 of 9", "- 3 -"). */
@@ -49,16 +51,18 @@ const MIN_PAGES_FOR_BARE = 2;
  * on one page. Another constant is a counter that starts after an unnumbered cover or front matter; it is taken only in a decorated form
  * ("Page 3", "3 of 9", "- 3 -") over at least three pages, because a run of bare numbers, fractions or years ("1001", "1002", "1003", or
  * "1/3", "2/3", "3/3" on later pages) is text that happens to be consecutive. A group that prints the same number on every page, or a
- * number that follows no page, is not a counter and stays: the error of a wrong guess is one counter kept in a row, never text lost.
+ * number that follows no page, is not a counter and stays. The error of the rule runs both ways: a counter in a form it does not take
+ * stays as a row, and an offset 0 group that is not a counter (section numbers in a header band) is dropped; the form of each dropped line
+ * is returned so the loss can be reported.
  */
-export function pageCounterBlocks<Block>(lines: readonly FurnitureLine<Block>[]): Set<Block> {
+export function pageCounterBlocks<Block>(lines: readonly FurnitureLine<Block>[]): Map<Block, CounterForm> {
   const groups = new Map<string, FurnitureLine<Block>[]>();
   for (const line of lines) {
     const group = groups.get(line.key);
     if (group) group.push(line);
     else groups.set(line.key, [line]);
   }
-  const counters = new Set<Block>();
+  const counters = new Map<Block, CounterForm>();
   for (const group of groups.values()) {
     const printed = group.map((line) => printedCounter(line.text));
     const offsets = printed.map((counter, at) => (counter === undefined ? undefined : counter.number - group[at].pageNumber));
@@ -71,7 +75,7 @@ export function pageCounterBlocks<Block>(lines: readonly FurnitureLine<Block>[])
         ? pageCount >= MIN_PAGES_FOR_BARE || forms.some((form) => form !== 'bare')
         : pageCount >= MIN_PAGES_FOR_OFFSET && forms.every((form) => form === 'decorated');
     if (!accepted) continue;
-    for (const line of group) counters.add(line.block);
+    group.forEach((line, at) => counters.set(line.block, forms[at] as CounterForm));
   }
   return counters;
 }
