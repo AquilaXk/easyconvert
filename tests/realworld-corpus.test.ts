@@ -11,8 +11,8 @@ import type { AddressInfo } from 'node:net';
 import { describeFetchFailure } from '../bench/http-retry';
 import { fetchBytes, retryDelayMs } from '../bench/realworld/http';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
-import { ManifestError, MANIFEST_PATH, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
-import { planJobs, shardJobs } from '../bench/realworld/plan';
+import { ManifestError, MANIFEST_PATH, parseManifest, readManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
+import { DEFAULT_PER_FILE, planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, crashDetail, exitSummary, isTypedRefusal } from '../bench/realworld/verdict';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
@@ -364,6 +364,41 @@ describe('verdicts and gate', () => {
         const entry = byFile.get(file);
         expect(entry?.source, `${file} source`).toBe(path.extname(file).slice(1));
         expect(entry?.target, `${file} target`).not.toBeUndefined();
+      }
+    });
+
+    it('is advertised by the registry and planned for its file, for every row that names a target', () => {
+      const { files: corpus } = readManifest();
+      const planned = planJobs(corpus, (format) => getAvailableTargetFormats(format).map((def) => def.id), DEFAULT_PER_FILE);
+      const files = new Map(corpus.map((file) => [file.id, file]));
+      const stale: string[] = [];
+      for (const entry of readKnownRefusals().filter((row) => row.target !== undefined)) {
+        const format = files.get(entry.file)?.format;
+        const source = entry.source ?? format;
+        for (const target of [entry.target].flat()) {
+          const advertised = getAvailableTargetFormats(source ?? '').some((def) => def.id === target);
+          const runs = planned.some((job) => job.file.id === entry.file && job.target === target);
+          if (!advertised || !runs) stale.push(`${entry.file} ${source}->${target}: advertised ${advertised}, planned ${runs}`);
+        }
+      }
+      expect(stale).toEqual([]);
+    });
+
+    it('refuses a source or a target that is no format of the registry when the list is read', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-names-'));
+      const read = (body: unknown): unknown => {
+        const file = path.join(dir, `${Math.random()}.json`);
+        fs.writeFileSync(file, JSON.stringify([body]));
+        return readKnownRefusals(file);
+      };
+      try {
+        expect(() => read({ ...row, source: 'pfd' })).toThrow(/source/);
+        expect(() => read({ ...row, target: 'dcox' })).toThrow(/target/);
+        expect(() => read({ ...row, target: ['docx', 'nosuchformat'] })).toThrow(/target/);
+        expect(() => read({ ...row, target: 'constructor' })).toThrow(/target/);
+        expect(read({ ...row, source: 'pdf', target: ['docx', 'html'] })).toHaveLength(1);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     });
   });

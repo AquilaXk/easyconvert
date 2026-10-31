@@ -17,10 +17,9 @@ import { getAvailableTargetFormats } from '../../src/lib/registry';
 import { ArgumentError, commit, EXIT_ERROR, EXIT_GATE, EXIT_PASS, flag, positiveInt, toolPath } from './cli';
 import { judgeJobs } from './judge';
 import { readManifest } from './manifest';
-import { planJobs, shardJobs } from './plan';
+import { DEFAULT_PER_FILE, planJobs, shardJobs } from './plan';
 import { BASELINE_PATH, buildBaseline, evaluate, type JobRecord, mergeShards, readBaseline, readKnownFailures, readKnownRefusals, readShard, renderMarkdown, REPORT_SCHEMA, type ShardReport } from './report';
 
-const DEFAULT_PER_FILE = 3;
 const DEFAULT_DEADLINE_MS = 180_000;
 const DEFAULT_HEAP_MB = 3072;
 const DEFAULT_CACHE = path.join(os.homedir(), '.cache', 'easyconvert-realworld');

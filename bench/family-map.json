@@ -182,7 +182,7 @@
     },
     {
       "families": ["document", "ebook", "data"],
-      "match": "^src/lib/conversions/(office|xlsx-writer|sheet-text-tables|office/spreadsheet-limits)\\.ts$"
+      "match": "^src/lib/conversions/(office|xlsx-writer|sheet-text-tables|table-grid|office/spreadsheet-limits)\\.ts$"
     },
     {
       "families": ["document", "ebook"],

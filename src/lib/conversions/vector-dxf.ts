@@ -257,17 +257,10 @@ export function encodeSvgPageToDxf(svg: Buffer): Buffer {
 
 /**
  * The page geometry of an SVG page that Poppler drew from a PDF page, with its bitmap-font characters as TEXT from the page's
- * text layer; `readText` is called only for a page that draws such characters. The pages of a document pass the same `leftOut` and
- * report it after the last one, so one warning names them all; a page written alone reports its own.
+ * text layer; `readText` is called only for a page that draws such characters. The pages of a document pass the same `leftOut`, and
+ * the caller reports it after the last one, so one warning names them all.
  */
-export async function encodeSvgPageToDxfWithText(svg: Buffer, readText: () => Promise<PdfPageText>, leftOut?: PicturePages, page?: number): Promise<Buffer> {
-  const pictures = leftOut ?? new PicturePages();
-  const dxf = await writePageWithText(svg, readText, pictures, page);
-  if (leftOut === undefined) pictures.report();
-  return dxf;
-}
-
-async function writePageWithText(svg: Buffer, readText: () => Promise<PdfPageText>, leftOut: PicturePages, page?: number): Promise<Buffer> {
+export async function encodeSvgPageToDxfWithText(svg: Buffer, readText: () => Promise<PdfPageText>, leftOut: PicturePages, page?: number): Promise<Buffer> {
   const bitmapGlyphs = new BitmapGlyphs(true);
   const parsed = readSvgPage(svg, bitmapGlyphs, leftOut, page);
   if (bitmapGlyphs.marks.length === 0) return writeDxf(parsed, []);

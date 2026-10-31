@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
-import { PDF_TABLE_MAX_CELLS } from '../src/lib/conversions/office/sheet-bounds';
+import { PDF_TABLE_MAX_CELLS } from '../src/lib/conversions/pdf-table-bounds';
 import { renderPdfTables } from '../src/lib/conversions/pdf-table-layout';
 import { PayloadLimitError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';

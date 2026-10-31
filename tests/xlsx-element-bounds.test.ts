@@ -4,7 +4,8 @@ import { convertFile } from '../src/lib/conversions';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { OPC_MAX_RELATIONSHIPS_SCANNED } from '../src/lib/conversions/office/opc-parts';
 import { assertWorkbookFitsXls } from '../src/lib/conversions/office/xls-limits';
-import { XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_MAX_SHEETS } from '../src/lib/conversions/office/xlsx-sheets';
+import { WORKBOOK_MAX_SHEETS } from '../src/lib/conversions/office/sheet-bounds';
+import { XLSX_MAX_RANGES_PER_WORKBOOK } from '../src/lib/conversions/office/xlsx-sheets';
 import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
 import { DEFAULT_HANG_GUARD_MS, cpuClockMs, expectSizeIndependentOnInputs, expectWithinHangGuard } from './helpers/timing';
@@ -232,13 +233,13 @@ describe('sheets of a workbook', () => {
     const runs: Array<() => Promise<unknown>> = [() => parseAllXlsxWorksheets(hostile), () => assertWorkbookFitsXls(hostile)];
     for (const run of runs) {
       const { failure, cpuMs } = await refusal(run);
-      expectPayloadLimit(failure, new RegExp(`more than ${XLSX_MAX_SHEETS} sheets`));
+      expectPayloadLimit(failure, new RegExp(`more than ${WORKBOOK_MAX_SHEETS} sheets`));
       expectWithinHangGuard('the refusal of a sheet listed 100,000 times', cpuMs, { guardMs: DEFAULT_HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
     }
   });
 
   it('are accepted up to the bound', async () => {
-    const book = await workbookListing(sheetElements(XLSX_MAX_SHEETS, (index) => `S${index}`));
+    const book = await workbookListing(sheetElements(WORKBOOK_MAX_SHEETS, (index) => `S${index}`));
     await expect(assertWorkbookFitsXls(book)).resolves.toBeUndefined();
     await expect(parseAllXlsxWorksheets(book)).resolves.toHaveLength(1);
   });

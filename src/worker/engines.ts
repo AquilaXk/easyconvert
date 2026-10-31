@@ -27,7 +27,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEncryptedAnswer, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -456,7 +456,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withEncryptedAnswer(runHeadlessOffice)), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(runHeadlessOffice)), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.

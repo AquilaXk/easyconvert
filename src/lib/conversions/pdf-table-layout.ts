@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { ConversionFailedError, PayloadLimitError } from '../types';
-import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS } from './office/sheet-bounds';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex } from './pdf-fonts';
+import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS } from './pdf-table-bounds';
 
 /**
  * Table writer shared by the in-process spreadsheet and data to PDF paths. It draws only the cells it is
@@ -9,6 +9,7 @@ import { PdfUnicodeTextWriter, loadFontCoverageIndex } from './pdf-fonts';
  * drawn (paginated, with the header rows repeated), cell text wraps and grows the row instead of being cut,
  * and a table wider than the page continues in further column groups.
  */
+
 
 const PAGE_SIZE = 'A4';
 const PAGE_MARGIN = 36;

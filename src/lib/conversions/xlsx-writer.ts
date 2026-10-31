@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { stringifyJsonLossless, type DataValue } from './data-json';
-import { SHEET_MAX_CELL_CHARS, assertSheetCount, gridLimitError, gridOf, sheetLimitError } from './office/sheet-bounds';
+import { SHEET_MAX_CELL_CHARS, assertSheetCount, sheetLimitError } from './office/sheet-bounds';
+import { gridLimitError, gridOf } from './table-grid';
 
 /**
  * Writes a table as an XLSX workbook with typed cells (ECMA-376 Part 1, 18.3): a number is a number, a boolean `t="b"`, a date a serial

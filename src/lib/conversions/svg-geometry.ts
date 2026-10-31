@@ -2,7 +2,7 @@ import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
-import { isDrawnPicture, type LeftOutPictures } from './svg-picture';
+import { isDrawnPicture, isFullyTransparent, type LeftOutPictures } from './svg-picture';
 import { ActiveClips } from './svg-clip-region';
 import { parseLength, requireFinite, rootUnitPx } from './svg-length';
 import { createPageClipCheck, type ClipNode } from './svg-page-clip';
@@ -454,6 +454,8 @@ interface StyleContext {
   fillRule: string;
   color: string;
   visibility: string;
+  /** An enclosing group, or the element, is fully transparent: opacity does not inherit, but nothing below such a group is painted. */
+  transparent: boolean;
   strokeLinecap: string;
   strokeLinejoin: string;
   strokeMiterlimit: string;
@@ -469,6 +471,7 @@ const INITIAL_STYLE: StyleContext = {
   fillRule: 'nonzero',
   color: 'black',
   visibility: 'visible',
+  transparent: false,
   strokeLinecap: 'butt',
   strokeLinejoin: 'miter',
   strokeMiterlimit: '4',
@@ -477,7 +480,7 @@ const INITIAL_STYLE: StyleContext = {
 };
 
 /** Inherited presentation properties handled by the encoders, keyed by CSS name. */
-const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm' | 'dashArray'>> = {
+const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm' | 'dashArray' | 'transparent'>> = {
   fill: 'fill',
   stroke: 'stroke',
   'stroke-width': 'strokeWidth',
@@ -722,6 +725,7 @@ function deriveContext(parent: StyleContext, attrs: Map<string, string>, declare
     const v = declared.get(cssName);
     if (v !== undefined && v !== 'inherit') ctx[key] = v;
   }
+  ctx.transparent = parent.transparent || isFullyTransparent(declared.get('opacity'));
   const dashArray = declared.get('stroke-dasharray');
   if (pens === 'centre-line' && dashArray !== undefined && dashArray.toLowerCase() !== 'inherit') ctx.dashArray = parseDashArray(dashArray);
   const transform = attrs.get('transform');
@@ -1105,7 +1109,11 @@ function renderUse(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     if (target.attrs.has('viewBox')) {
       throw new UnsupportedOptionError('SVG <symbol> with a viewBox is not supported by metafile encoders.');
     }
-    renderChildren(target, useCtx, state);
+    const declared = declaredProperties(target.attrs, target.name, state.sheet);
+    assertNeutralPaintProperties(declared, state.pens);
+    assertValidPaintDeclarations(declared);
+    if (declared.get('display') === 'none') return;
+    renderChildren(target, deriveContext(useCtx, target.attrs, declared, state.pens), state);
   } else if (NON_RENDERED_ELEMENTS.has(target.name)) {
     throw new UnsupportedOptionError(`SVG <use> of non-rendering element <${target.name}> is not supported by metafile encoders.`);
   } else {
@@ -1192,7 +1200,7 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
     throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
   }
   if (kind === 'picture') {
-    if (state.pictures !== undefined && isDrawnPicture(declaredProperties(node.attrs, node.name, state.sheet), parent.visibility)) state.pictures.count += 1;
+    if (state.pictures !== undefined && isDrawnPicture(node.attrs, declaredProperties(node.attrs, node.name, state.sheet), parent)) state.pictures.count += 1;
     return;
   }
   const declared = declaredProperties(node.attrs, node.name, state.sheet);

@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { writeTransientWorkbook } from '../src/lib/conversions/data';
 import { generateOdsFromData } from '../src/lib/conversions/office';
-import { ODS_MAX_CELLS, PDF_TABLE_MAX_CELLS, WORKBOOK_MAX_SHEETS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from '../src/lib/conversions/office/sheet-bounds';
+import { ODS_MAX_CELLS, WORKBOOK_MAX_SHEETS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from '../src/lib/conversions/office/sheet-bounds';
 import { PARQUET_MAX_COLUMNS } from '../src/lib/conversions/parquet-format';
+import { PDF_TABLE_MAX_CELLS } from '../src/lib/conversions/pdf-table-bounds';
 import { PayloadLimitError, SheetLimitError } from '../src/lib/types';
 
 /**

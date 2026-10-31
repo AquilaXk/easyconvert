@@ -163,7 +163,7 @@ export type OfficeSuiteRun = (input: Buffer | WorkerVfsPayload, sourceFormat: st
  * `RequestEncryptionData` tries it first), so the file goes to the suite whatever its FilePass record says. A file that is encrypted
  * and could not be loaded is intact and needs a password: the answer is the one the in-process readers give.
  */
-export function withEncryptedAnswer(run: OfficeSuiteRun): OfficeSuiteRun {
+export function withLegacyOfficeRecovery(run: OfficeSuiteRun): OfficeSuiteRun {
   return async (input, sourceFormat, targetFormat, options, originalFilename) => {
     const answerFor = (err: unknown): unknown =>
       officeSuiteCouldNotLoad(err) && OFFICE_NATIVE_SOURCES.has(sourceFormat) && encryptedInput(input, sourceFormat)
