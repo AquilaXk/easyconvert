@@ -26,8 +26,8 @@ import {
 } from '../lib/types';
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
-import { assertDrawingPackage, assertWorkbookNotEncrypted, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { assertDrawingPackage, officeInputWithoutMacros } from './office-input-checks';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEncryptedAnswer, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -458,7 +458,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withPresentationRetry(runHeadlessOffice)), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withEncryptedAnswer(withPresentationRetry(runHeadlessOffice))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.
@@ -2274,7 +2274,6 @@ async function convertWithinImageSession(
 
   // 1. Native Headless Office
   await assertDrawingPackage(input, src);
-  assertWorkbookNotEncrypted(input, src);
   if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
   if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteReadsInputAndWrites(src, tgt, input)) {

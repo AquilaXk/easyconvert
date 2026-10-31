@@ -1576,7 +1576,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9570
+    "maxValue": 9568
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2715,14 +2715,14 @@
     "rule": "max-lines-per-function",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 296
+    "maxValue": 295
   },
   {
     "file": "src/worker/engines.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2576
+    "maxValue": 2575
   },
   {
     "file": "src/worker/engines.ts",
