@@ -416,7 +416,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     );
     expect(getPasswordValidationError('txt', '7z', '비밀번호🔑')).toBeNull();
     expect(isValidPasswordForTarget('비밀번호🔑', '7z')).toBe(true);
-    for (const badPw of ['bad\npw', 'bad\0pw', 'bad\ud800pw', 'bad\udc00pw']) {
+    for (const badPw of ['bad\rpw', 'bad\npw', 'bad\0pw', 'bad\ud800pw', 'bad\udc00pw']) {
       expect(isValidPasswordForTarget(badPw, '7z')).toBe(false);
       expect(getPasswordValidationError('txt', '7z', badPw)).toBe(
         'Passwords cannot contain line breaks, null bytes, or invalid Unicode.'

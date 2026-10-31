@@ -2,20 +2,20 @@ import { AudioCodec, ConversionOptions, FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import {
   FFMPEG_VIDEO_CONTAINERS,
-  resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  resolveSelectableVideoCodecs,
   sanitizeVideoOptionsForTarget,
 } from './media-capabilities';
 
 export {
   FFMPEG_VIDEO_CONTAINERS,
-  resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  resolveSelectableVideoCodecs,
   sanitizeVideoOptionsForTarget,
 };
 export {
   isLosslessAudioTarget,
-  resolveSelectableVideoCodecs,
+  resolveAllowedVideoCodecs,
   type AudioCapabilities,
   type SelectableVideoCodec,
 } from './media-capabilities';
@@ -113,7 +113,7 @@ function computeMediaCaps(
   tgt: string
 ) {
   const showVideo = FFMPEG_VIDEO_CONTAINERS.has(tgt);
-  const showVideoCodec = resolveAllowedVideoCodecs(tgt).length > 0;
+  const showVideoCodec = resolveSelectableVideoCodecs(tgt).length > 0;
   const showImage = !showVideo && isImageCapablePair(sourceCategory, targetCategory, tgt);
   const hasAudioSource = sourceCategory === 'video' || sourceCategory === 'audio';
   const showAudio =

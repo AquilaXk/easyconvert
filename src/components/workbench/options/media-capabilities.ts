@@ -2,8 +2,7 @@ import { AudioCodec, ConversionOptions } from '@/lib/types';
 
 type VideoCodecOption = NonNullable<ConversionOptions['videoCodec']>;
 type VideoEncoding = NonNullable<ConversionOptions['video']>;
-type NestedVideoCodec = NonNullable<VideoEncoding['codec']>;
-export type SelectableVideoCodec = NestedVideoCodec;
+export type SelectableVideoCodec = NonNullable<VideoEncoding['codec']>;
 type VideoRateControlOption = NonNullable<VideoEncoding['rateControl']>;
 type AudioSampleRateOption = NonNullable<ConversionOptions['audioSampleRate']>;
 type AudioChannelOption = NonNullable<ConversionOptions['audioChannels']>;
@@ -41,7 +40,7 @@ export function resolveSelectableVideoCodecs(
   return tgt === 'mov' ? [...base, 'prores'] : base;
 }
 
-const ALLOWED_VIDEO_PROFILES_BY_CODEC: Readonly<Record<NestedVideoCodec, ReadonlySet<string>>> = {
+const ALLOWED_VIDEO_PROFILES_BY_CODEC: Readonly<Record<SelectableVideoCodec, ReadonlySet<string>>> = {
   h264: new Set(['baseline', 'main', 'high', 'high10']),
   hevc: new Set(['main', 'main10']),
   vp9: new Set(),
@@ -82,7 +81,7 @@ const X26X_PRESETS: ReadonlySet<string> = new Set([
   'veryslow',
 ]);
 
-const TWO_PASS_CODECS: ReadonlySet<NestedVideoCodec> = new Set(['h264', 'hevc', 'vp9']);
+const TWO_PASS_CODECS: ReadonlySet<SelectableVideoCodec> = new Set(['h264', 'hevc', 'vp9']);
 const SVT_AV1_PRESET_PATTERN = /^\d{1,2}$/;
 const CODEC_SENSITIVE_VIDEO_KEYS: ReadonlySet<string> = new Set([
   'codec',
@@ -104,7 +103,7 @@ function wasRejectedCodec(requested: string | undefined, accepted: string | unde
   return requested !== undefined && accepted === undefined;
 }
 
-function isValidVideoPreset(preset: string, codec: NestedVideoCodec): boolean {
+function isValidVideoPreset(preset: string, codec: SelectableVideoCodec): boolean {
   if (codec === 'h264' || codec === 'hevc') return X26X_PRESETS.has(preset);
   if (codec === 'av1') {
     const num = Number(preset);
@@ -113,7 +112,7 @@ function isValidVideoPreset(preset: string, codec: NestedVideoCodec): boolean {
   return false;
 }
 
-function isValidVideoCrf(crf: number, codec: NestedVideoCodec): boolean {
+function isValidVideoCrf(crf: number, codec: SelectableVideoCodec): boolean {
   if (codec === 'prores' || !Number.isFinite(crf) || crf < 0) return false;
   return codec === 'h264' || codec === 'hevc' ? crf <= 51 : crf <= 63;
 }
@@ -127,7 +126,7 @@ function omitTwoPass(rateControl: VideoRateControlOption): VideoRateControlOptio
 function sanitizeVideoRateControl(
   rateControl: VideoEncoding['rateControl'],
   tgt: string,
-  codec: NestedVideoCodec
+  codec: SelectableVideoCodec
 ): VideoEncoding['rateControl'] {
   if (!rateControl) return undefined;
   if (rateControl.mode === 'crf') {
@@ -166,8 +165,8 @@ function copyExtraVideoFields(video: VideoEncoding): Record<string, unknown> {
 function applySanitizedCodecFields(
   clean: Record<string, unknown>,
   video: VideoEncoding,
-  effectiveCodec: NestedVideoCodec,
-  nextNestedCodec: NestedVideoCodec | undefined
+  effectiveCodec: SelectableVideoCodec,
+  nextNestedCodec: SelectableVideoCodec | undefined
 ): void {
   if (nextNestedCodec) clean.codec = nextNestedCodec;
   if (
@@ -187,8 +186,8 @@ function applySanitizedCodecFields(
 interface VideoCodecContext {
   tgt: string;
   nextVideoCodec: VideoCodecOption | undefined;
-  nextNestedCodec: NestedVideoCodec | undefined;
-  effectiveCodec: NestedVideoCodec;
+  nextNestedCodec: SelectableVideoCodec | undefined;
+  effectiveCodec: SelectableVideoCodec;
   dropCodecContext: boolean;
 }
 
@@ -198,18 +197,14 @@ function resolveVideoCodecContext(
 ): VideoCodecContext {
   const allowedVCodecs = resolveAllowedVideoCodecs(tgt);
   const allowedNested = resolveSelectableVideoCodecs(tgt);
-  const requested: NestedVideoCodec | undefined = options.video?.codec || options.videoCodec;
-  const accepted = pickAllowedCodec(requested, allowedNested);
+  const rawNested = options.video?.codec;
+  const requested: SelectableVideoCodec | undefined = rawNested || options.videoCodec;
+  const nextNestedCodec = rawNested ? pickAllowedCodec(rawNested, allowedNested) : undefined;
+  const nextVideoCodec = rawNested ? undefined : pickAllowedCodec(options.videoCodec, allowedVCodecs);
+  const accepted = nextNestedCodec ?? nextVideoCodec;
   const dropCodecContext = allowedNested.length === 0 || wasRejectedCodec(requested, accepted);
-  const nextNestedCodec = dropCodecContext
-    ? undefined
-    : pickAllowedCodec(options.video?.codec, allowedNested);
-  const nextVideoCodec =
-    dropCodecContext || nextNestedCodec !== undefined
-      ? undefined
-      : pickAllowedCodec(options.videoCodec, allowedVCodecs);
-  const defaultCodec: NestedVideoCodec = tgt === 'webm' ? 'vp9' : 'h264';
-  const effectiveCodec: NestedVideoCodec = nextNestedCodec ?? nextVideoCodec ?? defaultCodec;
+  const defaultCodec: SelectableVideoCodec = tgt === 'webm' ? 'vp9' : 'h264';
+  const effectiveCodec: SelectableVideoCodec = accepted ?? defaultCodec;
   return { tgt, nextVideoCodec, nextNestedCodec, effectiveCodec, dropCodecContext };
 }
 

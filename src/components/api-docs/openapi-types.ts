@@ -235,6 +235,11 @@ function isNullOnlyEnum(values: OpenApiSchemaObject['enum']): boolean {
   return values !== undefined && values.length > 0 && values.every((item) => item === null);
 }
 
+function isNullOnlyType(raw: OpenApiSchemaObject['type']): boolean {
+  if (raw === 'null') return true;
+  return Array.isArray(raw) && raw.length > 0 && raw.every((item) => item === 'null');
+}
+
 function resolveExplicitPrimaryType(raw: OpenApiSchemaObject['type']): string | undefined {
   if (typeof raw === 'string') return raw === 'null' ? undefined : raw;
   if (Array.isArray(raw)) return raw.find((item) => item !== 'null');
@@ -243,9 +248,16 @@ function resolveExplicitPrimaryType(raw: OpenApiSchemaObject['type']): string | 
 
 const MAX_UNION_UNWRAP_STEPS = 8;
 
+function hasConcreteSchemaShape(branch: OpenApiSchemaObject): boolean {
+  if (resolveExplicitPrimaryType(branch.type) !== undefined) return true;
+  if (branch.const !== undefined && branch.const !== null) return true;
+  if (branch.enum?.length && !isNullOnlyEnum(branch.enum)) return true;
+  return Boolean(branch.properties || branch.items || branch.oneOf?.length || branch.anyOf?.length);
+}
+
 function isNullUnionBranch(branch: OpenApiSchemaObject): boolean {
-  if (branch.type === 'null' || branch.const === null || isNullOnlyEnum(branch.enum)) return true;
-  return Array.isArray(branch.type) && branch.type.length === 1 && branch.type[0] === 'null';
+  if (hasConcreteSchemaShape(branch)) return false;
+  return isNullOnlyType(branch.type) || branch.const === null || isNullOnlyEnum(branch.enum);
 }
 
 function shouldStopUnionUnwrap(schema: OpenApiSchemaObject): boolean {
@@ -280,6 +292,7 @@ function clearOuterNullLiterals(
   outer: OpenApiSchemaObject,
   branch: OpenApiSchemaObject
 ): void {
+  if (isNullOnlyType(outer.type) && branch.type === undefined) delete merged.type;
   if (outer.const === null && branch.const === undefined) delete merged.const;
   if (isNullOnlyEnum(outer.enum) && !branch.enum) delete merged.enum;
   if (outer.example === null && branch.example === undefined) delete merged.example;
@@ -299,7 +312,9 @@ function mergeUnionStep(
     merged.default = outerRest.default;
   }
   if (branch.type === undefined && outerRest.type !== undefined) merged.type = outerRest.type;
-  clearOuterNullLiterals(merged, outerRest, branch);
+  if (!isNullUnionBranch(branch)) {
+    clearOuterNullLiterals(merged, outerRest, branch);
+  }
   applyMergedObjectFields(merged, outerRest, branch);
   return merged;
 }

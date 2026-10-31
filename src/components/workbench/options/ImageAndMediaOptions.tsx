@@ -237,7 +237,7 @@ function applyVideoCodecChange(
       ? {
           videoCodec: undefined,
           videoFps: options.videoFps,
-          video: { ...(strippedVideo ?? {}), codec: 'prores' as const },
+          video: { ...strippedVideo, codec: 'prores' as const },
         }
       : {
           videoCodec: chosen,
