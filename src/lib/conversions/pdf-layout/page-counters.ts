@@ -8,11 +8,11 @@ export type CounterForm = 'bare' | 'fraction' | 'decorated';
 
 /** The forms a line can have, each with the number it prints in the group `n`. A mark before the number needs the same mark after it. */
 const COUNTER_FORMS: readonly (readonly [CounterForm, RegExp])[] = [
-  ['bare', /^(?<n>\d+)$/],
-  ['fraction', /^(?<n>\d+)\s*\/\s*\d+$/],
-  ['decorated', /^page\s*(?<n>\d+)(?:\s*(?:of|\/)\s*\d+)?$/i],
-  ['decorated', /^(?<n>\d+)\s*of\s*\d+$/i],
-  ['decorated', /^(?<mark>[-–—·•])\s*(?:page\s*)?(?<n>\d+)(?:\s*(?:of|\/)\s*\d+)?\s*\k<mark>$/i],
+  ['bare', /^(?<n>\d{1,6})$/],
+  ['fraction', /^(?<n>\d{1,6})\s*\/\s*\d+$/],
+  ['decorated', /^page\s*(?<n>\d{1,6})(?:\s*(?:of|\/)\s*\d+)?$/i],
+  ['decorated', /^(?<n>\d{1,6})\s*of\s*\d+$/i],
+  ['decorated', /^(?<mark>[-–—·•])\s*(?:page\s*)?(?<n>\d{1,6})(?:\s*(?:of|\/)\s*\d+)?\s*\k<mark>$/i],
 ];
 
 export interface PrintedCounter {

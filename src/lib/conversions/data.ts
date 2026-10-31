@@ -24,13 +24,13 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { generateOdsFromData, officeSheetWorkbook } from './office';
-import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
+import { ODS_MAX_CELLS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
 import { XLSX_MAX_MATERIALISED_CELLS } from './office/xlsx-sheets';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
-import { PARQUET_MAX_CELLS } from './parquet-format';
-import { renderPdfTables } from './pdf-table-layout';
+import { PARQUET_MAX_CELLS, PARQUET_MAX_COLUMNS, PARQUET_MAX_ROWS } from './parquet-format';
+import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS, renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
@@ -483,17 +483,23 @@ interface TableBounds {
 }
 
 /**
- * Spreadsheet targets hold the grid of their format (`sheet-bounds.ts`: 16,384 columns and 1,048,576 rows in a worksheet, 256 and 65,536 in
- * a BIFF8 worksheet) and no more cells than our own XLSX reader materialises for one workbook (XLSX_MAX_MATERIALISED_CELLS, 20 million,
- * the bound of the Parquet reader for a table too), so a workbook this engine writes is one it reads. Every other table target holds
- * the Parquet bound of rows x columns in memory at once (PARQUET_MAX_CELLS, `parquet-format.ts`).
+ * Each target's own writer limits, checked before the records-by-columns matrix exists, so a small input naming many columns is
+ * refused before it costs memory. Spreadsheets hold the grid of their format (`sheet-bounds.ts`) and no more cells than our XLSX
+ * reader materialises for one workbook (XLSX_MAX_MATERIALISED_CELLS) or, for ODS, than its writer holds in one string
+ * (ODS_MAX_CELLS). A PDF holds the table its page layout draws (`pdf-table-layout.ts`), Parquet its writer's columns, rows and cells
+ * (`parquet-format.ts`), and every other table target the Parquet bound of cells held in memory at once.
  */
+const TABLE_BOUNDS: Readonly<Record<string, TableBounds>> = {
+  xls: { sheet: 'an .xls worksheet', columns: XLS_MAX_COLUMNS, rows: XLS_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS },
+  xlsx: { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS },
+  ods: { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: ODS_MAX_CELLS },
+  pdf: { sheet: null, columns: PDF_TABLE_MAX_COLUMNS, rows: Infinity, cells: PDF_TABLE_MAX_CELLS },
+  parquet: { sheet: null, columns: PARQUET_MAX_COLUMNS, rows: PARQUET_MAX_ROWS, cells: PARQUET_MAX_CELLS },
+};
+const OTHER_TABLE_BOUNDS: TableBounds = { sheet: null, columns: Infinity, rows: Infinity, cells: PARQUET_MAX_CELLS };
+
 function tableBoundsOf(tgt: string): TableBounds {
-  if (tgt === 'xls') return { sheet: 'an .xls worksheet', columns: XLS_MAX_COLUMNS, rows: XLS_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS };
-  if (tgt === 'xlsx' || tgt === 'ods') {
-    return { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS };
-  }
-  return { sheet: null, columns: Infinity, rows: Infinity, cells: PARQUET_MAX_CELLS };
+  return Object.hasOwn(TABLE_BOUNDS, tgt) ? TABLE_BOUNDS[tgt] : OTHER_TABLE_BOUNDS;
 }
 
 const HEADER_ROWS = 1;
@@ -504,8 +510,10 @@ function assertTableFits(fields: number, records: number, bounds: TableBounds): 
     if (fields > bounds.columns) throw sheetLimitError('The table', fields, 'columns', bounds.sheet, bounds.columns);
     if (records + HEADER_ROWS > bounds.rows) throw sheetLimitError('The table', records + HEADER_ROWS, 'rows', bounds.sheet, bounds.rows);
     if (cells > bounds.cells) throw sheetLimitError('The table', cells, 'cells (records times columns)', 'a workbook this engine reads', bounds.cells);
-  } else if (cells > bounds.cells) {
-    throw new PayloadLimitError(`The table of records has ${fields} columns by ${records} records, ${cells} cells, and a table is built with at most ${bounds.cells}.`);
+  } else if (fields > bounds.columns || records > bounds.rows || cells > bounds.cells) {
+    const limits = [[bounds.columns, 'columns'], [bounds.rows, 'records'], [bounds.cells, 'cells']] as const;
+    const held = limits.filter(([limit]) => Number.isFinite(limit)).map(([limit, unit]) => `${limit} ${unit}`).join(', ');
+    throw new PayloadLimitError(`The table of records has ${fields} columns by ${records} records, ${cells} cells; this target holds at most ${held}.`);
   }
 }
 

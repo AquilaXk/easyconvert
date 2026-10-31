@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { writeTransientWorkbook } from '../src/lib/conversions/data';
 import { generateOdsFromData } from '../src/lib/conversions/office';
-import { WORKBOOK_MAX_SHEETS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from '../src/lib/conversions/office/sheet-bounds';
+import { ODS_MAX_CELLS, WORKBOOK_MAX_SHEETS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from '../src/lib/conversions/office/sheet-bounds';
+import { PARQUET_MAX_COLUMNS } from '../src/lib/conversions/parquet-format';
+import { PDF_TABLE_MAX_CELLS } from '../src/lib/conversions/pdf-table-layout';
 import { PayloadLimitError, SheetLimitError } from '../src/lib/types';
 
 /**
@@ -114,5 +116,33 @@ describe('an ODS table is bound as an XLSX worksheet is', () => {
   it('writes a table of the widest row', async () => {
     const ods = await generateOdsFromData([new Array<string>(XLSX_MAX_COLUMNS).fill('')], 'widest');
     expect(ods.subarray(0, 2).toString('latin1')).toBe('PK');
+  });
+});
+
+describe('a table of records past the limit of its own writer', () => {
+  // Each line names one key, so a table of n lines is n x n cells: the smallest square past each writer's limit.
+  const linesPast = (cells: number): number => Math.floor(Math.sqrt(cells)) + 1;
+
+  const oneKeyArray = (count: number): Buffer => Buffer.from(`[${Array.from({ length: count }, (_, index) => `{"k${index}":1}`).join(',')}]`);
+
+  it.each([
+    ['ods', 'ndjson', oneKeyLines(linesPast(ODS_MAX_CELLS)), SheetLimitError],
+    ['pdf', 'json', oneKeyArray(linesPast(PDF_TABLE_MAX_CELLS)), PayloadLimitError],
+    ['parquet', 'ndjson', oneKeyLines(PARQUET_MAX_COLUMNS + 1), PayloadLimitError],
+  ] as const)('refuses %s before the matrix is built, with the typed limit error', async (target, source, input, errorType) => {
+    const before = process.memoryUsage().heapUsed;
+    const failure = await failureOf(() => dispatchConversion(input, source, target, {}, `wide.${source}`));
+    expect(failure).toBeInstanceOf(errorType);
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(HEAP_GROWTH_CEILING);
+  });
+
+  it('refuses an OpenDocument workbook past its cells from any caller of the writer', async () => {
+    const side = linesPast(ODS_MAX_CELLS);
+    const rows = Array.from({ length: side }, () => Array.from({ length: side }, () => ''));
+    const failure = await failureOf(() => generateOdsFromData(rows, 'wide'));
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as Error).message).toBe(
+      `The workbook has ${side * side} cells, and an OpenDocument spreadsheet this engine writes holds at most ${ODS_MAX_CELLS}; nothing was cut.`
+    );
   });
 });

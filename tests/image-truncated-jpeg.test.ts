@@ -102,6 +102,18 @@ describe('which streams are opened tolerantly', () => {
     expect(truncatedJpegDecodeOptions(FULL.subarray(0, walk.scanStart + floor))).toEqual({ failOn: 'none' });
   });
 
+  it.each([
+    ['lossless', 0xc3],
+    ['arithmetic-coded', 0xc9],
+  ])('a %s frame, which can code a block in less than one bit, keeps the strict default', (_name, sof) => {
+    const cut = Buffer.from(FULL.subarray(0, walk.scanStart + floor * 4));
+    const at = [0xc0, 0xc1, 0xc2].map((marker) => cut.indexOf(Buffer.from([0xff, marker]))).find((offset) => offset >= 0) ?? -1;
+    expect(at).toBeGreaterThan(0);
+    cut[at + 1] = sof;
+    expect(walkJpegStream(cut, 0).frameBlocks).toBe(-1);
+    expect(truncatedJpegDecodeOptions(cut)).toEqual({});
+  });
+
   it('a stream with its end marker keeps the strict default, so a corrupt but complete file is still reported', () => {
     expect(walk).toMatchObject({ end: FULL.length, frameBlocks: FRAME_BLOCKS });
   });

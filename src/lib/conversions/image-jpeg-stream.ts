@@ -20,6 +20,10 @@ const NO_OFFSET = -1;
 
 const JPEG_SOF_FIRST = 0xc0;
 const JPEG_SOF_LAST = 0xcf;
+/** SOF0 baseline, SOF1 extended and SOF2 progressive, all Huffman-coded DCT (ITU-T T.81 table B.1). */
+const HUFFMAN_DCT_FRAMES: ReadonlySet<number> = new Set([0xc0, 0xc1, 0xc2]);
+/** Marks a frame of another coding process: the walk keeps it and the decode stays strict. */
+const NOT_TOLERATED = -1;
 const JPEG_DHT = 0xc4;
 const JPEG_JPG_EXTENSION = 0xc8;
 const JPEG_DAC = 0xcc;
@@ -39,7 +43,7 @@ export interface JpegStreamWalk {
   end: number;
   /** Offset just past the first start-of-scan header, where the entropy-coded data begins, or -1 when no scan header was read in full. */
   scanStart: number;
-  /** The 8x8 blocks of every component of the frame the SOF declares, or 0 when the stream holds no complete frame header. */
+  /** The 8x8 blocks of every component of the frame the SOF declares; 0 when the stream holds no complete frame header, -1 for a frame that is not Huffman DCT. */
   frameBlocks: number;
 }
 
@@ -110,7 +114,8 @@ export function walkJpegStream(buffer: Buffer, start: number): JpegStreamWalk {
     if (pos + 3 >= buffer.length) return { end: NO_OFFSET, scanStart, frameBlocks };
     const segment = pos;
     pos += JPEG_MARKER_BYTES + buffer.readUInt16BE(pos + JPEG_MARKER_BYTES);
-    if (isFrameMarker(marker) && frameBlocks === 0) frameBlocks = frameBlocksOf(buffer, segment);
+    // Only a Huffman DCT frame (baseline, extended, progressive) codes every block in at least one bit; any other frame stays strict.
+    if (isFrameMarker(marker) && frameBlocks === 0) frameBlocks = HUFFMAN_DCT_FRAMES.has(marker) ? frameBlocksOf(buffer, segment) : NOT_TOLERATED;
     if (marker === JPEG_SOS) {
       if (pos <= buffer.length && scanStart === NO_OFFSET) scanStart = pos;
       pos = skipEntropyCodedData(buffer, pos);
@@ -142,7 +147,7 @@ export function minimumScanBytes(blocks: number): number {
 export function truncatedJpegDecodeOptions(buffer: Buffer): SharpOptions {
   if (!buffer.subarray(0, JPEG_SOI_MARKER.length).equals(JPEG_SOI_MARKER)) return {};
   const { scanStart, frameBlocks } = walkJpegStream(buffer, 0);
-  if (scanStart === NO_OFFSET || frameBlocks === 0) return {};
+  if (scanStart === NO_OFFSET || frameBlocks <= 0) return {};
   if (buffer.indexOf(JPEG_EOI_MARKER, scanStart) !== NO_OFFSET) return {};
   return buffer.length - scanStart >= minimumScanBytes(frameBlocks) ? { failOn: 'none' } : {};
 }
