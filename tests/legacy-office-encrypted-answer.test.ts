@@ -3,9 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { isEncryptedWordDocument } from '../src/lib/conversions/office/doc-reader';
 import { xlsHasFilePass } from '../src/lib/conversions/office';
-import { ConversionFailedError, EncryptedOfficeDocumentError } from '../src/lib/types';
+import { ConversionFailedError, EncryptedOfficeDocumentError, SandboxUnavailableError } from '../src/lib/types';
 import { isEncryptedLegacyOffice } from '../src/worker/office-input-checks';
-import { withEncryptedAnswer } from '../src/worker/office-suite-route';
+import { retryRefusedLegacyDocument, withEncryptedAnswer, type OfficeSuiteRouteDeps } from '../src/worker/office-suite-route';
+import { SandboxedProcessError, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import type { WorkerConversionResult, WorkerVfsPayload } from '../src/worker/worker-types';
 import { buildCompoundFile } from './helpers/cfb-craft';
 import { oracleTest } from './helpers/oracle-test';
@@ -115,9 +116,61 @@ describe('the office suite run on a legacy workbook or document it could not loa
     await expect(withEncryptedAnswer(failingSuite(failure))(input, src, 'pdf')).rejects.toBe(failure);
   });
 
-  it('keeps an error that is not "could not load" even for an encrypted workbook', async () => {
-    const failure = new Error('the sandbox is gone');
+  it.each([
+    ['an unavailable sandbox', new SandboxUnavailableError('no user namespaces')],
+    ['a time limit', new SandboxedTimeoutError(45_000)],
+    ['a stop of the suite on the document', new SandboxedProcessError('Unspecified Application Error', 1, 'Unspecified Application Error')],
+    ['a document with no export filter for the target', new SandboxedProcessError('Error: no export filter for /out/x.pdf found', 1, '')],
+  ])('keeps %s as it is, even for an encrypted workbook', async (_name, failure) => {
     await expect(withEncryptedAnswer(failingSuite(failure))(encryptedWorkbook(), 'xls', 'pdf')).rejects.toBe(failure);
+  });
+});
+
+describe('the reader refusal of an encrypted workbook, tried on the office suite', () => {
+  const readerRefusal = new EncryptedOfficeDocumentError('The XLS workbook is encrypted or password protected, so its cells cannot be read.');
+  const suiteResult: WorkerConversionResult = { buffer: Buffer.from('PK'), mimeType: 'application/zip', filename: 'out.xlsx', size: 2, engineUsed: 'native-soffice-pool', filePath: '/tmp/out.xlsx', executionTimeMs: 1 };
+
+  function deps(write: () => Promise<WorkerConversionResult | null>): { deps: OfficeSuiteRouteDeps; writes: () => number } {
+    let writes = 0;
+    return {
+      deps: {
+        writeWithOfficeSuite: async () => {
+          writes += 1;
+          return write();
+        },
+        convert: async () => ({ ...suiteResult, buffer: Buffer.from('a,b\n'), filename: 'out.csv', engineUsed: 'internal-fallback' }),
+        discardOutput: () => undefined,
+      },
+      writes: () => writes,
+    };
+  }
+  const csvRequest = { input: encryptedWorkbook(), src: 'xls', tgt: 'csv', options: {}, originalFilename: 'book.xls' };
+
+  it('converts through the suite when the suite reads it (the default password)', async () => {
+    const { deps: suite } = deps(async () => suiteResult);
+    await expect(retryRefusedLegacyDocument(suite, csvRequest, readerRefusal)).resolves.toMatchObject({ engineUsed: 'internal-fallback' });
+  });
+
+  it('keeps the 422 when the suite could not load it either', async () => {
+    const { deps: suite } = deps(async () => Promise.reject(new EncryptedOfficeDocumentError('The XLS file is encrypted or password protected.')));
+    await expect(retryRefusedLegacyDocument(suite, csvRequest, readerRefusal)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['an unavailable sandbox', new SandboxUnavailableError('no user namespaces')],
+    ['a time limit', new SandboxedTimeoutError(45_000)],
+  ])('answers %s as itself, not as a lasting "encrypted"', async (_name, failure) => {
+    const { deps: suite } = deps(async () => Promise.reject(failure));
+    await expect(retryRefusedLegacyDocument(suite, csvRequest, readerRefusal)).rejects.toBe(failure);
+  });
+
+  it('does not run the suite again on its own verdict that the workbook is encrypted', async () => {
+    const verdict = await withEncryptedAnswer(async () => {
+      throw new Error(NOT_LOADED);
+    })(encryptedWorkbook(), 'xls', 'pdf').catch((err: unknown) => err);
+    const { deps: suite, writes } = deps(async () => suiteResult);
+    await expect(retryRefusedLegacyDocument(suite, { ...csvRequest, tgt: 'pdf' }, verdict)).resolves.toBeUndefined();
+    expect(writes()).toBe(0);
   });
 });
 

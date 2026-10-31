@@ -496,7 +496,7 @@ describe('an encrypted workbook that the office suite could not load (issue 668)
   describe.each(variants)('%s', (_name, filePass) => {
     const compound = buildCompoundFile([{ name: 'Workbook', data: encryptedWorkbook(filePass) }]);
 
-    it.each(['ods', 'xlsx', 'pdf', 'png'])('is refused with status 422 for the .%s target after LibreOffice could not load it', async (target) => {
+    for (const target of ['ods', 'xlsx', 'pdf', 'png']) oracleTest(`is refused with status 422 for the .${target} target after LibreOffice could not load it`, ['soffice'], async () => {
       const failure = await dispatchConversion(compound, 'xls', target, {}, 'locked.xls').catch((err: unknown) => err);
       expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
       expect((failure as EncryptedOfficeDocumentError).status).toBe(422);
@@ -504,7 +504,7 @@ describe('an encrypted workbook that the office suite could not load (issue 668)
     }, 120_000);
   });
 
-  it('is refused the same way when the workbook is a bare BIFF stream', async () => {
+  oracleTest('is refused the same way when the workbook is a bare BIFF stream', ['soffice'], async () => {
     const failure = await dispatchConversion(encryptedWorkbook(RC4_FILEPASS), 'xls', 'ods', {}, 'locked.xls').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
     expect((failure as EncryptedOfficeDocumentError).status).toBe(422);

@@ -108,6 +108,7 @@ export function withOfficePageBounds(src: string, options: WorkerEngineOptions):
 const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
 /** LibreOffice's stderr when it cannot load the file, or loads it as another kind of document (a text file named .ppt) that has no export filter for the target. */
 const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no export filter for/;
+const LIBREOFFICE_NOT_LOADED_PATTERN = /source file could not be loaded/;
 /**
  * LibreOffice's stderr when the office suite itself stops on the document: an import filter that gives up ("Unspecified
  * Application Error") or a crash of its layout (a fatal signal). Another run on the same document stops the same way.
@@ -186,12 +187,33 @@ export function withEncryptedAnswer(run: OfficeSuiteRun): OfficeSuiteRun {
     try {
       return await run(input, sourceFormat, targetFormat, options, originalFilename);
     } catch (err) {
-      if (asUnreadableDocument(err, sourceFormat) !== err && isEncryptedLegacyOffice(input, sourceFormat)) {
-        throw new EncryptedOfficeDocumentError(`The ${sourceFormat.toUpperCase()} file is encrypted or password protected, so its content cannot be read.`);
+      if (officeSuiteCouldNotLoad(err) && OFFICE_NATIVE_SOURCES.has(sourceFormat) && encryptedInput(input, sourceFormat)) {
+        throw new SuiteEncryptedDocumentError(`The ${sourceFormat.toUpperCase()} file is encrypted or password protected, so its content cannot be read.`);
       }
       throw err;
     }
   };
+}
+
+/**
+ * The office suite's answer that it could not load an encrypted document: it has already tried the default password, so the
+ * reader's refusal of the same file is not retried on the suite (`isEncryptedWorkbookRefusal`).
+ */
+class SuiteEncryptedDocumentError extends EncryptedOfficeDocumentError {}
+
+/** The suite wrote nothing or could not load the file. A stop or a crash of the suite on the document is its own answer, never "encrypted". */
+function officeSuiteCouldNotLoad(err: unknown): boolean {
+  if (err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) return true;
+  return err instanceof SandboxedProcessError && LIBREOFFICE_NOT_LOADED_PATTERN.test(err.message);
+}
+
+/** Whether the input is an encrypted legacy document; a file that cannot be read for the check is not called encrypted. */
+function encryptedInput(input: Buffer | WorkerVfsPayload, sourceFormat: string): boolean {
+  try {
+    return isEncryptedLegacyOffice(input, sourceFormat);
+  } catch {
+    return false;
+  }
 }
 
 /** The metafile sources whose page the frame of the header decides, and the drawing format the office suite opens for them. */
@@ -433,7 +455,7 @@ export function officeSuiteReadsInputAndWrites(src: string, tgt: string, input: 
 
 /** The in-process reader's refusal of an encrypted workbook, which the office suite may still read: it decrypts one that uses the default password of the format. */
 function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
-  return refusal instanceof EncryptedOfficeDocumentError && officeReadingFormat(src) === 'xls';
+  return refusal instanceof EncryptedOfficeDocumentError && !(refusal instanceof SuiteEncryptedDocumentError) && officeReadingFormat(src) === 'xls';
 }
 
 /**
@@ -455,6 +477,9 @@ export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, req
     return { ...retried, fallbackChain: [...(retried.fallbackChain ?? []), `in-process reader refused the document: ${(refusal as Error).message}`] };
   } catch (retryError) {
     if (request.options.signal?.aborted) throw retryError;
+    // For an encrypted workbook the suite's run is the only way to read it: a failure that is not the suite's verdict on the file
+    // (an unavailable engine, a time or memory limit) is answered as itself, so it stays retryable, never as a lasting "encrypted".
+    if (isEncryptedWorkbookRefusal(request.src, refusal) && !(retryError instanceof EncryptedOfficeDocumentError)) throw retryError;
     return undefined;
   }
 }
