@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { ConversionFailedError, PayloadLimitError } from '../types';
+import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS } from './office/sheet-bounds';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex } from './pdf-fonts';
 
 /**
@@ -8,11 +9,6 @@ import { PdfUnicodeTextWriter, loadFontCoverageIndex } from './pdf-fonts';
  * drawn (paginated, with the header rows repeated), cell text wraps and grows the row instead of being cut,
  * and a table wider than the page continues in further column groups.
  */
-
-/** Most cells (rows times columns, over all sheets) one document may hold before it is refused with HTTP 413. */
-export const PDF_TABLE_MAX_CELLS = 1_000_000;
-/** Most columns one sheet may hold. */
-export const PDF_TABLE_MAX_COLUMNS = 16_384;
 
 const PAGE_SIZE = 'A4';
 const PAGE_MARGIN = 36;
