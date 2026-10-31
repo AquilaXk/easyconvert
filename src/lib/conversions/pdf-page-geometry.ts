@@ -1,4 +1,4 @@
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFPageTree } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 import { mapBoxToSource, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
@@ -83,6 +83,11 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
     doc = await PDFDocument.load(pdf, { updateMetadata: false });
   } catch (err) {
     throw new PdfPageFrameError(`Invalid PDF: the page boxes could not be read (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  // pdf-lib builds a page tree only for a dictionary typed /Type /Pages; anything else under /Pages (a script, a dictionary with
+  // no type) has no traverse method, so ask before walking and name what the file holds instead of the parser's TypeError.
+  if (!(doc.catalog.lookup(PDFName.of('Pages')) instanceof PDFPageTree)) {
+    throw new PdfPageFrameError('Invalid PDF: the /Pages entry of the catalog is not a page tree.');
   }
   let pages: ReturnType<PDFDocument['getPages']>;
   try {
