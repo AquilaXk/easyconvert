@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { sanitizeSvgDocument, sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-import { normalizeSvgForRendering } from '../src/lib/conversions/svg-geometry';
+import { normalizeSvgForRendering } from '../src/lib/conversions/svg-render-normalize';
 
 async function pixelAt(pngBuffer: Buffer, x: number, y: number): Promise<[number, number, number, number]> {
   const { data, info } = await sharp(pngBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });

@@ -43,9 +43,14 @@ export interface AudioTargetSpec {
   readonly maxChannels?: number;
   /**
    * Layout a source with more than `maxChannels` is mixed down to when the caller names no channel count. A target without
-   * one refuses such a source, because the right mix depends on the layout (7.1 to 5.1 has no single standard matrix).
+   * one refuses such a source, because the right mix depends on the layout.
    */
   readonly downmixLayout?: string;
+  /**
+   * The downmix to `downmixLayout` states `rematrix_maxval=1.0`, so the sum of each row of the matrix is at most 1. An encoder that takes floating
+   * point samples gets the mix unnormalised from FFmpeg's own format negotiation, which is what a target without this flag keeps.
+   */
+  readonly normalisedDownmix?: boolean;
 }
 
 const LOSSY_DEFAULT_BITRATE = '192k';
@@ -60,6 +65,8 @@ const OPUS_DEFAULT_SAMPLE_RATE_HZ = 48000;
 /** The AC-3 encoder accepts 1 to 6 channels (5.1) at these rates. */
 const AC3_SAMPLE_RATES_HZ: readonly number[] = [32000, 44100, 48000];
 const AC3_MAX_CHANNELS = 6;
+/** A 7.1 source is mixed down to 5.1(side), the widest layout the encoder codes and the one FFmpeg's own format negotiation picks with no channel count set. */
+const AC3_DOWNMIX_LAYOUT = '5.1(side)';
 /** The WMA v2 encoder writes mono or stereo up to 48 kHz. */
 const WMA_MAX_CHANNELS = 2;
 const WMA_MAX_SAMPLE_RATE_HZ = 48000;
@@ -125,6 +132,7 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
     userCodecs: [],
     allowedSampleRates: AC3_SAMPLE_RATES_HZ,
     maxChannels: AC3_MAX_CHANNELS,
+    downmixLayout: AC3_DOWNMIX_LAYOUT,
   },
   wma: {
     encoder: 'wmav2',
@@ -134,6 +142,7 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
     maxSampleRate: WMA_MAX_SAMPLE_RATE_HZ,
     maxChannels: WMA_MAX_CHANNELS,
     downmixLayout: 'stereo',
+    normalisedDownmix: true,
   },
   amr: {
     encoder: 'libopencore_amrnb',

@@ -171,6 +171,29 @@ describe('structure from positioned text', () => {
   });
 });
 
+describe('a paragraph that runs over several pages', () => {
+  const body = (pageNumber: number, texts: string[]): PdfPageContent => ({ ...page(texts.map((text, index) => item(text, 50, 100 + index * 14))), pageNumber });
+  const pages = [
+    body(1, ['The records of the organization were kept in the tower, and the', 'clerks who copied them each evening used a very careful administra-']),
+    body(2, ['tion that left almost nothing to chance in the long winter months,', 'so that every page was checked twice before it was put away until']),
+    body(3, ['spring came and the roads opened again, and the long work of copying', 'went on for another year before the last volume was finished at last.']),
+    body(4, ['Nobody remembers who bound the volumes in the end, but they were bound', 'well and they have outlasted the tower and the town around it too.']),
+  ];
+
+  it('is one paragraph over every page that carries on, a word broken at a page end rejoined, until a sentence ends', () => {
+    expect(lines(layoutPdf(pages, FONTS).model)).toEqual([
+      'The records of the organization were kept in the tower, and the clerks who copied them each evening used a very careful administration ' +
+        'that left almost nothing to chance in the long winter months, so that every page was checked twice before it was put away until ' +
+        'spring came and the roads opened again, and the long work of copying went on for another year before the last volume was finished at last.',
+      'Nobody remembers who bound the volumes in the end, but they were bound well and they have outlasted the tower and the town around it too.',
+    ]);
+  });
+
+  it('keeps the page texts, whatever the paragraph was made of', () => {
+    expect(layoutPdf(pages, FONTS).pageText.map((entry) => entry.lines.length)).toEqual([2, 2, 2, 2]);
+  });
+});
+
 describe('hostile pages', () => {
   it('refuses a page whose layout would take more steps than the limit, quickly and with a typed error', async () => {
     // Every run is on its own baseline and the runs cannot be clustered cheaply: the step budget decides.

@@ -794,7 +794,7 @@
     "rule": "complexity",
     "function": "readRun",
     "count": 1,
-    "maxValue": 37
+    "maxValue": 35
   },
   {
     "file": "src/lib/conversions/fb2-model.ts",
@@ -1000,7 +1000,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2778
+    "maxValue": 2734
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1576,7 +1576,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9568
+    "maxValue": 9567
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1935,13 +1935,6 @@
     "function": "decodeTruePlane",
     "count": 1,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/svg-geometry.ts",
-    "rule": "max-lines",
-    "function": "<module>",
-    "count": 1,
-    "maxValue": 1522
   },
   {
     "file": "src/lib/conversions/wasm/resampler-mac.ts",
@@ -2722,7 +2715,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2575
+    "maxValue": 2573
   },
   {
     "file": "src/worker/engines.ts",

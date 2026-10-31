@@ -19,7 +19,8 @@ import {
 } from './cad-nurbs';
 import { convertCadWithOcct, convertMeshToIgesWithOcct, isOcctSource } from './cad-occt';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
-import { MAX_SVG_INPUT_CHARS, normalizeSvgBufferForRendering } from './svg-geometry';
+import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
+import { normalizeSvgBufferForRendering } from './svg-render-normalize';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { convertDwgToDxf } from './cad-dwg';
 import { encodeSvgPageToDxf } from './vector-dxf';

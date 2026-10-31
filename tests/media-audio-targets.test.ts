@@ -512,6 +512,55 @@ function sevenPointOne(): string {
   });
 }
 
+const SEVEN_ONE_FRONT_LEFT = 0;
+const SEVEN_ONE_SIDE_LEFT = 6;
+const SEVEN_ONE_CHANNELS = 8;
+const FIVE_ONE_CHANNELS = 6;
+const AC3_LEVEL_TOLERANCE_DB = 0.5;
+/** A channel that holds no tone decodes far below this; the ones that hold the mix are within a few dB of the tone. */
+const SILENT_CHANNEL_DB = -60;
+const SKIP_AC3_FRAMES_SECONDS = 0.1;
+const DB_PER_DECADE = 20;
+
+function sevenPointOneWithToneIn(channel: number): string {
+  return input(`seven-one-ch${channel}.wav`, (file) => {
+    const silent = `anullsrc=channel_layout=mono:sample_rate=${SAMPLE_RATE}`;
+    const tone = `sine=frequency=${TONE_HZ}:sample_rate=${SAMPLE_RATE}`;
+    const sources = Array.from({ length: SEVEN_ONE_CHANNELS }, (_, index) => (index === channel ? tone : silent));
+    ffmpeg([
+      ...sources.flatMap((src) => ['-f', 'lavfi', '-t', String(CLIP_SECONDS), '-i', src]),
+      '-filter_complex', `join=inputs=${SEVEN_ONE_CHANNELS}:channel_layout=7.1`, '-c:a', 'pcm_s16le', file,
+    ]);
+  });
+}
+
+/** The RMS of each channel of a six-channel AC-3 file in dB, the first frames skipped, read by a separate ffmpeg decode. */
+function ac3ChannelLevelsDb(file: string): number[] {
+  const raw = ffmpeg(['-ss', String(SKIP_AC3_FRAMES_SECONDS), '-i', file, '-f', 'f32le', '-acodec', 'pcm_f32le', '-ac', String(FIVE_ONE_CHANNELS), '-']);
+  const samples = new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / Float32Array.BYTES_PER_ELEMENT);
+  const sums = new Array<number>(FIVE_ONE_CHANNELS).fill(0);
+  for (let at = 0; at < samples.length; at += 1) sums[at % FIVE_ONE_CHANNELS] += samples[at] * samples[at];
+  const frames = samples.length / FIVE_ONE_CHANNELS;
+  return sums.map((sum) => DB_PER_DECADE * Math.log10(Math.sqrt(sum / frames) + Number.EPSILON));
+}
+
+describe('a 7.1 source written to AC-3 keeps the level the reference mix gives', () => {
+  const channels: ReadonlyArray<[string, number]> = [['front left', SEVEN_ONE_FRONT_LEFT], ['side left', SEVEN_ONE_SIDE_LEFT]];
+
+  for (const [name, channel] of channels) oracleTest(`a tone in the ${name} channel is as loud as in ffmpeg -c:a ac3 with no filter`, ['ffmpeg', 'ffprobe'], async () => {
+    const source = sevenPointOneWithToneIn(channel);
+    const reference = path.join(workDir, `reference-${channel}.ac3`);
+    ffmpeg(['-i', source, '-c:a', 'ac3', '-b:a', '192k', reference]);
+    const ours = ac3ChannelLevelsDb(await convertToFile(source, 'wav', 'ac3', {}));
+    const expected = ac3ChannelLevelsDb(reference);
+    expect(Math.max(...expected)).toBeGreaterThan(SILENT_CHANNEL_DB);
+    expected.forEach((level, index) => {
+      if (level > SILENT_CHANNEL_DB) expect(Math.abs(ours[index] - level)).toBeLessThan(AC3_LEVEL_TOLERANCE_DB);
+      else expect(ours[index]).toBeLessThan(SILENT_CHANNEL_DB);
+    });
+  }, TEST_TIMEOUT_MS);
+});
+
 describe('explicit codec equal to the target default', () => {
   for (const id of ['ogg', 'oga', 'weba']) {
     oracleTest(`32 kHz mono WAV -> ${id} with audio.codec vorbis encodes with libvorbis`, ['ffmpeg', 'ffprobe'], async () => {
@@ -567,11 +616,12 @@ describe('encoder format limits are rejected before ffmpeg runs', () => {
     expect(argAfter(build('wma', { audio: { channels: 2, sampleRate: 44100 } }), '-ac')).toBe('2');
   });
 
-  oracleTest('an 8-channel input is refused by AC-3 (no single 7.1 to 5.1 mix) and mixed down to stereo by WMA, unless a channel count is requested', ['ffmpeg', 'ffprobe'], async () => {
+  oracleTest('an 8-channel input is mixed down to 5.1 by AC-3 and to stereo by WMA, unless a channel count is requested', ['ffmpeg', 'ffprobe'], async () => {
     const source = sevenPointOne();
-    expect(() => build('ac3', {}, source)).toThrow(InvalidMediaOptionError);
-    await expect(convertMedia(fs.readFileSync(source), 'wav', 'ac3', {}, 'wide')).rejects.toThrow(InvalidMediaOptionError);
+    const ac3 = ffprobeStreams(await convertToFile(source, 'wav', 'ac3', {}))[0];
+    expect([ac3.channels, ac3.channel_layout]).toEqual([6, '5.1(side)']);
     expect(ffprobeStreams(await convertToFile(source, 'wav', 'ac3', { audio: { channels: 2 } }))[0].channels).toBe(2);
+    expect(() => build('ac3', { audio: { channels: 8 } }, source)).toThrow(InvalidMediaOptionError);
     expect(() => build('wma', { audio: { channels: 8 } }, source)).toThrow(InvalidMediaOptionError);
     expect(ffprobeStreams(await convertToFile(source, 'wav', 'wma', {}))[0].channels).toBe(2);
     expect(ffprobeStreams(await convertToFile(source, 'wav', 'wma', { audio: { channels: 1 } }))[0].channels).toBe(1);

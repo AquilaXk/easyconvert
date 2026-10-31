@@ -82,11 +82,13 @@ export function assertChannelLimits(
 
 /**
  * The filter that brings the selected input track down to the target's `downmixLayout`, when the caller named no channel count
- * and the track holds more channels than the encoder codes (a 5.1 film track for WMA, which codes two); undefined when
- * nothing needs mixing. A target with no downmix layout refuses such a track instead. The matrix is FFmpeg's ITU-R BS.775 mix
- * (the centre and the surround channels 3 dB down, the LFE left out) with its normalisation stated: WMA takes floating-point
- * samples, for which FFmpeg would otherwise leave the mix unnormalised, 7 dB louder than the same mix for the 16-bit encoders
- * (MP3) and over full scale for loud content.
+ * and the track holds more channels than the encoder codes (a 7.1 track for AC-3, which codes 5.1, or a 5.1 film track for WMA, which
+ * codes two); undefined when nothing needs mixing. A target with no downmix layout refuses such a track instead. The mix is FFmpeg's
+ * own for the pair of layouts (for stereo the ITU-R BS.775 matrix: the centre and the surround channels 3 dB down, the LFE left out).
+ * A target that sets `normalisedDownmix` (WMA) states the normalisation: its encoder takes floating-point samples, for which FFmpeg
+ * would otherwise leave the mix unnormalised, 7 dB louder than the same mix for the 16-bit encoders (MP3) and over full scale for
+ * loud content. AC-3 does not: its encoder takes floating-point samples too, and the unnormalised mix is the one that
+ * `ffmpeg -c:a ac3` writes with no filter, which leaves the front channels and the LFE of a 7.1 track at their own level.
  */
 function implicitDownmixFilter(
   spec: AudioTargetSpec,
@@ -97,7 +99,7 @@ function implicitDownmixFilter(
   if (spec.maxChannels === undefined || spec.downmixLayout === undefined || requestedChannelCount(options) !== undefined) return undefined;
   const channels = channelsToWrite(options, input, ffmpegBin);
   if (channels === undefined || channels <= spec.maxChannels) return undefined;
-  return `aresample=ochl=${spec.downmixLayout}:rematrix_maxval=1.0`;
+  return spec.normalisedDownmix ? `aresample=ochl=${spec.downmixLayout}:rematrix_maxval=1.0` : `aresample=ochl=${spec.downmixLayout}`;
 }
 
 function bs775Filter(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): string {

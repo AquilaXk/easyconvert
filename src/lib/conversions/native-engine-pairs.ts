@@ -27,7 +27,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'xls->jpg', 'xls->png',
   'xlsx->jpg', 'xlsx->png',
   // A BIFF8 workbook: the office suite writes it, from the XLSX workbook the in-process engine writes or from the source it reads.
-  'csv->xls', 'tsv->xls', 'json->xls', 'parquet->xls', 'et->xls', 'pdf->xls', 'xlsx->xls', 'xlsm->xls', 'ods->xls', 'numbers->xls',
+  'csv->xls', 'tsv->xls', 'json->xls', 'parquet->xls', 'ndjson->xls', 'jsonl->xls', 'yaml->xls', 'yml->xls', 'xml->xls', 'et->xls', 'pdf->xls', 'xlsx->xls', 'xlsm->xls', 'ods->xls', 'numbers->xls',
   'xps->avif', 'xps->bmp', 'xps->eps', 'xps->gif', 'xps->ico', 'xps->jpg', 'xps->pdf', 'xps->png', 'xps->ps', 'xps->psd', 'xps->svg', 'xps->tiff', 'xps->webp',
 ]);
 
