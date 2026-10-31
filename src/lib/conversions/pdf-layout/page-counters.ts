@@ -64,18 +64,19 @@ export function pageCounterBlocks<Block>(lines: readonly FurnitureLine<Block>[])
   }
   const counters = new Map<Block, CounterForm>();
   for (const group of groups.values()) {
-    const printed = group.map((line) => printedCounter(line.text));
-    const offsets = printed.map((counter, at) => (counter === undefined ? undefined : counter.number - group[at].pageNumber));
+    const printed = group.flatMap((line) => printedCounter(line.text) ?? []);
+    if (printed.length < group.length) continue;
+    const offsets = printed.map((counter, at) => counter.number - group[at].pageNumber);
     const [offset] = offsets;
-    if (offset === undefined || offsets.some((other) => other !== offset)) continue;
-    const forms = printed.map((counter) => counter?.form);
+    if (offsets.some((other) => other !== offset)) continue;
+    const forms = printed.map((counter) => counter.form);
     const pageCount = new Set(group.map((line) => line.pageNumber)).size;
     const accepted =
       offset === 0
         ? pageCount >= MIN_PAGES_FOR_BARE || forms.some((form) => form !== 'bare')
         : pageCount >= MIN_PAGES_FOR_OFFSET && forms.every((form) => form === 'decorated');
     if (!accepted) continue;
-    group.forEach((line, at) => counters.set(line.block, forms[at] as CounterForm));
+    group.forEach((line, at) => counters.set(line.block, forms[at]));
   }
   return counters;
 }

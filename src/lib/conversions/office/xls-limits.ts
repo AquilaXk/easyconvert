@@ -5,7 +5,8 @@ import { openPackage } from '../package-access';
 import { readZipEntryText, scanZipEntry } from '../zip-entry-reader';
 import { streamElementsWithin } from './opc-parts';
 import { XLSX_MAX_PART_ENTRIES, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './xlsx-sheets';
-import { gridOf, sheetLimitError } from './sheet-bounds';
+import { sheetLimitError } from './sheet-bounds';
+import { gridOf } from '../table-grid';
 
 /**
  * A workbook that is written as `.xls` has to fit the BIFF8 sheet. The office suite's `MS Excel 97` export drops the rows past 65,536

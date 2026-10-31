@@ -24,7 +24,8 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { generateOdsFromData, officeSheetWorkbook } from './office';
-import { gridLimitError, gridOf, isSpreadsheetGrid, sheetLimitError, type Grid } from './office/sheet-bounds';
+import { sheetLimitError } from './office/sheet-bounds';
+import { gridLimitError, gridOf, isSpreadsheetGrid, type Grid } from './table-grid';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';

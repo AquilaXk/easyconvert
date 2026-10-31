@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { writeTransientWorkbook } from '../src/lib/conversions/data';
 import { generateOdsFromData } from '../src/lib/conversions/office';
-import { gridOf } from '../src/lib/conversions/office/sheet-bounds';
+import { gridOf } from '../src/lib/conversions/table-grid';
 import { encodeParquet } from '../src/lib/conversions/parquet-writer';
 import { writeXlsx, writeXlsxWorkbook } from '../src/lib/conversions/xlsx-writer';
 import { PayloadLimitError, SheetLimitError } from '../src/lib/types';
