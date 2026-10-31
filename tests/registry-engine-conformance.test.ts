@@ -1,5 +1,5 @@
 import { buildCompoundFile } from './helpers/cfb-craft';
-import { afterAll, afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
@@ -950,6 +950,14 @@ function buildShortMediaSample(dir: string, source: string): Buffer | null {
 
 // skip-ok: part selection: the sharded run executes each of these once, in part 1.
 describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
+  /** The first call of each entry point loads the readers it dispatches to: 0.9 s on a fast core, which a loaded shard stretches past the 5 s default of a test. */
+  const COLD_START_TIMEOUT_MS = 60_000;
+  beforeAll(async () => {
+    await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch(() => undefined);
+    await convertDocument(FIXTURES.get('pdf')![0], 'pdf', 'svg', {}, 'probe.pdf').catch(() => undefined);
+    await convertFile(PLAIN_TEXT, 'pdf', 'txt', {}, 'probe.pdf').catch(() => undefined);
+  }, COLD_START_TIMEOUT_MS);
+
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
     expect((routing as Error).message).toMatch(/^Unsupported office conversion from pages to doc$/);

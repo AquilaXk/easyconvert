@@ -7,32 +7,26 @@ import { assertWorkbookFitsXls } from '../src/lib/conversions/office/xls-limits'
 import { XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_MAX_SHEETS } from '../src/lib/conversions/office/xlsx-sheets';
 import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
-import { DEFAULT_HANG_GUARD_MS, cpuClockMs, expectSizeIndependentOnInputs } from './helpers/timing';
+import { DEFAULT_HANG_GUARD_MS, cpuClockMs, expectSizeIndependentOnInputs, expectWithinHangGuard } from './helpers/timing';
+import { RELATIONSHIPS_NAMESPACE, mergeCells, withRelationshipsNamespace, withSheetTail } from './helpers/xlsx-hostile-sheet';
 
 /**
  * The lists a worksheet part carries beside its cells (merged ranges, hyperlinks, relationships) and the list of sheets of a
  * workbook are taken one element at a time into their final shape and bounded, so that a few hundred kilobytes of repeated
  * elements cannot ask for gigabytes of heap or minutes of CPU. Merged ranges and hyperlinks past their bound are left out and the
  * conversion goes on; relationships scanned past theirs, and sheets past theirs, are refused (413). Each hostile package below is
- * a few hundred kilobytes compressed. CPU time is read, not wall-clock time: it does not count the time a busy runner keeps the
- * process waiting.
+ * a few hundred kilobytes compressed. What the reading costs is not asserted here: reading the million ranges that are kept takes
+ * about a second of CPU on a fast core and about five times that on a loaded shard, so the cost of the hostile sheet is compared
+ * with the cost of one just past the bound in xlsx-element-bounds.perf.test.ts, which runs nightly.
  */
 
-const RELATIONSHIPS_NAMESPACE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const PACKAGE_NAMESPACE = 'http://schemas.openxmlformats.org/package/2006/relationships';
-const MERGE = '<mergeCell ref="A1:B2"/>';
 const MILLIONS = 3_000_000;
+/** The CPU time to refuse a workbook that lists one sheet 100,000 times, on a fast core: about 60 ms. */
+const REFUSAL_EXPECTED_LOCAL_MS = 100;
 
-/** The worksheet root of the writer declares the main namespace only; a sheet with `r:id` attributes declares the relationships one as well. */
-const withRelationshipsNamespace = (sheet: string): string => sheet.replace('<worksheet ', `<worksheet xmlns:r="${RELATIONSHIPS_NAMESPACE}" `);
-
-async function workbookWith(sheetTail: string, extra: (zip: JSZip) => void = () => undefined): Promise<Buffer> {
-  const zip = await JSZip.loadAsync(await writeXlsx([['a']], 'verbatim'));
-  const sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
-  zip.file('xl/worksheets/sheet1.xml', withRelationshipsNamespace(sheet).replace('</worksheet>', `${sheetTail}</worksheet>`));
-  extra(zip);
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-}
+/** A one-cell workbook whose first worksheet ends in `sheetTail`. */
+const workbookWith = async (sheetTail: string, extra?: (zip: JSZip) => void): Promise<Buffer> => withSheetTail(await writeXlsx([['a']], 'verbatim'), sheetTail, extra);
 
 /** A copy of the first worksheet as sheet `index`, listed in the workbook and its relationships under the name `S<index>`. */
 async function addSheetCopy(zip: JSZip, index: number, relationshipsPart: string | Buffer | undefined): Promise<void> {
@@ -47,8 +41,6 @@ async function addSheetCopy(zip: JSZip, index: number, relationshipsPart: string
     )
   );
 }
-
-const mergeCells = (count: number): string => `<mergeCells count="${count}">${MERGE.repeat(count)}</mergeCells>`;
 
 /** A workbook whose `sheets` list holds `sheets`, each a `sheet` element that names `rId1`, the one worksheet part. */
 async function workbookListing(sheets: string): Promise<Buffer> {
@@ -83,16 +75,26 @@ describe('merged ranges of a worksheet', () => {
     expect(sheet.mergedRanges![99_999]).toEqual({ startRow: 0, endRow: 1, startCol: 0, endCol: 1 });
   });
 
-  it('stop at the bound, in bounded CPU time, when millions of them are listed in a small file, and the sheet is still read', async () => {
+  it('stop at the bound when millions of them are listed in a small file, and the sheet is still read', async () => {
     const hostile = await workbookWith(mergeCells(MILLIONS));
     expect(hostile.length).toBeLessThan(1024 * 1024);
-    const started = cpuClockMs();
     const [sheet] = await parseAllXlsxWorksheets(hostile);
-    const cpuMs = cpuClockMs() - started;
     expect(sheet.mergedRanges).toHaveLength(XLSX_MAX_RANGES_PER_WORKBOOK);
     expect(sheet.rows[0]).toEqual(['a']);
-    expect(cpuMs, `took ${cpuMs.toFixed(0)} ms of CPU`).toBeLessThan(DEFAULT_HANG_GUARD_MS);
   }, 60_000);
+
+  it('leave the columns and the rows of a sheet whose elements carry a prefix as they are read', async () => {
+    const MAIN_NAMESPACE = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const prefixedSheet =
+      `<?xml version="1.0"?><x:worksheet xmlns:x="${MAIN_NAMESPACE}"><x:cols><x:col min="2" max="2" width="20" customWidth="1"/></x:cols>` +
+      `<x:sheetData><x:row r="1"><x:c r="A1" t="inlineStr"><x:is><x:t>a</x:t></x:is></x:c><x:c r="B1" t="inlineStr"><x:is><x:t>b</x:t></x:is></x:c></x:row></x:sheetData>` +
+      `${mergeCells(1000).replace(/<(\/?)(mergeCells?)/g, '<$1x:$2')}</x:worksheet>`;
+    const workbook = await workbookWith('', (zip) => zip.file('xl/worksheets/sheet1.xml', prefixedSheet));
+    const [sheet] = await parseAllXlsxWorksheets(workbook);
+    expect(sheet.rows[0]).toEqual(['a', 'b']);
+    expect(sheet.columnWidths).toEqual([undefined, 150]);
+    expect(sheet.mergedRanges).toHaveLength(1000);
+  });
 
   it('are counted for the whole workbook, not for each sheet', async () => {
     const half = Math.ceil(XLSX_MAX_RANGES_PER_WORKBOOK / 2) + 1;
@@ -231,7 +233,7 @@ describe('sheets of a workbook', () => {
     for (const run of runs) {
       const { failure, cpuMs } = await refusal(run);
       expectPayloadLimit(failure, new RegExp(`more than ${XLSX_MAX_SHEETS} sheets`));
-      expect(cpuMs, `took ${cpuMs.toFixed(0)} ms of CPU`).toBeLessThan(DEFAULT_HANG_GUARD_MS);
+      expectWithinHangGuard('the refusal of a sheet listed 100,000 times', cpuMs, { guardMs: DEFAULT_HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
     }
   });
 

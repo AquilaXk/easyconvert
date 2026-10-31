@@ -9,7 +9,7 @@ import { OcrWorkerPool, type OcrPooledWorker, type OcrWorkerHealth, type OcrWork
 
 const SPEC: OcrWorkerSpec = { langs: 'eng', langPath: '/tessdata', gzip: false, engineMode: 1, parameters: { tessedit_pageseg_mode: '3' } };
 const SETTLE_MS = 100;
-const HANG_GUARD_MS = 2_000;
+const NO_SETTLE_WAIT_MS = 2_000;
 
 interface FakeWorker extends OcrPooledWorker {
   terminated: boolean;
@@ -53,7 +53,7 @@ async function outcomeOf(promise: Promise<unknown>): Promise<unknown> {
       () => 'resolved',
       (error: unknown) => error
     ),
-    new Promise<string>((resolve) => setTimeout(() => resolve('still running'), HANG_GUARD_MS)),
+    new Promise<string>((resolve) => setTimeout(() => resolve('still running'), NO_SETTLE_WAIT_MS)),
   ]);
 }
 

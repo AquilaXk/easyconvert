@@ -1,1 +1,884 @@
-[]
+[
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-7z-aes-work.test.ts",
+    "symbol": "<template title>",
+    "reason": "relative: a bound computed from the time `7z t` takes on the same archive in the same run; measured 24.9 ms against 330.7 ms on a fast core (13.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-7z-aes-work.test.ts",
+    "symbol": "<template title>",
+    "reason": "relative: a bound computed from the time `7z t` takes on the same archive in the same run; measured 23.5 ms against 330.7 ms on a fast core (14.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-7z-aes-work.test.ts",
+    "symbol": "derives a key once and hands the same key to every later request for it",
+    "reason": "measured 28.6 ms against 1500 ms on a fast core (52.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-7z-aes-work.test.ts",
+    "symbol": "refuses 64 folders with distinct salts at the top power before hashing anything, without stalling the loop",
+    "reason": "measured 0.2 ms against 2000 ms on a fast core (8857.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-7z-aes-work.test.ts",
+    "symbol": "refuses 64 folders with distinct salts at the top power before hashing anything, without stalling the loop",
+    "reason": "measured 0 ms against 100 ms on a fast core (100000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-7z-aes-work.test.ts",
+    "symbol": "derives three distinct keys at the top power on a pool thread: the loop keeps turning, the wrong password is typed",
+    "reason": "measured 1.4 ms against 100 ms on a fast core (71.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-native-bzip2.test.ts",
+    "symbol": "stops the lbzip2 process when the request is aborted",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-native-deflate.test.ts",
+    "symbol": "stops the libdeflate process when the request is aborted",
+    "reason": "measured 0 ms against 2000 ms on a fast core (2000000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-xz-sandbox.test.ts",
+    "symbol": "decompressXz stops at the job deadline instead of waiting for xz",
+    "reason": "measured 302 ms against 10000 ms on a fast core (33.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-xz-sandbox.test.ts",
+    "symbol": "compressXz stops when the job signal fires and rethrows its reason",
+    "reason": "measured 303 ms against 10000 ms on a fast core (33.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/archive-xz-sandbox.test.ts",
+    "symbol": "compressXz stops at the job deadline",
+    "reason": "measured 302 ms against 10000 ms on a fast core (33.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dwg-fuzz.test.ts",
+    "symbol": "<template title>",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dwg-fuzz.test.ts",
+    "symbol": "<template title>",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dwg-reader.test.ts",
+    "symbol": "stops a program that does not finish within the time of the conversion, with a typed timeout and without waiting for it",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 703 ms against 10000 ms on a fast core (14.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dwg-reader.test.ts",
+    "symbol": "stops a program when the job is cancelled",
+    "reason": "measured 303 ms against 10000 ms on a fast core (33.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dxf-limits.test.ts",
+    "symbol": "refuses nested 1000 x 500 arrays of a block that draws nothing, fast and with a typed 422",
+    "reason": "measured 34 ms against 3000 ms on a fast core (88.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dxf-limits.test.ts",
+    "symbol": "refuses nested arrays of a block that holds one TEXT, before the text fills the heap",
+    "reason": "measured 36 ms against 3000 ms on a fast core (83.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dxf-limits.test.ts",
+    "symbol": "reduces a very large ARC angle into one turn, so the extents are finite and found at once",
+    "reason": "measured 0 ms against 3000 ms on a fast core (3000000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dxf-limits.test.ts",
+    "symbol": "refuses a SPLINE of %s with a typed geometry error, without evaluating it",
+    "reason": "measured 5 ms against 3000 ms on a fast core (600.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-dxf-limits.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 1 ms against 3000 ms on a fast core (3000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-iges-preflight.test.ts",
+    "symbol": "is repaired in time when a hundred thousand counts are too large",
+    "reason": "measured 14.7 ms against 5000 ms on a fast core (340.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cad-occt-real-samples.test.ts",
+    "symbol": "allocates nothing for counts that the file does not hold, however large they are",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/ci-setup-tasks.test.ts",
+    "symbol": "<module>",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 2023 ms against 15000 ms on a fast core (7.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/ci-setup-tasks.test.ts",
+    "symbol": "<module>",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 2027 ms against 15000 ms on a fast core (7.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/compound-file-kind.test.ts",
+    "symbol": "is refused when the directory declares more entries than the parser reads",
+    "reason": "measured 9.8 ms against 2000 ms on a fast core (204.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/cpu-pool.test.ts",
+    "symbol": "frees the thread within a second when a running task is aborted, and keeps serving",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/delimited-ragged-limits.test.ts",
+    "symbol": "refuses 20,000 records padded to one of 20,000 fields in a worker heap of 128 MiB, quickly",
+    "reason": "measured 6 ms against 5000 ms on a fast core (833.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/doc-symbol-fonts.test.ts",
+    "symbol": "survives seeded mutations of the formatting structures without a hang or an untyped error",
+    "reason": "measured 1 ms against 2000 ms on a fast core (2000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/doc-symbol-fonts.test.ts",
+    "symbol": "survives seeded mutations of the formatting structures without a hang or an untyped error",
+    "reason": "measured 45 ms against 30000 ms on a fast core (666.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/dxf-bitmap-font-text.test.ts",
+    "symbol": "reads a mask of 30,000 pictures once for 30,000 uses of its glyph, and writes one TEXT per run",
+    "reason": "measured 241 ms against 5000 ms on a fast core (20.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/dxf-bitmap-font-text.test.ts",
+    "symbol": "matches glyphs against a text layer of 200,000 runs on one baseline without comparing every pair",
+    "reason": "measured 57 ms against 5000 ms on a fast core (87.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/ebook-calibre-route.test.ts",
+    "symbol": "gives the two runs of a PDB book one time limit between them, not one each",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 1502 ms against 3000 ms on a fast core (2.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "WOFF2 encode of %s font keeps the loop delay under the budget",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 2.7 ms against 105 ms on a fast core (38.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a 24 MP 16-bit PNG encode keeps the loop delay under the budget and equals the synchronous encoder",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 7.3 ms against 105 ms on a fast core (14.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a 16 MB bzip2 encode keeps the loop delay under the budget and decodes with `bzip2 -dc`",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 6.8 ms against 105 ms on a fast core (15.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a 3 MB pure xz encode keeps the loop delay under the budget and unpacks to the input",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 2.6 ms against 105 ms on a fast core (40.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a level-19 zstd encode of 1 MB keeps the loop delay under the budget and equals the synchronous frame",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 0.3 ms against 105 ms on a fast core (329.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a level-%i zstd encode of 8 MB in jobs keeps the loop delay under the budget and equals the synchronous frame",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 3.7 ms against 105 ms on a fast core (28.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a pure 7z archive of three 1 MB files keeps the loop delay under the budget and extracts to the inputs",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 0.8 ms against 105 ms on a fast core (123.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a native 7z archive keeps the loop delay under the budget while 7-Zip compresses",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 3.2 ms against 105 ms on a fast core (33.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/event-loop-budget.test.ts",
+    "symbol": "a 3-minute stereo FLAC encode keeps the loop delay under the budget and equals the synchronous stream",
+    "reason": "event-loop CPU time between two ticks against the product budget of 100 ms (EVENT_LOOP_BLOCK_BUDGET_MS), which is the claim and cannot be widened; measured 2.9 ms against 105 ms on a fast core (36.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/font-cff-to-truetype.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 31.7 ms against 30000 ms on a fast core (944.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/health-live-probes.test.ts",
+    "symbol": "answers 503 within the probe deadline when the Redis port is closed, and the admin view names redis",
+    "reason": "measured 2 ms against 12000 ms on a fast core (6000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/health-live-probes.test.ts",
+    "symbol": "gives up on a Redis that accepts connections but never answers, within the probe deadline",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 2003 ms against 12000 ms on a fast core (6.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/health-live-probes.test.ts",
+    "symbol": "answers 503 with reason timeout when the object store stalls past the probe deadline",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 2003 ms against 12000 ms on a fast core (6.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-image-fetch.test.ts",
+    "symbol": "refuses a server that never answers after the per-fetch time",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 302 ms against 2500 ms on a fast core (8.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-image-session.test.ts",
+    "symbol": "shares one total time across the fetches",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 1551 ms against 8000 ms on a fast core (5.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-image-session.test.ts",
+    "symbol": "stops a fetch in flight when the job signal fires",
+    "reason": "measured 0 ms against 2000 ms on a fast core (2000000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-pdf-inprocess-omissions.test.ts",
+    "symbol": "answers MathML nested hundreds of levels deep quickly, with a document or a typed refusal",
+    "reason": "measured 1 ms against 5000 ms on a fast core (5000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-pdf-nested-tables.test.ts",
+    "symbol": "answers a page nested far past the limit with a typed refusal, quickly",
+    "reason": "measured 1 ms against 5000 ms on a fast core (5000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-pdf-nested-tables.test.ts",
+    "symbol": "refuses a cell spanning a thousand columns as too wide for the page, quickly, whatever its rowspan",
+    "reason": "measured 1 ms against 2000 ms on a fast core (2000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-pdf-nested-tables.test.ts",
+    "symbol": "refuses a row of five thousand cells before it measures them, quickly",
+    "reason": "measured 10 ms against 2000 ms on a fast core (200.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/html-pdf-nested-tables.test.ts",
+    "symbol": "answers absurd widths and spans in bounded time: a table of 99999999 px and one of 100000 %",
+    "reason": "measured 50 ms against 5000 ms on a fast core (100.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/image-tiff-tag-order.test.ts",
+    "symbol": "is walked once, not once per directory it links to: %s",
+    "reason": "measured 1.4 ms against 1000 ms on a fast core (715.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/image-tiff-tag-order.test.ts",
+    "symbol": "is walked once, not once per directory it links to: %s",
+    "reason": "measured 0.6 ms against 1000 ms on a fast core (1641.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-enforcement.test.ts",
+    "symbol": "is killed at its deadline: process group gone, temp directory removed, typed error, no retry",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 406 ms against 4400 ms on a fast core (10.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-ocr.test.ts",
+    "symbol": "stops at the job signal: the call ends with the deadline error and no render or Tesseract process is left",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 1504 ms against 15000 ms on a fast core (10.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-ocr.test.ts",
+    "symbol": "limits the OCR of a long document to 90 percent of the time the job has left, as a typed 413 before the deadline",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 3617 ms against 12000 ms on a fast core (3.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-sync-routes.test.ts",
+    "symbol": "answers a typed 504 within the bound when the conversion never ends, and aborts the conversion",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 329 ms against 3300 ms on a fast core (10.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-sync-routes.test.ts",
+    "symbol": "aborts the conversion when the client disconnects after it started, and refunds the quota",
+    "reason": "measured 0 ms against 3000 ms on a fast core (3000000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-sync-routes.test.ts",
+    "symbol": "$label stops at the cap, below the job deadline, and points to the asynchronous API",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 204 ms against 2000 ms on a fast core (9.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/job-deadline-sync-routes.test.ts",
+    "symbol": "$label stops at the cap, below the job deadline, and points to the asynchronous API",
+    "reason": "measured -3 ms against 200 ms on a fast core (200000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/media-decode-failures-log.test.ts",
+    "symbol": "reads a megabyte tag of repeated %j in linear time",
+    "reason": "measured 22.6 ms against 2000 ms on a fast core (88.6x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/media-hw-probe-bounds.test.ts",
+    "symbol": "<module>",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 3005 ms against 13000 ms on a fast core (4.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/media-hw-probe-bounds.test.ts",
+    "symbol": "<module>",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 5233 ms against 15000 ms on a fast core (2.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/metafile-page-frame.test.ts",
+    "symbol": "is not read past the first mebibyte of a WMF: a file that never gives a window extent there is left to the office suite, quickly",
+    "reason": "measured 2 ms against 1000 ms on a fast core (502.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/mobi-book-structure.test.ts",
+    "symbol": "finishes quickly on thousands of links that never close, which it converts or refuses with a typed error",
+    "reason": "measured 181 ms against 15000 ms on a fast core (82.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/ocr-cli-tsv.test.ts",
+    "symbol": "does not stall the event loop while the CLI recognizes a page",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/ocr-cli-tsv.test.ts",
+    "symbol": "<module>",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/office-source-signatures.test.ts",
+    "symbol": "reads thousands of tiny entries in bounded time, and takes a long package that starts in a CorelDRAW folder as unread",
+    "reason": "measured 10.6 ms against 1000 ms on a fast core (94.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/oracles/product/oracle-hardening.test.ts",
+    "symbol": "stops the pipeline promptly and rejects when the signal aborts",
+    "reason": "measured 51 ms against 2000 ms on a fast core (39.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-annotation-text-hostile.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 53.3 ms against 15000 ms on a fast core (281.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-annotation-text.test.ts",
+    "symbol": "keeps the text of 10,000 notes on a page whose own 50,000 glyphs have no mapping, each note once",
+    "reason": "measured 401 ms against 30000 ms on a fast core (74.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-encryption-inspect.test.ts",
+    "symbol": "is refused with a typed 413 within a small memory and time budget, in a fresh process",
+    "reason": "measured 68.7 ms against 3000 ms on a fast core (43.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-internal-links.test.ts",
+    "symbol": "keeps every link and destination, as a name tree qpdf accepts, in a time that grows with the page",
+    "reason": "measured 402 ms against 60000 ms on a fast core (149.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-internal-links.test.ts",
+    "symbol": "names thousands of equal ids once each",
+    "reason": "measured 218 ms against 60000 ms on a fast core (275.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-jbig2-bomb.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 2 ms against 5000 ms on a fast core (2510.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-jbig2-bomb.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 0.6 ms against 5000 ms on a fast core (8775.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-jbig2-bomb.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 0.7 ms against 5000 ms on a fast core (6880.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-jbig2-bomb.test.ts",
+    "symbol": "reads %s once and examines a bounded number of names in %i MB",
+    "reason": "measured 20.2 ms against 3000 ms on a fast core (148.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-ocr-page-scaling.test.ts",
+    "symbol": "stops before the job deadline when the job has one, even though the pages would fit the budget of the document",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 9007.9 ms against 10000 ms on a fast core (1.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-decoders-limits.test.ts",
+    "symbol": "refuses a page that would decode more than",
+    "reason": "measured 311.4 ms against 30000 ms on a fast core (96.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-decoders.test.ts",
+    "symbol": "<module>",
+    "reason": "measured 279.6 ms against 15000 ms on a fast core (53.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-guard.test.ts",
+    "symbol": "reads a JBIG2Globals stream that 1,000 pictures share once, however long its segments run",
+    "reason": "measured 15.5 ms against 3000 ms on a fast core (193.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-guard.test.ts",
+    "symbol": "parses an inline image dictionary over its own BI to ID text, so unclosed arrays do not run on",
+    "reason": "measured 7.4 ms against 3000 ms on a fast core (406.3x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-guard.test.ts",
+    "symbol": "stops giving the readers bytes once the spans of pictures that overlap have used the budget",
+    "reason": "measured 10.7 ms against 3000 ms on a fast core (280.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-repeats.test.ts",
+    "symbol": "is refused with a 413 once the document places more pictures than the limit, however small they are",
+    "reason": "measured 6 ms against 60000 ms on a fast core (10000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-repeats.test.ts",
+    "symbol": "is refused with a 413 when its pages place more pictures than the limit",
+    "reason": "measured 336 ms against 60000 ms on a fast core (178.6x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-picture-repeats.test.ts",
+    "symbol": "converts a picture shared by many pages, one placement each, in time and with one copy per placement",
+    "reason": "measured 104 ms against 60000 ms on a fast core (576.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-cid-widths-bounds.test.ts",
+    "symbol": "reads one 100,000-entry array named 1,000 times from far below the CIDs asked for, in 64 fonts, at the cost of the entries",
+    "reason": "measured 18 ms against 2000 ms on a fast core (110.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-cid-widths-bounds.test.ts",
+    "symbol": "leaves the fonts as they were when /W names a 1,000-entry array 100,000 times from the first CID, past the step budget, though every width is the font's",
+    "reason": "measured 32.9 ms against 2000 ms on a fast core (60.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-font-program-tounicode.test.ts",
+    "symbol": "are read within a second when the program repeats one unreadable cmap subtable, and the file is passed on as it is",
+    "reason": "measured 3.4 ms against 1000 ms on a fast core (293.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-font-program-tounicode.test.ts",
+    "symbol": "each get the text of the readable subtable behind such records, within a second",
+    "reason": "measured 11.6 ms against 1000 ms on a fast core (86.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-font-program-tounicode.test.ts",
+    "symbol": "cost no more to read as a stream that inflates past the cap than as one font, and the file is passed on as it is",
+    "reason": "relative: a bound of 4 times the cost of one font measured in the same run, plus 150 ms; measured 17.9 ms against 215.3 ms on a fast core (12.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-font-program-tounicode.test.ts",
+    "symbol": "read a /Differences of 200,000 names within the bound, as one map of at most 255 codes",
+    "reason": "measured 46.4 ms against 2000 ms on a fast core (43.1x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-font-program-tounicode.test.ts",
+    "symbol": "read at most the 4,096 fonts the reader reports of a page that names 5,001, within the bound",
+    "reason": "measured 29.9 ms against 2000 ms on a fast core (66.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-geometry-deadline.test.ts",
+    "symbol": "stops a document whose nested forms never finish and reports a typed error within the deadline",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 3003 ms against 15000 ms on a fast core (5.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-standard-glyph-order.test.ts",
+    "symbol": "reads a /W range over 2^32 CIDs at once",
+    "reason": "measured 0.1 ms against 1000 ms on a fast core (6845.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-standard-glyph-order.test.ts",
+    "symbol": "reads 65,536 CIDs listed one by one at the cost of the array",
+    "reason": "measured 8.4 ms against 1000 ms on a fast core (118.8x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-text-standard-glyph-order.test.ts",
+    "symbol": "reads 200,000 ranges that each span every CID in time linear in the array",
+    "reason": "measured 82.1 ms against 2000 ms on a fast core (24.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-tounicode-coverage.test.ts",
+    "symbol": "cost the number of tokens when 100,000 ranges each span the whole code space",
+    "reason": "measured 36.9 ms against 2000 ms on a fast core (54.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/pdf-tounicode-coverage.test.ts",
+    "symbol": "read a map of a million unterminated literal strings in linear time, as the lexer reads one to the end",
+    "reason": "measured 0.4 ms against 2000 ms on a fast core (4533.4x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/qpdf-runner.test.ts",
+    "symbol": "stops a job at its time limit with the typed error, and nothing of it is left",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/qpdf-runner.test.ts",
+    "symbol": "ends at the time limit of the job, the descendant killed with it, and other jobs go on",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/qpdf-runner.test.ts",
+    "symbol": "is stopped by the caller too: the abort kills the descendant",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/qpdf-runner.test.ts",
+    "symbol": "ends with the result of its first process when the descendant has closed the streams, and the descendant is killed",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/qpdf-runner.test.ts",
+    "symbol": "<module>",
+    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/realworld-output-check.test.ts",
+    "symbol": "stops a reader that prints to stderr without end at the runner's output limit, and writes none of it to disk",
+    "reason": "measured 240 ms against 30000 ms on a fast core (125.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/realworld-output-check.test.ts",
+    "symbol": "serves the event loop while a reader that stays under the output limit prints about 10 MB to stderr in 50 bursts, then quotes it",
+    "reason": "measured 6.6 ms against 250 ms on a fast core (37.9x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/realworld-output-check.test.ts",
+    "symbol": "kills a reader that ignores SIGTERM with SIGKILL at the timeout, long before it would end by itself",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 503 ms against 3000 ms on a fast core (6.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/realworld-output-check.test.ts",
+    "symbol": "kills the whole process group of a reader at the timeout, so the descendant it forked does not outlive the verdict",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 1002 ms against 8000 ms on a fast core (8.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/realworld-output-check.test.ts",
+    "symbol": "kills a descendant that still holds the stderr of a reader that %s, and gives the timeout as the verdict, as the runner waits for the pipe",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 1003 ms against 8000 ms on a fast core (8.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/redis-when-ready.test.ts",
+    "symbol": "still fails within about the wait, and the next calls fail at once",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 2003 ms against 3000 ms on a fast core (1.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/redis-when-ready.test.ts",
+    "symbol": "still fails within about the wait, and the next calls fail at once",
+    "reason": "measured 0 ms against 250 ms on a fast core (250000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/sandbox-launcher.test.ts",
+    "symbol": "stops a program that runs past its time limit and reports SandboxedTimeoutError",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 303 ms against 5000 ms on a fast core (16.5x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/sandbox-launcher.test.ts",
+    "symbol": "rejects an abort within two seconds when the helper does not answer the cancel",
+    "reason": "timer-driven: the time measured is a wait the test sets, which a slow runner does not stretch, and the slack is the bound less that wait; measured 2003 ms against 4000 ms on a fast core (2.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/svg-bitmap-glyph.test.ts",
+    "symbol": "a mask that refers to itself is no picture and ends in the mask refusal without looping",
+    "reason": "measured 0 ms against 2000 ms on a fast core (2000000.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/svg-bitmap-glyph.test.ts",
+    "symbol": "thirty thousand copies of one glyph are refused at the first, without drawing the rest",
+    "reason": "measured 30 ms against 2000 ms on a fast core (66.7x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/svg-bitmap-glyph.test.ts",
+    "symbol": "a mask of thirty thousand pictures is read once, then refused",
+    "reason": "measured 17 ms against 2000 ms on a fast core (117.6x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/timing-helpers.test.ts",
+    "symbol": "times work that finishes in microseconds by repeating it, so a fast machine measures as well as a slow one",
+    "reason": "reads a virtual clock or the idle CPU of a sleeping process, not the speed of the runner; not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/timing-helpers.test.ts",
+    "symbol": "stands still while the process waits and moves while it works",
+    "reason": "reads a virtual clock or the idle CPU of a sleeping process, not the speed of the runner; not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/truetype-cmap.test.ts",
+    "symbol": "reads nothing from a cmap that claims 65,535 encoding records, and stops at once",
+    "reason": "measured 0 ms against 2000 ms on a fast core (107863.2x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/truetype-cmap.test.ts",
+    "symbol": "maps a format 12 group over every code point only to the glyphs the font has, quickly",
+    "reason": "measured 0 ms against 2000 ms on a fast core (74418.6x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/truetype-cmap.test.ts",
+    "symbol": "reads nothing from 65,535 records that name one format 4 subtable only its last segment makes unreadable, within a few milliseconds",
+    "reason": "measured 4 ms against 200 ms on a fast core (50.6x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/truetype-cmap.test.ts",
+    "symbol": "reads the readable subtable behind such records, within a few milliseconds",
+    "reason": "measured 2 ms against 200 ms on a fast core (99.0x)",
+    "owningWP": "CI-TIMING"
+  },
+  {
+    "rule": "G7-ABSOLUTE-TIME-BOUND",
+    "file": "tests/zip-package-sniffing.test.ts",
+    "symbol": "with ten thousand tiny entries is read in bounded time and does not look past the first entries it reads",
+    "reason": "measured 0.7 ms against 1000 ms on a fast core (1404.4x)",
+    "owningWP": "CI-TIMING"
+  }
+]

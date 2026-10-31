@@ -6,10 +6,11 @@ const { parentPort, threadId } = require('node:worker_threads');
 const handlers = {
   echo: (payload) => ({ result: { value: payload.value, threadId } }),
   spin: (payload) => {
-    const end = Date.now() + payload.ms;
+    const startedAt = Date.now();
+    const end = startedAt + payload.ms;
     let n = 0;
     while (Date.now() < end) n++;
-    return { result: { threadId, spun: n > 0 } };
+    return { result: { threadId, spun: n > 0, startedAt, endedAt: Date.now() } };
   },
   sum: (payload) => {
     const view = new Uint8Array(payload.bytes);

@@ -306,7 +306,7 @@ describe.skipIf(toolsMissing)('stream extents and Flate data the references read
 const RUN_STREAMS = 3000;
 const RUN_BYTES = 2 * MIB;
 /** Hang guard only: with the lookahead bounded, indexing the file takes milliseconds. */
-const RUN_HANG_GUARD_MS = 5000;
+const RUN_HANG_GUARD_MS = 20_000;
 /** Streams of the NUL-run file, the bytes of data each holds, and the streams of the small file whose content is read back (the guard and the reader each decode every stream). */
 const NUL_STREAMS = 40;
 const NUL_STREAM_BYTES = 4 * MIB;
