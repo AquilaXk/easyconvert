@@ -19,13 +19,15 @@ export function reportConversionWarning(line: string): void {
   if (lines !== undefined && lines.size < MAX_WARNING_LINES) lines.add(line);
 }
 
-/** Runs `convert` in a warning scope and adds what was reported to the warnings of its result. */
-export async function withConversionWarnings(convert: () => Promise<ConversionResult>): Promise<ConversionResult> {
+/** Runs `convert` in a warning scope and adds what was reported to the warnings of its result (an engine's result carries metadata as a conversion's does). */
+export async function withConversionWarnings<T extends Pick<ConversionResult, 'metadata'>>(convert: () => Promise<T>): Promise<T> {
   if (scopes.getStore() !== undefined) return convert();
   const lines = new Set<string>();
   const result = await scopes.run(lines, convert);
   if (lines.size === 0) return result;
   const existing = Array.isArray(result.metadata?.warnings) ? (result.metadata.warnings as string[]) : [];
   const merged = [...existing, ...[...lines].filter((line) => !existing.includes(line))].slice(0, MAX_WARNING_LINES);
-  return { ...result, metadata: { ...result.metadata, warnings: merged } };
+  // Set on the result itself: a worker result reads its buffer lazily from disk, and a copy would read it into memory.
+  result.metadata = { ...result.metadata, warnings: merged };
+  return result;
 }

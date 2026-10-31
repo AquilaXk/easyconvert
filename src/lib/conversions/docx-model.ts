@@ -568,22 +568,18 @@ class DocxReader {
           if (choice) this.readRun(choice, part, state);
           break;
         }
+        case 'ruby': {
+          const base = firstChild(child, 'rubyBase');
+          if (base) this.readInlineChildren(base, part, state);
+          break;
+        }
         case 'footnoteReference':
         case 'endnoteReference':
           this.readNoteReference(child, state);
           break;
-        case 'fldChar': {
-          const type = child.attrs.get('fldCharType');
-          if (type === 'begin') state.fields.push({ instruction: '', inResult: false });
-          else if (type === 'separate') {
-            const field = state.fields[state.fields.length - 1];
-            if (field) {
-              field.inResult = true;
-              field.href = hrefOfInstruction(field.instruction);
-            }
-          } else if (type === 'end') state.fields.pop();
+        case 'fldChar':
+          this.readFieldChar(child, state);
           break;
-        }
         case 'instrText': {
           const field = state.fields[state.fields.length - 1];
           if (field && !field.inResult) field.instruction += ownText(child);
@@ -593,6 +589,19 @@ class DocxReader {
           break;
       }
     }
+  }
+
+  /** A field's begin, separate and end marks (ECMA-376 17.16.18): the instruction text comes first, then the result the reader keeps. */
+  private readFieldChar(mark: XmlElement, state: ParagraphState): void {
+    const type = mark.attrs.get('fldCharType');
+    if (type === 'begin') state.fields.push({ instruction: '', inResult: false });
+    else if (type === 'separate') {
+      const field = state.fields[state.fields.length - 1];
+      if (field) {
+        field.inResult = true;
+        field.href = hrefOfInstruction(field.instruction);
+      }
+    } else if (type === 'end') state.fields.pop();
   }
 
   private readNoteReference(reference: XmlElement, state: ParagraphState): void {
