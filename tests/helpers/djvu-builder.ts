@@ -4,6 +4,12 @@
  * the structure, not the decoding of a picture; the pictures of the converter tests come from the djvulibre encoders.
  */
 
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { requireOracleTool } from './differential-oracle';
+
 const MAGIC = Buffer.from('AT&T', 'latin1');
 const BUNDLE_FLAG = 0x80;
 const DIRECTORY_VERSION = 1;
@@ -57,29 +63,106 @@ export function includeChunk(name: string): Buffer {
   return chunk('INCL', Buffer.from(name, 'latin1'));
 }
 
-/** The `DIRM` chunk of a bundled document: flags, file count and one offset per file; the compressed names are left out. */
-function bundledDirectory(offsets: readonly number[]): Buffer {
-  const header = Buffer.alloc(3);
-  header[0] = BUNDLE_FLAG | DIRECTORY_VERSION;
-  header.writeUInt16BE(offsets.length, 1);
-  return chunk('DIRM', Buffer.concat([header, ...offsets.map(u32)]));
+/** What the directory says about a file of a bundle: whether it is a page, an include, thumbnails or shared annotations (`DjVmDir::File::FILE_TYPE`). */
+export type BundleKind = 'include' | 'page' | 'thumbnails' | 'annotation';
+
+/** A file of the directory: the component it points at (an index into the components, so that several files can share bytes), its kind and its strings. */
+export interface BundleEntry {
+  readonly component: number;
+  readonly kind: BundleKind;
+  readonly id: string;
+  readonly name?: string;
+  readonly title?: string;
+}
+
+export interface BundleOptions {
+  /** Version 0 of the directory stores the sizes in the clear and has no sizes in the compressed tail (DjVmDir.cpp `decode`, lines 224 to 262). */
+  readonly version?: 0 | 1;
+  /** The offsets of the files as laid out, to be replaced by the directory's own, for the files whose offset lies. */
+  readonly offsets?: (laidOut: readonly number[]) => number[];
+}
+
+const FILE_TYPE: Readonly<Record<BundleKind, number>> = { include: 0, page: 1, thumbnails: 2, annotation: 3 };
+/** `DjVmDir::File::FLAGS_1` and `FLAGS_0` (libdjvu/DjVmDir.h lines 334 and 335). */
+const HAS_NAME = 0x80;
+const HAS_TITLE = 0x40;
+const IS_PAGE_0 = 1;
+const HAS_NAME_0 = 2;
+const HAS_TITLE_0 = 4;
+const FORM_DATA_SIZE_AT = 4;
+const CHUNK_HEADER_BYTES = 8;
+
+/** A file of the bundle as written: the size the directory records is that of the `FORM` chunk without its pad byte. */
+function componentBytes(form: Buffer): Buffer {
+  return form.subarray(0, CHUNK_HEADER_BYTES + form.readUInt32BE(FORM_DATA_SIZE_AT));
+}
+
+function u24(value: number): Buffer {
+  return u32(value).subarray(1);
+}
+
+function entryFlags(entry: BundleEntry, version: 0 | 1): number {
+  if (version === 0) return (entry.kind === 'page' ? IS_PAGE_0 : 0) | (entry.name === undefined ? 0 : HAS_NAME_0) | (entry.title === undefined ? 0 : HAS_TITLE_0);
+  return FILE_TYPE[entry.kind] | (entry.name === undefined ? 0 : HAS_NAME) | (entry.title === undefined ? 0 : HAS_TITLE);
+}
+
+function entryStrings(entry: BundleEntry): Buffer {
+  return Buffer.from([entry.id, entry.name, entry.title].filter((text) => text !== undefined).map((text) => `${text}\0`).join(''), 'utf-8');
+}
+
+/** BZZ, the compression of the tail of the directory, from the encoder of djvulibre. */
+function bzzEncode(data: Buffer): Buffer {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'djvu-bzz-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'in'), data);
+    execFileSync(requireOracleTool('bzz'), ['-e', path.join(dir, 'in'), path.join(dir, 'out')]);
+    return fs.readFileSync(path.join(dir, 'out'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The `DIRM` chunk of a bundle: flags, count and offsets (and sizes, in version 0) in the clear, then the BZZ tail of sizes, flags and strings. */
+function bundledDirectory(entries: readonly BundleEntry[], offsets: readonly number[], sizes: readonly number[], version: 0 | 1): Buffer {
+  const header = Buffer.from([BUNDLE_FLAG | version, entries.length >> 8, entries.length & 0xff]);
+  const clear = entries.map((_, index) => Buffer.concat([u32(offsets[index]), version === 0 ? u24(sizes[index]) : Buffer.alloc(0)]));
+  const sizeBytes = version === 0 ? [] : sizes.map(u24);
+  const tail = Buffer.concat([...sizeBytes, Buffer.from(entries.map((entry) => entryFlags(entry, version))), ...entries.map(entryStrings)]);
+  return chunk('DIRM', Buffer.concat([header, ...clear, bzzEncode(tail)]));
 }
 
 /**
- * A bundled document of the `components` (each a whole `FORM` chunk). `listed` names the components by index, in directory order, and
- * may repeat one, which is how a directory points several entries at the same bytes.
+ * A bundled document as djvulibre writes one (`DjVmDoc::write`): the `DIRM` directory with its BZZ compressed tail, then the
+ * components one after another, each padded to an even length. `entries` list the files of the directory; two entries may
+ * point at one component. The bytes need `bzz` of djvulibre.
  */
-export function bundledDocument(components: readonly Buffer[], listed: readonly number[] = components.map((_, index) => index)): Buffer {
+export function bundledDocument(components: readonly Buffer[], entries: readonly BundleEntry[], options: BundleOptions = {}): Buffer {
+  const version = options.version ?? DIRECTORY_VERSION;
+  const bytes = components.map(componentBytes);
   const headerBytes = MAGIC.length + 'FORM'.length + 4 + 'DJVM'.length;
-  const directorySize = bundledDirectory(listed.map(() => 0)).length;
+  const sizes = entries.map((entry) => bytes[entry.component].length);
+  const directorySize = bundledDirectory(entries, entries.map(() => 0), sizes, version).length;
   const starts: number[] = [];
   let next = headerBytes + directorySize;
-  for (const component of components) {
+  for (const component of bytes) {
     starts.push(next);
-    next += component.length;
+    next += component.length + (component.length % 2);
   }
-  const directory = bundledDirectory(listed.map((index) => starts[index]));
-  return Buffer.concat([MAGIC, form('DJVM', [directory, ...components])]);
+  const laidOut = entries.map((entry) => starts[entry.component]);
+  const directory = bundledDirectory(entries, options.offsets?.(laidOut) ?? laidOut, sizes, version);
+  return Buffer.concat([MAGIC, form('DJVM', [directory, ...bytes.map(padded)])]);
+}
+
+/** A file of a bundle that is its own component: the `FORM` bytes and what the directory says of it. */
+export type BundleFile = Omit<BundleEntry, 'component'> & { readonly form: Buffer };
+
+/** A bundle of the files in order, each its own component. */
+export function bundleOf(files: readonly BundleFile[], options: BundleOptions = {}): Buffer {
+  return bundledDocument(
+    files.map((file) => file.form),
+    files.map(({ form: _form, ...entry }, index) => ({ ...entry, component: index })),
+    options
+  );
 }
 
 /** An indirect document: a directory that names `names` as files next to it, with no flag for a bundle and no offsets. */
@@ -91,4 +174,23 @@ export function indirectDocument(names: readonly string[]): Buffer {
 /** A document whose first chunk is the `DIR0` of the first DjVu releases. */
 export function oldBundledDocument(): Buffer {
   return Buffer.concat([MAGIC, form('DJVM', [chunk('DIR0', Buffer.alloc(8))])]);
+}
+
+const WAVELET_CHUNK = 'BG44';
+const MAGIC_AND_FORM_HEADER_BYTES = 16;
+
+/**
+ * The wavelet chunks of a picture that `c44` of djvulibre wrote (a `FORM:DJVU` page with its `BG44` chunks) as a file of
+ * their own: a `FORM:PM44` for a colour picture or a `FORM:BM44` for a grey one (DjVu v3 specification, "IW44 files"). The
+ * chunk type is the form type. A page that is a lone wavelet picture has no `INFO` chunk: its size is in the first chunk.
+ */
+export function waveletForm(type: 'PM44' | 'BM44', djvuFile: Buffer): Buffer {
+  const chunks: Buffer[] = [];
+  let offset = MAGIC_AND_FORM_HEADER_BYTES;
+  while (offset + CHUNK_HEADER_BYTES <= djvuFile.length) {
+    const size = djvuFile.readUInt32BE(offset + FORM_DATA_SIZE_AT);
+    if (djvuFile.toString('latin1', offset, offset + 4) === WAVELET_CHUNK) chunks.push(chunk(type, djvuFile.subarray(offset + CHUNK_HEADER_BYTES, offset + CHUNK_HEADER_BYTES + size)));
+    offset += CHUNK_HEADER_BYTES + size + (size % 2);
+  }
+  return form(type, chunks);
 }

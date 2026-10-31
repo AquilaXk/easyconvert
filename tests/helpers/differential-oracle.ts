@@ -68,6 +68,8 @@ export type ExternalOracleTool =
   | 'djvmcvt'
   | 'djvm'
   | 'cjb2'
+  | 'c44'
+  | 'bzz'
   | 'ebook-convert'
   | 'rsvg-convert'
   | 'inkscape'

@@ -333,12 +333,15 @@ COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
 RUN gxps -v
 
 # DjVu renderer (the distribution's djvulibre-bin, GPL-2.0-or-later, started as a separate program like the other GPL tools above; its
-# licence text is collected by the notices step below). The build fails when the program does not start or cannot write a PDF: a page
-# is encoded with cjb2 from a bitmap written here and drawn again with ddjvu, which goes through its TIFF and PDF writers.
+# licence text is collected by the notices step below). The build fails when a program does not start or cannot do its part: a page
+# is encoded with cjb2 from a bitmap written here, djvused (which the worker runs before it draws, to learn the pages and their sizes)
+# must report one page of 8 x 8 pixels, and ddjvu draws it, which goes through its TIFF and PDF writers.
 RUN ddjvu --help 2>&1 | grep -q 'DjVuLibre-3' \
     && dir="$(mktemp -d)" \
     && printf 'P4\n8 8\n\252\125\252\125\252\125\252\125' > "$dir/page.pbm" \
     && cjb2 "$dir/page.pbm" "$dir/page.djvu" \
+    && [ "$(djvused -e 'n;ls' "$dir/page.djvu" | head -n 1)" = "1" ] \
+    && [ "$(djvused -e size "$dir/page.djvu")" = "width=8 height=8" ] \
     && ddjvu -format=pdf "$dir/page.djvu" "$dir/page.pdf" \
     && head -c 5 "$dir/page.pdf" | grep -q '%PDF-' \
     && rm -rf "$dir"
