@@ -1,5 +1,8 @@
+'use client';
+
 import React, { useRef, useState } from 'react';
 import { Check, Code2, Copy } from 'lucide-react';
+import { useCopyFeedback } from '@/hooks/useCopyFeedback';
 
 type SnippetLanguage = 'curl' | 'node' | 'python';
 
@@ -17,7 +20,8 @@ interface IntegrationGuideProps {
 
 export function IntegrationGuide({ sampleKeyDisplay }: Readonly<IntegrationGuideProps>) {
   const [codeTab, setCodeTab] = useState<SnippetLanguage>('curl');
-  const [copiedSnippet, setCopiedSnippet] = useState(false);
+  const { copiedKey, copyText } = useCopyFeedback(2000);
+  const copiedSnippet = copiedKey === 'snippet';
   const tabRefs = useRef<Record<SnippetLanguage, HTMLButtonElement | null>>({
     curl: null,
     node: null,
@@ -61,12 +65,7 @@ print(response.json())`,
   };
 
   const handleCopySnippet = () => {
-    const snippet = codeSnippets[codeTab];
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(snippet);
-    }
-    setCopiedSnippet(true);
-    setTimeout(() => setCopiedSnippet(false), 2000);
+    void copyText(codeSnippets[codeTab], 'snippet');
   };
 
   const handleTabKeyDown = (

@@ -13,6 +13,7 @@ import {
   DocumentOptionsSection,
   ImageOptionsSection,
   PasswordOptionsSection,
+  sanitizeOptionsForPair,
   VideoOptionsSection,
   type VisibleOptionsSections,
 } from './workbench/OptionsSections';
@@ -20,8 +21,12 @@ import {
 export {
   computeVisibleSections,
   DEFAULT_OPTIONS,
+  FFMPEG_VIDEO_CONTAINERS,
   isLosslessAudioTarget,
+  resolveAllowedVideoCodecs,
+  resolveAudioCapabilities,
   resolvePasswordMode,
+  sanitizeOptionsForPair,
   type PasswordMode,
 } from './workbench/options/options-capabilities';
 
@@ -76,7 +81,7 @@ function MediaAndDataGroup({ visible, options, onChange }: Readonly<ModalSection
         <VideoOptionsSection
           options={options}
           onChange={onChange}
-          showCodec={visible.targetCategory === 'video'}
+          showCodec={visible.showVideoCodec}
           targetFormat={visible.tgt}
         />
       )}
@@ -105,7 +110,9 @@ export default function OptionsModal({
   filename, sourceFormat, targetFormat, initialOptions, onSave, onClose,
 }: Readonly<OptionsModalProps>) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [options, setOptions] = useState<ConversionOptions>({ ...initialOptions });
+  const [options, setOptions] = useState<ConversionOptions>(() =>
+    sanitizeOptionsForPair(initialOptions, sourceFormat, targetFormat)
+  );
 
   useModalDialog(dialogRef, true, onClose);
 
@@ -157,7 +164,7 @@ export default function OptionsModal({
         </button>
         <button
           type="button"
-          onClick={() => { onSave(options); onClose(); }}
+          onClick={() => { onSave(sanitizeOptionsForPair(options, sourceFormat, targetFormat)); onClose(); }}
           className="min-h-[44px] px-5 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold transition-colors cursor-pointer"
         >
           Apply Options

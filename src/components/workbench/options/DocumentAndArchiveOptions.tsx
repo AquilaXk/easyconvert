@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import { ConversionOptions } from '@/lib/types';
 import {
   INPUT_CLASS,
   LABEL_CLASS,
@@ -57,8 +56,8 @@ function OcrOptionsFields({
             onChange={(e) =>
               onChange({
                 ...options,
-                ocrEnabled: e.target.checked,
-                ocrLanguage: e.target.checked ? options.ocrLanguage || 'eng' : options.ocrLanguage,
+                ocrEnabled: e.target.checked ? true : undefined,
+                ocrLanguage: e.target.checked ? options.ocrLanguage || 'eng' : undefined,
               })
             }
             className="w-4 h-4 rounded accent-[#5C6BC0] cursor-pointer"
@@ -193,7 +192,7 @@ export function PasswordOptionsSection({
           id="opt-doc-password"
           type="password"
           autoComplete="off"
-          maxLength={isZipTarget ? 99 : undefined}
+          maxLength={isZipTarget ? 99 : 256}
           value={options.password || ''}
           onChange={(e) => onChange({ ...options, password: e.target.value || undefined })}
           placeholder="Leave blank if no password is needed"
@@ -236,7 +235,14 @@ export function DataOptionsSection({
             <label htmlFor="opt-data-sheet-index" className={LABEL_CLASS}>Worksheet Index (0-based)</label>
             <input
               id="opt-data-sheet-index" type="number" min={0} value={options.sheetIndex ?? ''}
-              onChange={(e) => onChange({ ...options, sheetIndex: parseOptionalNonNegativeInt(e.target.value) })}
+              onChange={(e) => {
+                const nextIndex = parseOptionalNonNegativeInt(e.target.value);
+                onChange({
+                  ...options,
+                  sheetIndex: nextIndex,
+                  sheetMode: nextIndex === undefined ? undefined : 'index',
+                });
+              }}
               placeholder="0 (first sheet)" className={INPUT_CLASS}
             />
           </div>

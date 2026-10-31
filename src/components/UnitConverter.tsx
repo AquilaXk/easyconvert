@@ -16,9 +16,12 @@ import {
   PopularConversionsSection,
   QuickReferenceSection,
 } from '@/components/converter/UnitConverterPanels';
+import { useCopyFeedback } from '@/hooks/useCopyFeedback';
 
 export { UNIT_CATEGORIES, convertValue };
 export type { UnitCategory, UnitDefinition } from '@/lib/unit-catalog';
+
+const MAIN_COPY_KEY = '__main__';
 
 interface UnitConverterProps {
   initialCategory?: string;
@@ -57,8 +60,9 @@ export default function UnitConverter({
       : currentCategory.defaultTo
   );
   const [precision, setPrecision] = useState<number>(6);
-  const [isCopied, setIsCopied] = useState(false);
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const { copiedKey, copyText } = useCopyFeedback(1500);
+  const isCopied = copiedKey === MAIN_COPY_KEY;
+  const rowCopiedKey = copiedKey === MAIN_COPY_KEY ? null : copiedKey;
 
   const handleSelectCategory = (catKey: string) => {
     setActiveCategoryKey(catKey);
@@ -77,12 +81,15 @@ export default function UnitConverter({
     [inputVal, fromDef, toDef]
   );
 
-  const formattedResult = useMemo(() => {
-    if (!Number.isFinite(calculatedResult)) return '0';
-    return Number.parseFloat(calculatedResult.toFixed(precision)).toLocaleString(undefined, {
-      maximumFractionDigits: precision,
-    });
-  }, [calculatedResult, precision]);
+  const formattedResult = useMemo(
+    () => {
+      if (!Number.isFinite(calculatedResult)) return '0';
+      return Number.parseFloat(calculatedResult.toFixed(precision)).toLocaleString(undefined, {
+        maximumFractionDigits: precision,
+      });
+    },
+    [calculatedResult, precision]
+  );
 
   const rawCopyValue = useMemo(
     () => formatEditableDecimal(calculatedResult, precision),
@@ -103,16 +110,7 @@ export default function UnitConverter({
   };
 
   const handleCopy = (textToCopy: string, key?: string) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(textToCopy);
-      if (key) {
-        setCopiedKey(key);
-        setTimeout(() => setCopiedKey(null), 1500);
-      } else {
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), 1500);
-      }
-    }
+    void copyText(textToCopy, key ?? MAIN_COPY_KEY);
   };
 
   const allCategoryConversions = useMemo(
@@ -162,7 +160,7 @@ export default function UnitConverter({
         fromUnitKey={fromUnitKey}
         toUnitKey={toUnitKey}
         precision={precision}
-        copiedKey={copiedKey}
+        copiedKey={rowCopiedKey}
         onCopyRow={handleCopy}
       />
 

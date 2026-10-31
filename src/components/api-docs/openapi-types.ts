@@ -19,6 +19,8 @@ export interface OpenApiSchemaObject {
   required?: readonly string[];
   properties?: Record<string, OpenApiSchemaObject>;
   allOf?: ReadonlyArray<OpenApiSchemaObject>;
+  oneOf?: ReadonlyArray<OpenApiSchemaObject>;
+  anyOf?: ReadonlyArray<OpenApiSchemaObject>;
   $ref?: string;
 }
 
@@ -85,35 +87,91 @@ function lookupReferencedSchema(
   return Object.values(schemas).find((candidate) => candidate.$id === ref);
 }
 
+function applyOuterDescription(
+  resolved: OpenApiSchemaObject,
+  outer: OpenApiSchemaObject
+): OpenApiSchemaObject {
+  if (resolved === outer || !outer.description || resolved.description) {
+    return resolved;
+  }
+  return { ...resolved, description: outer.description };
+}
+
+function followSchemaRef(
+  schema: OpenApiSchemaObject,
+  schemas: Record<string, OpenApiSchemaObject> | undefined,
+  visited: Set<string>
+): OpenApiSchemaObject {
+  let current = schema;
+  while (current.$ref && !visited.has(current.$ref)) {
+    const resolved = lookupReferencedSchema(current.$ref, schemas);
+    if (!resolved) break;
+    visited.add(current.$ref);
+    current = resolved;
+  }
+  return applyOuterDescription(current, schema);
+}
+
+function collectSubSchemaInto(
+  sub: OpenApiSchemaObject,
+  mergedProps: Record<string, OpenApiSchemaObject>,
+  requiredSet: Set<string>
+): void {
+  if (sub.properties) {
+    Object.assign(mergedProps, sub.properties);
+  }
+  for (const reqKey of sub.required ?? []) {
+    requiredSet.add(reqKey);
+  }
+}
+
+function pickFirstDefined<T>(
+  initial: T | undefined,
+  items: ReadonlyArray<OpenApiSchemaObject>,
+  selector: (item: OpenApiSchemaObject) => T | undefined
+): T | undefined {
+  if (initial !== undefined) return initial;
+  for (const item of items) {
+    const value = selector(item);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function dereferenceSchemaList(
+  list: ReadonlyArray<OpenApiSchemaObject>,
+  schemas: Record<string, OpenApiSchemaObject> | undefined,
+  visited: ReadonlySet<string>
+): OpenApiSchemaObject[] {
+  return list
+    .map((item) => dereferenceSchemaInternal(item, schemas, new Set(visited)))
+    .filter((item): item is OpenApiSchemaObject => item !== undefined);
+}
+
 function mergeAllOfSchema(
   outer: OpenApiSchemaObject,
   schemas: Record<string, OpenApiSchemaObject> | undefined,
   visited: ReadonlySet<string>
 ): OpenApiSchemaObject {
-  const mergedProperties: Record<string, OpenApiSchemaObject> = {};
+  const resolvedSubs = dereferenceSchemaList(outer.allOf ?? [], schemas, visited);
+  const mergedProps: Record<string, OpenApiSchemaObject> = {};
   const requiredSet = new Set<string>();
-  let resolvedType: OpenApiSchemaObject['type'] = outer.type;
-  let resolvedDescription: string | undefined = outer.description;
-
-  for (const subSchema of outer.allOf ?? []) {
-    const resolvedSub = dereferenceSchemaInternal(subSchema, schemas, new Set(visited));
-    if (!resolvedSub) continue;
-    if (resolvedType === undefined && resolvedSub.type !== undefined) resolvedType = resolvedSub.type;
-    if (resolvedDescription === undefined && resolvedSub.description !== undefined) {
-      resolvedDescription = resolvedSub.description;
-    }
-    if (resolvedSub.properties) Object.assign(mergedProperties, resolvedSub.properties);
-    for (const reqKey of resolvedSub.required ?? []) requiredSet.add(reqKey);
+  for (const sub of resolvedSubs) {
+    collectSubSchemaInto(sub, mergedProps, requiredSet);
   }
-
-  if (outer.properties) Object.assign(mergedProperties, outer.properties);
-  for (const reqKey of outer.required ?? []) requiredSet.add(reqKey);
+  collectSubSchemaInto(outer, mergedProps, requiredSet);
 
   const merged: OpenApiSchemaObject = { ...outer };
   delete merged.allOf;
+  const resolvedType = pickFirstDefined(outer.type, resolvedSubs, (item) => item.type);
+  const resolvedDescription = pickFirstDefined(
+    outer.description,
+    resolvedSubs,
+    (item) => item.description
+  );
   if (resolvedType !== undefined) merged.type = resolvedType;
   if (resolvedDescription !== undefined) merged.description = resolvedDescription;
-  if (Object.keys(mergedProperties).length > 0) merged.properties = mergedProperties;
+  if (Object.keys(mergedProps).length > 0) merged.properties = mergedProps;
   if (requiredSet.size > 0) merged.required = [...requiredSet];
   return merged;
 }
@@ -124,20 +182,15 @@ function dereferenceSchemaInternal(
   visited: Set<string>
 ): OpenApiSchemaObject | undefined {
   if (!schema) return undefined;
-  let current: OpenApiSchemaObject = schema;
-  while (current.$ref) {
-    const ref: string = current.$ref;
-    if (visited.has(ref)) break;
-    const resolved = lookupReferencedSchema(ref, schemas);
-    if (!resolved) break;
-    visited.add(ref);
-    current = resolved;
+  let current = followSchemaRef(schema, schemas, visited);
+  if (current.allOf?.length) {
+    current = mergeAllOfSchema(current, schemas, visited);
   }
-  if (current !== schema && schema.description && !current.description) {
-    current = { ...current, description: schema.description };
+  if (current.oneOf?.length) {
+    current = { ...current, oneOf: dereferenceSchemaList(current.oneOf, schemas, visited) };
   }
-  if (current.allOf && current.allOf.length > 0) {
-    return mergeAllOfSchema(current, schemas, visited);
+  if (current.anyOf?.length) {
+    current = { ...current, anyOf: dereferenceSchemaList(current.anyOf, schemas, visited) };
   }
   return current;
 }
@@ -149,6 +202,22 @@ export function dereferenceSchema(
   return dereferenceSchemaInternal(schema, schemas, new Set<string>());
 }
 
+function formatUnionBranchLabel(branch: OpenApiSchemaObject): string {
+  const direct = formatSchemaType(branch, '');
+  if (direct) return direct;
+  if (branch.const !== undefined) return JSON.stringify(branch.const);
+  if (branch.properties) return 'object';
+  if (branch.items) return 'array';
+  return '';
+}
+
+function formatUnionType(union: ReadonlyArray<OpenApiSchemaObject>): string {
+  const labels = Array.from(
+    new Set(union.map(formatUnionBranchLabel).filter((label) => label.length > 0))
+  );
+  return labels.join(' | ');
+}
+
 export function formatSchemaType(
   schema: OpenApiSchemaObject | undefined,
   fallback: string
@@ -156,19 +225,28 @@ export function formatSchemaType(
   const rawType = schema?.type;
   if (typeof rawType === 'string') return rawType;
   if (Array.isArray(rawType) && rawType.length > 0) return rawType.join(' | ');
+  const union = schema?.oneOf ?? schema?.anyOf;
+  const unionLabel = union?.length ? formatUnionType(union) : '';
+  if (unionLabel) return unionLabel;
   return fallback;
+}
+
+function resolveExplicitPrimaryType(raw: OpenApiSchemaObject['type']): string | undefined {
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) return raw.find((item) => item !== 'null') ?? 'string';
+  return undefined;
 }
 
 export function primarySchemaType(schema: OpenApiSchemaObject | undefined): string {
   if (!schema) return 'string';
-  const raw = schema.type;
-  if (typeof raw === 'string') return raw;
-  if (Array.isArray(raw)) return raw.find((item) => item !== 'null') ?? 'string';
+  const explicit = resolveExplicitPrimaryType(schema.type);
+  if (explicit) return explicit;
+  const union = schema.oneOf ?? schema.anyOf;
+  if (union?.length) return primarySchemaType(union[0]);
   if (schema.properties) return 'object';
   if (schema.items) return 'array';
   return 'string';
 }
-
 
 export interface ParsedEndpointItem {
   key: string;

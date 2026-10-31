@@ -5,7 +5,10 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion, getEffectiveMaxFileSize } from '@/lib/client-converter';
-import { DEFAULT_OPTIONS } from '@/components/workbench/options/options-capabilities';
+import {
+  DEFAULT_OPTIONS,
+  sanitizeOptionsForPair,
+} from '@/components/workbench/options/options-capabilities';
 
 declare global {
   interface Window {
@@ -34,17 +37,48 @@ function resolveInitialTargetFormat(sourceFormat: string, effectiveDefault?: str
   return getAvailableTargetFormats(normalizedSource).some((f) => f.id === cleanTarget) ? cleanTarget : '';
 }
 
-function shallowEqualOptions(a: ConversionOptions, b: ConversionOptions): boolean {
-  const recA = a as Record<string, unknown>;
-  const recB = b as Record<string, unknown>;
-  for (const key of new Set([...Object.keys(recA), ...Object.keys(recB)])) {
-    if (!Object.is(recA[key], recB[key])) return false;
+function isPlainRecord(val: unknown): val is Record<string, unknown> {
+  if (typeof val !== 'object' || val === null) return false;
+  const proto = Object.getPrototypeOf(val);
+  return proto === Object.prototype || proto === null;
+}
+
+function definedKeys(rec: Record<string, unknown>): string[] {
+  return Object.keys(rec).filter((key) => rec[key] !== undefined);
+}
+
+function areRecordsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keysA = definedKeys(a);
+  const keysB = definedKeys(b);
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((key) => Object.hasOwn(b, key) && areValuesEqual(a[key], b[key]));
+}
+
+function areValuesEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, idx) => areValuesEqual(item, b[idx]));
   }
-  return true;
+  if (isPlainRecord(a) && isPlainRecord(b)) {
+    return areRecordsEqual(a, b);
+  }
+  return false;
+}
+
+export function areOptionsEqual(a: ConversionOptions, b: ConversionOptions): boolean {
+  return areValuesEqual(a, b);
 }
 
 function canResetToReady(item: ConversionQueueItem, maxLimit: number): boolean {
   return item.status === 'completed' || (item.status === 'error' && item.size <= maxLimit);
+}
+
+function isConvertiblePendingItem(item: ConversionQueueItem, maxLimit: number): boolean {
+  return (
+    (item.status === 'ready' || item.status === 'error') &&
+    Boolean(item.targetFormat) &&
+    item.size <= maxLimit
+  );
 }
 
 function patchIdleItem(
@@ -140,8 +174,13 @@ function useQueueLifecycleEffects(
   mountedRef: React.MutableRefObject<boolean>,
   blobUrlsRef: React.MutableRefObject<Set<string>>,
   timersRef: React.MutableRefObject<Set<ReturnType<typeof setTimeout>>>,
-  handleFilesSelectedRef: React.MutableRefObject<(files: File[], overrideTarget?: string) => void>
+  handleFilesSelectedRef: React.MutableRefObject<(files: File[], overrideTarget?: string) => void>,
+  handleFilesSelected: (files: File[], overrideTarget?: string) => void
 ): void {
+  useEffect(() => {
+    handleFilesSelectedRef.current = handleFilesSelected;
+  });
+
   useEffect(() => {
     mountedRef.current = true;
     const urls = blobUrlsRef.current;
@@ -163,7 +202,7 @@ function useQueueLifecycleEffects(
   }, [handleFilesSelectedRef]);
 }
 
-interface QueueMutationContext {
+export interface QueueMutationContext {
   bundlePrefix?: string;
   mountedRef: React.MutableRefObject<boolean>;
   queueRef: React.MutableRefObject<ConversionQueueItem[]>;
@@ -172,6 +211,7 @@ interface QueueMutationContext {
   blobUrlsRef: React.MutableRefObject<Set<string>>;
   timersRef: React.MutableRefObject<Set<ReturnType<typeof setTimeout>>>;
   batchGenRef: React.MutableRefObject<number>;
+  batchRunningRef: React.MutableRefObject<boolean>;
   updateQueue: React.Dispatch<React.SetStateAction<ConversionQueueItem[]>>;
   revokeBlobUrl: (url?: string) => void;
   isItemBusy: (item: ConversionQueueItem) => boolean;
@@ -181,13 +221,15 @@ interface QueueMutationContext {
   setZipError: React.Dispatch<React.SetStateAction<string | null>>;
 }
 
-function createQueueMutators(ctx: QueueMutationContext) {
+export function createQueueMutators(ctx: QueueMutationContext) {
   const mutateIdleItems = (
     predicate: (item: ConversionQueueItem) => boolean,
     getPatch: (item: ConversionQueueItem) => Pick<ConversionQueueItem, 'targetFormat' | 'options'>
   ) => {
     const maxLimit = getEffectiveMaxFileSize();
-    const matches = ctx.queueRef.current.filter((item) => !ctx.isItemBusy(item) && predicate(item));
+    const canEdit = (item: ConversionQueueItem) =>
+      !ctx.isItemBusy(item) && item.size <= maxLimit && predicate(item);
+    const matches = ctx.queueRef.current.filter(canEdit);
     if (matches.length === 0) return;
     for (const item of matches) {
       if (canResetToReady(item, maxLimit)) {
@@ -195,7 +237,7 @@ function createQueueMutators(ctx: QueueMutationContext) {
       }
     }
     ctx.updateQueue((prev) =>
-      prev.map((item) => (!ctx.isItemBusy(item) && predicate(item) ? patchIdleItem(item, getPatch(item), maxLimit) : item))
+      prev.map((item) => (canEdit(item) ? patchIdleItem(item, getPatch(item), maxLimit) : item))
     );
   };
 
@@ -205,8 +247,13 @@ function createQueueMutators(ctx: QueueMutationContext) {
     ctx.inFlightIdsRef.current.delete(id);
     ctx.syncInFlight();
     ctx.updateQueue((prev) => prev.filter((i) => i.id !== id));
-    if (ctx.queueRef.current.length === 0) {
+    const maxLimit = getEffectiveMaxFileSize();
+    const hasPendingConvertible = ctx.queueRef.current.some((i) =>
+      isConvertiblePendingItem(i, maxLimit)
+    );
+    if (ctx.inFlightIdsRef.current.size === 0 && !hasPendingConvertible) {
       ctx.batchGenRef.current += 1;
+      ctx.batchRunningRef.current = false;
       ctx.setIsBatchRunning(false);
     }
   };
@@ -218,6 +265,7 @@ function createQueueMutators(ctx: QueueMutationContext) {
     }
     clearTimersAndBlobs(ctx.timersRef.current, ctx.blobUrlsRef.current);
     ctx.batchGenRef.current += 1;
+    ctx.batchRunningRef.current = false;
     ctx.inFlightIdsRef.current.clear();
     ctx.setIsBatchRunning(false);
     ctx.setInFlightCount(0);
@@ -227,19 +275,38 @@ function createQueueMutators(ctx: QueueMutationContext) {
 
   const handleUpdateTargetFormat = (id: string, targetFormat: string) => {
     const clean = targetFormat.toLowerCase();
-    mutateIdleItems((i) => i.id === id && i.targetFormat.toLowerCase() !== clean, (i) => ({ targetFormat: clean, options: i.options }));
+    mutateIdleItems(
+      (i) => i.id === id && i.targetFormat.toLowerCase() !== clean,
+      (i) => ({
+        targetFormat: clean,
+        options: sanitizeOptionsForPair(i.options, i.sourceFormat, clean),
+      })
+    );
   };
 
   const handleUpdateAllTargets = (targetFormat: string) => {
     const clean = targetFormat.toLowerCase();
     mutateIdleItems(
-      (i) => i.targetFormat.toLowerCase() !== clean && getAvailableTargetFormats(i.sourceFormat).some((f) => f.id === clean),
-      (i) => ({ targetFormat: clean, options: i.options })
+      (i) =>
+        i.targetFormat.toLowerCase() !== clean &&
+        getAvailableTargetFormats(i.sourceFormat).some((f) => f.id === clean),
+      (i) => ({
+        targetFormat: clean,
+        options: sanitizeOptionsForPair(i.options, i.sourceFormat, clean),
+      })
     );
   };
 
   const handleUpdateOptions = (id: string, nextOptions: ConversionOptions) => {
-    mutateIdleItems((i) => i.id === id && !shallowEqualOptions(i.options, nextOptions), (i) => ({ targetFormat: i.targetFormat, options: nextOptions }));
+    mutateIdleItems(
+      (i) =>
+        i.id === id &&
+        !areOptionsEqual(i.options, sanitizeOptionsForPair(nextOptions, i.sourceFormat, i.targetFormat)),
+      (i) => ({
+        targetFormat: i.targetFormat,
+        options: sanitizeOptionsForPair(nextOptions, i.sourceFormat, i.targetFormat),
+      })
+    );
   };
 
   return {
@@ -276,7 +343,15 @@ function createDownloadAllZipHandler(ctx: QueueMutationContext) {
   };
 }
 
-function createConversionRunners(ctx: QueueMutationContext) {
+function canConvertBatchTarget(
+  item: ConversionQueueItem | undefined,
+  ctx: QueueMutationContext
+): item is ConversionQueueItem {
+  if (!item || ctx.isItemBusy(item) || item.status === 'completed') return false;
+  return Boolean(item.targetFormat) && item.size <= getEffectiveMaxFileSize();
+}
+
+export function createConversionRunners(ctx: QueueMutationContext) {
   const convertSingleItem = async (itemOrId: ConversionQueueItem | string): Promise<void> => {
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
     const current = ctx.queueRef.current.find((i) => i.id === id);
@@ -310,26 +385,37 @@ function createConversionRunners(ctx: QueueMutationContext) {
     }
   };
 
+  const runBatchFrom = async (
+    index: number,
+    ids: readonly string[],
+    batchGen: number
+  ): Promise<void> => {
+    if (index >= ids.length || ctx.batchGenRef.current !== batchGen || !ctx.mountedRef.current) return;
+    const latest = ctx.queueRef.current.find((i) => i.id === ids[index]);
+    if (canConvertBatchTarget(latest, ctx)) {
+      await convertSingleItem(latest);
+    }
+    await runBatchFrom(index + 1, ids, batchGen);
+  };
+
   const handleConvertAll = async () => {
+    if (ctx.batchRunningRef.current) return;
     const maxLimit = getEffectiveMaxFileSize();
-    const ids = ctx.queueRef.current.filter((i) => (i.status === 'ready' || i.status === 'error') && Boolean(i.targetFormat) && i.size <= maxLimit).map((i) => i.id);
+    const ids = ctx.queueRef.current
+      .filter((i) => isConvertiblePendingItem(i, maxLimit))
+      .map((i) => i.id);
     if (ids.length === 0) return;
     const batchGen = ctx.batchGenRef.current + 1;
     ctx.batchGenRef.current = batchGen;
+    ctx.batchRunningRef.current = true;
     ctx.setIsBatchRunning(true);
-    const runNext = async (index: number): Promise<void> => {
-      if (index >= ids.length || ctx.batchGenRef.current !== batchGen || !ctx.mountedRef.current) return;
-      const id = ids[index];
-      const latest = ctx.queueRef.current.find((i) => i.id === id);
-      if (latest && !ctx.isItemBusy(latest) && latest.status !== 'completed' && latest.targetFormat && latest.size <= getEffectiveMaxFileSize()) {
-        await convertSingleItem(latest);
-      }
-      await runNext(index + 1);
-    };
     try {
-      await runNext(0);
+      await runBatchFrom(0, ids, batchGen);
     } finally {
-      if (ctx.batchGenRef.current === batchGen && ctx.mountedRef.current) ctx.setIsBatchRunning(false);
+      if (ctx.batchGenRef.current === batchGen) {
+        ctx.batchRunningRef.current = false;
+        if (ctx.mountedRef.current) ctx.setIsBatchRunning(false);
+      }
     }
   };
 
@@ -352,13 +438,13 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const [isBatchRunning, setIsBatchRunning] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
   const queueRef = useRef<ConversionQueueItem[]>(queue);
-  queueRef.current = queue;
   const generationRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());
   const blobUrlsRef = useRef<Set<string>>(new Set());
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const mountedRef = useRef(true);
   const batchGenRef = useRef(0);
+  const batchRunningRef = useRef(false);
   const updateQueue: React.Dispatch<React.SetStateAction<ConversionQueueItem[]>> = (a) => updateQueueState(queueRef, setQueue, a);
   const syncInFlight = () => {
     if (mountedRef.current) setInFlightCount(inFlightIdsRef.current.size);
@@ -376,13 +462,12 @@ export function useClientQueue(options?: UseClientQueueOptions) {
     updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, maxLimit, def))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
-  handleFilesSelectedRef.current = handleFilesSelected;
-  useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, handleFilesSelectedRef);
+  useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, handleFilesSelectedRef, handleFilesSelected);
 
   const mutationCtx: QueueMutationContext = {
     bundlePrefix: options?.bundlePrefix, mountedRef, queueRef, generationRef, inFlightIdsRef,
-    blobUrlsRef, timersRef, batchGenRef, updateQueue, revokeBlobUrl, isItemBusy, syncInFlight,
-    setIsBatchRunning, setInFlightCount, setZipError,
+    blobUrlsRef, timersRef, batchGenRef, batchRunningRef, updateQueue, revokeBlobUrl, isItemBusy,
+    syncInFlight, setIsBatchRunning, setInFlightCount, setZipError,
   };
   const mutators = createQueueMutators(mutationCtx);
   const runners = createConversionRunners(mutationCtx);

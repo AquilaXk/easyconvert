@@ -59,14 +59,13 @@ function renderCategoryIcon(ext: string): React.ReactNode {
   return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
 }
 
-function isRetryDisabled(item: ConversionQueueItem, isBusy: boolean): boolean {
-  if (isBusy || !item.targetFormat) return true;
-  return item.size > getEffectiveMaxFileSize() || Boolean(item.error?.includes('exceeds the'));
+function isRetryDisabled(item: ConversionQueueItem, isBusy: boolean, isOversize: boolean): boolean {
+  return isBusy || !item.targetFormat || isOversize;
 }
 
 function RowStatusDisplay({
-  item, isBusy, onRetry,
-}: Readonly<{ item: ConversionQueueItem; isBusy: boolean; onRetry: () => void }>) {
+  item, isBusy, isOversize, onRetry,
+}: Readonly<{ item: ConversionQueueItem; isBusy: boolean; isOversize: boolean; onRetry: () => void }>) {
   if (isBusy) {
     const rounded = Math.round(item.progress);
     return (
@@ -100,7 +99,7 @@ function RowStatusDisplay({
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-dangerSoft text-status-danger dark:bg-red-950/40 dark:text-red-300 border border-red-500/30">Failed</span>
         <button
-          type="button" disabled={isRetryDisabled(item, isBusy)} onClick={onRetry}
+          type="button" disabled={isRetryDisabled(item, isBusy, isOversize)} onClick={onRetry}
           className="inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-md border border-red-300 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Retry
@@ -125,6 +124,7 @@ export default function QueueItemRow({
   onRemove,
 }: Readonly<QueueItemRowProps>) {
   const isBusy = item.status === 'uploading' || item.status === 'converting';
+  const isOversize = item.size > getEffectiveMaxFileSize() || Boolean(item.error?.includes('exceeds the'));
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
 
@@ -169,7 +169,7 @@ export default function QueueItemRow({
             aria-label={`Select output format for ${item.name}`}
             aria-haspopup="dialog"
             aria-expanded={isFormatSelectorOpen}
-            disabled={isBusy}
+            disabled={isBusy || isOversize}
             onClick={onToggleFormatSelector}
             className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-md border text-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
           >
@@ -177,7 +177,7 @@ export default function QueueItemRow({
             <ChevronDown className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
           </button>
 
-          {isFormatSelectorOpen && (
+          {isFormatSelectorOpen && !isOversize && (
             <FormatSelector
               sourceFormat={item.sourceFormat}
               availableFormats={getAvailableTargetFormats(item.sourceFormat)}
@@ -193,14 +193,14 @@ export default function QueueItemRow({
           type="button"
           data-testid="queue-options-btn"
           aria-label={`Conversion options for ${item.name}`}
-          disabled={!item.targetFormat || isBusy}
+          disabled={!item.targetFormat || isBusy || isOversize}
           onClick={onOpenOptions}
           className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-md border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-elevated text-ink-secondary dark:text-neutral-300 hover:border-brand-700 hover:text-brand-950 dark:hover:text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Sliders className="w-4 h-4" />
         </button>
 
-        <RowStatusDisplay item={item} isBusy={isBusy} onRetry={onRetry} />
+        <RowStatusDisplay item={item} isBusy={isBusy} isOversize={isOversize} onRetry={onRetry} />
 
         <button
           type="button"

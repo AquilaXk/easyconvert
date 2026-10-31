@@ -57,11 +57,15 @@ export {
 export {
   computeVisibleSections,
   DEFAULT_OPTIONS,
+  FFMPEG_VIDEO_CONTAINERS,
   isDelimitedFormat,
   isLosslessAudioTarget,
   OCR_TARGETS,
+  resolveAllowedVideoCodecs,
+  resolveAudioCapabilities,
   resolvePasswordMode,
+  sanitizeOptionsForPair,
+  type AudioCapabilities,
   type PasswordMode,
-  type VisibleOptionSections,
   type VisibleOptionsSections,
 } from './options/options-capabilities';

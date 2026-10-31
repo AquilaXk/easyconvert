@@ -25,9 +25,12 @@ import { buildCurlSnippet } from '../src/components/api-docs/curl-builder';
 import { RequestBodySection } from '../src/components/api-docs/EndpointSchemaTables';
 import {
   dereferenceSchema,
+  formatSchemaType,
+  primarySchemaType,
   type OpenApiOperation,
   type OpenApiSchemaObject,
 } from '../src/components/api-docs/openapi-types';
+import { writeClipboardText } from '../src/hooks/useCopyFeedback';
 import { buildOpenApiDocument } from '../src/lib/api/openapi';
 import StatusPage from '../src/app/status/page';
 import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
@@ -195,73 +198,31 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(phrasesPresent(imageText, ['Page Range', 'Open Password', 'Video Codec', 'Audio Bitrate'])).toEqual([]);
 
     const pngToPdfText = visibleText(
-      render(OptionsModal, {
-        filename: 'scan.png',
-        sourceFormat: 'png',
-        targetFormat: 'pdf',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'scan.png', sourceFormat: 'png', targetFormat: 'pdf', initialOptions: {}, onSave: noop, onClose: noop })
     );
     expect(phrasesMissing(pngToPdfText, ['Orientation', 'Enable OCR text recognition'])).toEqual([]);
     expect(phrasesPresent(pngToPdfText, ['Open Password', 'Page Range'])).toEqual([]);
 
     const pdfToPngText = visibleText(
-      render(OptionsModal, {
-        filename: 'slides.pdf',
-        sourceFormat: 'pdf',
-        targetFormat: 'png',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'slides.pdf', sourceFormat: 'pdf', targetFormat: 'png', initialOptions: {}, onSave: noop, onClose: noop })
     );
     expect(phrasesMissing(pdfToPngText, ['Page Range', 'Open Password (PDF)'])).toEqual([]);
     expect(phrasesPresent(pdfToPngText, ['Orientation', 'Enable OCR text recognition'])).toEqual([]);
 
     const jsonToYamlText = visibleText(
-      render(OptionsModal, {
-        filename: 'config.json',
-        sourceFormat: 'json',
-        targetFormat: 'yaml',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'config.json', sourceFormat: 'json', targetFormat: 'yaml', initialOptions: {}, onSave: noop, onClose: noop })
     );
     expect(phrasesPresent(jsonToYamlText, ['Field Delimiter', 'Worksheet Index'])).toEqual([]);
 
     const pngToMp4Text = visibleText(
-      render(OptionsModal, {
-        filename: 'poster.png',
-        sourceFormat: 'png',
-        targetFormat: 'mp4',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'poster.png', sourceFormat: 'png', targetFormat: 'mp4', initialOptions: {}, onSave: noop, onClose: noop })
     );
     expect(phrasesPresent(pngToMp4Text, ['Audio Bitrate', 'Audio Codec'])).toEqual([]);
 
     const zipToTarText = visibleText(
-      render(OptionsModal, {
-        filename: 'bundle.zip',
-        sourceFormat: 'zip',
-        targetFormat: 'tar',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'bundle.zip', sourceFormat: 'zip', targetFormat: 'tar', initialOptions: {}, onSave: noop, onClose: noop })
     );
-    expect(
-      phrasesPresent(zipToTarText, [
-        'Archive Password',
-        'Compression Level',
-        'Output Archive Password',
-        'Open Password',
-      ])
-    ).toEqual([]);
+    expect(phrasesPresent(zipToTarText, ['Archive Password', 'Compression Level', 'Output Archive Password', 'Open Password'])).toEqual([]);
 
     expect(Object.keys(DEFAULT_OPTIONS)).toHaveLength(0);
     expect(DEFAULT_OPTIONS.delimiter).toBeUndefined();
@@ -279,37 +240,16 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(resolvePasswordMode('zip', 'tar')).toBeNull();
 
     const csvToTsvText = visibleText(
-      render(OptionsModal, {
-        filename: 'rows.csv',
-        sourceFormat: 'csv',
-        targetFormat: 'tsv',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'rows.csv', sourceFormat: 'csv', targetFormat: 'tsv', initialOptions: {}, onSave: noop, onClose: noop })
     );
     expect(phrasesMissing(csvToTsvText, ['Auto (match format)'])).toEqual([]);
 
     const pngToZipText = visibleText(
-      render(OptionsModal, {
-        filename: 'bundle.png',
-        sourceFormat: 'png',
-        targetFormat: 'zip',
-        initialOptions: {},
-        onSave: noop,
-        onClose: noop,
-      })
+      render(OptionsModal, { filename: 'bundle.png', sourceFormat: 'png', targetFormat: 'zip', initialOptions: {}, onSave: noop, onClose: noop })
     );
     expect(phrasesMissing(pngToZipText, ['Compression Level', 'Output Archive Password (ZIP)'])).toEqual([]);
 
-    const videoModal = render(OptionsModal, {
-      filename: 'clip.mov',
-      sourceFormat: 'mov',
-      targetFormat: 'mp4',
-      initialOptions: {},
-      onSave: noop,
-      onClose: noop,
-    });
+    const videoModal = render(OptionsModal, { filename: 'clip.mov', sourceFormat: 'mov', targetFormat: 'mp4', initialOptions: {}, onSave: noop, onClose: noop });
     const videoLabels = select(videoModal, 'label').map((l) => visibleText(l));
     expect(videoLabels.filter((text) => text.startsWith('Trim Start'))).toHaveLength(1);
     expect(videoLabels.filter((text) => text.startsWith('Trim End'))).toHaveLength(1);
@@ -628,12 +568,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     ).toEqual([]);
 
     const rotateCurl = buildCurlSnippet(
-      {
-        key: 'POST:/api/v1/webhooks/secrets/rotate',
-        method: 'post',
-        path: '/api/v1/webhooks/secrets/rotate',
-        operation: rotateOp,
-      },
+      { key: 'POST:/api/v1/webhooks/secrets/rotate', method: 'post', path: '/api/v1/webhooks/secrets/rotate', operation: rotateOp },
       '',
       '/',
       { schemas }
@@ -648,6 +583,37 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     );
     expect(resolvedByUriId?.type).toBe('object');
     expect(resolvedByUriId?.properties?.quality).toBeDefined();
+    const falseColorProp = dereferenceSchema(resolvedByUriId?.properties?.falseColorSuppression, schemas);
+    expect(formatSchemaType(falseColorProp, 'object')).toBe('boolean | number');
+    expect(primarySchemaType(falseColorProp)).toBe('boolean');
+
+    const resolvedOneOf = dereferenceSchema(
+      { oneOf: [{ $ref: '#/components/schemas/IdempotencyKeyHeader' }, { type: 'number' }] },
+      schemas
+    );
+    expect(resolvedOneOf?.oneOf?.[0]?.type).toBe('string');
+    expect(formatSchemaType(resolvedOneOf, 'object')).toBe('string | number');
+    expect(primarySchemaType(resolvedOneOf)).toBe('string');
+
+    const resolvedAnyOf = dereferenceSchema(
+      { anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'string' }] },
+      schemas
+    );
+    expect(formatSchemaType(resolvedAnyOf, 'object')).toBe('string | number');
+
+    const unionBodyDom = render(RequestBodySection, {
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: { threshold: { oneOf: [{ type: 'string' }, { type: 'number' }] } },
+          },
+        },
+      },
+      schemas,
+    });
+    expect(visibleText(unionBodyDom)).toContain('[string | number]');
+    expect(visibleText(unionBodyDom)).not.toContain('[object]');
 
     const resolvedPdfaProblem = dereferenceSchema(
       { $ref: '#/components/schemas/PdfaValidationProblem' },
@@ -659,25 +625,12 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(resolvedPdfaProblem?.properties?.profile).toBeDefined();
     expect(resolvedPdfaProblem?.properties?.failedRules).toBeDefined();
     expect(resolvedPdfaProblem?.required).toEqual(
-      expect.arrayContaining([
-        'type',
-        'title',
-        'status',
-        'detail',
-        'instance',
-        'profile',
-        'failedRules',
-      ])
+      expect.arrayContaining(['type', 'title', 'status', 'detail', 'instance', 'profile', 'failedRules'])
     );
 
     const patchKeyOp = doc.paths['/api/keys/{id}'].patch as unknown as OpenApiOperation;
     const patchKeyCurl = buildCurlSnippet(
-      {
-        key: 'PATCH:/api/keys/{id}',
-        method: 'patch',
-        path: '/api/keys/{id}',
-        operation: patchKeyOp,
-      },
+      { key: 'PATCH:/api/keys/{id}', method: 'patch', path: '/api/keys/{id}', operation: patchKeyOp },
       '',
       '/',
       { schemas }
@@ -685,9 +638,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     const patchDataStart = patchKeyCurl.indexOf("-d '");
     expect(patchDataStart).toBeGreaterThan(-1);
     const patchDataEnd = patchKeyCurl.indexOf("'", patchDataStart + 4);
-    const patchPayload = JSON.parse(
-      patchKeyCurl.slice(patchDataStart + 4, patchDataEnd)
-    ) as Record<string, unknown>;
+    const patchPayload = JSON.parse(patchKeyCurl.slice(patchDataStart + 4, patchDataEnd)) as Record<string, unknown>;
     expect(Object.keys(patchPayload)).toEqual(['name']);
 
     const patchCidrCurl = buildCurlSnippet(
@@ -701,10 +652,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
               'application/json': {
                 schema: {
                   type: 'object',
-                  properties: {
-                    allowedIps: { type: 'array', items: { type: 'string' } },
-                    expiresAt: { type: 'number' },
-                  },
+                  properties: { allowedIps: { type: 'array', items: { type: 'string' } }, expiresAt: { type: 'number' } },
                 },
               },
             },
@@ -726,12 +674,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         path: '/api/v1/jobs',
         operation: {
           ...jobsOp,
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': jobsOp.requestBody!.content!['application/json'],
-            },
-          },
+          requestBody: { required: true, content: { 'application/json': jobsOp.requestBody!.content!['application/json'] } },
         },
       },
       '',
@@ -741,6 +684,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(jobsJsonCurl).toContain('"uploadId":"upl_01J9EXAMPLE"');
     expect(jobsJsonCurl).toContain('"targetFormat":"pdf"');
 
+    const sessionSecurity = [{ SessionCookie: [] }];
     const sessionMeOp = doc.paths['/api/auth/me'].get as unknown as OpenApiOperation;
     const sessionCurl = buildCurlSnippet(
       { key: 'GET:/api/auth/me', method: 'get', path: '/api/auth/me', operation: sessionMeOp },
@@ -750,6 +694,32 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     );
     expect(sessionCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
     expect(sessionCurl).not.toContain('Authorization: Bearer');
+    expect(sessionCurl).not.toContain('-H "Origin:');
+
+    const sessionKeysGetCurl = buildCurlSnippet(
+      { key: 'GET:/api/v1/account/keys', method: 'get', path: '/api/v1/account/keys', operation: { security: sessionSecurity } },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(sessionKeysGetCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
+    expect(sessionKeysGetCurl).not.toContain('-H "Origin:');
+
+    for (const method of ['post', 'put', 'patch', 'delete'] as const) {
+      const mutatingSessionCurl = buildCurlSnippet(
+        {
+          key: `${method.toUpperCase()}:/api/v1/account/keys/{id}`,
+          method,
+          path: method === 'post' ? '/api/v1/webhooks/secrets/rotate' : '/api/v1/account/keys/{id}',
+          operation: { security: sessionSecurity },
+        },
+        '',
+        'https://console.example.com/v1',
+        { schemas }
+      );
+      expect(mutatingSessionCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
+      expect(mutatingSessionCurl).toContain('-H "Origin: https://console.example.com"');
+    }
 
     const scopesCurl = buildCurlSnippet(
       {
@@ -763,10 +733,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
                 schema: {
                   type: 'object',
                   required: ['name', 'scopes'],
-                  properties: {
-                    name: { type: 'string' },
-                    scopes: { type: 'array', items: { type: 'string' } },
-                  },
+                  properties: { name: { type: 'string' }, scopes: { type: 'array', items: { type: 'string' } } },
                 },
               },
             },
@@ -814,12 +781,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
     const completeOp = doc.paths['/api/v1/uploads/direct/complete'].post as unknown as OpenApiOperation;
     const completeCurl = buildCurlSnippet(
-      {
-        key: 'POST:/api/v1/uploads/direct/complete',
-        method: 'post',
-        path: '/api/v1/uploads/direct/complete',
-        operation: completeOp,
-      },
+      { key: 'POST:/api/v1/uploads/direct/complete', method: 'post', path: '/api/v1/uploads/direct/complete', operation: completeOp },
       '',
       '/',
       { schemas }
@@ -828,12 +790,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
     const credsOp = doc.paths['/api/v1/storage/credentials'].post as unknown as OpenApiOperation;
     const credsCurl = buildCurlSnippet(
-      {
-        key: 'POST:/api/v1/storage/credentials',
-        method: 'post',
-        path: '/api/v1/storage/credentials',
-        operation: credsOp,
-      },
+      { key: 'POST:/api/v1/storage/credentials', method: 'post', path: '/api/v1/storage/credentials', operation: credsOp },
       '',
       '/',
       { schemas }
@@ -986,6 +943,26 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
     for (const sample of [1e-7, 1e-9, -1e-9, 1e-15, 1e-22, -1e-22, 0.45359237, 100, 1e21]) {
       expect(formatEditableDecimal(sample, 6)).toMatch(editablePattern);
+    }
+  });
+
+  it('guards clipboard writes against missing APIs and rejected permissions before reporting success', async () => {
+    const prevDesc = Object.getOwnPropertyDescriptor(globalThis.navigator, 'clipboard');
+    try {
+      Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: undefined });
+      expect(await writeClipboardText('curl -I https://api.easyconvert.com')).toBe(false);
+
+      const rejectingWrite = vi.fn().mockRejectedValueOnce(new Error('NotAllowedError'));
+      Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText: rejectingWrite } });
+      expect(await writeClipboardText('curl -I https://api.easyconvert.com')).toBe(false);
+
+      const resolvingWrite = vi.fn().mockResolvedValueOnce(undefined);
+      Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText: resolvingWrite } });
+      expect(await writeClipboardText('42.5')).toBe(true);
+      expect(resolvingWrite).toHaveBeenCalledWith('42.5');
+    } finally {
+      if (prevDesc) Object.defineProperty(globalThis.navigator, 'clipboard', prevDesc);
+      else Reflect.deleteProperty(globalThis.navigator, 'clipboard');
     }
   });
 });

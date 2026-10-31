@@ -11,6 +11,7 @@ import {
   type OpenApiSpec,
   type ParsedEndpointItem,
 } from '@/components/api-docs/openapi-types';
+import { useCopyFeedback } from '@/hooks/useCopyFeedback';
 
 export default function ApiDocsPage() {
   const [spec, setSpec] = useState<OpenApiSpec | null>(null);
@@ -19,7 +20,7 @@ export default function ApiDocsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMethod, setSelectedMethod] = useState<string>('all');
   const [expandedEndpoints, setExpandedEndpoints] = useState<Record<string, boolean>>({});
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const { copiedKey, copyText } = useCopyFeedback(2000);
   const [apiKeyInput, setApiKeyInput] = useState('');
 
   useEffect(() => {
@@ -58,11 +59,7 @@ export default function ApiDocsPage() {
   };
 
   const copyToClipboard = (text: string, id: string) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(text);
-      setCopiedKey(id);
-      setTimeout(() => setCopiedKey(null), 2000);
-    }
+    void copyText(text, id);
   };
 
   const parsedEndpoints = useMemo<ParsedEndpointItem[]>(() => {

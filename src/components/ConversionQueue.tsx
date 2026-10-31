@@ -182,7 +182,9 @@ export default function ConversionQueue({
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
   const maxLimit = getEffectiveMaxFileSize();
-  const convertibleItems = items.filter((i) => i.size <= maxLimit);
+  const isConvertibleItem = (item: ConversionQueueItem) =>
+    item.size <= maxLimit && !item.error?.includes('exceeds the');
+  const convertibleItems = items.filter(isConvertibleItem);
   const effectiveBusy = isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
   const completedCount = items.filter((i) => i.status === 'completed').length;
   const allDone = convertibleItems.length > 0 && convertibleItems.every((i) => i.status === 'completed');
@@ -228,8 +230,9 @@ export default function ConversionQueue({
         />
       </div>
       {completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
-      {currentOptionsItem?.targetFormat && (
+      {currentOptionsItem?.targetFormat && isConvertibleItem(currentOptionsItem) && (
         <OptionsModal
+          key={`${currentOptionsItem.id}:${currentOptionsItem.sourceFormat}:${currentOptionsItem.targetFormat}`}
           filename={currentOptionsItem.name} sourceFormat={currentOptionsItem.sourceFormat}
           targetFormat={currentOptionsItem.targetFormat} initialOptions={currentOptionsItem.options}
           onSave={(opts) => { onUpdateOptions(currentOptionsItem.id, opts); setActiveOptionsModalId(null); }}

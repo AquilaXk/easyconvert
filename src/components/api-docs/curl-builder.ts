@@ -9,6 +9,7 @@ import {
 
 const DEFAULT_API_ORIGIN = 'https://api.easyconvert.com';
 const SESSION_COOKIE_NAME = 'easyconvert_session';
+const MUTATING_METHODS: ReadonlySet<string> = new Set(['post', 'put', 'patch', 'delete']);
 type SchemaMap = Record<string, OpenApiSchemaObject>;
 
 export interface CurlBuildOptions {
@@ -296,19 +297,40 @@ function appendPayloadFlags(
   }
 }
 
-function buildAuthFlag(
+function isSessionCookieOnlySecurity(
+  security: Array<Record<string, string[]>> | undefined
+): boolean {
+  if (!security || security.length === 0) return false;
+  const hasSessionCookie = security.some((req) => 'SessionCookie' in req);
+  const hasApiAuth = security.some((req) => 'BearerAuth' in req || 'ApiKeyAuth' in req);
+  return hasSessionCookie && !hasApiAuth;
+}
+
+function resolveAuthConfig(
   security: Array<Record<string, string[]>> | undefined,
   apiKeyInput: string
-): string | null {
-  if (Array.isArray(security)) {
-    if (security.length === 0) return null;
-    const hasSessionCookie = security.some((req) => 'SessionCookie' in req);
-    const hasApiAuth = security.some((req) => 'BearerAuth' in req || 'ApiKeyAuth' in req);
-    if (hasSessionCookie && !hasApiAuth) {
-      return `  -b "${SESSION_COOKIE_NAME}=YOUR_SESSION_COOKIE"`;
-    }
+): { flag: string | null; isSessionCookie: boolean } {
+  if (Array.isArray(security) && security.length === 0) {
+    return { flag: null, isSessionCookie: false };
   }
-  return `  -H "Authorization: Bearer ${escapeDoubleQuoted(apiKeyInput.trim() || 'YOUR_API_KEY')}"`;
+  if (isSessionCookieOnlySecurity(security)) {
+    return {
+      flag: `  -b "${SESSION_COOKIE_NAME}=YOUR_SESSION_COOKIE"`,
+      isSessionCookie: true,
+    };
+  }
+  return {
+    flag: `  -H "Authorization: Bearer ${escapeDoubleQuoted(apiKeyInput.trim() || 'YOUR_API_KEY')}"`,
+    isSessionCookie: false,
+  };
+}
+
+function extractOrigin(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return baseUrl;
+  }
 }
 
 export function buildCurlSnippet(
@@ -324,10 +346,14 @@ export function buildCurlSnippet(
   const lines: string[] = [
     method === 'head' ? `curl -I "${escapedUrl}"` : `curl -X ${method.toUpperCase()} "${escapedUrl}"`,
   ];
-  const authFlag = buildAuthFlag(operation.security, apiKeyInput);
-  if (authFlag) lines.push(authFlag);
+  const auth = resolveAuthConfig(operation.security, apiKeyInput);
+  if (auth.flag) lines.push(auth.flag);
   const isTusCreate = isTusCreationEndpoint(endpoint);
-  for (const headerValue of collectHeaderMap(operation.parameters, schemas, isTusCreate).values()) {
+  const headerMap = collectHeaderMap(operation.parameters, schemas, isTusCreate);
+  if (auth.isSessionCookie && MUTATING_METHODS.has(method) && !headerMap.has('origin')) {
+    lines.push(`  -H "Origin: ${escapeDoubleQuoted(extractOrigin(baseUrl))}"`);
+  }
+  for (const headerValue of headerMap.values()) {
     lines.push(`  -H "${headerValue}"`);
   }
   if (method !== 'head') appendPayloadFlags(lines, endpoint, isTusCreate, schemas);
