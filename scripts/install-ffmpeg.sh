@@ -30,7 +30,7 @@ INSTALL_DIR="${1:-/opt/ffmpeg}"
 # libvorbis-whole-frames.patch: libavcodec/libvorbisenc.c takes frames of any size, so that ffmpeg 9 no longer hands the encoder
 # thread a frame of 64 samples at a time; the Vorbis stream it writes is the one it wrote before (entry 131 of docs/policy-decisions.md).
 FFMPEG_PATCHES=(
-  "libvorbis-whole-frames.patch 1e3f0617c7c7778bf308aefea46479a6c7ae15ad2bf440ff9c084d422e97052d"
+  "libvorbis-whole-frames.patch da684762c51d134f6d5f295fdafaa27c9d964c9db89cc08a1d5d5e7e60b9202c"
 )
 patch_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ffmpeg-patches"
 
@@ -142,10 +142,23 @@ done
 # The patch of the Vorbis encoder is in the build, and the stream it writes does not depend on the size of the frames it is sent
 # (before the patch the encoder asked for frames of 64 samples, and the same stream came out of every size ffmpeg was told to use).
 grep -Eq 'General capabilities:.*\bvariable\b' <<< "$("$ffmpeg_bin" -hide_banner -h encoder=libvorbis)" || { echo "libvorbis does not take frames of any size: the libvorbis patch is not in the build" >&2; exit 1; }
+# Six different channels (noise, tones, a ramp), so the planar layout and the channel mapping of the patch are exercised; every
+# run must succeed and write a real Ogg stream, so a build whose encoder fails the same way for every size does not pass.
+vorbis_check_dir="$(mktemp -d)"
 vorbis_stream() {
-  "$ffmpeg_bin" -hide_banner -v error -f lavfi -i "anoisesrc=d=3:r=44100:c=white:a=0.5:seed=1" -af "asetnsamples=n=$1:p=0" -c:a libvorbis -q:a 5 -fflags +bitexact -f ogg - | sha256sum
+  local out="$vorbis_check_dir/$1.ogg"
+  "$ffmpeg_bin" -hide_banner -v error -f lavfi \
+    -i "aevalsrc=exprs=random(0)-0.5|0.5*sin(2*PI*440*t)|0.4*sin(2*PI*330*t)|0.3*sin(2*PI*55*t)|0.5*sin(2*PI*880*t)*cos(2*PI*3*t)|mod(t\,1)-0.5:c=5.1:s=44100:d=3" \
+    -af "asetnsamples=n=$1:p=0" -c:a libvorbis -q:a 5 -fflags +bitexact -f ogg "$out" \
+    || { echo "the libvorbis encoder failed for frames of $1 samples" >&2; exit 1; }
+  [ "$(head -c 4 "$out")" = "OggS" ] && [ "$(wc -c < "$out")" -gt 10000 ] \
+    || { echo "the libvorbis encoder wrote no Ogg stream for frames of $1 samples" >&2; exit 1; }
 }
-[ "$(vorbis_stream 64)" = "$(vorbis_stream 100)" ] && [ "$(vorbis_stream 64)" = "$(vorbis_stream 100000)" ] || { echo "the libvorbis encoder writes another stream for another frame size" >&2; exit 1; }
+for size in 64 7 100 100000; do vorbis_stream "$size"; done
+for size in 7 100 100000; do
+  cmp -s "$vorbis_check_dir/64.ogg" "$vorbis_check_dir/$size.ogg" || { echo "the libvorbis encoder writes another stream for frames of $size samples" >&2; exit 1; }
+done
+rm -rf "$vorbis_check_dir"
 
 install -d "$INSTALL_DIR/share/doc/ffmpeg"
 # The Debian-style name, so the image collects it into /licenses with the system notices.

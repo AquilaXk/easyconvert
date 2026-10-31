@@ -140,14 +140,20 @@ describe('the install script of FFmpeg', () => {
     expect(patch).toContain('+#define LIBVORBIS_CHUNK_SIZE 64');
     expect(patch).toContain('+    FF_CODEC_RECEIVE_PACKET_CB(libvorbis_receive_packet),');
     expect(patch).toContain('AV_CODEC_CAP_VARIABLE_FRAME_SIZE');
-    expect(patch).not.toContain('+    avctx->frame_size');
+    // The encoder owns frame_size as before: a size the caller set is cleared, not left for fftools to act on.
+    expect(patch).toContain('+    avctx->frame_size = 0;');
+    expect(patch).not.toMatch(/^\+\s*avctx->frame_size = (?!0;)/m);
   });
 
   it('fails the build when the patch is missing from the encoder or when the stream depends on the frame size', () => {
     expect(INSTALL).toContain("grep -Eq 'General capabilities:.*\\bvariable\\b'");
-    expect(INSTALL).toContain('the libvorbis encoder writes another stream for another frame size');
-    for (const size of ['64', '100', '100000']) expect(INSTALL, size).toContain(`vorbis_stream ${size}`);
-    expect(INSTALL.indexOf('vorbis_stream 64')).toBeGreaterThan(INSTALL.indexOf('make -j"$jobs"'));
+    expect(INSTALL).toContain('for size in 64 7 100 100000; do vorbis_stream "$size"; done');
+    expect(INSTALL).toContain('the libvorbis encoder writes another stream for frames of $size samples');
+    // A run that fails, or writes no Ogg stream, stops the build: equal empty outputs would otherwise compare equal.
+    expect(INSTALL).toContain('the libvorbis encoder failed for frames of $1 samples');
+    expect(INSTALL).toContain('[ "$(head -c 4 "$out")" = "OggS" ] && [ "$(wc -c < "$out")" -gt 10000 ]');
+    expect(INSTALL).toMatch(/aevalsrc=exprs=[^"]*:c=5\.1:/);
+    expect(INSTALL.indexOf('vorbis_stream "$size"')).toBeGreaterThan(INSTALL.indexOf('make -j"$jobs"'));
   });
 
   it('links the libraries the conversions name and only those, with no nonfree component and no network', () => {
