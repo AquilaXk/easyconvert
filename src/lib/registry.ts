@@ -1057,7 +1057,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'Human-friendly data serialization standard.',
-    targetFormats: ['json', 'txt', 'zip', 'toml'],
+    targetFormats: ['json', 'txt', 'zip', 'toml', 'xlsx', 'ods', 'xls'],
   },
   yml: {
     id: 'yml',
@@ -1066,7 +1066,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'YAML configuration and data format short extension.',
-    targetFormats: ['json', 'txt', 'zip', 'toml'],
+    targetFormats: ['json', 'txt', 'zip', 'toml', 'xlsx', 'ods', 'xls'],
   },
   xml: {
     id: 'xml',
@@ -1075,7 +1075,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/xml',
     category: 'data',
     description: 'Extensible Markup Language hierarchical structured document.',
-    targetFormats: ['json', 'yaml', 'txt', 'csv', 'zip'],
+    targetFormats: ['json', 'yaml', 'txt', 'csv', 'zip', 'xlsx', 'ods', 'xls'],
   },
   toml: {
     id: 'toml',
@@ -1247,7 +1247,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-ndjson',
     category: 'data',
     description: 'Streaming structured data formatted with one valid JSON value per line.',
-    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip'],
+    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip', 'xlsx', 'ods', 'xls'],
   },
   jsonl: {
     id: 'jsonl',
@@ -1256,7 +1256,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-jsonlines',
     category: 'data',
     description: 'Convenient format for storing records that can be processed one line at a time.',
-    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip'],
+    targetFormats: ['json', 'csv', 'tsv', 'parquet', 'zip', 'xlsx', 'ods', 'xls'],
   },
   tab: {
     id: 'tab',
