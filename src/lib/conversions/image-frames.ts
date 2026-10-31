@@ -12,6 +12,7 @@ import {
   RGBA_BYTES_PER_PIXEL,
 } from './image-limits';
 import { maxInputPixels, resizedDimensions } from './image-input-limits';
+import { truncatedJpegDecodeOptions } from './image-jpeg-stream';
 import { EXIF_ORIENTATION_NORMAL, FIRST_QUARTER_TURN_ORIENTATION, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
@@ -315,7 +316,7 @@ export async function selectFrames(
 
   const meta = header ?? (await sharp(buffer, { limitInputPixels: maxInputPixels() }).metadata());
   const frames = meta.pages ?? SINGLE_FRAME;
-  const untouched: FrameSelection = { source: buffer, input: {}, keepsAnimation: false, ...(frames <= SINGLE_FRAME ? { metadata: meta } : {}) };
+  const untouched: FrameSelection = { source: buffer, input: truncatedJpegDecodeOptions(buffer), keepsAnimation: false, ...(frames <= SINGLE_FRAME ? { metadata: meta } : {}) };
   if (frames <= SINGLE_FRAME || meta.format === undefined) return untouched;
   if (ANIMATION_SOURCE_FORMATS.has(meta.format)) {
     return selectAnimationFrames(buffer, meta, frames, targetFormat, options);
