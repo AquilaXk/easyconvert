@@ -31,6 +31,13 @@ const ENCRYPTED_DOC = buildWordBinary({ pieces: [{ text: 'Secret paragraph\r', c
 const PLAIN_DOC = buildWordBinary({ pieces: [{ text: 'Open paragraph\r', compressed: true }] });
 const MALFORMED_DOC = Buffer.concat([ENCRYPTED_DOC.subarray(0, 512), Buffer.alloc(64)]);
 
+/**
+ * A malformed legacy document is handed to the office suite when one is installed, and that starts a process: about 1 s on a fast
+ * core, 2 s for the first, which a loaded shard stretches past the 5 s default of a test. The cases that answer without an engine
+ * keep the default; this one names the timeout that only stops a hang.
+ */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+
 function form(file: Buffer, name: string, fieldName = 'file'): FormData {
   const data = new FormData();
   data.append(fieldName, new Blob([new Uint8Array(file)]), name);
@@ -49,16 +56,18 @@ async function apiKeyHeaders(): Promise<Record<string, string>> {
 }
 
 describe('an encrypted document answers 422 on the convert routes', () => {
-  it('POST /api/convert answers 422 with the reason, and 400 for a malformed file', async () => {
+  it('POST /api/convert answers 422 with the reason', async () => {
     const res = await convertPost(new NextRequest(`${BASE_URL}/api/convert`, { method: 'POST', body: form(ENCRYPTED_DOC, 'secret.doc') }));
     expect(res.status).toBe(HTTP_UNPROCESSABLE);
     const problem = await res.json();
     expect(problem.title).toBe('Unprocessable Entity');
     expect(problem.detail).toMatch(/encrypted|password/i);
+  });
 
+  it('POST /api/convert answers 400 for a malformed file', async () => {
     const malformed = await convertPost(new NextRequest(`${BASE_URL}/api/convert`, { method: 'POST', body: form(MALFORMED_DOC, 'broken.doc') }));
     expect(malformed.status).toBe(HTTP_BAD_REQUEST);
-  });
+  }, ENGINE_TEST_TIMEOUT_MS);
 
   it('POST /api/v1/convert answers a 422 problem document, and converts the same file unencrypted', async () => {
     const headers = await apiKeyHeaders();

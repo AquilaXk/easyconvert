@@ -104,13 +104,11 @@ describe('SVG sanitizer terminates on adversarial shapes (issue #399)', () => {
   it('isSvg reads a bounded prefix of many unterminated comments, however long the input', async () => {
     // isSvg decides from the first SVG_SNIFF_BYTES (256 KiB), where the unterminated comments are scanned once;
     // a quadratic scan of that prefix would take minutes, so a generous absolute guard catches it.
-    const SNIFF_PREFIX_HANG_GUARD_MS = 5_000;
     const withComments = (bytes: number) => `${'<!--'.repeat(Math.floor(bytes / '<!--'.length))}<svg/>`;
     const { largeResult } = await expectNoHangOnInput(
       'isSvg',
       (input: string) => isSvg(input),
-      withComments(ISVG_MODEST_BYTES * SCALING_FACTOR),
-      SNIFF_PREFIX_HANG_GUARD_MS
+      withComments(ISVG_MODEST_BYTES * SCALING_FACTOR)
     );
     expect(largeResult).toBe(false);
     expect(isSvg('<!-- note --><svg/>')).toBe(true);

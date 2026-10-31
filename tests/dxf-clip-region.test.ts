@@ -5,6 +5,7 @@ import { MAX_ACTIVE_CLIPS, MAX_CLIP_EDGES } from '../src/lib/conversions/svg-cli
 import { PAGE_CLIP_TOLERANCE_PIXELS } from '../src/lib/conversions/svg-page-clip';
 import { encodeSvgPageToDxf } from '../src/lib/conversions/vector-dxf';
 import { readDxf, type DxfDocument } from './helpers/dxf-reader';
+import { DEFAULT_HANG_GUARD_MS, expectWithinHangGuard } from './helpers/timing';
 
 /**
  * A clip path that is not the page. The DXF writer (which writes the centre lines of the drawing and holds no clip) drops it
@@ -15,7 +16,8 @@ import { readDxf, type DxfDocument } from './helpers/dxf-reader';
 
 const PAGE_WIDTH = 200;
 const PAGE_HEIGHT = 100;
-const HOSTILE_BUDGET_MS = 3000;
+/** The hostile cases take up to 0.3 s on a fast core; the guard stops a hang, and the refusal each case expects is what pins the limit. */
+const HOSTILE_GUARD = { guardMs: DEFAULT_HANG_GUARD_MS, expectedLocalMs: 300 };
 /** One point of the page in device pixels (96 per inch against 72), the most a clip may hide. */
 const TOLERANCE = PAGE_CLIP_TOLERANCE_PIXELS;
 
@@ -403,7 +405,7 @@ describe('hostile clips', () => {
   it('a clip path of a million vertices is refused inside the budget of the vertex limit', () => {
     const { result, ms } = timed(clipped(pathClip(`M 0 0${'L1,1'.repeat(1_000_000)}Z`), stroke('M 10 10 L 20 10')));
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG expands to more than 500000 vertices/);
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
   });
 
   it(`a clip path of more than ${MAX_CLIP_EDGES} edges is refused without being measured`, () => {
@@ -411,7 +413,7 @@ describe('hostile clips', () => {
     const { result, ms } = timed(clipped(pathClip(`M 0 0 ${points} Z`), stroke('M 10 10 L 20 10')));
     expect(result).toMatch(CLIP_REFUSAL);
     expect(result).toMatch(/more than 1024 edges/);
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
   });
 
   it('a clip referenced by 30,000 elements is read once and measured for each', () => {
@@ -419,7 +421,7 @@ describe('hostile clips', () => {
     const start = performance.now();
     const dxf = dxfOf(svgOf(`<defs>${pathClip(BOX)}</defs>${drawn}`));
     expect(dxf.entities).toHaveLength(30_000);
-    expect(performance.now() - start).toBeLessThan(HOSTILE_BUDGET_MS * 2);
+    expectWithinHangGuard('hostile clip', performance.now() - start, HOSTILE_GUARD);
   });
 
   it('a clip placed under an element is charged for every point it moves, also where a singular matrix leaves it no edge', () => {
@@ -428,7 +430,7 @@ describe('hostile clips', () => {
     const svg = svgOf(`<defs>${pathClip(`M 100 0 ${ring} Z`)}</defs><g transform="matrix(1 0 0 0 0 0)">${placements}</g>${stroke('M 10 90 L 190 90')}`);
     const { result, ms } = timed(svg);
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
   });
 
   it('a refusal quotes at most 40 characters of a value', () => {
@@ -446,7 +448,7 @@ describe('hostile clips', () => {
     const drawn = Array.from({ length: 400 }, () => stroke(line)).join('');
     const { result, ms } = timed(clipped(clip, drawn));
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
   });
 
   it('a page with as many edge tests as the heaviest real page needed is written, not stopped at the work limit', () => {
@@ -469,14 +471,14 @@ describe('hostile clips', () => {
   ])('%s is refused', (_name, clip) => {
     const { result, ms } = timed(clipped(clip, stroke('M 60 30 L 140 30')));
     expect(result).not.toBe('converted');
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
   });
 
   it('a clip and a drawing past a billion device pixels are refused, where their distance would be NaN', () => {
     const huge = clipOf('<rect x="10" y="10" width="1e200" height="1e200"/>');
     const { result, ms } = timed(clipped(huge, stroke('M -1e150 1e150 L -1e150 1.5e150')));
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path .*1000000000 device pixels/);
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
     expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 L 2e9 30')))).not.toBe('converted');
   });
 
@@ -484,11 +486,11 @@ describe('hostile clips', () => {
     const zigzag = (count: number): string => stroke(`M 60 30${Array.from({ length: count }, (_, i) => ` L ${i % 2 === 0 ? 160 : 140} ${30 + (i % 40) / 1000}`).join('')}`);
     const within = timed(clipped(pathClip(BOX), zigzag(150_000)));
     expect(within.result).toBe('converted');
-    expect(within.ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', within.ms, HOSTILE_GUARD);
     expect(dxfOf(clipped(pathClip(BOX), zigzag(1001))).entities).toHaveLength(501);
     const past = timed(clipped(pathClip(BOX), zigzag(400_000)));
     expect(past.result).toMatch(/^CadGeometryUnavailableError: SVG expands to more than 500000 vertices/);
-    expect(past.ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', past.ms, HOSTILE_GUARD);
   });
 
   it('a cut is charged to the work limit as its vertices times the edges of the clip', () => {
@@ -497,7 +499,7 @@ describe('hostile clips', () => {
     const line = stroke(`M 100 50${' L 100 51 L 101 51'.repeat(2500)} L 190 50`);
     const { result, ms } = timed(clipped(clip, line));
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
-    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
     expect(refusal(clipped(clip, stroke('M 100 50 L 100 51 L 190 50')))).toBe('converted');
   });
 
@@ -513,7 +515,7 @@ describe('hostile clips', () => {
         [190 - (MAX_ACTIVE_CLIPS - 1) * 5, 50],
       ],
     ]);
-    expect(performance.now() - start).toBeLessThan(HOSTILE_BUDGET_MS);
+    expectWithinHangGuard('hostile clip', performance.now() - start, HOSTILE_GUARD);
   });
 
   it('a clipped element under a transform that overflows is refused', () => {

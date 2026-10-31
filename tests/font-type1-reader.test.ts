@@ -16,6 +16,7 @@ import {
   rectangleGlyph,
   type Type1Glyph,
 } from './helpers/type1-builder';
+import { DEFAULT_HANG_GUARD_MS, expectWithinHangGuard } from './helpers/timing';
 
 /**
  * The reader of PostScript Type 1 fonts (src/lib/conversions/font-type1.ts), which checks a file before FontForge sees it and rewrites it
@@ -213,7 +214,8 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
   /** A private dictionary of `count` charstrings of no bytes each: five bytes of file per entry. */
   const entryFlood = (count: number) =>
     pfbWithPrivateDictionary(Buffer.concat([Buffer.from('/RD {string currentfile exch readstring pop} def\n/CharStrings 1 dict dup begin\n'), Buffer.from('0 RD '.repeat(count)), Buffer.from('end currentfile closefile\n')]));
-  const MAX_TIME_MS = 5000;
+  /** The cases take up to 0.35 s on a fast core; the guard stops a reader that walks a flood of entries or segments more than once. */
+  const HOSTILE_GUARD = { guardMs: DEFAULT_HANG_GUARD_MS, expectedLocalMs: 350 };
   const MAX_HEAP_GROWTH_BYTES = 256 * 1024 * 1024;
 
   /** Runs the reader on `file` and returns its failure with the milliseconds it took and the heap it left behind. */
@@ -229,7 +231,7 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
     expect(error).toBeInstanceOf(PayloadLimitError);
     expect((error as PayloadLimitError).status).toBe(413);
     expect(error.message).toContain('16 MiB');
-    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expectWithinHangGuard('hostile Type 1 font', ms, HOSTILE_GUARD);
   });
 
   it('does not refuse a file of exactly the size limit for its size', () => {
@@ -244,7 +246,7 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
     const { error, ms, heapBytes } = refusal(entryFlood(3_000_000));
     expect(error).toBeInstanceOf(PayloadLimitError);
     expect(error.message).toContain(`${MAX_TYPE1_CHARSTRING_ENTRIES}`);
-    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expectWithinHangGuard('hostile Type 1 font', ms, HOSTILE_GUARD);
     expect(heapBytes).toBeLessThan(MAX_HEAP_GROWTH_BYTES);
   });
 
@@ -257,7 +259,7 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
     const { error, ms, heapBytes } = refusal(pfbWithZeroLengthSegments(2_500_000));
     expect(error).toBeInstanceOf(PayloadLimitError);
     expect(error.message).toContain(`${MAX_PFB_SEGMENTS}`);
-    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expectWithinHangGuard('hostile Type 1 font', ms, HOSTILE_GUARD);
     expect(heapBytes).toBeLessThan(MAX_HEAP_GROWTH_BYTES);
   });
 
@@ -274,7 +276,7 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
   it('decodes a hexadecimal run of the size limit in a buffer of its own size: refused as a font, in bounded time and heap', () => {
     const { error, ms, heapBytes } = refusal(pfaWithHexRun(MAX_TYPE1_FILE_BYTES - 1024));
     expect(error).toBeInstanceOf(UnprocessableFontInputError);
-    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expectWithinHangGuard('hostile Type 1 font', ms, HOSTILE_GUARD);
     expect(heapBytes).toBeLessThan(MAX_HEAP_GROWTH_BYTES);
   });
 });

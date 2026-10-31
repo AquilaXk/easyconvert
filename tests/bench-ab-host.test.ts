@@ -14,6 +14,11 @@ import { isProcessRunning } from './helpers/process-state';
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-ab-host-'));
 afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
 const STUB = path.join(__dirname, 'helpers', 'ab-child-stub.ts');
+/**
+ * The first row of the stub sleeps 8 ms. A timer may fire a millisecond early against the clock that times it (a call read 6.977),
+ * so what is asserted is that the call was timed in milliseconds and over the half of the sleep, not an exact floor.
+ */
+const FIRST_ROW_TIMED_AT_LEAST_MS = 4;
 
 describe('the base process', () => {
   it('times one call and a sample of calls on request, row after row, and ends on request', async () => {
@@ -21,9 +26,9 @@ describe('the base process', () => {
     try {
       await host.row('compression/first/throughput');
       const side = host.side();
-      expect(await side.call()).toBeGreaterThanOrEqual(7);
+      expect(await side.call()).toBeGreaterThanOrEqual(FIRST_ROW_TIMED_AT_LEAST_MS);
       const mean = await side.sample(3);
-      expect(mean).toBeGreaterThanOrEqual(7);
+      expect(mean).toBeGreaterThanOrEqual(FIRST_ROW_TIMED_AT_LEAST_MS);
       expect(mean).toBeLessThan(200);
       host.next();
       // The second row cannot run on this version: the error carries what the version said, with its own root.
@@ -145,7 +150,7 @@ describe('a process started for a confirmation', () => {
       expect(alive(pid)).toBe(false);
       expect(alive(host.pid)).toBe(true);
       await host.row('compression/first/throughput');
-      expect(await host.side().call()).toBeGreaterThanOrEqual(7);
+      expect(await host.side().call()).toBeGreaterThanOrEqual(FIRST_ROW_TIMED_AT_LEAST_MS);
       host.next();
     } finally {
       await host.stop();
