@@ -77,10 +77,10 @@ export const SIZE_RUN_TIMEOUT_MS = 120_000;
  * thread for each file and wait on them; `size` opens the same chain in milliseconds, so the floor ends it in 15 s whatever page
  * sizes the file declares, while every measured real document keeps three times its time.
  */
-export const DRAW_BUDGET_FLOOR_MS = 15_000;
-export const DRAW_BUDGET_REPORT_FACTOR = 16;
-export const DRAW_PIXELS_PER_MS = 4_000;
-export const DRAW_PIXELS_PER_INPUT_BYTE = 16;
+const DRAW_BUDGET_FLOOR_MS = 15_000;
+const DRAW_BUDGET_REPORT_FACTOR = 16;
+const DRAW_PIXELS_PER_MS = 4_000;
+const DRAW_PIXELS_PER_INPUT_BYTE = 16;
 /**
  * One glibc heap for the program's threads. Each thread that decodes an included file otherwise gets an arena of its own, 64 MiB
  * of address space each, and from about 30 of them the 2 GiB limit is met and the program waits forever: a plain chain of 32
@@ -253,7 +253,7 @@ function failedSizeRun(err: unknown, tempDir: string): DjvuIncludeStructureError
   if (err.signal !== null) return CRASH_SIGNALS.has(err.signal) ? crashedWhileOpening(err.signal) : undefined;
   if (err.exitCode === null || err.exitCode === 0 || NOT_STARTED_STATUSES.has(err.exitCode)) return undefined;
   const detail = stderrDetail(err.stderr, tempDir);
-  return new DjvuIncludeStructureError(`The DjVu document's include structure is damaged: djvused could not open its pages and exited with status ${err.exitCode}${detail ? `: ${detail}` : ''}.`);
+  return new DjvuIncludeStructureError(`djvused could not open the pages of the DjVu document (exit status ${err.exitCode})${detail ? `: ${detail}` : ''}.`);
 }
 
 function crashedWhileOpening(signal: NodeJS.Signals, memoryLimitMb?: number): DjvuIncludeStructureError {
@@ -278,7 +278,7 @@ async function readPageSizes(run: DjvuRun, pageCount: number): Promise<DjvuPageS
  * The budget of `ddjvu` for a document of `inputBytes` whose reports took `reportMs` and whose drawn pages declare `drawnPixels`:
  * the pixels count only up to what the bytes of the file can hold.
  */
-function drawBudgetMs(reportMs: number, drawnPixels: number, inputBytes: number): number {
+export function drawBudgetMs(reportMs: number, drawnPixels: number, inputBytes: number): number {
   const creditedPixels = Math.min(drawnPixels, inputBytes * DRAW_PIXELS_PER_INPUT_BYTE);
   return Math.ceil(Math.max(DRAW_BUDGET_FLOOR_MS, DRAW_BUDGET_REPORT_FACTOR * reportMs) + creditedPixels / DRAW_PIXELS_PER_MS);
 }

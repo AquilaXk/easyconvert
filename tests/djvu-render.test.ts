@@ -394,7 +394,7 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
 
   /** The refusals of a `size` run: a crash of the program, or a status other than zero. */
   const CRASHED = /^djvused crashed \(SIG(SEGV|BUS)\).* while opening the pages of the DjVu document\.$/;
-  const EXITED = /^The DjVu document's include structure is damaged: djvused could not open its pages and exited with status 10/;
+  const EXITED = /^djvused could not open the pages of the DjVu document \(exit status 10\)/;
 
   async function expectRefusedBeforeDrawing(bytes: Buffer, message: RegExp): Promise<void> {
     const program = realReportWithMarkedRenderer();
@@ -655,7 +655,7 @@ describe('the programs and their limits', () => {
       ['crashes', 'kill -SEGV $$', 'crashed (SIGSEGV) under its 2048 MB memory limit'],
       ['aborts', 'kill -ABRT $$', 'crashed (SIGABRT)'],
       ['crashes on a bus error', 'kill -BUS $$', 'crashed (SIGBUS)'],
-      ['fails', 'echo "*** Unexpected End Of File." >&2; exit 10', 'exited with status 10: *** Unexpected End Of File.'],
+      ['fails', 'echo "*** Unexpected End Of File." >&2; exit 10', '(exit status 10): *** Unexpected End Of File.'],
     ])('refuses a document whose pages djvused %s on when it opens them, with the typed include error', async (_name, size, how) => {
       const program = standIn('exit 0', { reporter: `case "$script" in n) ${DIRECTORY(1)};; size) ${size};; esac` });
       const error = await refusalOf(convertWith(program, 'pdf'));

@@ -206,7 +206,7 @@ export class ReplyReader {
   }
 }
 
-export interface JobResult {
+interface JobResult {
   kind: number;
   exitStatus: number;
   signal: number;
