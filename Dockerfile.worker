@@ -340,7 +340,7 @@ RUN ddjvu --help 2>&1 | grep -q 'DjVuLibre-3' \
     && dir="$(mktemp -d)" \
     && printf 'P4\n8 8\n\252\125\252\125\252\125\252\125' > "$dir/page.pbm" \
     && cjb2 "$dir/page.pbm" "$dir/page.djvu" \
-    && [ "$(djvused -e 'n;ls' "$dir/page.djvu" | head -n 1)" = "1" ] \
+    && [ "$(djvused -e n "$dir/page.djvu")" = "1" ] \
     && [ "$(djvused -e size "$dir/page.djvu")" = "width=8 height=8" ] \
     && ddjvu -format=pdf "$dir/page.djvu" "$dir/page.pdf" \
     && head -c 5 "$dir/page.pdf" | grep -q '%PDF-' \

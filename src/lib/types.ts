@@ -924,8 +924,8 @@ export class CpuPoolOverloadedError extends EngineUnavailableError {
 export class CpuTaskTimeoutError extends ConversionFailedError {
   readonly status = 422;
 
-  constructor(kind: string, limitMs: number) {
-    super(`The ${kind} task exceeded its ${limitMs} ms time limit`);
+  constructor(kind: string, limitMs: number, message?: string) {
+    super(message ?? `The ${kind} task exceeded its ${limitMs} ms time limit`);
     this.name = 'CpuTaskTimeoutError';
   }
 }

@@ -2,9 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { convertDjvu, drawBudgetMs, type DjvuJob } from '../src/worker/djvu-render';
+import {
+  convertDjvu,
+  DRAW_BUDGET_FLOOR_MS,
+  DRAW_BUDGET_REPORT_FACTOR,
+  DRAW_PIXELS_PER_INPUT_BYTE,
+  DRAW_PIXELS_PER_MS,
+  MEMORY_LIMIT_MB,
+  PDF_PAGE_COUNT_FLOOR_MS,
+  SIZE_RUN_TIMEOUT_MS,
+  type DjvuJob,
+} from '../src/worker/djvu-render';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/worker/sandbox';
-import { singlePage } from './helpers/djvu-builder';
+import { chunk, singlePage } from './helpers/djvu-builder';
 
 /**
  * The time limits and the verdicts of the DjVu chain (src/worker/djvu-render.ts), driven with a stand-in for the launcher of
@@ -19,10 +29,7 @@ vi.mock('../src/lib/security/sandbox-launcher', async (importOriginal) => ({ ...
 const START_MS = 1_000_000;
 const LONG_JOB_MS = 600_000;
 const SHORT_JOB_MS = 20_000;
-const BUDGET_FLOOR_MS = 15_000;
-const PIXELS_PER_MS = 4_000;
-const SIZE_RUN_LIMIT_MS = 120_000;
-const MEMORY_LIMIT_MB = 2048;
+const DECLARED_SIDE = 9_999;
 
 interface Sizes {
   readonly width: number;
@@ -33,6 +40,7 @@ interface Sizes {
 interface Programs {
   readonly sizes: readonly Sizes[];
   readonly countMs?: number;
+  readonly countError?: Error;
   readonly sizeError?: Error;
   readonly drawMs?: number;
   readonly drawError?: Error;
@@ -52,13 +60,18 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+/** The `djvused` script of a run: the value of its `-e` flag. */
+const scriptOf = (args: readonly string[]): string | undefined => args[args.indexOf('-e') + 1];
+
 function stubPrograms(programs: Programs): void {
   launch.mockImplementation(async (binary: string, args: string[]) => {
-    if (path.basename(binary) === 'djvused' && args[1] === 'n') {
+    const script = path.basename(binary) === 'djvused' ? scriptOf(args) : undefined;
+    if (script === 'n') {
       clock += programs.countMs ?? 0;
+      if (programs.countError) throw programs.countError;
       return { stdout: Buffer.from(`${programs.sizes.length}\n`) };
     }
-    if (path.basename(binary) === 'djvused' && args[1] === 'size') {
+    if (script === 'size') {
       if (programs.sizeError) throw programs.sizeError;
       return { stdout: Buffer.from(programs.sizes.map(({ width, height }) => `width=${width} height=${height}\n`).join('')) };
     }
@@ -78,11 +91,14 @@ function given(programs: Programs, pagesDrawn = programs.sizes.length): void {
   stubPrograms(programs);
 }
 
-async function convert(tgt: string, options: DjvuJob['options'] = {}): Promise<unknown> {
+/** A page file that holds `pixels` pixels at the most credit a byte can carry: the size of the file is what the budget counts. */
+const inputHolding = (pixels: number): Buffer => singlePage(64, 64, [chunk('JUNK', Buffer.alloc(Math.ceil(pixels / DRAW_PIXELS_PER_INPUT_BYTE)))]);
+
+async function convert(tgt: string, options: DjvuJob['options'] = {}, input: Buffer = singlePage(64, 64)): Promise<unknown> {
   countPdfPages.mockReset();
   countPdfPages.mockImplementation(async () => drawnPages);
   return convertDjvu({
-    input: singlePage(64, 64),
+    input,
     src: 'djvu',
     tgt,
     options,
@@ -94,7 +110,9 @@ async function convert(tgt: string, options: DjvuJob['options'] = {}): Promise<u
 }
 
 const drawCall = () => launch.mock.calls.find(([binary]) => path.basename(binary as string) === 'ddjvu');
-const drawLimitMs = (): number | undefined => (drawCall()?.[2] as { timeoutMs?: number } | undefined)?.timeoutMs;
+const callOf = (script: string) => launch.mock.calls.find(([binary, args]) => path.basename(binary as string) === 'djvused' && scriptOf(args as string[]) === script);
+const limitOf = (call: unknown[] | undefined): number | undefined => (call?.[2] as { timeoutMs?: number } | undefined)?.timeoutMs;
+const drawLimitMs = (): number | undefined => limitOf(drawCall());
 
 const refusalOf = async (conversion: Promise<unknown>): Promise<Error> => {
   const outcome = await conversion.then(
@@ -106,29 +124,44 @@ const refusalOf = async (conversion: Promise<unknown>): Promise<Error> => {
 };
 
 const PAGES: readonly Sizes[] = [
-  { width: 10_000, height: 10_000 },
-  { width: 5_000, height: 5_000 },
+  { width: 3_000, height: 3_000 },
+  { width: 2_000, height: 2_000 },
   { width: 64, height: 64 },
 ];
 const pixels = (pages: readonly Sizes[]) => pages.reduce((sum, page) => sum + page.width * page.height, 0);
+const budgetMs = (reportMs: number, creditedPixels: number) => Math.ceil(Math.max(DRAW_BUDGET_FLOOR_MS, DRAW_BUDGET_REPORT_FACTOR * reportMs) + creditedPixels / DRAW_PIXELS_PER_MS);
 
 describe('the budget of ddjvu', () => {
-  it('is the 15 s floor and the drawn pixels at 4 megapixels a second: every page for a PDF, the selected ones for images', async () => {
+  it('is the floor and the drawn pixels at their rate when the file can hold them: every page for a PDF, the selected ones for images', async () => {
     given({ sizes: PAGES });
-    await convert('pdf', { timeoutMs: LONG_JOB_MS });
-    expect(drawLimitMs()).toBe(Math.ceil(BUDGET_FLOOR_MS + pixels(PAGES) / PIXELS_PER_MS));
+    await convert('pdf', { timeoutMs: LONG_JOB_MS }, inputHolding(pixels(PAGES)));
+    expect(drawLimitMs()).toBe(budgetMs(0, pixels(PAGES)));
     given({ sizes: PAGES }, 1);
     launch.mockClear();
-    await convert('png', { timeoutMs: LONG_JOB_MS, pages: '2' });
-    expect(drawLimitMs()).toBe(BUDGET_FLOOR_MS + pixels([PAGES[1]]) / PIXELS_PER_MS);
+    await convert('png', { timeoutMs: LONG_JOB_MS, pages: '2' }, inputHolding(pixels(PAGES)));
+    expect(drawLimitMs()).toBe(budgetMs(0, pixels([PAGES[1]])));
   });
 
-  it('is sixteen times what the djvused runs took, when that is more than the floor', async () => {
+  it('counts no more pixels than the bytes of the file can hold, whatever sizes the pages declare', async () => {
+    const declared: Sizes[] = Array.from({ length: 6 }, () => ({ width: DECLARED_SIDE, height: DECLARED_SIDE }));
+    const input = singlePage(64, 64);
+    given({ sizes: declared });
+    await convert('pdf', { timeoutMs: LONG_JOB_MS }, input);
+    expect(drawLimitMs()).toBe(budgetMs(0, input.length * DRAW_PIXELS_PER_INPUT_BYTE));
+    expect(drawLimitMs()).toBeLessThan(DRAW_BUDGET_FLOOR_MS + 1_000);
+    given({ sizes: PAGES });
+    launch.mockClear();
+    const halfHeld = inputHolding(pixels(PAGES) / 2);
+    await convert('pdf', { timeoutMs: LONG_JOB_MS }, halfHeld);
+    expect(drawLimitMs()).toBe(budgetMs(0, halfHeld.length * DRAW_PIXELS_PER_INPUT_BYTE));
+  });
+
+  it('is sixteen times what the work before ddjvu took, when that is more than the floor', async () => {
     const countMs = 3_000;
     given({ sizes: PAGES, countMs });
-    await convert('pdf', { timeoutMs: LONG_JOB_MS });
-    expect(drawLimitMs()).toBe(Math.ceil(16 * countMs + pixels(PAGES) / PIXELS_PER_MS));
-    expect(drawBudgetMs(countMs, pixels(PAGES))).toBe(drawLimitMs());
+    await convert('pdf', { timeoutMs: LONG_JOB_MS }, inputHolding(pixels(PAGES)));
+    expect(drawLimitMs()).toBe(budgetMs(countMs, pixels(PAGES)));
+    expect(DRAW_BUDGET_REPORT_FACTOR * countMs).toBeGreaterThan(DRAW_BUDGET_FLOOR_MS);
   });
 
   it('is what is left of the deadline of the job when that is less', async () => {
@@ -138,10 +171,10 @@ describe('the budget of ddjvu', () => {
   });
 
   it('refuses a document ddjvu did not draw within the budget with the typed time-limit refusal, saying the document took too long to draw', async () => {
-    const budgetMs = Math.ceil(BUDGET_FLOOR_MS + pixels(PAGES) / PIXELS_PER_MS);
-    given({ sizes: PAGES, drawError: new SandboxedTimeoutError(budgetMs) });
-    const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
-    expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', status: 422, message: `The .djvu document took too long to draw: ddjvu ran past the ${budgetMs} ms its pages allow.` });
+    const budget = budgetMs(0, pixels(PAGES));
+    given({ sizes: PAGES, drawError: new SandboxedTimeoutError(budget) });
+    const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }, inputHolding(pixels(PAGES))));
+    expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', status: 422, message: `The .djvu document took too long to draw: ddjvu ran past the ${budget} ms its pages allow.` });
   });
 
   it('names the limit of the job, not the slice ddjvu was given, when the deadline cut the drawing', async () => {
@@ -153,15 +186,15 @@ describe('the budget of ddjvu', () => {
 });
 
 describe('the page count of the PDF', () => {
-  it('is not started with less than two seconds of the deadline left: the deadline answers, with the limit of the job', async () => {
-    given({ sizes: [PAGES[2]], drawMs: SHORT_JOB_MS - 1_500 });
+  it('is not started with less than its floor of the deadline left: the deadline answers, with the limit of the job', async () => {
+    given({ sizes: [PAGES[2]], drawMs: SHORT_JOB_MS - PDF_PAGE_COUNT_FLOOR_MS + 500 });
     const error = await refusalOf(convert('pdf', { timeoutMs: SHORT_JOB_MS }));
     expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', message: expect.stringContaining(`${SHORT_JOB_MS} ms`) });
     expect(countPdfPages).not.toHaveBeenCalled();
   });
 
-  it('is started with two seconds or more left', async () => {
-    given({ sizes: [PAGES[2]], drawMs: SHORT_JOB_MS - 2_000 });
+  it('is started with its floor or more left', async () => {
+    given({ sizes: [PAGES[2]], drawMs: SHORT_JOB_MS - PDF_PAGE_COUNT_FLOOR_MS });
     await convert('pdf', { timeoutMs: SHORT_JOB_MS });
     expect(countPdfPages).toHaveBeenCalledOnce();
   });
@@ -177,33 +210,48 @@ describe('how a size run ended', () => {
     ['was killed by the out-of-memory killer (SIGKILL under the memory limit)', new SandboxedMemoryLimitError(MEMORY_LIMIT_MB, 'SIGKILL')],
     ['was stopped by the resident-size watch', new SandboxedMemoryLimitError(MEMORY_LIMIT_MB)],
     ['did not start', spawnFailure],
+    ['could not be executed under the wrapper (status 126)', new SandboxedProcessError('Process exited with code 126', 126, 'exec: Permission denied')],
+    ['was not found by the wrapper (status 127)', new SandboxedProcessError('Process exited with code 127', 127, 'exec: not found')],
     ['printed more than its output limit', new SandboxedBufferLimitError(16 * 1024 * 1024)],
   ])('is not a verdict on the document when the run %s', async (_name, sizeError) => {
     given({ sizes: [PAGES[2]], sizeError });
     const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
     expect(error.name).not.toBe('DjvuIncludeStructureError');
     expect(error.message).not.toContain('include structure');
+    expect(error.message).not.toContain('crashed');
     expect(drawCall()).toBeUndefined();
   });
 
   it.each([
-    ['faulted under the address space limit (SIGSEGV)', new SandboxedMemoryLimitError(MEMORY_LIMIT_MB, 'SIGSEGV'), 'crashed (SIGSEGV) under its 2048 MB memory limit'],
-    ['faulted without a memory limit (SIGSEGV)', new SandboxedProcessError('Process terminated by signal SIGSEGV', null, '', 'SIGSEGV'), 'crashed (SIGSEGV)'],
-    ['raised a floating point exception (SIGFPE)', new SandboxedProcessError('Process terminated by signal SIGFPE', null, '', 'SIGFPE'), 'crashed (SIGFPE)'],
-    ['hit an illegal instruction (SIGILL)', new SandboxedProcessError('Process terminated by signal SIGILL', null, '', 'SIGILL'), 'crashed (SIGILL)'],
-    ['exited with a status other than zero', new SandboxedProcessError('*** Unexpected End Of File.', 10, '*** Unexpected End Of File.'), 'exited with status 10: *** Unexpected End Of File.'],
-  ])('refuses the include structure of a document when the program %s', async (_name, sizeError, how) => {
+    ['faulted under the address space limit (SIGSEGV)', new SandboxedMemoryLimitError(MEMORY_LIMIT_MB, 'SIGSEGV'), `djvused crashed (SIGSEGV) under its ${MEMORY_LIMIT_MB} MB memory limit while opening the pages of the DjVu document.`],
+    ['aborted under the address space limit (SIGABRT)', new SandboxedMemoryLimitError(MEMORY_LIMIT_MB, 'SIGABRT'), `djvused crashed (SIGABRT) under its ${MEMORY_LIMIT_MB} MB memory limit while opening the pages of the DjVu document.`],
+    ['faulted without a memory limit (SIGSEGV)', new SandboxedProcessError('Process terminated by signal SIGSEGV', null, '', 'SIGSEGV'), 'djvused crashed (SIGSEGV) while opening the pages of the DjVu document.'],
+    ['raised a floating point exception (SIGFPE)', new SandboxedProcessError('Process terminated by signal SIGFPE', null, '', 'SIGFPE'), 'djvused crashed (SIGFPE) while opening the pages of the DjVu document.'],
+    ['hit an illegal instruction (SIGILL)', new SandboxedProcessError('Process terminated by signal SIGILL', null, '', 'SIGILL'), 'djvused crashed (SIGILL) while opening the pages of the DjVu document.'],
+  ])('refuses a document on which the program %s, saying it crashed and not what the cause was', async (_name, sizeError, message) => {
     given({ sizes: [PAGES[2]], sizeError });
     const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
-    expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: expect.stringContaining(how) });
+    expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message });
+    expect(error.message).not.toContain('too deep');
     expect(drawCall()).toBeUndefined();
   });
 
-  it('refuses a document whose pages djvused could not open within its own limit, saying so', async () => {
-    given({ sizes: [PAGES[2]], sizeError: new SandboxedTimeoutError(SIZE_RUN_LIMIT_MS) });
+  it('refuses a document on which the program exited with a status other than zero, naming what it printed', async () => {
+    given({ sizes: [PAGES[2]], sizeError: new SandboxedProcessError('*** Unexpected End Of File.', 10, '*** Unexpected End Of File.') });
     const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
-    expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: `djvused could not open the pages of the DjVu document within its ${SIZE_RUN_LIMIT_MS} ms limit.` });
-    expect((launch.mock.calls.find(([, args]) => (args as string[])[1] === 'size')?.[2] as { timeoutMs: number }).timeoutMs).toBe(SIZE_RUN_LIMIT_MS);
+    expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: expect.stringContaining('exited with status 10: *** Unexpected End Of File.') });
+    expect(drawCall()).toBeUndefined();
+  });
+
+  it.each([
+    ['the size run', { sizeError: new SandboxedTimeoutError(SIZE_RUN_TIMEOUT_MS) }, 'size', SIZE_RUN_TIMEOUT_MS],
+    ['the page count run', { countError: new SandboxedTimeoutError(30_000) }, 'n', 30_000],
+  ])('hands %s past its own limit on as a time-out, not as a verdict on the document', async (_name, failure, script, ownLimitMs) => {
+    given({ sizes: [PAGES[2]], ...failure });
+    const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    expect(error).toMatchObject({ name: 'SandboxedTimeoutError', timeoutMs: ownLimitMs });
+    expect(limitOf(callOf(script))).toBe(ownLimitMs);
+    expect(drawCall()).toBeUndefined();
   });
 
   it('names the limit of the job when the deadline cut the size run', async () => {
