@@ -4,6 +4,7 @@ import {
   releaseChunkScratch,
   type CellChunk,
 } from './delimited-bytes';
+import { gridOf } from './office/sheet-bounds';
 import { compressPage } from './parquet-codec';
 import {
   ColumnSchema,
@@ -12,8 +13,6 @@ import {
   PageType,
   PARQUET_DATA_PAGE_TARGET_BYTES,
   PARQUET_MAGIC,
-  PARQUET_MAX_CELLS,
-  PARQUET_MAX_ROWS,
   PARQUET_MAX_VALUE_BYTES,
   PARQUET_STATS_MAX_BYTES,
   ParquetType,
@@ -45,6 +44,8 @@ import {
  * them by their bytes is the UTF-8 order the statistics need.
  */
 
+/** What a Parquet file holds (`gridOf`), the bound the scanner's rows and cells are checked against. */
+const GRID = gridOf('parquet');
 /** Local copies of shared limits: an imported binding costs a getter call each time a hot loop reads it. */
 const PAGE_TARGET_BYTES = PARQUET_DATA_PAGE_TARGET_BYTES;
 const MAX_VALUE_BYTES = PARQUET_MAX_VALUE_BYTES;
@@ -628,7 +629,7 @@ export function encodeParquetFromScanner(scanner: DelimitedByteScanner, options:
       const chunk = scanner.nextChunk(resolved.rowGroupMaxRows, resolved.rowGroupMaxBytes);
       if (chunk === null) break;
       totalRows += chunk.rows;
-      if (totalRows > PARQUET_MAX_ROWS || totalRows * width > PARQUET_MAX_CELLS) {
+      if (totalRows > GRID.rows || totalRows * width > GRID.cells) {
         throw new DelimitedBytesUnsupported('a table beyond the Parquet row and cell limits');
       }
       const scratch = scratchFor(chunk.rows);
