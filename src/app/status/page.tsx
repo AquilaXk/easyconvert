@@ -5,9 +5,9 @@ import Footer from '@/components/Footer';
 import StatusDashboard from '@/components/StatusDashboard';
 
 export const metadata: Metadata = {
-  title: 'Browser Edge Engine Real-Time Status — EasyConvert',
+  title: 'Browser Edge Engine Status | EasyConvert',
   description:
-    'Live real-time operational status, browser engine diagnostics, and telemetry for EasyConvert in-browser conversion engines and zero-retention sandbox.',
+    'Live operational status, browser engine diagnostics, and capability probes for EasyConvert WebAssembly, WebCodecs, and OPFS conversion pipelines.',
 };
 
 export default function StatusPage() {
@@ -15,21 +15,16 @@ export default function StatusPage() {
     <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
       <Header />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14">
-        {/* Page Title & Breadcrumb Header */}
-        <div className="mb-8 text-center sm:text-left">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-brand-300 dark:border-white/10 mb-3">
-            <span>Edge Infrastructure Telemetry</span>
-          </div>
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-brand-950 dark:text-white">
+      <main id="main-content" className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12">
+        <div className="mb-8">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-brand-950 dark:text-white">
             System Operational Status
           </h1>
           <p className="mt-2 text-sm sm:text-base text-ink-secondary dark:text-neutral-400 max-w-3xl">
-            Real-time health, latency benchmarks, and component status for all in-browser WebAssembly, WebCodecs, and OPFS conversion pipelines.
+            Real-time capability checks, latency probes, and component status for in-browser WebAssembly, WebCodecs, and OPFS conversion pipelines.
           </p>
         </div>
 
-        {/* Real-time Status Dashboard */}
         <StatusDashboard />
       </main>
 

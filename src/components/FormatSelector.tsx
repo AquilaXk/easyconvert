@@ -1,214 +1,280 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, ChevronRight } from 'lucide-react';
-import { FormatDefinition } from '@/lib/types';
-import { getAllFormats } from '@/lib/registry';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useId } from 'react';
+import { createPortal } from 'react-dom';
+import type { FormatDefinition } from '@/lib/types';
+import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
+import { CATEGORY_ORDER } from '@/lib/registry-stats';
+import { useModalDialog } from '@/hooks/useModalDialog';
+import { FormatSelectorBody, MobileFormatDialogHeader } from './workbench/FormatSelectorView';
 
-interface FormatSelectorProps {
-  availableFormats?: FormatDefinition[];
-  selectedFormatId?: string;
-  onSelect: (formatId: string) => void;
-  onClose: () => void;
-  title?: string;
+export interface FormatSelectorProps {
+  availableFormats?: FormatDefinition[]; selectedFormatId?: string; sourceFormat?: string;
+  allowAny?: boolean; onSelect: (formatId: string) => void; onClose: () => void; title?: string;
 }
 
-const CATEGORY_ORDER = [
-  'document',
-  'image',
-  'video',
-  'audio',
-  'vector',
-  'cad',
-  'spreadsheet',
-  'presentation',
-  'archive',
-  'ebook',
-  'font',
-  'data',
-];
+const NATURAL_PANEL_HEIGHT = 368;
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+const DESKTOP_PANEL_CLASS = 'm-0 p-0 right-auto w-[min(440px,calc(100dvw-2rem))] rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-xl overflow-hidden flex flex-col text-brand-950 dark:text-white text-left select-none';
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export default function FormatSelector({
-  availableFormats,
-  selectedFormatId,
-  onSelect,
-  onClose,
-}: FormatSelectorProps) {
-  const [search, setSearch] = useState('');
-  const popoverRef = useRef<HTMLDivElement>(null);
+function readInitialMobileState(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 639px)').matches : false;
+}
 
-  const allFormats = availableFormats && availableFormats.length > 0 ? availableFormats : getAllFormats();
+function sortFormatCategories(keys: Iterable<string>): string[] {
+  const orderList = CATEGORY_ORDER as readonly string[];
+  return Array.from(keys).sort((a, b) => {
+    const idxA = orderList.indexOf(a.toLowerCase());
+    const idxB = orderList.indexOf(b.toLowerCase());
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    return idxB !== -1 ? 1 : a.localeCompare(b);
+  });
+}
 
-  // Group formats by category
-  const categoriesWithFormats = useMemo(() => {
-    const map = new Map<string, FormatDefinition[]>();
-    allFormats.forEach((f) => {
-      const cat = f.category || 'document';
-      if (!map.has(cat)) {
-        map.set(cat, []);
-      }
-      map.get(cat)!.push(f);
-    });
-    return map;
-  }, [allFormats]);
+function pickValidCategory(cat: string | undefined, categories: string[]): string | null {
+  return cat && categories.includes(cat) ? cat : null;
+}
 
-  // Order categories logically: common first, then remaining alphabetically
-  const categories = useMemo(() => {
-    const existing = Array.from(categoriesWithFormats.keys());
-    return existing.sort((a, b) => {
-      const idxA = CATEGORY_ORDER.indexOf(a.toLowerCase());
-      const idxB = CATEGORY_ORDER.indexOf(b.toLowerCase());
-      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-      if (idxA !== -1) return -1;
-      if (idxB !== -1) return 1;
-      return a.localeCompare(b);
-    });
-  }, [categoriesWithFormats]);
+function resolveInitialCategory(selectedFormatId: string | undefined, sourceFormat: string | undefined, allFormats: FormatDefinition[], categories: string[]): string {
+  const sel = selectedFormatId?.toLowerCase();
+  if (sel && sel !== 'any') {
+    const matched = pickValidCategory(allFormats.find((f) => f.id.toLowerCase() === sel)?.category, categories);
+    if (matched) return matched;
+  }
+  const src = sourceFormat?.toLowerCase();
+  if (src && src !== 'any') {
+    const matched = pickValidCategory(FORMAT_REGISTRY[src]?.category, categories);
+    if (matched) return matched;
+  }
+  return categories[0] || 'document';
+}
 
-  // Determine initial active category based on selectedFormatId
-  const initialCategory = useMemo(() => {
-    if (selectedFormatId) {
-      const found = allFormats.find((f) => f.id.toLowerCase() === selectedFormatId.toLowerCase());
-      if (found && categories.includes(found.category)) {
-        return found.category;
-      }
-    }
-    if (categories.includes('document')) return 'document';
-    return categories[0] || 'document';
-  }, [selectedFormatId, allFormats, categories]);
+function groupFormatsByCategory(allFormats: FormatDefinition[]): Map<string, FormatDefinition[]> {
+  const map = new Map<string, FormatDefinition[]>();
+  for (const fmt of allFormats) {
+    const cat = fmt.category || 'document';
+    const group = map.get(cat);
+    if (group) group.push(fmt);
+    else map.set(cat, [fmt]);
+  }
+  return map;
+}
 
-  const [activeCategory, setActiveCategory] = useState<string>(initialCategory);
+function filterDisplayedFormats(allFormats: FormatDefinition[], byCategory: Map<string, FormatDefinition[]>, activeCategory: string, search: string): FormatDefinition[] {
+  const q = search.trim().toLowerCase();
+  if (!q) return byCategory.get(activeCategory) || [];
+  return allFormats.filter((f) => f.id.toLowerCase().includes(q) || f.name.toLowerCase().includes(q) || f.extension.toLowerCase().includes(q));
+}
+
+function resolveTriggerElement(anchor: HTMLSpanElement | null): HTMLElement | null {
+  const sibling = anchor?.previousElementSibling;
+  if (sibling instanceof HTMLElement) return sibling;
+  const button = anchor?.parentElement?.querySelector<HTMLElement>('button');
+  if (button) return button;
+  return document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+}
+
+function shouldCloseOnTab(e: KeyboardEvent, popover: HTMLElement | null): boolean {
+  if (e.key !== 'Tab' || !popover) return false;
+  const focusables = Array.from(popover.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+  if (focusables.length === 0) return true;
+  return document.activeElement === (e.shiftKey ? focusables[0] : focusables.at(-1));
+}
+
+export function computeDesktopPortalPosition(
+  triggerRect: DOMRect,
+  viewportW: number,
+  viewportH: number
+): React.CSSProperties | null {
+  if (triggerRect.bottom <= 64 || triggerRect.top >= viewportH) return null;
+  const panelWidth = Math.min(440, viewportW - 32);
+  const left = Math.min(Math.max(12, triggerRect.left), Math.max(12, viewportW - panelWidth - 12));
+  const spaceBelow = viewportH - triggerRect.bottom - 16;
+  const spaceAbove = triggerRect.top - 72;
+  if (spaceBelow >= NATURAL_PANEL_HEIGHT || spaceBelow >= spaceAbove) {
+    return {
+      top: triggerRect.bottom + 8,
+      bottom: 'auto',
+      left,
+      maxHeight: Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceBelow)),
+    };
+  }
+  const effectiveHeight = Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceAbove));
+  return {
+    top: 'auto',
+    bottom: viewportH - triggerRect.top + 8,
+    left,
+    maxHeight: effectiveHeight,
+  };
+}
+
+interface DesktopPopoverRefs {
+  anchorRef: React.RefObject<HTMLSpanElement | null>;
+  popoverRef: React.RefObject<HTMLDialogElement | null>;
+  triggerRef: React.MutableRefObject<HTMLElement | null>;
+  onCloseRef: React.MutableRefObject<() => void>;
+}
+
+function useDesktopPopoverEffects(
+  isMobile: boolean,
+  inputId: string,
+  refs: DesktopPopoverRefs,
+  setPortalStyle: React.Dispatch<React.SetStateAction<React.CSSProperties>>
+): void {
+  const { anchorRef, popoverRef, triggerRef, onCloseRef } = refs;
 
   useEffect(() => {
-    setActiveCategory(initialCategory);
-  }, [initialCategory]);
+    if (isMobile || typeof document === 'undefined') return;
+    triggerRef.current = resolveTriggerElement(anchorRef.current);
+    document.getElementById(inputId)?.focus({ preventScroll: true });
 
-  // Close on Escape key
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        const trigger = triggerRef.current;
+        onCloseRef.current();
+        trigger?.focus({ preventScroll: true });
+        return;
+      }
+      if (shouldCloseOnTab(e, popoverRef.current)) {
+        if (e.shiftKey) {
+          e.preventDefault();
+          const trigger = triggerRef.current;
+          onCloseRef.current();
+          trigger?.focus({ preventScroll: true });
+          return;
+        }
+        triggerRef.current?.focus({ preventScroll: true });
+        onCloseRef.current();
+      }
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target || popoverRef.current?.contains(target) || anchorRef.current?.parentElement?.contains(target)) return;
+      onCloseRef.current();
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [isMobile, inputId, anchorRef, popoverRef, triggerRef, onCloseRef]);
 
-  // Capitalize category name (e.g. document -> Document, cad -> CAD)
-  const formatCategoryName = (cat: string) => {
-    const c = cat.toLowerCase();
-    if (c === 'cad') return 'CAD';
-    if (c === 'ebook') return 'E-Book';
-    if (c === 'data') return 'Data / JSON';
-    return cat.charAt(0).toUpperCase() + cat.slice(1).toLowerCase();
+  useIsomorphicLayoutEffect(() => {
+    if (isMobile || typeof window === 'undefined') return;
+    const updatePosition = () => {
+      const anchorEl = anchorRef.current?.parentElement;
+      if (!anchorEl) return;
+      const next = computeDesktopPortalPosition(anchorEl.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+      if (!next) onCloseRef.current();
+      else setPortalStyle(next);
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [isMobile, anchorRef, onCloseRef, setPortalStyle]);
+}
+
+function useMobileBreakpoint(): boolean {
+  const [isMobile, setIsMobile] = useState(readInitialMobileState);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 639px)');
+    const sync = () => setIsMobile(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  return isMobile;
+}
+
+export default function FormatSelector({
+  availableFormats, selectedFormatId, sourceFormat, allowAny = false, onSelect, onClose, title,
+}: Readonly<FormatSelectorProps>) {
+  const inputId = useId();
+  const [search, setSearch] = useState('');
+  const isMobile = useMobileBreakpoint();
+  const [portalStyle, setPortalStyle] = useState<React.CSSProperties>({ top: 0, bottom: 'auto', left: 12 });
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const popoverRef = useRef<HTMLDialogElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useModalDialog(dialogRef, isMobile, onClose);
+
+  const allFormats = useMemo(() => availableFormats ?? getAllFormats(), [availableFormats]);
+  const categoriesWithFormats = useMemo(() => groupFormatsByCategory(allFormats), [allFormats]);
+  const categories = useMemo(() => sortFormatCategories(categoriesWithFormats.keys()), [categoriesWithFormats]);
+  const initialCategory = useMemo(
+    () => resolveInitialCategory(selectedFormatId, sourceFormat, allFormats, categories),
+    [selectedFormatId, sourceFormat, allFormats, categories]
+  );
+  const [activeCategory, setActiveCategory] = useState<string>(initialCategory);
+
+  useEffect(() => { setActiveCategory(initialCategory); }, [initialCategory]);
+
+  useDesktopPopoverEffects(isMobile, inputId, { anchorRef, popoverRef, triggerRef, onCloseRef }, setPortalStyle);
+
+  const displayedFormats = useMemo(
+    () => filterDisplayedFormats(allFormats, categoriesWithFormats, activeCategory, search),
+    [search, activeCategory, allFormats, categoriesWithFormats]
+  );
+
+  const handleSelect = (formatId: string) => {
+    const trigger = triggerRef.current;
+    onSelect(formatId);
+    onCloseRef.current();
+    if (!isMobile) trigger?.focus({ preventScroll: true });
   };
 
-  // Formats to display in right column
-  const displayedFormats = useMemo(() => {
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      return allFormats.filter(
-        (f) =>
-          f.id.toLowerCase().includes(q) ||
-          f.name.toLowerCase().includes(q) ||
-          f.extension.toLowerCase().includes(q)
-      );
-    }
-    return categoriesWithFormats.get(activeCategory) || [];
-  }, [search, activeCategory, allFormats, categoriesWithFormats]);
+  const dialogLabel = title || 'Select Format';
+  const body = (
+    <FormatSelectorBody
+      inputId={inputId} search={search} onSearchChange={setSearch} categories={categories}
+      activeCategory={activeCategory} onSelectCategory={setActiveCategory} displayedFormats={displayedFormats}
+      hasNoSupportedFormats={allFormats.length === 0} selectedFormatId={selectedFormatId}
+      allowAny={allowAny} onChoose={handleSelect}
+    />
+  );
+
+  if (isMobile) {
+    return (
+      <dialog
+        ref={dialogRef} aria-label={dialogLabel}
+        className="w-[calc(100dvw-1.5rem)] max-w-md rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl overflow-hidden text-left select-none"
+      >
+        <MobileFormatDialogHeader title={title} onClose={onClose} />
+        {body}
+      </dialog>
+    );
+  }
+
+  if (typeof document === 'undefined') {
+    return (
+      <dialog open ref={popoverRef} aria-label={dialogLabel} className={`relative ${DESKTOP_PANEL_CLASS}`}>
+        {body}
+      </dialog>
+    );
+  }
 
   return (
-    <div
-      ref={popoverRef}
-      onClick={(e) => e.stopPropagation()}
-      className="w-[460px] max-w-[95vw] bg-white dark:bg-[#14182B] border border-neutral-border dark:border-[#2B3556] rounded-2xl shadow-2xl overflow-hidden flex flex-col text-brand-950 dark:text-white animate-in zoom-in-95 duration-150 text-left select-none ring-1 ring-black/5 dark:ring-white/10"
-    >
-      {/* Top: Search Format Input */}
-      <div className="flex items-center px-4 py-3 border-b border-neutral-border dark:border-[#252D48] bg-neutral-50/90 dark:bg-[#111424]">
-        <Search className="w-4 h-4 text-ink-muted dark:text-neutral-400 shrink-0 mr-2.5" />
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && displayedFormats.length > 0) {
-              e.preventDefault();
-              onSelect(displayedFormats[0].id);
-              onClose();
-            }
-          }}
-          placeholder="Search format..."
-          autoFocus
-          className="bg-transparent text-sm text-brand-950 dark:text-white placeholder-ink-muted dark:placeholder-neutral-400 outline-none w-full font-medium"
-        />
-        {search && (
-          <button
-            type="button"
-            onClick={() => setSearch('')}
-            className="text-xs text-ink-muted hover:text-brand-950 dark:text-neutral-400 dark:hover:text-white px-1.5 py-0.5"
-          >
-            Clear
-          </button>
-        )}
-      </div>
-
-      {/* Two columns body */}
-      <div className="flex h-80">
-        {/* Left column: Category list with divider lines */}
-        {!search && (
-          <div className="w-[145px] border-r border-neutral-border dark:border-[#252D48] overflow-y-auto shrink-0 bg-neutral-50/60 dark:bg-[#0E1120] divide-y divide-neutral-200/60 dark:divide-[#1F263E]">
-            {categories.map((cat) => {
-              const isActive = cat.toLowerCase() === activeCategory.toLowerCase();
-              return (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setActiveCategory(cat)}
-                  onMouseEnter={() => setActiveCategory(cat)}
-                  className={`flex items-center justify-between w-full px-3.5 py-2.5 text-xs text-left transition-colors cursor-pointer ${
-                    isActive
-                      ? 'bg-brand-100 text-brand-900 font-bold border-l-2 border-brand-700 dark:bg-[#1B2238] dark:text-brand-300 dark:border-brand-500'
-                      : 'text-ink-secondary hover:bg-neutral-100/80 hover:text-brand-950 dark:text-neutral-300 dark:hover:bg-white/[0.04] dark:hover:text-white'
-                  }`}
-                >
-                  <span className="truncate">{formatCategoryName(cat)}</span>
-                  {isActive && <ChevronRight className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400 shrink-0 ml-1" />}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Right column: Format badges grid */}
-        <div className="flex-1 p-3.5 overflow-y-auto bg-white dark:bg-[#14182B]">
-          {displayedFormats.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-ink-muted dark:text-neutral-400 text-xs text-center py-8">
-              No formats matching &quot;{search}&quot;
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-2">
-              {displayedFormats.map((fmt) => {
-                const isSelected = selectedFormatId?.toLowerCase() === fmt.id.toLowerCase();
-                return (
-                  <button
-                    key={fmt.id}
-                    type="button"
-                    onClick={() => {
-                      onSelect(fmt.id);
-                      onClose();
-                    }}
-                    className={`px-2.5 py-2 text-xs font-mono font-semibold rounded-xl text-center border transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-brand-700 border-brand-700 text-white shadow-md shadow-brand-700/30'
-                        : 'bg-neutral-50 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-400 text-brand-950 border-neutral-border dark:bg-[#1A2035] dark:hover:bg-brand-700/20 dark:text-neutral-200 dark:hover:text-white dark:border-[#2B3556] dark:hover:border-brand-500/40 shadow-xs'
-                    }`}
-                  >
-                    {fmt.extension.toUpperCase()}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+    <>
+      <span ref={anchorRef} className="hidden" aria-hidden="true" />
+      {createPortal(
+        <dialog open ref={popoverRef} aria-label={dialogLabel} style={portalStyle} className={`fixed z-[60] ${DESKTOP_PANEL_CLASS}`}>
+          {body}
+        </dialog>,
+        document.body
+      )}
+    </>
   );
 }

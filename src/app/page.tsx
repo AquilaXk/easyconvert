@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
@@ -14,7 +14,8 @@ export default function Home() {
   const {
     queue,
     isConverting,
-    setPresetTarget,
+    zipError,
+    clearZipError,
     handleFilesSelected,
     handleRemoveItem,
     handleClearAll,
@@ -26,10 +27,20 @@ export default function Home() {
     handleDownloadAllZip,
   } = useClientQueue({ bundlePrefix: 'easyconvert_bundle' });
 
-  const handleSelectPreset = (source: string, target: string) => {
-    setPresetTarget(target);
-    const input = document.getElementById('main-file-input') as HTMLInputElement;
-    if (input) {
+  const activeQueueSummary = useMemo(() => {
+    if (queue.length === 0) return undefined;
+    const srcs = Array.from(new Set(queue.map((item) => item.sourceFormat.toUpperCase())));
+    const tgts = Array.from(
+      new Set(queue.map((item) => item.targetFormat.trim().toUpperCase()).filter(Boolean))
+    );
+    const targetSuffix = tgts.length > 0 ? ` to ${tgts.join(', ')}` : '';
+    const countLabel = queue.length === 1 ? '1 file' : `${queue.length} files`;
+    return `${countLabel} (${srcs.join(', ')}${targetSuffix})`;
+  }, [queue]);
+
+  const handleOpenFilePicker = () => {
+    const input = document.getElementById('main-file-input');
+    if (input instanceof HTMLInputElement) {
       input.click();
     }
   };
@@ -38,21 +49,17 @@ export default function Home() {
     <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
       <Header />
 
-      {/* Top Leaderboard Ad Unit */}
-      <AdBanner slot="top-leaderboard" className="pt-2 pb-0" />
-
-      <main className="flex-1">
-        {/* Modern Dropzone & Format Hero Section */}
+      <main id="main-content" className="flex-1">
         <Hero
           onFilesSelected={handleFilesSelected}
           hasActiveQueue={queue.length > 0}
           activeSourceFormat={queue.length > 0 ? queue[0].sourceFormat : undefined}
-          activeTargetFormat={queue.length > 0 ? (queue[0].targetFormat || 'any') : undefined}
+          activeTargetFormat={queue.length > 0 ? queue[0].targetFormat || 'any' : undefined}
+          activeQueueSummary={activeQueueSummary}
         />
 
-        {/* Floating Queue Table when files are added */}
         {queue.length > 0 && (
-          <div className="relative z-20 max-w-8xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 mb-14 animate-in fade-in duration-200 pb-24">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
             <ConversionQueue
               items={queue}
               onRemoveItem={handleRemoveItem}
@@ -60,34 +67,30 @@ export default function Home() {
               onUpdateTargetFormat={handleUpdateTargetFormat}
               onUpdateAllTargets={handleUpdateAllTargets}
               onUpdateOptions={handleUpdateOptions}
-              onConvertAll={handleConvertAll}
+              onConvertAll={() => {
+                void handleConvertAll();
+              }}
               onConvertSingle={(id) => {
-                const target = queue.find((i) => i.id === id);
-                if (target) convertSingleItem(target);
+                const target = queue.find((item) => item.id === id);
+                if (target) {
+                  void convertSingleItem(target);
+                }
               }}
-              onAddMoreFiles={() => {
-                const input = document.getElementById('main-file-input') as HTMLInputElement;
-                if (input) input.click();
+              onAddMoreFiles={handleOpenFilePicker}
+              onDownloadAllZip={() => {
+                void handleDownloadAllZip();
               }}
-              onDownloadAllZip={handleDownloadAllZip}
               isConverting={isConverting}
+              zipError={zipError}
+              onDismissZipError={clearZipError}
             />
           </div>
         )}
 
-        {/* Informational & conversion content when queue is idle */}
         {queue.length === 0 && (
           <>
-            {/* Mid-Content Ad Banner */}
+            <Features />
             <AdBanner slot="mid-content" />
-
-            {/* 3-Step Guide, Format Catalog & High-Fidelity Highlights */}
-            <Features onSelectPreset={handleSelectPreset} />
-
-            {/* In-Feed Ad Banner */}
-            <AdBanner slot="in-feed" />
-
-            {/* Comprehensive Free & Secure FAQ Section */}
             <FaqSection />
           </>
         )}

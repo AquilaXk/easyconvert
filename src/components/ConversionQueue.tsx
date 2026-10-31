@@ -1,32 +1,17 @@
 'use client';
 
-import React, { useState } from 'react';
-import {
-  FileText,
-  FileImage,
-  Database,
-  Archive,
-  Music,
-  Video,
-  BookOpen,
-  Presentation,
-  Type,
-  X,
-  Sliders,
-  Download,
-  Loader2,
-  ChevronDown,
-  Info,
-  Package,
-  ArrowRight,
-} from 'lucide-react';
-import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
+import React, { useMemo, useState } from 'react';
+import { ArrowRight, ChevronDown, Loader2, Package, Trash2, X } from 'lucide-react';
+import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
+import { getAvailableTargetFormats } from '@/lib/registry';
+import { getEffectiveMaxFileSize } from '@/lib/client-converter';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
+import QueueItemRow from './workbench/QueueItemRow';
+import { getPasswordValidationError } from './workbench/options/options-capabilities';
 
-interface ConversionQueueProps {
+export interface ConversionQueueProps {
   items: ConversionQueueItem[];
   onRemoveItem: (id: string) => void;
   onClearAll: () => void;
@@ -38,323 +23,252 @@ interface ConversionQueueProps {
   onAddMoreFiles: () => void;
   onDownloadAllZip: () => void;
   isConverting: boolean;
+  zipError?: string | null;
+  onDismissZipError?: () => void;
+}
+
+function pluralizeFiles(count: number): string {
+  return count === 1 ? '1 file' : `${count} files`;
+}
+
+function hasItemOptionError(item: ConversionQueueItem): boolean {
+  if (
+    !item.targetFormat ||
+    item.status === 'completed' ||
+    item.status === 'uploading' ||
+    item.status === 'converting'
+  ) {
+    return false;
+  }
+  return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password) !== null;
+}
+
+function getQueueStatusSummary(
+  items: ConversionQueueItem[],
+  convertibleItems: ConversionQueueItem[],
+  isBusy: boolean
+): string {
+  if (isBusy) return 'Converting queued files...';
+  if (convertibleItems.length === 0) {
+    if (items.length === 0) return 'No files in queue';
+    return items.length === 1
+      ? '1 file exceeds the conversion size limit. Remove it to continue.'
+      : `${items.length} files exceed the conversion size limit. Remove them to continue.`;
+  }
+  if (convertibleItems.some((i) => !i.targetFormat?.trim())) {
+    return 'Please select an output format to continue';
+  }
+  if (convertibleItems.some(hasItemOptionError)) {
+    return 'Update password options or output format to continue.';
+  }
+  if (convertibleItems.every((i) => i.status === 'completed')) {
+    return `Conversion complete for ${pluralizeFiles(convertibleItems.length)}`;
+  }
+  const errorCount = convertibleItems.filter((i) => i.status === 'error').length;
+  if (errorCount > 0) {
+    return `${pluralizeFiles(errorCount)} failed conversion. Retry or remove to continue.`;
+  }
+  const readyCount = convertibleItems.filter((i) => i.status === 'ready').length;
+  return `Ready to convert ${pluralizeFiles(readyCount)}`;
+}
+
+function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefinition[] {
+  const seen = new Map<string, FormatDefinition>();
+  for (const item of items) {
+    for (const fmt of getAvailableTargetFormats(item.sourceFormat)) {
+      if (!seen.has(fmt.id)) seen.set(fmt.id, fmt);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+interface QueueBatchHeaderProps {
+  itemCount: number; canBatchSelect: boolean; effectiveBusy: boolean; isBatchSelectorOpen: boolean; batchTargetLabel: string;
+  batchAvailableFormats: FormatDefinition[]; onUpdateAllTargets?: (targetFormat: string) => void;
+  onToggleBatchSelector: () => void; onCloseBatchSelector: () => void;
+  onSelectBatchTarget: (fmt: string) => void; onClearAll: () => void;
+}
+
+function QueueBatchHeader({
+  itemCount, canBatchSelect, effectiveBusy, isBatchSelectorOpen, batchTargetLabel, batchAvailableFormats,
+  onUpdateAllTargets, onToggleBatchSelector, onCloseBatchSelector, onSelectBatchTarget, onClearAll,
+}: Readonly<QueueBatchHeaderProps>) {
+  return (
+    <div className="px-4 sm:px-5 py-3 border-b border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between gap-3">
+      {onUpdateAllTargets && canBatchSelect ? (
+        <div className="flex items-center flex-wrap gap-2.5">
+          <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">Convert all to</span>
+          <div className="relative">
+            <button
+              type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
+              className="inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-md border border-neutral-300 dark:border-dark-border bg-white dark:bg-dark-elevated text-xs font-mono font-semibold uppercase text-brand-950 dark:text-white hover:border-brand-700 dark:hover:border-brand-400 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : 'Choose format'}</span>
+              <ChevronDown className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
+            </button>
+            {isBatchSelectorOpen && (
+              <FormatSelector
+                availableFormats={batchAvailableFormats} selectedFormatId={batchTargetLabel}
+                onSelect={onSelectBatchTarget} onClose={onCloseBatchSelector} title="Convert all compatible files to"
+              />
+            )}
+          </div>
+        </div>
+      ) : (
+        <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">{itemCount} files in queue</span>
+      )}
+      <button
+        type="button" disabled={effectiveBusy} onClick={onClearAll}
+        className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-md text-xs font-medium text-ink-secondary dark:text-neutral-300 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <Trash2 className="w-3.5 h-3.5" /><span>Clear all</span>
+      </button>
+    </div>
+  );
+}
+
+interface QueueFooterBarProps {
+  statusSummary: string; zipError?: string | null; onDismissZipError?: () => void;
+  effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean;
+  onAddMoreFiles: () => void; onDownloadAllZip: () => void; onConvertAll: () => void;
+}
+
+function QueueFooterBar({
+  statusSummary, zipError, onDismissZipError, effectiveBusy, completedCount,
+  allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
+}: Readonly<QueueFooterBarProps>) {
+  return (
+    <div className="bg-neutral-subtle dark:bg-[#121629] border-t border-neutral-border dark:border-dark-border rounded-b-xl px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
+      <div className="min-w-0">
+        <output aria-live="polite" className="block text-sm text-ink-secondary dark:text-neutral-300">{statusSummary}</output>
+        {zipError && (
+          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+            <span>{zipError}</span>
+            {onDismissZipError && (
+              <button
+                type="button" aria-label="Dismiss archive error" onClick={onDismissZipError}
+                className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-red-100 dark:hover:bg-red-950/40 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center flex-wrap sm:flex-nowrap gap-2.5 w-full sm:w-auto justify-end">
+        <button
+          type="button" disabled={effectiveBusy} onClick={onAddMoreFiles}
+          className="min-h-[48px] px-4 rounded-md bg-white hover:bg-neutral-50 active:bg-neutral-100 dark:bg-dark-surface dark:hover:bg-dark-elevated text-brand-950 dark:text-neutral-200 border border-neutral-300 dark:border-[#2C3452] text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <span>+ Add more files</span>
+        </button>
+        {completedCount > 1 && (
+          <button
+            type="button" onClick={onDownloadAllZip}
+            className="min-h-[48px] px-4 rounded-md bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/40 dark:hover:bg-brand-900/60 text-brand-800 dark:text-brand-200 border border-brand-200 dark:border-brand-700/50 text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Package className="w-4 h-4 text-brand-700 dark:text-brand-300" /><span>Download All (.zip)</span>
+          </button>
+        )}
+        {!allDone && (
+          <button
+            type="button" disabled={!canConvert} onClick={onConvertAll}
+            className="min-h-[48px] px-6 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+          >
+            {effectiveBusy ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /><span>Converting...</span></>
+            ) : (
+              <><span>Convert</span><ArrowRight className="w-4 h-4" /></>
+            )}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function deriveQueueViewState(
+  items: ConversionQueueItem[],
+  convertibleItems: ConversionQueueItem[],
+  isConverting: boolean
+) {
+  const effectiveBusy =
+    isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
+  const completedCount = items.filter((i) => i.status === 'completed').length;
+  const allDone =
+    convertibleItems.length > 0 && convertibleItems.every((i) => i.status === 'completed');
+  const allHaveTarget =
+    convertibleItems.length > 0 && convertibleItems.every((i) => Boolean(i.targetFormat?.trim()));
+  const hasPending = convertibleItems.some((i) => i.status === 'ready' || i.status === 'error');
+  const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
+  const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
+  const statusSummary = getQueueStatusSummary(items, convertibleItems, effectiveBusy);
+  return { effectiveBusy, completedCount, allDone, canConvert, statusSummary };
 }
 
 export default function ConversionQueue({
-  items,
-  onRemoveItem,
-  onUpdateTargetFormat,
-  onUpdateOptions,
-  onConvertAll,
-  onConvertSingle,
-  onAddMoreFiles,
-  onDownloadAllZip,
-  isConverting,
-}: ConversionQueueProps) {
+  items, onRemoveItem, onClearAll, onUpdateTargetFormat, onUpdateAllTargets,
+  onUpdateOptions, onConvertAll, onConvertSingle, onAddMoreFiles, onDownloadAllZip,
+  isConverting, zipError, onDismissZipError,
+}: Readonly<ConversionQueueProps>) {
   const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
+  const [isBatchSelectorOpen, setIsBatchSelectorOpen] = useState(false);
+  const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
-
-  const getFormatLabel = (ext: string) => {
-    const clean = ext.toLowerCase();
-    const def = FORMAT_REGISTRY[clean];
-    if (def?.name) return def.name;
-    const cat = def?.category || 'file';
-    return `${clean.toUpperCase()} ${cat.charAt(0).toUpperCase() + cat.slice(1)}`;
-  };
-
-  const getFileCategoryIcon = (ext: string) => {
-    const clean = ext.toLowerCase();
-    const def = FORMAT_REGISTRY[clean];
-    const cat = def?.category || 'document';
-
-    switch (cat) {
-      case 'audio':
-        return <Music className="w-5 h-5 text-amber-600 dark:text-amber-400" />;
-      case 'video':
-        return <Video className="w-5 h-5 text-purple-600 dark:text-purple-400" />;
-      case 'image':
-        return <FileImage className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />;
-      case 'ebook':
-        return <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />;
-      case 'presentation':
-        return <Presentation className="w-5 h-5 text-orange-600 dark:text-orange-400" />;
-      case 'spreadsheet':
-      case 'data':
-        return <Database className="w-5 h-5 text-teal-600 dark:text-teal-400" />;
-      case 'archive':
-        return <Archive className="w-5 h-5 text-sky-600 dark:text-sky-400" />;
-      case 'font':
-      case 'cad':
-        return <Type className="w-5 h-5 text-blue-600 dark:text-blue-400" />;
-      default:
-        if (clean === 'pdf') {
-          return <FileText className="w-5 h-5 text-red-500 dark:text-red-400" />;
-        }
-        return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
-    }
-  };
-
-  const completedCount = items.filter((i) => i.status === 'completed').length;
-  const allReady = items.length > 0 && items.every((i) => i.targetFormat && i.targetFormat.trim() !== '');
-
+  const maxLimit = getEffectiveMaxFileSize();
+  const convertibleItems = useMemo(
+    () => items.filter((item) => item.size <= maxLimit),
+    [items, maxLimit]
+  );
+  const view = deriveQueueViewState(items, convertibleItems, isConverting);
+  const batchAvailableFormats = useMemo(
+    () => collectBatchTargetFormats(convertibleItems),
+    [convertibleItems]
+  );
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
     <>
-      {/* File Staging Table Card: Crisp Light Surface & High-Contrast Dark Surface */}
-      <div className="w-full bg-white dark:bg-[#181D30] rounded-2xl border border-neutral-border dark:border-[#2C375A] shadow-xl overflow-visible transition-colors">
-        <div className="divide-y divide-neutral-border dark:divide-[#252E4B]">
-          {items.map((item) => {
-            const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
-            return (
-              <div
-                key={item.id}
-                className="px-5 sm:px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors hover:bg-brand-50/40 dark:hover:bg-white/[0.02]"
-              >
-                {/* File Information */}
-                <div className="flex items-center gap-3.5 min-w-0 md:w-5/12">
-                  <div
-                    className={`p-2.5 rounded-xl border shrink-0 ${
-                      isPdf
-                        ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40'
-                        : 'bg-brand-50 dark:bg-brand-900/40 border-brand-200/80 dark:border-brand-700/30'
-                    }`}
-                  >
-                    {getFileCategoryIcon(item.sourceFormat)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold text-brand-950 dark:text-white truncate" title={item.name}>
-                      {item.name}
-                    </p>
-                    <p className="text-xs text-ink-secondary dark:text-neutral-400 font-medium">
-                      {getFormatLabel(item.sourceFormat)}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Conversion Target & Settings & Status */}
-                <div className="relative flex items-center justify-between md:justify-end gap-3 flex-wrap md:flex-nowrap flex-1">
-                  {/* Convert indicator */}
-                  <span className="text-xs text-ink-muted dark:text-neutral-400 font-medium">to</span>
-
-                  {/* Target format selector button: compact tactile [ ... ▼ ] or [ DOCX ▼ ] with popover anchored directly beneath */}
-                  <div className="relative inline-block">
-                    {item.targetFormat ? (
-                      <button
-                        type="button"
-                        data-testid="queue-target-format-btn"
-                        disabled={item.status === 'converting' || item.status === 'uploading'}
-                        onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold uppercase rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-[#14182B] text-brand-950 dark:text-white hover:border-brand-700 dark:hover:border-brand-400 shadow-xs transition-colors cursor-pointer"
-                      >
-                        <span>{item.targetFormat}</span>
-                        <ChevronDown className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        data-testid="queue-target-format-btn"
-                        disabled={item.status === 'converting' || item.status === 'uploading'}
-                        onClick={() => setActiveFormatSelectorId(activeFormatSelectorId === item.id ? null : item.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-bold rounded-lg border border-dashed border-brand-500 text-brand-700 dark:text-brand-300 bg-brand-50/50 dark:bg-brand-900/20 hover:bg-brand-100/60 shadow-xs transition-colors cursor-pointer"
-                      >
-                        <span>...</span>
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-
-                    {/* 2-Column Searchable Target Format Selector Popover */}
-                    {activeFormatSelectorId === item.id && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-40"
-                          onClick={() => setActiveFormatSelectorId(null)}
-                        />
-                        <div className="absolute right-0 sm:right-auto sm:left-0 top-full mt-2 z-50">
-                          <FormatSelector
-                            availableFormats={getAvailableTargetFormats(item.sourceFormat)}
-                            selectedFormatId={item.targetFormat}
-                            onSelect={(fmt) => {
-                              onUpdateTargetFormat(item.id, fmt);
-                              setActiveFormatSelectorId(null);
-                            }}
-                            onClose={() => setActiveFormatSelectorId(null)}
-                            title={`Convert ${item.sourceFormat.toUpperCase()} to:`}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Options button (visible when target is chosen) */}
-                  {item.targetFormat && (
-                    <button
-                      type="button"
-                      data-testid="queue-options-btn"
-                      title="Options"
-                      disabled={item.status === 'converting' || item.status === 'uploading'}
-                      onClick={() => setActiveOptionsModalId(item.id)}
-                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-neutral-border dark:border-neutral-700 bg-white dark:bg-[#14182B] text-ink-secondary dark:text-neutral-300 hover:border-brand-400 hover:text-brand-950 dark:hover:text-white shadow-xs transition-colors cursor-pointer"
-                    >
-                      <Sliders className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
-                      <span className="hidden sm:inline">Options</span>
-                    </button>
-                  )}
-
-                  {/* Ready Status Badge matching Reference 1 */}
-                  {item.status === 'ready' && (
-                    <span className="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded text-[11px] font-medium tracking-wide uppercase text-emerald-600 dark:text-emerald-400 border border-emerald-500/60 bg-emerald-50/40 dark:bg-emerald-950/20">
-                      Ready
-                    </span>
-                  )}
-
-                  {/* Progress / Status / Finished Actions */}
-                  {(item.status === 'uploading' || item.status === 'converting') && (
-                    <div className="flex items-center gap-2 min-w-[120px]">
-                      <Loader2 className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400 animate-spin" />
-                      <div className="w-full bg-neutral-200 dark:bg-neutral-700 h-2 rounded-full overflow-hidden">
-                        <div
-                          className="bg-brand-700 h-full transition-all duration-300 rounded-full"
-                          style={{ width: `${Math.max(15, item.progress)}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {item.status === 'completed' && item.edgeProcessed && (
-                    <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg">
-                      <span>{item.edgeTier || 'Edge L0'}</span>
-                    </span>
-                  )}
-
-                  {item.status === 'completed' && !item.edgeProcessed && (
-                    <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg">
-                      <span>{item.edgeTier || 'Client Edge'}</span>
-                    </span>
-                  )}
-
-                  {item.status === 'completed' && item.resultUrl && (
-                    <a
-                      href={item.resultUrl}
-                      download={`converted_${item.name.replace(/\.[^/.]+$/, '')}.${item.targetFormat}`}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-colors"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Download</span>
-                    </a>
-                  )}
-
-                  {item.status === 'error' && (
-                    <button
-                      type="button"
-                      onClick={() => onConvertSingle(item.id)}
-                      className="text-xs font-semibold text-red-600 hover:underline px-2 py-1"
-                    >
-                      Retry
-                    </button>
-                  )}
-
-                  {/* File Size */}
-                  <span className="text-xs font-mono text-ink-muted dark:text-neutral-400 min-w-[55px] text-right">
-                    {formatFileSize(item.size)}
-                  </span>
-
-                  {/* Delete button */}
-                  <button
-                    type="button"
-                    onClick={() => onRemoveItem(item.id)}
-                    title="Delete"
-                    className="p-1 text-ink-muted hover:text-red-600 dark:hover:text-white rounded-lg hover:bg-red-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+      <div className="w-full rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm overflow-visible">
+        {items.length > 1 && (
+          <QueueBatchHeader
+            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
+            batchTargetLabel={batchTargetLabel} batchAvailableFormats={batchAvailableFormats} onUpdateAllTargets={onUpdateAllTargets}
+            onToggleBatchSelector={() => { setActiveFormatSelectorId(null); setIsBatchSelectorOpen((prev) => !prev); }}
+            onCloseBatchSelector={() => setIsBatchSelectorOpen(false)}
+            onSelectBatchTarget={(fmt) => { setBatchTargetLabel(fmt); onUpdateAllTargets?.(fmt); setIsBatchSelectorOpen(false); }}
+            onClearAll={onClearAll}
+          />
+        )}
+        <div className="divide-y divide-neutral-border dark:divide-dark-border">
+          {items.map((item) => (
+            <QueueItemRow
+              key={item.id} item={item} isFormatSelectorOpen={activeFormatSelectorId === item.id}
+              onToggleFormatSelector={() => {
+                setIsBatchSelectorOpen(false);
+                setActiveFormatSelectorId((prev) => (prev === item.id ? null : item.id));
+              }}
+              onCloseFormatSelector={() => setActiveFormatSelectorId(null)}
+              onSelectTargetFormat={(fmt) => { onUpdateTargetFormat(item.id, fmt); setActiveFormatSelectorId(null); }}
+              onOpenOptions={() => setActiveOptionsModalId(item.id)}
+              onRetry={() => onConvertSingle(item.id)} onRemove={() => onRemoveItem(item.id)}
+            />
+          ))}
         </div>
-
-        {/* Attached Conversion Dock directly on the table card with harmonious surface styling */}
-        <div className="bg-[#F8F9FD] dark:bg-[#121629] px-5 sm:px-6 py-4 rounded-b-2xl border-t border-neutral-200/80 dark:border-[#263050] flex items-center justify-between gap-4 flex-wrap transition-colors">
-          {/* Left: Add more files button with tactile secondary styling */}
-          <button
-            type="button"
-            onClick={onAddMoreFiles}
-            className="bg-white hover:bg-neutral-50 active:bg-neutral-100 dark:bg-[#1B2032] dark:hover:bg-[#242B42] text-brand-950 dark:text-neutral-200 border border-neutral-300 dark:border-[#2C3452] rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 px-4 py-2.5 transition-all cursor-pointer shadow-xs hover:shadow-sm w-full sm:w-auto"
-          >
-            <span className="text-brand-700 dark:text-brand-400 font-bold text-base leading-none">+</span>
-            <span>Add more files</span>
-          </button>
-
-          {/* Center helper hint with high legibility */}
-          {!allReady ? (
-            <div className="flex items-center justify-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400 w-full lg:w-auto order-first lg:order-none py-0.5">
-              <Info className="w-3.5 h-3.5 shrink-0" />
-              <span>Please select output format</span>
-            </div>
-          ) : (
-            <div className="hidden lg:flex items-center gap-2 text-xs font-medium text-ink-secondary dark:text-neutral-300">
-              <span>Ctrl or Shift to select multiple files</span>
-            </div>
-          )}
-
-          {/* Right: Download all zip and Convert button */}
-          <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap w-full sm:w-auto justify-end">
-            {completedCount > 1 && (
-              <button
-                type="button"
-                onClick={onDownloadAllZip}
-                className="flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs sm:text-sm font-bold text-brand-800 dark:text-brand-200 bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/40 dark:hover:bg-brand-900/60 border border-brand-200 dark:border-brand-700/50 rounded-xl transition-all cursor-pointer shadow-xs w-full sm:w-auto"
-              >
-                <Package className="w-4 h-4 text-brand-700 dark:text-brand-300" />
-                <span>Download All (ZIP)</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              disabled={isConverting || !allReady}
-              onClick={onConvertAll}
-              className="bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white px-8 sm:px-10 py-3 rounded-xl font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-md shadow-brand-700/25 hover:shadow-lg hover:shadow-brand-700/30 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none disabled:active:scale-100 transition-all cursor-pointer w-full sm:w-auto"
-            >
-              {isConverting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Converting...</span>
-                </>
-              ) : (
-                <>
-                  <span>Convert</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
-            </button>
-          </div>
-        </div>
+        <QueueFooterBar
+          statusSummary={view.statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}
+          effectiveBusy={view.effectiveBusy} completedCount={view.completedCount} allDone={view.allDone} canConvert={view.canConvert}
+          onAddMoreFiles={onAddMoreFiles} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
+        />
       </div>
-
-      {/* Post-Conversion Ad Unit */}
-      <AdBanner slot="post-conversion" className="mt-8 mb-4" />
-
-      {/* Options Modal */}
-      {currentOptionsItem && (
+      {view.completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
+      {currentOptionsItem?.targetFormat && currentOptionsItem.size <= maxLimit && (
         <OptionsModal
-          filename={currentOptionsItem.name}
-          sourceFormat={currentOptionsItem.sourceFormat}
-          targetFormat={currentOptionsItem.targetFormat}
-          initialOptions={currentOptionsItem.options}
-          onSave={(opts) => {
-            onUpdateOptions(currentOptionsItem.id, opts);
-            setActiveOptionsModalId(null);
-          }}
+          key={`${currentOptionsItem.id}:${currentOptionsItem.sourceFormat}:${currentOptionsItem.targetFormat}`}
+          filename={currentOptionsItem.name} sourceFormat={currentOptionsItem.sourceFormat}
+          targetFormat={currentOptionsItem.targetFormat} initialOptions={currentOptionsItem.options}
+          onSave={(opts) => { onUpdateOptions(currentOptionsItem.id, opts); setActiveOptionsModalId(null); }}
           onClose={() => setActiveOptionsModalId(null)}
         />
       )}

@@ -1,32 +1,5 @@
 [
   {
-    "file": "src/app/[slug]/page.tsx",
-    "rule": "complexity",
-    "function": "DynamicConverterPage",
-    "count": 1,
-    "maxValue": 40
-  },
-  {
-    "file": "src/app/[slug]/page.tsx",
-    "rule": "max-lines-per-function",
-    "function": "DynamicConverterPage",
-    "count": 1,
-    "maxValue": 518
-  },
-  {
-    "file": "src/app/api-docs/page.tsx",
-    "rule": "max-lines-per-function",
-    "function": "ApiDocsPage",
-    "count": 1,
-    "maxValue": 425
-  },
-  {
-    "file": "src/app/api-docs/page.tsx",
-    "rule": "no-nested-ternary",
-    "function": "ApiDocsPage",
-    "count": 1
-  },
-  {
     "file": "src/app/api/convert/batch/route.ts",
     "rule": "complexity",
     "function": "POST",
@@ -194,131 +167,6 @@
     "file": "src/app/api/v1/uploads/direct/part/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "PUT",
-    "count": 1
-  },
-  {
-    "file": "src/app/auth/page.tsx",
-    "rule": "max-lines-per-function",
-    "function": "LoginFormContent",
-    "count": 1,
-    "maxValue": 301
-  },
-  {
-    "file": "src/app/dashboard/page.tsx",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "DashboardPage",
-    "count": 1
-  },
-  {
-    "file": "src/app/dashboard/page.tsx",
-    "rule": "complexity",
-    "function": "DashboardPage",
-    "count": 1,
-    "maxValue": 37
-  },
-  {
-    "file": "src/app/dashboard/page.tsx",
-    "rule": "max-lines-per-function",
-    "function": "DashboardPage",
-    "count": 1,
-    "maxValue": 1122
-  },
-  {
-    "file": "src/components/BrandLogo.tsx",
-    "rule": "no-nested-ternary",
-    "function": "BrandLogo",
-    "count": 1
-  },
-  {
-    "file": "src/components/ConversionQueue.tsx",
-    "rule": "max-lines-per-function",
-    "function": "ConversionQueue",
-    "count": 1,
-    "maxValue": 296
-  },
-  {
-    "file": "src/components/Features.tsx",
-    "rule": "max-lines-per-function",
-    "function": "Features",
-    "count": 1,
-    "maxValue": 366
-  },
-  {
-    "file": "src/components/Footer.tsx",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "Footer",
-    "count": 2
-  },
-  {
-    "file": "src/components/Header.tsx",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "Header",
-    "count": 2
-  },
-  {
-    "file": "src/components/Header.tsx",
-    "rule": "max-lines-per-function",
-    "function": "Header",
-    "count": 1,
-    "maxValue": 267
-  },
-  {
-    "file": "src/components/Hero.tsx",
-    "rule": "max-lines-per-function",
-    "function": "Hero",
-    "count": 1,
-    "maxValue": 297
-  },
-  {
-    "file": "src/components/OptionsModal.tsx",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "OptionsModal",
-    "count": 2
-  },
-  {
-    "file": "src/components/OptionsModal.tsx",
-    "rule": "complexity",
-    "function": "OptionsModal",
-    "count": 1,
-    "maxValue": 33
-  },
-  {
-    "file": "src/components/OptionsModal.tsx",
-    "rule": "max-lines-per-function",
-    "function": "OptionsModal",
-    "count": 1,
-    "maxValue": 339
-  },
-  {
-    "file": "src/components/StatusDashboard.tsx",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "runDiagnostics",
-    "count": 1
-  },
-  {
-    "file": "src/components/StatusDashboard.tsx",
-    "rule": "max-lines-per-function",
-    "function": "StatusDashboard",
-    "count": 1,
-    "maxValue": 353
-  },
-  {
-    "file": "src/components/UnitConverter.tsx",
-    "rule": "max-lines-per-function",
-    "function": "UnitConverter",
-    "count": 1,
-    "maxValue": 355
-  },
-  {
-    "file": "src/components/UnitConverter.tsx",
-    "rule": "no-nested-ternary",
-    "function": "UnitConverter",
-    "count": 1
-  },
-  {
-    "file": "src/hooks/useClientQueue.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "useClientQueue",
     "count": 1
   },
   {
@@ -2566,7 +2414,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3312
+    "maxValue": 3307
   },
   {
     "file": "src/lib/security/memory-shredder.ts",
@@ -2604,19 +2452,6 @@
     "function": "isBlockedIpv4",
     "count": 1,
     "maxValue": 32
-  },
-  {
-    "file": "src/lib/slug-parser.ts",
-    "rule": "complexity",
-    "function": "parseConverterSlug",
-    "count": 1,
-    "maxValue": 41
-  },
-  {
-    "file": "src/lib/slug-parser.ts",
-    "rule": "no-nested-ternary",
-    "function": "parseConverterSlug",
-    "count": 4
   },
   {
     "file": "src/lib/storage/adapters/azure-blob.ts",
