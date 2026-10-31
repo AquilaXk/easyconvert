@@ -2656,9 +2656,9 @@ function looksLikeJpeg(buffer: Buffer): boolean {
 
 /**
  * The PDF of a JPEG that goes in unchanged, or null when it must be decoded instead: not a JPEG, a coding the PDF
- * filter does not read (arithmetic, lossless, 12-bit), a header that cannot be read, or a file the image library
- * cannot decode (a truncated scan: the decoding path then answers the typed error). The declared size is checked
- * against the input pixel limit first (HTTP 413).
+ * filter does not read (arithmetic, lossless, 12-bit), a header that cannot be read, or a file the image library cannot
+ * decode strictly (a scan cut short: the decoding path then reads it as far as it goes or answers the typed error, see
+ * `truncatedJpegDecodeOptions`). The declared size is checked against the input pixel limit first (HTTP 413).
  */
 async function jpegPassthroughPdf(
   buffer: Buffer,
