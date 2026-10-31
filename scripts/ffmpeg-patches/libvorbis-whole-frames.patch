@@ -1,0 +1,283 @@
+libavcodec/libvorbisenc: accept frames of any size
+
+The encoder required frames of 64 samples (AVCodecContext.frame_size) and
+returned at most one packet for each call. ffmpeg 9 cuts a stream into frames
+of the size an encoder states in a synchronisation queue and hands each to the
+encoder thread through a queue of two, so every 64 samples cost a hand-over
+between two threads. For 120 s of 44.1 kHz stereo that is 235,000 futex calls
+and 85,000 voluntary context switches, and the encoder thread waits for its
+input for most of the run.
+
+Receive packets through the receive_packet callback, so that one call can
+return every packet the samples of a frame complete, and drop frame_size. The
+encoder then takes the frames the decoder makes (VARIABLE_FRAME_SIZE).
+
+The packets libvorbis writes depend on how the samples are split across its
+vorbis_analysis_wrote() calls (a stream encoded from calls of 128 samples
+differs from one encoded from calls of 64, by some tens of bytes in 875 KB),
+so a frame is not passed through whole: it is cut into the calls of 64 samples
+that the required frame size made, keeping the rest for the next frame. The
+stream is then the one the required frame size gave, whatever the size of the
+frames, and the packet timestamps, which AudioFrameQueue takes from the
+frames, are unchanged.
+
+The output packet buffer grows when a frame completes more packets than it
+holds, where it used to fail with AVERROR_BUG.
+
+Matroska no longer writes a DefaultDuration of 64 samples and a BlockDuration
+for each packet, which both came from frame_size.
+
+--- a/libavcodec/libvorbisenc.c
++++ b/libavcodec/libvorbisenc.c
+@@ -35,12 +35,13 @@
+ #include "vorbis_parser_internal.h"
+ 
+ 
+-/* Number of samples the user should send in each call.
+- * This value is used because it is the LCD of all possible frame sizes, so
+- * an output packet will always start at the same point as one of the input
+- * packets.
++/* The packets libvorbis writes depend on how the samples are split across
++ * its vorbis_analysis_wrote() calls. Frames of 64 samples, the LCD of all
++ * possible frame sizes, were required, and each was one call. Frames of any
++ * size are accepted now and cut into the same calls, so the stream is the
++ * one the required size gave.
+  */
+-#define LIBVORBIS_FRAME_SIZE 64
++#define LIBVORBIS_CHUNK_SIZE 64
+ 
+ #define BUFFER_SIZE (1024 * 64)
+ 
+@@ -50,6 +51,9 @@
+     vorbis_dsp_state vd;                /**< DSP state used for analysis    */
+     vorbis_block vb;                    /**< vorbis_block used for analysis */
+     AVFifo *pkt_fifo;                   /**< output packet buffer           */
++    AVFrame *frame;                     /**< input frame being sent         */
++    float *chunk;                       /**< planar samples not yet given to libvorbis */
++    int chunk_samples;                  /**< number of samples held per channel in chunk */
+     int eof;                            /**< end-of-file flag               */
+     int dsp_initialized;                /**< vd has been initialized        */
+     vorbis_comment vc;                  /**< VorbisComment info             */
+@@ -255,6 +259,8 @@
+     vorbis_info_clear(&s->vi);
+ 
+     av_fifo_freep2(&s->pkt_fifo);
++    av_frame_free(&s->frame);
++    av_freep(&s->chunk);
+     ff_af_queue_close(&s->afq);
+ 
+     return 0;
+@@ -327,11 +333,16 @@
+     if ((ret = libvorbis_get_priming_samples(&s->vi, avctx)))
+         goto error;
+ 
+-    avctx->frame_size = LIBVORBIS_FRAME_SIZE;
++    /* The encoder takes frames of any size (AV_CODEC_CAP_VARIABLE_FRAME_SIZE): a
++     * size set by the caller is not one it asks for. */
++    avctx->frame_size = 0;
+     ff_af_queue_init(avctx, &s->afq);
+ 
+     s->pkt_fifo = av_fifo_alloc2(BUFFER_SIZE, 1, 0);
+-    if (!s->pkt_fifo) {
++    s->frame    = av_frame_alloc();
++    s->chunk    = av_calloc(avctx->ch_layout.nb_channels * LIBVORBIS_CHUNK_SIZE,
++                            sizeof(*s->chunk));
++    if (!s->pkt_fifo || !s->frame || !s->chunk) {
+         ret = AVERROR(ENOMEM);
+         goto error;
+     }
+@@ -342,42 +353,13 @@
+     return ret;
+ }
+ 
+-static int libvorbis_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
+-                                  const AVFrame *frame, int *got_packet_ptr)
++/* Move every packet libvorbis can complete into the output packet buffer. */
++static int libvorbis_collect_packets(AVCodecContext *avctx)
+ {
+     LibvorbisEncContext *s = avctx->priv_data;
+     ogg_packet op;
+-    int ret, duration;
+-
+-    /* send samples to libvorbis */
+-    if (frame) {
+-        const int samples = frame->nb_samples;
+-        float **buffer;
+-        int c, channels = s->vi.channels;
+-
+-        buffer = vorbis_analysis_buffer(&s->vd, samples);
+-        for (c = 0; c < channels; c++) {
+-            int co = (channels > 8) ? c :
+-                     vorbis_encoding_channel_layout_offsets[channels - 1][c];
+-            memcpy(buffer[c], frame->extended_data[co],
+-                   samples * sizeof(*buffer[c]));
+-        }
+-        if ((ret = vorbis_analysis_wrote(&s->vd, samples)) < 0) {
+-            av_log(avctx, AV_LOG_ERROR, "error in vorbis_analysis_wrote()\n");
+-            return vorbis_error_to_averror(ret);
+-        }
+-        if ((ret = ff_af_queue_add(&s->afq, frame)) < 0)
+-            return ret;
+-    } else {
+-        if (!s->eof && s->afq.frame_alloc)
+-            if ((ret = vorbis_analysis_wrote(&s->vd, 0)) < 0) {
+-                av_log(avctx, AV_LOG_ERROR, "error in vorbis_analysis_wrote()\n");
+-                return vorbis_error_to_averror(ret);
+-            }
+-        s->eof = 1;
+-    }
++    int ret;
+ 
+-    /* retrieve available packets from libvorbis */
+     while ((ret = vorbis_analysis_blockout(&s->vd, &s->vb)) == 1) {
+         if ((ret = vorbis_analysis(&s->vb, NULL)) < 0)
+             break;
+@@ -386,10 +368,12 @@
+ 
+         /* add any available packets to the output packet buffer */
+         while ((ret = vorbis_bitrate_flushpacket(&s->vd, &op)) == 1) {
+-            if (av_fifo_can_write(s->pkt_fifo) < sizeof(ogg_packet) + op.bytes) {
+-                av_log(avctx, AV_LOG_ERROR, "packet buffer is too small\n");
+-                return AVERROR_BUG;
+-            }
++            size_t size = sizeof(ogg_packet) + op.bytes;
++            int err;
++
++            if (av_fifo_can_write(s->pkt_fifo) < size &&
++                (err = av_fifo_grow2(s->pkt_fifo, size - av_fifo_can_write(s->pkt_fifo))) < 0)
++                return err;
+             av_fifo_write(s->pkt_fifo, &op, sizeof(ogg_packet));
+             av_fifo_write(s->pkt_fifo, op.packet, op.bytes);
+         }
+@@ -403,10 +387,103 @@
+         return vorbis_error_to_averror(ret);
+     }
+ 
+-    /* Read an available packet if possible */
+-    if (av_fifo_read(s->pkt_fifo, &op, sizeof(ogg_packet)) < 0)
+-        return 0;
++    return 0;
++}
+ 
++/* Give libvorbis the `samples` samples held in the chunk buffer and collect the packets they complete. */
++static int libvorbis_write_chunk(AVCodecContext *avctx, int samples)
++{
++    LibvorbisEncContext *s = avctx->priv_data;
++    int channels = s->vi.channels;
++    float **buffer;
++    int ret;
++
++    buffer = vorbis_analysis_buffer(&s->vd, samples);
++    for (int c = 0; c < channels; c++)
++        memcpy(buffer[c], s->chunk + c * LIBVORBIS_CHUNK_SIZE,
++               samples * sizeof(*buffer[c]));
++    if ((ret = vorbis_analysis_wrote(&s->vd, samples)) < 0) {
++        av_log(avctx, AV_LOG_ERROR, "error in vorbis_analysis_wrote()\n");
++        return vorbis_error_to_averror(ret);
++    }
++
++    return libvorbis_collect_packets(avctx);
++}
++
++/* Hand the samples of a frame, or the end of the stream, to libvorbis. */
++static int libvorbis_send_frame(AVCodecContext *avctx, const AVFrame *frame)
++{
++    LibvorbisEncContext *s = avctx->priv_data;
++    int channels = s->vi.channels;
++    int ret;
++
++    if (frame) {
++        if ((ret = ff_af_queue_add(&s->afq, frame)) < 0)
++            return ret;
++
++        for (int pos = 0; pos < frame->nb_samples;) {
++            int n = FFMIN(frame->nb_samples - pos,
++                          LIBVORBIS_CHUNK_SIZE - s->chunk_samples);
++
++            for (int c = 0; c < channels; c++) {
++                int co = (channels > 8) ? c :
++                         vorbis_encoding_channel_layout_offsets[channels - 1][c];
++                memcpy(s->chunk + c * LIBVORBIS_CHUNK_SIZE + s->chunk_samples,
++                       (const float *)frame->extended_data[co] + pos,
++                       n * sizeof(*s->chunk));
++            }
++            s->chunk_samples += n;
++            pos              += n;
++            if (s->chunk_samples == LIBVORBIS_CHUNK_SIZE) {
++                s->chunk_samples = 0;
++                if ((ret = libvorbis_write_chunk(avctx, LIBVORBIS_CHUNK_SIZE)) < 0)
++                    return ret;
++            }
++        }
++    } else {
++        if (s->chunk_samples) {
++            int n = s->chunk_samples;
++
++            s->chunk_samples = 0;
++            if ((ret = libvorbis_write_chunk(avctx, n)) < 0)
++                return ret;
++        }
++        if (!s->eof && s->afq.frame_alloc)
++            if ((ret = vorbis_analysis_wrote(&s->vd, 0)) < 0) {
++                av_log(avctx, AV_LOG_ERROR, "error in vorbis_analysis_wrote()\n");
++                return vorbis_error_to_averror(ret);
++            }
++        s->eof = 1;
++        return libvorbis_collect_packets(avctx);
++    }
++
++    return 0;
++}
++
++static int libvorbis_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
++{
++    LibvorbisEncContext *s = avctx->priv_data;
++    ogg_packet op;
++    int ret, duration;
++
++    /* feed libvorbis until it has completed a packet */
++    while (av_fifo_can_read(s->pkt_fifo) < sizeof(ogg_packet)) {
++        if (s->eof)
++            return AVERROR_EOF;
++
++        ret = ff_encode_get_frame(avctx, s->frame);
++        if (ret == AVERROR_EOF) {
++            ret = libvorbis_send_frame(avctx, NULL);
++        } else if (ret >= 0) {
++            ret = libvorbis_send_frame(avctx, s->frame);
++            av_frame_unref(s->frame);
++        }
++        if (ret < 0)
++            return ret;
++    }
++
++    av_fifo_read(s->pkt_fifo, &op, sizeof(ogg_packet));
++
+     if ((ret = ff_get_encode_buffer(avctx, avpkt, op.bytes, 0)) < 0)
+         return ret;
+     av_fifo_read(s->pkt_fifo, avpkt->data, op.bytes);
+@@ -430,7 +507,9 @@
+         }
+     }
+ 
+-    *got_packet_ptr = 1;
++    /* no reordering, so dts equals pts */
++    avpkt->dts = avpkt->pts;
++
+     return 0;
+ }
+ 
+@@ -440,11 +519,11 @@
+     .p.type         = AVMEDIA_TYPE_AUDIO,
+     .p.id           = AV_CODEC_ID_VORBIS,
+     .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY |
+-                      AV_CODEC_CAP_SMALL_LAST_FRAME,
++                      AV_CODEC_CAP_VARIABLE_FRAME_SIZE,
+     .caps_internal  = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
+     .priv_data_size = sizeof(LibvorbisEncContext),
+     .init           = libvorbis_encode_init,
+-    FF_CODEC_ENCODE_CB(libvorbis_encode_frame),
++    FF_CODEC_RECEIVE_PACKET_CB(libvorbis_receive_packet),
+     .close          = libvorbis_encode_close,
+     CODEC_SAMPLEFMTS(AV_SAMPLE_FMT_FLTP),
+     .p.priv_class   = &vorbis_class,

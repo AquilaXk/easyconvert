@@ -95,10 +95,10 @@ RUN /tmp/install-ghostxps.sh /opt/ghostxps
 # ==============================================================================
 # Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
 # ==============================================================================
-# Every audio and video conversion. FFmpeg is built here from its unmodified release archive, pinned by SHA-256 in
-# scripts/install-ffmpeg.sh, against the codec libraries of this Debian release (the development packages named below; the runtime
-# stage installs the same libraries). Debian 13 ships FFmpeg 7.1, which decodes only part of an xHE-AAC stream, and trixie-backports
-# holds no newer one. The build is GPL-2.0-or-later (libx264 and libx265) with no nonfree component, and the worker runs it as a
+# Every audio and video conversion. FFmpeg is built here from its release archive and one patch (scripts/ffmpeg-patches), both
+# pinned by SHA-256 in scripts/install-ffmpeg.sh, against the codec libraries of this Debian release (the development packages named
+# below; the runtime stage installs the same libraries). Debian 13 ships FFmpeg 7.1, which decodes only part of an xHE-AAC stream,
+# and trixie-backports holds no newer one. The build is GPL-2.0-or-later (libx264 and libx265) with no nonfree component, and the worker runs it as a
 # separate sandboxed process; nothing links it into the application. The stage fails the build if a hardening property, a codec or
 # a filter the conversions name is missing.
 FROM ${NODE_IMAGE} AS ffmpeg
@@ -109,6 +109,7 @@ RUN apt-get update \
         curl \
         xz-utils \
         build-essential \
+        patch \
         nasm \
         pkg-config \
         libx264-dev \
@@ -132,6 +133,7 @@ RUN apt-get update \
         liblzma-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-ffmpeg.sh /tmp/install-ffmpeg.sh
+COPY scripts/ffmpeg-patches /tmp/ffmpeg-patches
 RUN /tmp/install-ffmpeg.sh /opt/ffmpeg
 
 # ==============================================================================
