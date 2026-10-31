@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { S3ObjectClient } from '../src/lib/storage/s3-object-client';
 import { RemoteStorageBackend } from '../src/lib/storage/remote-storage-backend';
@@ -420,39 +423,52 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       return { ...app, submit, queueModule, bullmq };
     }
 
-    it('runs a submitted job from an object-store input to a presigned result and removes the upload', async () => {
+    it('runs a submitted job from an object-store input to a result served through the application and removes the upload', async () => {
       const { storage, submit, queueModule, bullmq } = await loadJobApp();
-      const inputKey = `uploads/${Date.now()}_scores.csv`;
-      await storage.storageProvider.saveObject(inputKey, Buffer.from(CSV_INPUT), 'text/csv', 'scores.csv', 3_600_000);
+      const ledgers = await import('../src/lib/storage/retention-ledger');
+      const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-wiring-ledger-'));
+      ledgers.setRetentionLedger(new ledgers.FileRetentionLedger(ledgerDir));
+      try {
+        const inputKey = `uploads/${Date.now()}_scores.csv`;
+        await storage.storageProvider.saveObject(inputKey, Buffer.from(CSV_INPUT), 'text/csv', 'scores.csv', 3_600_000);
 
-      const res = await submit(inputKey, 'scores.csv');
-      expect(res.status).toBe(202);
-      const { jobId } = await res.json();
-      expect((await queueModule.conversionQueue.getJob(jobId))?.data.storageKey).toBe(inputKey);
+        const res = await submit(inputKey, 'scores.csv');
+        expect(res.status).toBe(202);
+        const { jobId } = await res.json();
+        expect((await queueModule.conversionQueue.getJob(jobId))?.data.storageKey).toBe(inputKey);
 
-      const worker = new bullmq.Worker(queueModule.conversionQueue, queueModule.processConversionJob, { concurrency: 1 });
-      queueModule.attachInputCleanupOnCompletion(worker);
-      const result = await new Promise<ConversionJobResult>((resolve, reject) => {
-        worker.on('completed', (job: { id: string }, value: ConversionJobResult) => {
-          if (job.id === jobId) resolve(value);
+        const worker = new bullmq.Worker(queueModule.conversionQueue, queueModule.processConversionJob, { concurrency: 1 });
+        queueModule.attachInputCleanupOnCompletion(worker);
+        const result = await new Promise<ConversionJobResult>((resolve, reject) => {
+          worker.on('completed', (job: { id: string }, value: ConversionJobResult) => {
+            if (job.id === jobId) resolve(value);
+          });
+          worker.on('failed', (job: { id: string }, err: Error) => {
+            if (job.id === jobId) reject(err);
+          });
         });
-        worker.on('failed', (job: { id: string }, err: Error) => {
-          if (job.id === jobId) reject(err);
+        await worker.close();
+
+        const rows = JSON.parse(server.objects.get(result.resultKey)!.body.toString('utf-8'));
+        expect(rows).toEqual([
+          { name: 'Alice', score: '100' },
+          { name: 'Bob', score: '95' },
+        ]);
+        // Downloads go through the application, whatever the driver, so that a delivery can be seen and the result deleted after it.
+        expect(result.downloadUrl).toBe(`/api/storage/file/${encodeURIComponent(result.resultKey)}`);
+
+        // The completed job's upload is held until it ended, and the sweep deletes it from the object store once the grace period has passed.
+        const { sweepRetention } = await import('../src/lib/storage/retention-service');
+        const { resolveRetentionPolicy } = await import('../src/lib/storage/result-retention');
+        const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+        await vi.waitFor(async () => {
+          await sweepRetention(storage.storageProvider, afterGrace);
+          expect(server.objects.has(inputKey)).toBe(false);
         });
-      });
-      await worker.close();
-
-      const rows = JSON.parse(server.objects.get(result.resultKey)!.body.toString('utf-8'));
-      expect(rows).toEqual([
-        { name: 'Alice', score: '100' },
-        { name: 'Bob', score: '95' },
-      ]);
-      const downloaded = await fetch(result.downloadUrl);
-      expect(downloaded.status).toBe(HTTP_OK);
-      expect(JSON.parse(await downloaded.text())).toEqual(rows);
-
-      // The completed job's upload is deleted from the object store.
-      await vi.waitFor(() => expect(server.objects.has(inputKey)).toBe(false));
+      } finally {
+        ledgers.setRetentionLedger(undefined);
+        fs.rmSync(ledgerDir, { recursive: true, force: true });
+      }
     });
 
     it('rejects a stored object whose first bytes do not match its extension, reading only its header', async () => {
@@ -601,7 +617,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       );
     }
 
-    it('reads the input from the object store, writes the result there, and returns a presigned download URL', async () => {
+    it('reads the input from the object store, writes the result there, and names the application as its download', async () => {
       const backend = makeBackend();
       const csv = 'id,name,role\n101,Ada Lovelace,Mathematician\n102,Alan Turing,Computer Scientist\n';
       await backend.saveObject('uploads/users.csv', Buffer.from(csv), 'text/csv', 'users.csv');
@@ -629,13 +645,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
         { id: '102', name: 'Alan Turing', role: 'Computer Scientist' },
       ]);
 
-      // The URL in the job result is a real presigned object-store URL: a plain HTTP client gets the result.
-      const downloadUrl = new URL(result.downloadUrl);
-      expect(downloadUrl.origin).toBe(server.url);
-      expect(downloadUrl.searchParams.get('X-Amz-Credential')?.startsWith(`${ACCESS_KEY}/`)).toBe(true);
-      const res = await fetch(result.downloadUrl);
-      expect(res.status).toBe(HTTP_OK);
-      expect(Buffer.from(await res.arrayBuffer()).equals(stored!.body)).toBe(true);
+      // The URL in the job result is the application's download route, not a link into the bucket.
+      expect(result.downloadUrl).toBe(`/api/storage/file/${encodeURIComponent(result.resultKey)}`);
       expect(result.size).toBe(stored!.body.length);
     });
 

@@ -15,6 +15,7 @@ import type {
 import type { User } from '../auth/types';
 import { decryptSecret } from './secret-encryption';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
+import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
 
 export { isIpInCidr, isIpAllowed };
@@ -977,11 +978,12 @@ export class RedisKeyStore extends KeyStore {
     toFormat: string;
     size: number;
     downloadUrl: string;
+    storageKey?: string;
     ttlMs?: number;
   }): Promise<UserConversionFile> {
     this.ensureInitialized();
     const now = Date.now();
-    const ttl = data.ttlMs ?? 3600 * 1000;
+    const ttl = data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs;
     const file: UserConversionFile = {
       id: crypto.randomUUID(),
       userId: data.userId,
@@ -990,6 +992,7 @@ export class RedisKeyStore extends KeyStore {
       toFormat: data.toFormat,
       size: data.size,
       downloadUrl: data.downloadUrl,
+      storageKey: data.storageKey,
       createdAt: now,
       expiresAt: now + ttl,
     };

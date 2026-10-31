@@ -1,5 +1,8 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as submitLegacyJob } from '../src/app/api/queue/jobs/route';
@@ -11,6 +14,10 @@ import {
 } from '../src/lib/queue/conversion-queue';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
+import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
+import { sweepRetention } from '../src/lib/storage/retention-service';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -193,6 +200,66 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
     expect(await missingLegacy.json()).toEqual(await notOwnedLegacy.json());
   });
 
+  it('authorizes every upload node of a graph, so another user\'s output can be neither held nor converted through a second node', async () => {
+    const alice = await createUser('input_alice');
+    const bob = await createUser('input_bob');
+    const ownUpload = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
+    const aliceKey = storeCsv(`conversions/${alice.id}/${uniqueSuffix()}_scores.csv`);
+    const countsBefore = await conversionQueue.getJobCounts();
+
+    const res = await submitV1Job(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await writeKeyHeaders(bob)) },
+        body: JSON.stringify({
+          originalFilename: 'scores.csv',
+          graph: {
+            nodes: {
+              first: { op: 'import.upload', storageKey: ownUpload },
+              second: { op: 'import.upload', storageKey: aliceKey },
+              tojson: { op: 'convert', input: 'first', targetFormat: 'json' },
+              otherjson: { op: 'convert', input: 'second', targetFormat: 'json' },
+              out: { op: 'export.internal', input: 'tojson' },
+              otherout: { op: 'export.internal', input: 'otherjson' },
+            },
+          },
+        }),
+      })
+    );
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).detail).toBe(NOT_FOUND_DETAIL);
+    expect(await getRetentionLedger().get(aliceKey)).toBeUndefined();
+    expect(await getRetentionLedger().get(ownUpload)).toBeUndefined();
+    expect(await conversionQueue.getJobCounts()).toEqual(countsBefore);
+  });
+
+  it('authorizes a graph key that only begins with "inline"', async () => {
+    const bob = await createUser('input_inline');
+    const lookalike = storeCsv(`inline_${uniqueSuffix()}_scores.csv`);
+    const countsBefore = await conversionQueue.getJobCounts();
+
+    const res = await submitV1Job(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await writeKeyHeaders(bob)) },
+        body: JSON.stringify({
+          originalFilename: 'scores.csv',
+          graph: {
+            nodes: {
+              first: { op: 'import.upload', storageKey: lookalike },
+              tojson: { op: 'convert', input: 'first', targetFormat: 'json' },
+              out: { op: 'export.internal', input: 'tojson' },
+            },
+          },
+        }),
+      })
+    );
+
+    expect(res.status).toBe(404);
+    expect(await conversionQueue.getJobCounts()).toEqual(countsBefore);
+  });
+
   it('accepts the owner chaining their own conversions/ and results/ outputs', async () => {
     const alice = await createUser('input_alice');
     const aliceJob = await conversionQueue.add('convert', victimJobData(alice.id));
@@ -262,16 +329,27 @@ describe('job input cleanup deletes only uploads (#249)', () => {
     await queue.close();
   });
 
-  it('still deletes an anonymous uploads/ input after its job completes', async () => {
-    const uploadKey = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
+  it('still deletes an anonymous uploads/ input after its job completes and the grace period has passed', async () => {
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-anonymous-input-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+    try {
+      const uploadKey = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
 
-    const res = await legacySubmit(uploadKey);
-    expect(res.status).toBe(200);
-    const { jobId } = await res.json();
+      const res = await legacySubmit(uploadKey);
+      expect(res.status).toBe(200);
+      const { jobId } = await res.json();
 
-    const result = await completeQueuedJob(jobId);
-    expect(JSON.parse((await storedText(result.resultKey)) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
-    expect(storageProvider.getObject(uploadKey)).toBeUndefined();
-    createdKeys.push(result.resultKey);
+      const result = await completeQueuedJob(jobId);
+      expect(JSON.parse((await storedText(result.resultKey)) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
+      createdKeys.push(result.resultKey);
+      const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+      await vi.waitFor(async () => {
+        await sweepRetention(storageProvider, afterGrace);
+        expect(storageProvider.getObject(uploadKey)).toBeUndefined();
+      });
+    } finally {
+      restoreIsolatedRetentionLedger();
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
   });
 });

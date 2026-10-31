@@ -72,7 +72,8 @@ import {
  *
  * Every request is signed with SigV4 header authentication (see s3-sigv4.ts). Bodies are
  * streamed: a part is the largest buffer ever held, and a download is handed to the caller as a
- * stream under an inactivity timeout and an absolute ceiling.
+ * stream under an inactivity timeout only (the absolute ceiling covers a request until its headers
+ * arrive).
  *
  * Unlike the BYOS adapter, the endpoint here is operator configuration and never customer input,
  * so there is no SSRF layer; the endpoint must still be https in production.
@@ -229,6 +230,8 @@ interface S3Request {
 
 interface RequestDeadlines {
   touch: () => void;
+  /** Stops the absolute ceiling and keeps the inactivity timeout. */
+  endCeiling: () => void;
   clear: () => void;
   signal: AbortSignal;
   timedOutAfterMs: () => number | undefined;
@@ -470,6 +473,7 @@ export class S3ObjectClient {
         clearTimeout(timer);
         timer = setTimeout(onInactive, this.requestTimeoutMs);
       },
+      endCeiling: () => clearTimeout(ceiling),
       clear: () => {
         clearTimeout(timer);
         clearTimeout(ceiling);
@@ -640,12 +644,14 @@ export class S3ObjectClient {
   }
 
   /**
-   * Streams a response body under the request's deadlines: every chunk extends the inactivity
-   * timeout, the absolute ceiling keeps counting from the request start, and the body length must
-   * equal `expectedLength` (the Content-Length) exactly. Any failure destroys the stream with a
-   * typed storage error.
+   * Streams a response body under the inactivity timeout, which every chunk extends, and checks that
+   * the body length equals the Content-Length exactly. The absolute ceiling ends when the headers
+   * arrive: the body is read at the pace of whoever consumes it, such as a client downloading a
+   * large result over a slow link, and the inactivity timeout still ends a body that stops arriving.
+   * Any failure destroys the stream with a typed storage error.
    */
   private boundedBody(res: Response, deadlines: RequestDeadlines): Readable {
+    deadlines.endCeiling();
     const lengthHeader = res.headers.get('content-length');
     const declared = lengthHeader === null ? undefined : Number.parseInt(lengthHeader, 10);
     const source = Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -18,6 +19,7 @@ import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import { storageProvider } from '@/lib/storage';
+import { saveRetainedResult } from '@/lib/storage/retention-service';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
@@ -114,7 +116,7 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
   return { data: { file: file as File, sourceDef, targetDef, options } };
 }
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
@@ -402,7 +404,7 @@ export async function POST(req: NextRequest) {
     const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
     const outFileName = `${baseName}.${outExtension}`;
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
-    await storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
+    await saveRetainedResult(storageProvider, storageKey, outputBuffer, conversionResult.mimeType, outFileName);
 
     // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
     if (reservation?.reservationId) {
@@ -410,7 +412,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Record in user's file conversion history
-    const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
+    const stored = { storageKey, downloadUrl: `/api/storage/file/${encodeURIComponent(storageKey)}` };
 
     const userFile = await redisKeyStore.recordUserFile({
       userId: auth.user.id,
@@ -418,7 +420,7 @@ export async function POST(req: NextRequest) {
       fromFormat: sourceDef.id,
       toFormat: targetDef.id,
       size: outputBuffer.length,
-      downloadUrl,
+      ...stored,
     });
 
     // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
@@ -459,7 +461,7 @@ export async function POST(req: NextRequest) {
         size: outputBuffer.length,
         durationMs,
         dataUri,
-        downloadUrl,
+        downloadUrl: stored.downloadUrl,
         expiresAt: userFile.expiresAt,
         ...frameMetadataFields(conversionResult),
         ...engineTraceFields(conversionResult),
@@ -539,4 +541,4 @@ export async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-}
+});

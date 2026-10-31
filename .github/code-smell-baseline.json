@@ -96,14 +96,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 85
+    "maxValue": 81
   },
   {
     "file": "src/app/api/storage/multipart/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 295
+    "maxValue": 281
   },
   {
     "file": "src/app/api/v1/archives/inspect/route.ts",
@@ -149,7 +149,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 185
+    "maxValue": 183
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -379,7 +379,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1650
+    "maxValue": 1597
   },
   {
     "file": "src/lib/api/contracts/validate.ts",
@@ -2533,14 +2533,14 @@
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 521
+    "maxValue": 515
   },
   {
     "file": "src/lib/queue/node-processor.ts",
     "rule": "complexity",
     "function": "processNodeJob",
     "count": 1,
-    "maxValue": 63
+    "maxValue": 62
   },
   {
     "file": "src/lib/queue/node-processor.ts",

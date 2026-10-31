@@ -13,6 +13,7 @@ import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { redactText } from '../../security/redact';
 import { storageProvider } from '../../storage';
+import { releaseGraphInputHolds } from './input-cleanup';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 
@@ -343,6 +344,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
   async cleanupIntermediates(graphId: string): Promise<number> {
     const prefix = `intermediate/${graphId}/`;
+    const graph = this.graphs.get(graphId)?.state.graph;
+    if (graph) await releaseGraphInputHolds(graphId, graph);
     if (typeof storageProvider.deleteByPrefix === 'function') {
       return storageProvider.deleteByPrefix(prefix);
     }

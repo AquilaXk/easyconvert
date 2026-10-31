@@ -56,7 +56,7 @@ export const storagePaths = {
     get: {
       summary: 'Download Stored File',
       description:
-        'Downloads a stored file by the key in a `downloadUrl`. Outputs owned by a user (`conversions/{userId}/...` keys and results of jobs created with credentials) are served only to that user through a session or an API key with the "storage:download" scope; any other caller gets 404 so keys cannot be probed. Anonymous job results keep capability-URL access. Every file response is sent with `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. A single byte range is supported; multi-range requests return the full file.',
+        'Downloads a stored file by the key in a `downloadUrl`. Outputs owned by a user (`conversions/{userId}/...` keys and results of jobs created with credentials) are served only to that user through a session or an API key with the "storage:download" scope; any other caller gets 404 so keys cannot be probed. Anonymous job results keep capability-URL access. Every file response is sent with `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. A single byte range is supported; multi-range requests return the full file. A result is deleted shortly after it has been downloaded completely (one response, or ranges that together cover the whole file); a download that stops early does not count.',
       operationId: 'downloadStoredFile',
       security: [...requireScope('storage:download'), {}],
       parameters: [
@@ -99,6 +99,11 @@ export const storagePaths = {
         },
         '404': {
           description: 'Object not found, expired, owned by another user, or a job result whose job cannot be read.',
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+        },
+        '410': {
+          description:
+            'The file was deleted by the retention rule: shortly after its first complete download (`RESULT_DELIVERED_GRACE_SECONDS`), or because nobody downloaded it within `RESULT_UNDELIVERED_TTL_SECONDS`. Only the owner sees it; any other caller gets 404.',
           content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
         },
         '416': {

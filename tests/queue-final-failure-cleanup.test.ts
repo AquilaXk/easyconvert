@@ -1,10 +1,18 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Queue, Worker, type Job } from '../src/lib/queue/bullmq-engine';
 import { attachInputCleanupOnCompletion, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
+import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
+import { sweepRetention } from '../src/lib/storage/retention-service';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { bombPng } from './helpers/image-bombs';
 
@@ -19,9 +27,27 @@ function nextEvent(emitter: EventEmitter, event: string): Promise<unknown[]> {
   });
 }
 
+let ledgerDir: string;
+
+beforeEach(() => {
+  ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-final-failure-holds-'));
+  setRetentionLedger(new FileRetentionLedger(ledgerDir));
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  restoreIsolatedRetentionLedger();
+  fs.rmSync(ledgerDir, { recursive: true, force: true });
 });
+
+/** Sweeps at the time the grace period of the last job has passed, until the input is deleted. */
+async function expectInputDeleted(inputKey: string): Promise<void> {
+  const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+  await vi.waitFor(async () => {
+    await sweepRetention(s3Storage, afterGrace);
+    expect(s3Storage.getObject(inputKey)).toBeUndefined();
+  });
+}
 
 describe('a failure that cannot be retried is a final failure', () => {
   it('removes the uploaded input when a typed rejection ends the job on its first attempt', async () => {
@@ -31,7 +57,8 @@ describe('a failure that cannot be retried is a final failure', () => {
     const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
     attachInputCleanupOnCompletion(worker);
     const failed = nextEvent(worker, 'failed');
-    const job = await queue.add(
+    const job = await enqueueConversionJob(
+      queue,
       'convert',
       {
         jobId: '',
@@ -42,13 +69,14 @@ describe('a failure that cannot be retried is a final failure', () => {
         options: {},
         storageKey: inputKey,
       },
-      { attempts: ATTEMPTS, backoff: { type: 'fixed', delay: RETRY_DELAY_MS } }
+      { attempts: ATTEMPTS, backoff: { type: 'fixed', delay: RETRY_DELAY_MS } },
+      {}
     );
     await failed;
 
     expect(job.attemptsMade).toBe(1);
     expect(job.failedStatus).toBe(413);
-    expect(s3Storage.getObject(inputKey)).toBeUndefined();
+    await expectInputDeleted(inputKey);
     await worker.close();
     await queue.close();
   });
@@ -57,15 +85,17 @@ describe('a failure that cannot be retried is a final failure', () => {
     const inputKey = `uploads/final-failure-direct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
     s3Storage.saveObject(inputKey, bombPng(OVER_LIMIT_SIDE, OVER_LIMIT_SIDE), 'image/png', 'bomb.png');
     const queue = new Queue<ConversionJobData, ConversionJobResult>('final-failure-direct');
-    const job = await queue.add(
+    const job = await enqueueConversionJob(
+      queue,
       'convert',
       { jobId: '', originalFilename: 'bomb.png', sourceFormat: 'png', targetFormat: 'jpg', fileSize: 123, options: {}, storageKey: inputKey },
-      { attempts: ATTEMPTS }
+      { attempts: ATTEMPTS },
+      {}
     );
     job.attemptsMade = 1;
 
     await expect(processConversionJob(job)).rejects.toMatchObject({ status: 413 });
-    expect(s3Storage.getObject(inputKey)).toBeUndefined();
+    await expectInputDeleted(inputKey);
     await queue.close();
   });
 });

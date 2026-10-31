@@ -50,6 +50,13 @@ interface Compose {
 }
 
 const compose = parse(read('docker-compose.prod.yml'), { merge: true }) as Compose;
+const RETENTION_SETTINGS = [
+  'RESULT_UNDELIVERED_TTL_SECONDS',
+  'RESULT_DELIVERED_GRACE_SECONDS',
+  'RESULT_DISK_HIGH_PERCENT',
+  'RESULT_DISK_LOW_PERCENT',
+  'RESULT_DISK_REFUSE_PERCENT',
+];
 const APP_SERVICES = ['web', 'worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu'];
 const LOOPBACK_PORT = /^127\.0\.0\.1:/;
 /** `${NAME:-default}` as written in a limit; returns the default. */
@@ -470,6 +477,17 @@ describe('env allowlist', () => {
     expect(allowlist).toContain('EASYCONVERT_BUDGET_CPUS');
     expect(allowlist).toContain('EASYCONVERT_BUDGET_MEMORY_GB');
     for (const name of SET_BY_THE_DEPLOY_JOB) expect(allowlist).not.toContain(name);
+  });
+
+  it('passes the five retention settings through to every application service with no default, and lets them through', () => {
+    for (const service of APP_SERVICES) {
+      const environment = compose.services[service].environment ?? {};
+      for (const name of RETENTION_SETTINGS) {
+        expect(name in environment, `${service} ${name}`).toBe(true);
+        expect(environment[name], `${service} ${name}`).toBeNull();
+      }
+    }
+    for (const name of RETENTION_SETTINGS) expect(allowlist, name).toContain(name);
   });
 
   it('lists nothing that the compose file does not read', () => {
@@ -1176,12 +1194,11 @@ describe('operations document and policy entry', () => {
     expect(doc).toContain('no check proves it');
   });
 
-  it('points to the retention settings and their policy entry and no longer calls delete on delivery the next pull request', () => {
+  it('points to the five retention settings and their policy entry as read by the application, and no longer calls delete on delivery the next pull request', () => {
     for (const text of [doc, policy.slice(policy.indexOf('## 122.'))]) {
-      expect(text).toContain('RESULT_UNDELIVERED_TTL_SECONDS');
-      expect(text).toContain('RESULT_DELIVERED_GRACE_SECONDS');
-      expect(text).toContain('PR #919');
-      expect(text).not.toMatch(/next pull request/);
+      for (const name of RETENTION_SETTINGS) expect(text, name).toContain(name);
+      expect(text).toContain('since PR #919');
+      expect(text).not.toMatch(/next pull request|until it is merged|take effect with/);
     }
   });
 

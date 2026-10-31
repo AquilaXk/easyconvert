@@ -46,7 +46,7 @@ interface S3MultipartSession {
   ownerUserId?: string;
 }
 
-import { globalSharedObjects } from './shared-store';
+import { extendStoredExpiry, globalSharedObjects } from './shared-store';
 
 /**
  * Enterprise Zero-Heap S3 / R2 Object Storage Service.
@@ -513,14 +513,15 @@ export class S3ObjectStorageService implements IStorageBackend {
   }
 
   deleteObject(key: string): boolean {
-    globalSharedObjects.delete(key);
+    const shared = globalSharedObjects.delete(key);
     const obj = this.objects.get(key);
     if (obj?.filePath && fs.existsSync(obj.filePath)) {
       try {
         fs.rmSync(obj.filePath, { force: true });
       } catch {}
     }
-    return this.objects.delete(key);
+    const own = this.objects.delete(key);
+    return own || shared;
   }
 
   deleteByPrefix(prefix: string): number {
@@ -754,10 +755,14 @@ export class S3ObjectStorageService implements IStorageBackend {
     });
   }
 
+  extendExpiry(key: string, expiresAt: number): boolean {
+    return extendStoredExpiry(this.objects, key, expiresAt);
+  }
+
   sweepExpiredObjects(now: number = Date.now()): number {
     let swept = 0;
     for (const [key, obj] of this.objects.entries()) {
-      if (obj.expiresAt <= now) {
+      if (obj.expiresAt <= now && globalSharedObjects.renewedExpiry(obj) <= now) {
         if (obj.filePath && fs.existsSync(obj.filePath)) {
           try {
             fs.rmSync(obj.filePath, { force: true });
@@ -775,6 +780,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       }
     }
 
+    globalSharedObjects.sweepStaleTempFiles(now);
     return swept;
   }
 }

@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
@@ -21,6 +24,11 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
+import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
+import { sweepRetention } from '../src/lib/storage/retention-service';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 interface Gate {
@@ -629,6 +637,27 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
   });
 
   describe('6. Uploaded input cleanup follows the recorded outcome', () => {
+    let ledgerDir: string;
+
+    beforeEach(() => {
+      ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-lifecycle-holds-'));
+      setRetentionLedger(new FileRetentionLedger(ledgerDir));
+    });
+
+    afterEach(() => {
+      restoreIsolatedRetentionLedger();
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    });
+
+    /** Sweeps at the time the grace period of the last job has passed, until the input is deleted. */
+    async function expectInputDeleted(inputKey: string): Promise<void> {
+      const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+      await vi.waitFor(async () => {
+        await sweepRetention(s3Storage, afterGrace);
+        expect(s3Storage.getObject(inputKey)).toBeUndefined();
+      });
+    }
+
     function storeCsvInput(label: string): string {
       const inputKey = `uploads/lifecycle-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.csv`;
       s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
@@ -640,10 +669,12 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
       attachInputCleanupOnCompletion(worker);
       const completed = nextEvent(worker, 'completed');
-      const job = await queue.add(
+      const job = await enqueueConversionJob(
+        queue,
         'convert',
         csvJobData({ storageKey: inputKey, inputBufferBase64: undefined }),
-        { attempts: 1 }
+        { attempts: 1 },
+        {}
       );
       const [, result] = (await completed) as [unknown, ConversionJobResult];
       await worker.close();
@@ -678,7 +709,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
         { name: 'Alice', score: '100' },
         { name: 'Bob', score: '95' },
       ]);
-      expect(s3Storage.getObject(inputKey)).toBeUndefined();
+      await expectInputDeleted(inputKey);
     });
 
     it('still deletes the input when the final attempt fails', async () => {
@@ -687,45 +718,18 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       const worker = new Worker(queue, processConversionJob, { concurrency: 1 });
       attachInputCleanupOnCompletion(worker);
       const failed = nextEvent(worker, 'failed');
-      await queue.add(
+      await enqueueConversionJob(
+        queue,
         'convert',
         csvJobData({ storageKey: inputKey, inputBufferBase64: undefined, targetFormat: 'not-a-format' }),
-        { attempts: 1 }
+        { attempts: 1 },
+        {}
       );
       await failed;
 
-      expect(s3Storage.getObject(inputKey)).toBeUndefined();
+      await expectInputDeleted(inputKey);
       await worker.close();
       await queue.close();
-    });
-
-    it('warns with the job id and key when the cleanup after completion finds no object', async () => {
-      const inputKey = storeCsvInput('cleanup-false');
-      vi.spyOn(s3Storage, 'deleteObject').mockReturnValue(false);
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-      const { job, result } = await completeThroughWorker('cleanup-false', inputKey);
-
-      expect(result.status).toBe('completed');
-      const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
-      expect(warnings.some((w) => w.includes(job.id) && w.includes(inputKey))).toBe(true);
-    });
-
-    it('warns with the job id, key, and error when the cleanup after completion throws', async () => {
-      const inputKey = storeCsvInput('cleanup-throw');
-      vi.spyOn(s3Storage, 'deleteObject').mockImplementation(() => {
-        throw new Error('storage backend unavailable');
-      });
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-      const { job } = await completeThroughWorker('cleanup-throw', inputKey);
-
-      const warnings = warnSpy.mock.calls.map((args) => args.map(String).join(' '));
-      expect(
-        warnings.some(
-          (w) => w.includes(job.id) && w.includes(inputKey) && w.includes('storage backend unavailable')
-        )
-      ).toBe(true);
     });
   });
 });

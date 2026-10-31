@@ -17,6 +17,11 @@ import * as memoryShredder from '../src/lib/security/memory-shredder';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import type { JobGraph } from '../src/lib/queue/graph/types';
 import { graphScheduler } from '../src/lib/queue/graph';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
+import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
+import { sweepRetention } from '../src/lib/storage/retention-service';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 
 describe('WP-32: Unified Shared Node Processor', () => {
   let queue: Queue<ConversionJobData, ConversionJobResult>;
@@ -412,15 +417,23 @@ describe('WP-32: Unified Shared Node Processor', () => {
         },
       };
 
-      const job = await queue.add('convert', {
-        jobId: 'job_fail_cleanup',
-        sourceFormat: 'csv',
-        targetFormat: 'json',
-        originalFilename: 'failing_upload.csv',
-        fileSize: 12,
-        storageKey,
-        options: {},
-      });
+      const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-final-failure-'));
+      setRetentionLedger(new FileRetentionLedger(ledgerDir));
+      const job = await enqueueConversionJob(
+        queue,
+        'convert',
+        {
+          jobId: 'job_fail_cleanup',
+          sourceFormat: 'csv',
+          targetFormat: 'json',
+          originalFilename: 'failing_upload.csv',
+          fileSize: 12,
+          storageKey,
+          options: {},
+        },
+        {},
+        {}
+      );
 
       // Mark as final attempt
       job.opts.attempts = 1;
@@ -430,8 +443,15 @@ describe('WP-32: Unified Shared Node Processor', () => {
         /Fatal conversion failure/
       );
 
-      // Verify uploaded input was removed from storage upon final attempt failure
-      expect(s3Storage.getObject(storageKey)).toBeUndefined();
+      // The job held its upload; the final failure ends the hold and the sweep deletes the upload after the grace period
+      const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+      try {
+        expect(await sweepRetention(s3Storage, afterGrace)).toBe(1);
+        expect(s3Storage.getObject(storageKey)).toBeUndefined();
+      } finally {
+        restoreIsolatedRetentionLedger();
+        fs.rmSync(ledgerDir, { recursive: true, force: true });
+      }
     });
   });
 });

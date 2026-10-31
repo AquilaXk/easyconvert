@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
+import { graphInputKeys, initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
@@ -40,6 +42,7 @@ import {
   JobGraphSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
 
 export const dynamic = 'force-dynamic';
@@ -52,7 +55,17 @@ const STORAGE_TIER_PAYLOAD_LIMITS: Record<string, number> = {
   enterprise: 10 * 1024 * 1024 * 1024, // 10 GiB
 };
 
-export async function POST(req: NextRequest) {
+/** Whether the caller may use every stored file a job reads: the top-level `storageKey` and each `import.upload` node of its graph. */
+async function mayUseStoredInputs(storageKey: string | undefined, graph: JobGraph | undefined, callerUserId: string): Promise<boolean> {
+  const keys = new Set(graph ? graphInputKeys(normalizeGraphNodes(graph)) : []);
+  if (storageKey) keys.add(storageKey);
+  for (const key of keys) {
+    if (!isInlineInputKey(key) && !(await mayUseStorageKeyAsJobInput(key, callerUserId))) return false;
+  }
+  return true;
+}
+
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
@@ -446,12 +459,12 @@ export async function POST(req: NextRequest) {
     if (!storageKey && graph && !inputBufferBase64 && !uploadedBuffer) {
       const graphNodes = normalizeGraphNodes(graph);
       const uploadNode = Object.values(graphNodes).find((n) => n.op === 'import.upload') as { storageKey?: string } | undefined;
-      if (uploadNode?.storageKey && !uploadNode.storageKey.startsWith('inline')) {
+      if (uploadNode?.storageKey && !isInlineInputKey(uploadNode.storageKey)) {
         storageKey = uploadNode.storageKey;
       }
     }
 
-    if (!originalFilename && storageKey && !storageKey.startsWith('inline')) {
+    if (!originalFilename && storageKey && !isInlineInputKey(storageKey)) {
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 
@@ -469,7 +482,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Authorize a caller-supplied key before anything reads the object.
-    if (storageKey && !storageKey.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
+    if (!(await mayUseStoredInputs(storageKey, graph, auth.user.id))) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
     }
 
@@ -630,7 +643,7 @@ export async function POST(req: NextRequest) {
     if (graph) {
       graph.nodes = normalizeGraphNodes(graph);
       const graphId = generateJobId();
-      const graphState = await graphScheduler.initGraph(graphId, graph as any, {
+      const graphState = await initGraphHoldingInputs(graphScheduler, graphId, graph as any, {
         ownerUserId: auth.user.id,
         reservationId: reservation.reservationId,
         webhookUrl: effectiveWebhookUrl,
@@ -738,7 +751,7 @@ export async function POST(req: NextRequest) {
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');
   }
-}
+});
 
 export async function GET(req: NextRequest) {
   return withQueueErrors(req.nextUrl?.pathname || '/api/v1/jobs', () => listJobs(req));

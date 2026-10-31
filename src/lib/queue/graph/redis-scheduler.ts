@@ -21,6 +21,7 @@ import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { redactText } from '../../security/redact';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { storageProvider } from '../../storage';
+import { releaseGraphInputHolds } from './input-cleanup';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
@@ -332,6 +333,8 @@ export class RedisGraphScheduler implements IGraphScheduler {
 
   async cleanupIntermediates(graphId: string): Promise<number> {
     const prefix = `intermediate/${graphId}/`;
+    const graph = (await this.getGraphState(graphId))?.graph;
+    if (graph) await releaseGraphInputHolds(graphId, graph);
     if (typeof storageProvider.deleteByPrefix === 'function') {
       return storageProvider.deleteByPrefix(prefix);
     }

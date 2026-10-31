@@ -60,6 +60,7 @@ import {
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
+import { saveRetainedResult } from '../../storage/retention-service';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
@@ -768,16 +769,10 @@ export async function processGraphNodeJob(
           if (!stored) continue;
 
           const promotedKey = `results/${graphId}/${stored.filename || path.basename(inputKey)}`;
-          await effectiveStorage.saveObject(
-            promotedKey,
-            stored.buffer,
-            stored.mimeType,
-            stored.filename || path.basename(inputKey),
-            60 * 60 * 1000
-          );
+          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, stored.filename || path.basename(inputKey));
           outputKeys.push(promotedKey);
         }
-        await job.log(`Promoted ${outputKeys.length} result(s) to permanent storage`);
+        await job.log(`Promoted ${outputKeys.length} result(s) for download`);
         break;
       }
 

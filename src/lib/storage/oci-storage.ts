@@ -152,6 +152,12 @@ export interface IStorageBackend {
   getActiveSessionsCount(): MaybePromise<number | null>;
   /** Stored objects, or null when the backend cannot count them cheaply. */
   getObjectsCount(): MaybePromise<number | null>;
+  /**
+   * Raises the expiry of an object so that it outlives the lifetime it was stored with, for every process that reads
+   * it; an expiry that is later already stays. False when there is no such object; rejects when the new expiry could not be written. Absent on a backend whose objects
+   * carry their expiry in the store.
+   */
+  extendExpiry?(key: string, expiresAt: number): MaybePromise<boolean>;
   sweepExpiredObjects?(now?: number): number;
   stopGc?(): void;
   generatePresignedUploadUrl?(

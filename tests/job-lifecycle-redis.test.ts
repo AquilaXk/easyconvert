@@ -22,6 +22,8 @@ import {
 } from '../src/lib/queue/conversion-queue';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { sweepRetention } from '../src/lib/storage/retention-service';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
@@ -617,7 +619,8 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       const queue = connect<ConversionJobData, ConversionJobResult>('commit-failure');
       const inputKey = `uploads/commit-failure-${crypto.randomBytes(6).toString('hex')}.csv`;
       s3Storage.saveObject(inputKey, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'scores.csv');
-      const job = await queue.add(
+      const job = await enqueueConversionJob(
+        queue,
         'convert',
         {
           jobId: 'commit-failure',
@@ -628,7 +631,8 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
           options: {},
           storageKey: inputKey,
         },
-        { attempts: 2 }
+        { attempts: 2 },
+        {}
       );
       let redisDown = true;
       const injected = injectCompletionFailures(queue, { failures: () => redisDown });
@@ -663,7 +667,10 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       const recorded = await queue.getJob(job.id);
       expect(recorded?.state).toBe('completed');
       expect(recorded?.attemptsMade).toBe(2);
-      expect(s3Storage.getObject(inputKey)).toBeUndefined();
+      await vi.waitFor(async () => {
+        await sweepRetention(s3Storage, Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000);
+        expect(s3Storage.getObject(inputKey)).toBeUndefined();
+      });
 
       await worker.close();
     }, 10000);

@@ -568,6 +568,28 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
       await expect(impatient.headObject('slow')).rejects.toMatchObject({ name: 'StorageTimeoutError' });
     });
 
+    it('streams a download body for longer than the absolute request ceiling while bytes keep arriving', async () => {
+      const brief = makeClient({ requestTimeoutMs: 5_000, maxRequestDurationMs: 200 });
+      const body = crypto.randomBytes(2 * 1024 * 1024);
+      await brief.putBuffer('slow-reader/big.bin', body);
+      const got = await brief.getObject('slow-reader/big.bin');
+      const chunks: Buffer[] = [];
+      const started = Date.now();
+      for await (const chunk of got!.stream) {
+        chunks.push(Buffer.from(chunk as Buffer));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(Date.now() - started).toBeGreaterThan(200);
+      expect(Buffer.concat(chunks).equals(body)).toBe(true);
+    });
+
+    it('still fails a download body that stops arriving for longer than the inactivity timeout', async () => {
+      const impatient = makeClient({ requestTimeoutMs: 150, maxAttempts: 1 });
+      server.faults.push({ match: (req) => req.method === 'GET', status: 200, stallBody: true, times: 1 });
+      const got = await impatient.getObject('stalled-body');
+      await expect(readAll(got!.stream)).rejects.toMatchObject({ name: 'StorageTimeoutError' });
+    });
+
     it('does not follow redirects', async () => {
       server.faults.push({ match: () => true, status: 307, code: 'TemporaryRedirect', times: 1 });
       const error = await client.putBuffer('redirect', Buffer.from('x')).catch((e: unknown) => e);

@@ -9,6 +9,7 @@ import { engineTraceFields } from '@/lib/api/engine-trace';
 import { conversionWarningsFields } from '@/lib/api/conversion-warnings';
 import { droppedStreamsFields } from '@/lib/api/dropped-streams';
 import type { ConversionJobResult } from '@/lib/types';
+import { resultAvailability } from '@/lib/storage/retention-service';
 
 export const dynamic = 'force-dynamic';
 
@@ -142,6 +143,7 @@ async function readJob(req: NextRequest, context: RouteContext) {
     ...droppedStreamsFields(job.returnvalue ?? {}),
     ...conversionWarningsFields(job.returnvalue ?? {}),
     result: publicResult(job.returnvalue),
+    retention: job.returnvalue?.resultKey ? await resultAvailability(job.returnvalue.resultKey) : undefined,
     tasks: redactForOutput(job.data?.tasks),
     graph: redactForOutput(graphState?.graph || job.data?.graph),
     nodes: nodesResponse,

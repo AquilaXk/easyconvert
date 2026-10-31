@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from './guard';
 import { conversionQueue } from '../queue/conversion-queue';
 import { storageProvider } from '../storage';
 import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
+import { isResultDeleted } from '../storage/retention-service';
 import { QueueUnavailableError } from '../types';
 
 /** Response detail for a job input key that is missing or that the caller may not use. */
@@ -73,7 +74,8 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
 }
 
 /**
- * Decides whether a caller may submit a stored object as a job input. The object must exist and be
+ * Decides whether a caller may submit a stored object as a job input. The object must exist, not be a result the
+ * retention rule already deleted, and be
  * either an upload (reachable by anyone holding its key) or an output owned by the authenticated
  * caller; anonymous callers may only use uploads. Answer a rejected key exactly like a missing
  * object, so other users' keys can be neither probed nor converted.
@@ -82,7 +84,7 @@ export async function mayUseStorageKeyAsJobInput(
   key: string,
   callerUserId: string | undefined
 ): Promise<boolean> {
-  if (!(await storageProvider.stat(key))) {
+  if (!(await storageProvider.stat(key)) || (await isResultDeleted(key))) {
     return false;
   }
   if (isUploadKey(key)) {

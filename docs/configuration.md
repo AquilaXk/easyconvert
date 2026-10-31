@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 124 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 129 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -105,6 +105,11 @@ Generate a secret with `openssl rand -hex 32`.
 | `S3_SIGNING_SECRET` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), surrounding whitespace is trimmed; secret, never logged | none | one of `STORAGE_SIGNING_SECRET`, `S3_SIGNING_SECRET`, `OCI_SIGNING_SECRET` | web, worker |
 | `OCI_SIGNING_SECRET` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), surrounding whitespace is trimmed; secret, never logged | none | one of `STORAGE_SIGNING_SECRET`, `S3_SIGNING_SECRET`, `OCI_SIGNING_SECRET` | web, worker |
 | `EASYCONVERT_STORAGE_DIR` | file or directory path | .easyconvert/storage under the working directory | no | web, worker |
+| `RESULT_UNDELIVERED_TTL_SECONDS` | integer, 60 to 86400 | `3600` | no | web, worker |
+| `RESULT_DELIVERED_GRACE_SECONDS` | integer, 1 to 3600 | `600` | no | web, worker |
+| `RESULT_DISK_HIGH_PERCENT` | integer, 1 to 99 | `85` | no | web, worker |
+| `RESULT_DISK_LOW_PERCENT` | integer, 1 to 99 | `80` | no | web, worker |
+| `RESULT_DISK_REFUSE_PERCENT` | integer, 1 to 99 | `95` | no | web, worker |
 | `OCI_NAMESPACE` | text | none | no | web, worker |
 | `OCI_REGION` | text | ap-seoul-1 (in-memory OCI emulation only) | no | web, worker |
 | `OCI_BUCKET` | text | easyconvert-transcode-bucket (in-memory OCI emulation only) | no | web, worker |
@@ -130,6 +135,11 @@ Generate a secret with `openssl rand -hex 32`.
 - `S3_SIGNING_SECRET`: Alternative name of STORAGE_SIGNING_SECRET; used when STORAGE_SIGNING_SECRET is not set.
 - `OCI_SIGNING_SECRET`: Alternative name of STORAGE_SIGNING_SECRET; used when neither STORAGE_SIGNING_SECRET nor S3_SIGNING_SECRET is set.
 - `EASYCONVERT_STORAGE_DIR`: Directory of the local storage driver and of the API key, usage and file stores. Share it between the API and the workers.
+- `RESULT_UNDELIVERED_TTL_SECONDS`: Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The upload a job reads is deleted shortly after the last job that reads it ends (RESULT_DELIVERED_GRACE_SECONDS) and does not wait for this. Applies to every storage driver; a bucket lifecycle rule is only a backstop.
+- `RESULT_DELIVERED_GRACE_SECONDS`: Seconds a conversion result stays downloadable after its first complete delivery (one response, or ranges that together cover the whole file), so a second click or a resumed download still works. After that it is deleted and its download answers 410 Gone. A download that stops early does not count as a delivery.
+- `RESULT_DISK_HIGH_PERCENT`: Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT. A pass that deleted nothing, or whose deletions together did not lower the use, waits five minutes unless the use moved. The files of a queued or running job, undelivered results younger than ten minutes and partly downloaded results are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.
+- `RESULT_DISK_LOW_PERCENT`: Disk use, in percent, at or below which the early deletion that RESULT_DISK_HIGH_PERCENT starts stops again. Local storage driver only; must be below RESULT_DISK_HIGH_PERCENT.
+- `RESULT_DISK_REFUSE_PERCENT`: Disk use, in percent, above which new uploads and conversions answer 503 with Retry-After, after an early deletion of results did not bring the use down to it, measured on the fuller of the file system that holds EASYCONVERT_STORAGE_DIR and the temporary directory; the parts, completion and abort of a running upload go on. Local storage driver only; must be above RESULT_DISK_HIGH_PERCENT and at most 99.
 - `OCI_NAMESPACE`: OCI Object Storage namespace (a single DNS label). Required when STORAGE_DRIVER is `oci`; checked when storage is selected.
 - `OCI_REGION`: OCI region (lowercase letters, digits, hyphens). Required when STORAGE_DRIVER is `oci`; only the in-memory OCI emulation falls back to a region.
 - `OCI_BUCKET`: OCI bucket name. Required when STORAGE_DRIVER is `oci` (OCI_BUCKET_NAME is accepted instead); only the in-memory OCI emulation falls back to a bucket.

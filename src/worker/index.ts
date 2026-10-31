@@ -15,6 +15,7 @@ import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullm
 import { legacyJobTimeoutMs } from '../lib/queue/enqueue';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
+import { startRetentionSweep } from '../lib/storage/retention-service';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
 import { probeNativeEngines } from './engines';
@@ -312,6 +313,8 @@ startHeartbeat();
 
 // Attach signal listeners in non-test environments
 if (process.env.NODE_ENV !== 'test') {
+  startRetentionSweep(ociStorage);
+
   process.on('SIGINT', () => {
     void drainWorker('SIGINT')
       .then(() => process.exit(0))

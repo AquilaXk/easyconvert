@@ -12,12 +12,22 @@ export type StorageKeyNamespace =
   | { namespace: 'other' };
 
 const UPLOAD_KEY_PREFIX = 'uploads/';
+const INLINE_INPUT_KEY = 'inline';
+const INLINE_INPUT_KEY_PREFIX = 'inline:';
 const USER_CONVERSION_KEY_PATTERN = /^conversions\/([^/]+)\//;
 const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
 
 /** Whether a key is in the ownerless multipart upload namespace. */
 export function isUploadKey(key: string): boolean {
   return key.startsWith(UPLOAD_KEY_PREFIX);
+}
+
+/**
+ * Whether a graph node's `storageKey` is the placeholder the server writes for an input that came in the request body
+ * (`inline`, or `inline:<filename>`) and not a stored file. A key that only begins with "inline" is a stored key.
+ */
+export function isInlineInputKey(key: string): boolean {
+  return key === INLINE_INPUT_KEY || key.startsWith(INLINE_INPUT_KEY_PREFIX);
 }
 
 export function classifyStorageKey(key: string): StorageKeyNamespace {

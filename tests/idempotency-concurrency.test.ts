@@ -15,6 +15,7 @@ import {
   canonicalJSON,
 } from '../src/lib/api/idempotency';
 import { withIdempotency } from '../src/lib/api/with-idempotency';
+import { setDiskProbe } from '../src/lib/storage/retention-service';
 
 const DEFAULT_REDIS_URL = 'redis://127.0.0.1:6379';
 
@@ -63,6 +64,8 @@ describe.each([
     }
 
     setIdempotencyStore(store);
+    // The disk is measured before a job is admitted; a real statfs per request would spread the requests apart.
+    setDiskProbe(async () => 0);
 
     const email = `idem_${Date.now()}_${Math.random().toString(36).substring(7)}@easyconvert.local`;
     testUser = await userStore.createUser({
@@ -78,6 +81,7 @@ describe.each([
 
   afterEach(async () => {
     setIdempotencyStore(null);
+    setDiskProbe(undefined);
     if (redisClient) {
       try {
         await store.reset?.();

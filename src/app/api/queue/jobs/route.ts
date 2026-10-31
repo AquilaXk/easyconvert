@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
@@ -19,7 +20,7 @@ import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
   const auth = await validateApiAccess(req, {
     requiredUnits: 1,
@@ -196,7 +197,7 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
-}
+});
 
 const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled']);
 const DEFAULT_LISTED_STATES: JobState[] = ['waiting', 'active', 'completed', 'failed', 'cancelled'];

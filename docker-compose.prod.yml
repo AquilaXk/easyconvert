@@ -93,9 +93,13 @@ x-app-environment: &app-environment
   # No `:?` inside the default: some Compose releases evaluate it even when REDIS_URL is set. deploy.sh refuses an env secret
   # with neither, and the Redis of the stack refuses to start without a password.
   REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD}@redis:6379}
-  # How long a stored result lives before and after it is downloaded. No default here: the application's schema holds them.
+  # How long a stored result lives before and after it is downloaded, and the disk use (percent) above which results are deleted
+  # early, where that stops, and above which new uploads are refused. No default here: the application's schema holds them.
   RESULT_UNDELIVERED_TTL_SECONDS:
   RESULT_DELIVERED_GRACE_SECONDS:
+  RESULT_DISK_HIGH_PERCENT:
+  RESULT_DISK_LOW_PERCENT:
+  RESULT_DISK_REFUSE_PERCENT:
   APP_URL: ${APP_URL:?set the public origin, for example https://convert.aquilaxk.site}
   # The origin that sign-in redirects and the same-origin check use (src/lib/auth/oauth.ts, src/middleware.ts); without it they
   # would fall back to the forwarded Host header.

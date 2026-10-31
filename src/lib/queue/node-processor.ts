@@ -14,7 +14,8 @@ import { scopeStorageObjects } from '../storage/scoped-storage';
 import { convertFile } from '../conversions';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
-import { isUploadKey } from '../storage/key-namespace';
+import { resolveRetentionPolicy } from '../storage/result-retention';
+import { registerStoredResult, releaseResultHold } from '../storage/retention-service';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
@@ -103,20 +104,6 @@ function discardConversionOutput(jobId: string, result: EngineResult): void {
       `[NodeProcessor] Failed to discard output of aborted job ${jobId} at "${result.filePath}":`,
       err
     );
-  }
-}
-
-/** Deletes a job's uploaded input upon final attempt failure. */
-async function removeJobInput(jobId: string, storageKey: string, storage: IStorageBackend): Promise<void> {
-  if (!isUploadKey(storageKey)) {
-    return;
-  }
-  try {
-    if (!(await storage.deleteObject(storageKey))) {
-      console.warn(`[NodeProcessor] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
-    }
-  } catch (err) {
-    console.warn(`[NodeProcessor] Input cleanup for job ${jobId} failed to delete key "${storageKey}":`, err);
   }
 }
 
@@ -314,7 +301,7 @@ export async function processNodeJob(
       }
     }
 
-    // 3. Save output artifact to storage with 1-hour TTL
+    // 3. Save the output with the undelivered time as its lifetime: it is deleted soon after its first complete download.
     if (attemptSignal.aborted) {
       if (lastProducedResult) {
         discardConversionOutput(job.id, lastProducedResult);
@@ -322,7 +309,7 @@ export async function processNodeJob(
       attemptSignal.throwIfAborted();
     }
     const resultKey = `results/${job.id}/${finalResult.filename}`;
-    const oneHourTtlMs = 60 * 60 * 1000;
+    const { undeliveredTtlMs } = resolveRetentionPolicy();
 
     if (
       finalResult.filePath &&
@@ -334,7 +321,7 @@ export async function processNodeJob(
         finalResult.filePath,
         finalResult.mimeType,
         finalResult.filename,
-        oneHourTtlMs
+        undeliveredTtlMs
       );
     } else {
       await storage.saveObject(
@@ -342,22 +329,22 @@ export async function processNodeJob(
         finalResult.buffer,
         finalResult.mimeType,
         finalResult.filename,
-        oneHourTtlMs
+        undeliveredTtlMs
       );
     }
+
+    await registerStoredResult(storage, resultKey);
 
     conversionSucceeded = true;
     const durationMs = Date.now() - startTime;
     await job.updateProgress(100);
 
-    let downloadUrl = `/api/storage/file/${encodeURIComponent(resultKey)}`;
-    if (typeof storage.generatePresignedDownloadUrl === 'function') {
-      const presigned = await storage.generatePresignedDownloadUrl(resultKey, 3600);
-      downloadUrl = presigned.url;
-    }
+    // Every download goes through the application, whatever the driver: a direct link to the bucket cannot tell
+    // when the file was delivered, so the retention rule could not delete it after delivery.
+    const downloadUrl = `/api/storage/file/${encodeURIComponent(resultKey)}`;
 
     await job.log(
-      `[${engine.name}] Output saved with 1-hour TTL. Download URL ready. Available at: ${downloadUrl} (took ${durationMs}ms)`
+      `[${engine.name}] Output saved for ${Math.round(undeliveredTtlMs / 1000)} s until downloaded. Download URL ready. Available at: ${downloadUrl} (took ${durationMs}ms)`
     );
 
     return {
@@ -393,7 +380,7 @@ export async function processNodeJob(
       secureShredBuffer(inputBufferForShredding, 2);
     }
     if (job.data.storageKey && !conversionSucceeded && isFinalFailure(job, failure)) {
-      await removeJobInput(job.id, job.data.storageKey, storage);
+      await releaseResultHold(job.data.storageKey, job.id);
     }
     await scope.releaseAll();
   }

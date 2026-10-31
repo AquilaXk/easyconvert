@@ -899,7 +899,7 @@ export default function DashboardPage() {
               <div>
                 <h2 className="text-lg font-bold">Recent Conversion Files</h2>
                 <p className="text-sm text-ink-secondary dark:text-dark-muted">
-                  Files are automatically purged 1 hour after conversion to guarantee zero data retention.
+                  A file is deleted shortly after you download it completely, or when its time below runs out.
                 </p>
               </div>
 

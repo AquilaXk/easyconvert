@@ -714,6 +714,61 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'RESULT_UNDELIVERED_TTL_SECONDS',
+    area: 'storage',
+    description:
+      'Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The upload a job reads is deleted shortly after the last job that reads it ends (RESULT_DELIVERED_GRACE_SECONDS) and does not wait for this. Applies to every storage driver; a bucket lifecycle rule is only a backstop.',
+    kind: { type: 'integer', min: 60, max: 86_400 },
+    default: 3600,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DELIVERED_GRACE_SECONDS',
+    area: 'storage',
+    description:
+      'Seconds a conversion result stays downloadable after its first complete delivery (one response, or ranges that together cover the whole file), so a second click or a resumed download still works. After that it is deleted and its download answers 410 Gone. A download that stops early does not count as a delivery.',
+    kind: { type: 'integer', min: 1, max: 3600 },
+    default: 600,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DISK_HIGH_PERCENT',
+    area: 'storage',
+    description:
+      'Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT. A pass that deleted nothing, or whose deletions together did not lower the use, waits five minutes unless the use moved. The files of a queued or running job, undelivered results younger than ten minutes and partly downloaded results are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.',
+    kind: { type: 'integer', min: 1, max: 99 },
+    default: 85,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DISK_LOW_PERCENT',
+    area: 'storage',
+    description:
+      'Disk use, in percent, at or below which the early deletion that RESULT_DISK_HIGH_PERCENT starts stops again. Local storage driver only; must be below RESULT_DISK_HIGH_PERCENT.',
+    kind: { type: 'integer', min: 1, max: 99 },
+    default: 80,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DISK_REFUSE_PERCENT',
+    area: 'storage',
+    description:
+      'Disk use, in percent, above which new uploads and conversions answer 503 with Retry-After, after an early deletion of results did not bring the use down to it, measured on the fuller of the file system that holds EASYCONVERT_STORAGE_DIR and the temporary directory; the parts, completion and abort of a running upload go on. Local storage driver only; must be above RESULT_DISK_HIGH_PERCENT and at most 99.',
+    kind: { type: 'integer', min: 1, max: 99 },
+    default: 95,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'OCI_NAMESPACE',
     area: 'storage',
     description: 'OCI Object Storage namespace (a single DNS label). Required when STORAGE_DRIVER is `oci`; checked when storage is selected.',
