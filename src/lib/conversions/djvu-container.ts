@@ -25,7 +25,8 @@ import { MAX_DOCUMENT_INFLATE_BYTES } from './bounded-inflate';
  * given file, whatever sits next to it. The old bundled form (`DIR0`, DjVuDocument.cpp line 364) is refused too: it has no
  * directory with the bundle flag, and djvulibre itself only reads it (no writer of it is in libdjvu or tools).
  *
- * A bundled document hands the directory offsets on, for the include graph (djvu-include-graph.ts).
+ * The offsets of the files of a bundle and the files they include are left to djvulibre: `djvused` opens them in the sandbox
+ * before `ddjvu` starts (djvu-render.ts).
  */
 
 const MAGIC = 'AT&T';
@@ -43,23 +44,17 @@ const FILE_REFERENCE_FIRST_BYTE_N = 0x4e;
 const ID_BYTES = 4;
 const SIZE_BYTES = 4;
 /** A chunk header (id, size), and the `FORM` header (id, size, type). */
-export const CHUNK_HEADER_BYTES = ID_BYTES + SIZE_BYTES;
+const CHUNK_HEADER_BYTES = ID_BYTES + SIZE_BYTES;
 const FORM_HEADER_BYTES = CHUNK_HEADER_BYTES + ID_BYTES;
 /** The magic precedes the first chunk of a file only. */
 const FILE_HEADER_BYTES = MAGIC.length + FORM_HEADER_BYTES;
-/**
- * `DjVmDir::decode` (libdjvu/DjVmDir.cpp lines 212 to 262): a flags byte (the bundle flag, then the version in 7 bits), the file
- * count as 16 bits, then for each file of a bundle its 32 bit offset, and in version 0 also its size as 24 bits.
- */
+/** `DjVmDir::decode` (libdjvu/DjVmDir.cpp lines 212 to 262): a flags byte (the bundle flag, then the version in 7 bits) and the file count as 16 bits. */
 const DIRECTORY_BUNDLE_FLAG = 0x80;
 const DIRECTORY_VERSION_MASK = 0x7f;
 /** `DjVmDir::version` (libdjvu/DjVmDir.cpp line 232 `ver>version`): a directory of a later version is an error. */
 const DIRECTORY_MAX_VERSION = 1;
 const DIRECTORY_FILE_COUNT_OFFSET = 1;
-const DIRECTORY_OFFSETS_START = 3;
-const DIRECTORY_OFFSET_BYTES = 4;
-const DIRECTORY_VERSION_0_SIZE_BYTES = 3;
-const MAX_INT32 = 0x7fffffff;
+const DIRECTORY_HEADER_BYTES = 3;
 
 /**
  * Pages one document may hold: the document page limit of the other fixed page chain that writes a PDF (`XPS_MAX_PAGES`,
@@ -79,27 +74,18 @@ export const DJVU_MAX_DIRECTORY_FILES = 2 * DJVU_MAX_PAGES;
  */
 export const DJVU_MAX_INPUT_BYTES = MAX_DOCUMENT_INFLATE_BYTES;
 
-/** The directory of a bundled document: where its files start, in the order of the directory, and where the bundle ends. */
-export interface DjvuBundle {
-  readonly offsets: readonly number[];
-  readonly end: number;
-}
-
-/** A single page file, or a bundle whose directory offsets the include graph walks. */
-export type DjvuContainer = { readonly bundle: null } | { readonly bundle: DjvuBundle };
-
-export interface Chunk {
+interface Chunk {
   readonly id: string;
   /** Offset of the data, and of the byte after it. */
   readonly start: number;
   readonly end: number;
 }
 
-export function idAt(bytes: Uint8Array, offset: number): string {
+function idAt(bytes: Uint8Array, offset: number): string {
   return String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
 }
 
-export function u32(bytes: Uint8Array, offset: number): number {
+function u32(bytes: Uint8Array, offset: number): number {
   return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
 }
 
@@ -108,7 +94,7 @@ function u16(bytes: Uint8Array, offset: number): number {
 }
 
 /** The chunk whose header starts at `offset`, which must end within `limit`. */
-export function chunkAt(bytes: Uint8Array, offset: number, limit: number): Chunk {
+function chunkAt(bytes: Uint8Array, offset: number, limit: number): Chunk {
   if (offset + CHUNK_HEADER_BYTES > limit) throw new CorruptStreamError('The DjVu file is damaged: a chunk header runs past the end of its parent.');
   const start = offset + CHUNK_HEADER_BYTES;
   const size = u32(bytes, offset + ID_BYTES);
@@ -123,37 +109,36 @@ function firstChild(bytes: Uint8Array, form: Chunk): Chunk | undefined {
 }
 
 /**
- * Calls `visit` with the offset of the data of each chunk of a composite chunk that starts with the byte `firstByte` of its
- * id, without building an object per chunk: a hostile page is up to 32 million chunks. Stops when `visit` returns true.
+ * The id of the first chunk of the page that names another file, read without building an object per chunk: a hostile page is
+ * up to 32 million chunks.
  */
-export function visitChunksStartingWith(bytes: Uint8Array, form: Chunk, firstBytes: readonly number[], visit: (id: string, start: number, end: number) => boolean | void): void {
+function fileReferenceOf(bytes: Uint8Array, form: Chunk): string | undefined {
   let offset = form.start + ID_BYTES;
   while (offset + CHUNK_HEADER_BYTES <= form.end) {
     const end = offset + CHUNK_HEADER_BYTES + u32(bytes, offset + ID_BYTES);
     if (end > form.end) throw new CorruptStreamError('The DjVu file is damaged: a chunk is longer than the chunk that holds it.');
-    if (firstBytes.includes(bytes[offset]) && visit(idAt(bytes, offset), offset + CHUNK_HEADER_BYTES, end) === true) return;
+    const firstByte = bytes[offset];
+    if (firstByte === FILE_REFERENCE_FIRST_BYTE_I || firstByte === FILE_REFERENCE_FIRST_BYTE_N) {
+      const id = idAt(bytes, offset);
+      if (FILE_REFERENCE_CHUNKS.has(id)) return id;
+    }
     offset = end + (end & 1);
   }
+  return undefined;
 }
 
-function readSinglePage(bytes: Uint8Array, form: Chunk): DjvuContainer {
-  let reference: string | undefined;
-  visitChunksStartingWith(bytes, form, [FILE_REFERENCE_FIRST_BYTE_I, FILE_REFERENCE_FIRST_BYTE_N], (id) => {
-    if (FILE_REFERENCE_CHUNKS.has(id)) reference = id;
-    return reference !== undefined;
-  });
+function checkSinglePage(bytes: Uint8Array, form: Chunk): void {
+  const reference = fileReferenceOf(bytes, form);
   if (reference !== undefined) {
     throw new ConversionFailedError(
       `The DjVu page names another file (a ${reference} chunk). Only a document that holds all its pages in the one file is converted; convert it into a bundled document first (djvmcvt -b).`
     );
   }
-  return { bundle: null };
 }
 
-/** The offsets of the files of the directory chunk, for the layouts of version 0 (offset and size) and version 1 (offset). */
-function readDirectoryOffsets(bytes: Uint8Array, directory: Chunk): number[] {
-  const length = directory.end - directory.start;
-  if (length < DIRECTORY_OFFSETS_START) throw new CorruptStreamError('The DjVu file is damaged: the DIRM chunk is shorter than its header.');
+/** The header of the directory chunk: a bundle of a version djvulibre reads, listing at least one and at most `DJVU_MAX_DIRECTORY_FILES` files. */
+function checkDirectoryHeader(bytes: Uint8Array, directory: Chunk): void {
+  if (directory.end - directory.start < DIRECTORY_HEADER_BYTES) throw new CorruptStreamError('The DjVu file is damaged: the DIRM chunk is shorter than its header.');
   const flags = bytes[directory.start];
   const version = flags & DIRECTORY_VERSION_MASK;
   if (version > DIRECTORY_MAX_VERSION) throw new CorruptStreamError('The DjVu file uses a newer document directory than this converter reads.');
@@ -164,26 +149,17 @@ function readDirectoryOffsets(bytes: Uint8Array, directory: Chunk): number[] {
   }
   const files = u16(bytes, directory.start + DIRECTORY_FILE_COUNT_OFFSET);
   if (files === 0) throw new CorruptStreamError('The DjVu document lists no files.');
-  const stride = DIRECTORY_OFFSET_BYTES + (version === 0 ? DIRECTORY_VERSION_0_SIZE_BYTES : 0);
   if (files > DJVU_MAX_DIRECTORY_FILES) throw new PayloadLimitError(`The DjVu directory lists ${files} files; at most ${DJVU_MAX_DIRECTORY_FILES} are converted.`);
-  if (length < DIRECTORY_OFFSETS_START + files * stride) throw new CorruptStreamError('The DjVu file is damaged: the DIRM chunk is shorter than the offsets of its files.');
-  const offsets: number[] = [];
-  for (let index = 0; index < files; index++) {
-    const offset = u32(bytes, directory.start + DIRECTORY_OFFSETS_START + index * stride);
-    if (offset === 0 || offset > MAX_INT32) throw new CorruptStreamError('The DjVu file is damaged: a file of the directory has no valid offset in the bundle.');
-    offsets.push(offset);
-  }
-  return offsets;
 }
 
-function readBundle(bytes: Uint8Array, form: Chunk): DjvuContainer {
+function checkBundle(bytes: Uint8Array, form: Chunk): void {
   const first = firstChild(bytes, form);
   if (first === undefined) throw new CorruptStreamError('The DjVu document holds no directory.');
   if (first.id === OLD_DIRECTORY_CHUNK) {
     throw new ConversionFailedError('The DjVu document uses the obsolete DIR0 directory of the first DjVu releases, which is not converted.');
   }
   if (first.id !== DIRECTORY_CHUNK) throw new CorruptStreamError('The DjVu file is damaged: a DJVM form does not start with its DIRM chunk.');
-  return { bundle: { offsets: readDirectoryOffsets(bytes, first), end: form.end } };
+  checkDirectoryHeader(bytes, first);
 }
 
 /** The top `FORM` chunk; the file may not end before it does (`IFFByteStream` reads to its end: "Unexpected End Of File"). */
@@ -198,17 +174,17 @@ function chunkAtFileStart(bytes: Uint8Array): Chunk {
 
 /**
  * Refuses what the converter must not hand to `ddjvu` on the bytes alone: a file that is not DjVu, a file over the input
- * limit, a truncated one, and a document that names other files. A bundle gives its directory offsets back.
+ * limit, a truncated one, a document that names other files, and a directory of more files than are taken.
  */
-export function readDjvuContainer(bytes: Uint8Array): DjvuContainer {
+export function checkDjvuContainer(bytes: Uint8Array): void {
   if (bytes.length > DJVU_MAX_INPUT_BYTES) throw new PayloadLimitError(`The DjVu file is larger than ${DJVU_MAX_INPUT_BYTES} bytes.`);
   if (bytes.length < FILE_HEADER_BYTES || idAt(bytes, 0) !== MAGIC || idAt(bytes, MAGIC.length) !== FORM) {
     throw new CorruptStreamError('The file is not a DjVu document: it does not start with the AT&TFORM signature.');
   }
   const form = chunkAtFileStart(bytes);
   const type = idAt(bytes, form.start);
-  if (type === TYPE_PAGE) return readSinglePage(bytes, form);
-  if (type === TYPE_DOCUMENT) return readBundle(bytes, form);
+  if (type === TYPE_PAGE) return checkSinglePage(bytes, form);
+  if (type === TYPE_DOCUMENT) return checkBundle(bytes, form);
   if (type === TYPE_INCLUDE) throw new CorruptStreamError('The file holds shared DjVu data (FORM:DJVI), not a page or a document.');
   throw new CorruptStreamError(`The file is not a DjVu page or document (FORM:${type}).`);
 }

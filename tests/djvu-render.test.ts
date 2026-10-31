@@ -10,8 +10,9 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EngineUnavailableError } from '../src/lib/types';
 import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { convertDjvu, type DjvuJob } from '../src/worker/djvu-render';
+import { SandboxedTimeoutError } from '../src/worker/sandbox';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
-import { bundleOf, chunk, form, includeChunk, pageForm, singlePage, waveletForm, type BundleFile } from './helpers/djvu-builder';
+import { bundledDocument, bundleOf, chunk, form, includeChunk, pageForm, singlePage, waveletForm, type BundleFile } from './helpers/djvu-builder';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { withMissingBinary } from './helpers/native-tools';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -28,8 +29,8 @@ import { expectWithinHangGuard } from './helpers/timing';
 const haveTools = !skipWithoutTools('ddjvu', 'djvutxt', 'djvused', 'djvmcvt', 'djvm', 'cjb2', 'c44', 'bzz', 'pdfinfo', 'pdftoppm', 'pdftotext');
 const haveOcr = !skipWithoutTools('tesseract');
 const CONVERSION_TIMEOUT_MS = 180_000;
-/** The refusal of a document of the review takes 7 ms with both programs started (measured); ddjvu takes over a minute on the same file. */
-const REFUSAL_EXPECTED_LOCAL_MS = 50;
+/** `djvused -e size` crashes on a cycle or a deep chain in 0.1 s on Apple silicon and 1.2 s on the arm64 test VM (measured); the overlapping directory converts in 0.04 s. */
+const REFUSAL_EXPECTED_LOCAL_MS = 500;
 const HANG_GUARD_MS = 10_000;
 const HANSARD = 'wc-hansard-1963-malaysia-bill-clause-4.djvu';
 const DOGV = 'wc-dogv-12042005.djvu';
@@ -346,22 +347,22 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
     await expect(dispatchConversion(bytes, 'djvu', 'pdf', {}, 'flagged.djvu')).rejects.toMatchObject({ name: 'ConversionFailedError', message: expect.stringContaining('do not agree') });
   });
 
-  /** The real `djvused` next to a `ddjvu` that leaves a file when it is started, to show that a refusal came before it. */
-  function realReportWithMarkedRenderer(): { interpreter: string; started: string } {
+  /** The real `djvused` next to a `ddjvu` that leaves a file when it is started and then runs `body`, to show whether a refusal came before it. */
+  function realReportWithMarkedRenderer(body = 'exit 10'): { interpreter: string; started: string } {
     const dir = scratchDir('djvu-marked-');
     const started = path.join(dir, 'started');
-    fs.writeFileSync(path.join(dir, 'ddjvu'), `#!/bin/sh\ntouch '${started}'\nexit 10\n`);
+    fs.writeFileSync(path.join(dir, 'ddjvu'), `#!/bin/sh\ntouch '${started}'\n${body}\n`);
     fs.chmodSync(path.join(dir, 'ddjvu'), 0o755);
     fs.symlinkSync(requireOracleTool('djvused'), path.join(dir, 'djvused'));
     return { interpreter: path.join(dir, 'ddjvu'), started };
   }
 
-  async function convertBuilt(program: { interpreter: string }, bytes: Buffer): Promise<unknown> {
+  async function convertBuilt(program: { interpreter: string }, bytes: Buffer, options: DjvuJob['options'] = {}): Promise<unknown> {
     return convertDjvu({
       input: bytes,
       src: 'djvu',
       tgt: 'pdf',
-      options: {},
+      options,
       originalFilename: 'built.djvu',
       interpreter: program.interpreter,
       convertPdfPages: async () => null,
@@ -369,35 +370,71 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
     });
   }
 
-  it('refuses a chain of shared files that include the next two before ddjvu is started, as the document of the review is (poc_f)', async () => {
-    const shared = chunk('Djbz', Buffer.alloc(4));
-    const levels = 40;
+  const shared = () => chunk('Djbz', Buffer.alloc(4));
+
+  /** A page that includes `i0`, and `levels` shared files of which each includes the files `next(index)` names. */
+  function includeChain(levels: number, next: (index: number) => readonly number[]): BundleFile[] {
     const files: BundleFile[] = [{ form: pageForm(SIDE, SIDE, [includeChunk('i0')]), kind: 'page', id: 'page' }];
     for (let index = 0; index < levels; index++) {
-      const next = [index + 1, index + 2].filter((target) => target < levels).map((target) => includeChunk(`i${target}`));
-      files.push({ form: form('DJVI', [...next, shared]), kind: 'include', id: `i${index}` });
+      const targets = next(index).filter((target) => target < levels);
+      files.push({ form: form('DJVI', [...targets.map((target) => includeChunk(`i${target}`)), shared()]), kind: 'include', id: `i${index}` });
     }
+    return files;
+  }
+
+  async function expectRefusedBeforeDrawing(bytes: Buffer): Promise<void> {
     const program = realReportWithMarkedRenderer();
     const started = Date.now();
-    await expect(convertBuilt(program, bundleOf(files))).rejects.toMatchObject({ name: 'DjvuIncludeGraphError', status: 422 });
+    await expect(convertBuilt(program, bytes)).rejects.toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: expect.stringContaining('include structure') });
     expect(fs.existsSync(program.started)).toBe(false);
-    expectWithinHangGuard('the refusal of poc_f 40', Date.now() - started, { guardMs: HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
+    expectWithinHangGuard('the refusal', Date.now() - started, { guardMs: HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
+  }
+
+  it('refuses a chain of 5,000 shared files, on which djvused crashes opening the page, before ddjvu is started', async () => {
+    await expectRefusedBeforeDrawing(bundleOf(includeChain(5_000, (index) => [index + 1])));
   });
 
-  it('refuses a document of two shared files that include each other before djvused reads its sizes, which crashes it on such a document', async () => {
-    const shared = chunk('Djbz', Buffer.alloc(4));
-    const files: BundleFile[] = [
+  it('refuses a document of two shared files that include each other, on which djvused crashes, before ddjvu is started', async () => {
+    const bytes = bundleOf([
       { form: pageForm(SIDE, SIDE, [includeChunk('a')]), kind: 'page', id: 'page' },
-      { form: form('DJVI', [includeChunk('b'), shared]), kind: 'include', id: 'a' },
-      { form: form('DJVI', [includeChunk('a'), shared]), kind: 'include', id: 'b' },
-    ];
-    const bytes = bundleOf(files);
-    const sizes = spawnSync(requireOracleTool('djvused'), ['-e', 'size', writeTemp(bytes, 'cycle.djvu')]);
-    expect(sizes.status).not.toBe(0);
-    const program = realReportWithMarkedRenderer();
-    await expect(convertBuilt(program, bytes)).rejects.toMatchObject({ name: 'DjvuIncludeGraphError', message: expect.stringContaining('cycle') });
-    expect(fs.existsSync(program.started)).toBe(false);
+      { form: form('DJVI', [includeChunk('b'), shared()]), kind: 'include', id: 'a' },
+      { form: form('DJVI', [includeChunk('a'), shared()]), kind: 'include', id: 'b' },
+    ]);
+    expect(spawnSync(requireOracleTool('djvused'), ['-e', 'size', writeTemp(bytes, 'cycle.djvu')]).status).not.toBe(0);
+    await expectRefusedBeforeDrawing(bytes);
   });
+
+  it('refuses a directory whose offsets point before the start or past the end of the bundle, which djvused cannot open', async () => {
+    const files: BundleFile[] = [{ form: pageForm(SIDE, SIDE), kind: 'page', id: 'p.djvu' }];
+    for (const offset of [0x80000000, 0x7fff0000]) await expectRefusedBeforeDrawing(bundleOf(files, { offsets: () => [offset] }));
+    await expect(convertBuilt(realReportWithMarkedRenderer(), bundleOf(files, { offsets: () => [0] }))).rejects.toMatchObject({ message: expect.stringContaining('djvused could not read') });
+  });
+
+  it('draws a directory of 2,000 entries at overlapping offsets inside one chunk of 50,000 empty chunks, which djvused opens in milliseconds, without a pass over the chunks in the worker', async () => {
+    const entries = 2_000;
+    const decoyBytes = 20;
+    const dataLength = entries * decoyBytes + 50_000 * 8;
+    const decoys = Array.from({ length: entries }, (_, index) => {
+      const decoy = Buffer.alloc(decoyBytes);
+      decoy.write('ANTaxxxxFORMxxxxDJVI', 'latin1');
+      decoy.writeUInt32BE(12, 4);
+      decoy.writeUInt32BE(dataLength - (index * decoyBytes + 16), 12);
+      return decoy;
+    });
+    const junk = chunk('JUNK', Buffer.concat([...decoys, Buffer.from('ANTa\0\0\0\0'.repeat(50_000), 'latin1')]));
+    const list = [{ component: 0, kind: 'page' as const, id: 'page' }, ...decoys.map((_, index) => ({ component: 1, kind: 'include' as const, id: `x${index}` }))];
+    const bytes = bundledDocument([pageForm(SIDE, SIDE), junk], list, { offsets: (laidOut) => laidOut.map((offset, index) => (index === 0 ? offset : offset + 8 + (index - 1) * decoyBytes + 8)) });
+    const started = Date.now();
+    const result = await dispatchConversion(bytes, 'djvu', 'pdf', {}, 'overlapping.djvu');
+    expect(pdfinfoPages(result.buffer)).toBe(1);
+    expectWithinHangGuard('the overlapping directory', Date.now() - started, { guardMs: HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
+  });
+
+  it('hands a chain of shared files that each include the next two (poc_f), which djvused opens at once, to ddjvu under the deadline of the job', async () => {
+    const program = realReportWithMarkedRenderer('sleep 30');
+    await expect(convertBuilt(program, bundleOf(includeChain(40, (index) => [index + 1, index + 2])), { timeoutMs: 2_000 })).rejects.toMatchObject({ name: 'SandboxedTimeoutError' });
+    expect(fs.existsSync(program.started)).toBe(true);
+  }, 20_000);
 });
 
 describe('the programs and their limits', () => {
@@ -538,6 +575,34 @@ describe('the programs and their limits', () => {
       expect(error).toMatchObject({ name: 'ConversionFailedError', message: expect.stringContaining('djvused could not read the .djvu file') });
       expect(fs.existsSync(failing.started)).toBe(false);
     });
+
+    it.each([
+      ['crashes', 'kill -SEGV $$', 'crashed or ran out of its'],
+      ['is killed by another signal', 'kill -BUS $$', 'crashed (SIGBUS)'],
+      ['fails', 'echo "*** Unexpected End Of File." >&2; exit 10', 'exited with status 10: *** Unexpected End Of File.'],
+    ])('refuses a document whose pages djvused %s on when it opens them, with the typed include error', async (_name, size, how) => {
+      const program = standIn('exit 0', { reporter: `case "$2" in n*) ${DIRECTORY(1)};; size) ${size};; esac` });
+      const error = await refusalOf(convertWith(program, 'pdf'));
+      expect(error).toMatchObject({ name: 'DjvuIncludeStructureError', status: 422, message: expect.stringContaining(how) });
+      expect(fs.existsSync(program.started)).toBe(false);
+    });
+
+    it('lets the deadline of the job, not the document, answer for a size run it cuts short', async () => {
+      const program = standIn('exit 0', { reporter: `case "$2" in n*) ${DIRECTORY(1)};; size) sleep 30;; esac` });
+      expect(await refusalOf(convertWith(program, 'pdf', { timeoutMs: 1_500 }))).toMatchObject({ name: 'SandboxedTimeoutError' });
+      expect(fs.existsSync(program.started)).toBe(false);
+    }, 20_000);
+
+    it('gives ddjvu what the djvused runs left of the one deadline of the job', async () => {
+      const deadlineMs = 3_000;
+      const reportMs = 1_000;
+      const program = standIn('sleep 30', { reporter: `case "$2" in n*) sleep ${reportMs / 1_000}; ${DIRECTORY(1)};; size) ${SIZES(1)};; esac` });
+      const error = await refusalOf(convertWith(program, 'pdf', { timeoutMs: deadlineMs }));
+      expect(error).toBeInstanceOf(SandboxedTimeoutError);
+      expect(fs.existsSync(program.started)).toBe(true);
+      const remainingGivenMs = (error as SandboxedTimeoutError).timeoutMs;
+      expect(remainingGivenMs).toBeLessThanOrEqual(deadlineMs - reportMs);
+    }, 20_000);
   });
 
   describe('the page selection of an image target', () => {

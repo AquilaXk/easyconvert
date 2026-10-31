@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DJVU_MAX_DIRECTORY_FILES, DJVU_MAX_INPUT_BYTES, readDjvuContainer } from '../src/lib/conversions/djvu-container';
+import { checkDjvuContainer, DJVU_MAX_DIRECTORY_FILES, DJVU_MAX_INPUT_BYTES } from '../src/lib/conversions/djvu-container';
 import { assertNotSpoofedFile, FileExtensionSpoofError } from '../src/lib/registry';
 import { bundledDocument, bundleOf, chunk, form, includeChunk, indirectDocument, oldBundledDocument, pageForm, singlePage } from './helpers/djvu-builder';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -8,7 +8,7 @@ import { expectWithinHangGuard } from './helpers/timing';
 
 /**
  * What of a DjVu file is read before the programs of djvulibre start (src/lib/conversions/djvu-container.ts): the bytes of the
- * container and the directory offsets of a bundle. The pages, their sizes and their count are reported by `djvused`, and
+ * container and the directory header of a bundle. The pages, their sizes and their count are reported by `djvused`, and
  * checked in tests/djvu-report.test.ts and tests/djvu-render.test.ts. The real files are the three DjVu files of the real-world
  * corpus: a bundled document of 34 pages at 600 dpi, a single colour page, and the Apache Tika file, an indirect document that
  * names eight page files which are not in the corpus.
@@ -20,8 +20,6 @@ const TIKA_INDIRECT = 'tika-testdjvu.djvu';
 /** The container of either hostile file takes about a millisecond on a fast core (1 and 5 ms measured); the guard only catches work that grows with the entries or chunks times the file. */
 const EXPECTED_LOCAL_MS = 5;
 const HANG_GUARD_MS = 10_000;
-/** The files of the directory of `wc-dogv-12042005.djvu`, as `djvudump` lists them: two shared dictionaries and 34 pages. */
-const DOGV_DIRECTORY_FILES = 36;
 const MAX_COUNT_IN_HEADER = 65_535;
 const NEWER_DIRECTORY_VERSION = 2;
 
@@ -29,7 +27,7 @@ const haveBzz = !skipWithoutTools('bzz');
 
 const refusalOf = (bytes: Buffer): Error => {
   try {
-    readDjvuContainer(bytes);
+    checkDjvuContainer(bytes);
   } catch (error) {
     if (error instanceof Error) return error;
   }
@@ -37,17 +35,13 @@ const refusalOf = (bytes: Buffer): Error => {
 };
 
 describe('the container of real DjVu files', () => {
-  it('reads the single page of the Hansard file as a page that names nothing', async (ctx) => {
+  it('accepts the single page of the Hansard file, which names nothing, and refuses it with a name of another file appended', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, HANSARD);
-    expect(readDjvuContainer(bytes)).toEqual({ bundle: null });
-  });
-
-  it('reads the directory of the bundled DOGV document: one offset for each file, as many as djvudump lists', async (ctx) => {
-    const { bytes } = await requireRealworldSample(ctx, DOGV);
-    const { bundle } = readDjvuContainer(bytes);
-    expect(bundle?.offsets).toHaveLength(DOGV_DIRECTORY_FILES);
-    expect(bundle?.end).toBe(bytes.length);
-    for (const offset of bundle?.offsets ?? []) expect(bytes.toString('latin1', offset, offset + 4)).toBe('FORM');
+    expect(() => checkDjvuContainer(bytes)).not.toThrow();
+    const include = includeChunk('dict0001.iff');
+    const named = Buffer.concat([bytes, include]);
+    named.writeUInt32BE(bytes.readUInt32BE(8) + include.length, 8);
+    expect(refusalOf(named)).toMatchObject({ name: 'ConversionFailedError', message: expect.stringContaining('INCL') });
   });
 
   it('refuses the Tika document, which is indirect: its eight pages are files next to the index', async (ctx) => {
@@ -63,8 +57,9 @@ describe('the container of real DjVu files', () => {
     }
   });
 
-  it('refuses a bundled document cut by one byte', async (ctx) => {
+  it('accepts the bundled DOGV document, whose directory lists two shared dictionaries and 34 pages, and refuses it cut by one byte', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, DOGV);
+    expect(() => checkDjvuContainer(bytes)).not.toThrow();
     expect(refusalOf(bytes.subarray(0, bytes.length - 1))).toMatchObject({ name: 'CorruptStreamError' });
     expect(refusalOf(bytes.subarray(0, Math.floor(bytes.length / 2)))).toMatchObject({ name: 'CorruptStreamError' });
   });
@@ -102,11 +97,12 @@ describe('documents that must not reach the programs', () => {
     expect(refusalOf(bytes)).toMatchObject({ name: 'PayloadLimitError' });
   });
 
-  it('reads a page with a hundred thousand chunks in one pass', () => {
+  it('reads a page with a hundred thousand chunks in one pass, to the name of another file after the last of them', () => {
     const many = Array.from({ length: 100_000 }, () => chunk('ANTa', Buffer.alloc(2)));
     const started = process.hrtime.bigint();
-    expect(readDjvuContainer(singlePage(10, 10, many))).toEqual({ bundle: null });
+    expect(() => checkDjvuContainer(singlePage(10, 10, many))).not.toThrow();
     expectWithinHangGuard('the container', Number(process.hrtime.bigint() - started) / 1e6, { guardMs: HANG_GUARD_MS, expectedLocalMs: EXPECTED_LOCAL_MS });
+    expect(refusalOf(singlePage(10, 10, [...many, includeChunk('dict0001.iff')]))).toMatchObject({ name: 'ConversionFailedError', message: expect.stringContaining('INCL') });
   });
 });
 
@@ -114,18 +110,8 @@ describe.skipIf(!haveBzz)('the directory of a bundle', () => {
   const page = pageForm(10, 10);
   const files = (count: number) => Array.from({ length: count }, (_, index) => ({ form: page, kind: 'page' as const, id: `p${index}.djvu` }));
 
-  it.each([0, 1] as const)('reads the offsets of a version %i directory, where version 0 keeps a size beside each offset', (version) => {
-    const bytes = bundleOf(files(3), { version });
-    const { bundle } = readDjvuContainer(bytes);
-    expect(bundle?.offsets).toHaveLength(3);
-    expect(new Set(bundle?.offsets).size).toBe(3);
-    for (const offset of bundle?.offsets ?? []) {
-      expect(bytes.toString('latin1', offset, offset + 4)).toBe('FORM');
-      expect(bytes.toString('latin1', offset + 8, offset + 12)).toBe('DJVU');
-    }
-  });
-
-  it('refuses an indirect directory by its missing bundle flag, a directory of a later version, and an empty one', () => {
+  it('accepts directories of version 0, which keeps a size beside each offset, and version 1, and refuses an indirect directory by its missing bundle flag, a directory of a later version, and an empty one', () => {
+    for (const version of [0, 1] as const) expect(() => checkDjvuContainer(bundleOf(files(3), { version })), `version ${version}`).not.toThrow();
     const bytes = bundleOf(files(1));
     const directoryFlags = 16 + 8;
     const indirect = Buffer.from(bytes);
@@ -139,27 +125,12 @@ describe.skipIf(!haveBzz)('the directory of a bundle', () => {
     expect(refusalOf(empty)).toMatchObject({ name: 'CorruptStreamError', message: expect.stringContaining('no files') });
   });
 
-  it('refuses an offset of zero or past the range of the program, and a count the chunk is too short for', () => {
-    const bytes = bundleOf(files(1));
-    const firstOffset = 16 + 8 + 3;
-    const zero = Buffer.from(bytes);
-    zero.writeUInt32BE(0, firstOffset);
-    expect(refusalOf(zero)).toMatchObject({ name: 'CorruptStreamError' });
-    const huge = Buffer.from(bytes);
-    huge.writeUInt32BE(0x80000000, firstOffset);
-    expect(refusalOf(huge)).toMatchObject({ name: 'CorruptStreamError' });
-    const many = Buffer.from(bytes);
-    many.writeUInt16BE(DJVU_MAX_DIRECTORY_FILES, 16 + 8 + 1);
-    expect(refusalOf(many)).toMatchObject({ name: 'CorruptStreamError', message: expect.stringContaining('shorter') });
-  });
-
-  it(`reads a directory of ${DJVU_MAX_DIRECTORY_FILES} entries over one page once, in time that does not grow with the entries, and refuses one more before any program reads it`, () => {
+  it(`accepts a directory of ${DJVU_MAX_DIRECTORY_FILES} entries over one page in time that does not grow with the entries, and refuses one more before any program reads it`, () => {
     const big = pageForm(10, 10, [chunk('BG44', Buffer.alloc(1 << 20))]);
     const entriesOf = (count: number) => Array.from({ length: count }, (_, index) => ({ component: 0, kind: 'page' as const, id: `p${index}.djvu` }));
     const bytes = bundledDocument([big], entriesOf(DJVU_MAX_DIRECTORY_FILES));
     const started = process.hrtime.bigint();
-    const { bundle } = readDjvuContainer(bytes);
-    expect(bundle?.offsets).toHaveLength(DJVU_MAX_DIRECTORY_FILES);
+    expect(() => checkDjvuContainer(bytes)).not.toThrow();
     expectWithinHangGuard('the container', Number(process.hrtime.bigint() - started) / 1e6, { guardMs: HANG_GUARD_MS, expectedLocalMs: EXPECTED_LOCAL_MS });
     expect(refusalOf(bundledDocument([big], entriesOf(DJVU_MAX_DIRECTORY_FILES + 1)))).toMatchObject({ name: 'PayloadLimitError', status: 413 });
     expect(refusalOf(bundledDocument([big], entriesOf(MAX_COUNT_IN_HEADER)))).toMatchObject({ name: 'PayloadLimitError', status: 413 });

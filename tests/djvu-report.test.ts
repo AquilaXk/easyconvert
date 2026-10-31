@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_MAX_INPUT_PIXELS } from '../src/lib/conversions/image-input-limits';
 import { DJVU_MAX_PAGES } from '../src/lib/conversions/djvu-container';
-import { parseDjvusedDirectory, parseDjvusedSizes } from '../src/lib/conversions/djvu-report';
+import { parseDjvusedPageCount, parseDjvusedSizes } from '../src/lib/conversions/djvu-report';
 import { expectWithinHangGuard } from './helpers/timing';
 
 /**
- * The strict reading of what `djvused` prints (src/lib/conversions/djvu-report.ts): `n;ls` first, `size` once the include graph is
- * known. The text is what djvulibre 3.5.28 prints for `wc-dogv-12042005.djvu` (the first lines) and for the documents of
+ * The strict reading of what `djvused` prints (src/lib/conversions/djvu-report.ts): `n;ls` first, then `size`. The text is what djvulibre 3.5.28 prints for `wc-dogv-12042005.djvu` (the first lines) and for the documents of
  * tests/djvu-render.test.ts; the programs themselves are run on real and built documents there.
  */
 
@@ -28,45 +27,36 @@ const dogvDirectory = (pages: number) =>
   ]);
 
 describe('the directory of a document', () => {
-  it('reads the pages and the files of the DOGV document', () => {
-    const { pageCount, entries } = parseDjvusedDirectory(dogvDirectory(3));
-    expect(pageCount).toBe(3);
-    expect(entries.map((entry) => [entry.page, entry.ids[0]])).toEqual([
-      [false, 'dict0020.iff'],
-      [true, 'p0001.djvu'],
-      [true, 'p0002.djvu'],
-      [true, 'p0003.djvu'],
-    ]);
+  it('counts the pages of the DOGV document, past its shared dictionary', () => {
+    expect(parseDjvusedPageCount(dogvDirectory(3))).toBe(3);
   });
 
-  it('keeps the name and the title that follow the id', () => {
-    const { entries } = parseDjvusedDirectory(lines(['1', '   1 P      140  p.iw4 F=cover.iw4 T=The cover']));
-    expect(entries).toEqual([{ page: true, ids: ['p.iw4', 'p.iw4 F=cover.iw4 T=The cover'], names: ['cover.iw4'], titles: ['The cover'] }]);
-  });
-
-  it('reads a name of a million markers in one pass', () => {
+  it('counts a page whatever its id, name and title hold, and reads a line of a million markers in one pass', () => {
+    expect(parseDjvusedPageCount(lines(['1', '   1 P      140  p.iw4 F=cover.iw4 T=The cover']))).toBe(1);
     const name = ' F='.repeat(LONG_LINE_MARKERS) + ' T='.repeat(LONG_LINE_MARKERS);
     const started = process.hrtime.bigint();
-    const { entries } = parseDjvusedDirectory(lines(['1', `   1 P      140  p.djvu${name}`]));
+    expect(parseDjvusedPageCount(lines(['1', `   1 P      140  p.djvu${name}`]))).toBe(1);
     expectWithinHangGuard('the directory line', Number(process.hrtime.bigint() - started) / 1e6, { guardMs: HANG_GUARD_MS, expectedLocalMs: LONG_LINE_EXPECTED_LOCAL_MS });
-    expect(entries[0].ids[0]).toBe('p.djvu');
-    expect(entries[0].names[0]).toHaveLength(LONG_LINE_MARKERS * 3 - 3);
   });
 
   it('lets the thumbnails row of a document with thumbnails pass', () => {
-    const { entries } = parseDjvusedDirectory(lines(['1', '   1 P      140  p.djvu', '     T          <thumbnails>']));
-    expect(entries).toHaveLength(1);
+    expect(parseDjvusedPageCount(lines(['1', '   1 P      140  p.djvu', '     T          <thumbnails>']))).toBe(1);
+  });
+
+  it('refuses a name with a newline that adds a page line, and lets one that adds the line of a shared file count the pages the program counts', () => {
+    expect(() => parseDjvusedPageCount(lines(['1', '   1 P      140  p', '   2 P      140  q.djvu']))).toThrowError(expect.objectContaining({ message: expect.stringContaining('do not agree') }));
+    expect(parseDjvusedPageCount(lines(['1', '   1 P      140  p', '     I      140  q.djvu']))).toBe(1);
   });
 
   it(`refuses more than ${DJVU_MAX_PAGES} pages by the count alone, and takes ${DJVU_MAX_PAGES}`, () => {
-    expect(() => parseDjvusedDirectory(lines([String(DJVU_MAX_PAGES + 1)]))).toThrowError(expect.objectContaining({ name: 'PayloadLimitError', status: 413 }));
-    expect(parseDjvusedDirectory(dogvDirectory(DJVU_MAX_PAGES)).pageCount).toBe(DJVU_MAX_PAGES);
+    expect(() => parseDjvusedPageCount(lines([String(DJVU_MAX_PAGES + 1)]))).toThrowError(expect.objectContaining({ name: 'PayloadLimitError', status: 413 }));
+    expect(parseDjvusedPageCount(dogvDirectory(DJVU_MAX_PAGES))).toBe(DJVU_MAX_PAGES);
   });
 
   it('refuses a document with no page, and a count that disagrees with the page files', () => {
-    expect(() => parseDjvusedDirectory(lines(['0', '     I      140  dict.iff']))).toThrowError(expect.objectContaining({ name: 'CorruptStreamError', message: expect.stringContaining('no page') }));
-    expect(() => parseDjvusedDirectory(lines(['2', '   1 P      140  a.djvu']))).toThrowError(expect.objectContaining({ message: expect.stringContaining('do not agree') }));
-    expect(() => parseDjvusedDirectory(lines(['1', '   1 P      140  a.djvu', '   2 P      140  b.djvu']))).toThrowError(expect.objectContaining({ message: expect.stringContaining('do not agree') }));
+    expect(() => parseDjvusedPageCount(lines(['0', '     I      140  dict.iff']))).toThrowError(expect.objectContaining({ name: 'CorruptStreamError', message: expect.stringContaining('no page') }));
+    expect(() => parseDjvusedPageCount(lines(['2', '   1 P      140  a.djvu']))).toThrowError(expect.objectContaining({ message: expect.stringContaining('do not agree') }));
+    expect(() => parseDjvusedPageCount(lines(['1', '   1 P      140  a.djvu', '   2 P      140  b.djvu']))).toThrowError(expect.objectContaining({ message: expect.stringContaining('do not agree') }));
   });
 
   it.each([
@@ -75,7 +65,7 @@ describe('the directory of a document', () => {
     ['a directory line of another shape', '1\n   1 Q      140  a.djvu\n'],
     ['a size line among the files', '1\n   1 P      140  a.djvu\nwidth=64 height=64\n'],
   ])('refuses %s', (_name, output) => {
-    expect(() => parseDjvusedDirectory(output)).toThrowError(expect.objectContaining({ name: 'ConversionFailedError' }));
+    expect(() => parseDjvusedPageCount(output)).toThrowError(expect.objectContaining({ name: 'ConversionFailedError' }));
   });
 });
 
