@@ -152,7 +152,7 @@ function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
     case 'buffer':
       return new SandboxedBufferLimitError(detail.limitBytes ?? 0);
     case 'memory':
-      return new SandboxedMemoryLimitError(detail.limitMb ?? 0);
+      return new SandboxedMemoryLimitError(detail.limitMb ?? 0, detail.signal ?? undefined);
     case 'unavailable':
       return new SandboxUnavailableError(detail.message);
     default:

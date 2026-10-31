@@ -99,11 +99,17 @@ export class SandboxedBufferLimitError extends Error {
 
 export class SandboxedMemoryLimitError extends Error {
   public limitMb: number;
+  /**
+   * The signal that ended the program: SIGSEGV for a fault under the address-space limit (a failed allocation it did not
+   * check, or a stack overflow), SIGKILL for the kernel's out-of-memory killer. Unset when the resident-size watch stopped it.
+   */
+  public signal?: NodeJS.Signals;
 
-  constructor(limitMb: number) {
+  constructor(limitMb: number, signal?: NodeJS.Signals) {
     super(`Process memory exceeded limit of ${limitMb}MB`);
     this.name = 'SandboxedMemoryLimitError';
     this.limitMb = limitMb;
+    this.signal = signal;
   }
 }
 
@@ -845,7 +851,7 @@ export async function executeSandboxedBinary(
             memoryLimitMb ||
             (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / (1024 * 1024)) : undefined);
           if ((signal === 'SIGKILL' || signal === 'SIGSEGV') && effectiveMemLimit && effectiveMemLimit > 0) {
-            reject(new SandboxedMemoryLimitError(effectiveMemLimit));
+            reject(new SandboxedMemoryLimitError(effectiveMemLimit, signal));
             return;
           }
           if (signal === 'SIGXFSZ') {

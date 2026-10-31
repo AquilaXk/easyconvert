@@ -10,7 +10,6 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EngineUnavailableError } from '../src/lib/types';
 import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { convertDjvu, type DjvuJob } from '../src/worker/djvu-render';
-import { SandboxedTimeoutError } from '../src/worker/sandbox';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
 import { bundledDocument, bundleOf, chunk, form, includeChunk, pageForm, singlePage, waveletForm, type BundleFile } from './helpers/djvu-builder';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
@@ -32,6 +31,14 @@ const CONVERSION_TIMEOUT_MS = 180_000;
 /** `djvused -e size` crashes on a cycle or a deep chain in 0.1 s on Apple silicon and 1.2 s on the arm64 test VM (measured); the overlapping directory converts in 0.04 s. */
 const REFUSAL_EXPECTED_LOCAL_MS = 500;
 const HANG_GUARD_MS = 10_000;
+/** A plain chain of 40 shared files converts in 0.02 s on the arm64 test VM and 0.05 s on Apple silicon with one heap (measured). */
+const CHAIN_EXPECTED_LOCAL_MS = 500;
+/** poc_f of 30 files converts in 1.3 s on the arm64 test VM and 1.4 s on Apple silicon (measured). */
+const POC_F_EXPECTED_LOCAL_MS = 2_000;
+/** Below the 15 s floor of the budget of ddjvu, where a chain that the heap bound did not help ends, and far below the deadline of 120 s. */
+const CHAIN_HANG_GUARD_MS = 40_000;
+/** The file count of a bundle directory: after `AT&TFORM`, the form size, `DJVM`, the `DIRM` header and the version byte. */
+const DIRM_FILE_COUNT_AT = 16 + 8 + 1;
 const HANSARD = 'wc-hansard-1963-malaysia-bill-clause-4.djvu';
 const DOGV = 'wc-dogv-12042005.djvu';
 const TIKA_INDIRECT = 'tika-testdjvu.djvu';
@@ -372,12 +379,15 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
 
   const shared = () => chunk('Djbz', Buffer.alloc(4));
 
-  /** A page that includes `i0`, and `levels` shared files of which each includes the files `next(index)` names. */
-  function includeChain(levels: number, next: (index: number) => readonly number[]): BundleFile[] {
+  /**
+   * A page that includes `i0`, and `levels` shared files of which each includes the files `next(index)` names and holds `body`.
+   * The default body is an empty symbol dictionary, which `ddjvu` fails to decode at once; with no body the program opens every file.
+   */
+  function includeChain(levels: number, next: (index: number) => readonly number[], body: () => readonly Buffer[] = () => [shared()]): BundleFile[] {
     const files: BundleFile[] = [{ form: pageForm(SIDE, SIDE, [includeChunk('i0')]), kind: 'page', id: 'page' }];
     for (let index = 0; index < levels; index++) {
       const targets = next(index).filter((target) => target < levels);
-      files.push({ form: form('DJVI', [...targets.map((target) => includeChunk(`i${target}`)), shared()]), kind: 'include', id: `i${index}` });
+      files.push({ form: form('DJVI', [...targets.map((target) => includeChunk(`i${target}`)), ...body()]), kind: 'include', id: `i${index}` });
     }
     return files;
   }
@@ -410,7 +420,41 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
     await expect(convertBuilt(realReportWithMarkedRenderer(), bundleOf(files, { offsets: () => [0] }))).rejects.toMatchObject({ message: expect.stringContaining('djvused could not read') });
   });
 
-  it('draws a directory of 2,000 entries at overlapping offsets inside one chunk of 50,000 empty chunks, which djvused opens in milliseconds, without a pass over the chunks in the worker', async () => {
+  /** Two pages, or a page and the shared file it includes, the second listed at `offsetOf` of the place it was laid out at. */
+  const pagePair = (offsetOf: (laidOut: number) => number) =>
+    bundleOf([{ form: pageForm(SIDE, SIDE), kind: 'page', id: 'p.djvu' }, { form: pageForm(SIDE, SIDE), kind: 'page', id: 'q.djvu' }], { offsets: (laidOut) => [laidOut[0], offsetOf(laidOut[1])] });
+  const pageAndInclude = (offsetOf: (laidOut: number) => number) =>
+    bundleOf([{ form: pageForm(SIDE, SIDE, [includeChunk('i0')]), kind: 'page', id: 'p.djvu' }, { form: form('DJVI', [chunk('ANTa', Buffer.from('(mode color)', 'latin1'))]), kind: 'include', id: 'i0' }], {
+      offsets: (laidOut) => [laidOut[0], offsetOf(laidOut[1])],
+    });
+  const MIDDLE_OF_FORM = 8;
+  const nonFormEntry = (kind: 'page' | 'include') => {
+    const first = kind === 'page' ? pageForm(SIDE, SIDE) : pageForm(SIDE, SIDE, [includeChunk('i0')]);
+    return bundledDocument([first, chunk('ANTa', Buffer.from('(mode color)', 'latin1'))], [{ component: 0, kind: 'page', id: 'p.djvu' }, { component: 1, kind, id: kind === 'page' ? 'q.djvu' : 'i0' }]);
+  };
+
+  it('refuses a page listed in the middle of a component or at a chunk that is no FORM, on which djvused size exits with status 10 (3.5.28 and 3.5.29), before ddjvu is started', async () => {
+    await expectRefusedBeforeDrawing(pagePair((offset) => offset + MIDDLE_OF_FORM));
+    await expectRefusedBeforeDrawing(nonFormEntry('page'));
+  });
+
+  it('refuses a shared file listed in the middle of a component or at a chunk that is no FORM, which djvused size passes and ddjvu fails at once with status 10', async () => {
+    for (const bytes of [pageAndInclude((offset) => offset + MIDDLE_OF_FORM), nonFormEntry('include')]) {
+      const started = Date.now();
+      await expect(convertBuilt({ interpreter: requireOracleTool('ddjvu') }, bytes)).rejects.toMatchObject({ name: 'ConversionFailedError', message: expect.stringContaining('ddjvu could not draw') });
+      expectWithinHangGuard('the failed drawing', Date.now() - started, { guardMs: HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
+    }
+  });
+
+  it('refuses a directory that counts more files than its DIRM holds, which djvused n cannot open, before ddjvu is started', async () => {
+    const short = Buffer.from(bundleOf([{ form: pageForm(SIDE, SIDE), kind: 'page', id: 'p.djvu' }]));
+    short.writeUInt16BE(3, DIRM_FILE_COUNT_AT);
+    const program = realReportWithMarkedRenderer();
+    await expect(convertBuilt(program, short)).rejects.toMatchObject({ name: 'ConversionFailedError', message: expect.stringContaining('djvused could not read') });
+    expect(fs.existsSync(program.started)).toBe(false);
+  });
+
+  it('draws a directory of 2,000 entries at overlapping offsets inside one chunk of 50,000 empty chunks as its one page, within the hang guard', async () => {
     const entries = 2_000;
     const decoyBytes = 20;
     const dataLength = entries * decoyBytes + 50_000 * 8;
@@ -430,15 +474,31 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
     expectWithinHangGuard('the overlapping directory', Date.now() - started, { guardMs: HANG_GUARD_MS, expectedLocalMs: REFUSAL_EXPECTED_LOCAL_MS });
   });
 
-  it('hands a chain of shared files that each include the next two (poc_f), which djvused opens at once, to ddjvu under the deadline of the job', async () => {
-    const program = realReportWithMarkedRenderer('sleep 30');
-    await expect(convertBuilt(program, bundleOf(includeChain(40, (index) => [index + 1, index + 2])), { timeoutMs: 2_000 })).rejects.toMatchObject({ name: 'SandboxedTimeoutError' });
-    expect(fs.existsSync(program.started)).toBe(true);
-  }, 20_000);
+  /** The outcome of the real programs on `bytes` under the default deadline: drawn, or the name and message of the refusal. */
+  async function chainOutcome(bytes: Buffer): Promise<{ elapsedMs: number; outcome: string }> {
+    const started = Date.now();
+    const outcome = await convertBuilt({ interpreter: requireOracleTool('ddjvu') }, bytes).then(
+      () => 'drawn',
+      (error: unknown) => (error instanceof Error ? `${error.name}: ${error.message}` : String(error))
+    );
+    return { elapsedMs: Date.now() - started, outcome };
+  }
+
+  it('draws a plain chain of 40 shared files, on which ddjvu waited for the deadline of the job before its heap was bound', async () => {
+    const { elapsedMs, outcome } = await chainOutcome(bundleOf(includeChain(40, (index) => [index + 1], () => [])));
+    expect(outcome).toBe('drawn');
+    expectWithinHangGuard('the plain chain', elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: CHAIN_EXPECTED_LOCAL_MS });
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('ends a chain of 30 shared files that each include the next two (poc_f) within the budget of ddjvu, never at the deadline of the job', async () => {
+    const { elapsedMs, outcome } = await chainOutcome(bundleOf(includeChain(30, (index) => [index + 1, index + 2], () => [])));
+    expect(outcome).toMatch(/^drawn$|took too long to draw/);
+    expectWithinHangGuard('poc_f', elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: POC_F_EXPECTED_LOCAL_MS });
+  }, CONVERSION_TIMEOUT_MS);
 });
 
 describe('the programs and their limits', () => {
-  const DIRECTORY = (pages: number) => `printf '${pages}\\n'; i=1; while [ $i -le ${pages} ]; do printf '%4d P %8d  p%d.djvu\\n' $i 100 $i; i=$((i+1)); done`;
+  const DIRECTORY = (pages: number) => `printf '${pages}\\n'`;
   const SIZES = (pages: number, side = 64) => `i=1; while [ $i -le ${pages} ]; do echo 'width=${side} height=${side}'; i=$((i+1)); done`;
 
   interface StandIn {
@@ -449,7 +509,7 @@ describe('the programs and their limits', () => {
 
   /**
    * A directory with a stand-in for `ddjvu` that runs `body` with the input, the output and the directory of the job as `$in`,
-   * `$out` and `$dir`, and a stand-in for `djvused` next to it that prints the directory or the sizes of a document of `pages`
+   * `$out` and `$dir`, and a stand-in for `djvused` next to it that prints the page count or the sizes of a document of `pages`
    * pages of `side` pixels (or runs `reporter` when given).
    */
   function standIn(body: string, options: { pages?: number; side?: number; reporter?: string; djvused?: boolean } = {}): StandIn {
@@ -531,10 +591,15 @@ describe('the programs and their limits', () => {
     expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu drew no page from the .djvu file.' });
   });
 
-  it('stops a program that runs past the time limit', async () => {
+  it('stops a program that runs past the deadline of the job, and names the limit of the job', async () => {
     const error = await refusalOf(convertWith(standIn('sleep 30'), 'pdf', { timeoutMs: 1_500 }));
-    expect(error.name).toBe('SandboxedTimeoutError');
+    expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', status: 422, message: expect.stringContaining('1500 ms') });
   }, 20_000);
+
+  it('gives ddjvu one glibc heap', async () => {
+    const error = await refusalOf(convertWith(standIn('echo "arena=$MALLOC_ARENA_MAX" >&2; exit 10'), 'pdf'));
+    expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu could not draw the .djvu file: arena=1' });
+  });
 
   it('refuses a PDF too large for the page tools before it is read for an image target', async () => {
     const error = await refusalOf(convertWith(standIn('dd if=/dev/null of="$out" bs=1048576 seek=200 count=0 2>/dev/null'), 'png'));
@@ -577,8 +642,9 @@ describe('the programs and their limits', () => {
     });
 
     it.each([
-      ['crashes', 'kill -SEGV $$', 'crashed or ran out of its'],
-      ['is killed by another signal', 'kill -BUS $$', 'crashed (SIGBUS)'],
+      ['crashes', 'kill -SEGV $$', 'crashed (SIGSEGV) under its 2048 MB memory limit'],
+      ['aborts', 'kill -ABRT $$', 'crashed (SIGABRT)'],
+      ['crashes on a bus error', 'kill -BUS $$', 'crashed (SIGBUS)'],
       ['fails', 'echo "*** Unexpected End Of File." >&2; exit 10', 'exited with status 10: *** Unexpected End Of File.'],
     ])('refuses a document whose pages djvused %s on when it opens them, with the typed include error', async (_name, size, how) => {
       const program = standIn('exit 0', { reporter: `case "$2" in n*) ${DIRECTORY(1)};; size) ${size};; esac` });
@@ -587,21 +653,29 @@ describe('the programs and their limits', () => {
       expect(fs.existsSync(program.started)).toBe(false);
     });
 
-    it('lets the deadline of the job, not the document, answer for a size run it cuts short', async () => {
+    it.each([
+      ['is stopped by SIGTERM', 'kill -TERM $$'],
+      ['is killed (SIGKILL), as the out-of-memory killer does', 'kill -KILL $$'],
+      ['is stopped by SIGHUP', 'kill -HUP $$'],
+    ])('does not blame the include structure of a document when djvused %s while it opens the pages', async (_name, size) => {
+      const program = standIn('exit 0', { reporter: `case "$2" in n*) ${DIRECTORY(1)};; size) ${size};; esac` });
+      const error = await refusalOf(convertWith(program, 'pdf'));
+      expect(error.name).not.toBe('DjvuIncludeStructureError');
+      expect(error.message).not.toContain('include structure');
+      expect(fs.existsSync(program.started)).toBe(false);
+    });
+
+    it('lets the deadline of the job, not the document, answer for a size run it cuts short, with the limit of the job', async () => {
       const program = standIn('exit 0', { reporter: `case "$2" in n*) ${DIRECTORY(1)};; size) sleep 30;; esac` });
-      expect(await refusalOf(convertWith(program, 'pdf', { timeoutMs: 1_500 }))).toMatchObject({ name: 'SandboxedTimeoutError' });
+      expect(await refusalOf(convertWith(program, 'pdf', { timeoutMs: 1_500 }))).toMatchObject({ name: 'CpuTaskTimeoutError', message: expect.stringContaining('1500 ms') });
       expect(fs.existsSync(program.started)).toBe(false);
     }, 20_000);
 
-    it('gives ddjvu what the djvused runs left of the one deadline of the job', async () => {
-      const deadlineMs = 3_000;
-      const reportMs = 1_000;
-      const program = standIn('sleep 30', { reporter: `case "$2" in n*) sleep ${reportMs / 1_000}; ${DIRECTORY(1)};; size) ${SIZES(1)};; esac` });
-      const error = await refusalOf(convertWith(program, 'pdf', { timeoutMs: deadlineMs }));
-      expect(error).toBeInstanceOf(SandboxedTimeoutError);
+    it('starts ddjvu on what the djvused runs left of the one deadline of the job, and names the limit of the job when it runs out', async () => {
+      const program = standIn('sleep 30', { reporter: `case "$2" in n*) sleep 1; ${DIRECTORY(1)};; size) ${SIZES(1)};; esac` });
+      const error = await refusalOf(convertWith(program, 'pdf', { timeoutMs: 3_000 }));
+      expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', message: expect.stringContaining('3000 ms') });
       expect(fs.existsSync(program.started)).toBe(true);
-      const remainingGivenMs = (error as SandboxedTimeoutError).timeoutMs;
-      expect(remainingGivenMs).toBeLessThanOrEqual(deadlineMs - reportMs);
     }, 20_000);
   });
 

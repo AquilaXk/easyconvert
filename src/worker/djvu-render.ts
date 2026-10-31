@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { checkDjvuContainer } from '../lib/conversions/djvu-container';
-import { DJVUSED_DIRECTORY_SCRIPT, DJVUSED_MAX_OUTPUT_BYTES, DJVUSED_SIZE_SCRIPT, parseDjvusedPageCount, parseDjvusedSizes } from '../lib/conversions/djvu-report';
+import { DJVUSED_MAX_OUTPUT_BYTES, DJVUSED_PAGE_COUNT_SCRIPT, DJVUSED_SIZE_SCRIPT, parseDjvusedPageCount, parseDjvusedSizes, type DjvuPageSize } from '../lib/conversions/djvu-report';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { groupConsecutiveRanges, OFFICE_PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from '../lib/conversions/page-range';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { ConversionFailedError, CpuTaskTimeoutError, EngineUnavailableError, InvalidPageRangeError } from '../lib/types';
 import { boundRenderedPages } from './poppler-ppm';
-import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from './sandbox';
+import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, type SandboxedExecutionResult } from './sandbox';
 import { createConversionResult, drawnPdfTooLargeError, handOffOutput, MAX_DRAWN_PDF_BYTES_FOR_IMAGES, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions } from './worker-types';
 import type { XpsJob } from './xps-render';
@@ -25,11 +25,13 @@ import type { XpsJob } from './xps-render';
  * `djvused` of the same package, run in the same sandbox on the same file, reports the page count (djvu-report.ts), so that what
  * the converter counts is what `ddjvu` draws, and a second run reports the page sizes, so that what the converter limits is what
  * `ddjvu` draws. The second run opens every page and creates the files the pages include, as `ddjvu` does, and crashes on a
- * document whose includes form a cycle or run thousands of files deep (a stack overflow, signal 11); its crash, a status other
- * than zero or its time limit refuses the document as one whose include structure the program cannot open, so djvulibre itself
- * judges the include graph, in the sandbox, and the worker holds no model of it. All three programs run before the output exists,
+ * document whose includes form a cycle or run thousands of files deep (a stack overflow, signal 11). What the program raises
+ * there (a crash signal or a status other than zero) refuses the document as one whose include structure it cannot open, so
+ * djvulibre itself judges the include graph, in the sandbox, and the worker holds no model of it; a run that something else
+ * ended (the deadline, a kill, a lost helper) is not a verdict on the document. All three programs run before the output exists,
  * in a directory of their own that holds the one file and the output, in the sandbox, without network, and share the one
- * deadline of the job (`DjvuRun`): a document costs at most the stage limit, 120 s by default, whatever its includes.
+ * deadline of the job (`DjvuRun`): a document costs at most the stage limit, 120 s by default, whatever its includes. `ddjvu`
+ * also has a budget of its own, from what the reports took and the pixels it draws (`drawBudgetMs`).
  *
  * The program stops at the first page it cannot decode, with a message and the exit status 10 (tools/ddjvu.cpp
  * `dopage`, lines 728 to 746, unless `-skip` is given, which is not), so a truncated or damaged page is a failure here and
@@ -51,14 +53,34 @@ const MEMORY_LIMIT_MB = 2048;
  */
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 /** The page count of the drawn PDF, the limit of the other page chains, held to the deadline of the job. */
-const PAGE_COUNT_TIMEOUT_MS = 45_000;
+const PDF_PAGE_COUNT_TIMEOUT_MS = 45_000;
+/** Less than this left of the deadline after `ddjvu` and the PDF is not counted: the deadline answers instead. */
+const PDF_PAGE_COUNT_FLOOR_MS = 2_000;
 /**
- * Each `djvused` run. Its cost is that of the directory, which grows with the square of its files: the largest directory taken
- * (10,000 pages and 10,000 shared files) takes 4.3 s for `n;ls` and 4.7 s for `size` with 3.5.28 on the 4 vCPU Linux arm64 test
- * VM (5.3 s with 3.5.29 on Apple silicon), and the crash on a cycle or a deep chain comes within 1.2 s. The limit is six times
- * the largest, and a run past it is refused (entry 134 of docs/policy-decisions.md).
+ * The `n` run. It reads the directory alone: 0.2 s for 3,000 pages with 3.5.28 on the 4 vCPU Linux arm64 test VM, and 4.3 s
+ * for `n;ls` on the largest directory taken (10,000 pages and 10,000 shared files); the limit is six times that.
  */
-const REPORT_TIMEOUT_MS = 30_000;
+const PAGE_COUNT_RUN_TIMEOUT_MS = 30_000;
+/**
+ * The `size` run, which decodes the first wavelet chunk of a `FORM:PM44` or `FORM:BM44` page: 40 ms a page of 2550 x 3300 scanned
+ * text on the test VM, so 40 s for a book of 1,000 such pages (119 s for 3,000). The limit is three times the 1,000-page book; a
+ * run past it is refused (entry 134 of docs/policy-decisions.md). Under the default stage limit the deadline comes first.
+ */
+const SIZE_RUN_TIMEOUT_MS = 120_000;
+/**
+ * The budget of `ddjvu`: `max(15 s, 8 x the two reports) + the drawn pixels at 12.5 megapixels a second`, at most what is left
+ * of the deadline. A chain of shared files makes the program create a thread for each file and wait on them; `size` opens
+ * the same chain in milliseconds, so the floor ends it in 15 s, while a real document keeps at least the margins of entry 134.
+ */
+const DRAW_BUDGET_FLOOR_MS = 15_000;
+const DRAW_BUDGET_REPORT_FACTOR = 8;
+const DRAW_PIXELS_PER_MS = 12_500;
+/**
+ * One glibc heap for the program's threads. Each thread that decodes an included file otherwise gets an arena of its own, 64 MiB
+ * of address space each, and from about 30 of them the 2 GiB limit is met and the program waits forever: a plain chain of 32
+ * shared files did. With one heap a chain of 250 converts in 0.07 s, and the pixels of the real documents are the same.
+ */
+const DRAW_ENVIRONMENT: Readonly<Record<string, string>> = { MALLOC_ARENA_MAX: '1' };
 /** What the report of a document of a few hundred pages comes to; the launcher helper copies it back. */
 const REPORT_EXPECTED_OUTPUT_BYTES = 64 * 1024;
 const REPORT_MAX_FILE_BYTES = 16 * 1024 * 1024;
@@ -66,6 +88,8 @@ const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const MAX_STDERR_CHARS = 300;
 /** The program writes its result to a file in the job directory and prints nothing the worker has to copy. */
 const NO_PIPED_OUTPUT_BYTES = 0;
+/** The signals of a program that failed by itself; a SIGKILL or SIGTERM comes from outside it. */
+const CRASH_SIGNALS: ReadonlySet<NodeJS.Signals> = new Set(['SIGSEGV', 'SIGBUS', 'SIGABRT', 'SIGFPE', 'SIGILL']);
 /** `ddjvu -format=pdf [-page=<pages>] <input> <output>`: the scale and the quality are left at the defaults (full page size, deflate). */
 const FORMAT_FLAG = '-format=pdf';
 const PDF_TARGET = 'pdf';
@@ -90,6 +114,23 @@ interface DjvuRun {
   readonly deadlineAt: number;
 }
 
+/** What the two `djvused` runs reported, and how long they took together. */
+interface DjvuReport {
+  readonly sizes: readonly DjvuPageSize[];
+  readonly reportMs: number;
+}
+
+/** How long a program may run: what is left of the deadline, or its own limit when that comes first. */
+interface TimeSlice {
+  readonly timeoutMs: number;
+  readonly cutByDeadline: boolean;
+}
+
+/** How a `size` run that did not print the sizes ended: a verdict on the document, or a failure that is not the document's. */
+type SizeRunFailure = { readonly kind: 'verdict'; readonly message: string } | { readonly kind: 'not-the-document' };
+
+const NOT_THE_DOCUMENT: SizeRunFailure = { kind: 'not-the-document' };
+
 /** A document whose pages `djvused` cannot open: the program crashed, failed or ran past its limit creating the files they include. */
 class DjvuIncludeStructureError extends ConversionFailedError {
   readonly status = 422;
@@ -99,11 +140,20 @@ class DjvuIncludeStructureError extends ConversionFailedError {
   }
 }
 
-/** The pages the program draws and the limit on the PDF it writes. */
+/** A document that `ddjvu` did not draw within its budget: the typed time-limit refusal, with what ran out. */
+class DjvuDrawTimeoutError extends CpuTaskTimeoutError {
+  constructor(src: string, budgetMs: number) {
+    super(`.${src} drawing`, budgetMs);
+    this.message = `The .${src} document took too long to draw: ddjvu ran past the ${budgetMs} ms its pages allow.`;
+  }
+}
+
+/** The pages the program draws, their pixels, and the limit on the PDF it writes. */
 interface DrawPlan {
   /** The `-page` argument, or undefined for every page. */
   readonly pageSpec: string | undefined;
   readonly pageCount: number;
+  readonly drawnPixels: number;
   readonly maxBytes: number;
 }
 
@@ -131,15 +181,37 @@ function toRendererError(err: unknown, program: string, src: string, tempDir: st
   return err;
 }
 
-/** What is left of the deadline of the run, at most `ownLimitMs`; a run that has used all of its time starts nothing more. */
-function remainingMs(run: DjvuRun, ownLimitMs: number): number {
-  const remaining = run.deadlineAt - Date.now();
-  if (remaining <= 0) throw new CpuTaskTimeoutError(`.${run.job.src} to .${run.job.tgt} conversion`, run.limitMs);
-  return Math.min(ownLimitMs, remaining);
+/** The job ran out of its deadline: reported with the limit of the job, not with the slice the last program was given. */
+function deadlineExceeded(run: DjvuRun): CpuTaskTimeoutError {
+  return new CpuTaskTimeoutError(`.${run.job.src} to .${run.job.tgt} conversion`, run.limitMs);
 }
 
-function sandboxLimits(run: DjvuRun, limits: Pick<LaunchedExecutionOptions, 'timeoutMs' | 'maxBuffer' | 'maxFileSize' | 'expectedOutputBytes'>): LaunchedExecutionOptions {
-  return { memoryLimitMb: MEMORY_LIMIT_MB, networkIsolated: true, signal: run.job.options.signal, cwd: run.tempDir, ...limits };
+/** What is left of the deadline of the run, at most `ownLimitMs`; a run that has used all of its time starts nothing more. */
+function sliceOf(run: DjvuRun, ownLimitMs: number): TimeSlice {
+  const remaining = run.deadlineAt - Date.now();
+  if (remaining <= 0) throw deadlineExceeded(run);
+  return remaining < ownLimitMs ? { timeoutMs: remaining, cutByDeadline: true } : { timeoutMs: ownLimitMs, cutByDeadline: false };
+}
+
+/**
+ * Runs `program` in the sandbox within `ownLimitMs` and the deadline. A run the deadline cut short is the deadline's error; a
+ * run past its own limit throws SandboxedTimeoutError for the caller to name.
+ */
+async function launchInRun(
+  run: DjvuRun,
+  ownLimitMs: number,
+  program: string,
+  args: string[],
+  limits: Pick<LaunchedExecutionOptions, 'maxBuffer' | 'maxFileSize' | 'expectedOutputBytes' | 'env'>
+): Promise<SandboxedExecutionResult> {
+  const slice = sliceOf(run, ownLimitMs);
+  const options: LaunchedExecutionOptions = { memoryLimitMb: MEMORY_LIMIT_MB, networkIsolated: true, signal: run.job.options.signal, cwd: run.tempDir, timeoutMs: slice.timeoutMs, ...limits };
+  try {
+    return await launchSandboxedBinary(program, args, options);
+  } catch (err) {
+    if (err instanceof SandboxedTimeoutError && slice.cutByDeadline) throw deadlineExceeded(run);
+    throw err;
+  }
 }
 
 /** `djvused` ships in the package of `ddjvu` and sits next to it. */
@@ -149,58 +221,78 @@ function reportProgramOf(job: DjvuJob): string {
   return program;
 }
 
-/** What `script` of `djvused` prints for the document, in the sandbox. */
-async function runReport(run: DjvuRun, script: string): Promise<string> {
+/** What `script` of `djvused` prints for the document, in the sandbox, and how long the run took. */
+async function runReport(run: DjvuRun, script: string, ownLimitMs: number): Promise<{ stdout: string; elapsedMs: number }> {
   const program = reportProgramOf(run.job);
-  const limits = sandboxLimits(run, {
-    timeoutMs: remainingMs(run, REPORT_TIMEOUT_MS),
+  const started = Date.now();
+  const report = await launchInRun(run, ownLimitMs, program, ['-e', script, run.inputPath], {
     maxBuffer: DJVUSED_MAX_OUTPUT_BYTES,
     maxFileSize: REPORT_MAX_FILE_BYTES,
     expectedOutputBytes: REPORT_EXPECTED_OUTPUT_BYTES,
   });
-  const report = await launchSandboxedBinary(program, ['-e', script, run.inputPath], limits);
-  return report.stdout.toString('utf-8');
+  return { stdout: report.stdout.toString('utf-8'), elapsedMs: Date.now() - started };
 }
 
-/** The page count `djvused -e 'n;ls'` reports, under the page limit. */
-async function readPageCount(run: DjvuRun): Promise<number> {
+/** The page count `djvused -e n` reports, under the page limit. */
+async function readPageCount(run: DjvuRun): Promise<{ pageCount: number; elapsedMs: number }> {
   try {
-    return parseDjvusedPageCount(await runReport(run, DJVUSED_DIRECTORY_SCRIPT));
+    const { stdout, elapsedMs } = await runReport(run, DJVUSED_PAGE_COUNT_SCRIPT, PAGE_COUNT_RUN_TIMEOUT_MS);
+    return { pageCount: parseDjvusedPageCount(stdout), elapsedMs };
   } catch (err) {
     throw toRendererError(err, REPORT_PROGRAM, run.job.src, run.tempDir);
   }
 }
 
-/**
- * How a `size` run that did not open the pages ended, or undefined for a failure that is not the document's: the deadline of the
- * job, a program that did not start, an output over its limit. The sandbox reports a segmentation fault under the address space
- * limit as the memory limit (process-sandbox.ts), which is how the stack overflow of a deep or cyclic include graph arrives.
- */
-function failedSizeRun(err: unknown, tempDir: string): string | undefined {
-  if (err instanceof SandboxedTimeoutError) return err.timeoutMs >= REPORT_TIMEOUT_MS ? `ran past its ${REPORT_TIMEOUT_MS} ms limit` : undefined;
-  if (err instanceof SandboxedMemoryLimitError) return `crashed or ran out of its ${err.limitMb} MB memory limit`;
-  if (!(err instanceof SandboxedProcessError) || err.spawnErrorCode !== undefined) return undefined;
-  if (err.signal !== null) return `crashed (${err.signal})`;
-  const detail = stderrDetail(err.stderr, tempDir);
-  return `exited with status ${err.exitCode}${detail ? `: ${detail}` : ''}`;
+function includeVerdict(how: string): SizeRunFailure {
+  return { kind: 'verdict', message: `The DjVu document's include structure is too deep, cyclic or damaged: djvused could not open its pages and ${how}.` };
 }
 
 /**
- * Checks the size of every page against the pixel limit: `ddjvu` draws each page at its own size. The run opens the pages and the
- * files they include, so its failure refuses the document before `ddjvu` starts on it.
+ * How a `size` run that did not open the pages ended. Only what the program raises is a verdict: a status other than zero, or a
+ * crash signal, which the sandbox reports as the memory limit when it is a segmentation fault under the address space limit
+ * (process-sandbox.ts), as the stack overflow of a deep or cyclic include graph arrives. A kill, a run ended with no status and
+ * no signal (a lost launcher helper), a program that did not start and an output over its limit are not the document's.
  */
-async function checkPageSizes(run: DjvuRun, pageCount: number): Promise<void> {
-  let output: string;
+function failedSizeRun(err: unknown, tempDir: string): SizeRunFailure {
+  if (err instanceof SandboxedTimeoutError) {
+    return { kind: 'verdict', message: `djvused could not open the pages of the DjVu document within its ${SIZE_RUN_TIMEOUT_MS} ms limit.` };
+  }
+  if (err instanceof SandboxedMemoryLimitError) {
+    return err.signal !== undefined && CRASH_SIGNALS.has(err.signal) ? includeVerdict(`crashed (${err.signal}) under its ${err.limitMb} MB memory limit`) : NOT_THE_DOCUMENT;
+  }
+  if (!(err instanceof SandboxedProcessError) || err.spawnErrorCode !== undefined) return NOT_THE_DOCUMENT;
+  if (err.signal !== null) return CRASH_SIGNALS.has(err.signal) ? includeVerdict(`crashed (${err.signal})`) : NOT_THE_DOCUMENT;
+  if (err.exitCode === null || err.exitCode === 0) return NOT_THE_DOCUMENT;
+  const detail = stderrDetail(err.stderr, tempDir);
+  return includeVerdict(`exited with status ${err.exitCode}${detail ? `: ${detail}` : ''}`);
+}
+
+/**
+ * The size of every page, checked against the pixel limit: `ddjvu` draws each page at its own size. The run opens the pages and
+ * the files they include, so its failure refuses the document before `ddjvu` starts on it. Every page is checked, also for a
+ * selection: the include structure of any page is the document's.
+ */
+async function readPageSizes(run: DjvuRun, pageCount: number): Promise<{ sizes: DjvuPageSize[]; elapsedMs: number }> {
+  let report: { stdout: string; elapsedMs: number };
   try {
-    output = await runReport(run, DJVUSED_SIZE_SCRIPT);
+    report = await runReport(run, DJVUSED_SIZE_SCRIPT, SIZE_RUN_TIMEOUT_MS);
   } catch (err) {
     const failure = failedSizeRun(err, run.tempDir);
-    if (failure === undefined) throw toRendererError(err, REPORT_PROGRAM, run.job.src, run.tempDir);
-    throw new DjvuIncludeStructureError(
-      `The DjVu document's include structure is too deep, cyclic or damaged: djvused could not open its pages and ${failure}.`
-    );
+    if (failure.kind === 'not-the-document') throw toRendererError(err, REPORT_PROGRAM, run.job.src, run.tempDir);
+    throw new DjvuIncludeStructureError(failure.message);
   }
-  parseDjvusedSizes(output, pageCount);
+  return { sizes: parseDjvusedSizes(report.stdout, pageCount), elapsedMs: report.elapsedMs };
+}
+
+async function readReport(run: DjvuRun): Promise<DjvuReport> {
+  const count = await readPageCount(run);
+  const { sizes, elapsedMs } = await readPageSizes(run, count.pageCount);
+  return { sizes, reportMs: count.elapsedMs + elapsedMs };
+}
+
+/** The budget of `ddjvu` for a document whose reports took `reportMs` and whose drawn pages hold `drawnPixels`. */
+export function drawBudgetMs(reportMs: number, drawnPixels: number): number {
+  return Math.ceil(Math.max(DRAW_BUDGET_FLOOR_MS, DRAW_BUDGET_REPORT_FACTOR * reportMs) + drawnPixels / DRAW_PIXELS_PER_MS);
 }
 
 /** The pages as the `-page` argument of the program: `3-5,8`. */
@@ -213,38 +305,54 @@ function withoutPageSelection(options: WorkerEngineOptions): WorkerEngineOptions
   return { ...options, page: undefined, pages: undefined };
 }
 
+function pixelsOf(sizes: readonly DjvuPageSize[], pages: readonly number[]): number {
+  return pages.reduce((sum, page) => sum + sizes[page - 1].width * sizes[page - 1].height, 0);
+}
+
 /**
  * What to draw. A PDF target is every page. A page target is the pages the request selects, at most as many as the other page
  * chains render in one request (the whole document when none is selected), so that a long document is not drawn for one page.
  */
-function drawPlanOf(job: DjvuJob, pageCount: number): DrawPlan {
-  if (job.tgt === PDF_TARGET) return { pageSpec: undefined, pageCount, maxBytes: MAX_OUTPUT_BYTES };
-  const selected =
-    resolvePageSelection(job.options.page, job.options.pages, pageCount, (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)) ??
-    Array.from({ length: pageCount }, (_, index) => index + 1);
+function drawPlanOf(job: DjvuJob, sizes: readonly DjvuPageSize[]): DrawPlan {
+  const pageCount = sizes.length;
+  const every = Array.from({ length: pageCount }, (_, index) => index + 1);
+  if (job.tgt === PDF_TARGET) return { pageSpec: undefined, pageCount, drawnPixels: pixelsOf(sizes, every), maxBytes: MAX_OUTPUT_BYTES };
+  const selected = resolvePageSelection(job.options.page, job.options.pages, pageCount, (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)) ?? every;
   const drawn = boundRenderedPages(selected, { ...job.options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES });
-  return { pageSpec: drawn.length === pageCount ? undefined : pageSpecOf(drawn), pageCount: drawn.length, maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES };
+  return {
+    pageSpec: drawn.length === pageCount ? undefined : pageSpecOf(drawn),
+    pageCount: drawn.length,
+    drawnPixels: pixelsOf(sizes, drawn),
+    maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES,
+  };
 }
 
-async function writePdf(run: DjvuRun, plan: DrawPlan): Promise<string> {
+async function drawWithinBudget(run: DjvuRun, plan: DrawPlan, budgetMs: number, pdfPath: string): Promise<void> {
   const { job, tempDir, inputPath } = run;
-  const pdfPath = path.join(tempDir, PDF_FILE);
-  const limits = sandboxLimits(run, {
-    timeoutMs: remainingMs(run, run.limitMs),
-    maxBuffer: job.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
-    maxFileSize: MAX_OUTPUT_BYTES,
-    expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
-  });
   const pageArguments = plan.pageSpec === undefined ? [] : [`-page=${plan.pageSpec}`];
   try {
-    await launchSandboxedBinary(job.interpreter, [FORMAT_FLAG, ...pageArguments, inputPath, pdfPath], limits);
+    await launchInRun(run, budgetMs, job.interpreter, [FORMAT_FLAG, ...pageArguments, inputPath, pdfPath], {
+      maxBuffer: job.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
+      maxFileSize: MAX_OUTPUT_BYTES,
+      expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
+      env: DRAW_ENVIRONMENT,
+    });
   } catch (err) {
+    if (err instanceof SandboxedTimeoutError) throw new DjvuDrawTimeoutError(job.src, budgetMs);
     throw toRendererError(err, RENDER_PROGRAM, job.src, tempDir);
   }
+}
+
+async function writePdf(run: DjvuRun, report: DjvuReport, plan: DrawPlan): Promise<string> {
+  const { job, tempDir } = run;
+  const pdfPath = path.join(tempDir, PDF_FILE);
+  await drawWithinBudget(run, plan, drawBudgetMs(report.reportMs, plan.drawnPixels), pdfPath);
   const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
   if (size === 0) throw new ConversionFailedError(`ddjvu drew no page from the .${job.src} file.`);
   if (size > plan.maxBytes) throw drawnPdfTooLargeError('ddjvu', job.src, size, plan.maxBytes);
-  const drawn = await job.countPdfPages(pdfPath, tempDir, remainingMs(run, PAGE_COUNT_TIMEOUT_MS), job.options.signal);
+  const countSlice = sliceOf(run, PDF_PAGE_COUNT_TIMEOUT_MS);
+  if (countSlice.timeoutMs < PDF_PAGE_COUNT_FLOOR_MS) throw deadlineExceeded(run);
+  const drawn = await job.countPdfPages(pdfPath, tempDir, countSlice.timeoutMs, job.options.signal);
   if (drawn !== plan.pageCount) {
     throw new ConversionFailedError(`ddjvu drew ${drawn} of the ${plan.pageCount} pages that the .${job.src} file lists.`);
   }
@@ -271,9 +379,8 @@ export async function convertDjvu(job: DjvuJob): Promise<WorkerConversionResult 
     fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
     const limitMs = runTimeoutMs(options);
     const run: DjvuRun = { job, tempDir, inputPath, limitMs, deadlineAt: Date.now() + limitMs };
-    const pageCount = await readPageCount(run);
-    await checkPageSizes(run, pageCount);
-    return writePdf(run, drawPlanOf(job, pageCount));
+    const report = await readReport(run);
+    return writePdf(run, report, drawPlanOf(job, report.sizes));
   };
 
   if (tgt === PDF_TARGET) {
