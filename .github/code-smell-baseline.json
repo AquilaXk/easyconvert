@@ -1548,7 +1548,7 @@
     "rule": "max-lines-per-function",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 274
+    "maxValue": 273
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1576,7 +1576,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9601
+    "maxValue": 9570
   },
   {
     "file": "src/lib/conversions/office.ts",
