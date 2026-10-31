@@ -24,6 +24,13 @@ const PROTOCOL_WHITELIST = 'file';
  * images the registry converts to video, and the subtitle files a conversion adds). One name is forced with `-f`; several (a
  * format whose files come in more than one container or bitstream) are passed as `-format_whitelist`, and FFmpeg's own probe
  * picks among them. No entry names a demuxer of REFERENCE_INPUT_FORMATS.
+ *
+ * FFmpeg checks the whitelist after its probe has chosen (`avformat_open_input`, demux.c line 286), so a real file whose container is not the
+ * one its name says needs that container in the list of its format. The extra demuxers each read one local file and are
+ * chosen by their own `read_probe` (FFmpeg 9.0.2): `argo_asf` (argo_asf.c, tag "ASF\0") under `.asf`, `aiff` (aiffdec.c,
+ * "FORM" with "AIFF" or "AIFC") under `.caf`, `ea` (electronicarts.c, among them the tag "MPCh") under `.mpc`, `lmlm4`
+ * (lmlm4.c) under `.divx` and `.xvid`, and `mpegts` (mpegts.c) under `.mpg` and `.mpeg`. Each is the container of a real
+ * file of the FFmpeg test suite or samples that was refused without it (tests/media-container-named-otherwise.test.ts).
  */
 export const MEDIA_INPUT_DEMUXERS: Readonly<Record<string, readonly string[]>> = {
   mp3: ['mp3'],
@@ -37,7 +44,7 @@ export const MEDIA_INPUT_DEMUXERS: Readonly<Record<string, readonly string[]>> =
   spx: ['ogg'],
   wma: ['asf'],
   wmv: ['asf'],
-  asf: ['asf'],
+  asf: ['asf', 'argo_asf'],
   dvr: ['asf', 'mpeg'],
   m4a: ['mov'],
   m4b: ['mov'],
@@ -54,7 +61,7 @@ export const MEDIA_INPUT_DEMUXERS: Readonly<Record<string, readonly string[]>> =
   aifc: ['aiff'],
   amr: ['amr', 'amrnb', 'amrwb'],
   au: ['au'],
-  caf: ['caf'],
+  caf: ['caf', 'aiff'],
   dts: ['dts', 'dtshd'],
   ac3: ['ac3', 'eac3'],
   mka: ['matroska'],
@@ -66,19 +73,19 @@ export const MEDIA_INPUT_DEMUXERS: Readonly<Record<string, readonly string[]>> =
   rmvb: ['rm'],
   voc: ['voc'],
   ape: ['ape'],
-  mpc: ['mpc', 'mpc8'],
+  mpc: ['mpc', 'mpc8', 'ea'],
   dss: ['dss'],
   avi: ['avi'],
-  divx: ['avi'],
-  xvid: ['avi'],
+  divx: ['avi', 'lmlm4'],
+  xvid: ['avi', 'lmlm4'],
   flv: ['flv'],
   ts: ['mpegts'],
   mts: ['mpegts'],
   m2ts: ['mpegts'],
   vob: ['mpeg'],
   mod: ['mpeg'],
-  mpg: ['mpeg', 'mpegvideo'],
-  mpeg: ['mpeg', 'mpegvideo'],
+  mpg: ['mpeg', 'mpegvideo', 'mpegts'],
+  mpeg: ['mpeg', 'mpegvideo', 'mpegts'],
   m2v: ['mpegvideo'],
   h264: ['h264'],
   h265: ['hevc'],

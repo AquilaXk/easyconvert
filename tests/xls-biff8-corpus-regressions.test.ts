@@ -485,8 +485,8 @@ describe('BIFF5 workbooks and files that hold both streams (issue 668: first let
   });
 });
 
-describe('an encrypted workbook that the office suite would read (issue 668)', () => {
-  // The in-process targets answer 422 above; the targets LibreOffice writes must answer the same way, from the same typed error.
+describe('an encrypted workbook that the office suite could not load (issue 668)', () => {
+  // The in-process targets answer 422 above; the targets LibreOffice writes must answer the same way, from the same typed error. The suite is started on the workbook (it decrypts the default password) and the answer follows its failure.
   const variants: Array<[string, Buffer]> = [
     ['XOR obfuscation', XOR_FILEPASS],
     ['RC4 encryption', RC4_FILEPASS],
@@ -496,7 +496,7 @@ describe('an encrypted workbook that the office suite would read (issue 668)', (
   describe.each(variants)('%s', (_name, filePass) => {
     const compound = buildCompoundFile([{ name: 'Workbook', data: encryptedWorkbook(filePass) }]);
 
-    it.each(['ods', 'xlsx', 'pdf', 'png'])('is refused with status 422 for the .%s target before LibreOffice starts', async (target) => {
+    for (const target of ['ods', 'xlsx', 'pdf', 'png']) oracleTest(`is refused with status 422 for the .${target} target after LibreOffice could not load it`, ['soffice'], async () => {
       const failure = await dispatchConversion(compound, 'xls', target, {}, 'locked.xls').catch((err: unknown) => err);
       expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
       expect((failure as EncryptedOfficeDocumentError).status).toBe(422);
@@ -504,7 +504,7 @@ describe('an encrypted workbook that the office suite would read (issue 668)', (
     }, 120_000);
   });
 
-  it('is refused the same way when the workbook is a bare BIFF stream', async () => {
+  oracleTest('is refused the same way when the workbook is a bare BIFF stream', ['soffice'], async () => {
     const failure = await dispatchConversion(encryptedWorkbook(RC4_FILEPASS), 'xls', 'ods', {}, 'locked.xls').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
     expect((failure as EncryptedOfficeDocumentError).status).toBe(422);
