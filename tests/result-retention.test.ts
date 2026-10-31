@@ -902,6 +902,8 @@ describe('the sweep timer', () => {
     fs.rmSync(ledgerDir, { recursive: true, force: true });
   });
 
+  const SETTLE_HANG_GUARD_MS = 10_000;
+
   async function dueKey(): Promise<string> {
     const key = `conversions/sweep-timer/${Date.now()}_${crypto.randomBytes(4).toString('hex')}.bin`;
     await registerResult(key);
@@ -909,9 +911,13 @@ describe('the sweep timer', () => {
     return key;
   }
 
-  /** Lets the file system work that the fake timers do not wait for finish; true when `done` holds in time. */
+  /**
+   * Lets the file system work that the fake timers do not wait for finish; true when `done` holds. It waits on the real clock
+   * (`performance` is not faked) up to a hang guard, not for a number of turns, which a loaded runner can use up before the work ends.
+   */
   async function settles(done: () => boolean): Promise<boolean> {
-    for (let attempt = 0; attempt < 500 && !done(); attempt++) await new Promise((resolve) => setImmediate(resolve));
+    const deadline = performance.now() + SETTLE_HANG_GUARD_MS;
+    while (!done() && performance.now() < deadline) await new Promise((resolve) => setImmediate(resolve));
     return done();
   }
 
