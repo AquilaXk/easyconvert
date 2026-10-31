@@ -47,10 +47,14 @@ const NOT_TAKEN_STATUSES: ReadonlySet<number> = new Set([429, 503]);
 const UNKNOWN_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 /** The answer to a repeat of a request with an idempotency key while the first one still runs. */
 const IN_FLIGHT_STATUS = 409;
-/** Refusals of the rate-limit status that last until the next day: the daily quota and the upload budget of a visitor. */
+/**
+ * Refusals of a status that says "not taken up" that sending again cannot change: the daily quota and the upload budget
+ * of a visitor, which last until the next day, and uploads without an account turned off by the server's setup.
+ */
 const FINAL_REFUSAL_TYPES: ReadonlySet<string> = new Set([
   'https://api.easyconvert.io/problems/quota-exceeded',
   'https://api.easyconvert.io/problems/upload-budget-exceeded',
+  'https://api.easyconvert.io/problems/client-ip-trust-unconfigured',
 ]);
 const MS_PER_SECOND = 1000;
 
@@ -81,6 +85,7 @@ type ServerStage =
   | { kind: 'none' }
   | { kind: 'opening'; request: CreationRequest }
   | { kind: 'uploading'; uploadId: string }
+  | { kind: 'completing'; uploadId: string; request: CreationRequest }
   | { kind: 'stored'; storageKey: string }
   | { kind: 'starting'; storageKey: string; request: CreationRequest }
   | { kind: 'queued'; jobId: string }
@@ -188,9 +193,13 @@ function creationRequest(url: string, payload: Body): CreationRequest {
   return { url, payload, idempotencyKey: crypto.randomUUID() };
 }
 
-/** Whether an answer says what the request did: anything but an edge failure or a repeat that met the first one running. */
-function settlesOutcome(res: Response): boolean {
-  return !UNKNOWN_STATUSES.has(res.status) && res.status !== IN_FLIGHT_STATUS;
+/**
+ * Whether an answer says the request created nothing: a refusal of the request itself, or an answer that it was not taken
+ * up. A server error does not say it, since the request may have created something before it failed, and neither does a
+ * repeat that met the first one running.
+ */
+function createdNothing(res: Response): boolean {
+  return res.status < 500 ? res.status !== IN_FLIGHT_STATUS : NOT_TAKEN_STATUSES.has(res.status);
 }
 
 /**
@@ -206,7 +215,7 @@ async function create(
   onRefused: () => void
 ): Promise<Body> {
   const res = await sendWithRetry(postJson(request.url, request.payload, { idempotencyKey: request.idempotencyKey }), hooks.signal, timing, 'idempotent');
-  if (!res.ok && settlesOutcome(res)) onRefused();
+  if (!res.ok && createdNothing(res)) onRefused();
   return readBody(res, action);
 }
 
@@ -258,11 +267,13 @@ async function uploadInParts(file: File, call: CallState, hooks: ResumableHooks,
     hooks.onProgress(Math.round((Math.min(start + partBytes, file.size) / file.size) * UPLOAD_PROGRESS_END));
   }
 
-  // The completion is not cut short by a cancellation: its answer names the stored file, which is then given up.
-  const completed = await readBody(
-    await sendWithRetry(postJson(`${MULTIPART_URL}?action=complete`, { uploadId, parts: receipts }), signal, timing, 'once'),
-    'Finishing the upload'
-  );
+  // The completion is not cut short by a cancellation: its answer names the stored file, which is then given up. Its key
+  // asks again which file it stored when the answer is lost.
+  const completing = creationRequest(`${MULTIPART_URL}?action=complete`, { uploadId, parts: receipts });
+  call.stage = { kind: 'completing', uploadId, request: completing };
+  const completed = await create(completing, 'Finishing the upload', hooks, timing, () => {
+    call.stage = { kind: 'uploading', uploadId };
+  });
   const storageKey = readString(completed, 'key', 'Finishing the upload');
   call.stage = { kind: 'stored', storageKey };
   throwIfAborted(signal);
@@ -362,6 +373,10 @@ async function releaseServerState(stage: ServerStage): Promise<void> {
     }
     case 'uploading':
       return abortUpload(stage.uploadId);
+    case 'completing': {
+      const storageKey = await askAgain(stage.request, 'key');
+      return storageKey ? discardUpload(storageKey) : abortUpload(stage.uploadId);
+    }
     case 'stored':
       return discardUpload(stage.storageKey);
     case 'starting': {
@@ -388,6 +403,9 @@ export async function executeResumableCloudConversion(
   timing: ResumableTiming = DEFAULT_RESUMABLE_TIMING
 ): Promise<ResumableConversionResult> {
   const call: CallState = { stage: { kind: 'none' } };
+  // A page that is closed or left mid-call closes what the call made; the requests go out with keepalive.
+  const onPageHide = () => void releaseServerState(call.stage);
+  globalThis.addEventListener?.('pagehide', onPageHide);
   try {
     hooks.onStage?.('uploading');
     const storageKey = await uploadInParts(file, call, hooks, timing);
@@ -399,5 +417,7 @@ export async function executeResumableCloudConversion(
   } catch (err) {
     void releaseServerState(call.stage);
     throw err;
+  } finally {
+    globalThis.removeEventListener?.('pagehide', onPageHide);
   }
 }

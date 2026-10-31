@@ -1,10 +1,46 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { SMALL_REQUEST_BODY_MAX_BYTES, partBodyVerdict, requestBodyVerdict } from '../src/lib/api/request-body-limit';
 import { SINGLE_REQUEST_BODY_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 
-type MiddlewareFn = (request: NextRequest) => Response;
+type MiddlewareFn = (request: NextRequest) => Response | Promise<Response>;
+
+/** The check of a request to `pathAndQuery` that declares `length`, or none when null. */
+function verdict(pathAndQuery: string, length: string | null) {
+  return requestBodyVerdict(new URL(`http://localhost:3000${pathAndQuery}`), new Headers(length === null ? {} : { 'content-length': length }));
+}
+
+function lengthHeaders(length: string | null): Headers {
+  return new Headers(length === null ? {} : { 'content-length': length });
+}
+
+const CHUNKED = new Headers({ 'transfer-encoding': 'chunked' });
+
+/** A request whose body of `bytes` bytes comes in chunks, without a declared length. */
+function chunked(pathAndQuery: string, bytes: number): NextRequest {
+  const chunk = new Uint8Array(64 * 1024);
+  let left = bytes;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (left <= 0) {
+        controller.close();
+        return;
+      }
+      const size = Math.min(left, chunk.length);
+      left -= size;
+      controller.enqueue(chunk.subarray(0, size));
+    },
+  });
+  return new NextRequest(`http://localhost:3000${pathAndQuery}`, {
+    method: 'POST',
+    headers: { 'transfer-encoding': 'chunked', 'x-forwarded-for': '203.0.113.91' },
+    body,
+    duplex: 'half',
+  } as never);
+}
 
 async function loadMiddleware(): Promise<MiddlewareFn> {
   vi.resetModules();
@@ -25,31 +61,72 @@ afterEach(() => {
 describe('the body a route takes, by its declared length', () => {
   it('gives a route that takes no file 1 MiB and a route that takes files one request', () => {
     expect(SMALL_REQUEST_BODY_MAX_BYTES).toBe(1024 * 1024);
-    expect(requestBodyVerdict('/api/auth/login', String(SMALL_REQUEST_BODY_MAX_BYTES))).toBeNull();
-    expect(requestBodyVerdict('/api/auth/login', String(SMALL_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
-    expect(requestBodyVerdict('/api/queue/jobs', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
-    expect(requestBodyVerdict('/api/queue/jobs', String(SINGLE_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
+    expect(verdict('/api/auth/login', String(SMALL_REQUEST_BODY_MAX_BYTES))).toBeNull();
+    expect(verdict('/api/auth/login', String(SMALL_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
+    expect(verdict('/api/queue/jobs', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
+    expect(verdict('/api/queue/jobs', String(SINGLE_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
   });
 
   it('counts the sub-paths of an upload route as that route, and a look-alike prefix as another route', () => {
-    expect(requestBodyVerdict('/api/v1/uploads/direct/part', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
-    expect(requestBodyVerdict('/api/v1/uploads/tus/abc', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
-    expect(requestBodyVerdict('/api/convertx', String(SMALL_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
+    expect(verdict('/api/v1/uploads/direct/part', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
+    expect(verdict('/api/v1/uploads/tus/abc', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
+    expect(verdict('/api/convertx', String(SMALL_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
   });
 
   it.each(['abc', '12x', '-1', '1.5', '', ' ', '99999999999999999999'])('refuses the declared length %j as malformed', (length) => {
-    expect(requestBodyVerdict('/api/convert', length)).toEqual({ status: 400, detail: 'The Content-Length header is not a whole number of bytes.' });
-    expect(partBodyVerdict(length)?.status).toBe(400);
+    expect(verdict('/api/convert', length)).toEqual({ status: 400, detail: 'The Content-Length header is not a whole number of bytes.' });
+    expect(partBodyVerdict(lengthHeaders(length))?.status).toBe(400);
   });
 
-  it('reads a body without a declared length, which the framework bounds itself', () => {
-    expect(requestBodyVerdict('/api/auth/login', null)).toBeNull();
-    expect(partBodyVerdict(null)).toBeNull();
+  it('lets a request without a body through', () => {
+    expect(verdict('/api/auth/login', null)).toBeNull();
+    expect(verdict('/api/convert', null)).toBeNull();
+    expect(partBodyVerdict(lengthHeaders(null))).toBeNull();
+  });
+
+  it('refuses a file sent without a length, which the framework would cut short at one request without an error', () => {
+    const lengthRequired = {
+      status: 411,
+      detail: 'A request that carries a file must declare its Content-Length; send the body with its length instead of in chunks.',
+    };
+    const target = (pathAndQuery: string) => new URL(`http://localhost:3000${pathAndQuery}`);
+    expect(requestBodyVerdict(target('/api/queue/jobs'), CHUNKED)).toEqual(lengthRequired);
+    expect(requestBodyVerdict(target('/api/convert'), CHUNKED)).toEqual(lengthRequired);
+    expect(requestBodyVerdict(target('/api/storage/multipart?action=chunk&uploadId=u&partNumber=1'), CHUNKED)).toEqual(lengthRequired);
+    expect(partBodyVerdict(CHUNKED)).toEqual(lengthRequired);
+  });
+
+  it('counts any other body sent without a length against the small limit', () => {
+    const target = (pathAndQuery: string) => new URL(`http://localhost:3000${pathAndQuery}`);
+    expect(requestBodyVerdict(target('/api/auth/login'), CHUNKED)).toEqual({
+      countUpTo: SMALL_REQUEST_BODY_MAX_BYTES,
+      detail: 'This request carries more than the 1 MiB this route takes.',
+    });
+    expect(requestBodyVerdict(target('/api/storage/multipart?action=initiate'), CHUNKED)).toMatchObject({ countUpTo: SMALL_REQUEST_BODY_MAX_BYTES });
+  });
+
+  it('gives the parts route one request only for a part; its other actions take a small JSON body', () => {
+    expect(verdict('/api/storage/multipart?action=chunk&uploadId=u&partNumber=1', String(SINGLE_REQUEST_BODY_MAX_BYTES))).toBeNull();
+    expect(verdict('/api/storage/multipart?action=initiate', String(SMALL_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
+    expect(verdict('/api/storage/multipart', String(SMALL_REQUEST_BODY_MAX_BYTES + 1))?.status).toBe(413);
+    expect(verdict('/api/storage/multipart?action=complete', String(SMALL_REQUEST_BODY_MAX_BYTES))).toBeNull();
+  });
+
+  it('gives one request to every route that reads its body whole', () => {
+    const apiDir = path.join(__dirname, '../src/app/api');
+    const routes = fs
+      .readdirSync(apiDir, { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('route.ts') && fs.readFileSync(path.join(apiDir, file), 'utf8').includes('withinSingleRequest('))
+      .map((file) => `/api/${path.dirname(file).split(path.sep).join('/')}`);
+    expect(routes.length).toBeGreaterThanOrEqual(6);
+    for (const route of routes) {
+      expect(verdict(route, String(SINGLE_REQUEST_BODY_MAX_BYTES)), route).toBeNull();
+    }
   });
 
   it('holds a part to the largest part', () => {
-    expect(partBodyVerdict(String(UPLOAD_PART_MAX_BYTES))).toBeNull();
-    expect(partBodyVerdict(String(UPLOAD_PART_MAX_BYTES + 1))).toEqual({
+    expect(partBodyVerdict(lengthHeaders(String(UPLOAD_PART_MAX_BYTES)))).toBeNull();
+    expect(partBodyVerdict(lengthHeaders(String(UPLOAD_PART_MAX_BYTES + 1)))).toEqual({
       status: 413,
       detail: 'This part carries 67,108,865 bytes, over the largest part of 64 MiB.',
     });
@@ -57,13 +134,13 @@ describe('the body a route takes, by its declared length', () => {
 
   it('names the parts flow of the web application to its routes and the public flow to the public routes', () => {
     const over = String(SINGLE_REQUEST_BODY_MAX_BYTES + 1);
-    expect(requestBodyVerdict('/api/convert', over)).toEqual({
+    expect(verdict('/api/convert', over)).toEqual({
       status: 413,
       detail:
         'This request carries 68,157,441 bytes, over the 64 MiB one request may carry. Send a larger file in parts of at most 64 MiB: ' +
         'open an upload with POST /api/storage/multipart, send the parts, then start the conversion with POST /api/queue/jobs on the stored file.',
     });
-    expect(requestBodyVerdict('/api/v1/convert', over)).toEqual({
+    expect(verdict('/api/v1/convert', over)).toEqual({
       status: 413,
       detail:
         'This request carries 68,157,441 bytes, over the 64 MiB one request may carry. Send a larger file in parts of at most 64 MiB: ' +
@@ -87,14 +164,33 @@ describe('the edge middleware refuses a body before any route buffers it', () =>
   it('answers 413 for an upload route past one request and 400 for a malformed length', async () => {
     const middleware = await loadMiddleware();
 
-    const over = middleware(declaring('/api/storage/multipart', String(SINGLE_REQUEST_BODY_MAX_BYTES + 1)));
+    const over = await middleware(declaring('/api/storage/multipart?action=chunk', String(SINGLE_REQUEST_BODY_MAX_BYTES + 1)));
     expect(over.status).toBe(413);
     expect((await over.json()).detail).toContain('in parts of at most 64 MiB');
 
-    const malformed = middleware(declaring('/api/queue/jobs', 'abc'));
+    const malformed = await middleware(declaring('/api/queue/jobs', 'abc'));
     expect(malformed.status).toBe(400);
 
-    expect(middleware(declaring('/api/storage/multipart', String(SINGLE_REQUEST_BODY_MAX_BYTES))).headers.get('x-middleware-next')).toBe('1');
+    const part = await middleware(declaring('/api/storage/multipart?action=chunk', String(SINGLE_REQUEST_BODY_MAX_BYTES)));
+    expect(part.headers.get('x-middleware-next')).toBe('1');
+  });
+
+  it('answers 411 for a file sent without a length', async () => {
+    const middleware = await loadMiddleware();
+    const res = await middleware(chunked('/api/queue/jobs', 1024));
+    expect(res.status).toBe(411);
+    expect(await res.json()).toMatchObject({ status: 411, title: 'Length Required', instance: '/api/queue/jobs' });
+  });
+
+  it('counts a JSON body sent without a length, answering 413 past 1 MiB and letting one within it through', async () => {
+    const middleware = await loadMiddleware();
+
+    const over = await middleware(chunked('/api/auth/login', SMALL_REQUEST_BODY_MAX_BYTES + 1));
+    expect(over.status).toBe(413);
+    expect((await over.json()).detail).toBe('This request carries more than the 1 MiB this route takes.');
+
+    const within = await middleware(chunked('/api/auth/login', SMALL_REQUEST_BODY_MAX_BYTES));
+    expect(within.headers.get('x-middleware-next')).toBe('1');
   });
 });
 

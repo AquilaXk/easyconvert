@@ -79,6 +79,11 @@ export interface RetentionRecord {
   holds?: Record<string, number>;
   /** A sweep could not delete the object; the next attempt waits until then, so the key does not block the others. */
   retryAt?: number;
+  /**
+   * Set on the record of a file an account uploaded in parts. It is not a result: it is kept only for the jobs that read
+   * it, its owner may still get a signed link to it, a download does not deliver it, and it is not deleted for space.
+   */
+  accountUpload?: true;
 }
 
 export type RetentionReason = 'delivered' | 'expired' | 'capacity';
@@ -102,6 +107,16 @@ export function isHoldableKey(key: string): boolean {
 export function isRetainedKey(key: string): boolean {
   const { namespace } = classifyStorageKey(key);
   return namespace === 'job-result' || namespace === 'user-conversion';
+}
+
+/** Whether `record` is of an upload, ownerless or an account's, not of a result. */
+export function isUploadRecord(record: RetentionRecord): boolean {
+  return record.accountUpload === true || isUploadKey(record.key);
+}
+
+/** Whether `record` is of a result the retention rule tracks: a retained key that holds no account's upload. */
+export function isResultRecord(record: RetentionRecord): boolean {
+  return isRetainedKey(record.key) && record.accountUpload !== true;
 }
 
 export function newRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
@@ -187,7 +202,7 @@ export function holdRecord(record: RetentionRecord, holder: string, now: number)
   const holds = activeHolds(record, now);
   if (!(holder in holds) && Object.keys(holds).length >= MAX_HOLDS) return undefined;
   const until = now + JOB_INPUT_HOLD_MAX_MS;
-  return { ...record, holds: { ...holds, [holder]: isUploadKey(record.key) ? Math.min(until, record.createdAt + JOB_INPUT_HOLD_MAX_MS) : until } };
+  return { ...record, holds: { ...holds, [holder]: isUploadRecord(record) ? Math.min(until, record.createdAt + JOB_INPUT_HOLD_MAX_MS) : until } };
 }
 
 /** The record once the job `holder` ended; undefined when it held nothing. */
@@ -204,6 +219,14 @@ export function releaseHold(record: RetentionRecord, holder: string): RetentionR
  */
 export function newUploadRecord(key: string, now: number): RetentionRecord {
   return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [] };
+}
+
+/**
+ * The record of a file an account just uploaded in parts: kept for the jobs that read it for as long as an upload lives
+ * (JOB_INPUT_HOLD_MAX_MS), which is the lifetime the store gives the completed object.
+ */
+export function newAccountUploadRecord(key: string, now: number): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [], accountUpload: true };
 }
 
 /**

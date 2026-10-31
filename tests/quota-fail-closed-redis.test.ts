@@ -332,11 +332,13 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
     });
 
     it('opens an upload for an anonymous caller within the anonymous limit, and refuses one past it', async () => {
+      // An anonymous upload needs a caller a declared proxy attributes (docs/policy-decisions.md, entry 137).
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'cf-connecting-ip': '198.51.100.99',
+          'x-forwarded-for': '198.51.100.99',
         },
         body: JSON.stringify({
           filename: 'document.pdf',
@@ -353,7 +355,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       const tooLarge = await multipartHandler(
         new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.99' },
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.99' },
           body: JSON.stringify({ filename: 'document.pdf', totalSize: PLAN_MAX_FILE_BYTES.anonymous + 1 }),
         })
       );

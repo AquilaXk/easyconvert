@@ -189,7 +189,7 @@ describe('Security: Error Path Disclosure Prevention', () => {
       body: JSON.stringify({ uploadId }),
     });
     const completeRes = await multipartPost(completeReq);
-    expect(completeRes.status).toBe(500);
+    expect(completeRes.status).toBe(503);
 
     const rawBody = await completeRes.text();
     expect(rawBody).not.toContain(part1Info.filePath);

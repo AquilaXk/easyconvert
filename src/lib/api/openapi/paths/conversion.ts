@@ -19,6 +19,7 @@ import {
   CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
   DECODE_LIMIT_DESCRIPTION,
+  LENGTH_REQUIRED_DESCRIPTION,
   PLAN_FILE_LIMIT_DESCRIPTION,
   SINGLE_REQUEST_LIMIT_DESCRIPTION,
 } from '../shared';
@@ -94,6 +95,7 @@ export const conversionPaths = {
         '400': createProblemResponse('Bad request or missing required parameters.'),
         '401': createProblemResponse('Unauthorized: API key or session required.'),
         '403': createProblemResponse('Forbidden: Insufficient scope or quota exhausted.'),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(STORED_PAYLOAD_LIMIT_DESCRIPTION),
         '422': createProblemResponse('Unprocessable Entity: Header encrypted, missing volume, or invalid archive.'),
         '500': createProblemResponse('Internal server error.'),
@@ -134,6 +136,7 @@ export const conversionPaths = {
         '422': createPdfaProblemResponse(
           `An idempotency key was reused with a different request payload or parameters, or the document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`
         ),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${REQUEST_PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
@@ -245,6 +248,7 @@ export const conversionPaths = {
         '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
         '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '422': createProblemResponse(
           'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), or an idempotency key was reused with a different request payload.'
         ),

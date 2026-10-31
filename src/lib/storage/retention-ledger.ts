@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Redis from 'ioredis';
 import { mapWithConcurrency } from '../conversions/ocr-page-batch';
+import { compareAndSetWithRetry } from '../redis/compare-and-set';
 import { readyGatedRedis } from '../redis/when-ready';
 import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
@@ -257,9 +258,6 @@ const REDIS_RECORD_PREFIX = `${RETENTION_REDIS_PREFIX}record:`;
 const REDIS_DUE_SET = `${RETENTION_REDIS_PREFIX}due`;
 /** Attempts of a compare-and-set before an update gives up; each failed one means another instance just wrote. */
 const MAX_UPDATE_ATTEMPTS = 16;
-/** A failed compare-and-set waits a random time up to this base doubled per attempt, so racing writers spread out. */
-const CAS_BACKOFF_BASE_MS = 2;
-const CAS_BACKOFF_MAX_MS = 100;
 const MGET_BATCH = 100;
 /** Longest one Redis command may take; a command that hangs fails instead of stopping the sweep. */
 const REDIS_COMMAND_TIMEOUT_MS = 5_000;
@@ -305,26 +303,27 @@ export class RedisRetentionLedger implements RetentionLedger {
     key: string,
     change: (current: RetentionRecord | undefined) => RetentionRecord | undefined
   ): Promise<RetentionRecord | undefined> {
-    for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
-      const raw = await this.redis.get(this.recordKey(key));
-      const next = change(raw === null ? undefined : parseRecord(raw));
-      if (!next) return undefined;
-      const keepUntil = (next.goneAt ?? sweepAt(next)) + GONE_RECORD_MS;
-      const written = await this.redis.eval(
-        COMPARE_AND_SET_LUA,
-        2,
-        this.recordKey(key),
-        REDIS_DUE_SET,
-        raw ?? '',
-        JSON.stringify(next),
-        String(Math.max(1, keepUntil - Date.now())),
-        next.goneAt === undefined ? String(sweepAt(next)) : '',
-        key
-      );
-      if (written === 1) return next;
-      await delay(crypto.randomInt(Math.min(CAS_BACKOFF_MAX_MS, CAS_BACKOFF_BASE_MS * 2 ** attempt) + 1));
-    }
-    throw new Error(`The retention record changed ${MAX_UPDATE_ATTEMPTS} times while it was being updated`);
+    return compareAndSetWithRetry<RetentionRecord | undefined>(
+      async () => {
+        const raw = await this.redis.get(this.recordKey(key));
+        const next = change(raw === null ? undefined : parseRecord(raw));
+        if (!next) return { written: undefined };
+        const keepUntil = (next.goneAt ?? sweepAt(next)) + GONE_RECORD_MS;
+        const written = await this.redis.eval(
+          COMPARE_AND_SET_LUA,
+          2,
+          this.recordKey(key),
+          REDIS_DUE_SET,
+          raw ?? '',
+          JSON.stringify(next),
+          String(Math.max(1, keepUntil - Date.now())),
+          next.goneAt === undefined ? String(sweepAt(next)) : '',
+          key
+        );
+        return written === 1 ? { written: next } : 'conflict';
+      },
+      { maxAttempts: MAX_UPDATE_ATTEMPTS, subject: 'The retention record' }
+    );
   }
 
   async forget(key: string): Promise<void> {

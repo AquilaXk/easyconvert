@@ -3,7 +3,9 @@ import { SINGLE_REQUEST_BODY_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PA
 
 /**
  * How large a request body each API route takes (docs/policy-decisions.md, entry 137), read from the `Content-Length`
- * before any body is read. Pure, so the edge middleware and the routes share it.
+ * before any body is read. A body sent without a length (`Transfer-Encoding: chunked`) is refused with 411 by a route
+ * that takes a file, since the framework would cut such a body short at one request without an error, and counted by
+ * the middleware against the small limit everywhere else. Pure, so the edge middleware and the routes share it.
  */
 
 const MIB = 1024 * 1024;
@@ -16,19 +18,35 @@ function exactBytes(bytes: number): string {
 /** The body of a route that takes no file: JSON or a form of a few fields. */
 export const SMALL_REQUEST_BODY_MAX_BYTES = MIB;
 
-/** Routes that take file bytes in a request, each up to SINGLE_REQUEST_BODY_MAX_BYTES; their sub-paths too. */
-const FILE_ROUTES: readonly string[] = [
-  '/api/convert',
-  '/api/queue/jobs',
-  '/api/storage/multipart',
-  '/api/v1/archives/inspect',
-  '/api/v1/convert',
-  '/api/v1/jobs',
-  '/api/v1/uploads',
+/**
+ * Routes that take file bytes in a request, each up to SINGLE_REQUEST_BODY_MAX_BYTES, with their sub-paths. A route
+ * that names an action takes a file only for that action: the other actions of the parts route are small JSON bodies.
+ */
+const FILE_ROUTES: ReadonlyArray<{ path: string; action?: string }> = [
+  { path: '/api/convert' },
+  { path: '/api/queue/jobs' },
+  { path: '/api/storage/multipart', action: 'chunk' },
+  { path: '/api/v1/archives/inspect' },
+  { path: '/api/v1/convert' },
+  { path: '/api/v1/jobs' },
+  { path: '/api/v1/uploads' },
 ];
 
-function isFileRoute(pathname: string): boolean {
-  return FILE_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+/** The address of a request: its path and its query. */
+export interface RequestTarget {
+  pathname: string;
+  searchParams: URLSearchParams;
+}
+
+/** The headers of a request, as both `Headers` and the edge request give them. */
+interface HeaderSource {
+  get(name: string): string | null;
+}
+
+function isFileRoute({ pathname, searchParams }: RequestTarget): boolean {
+  return FILE_ROUTES.some(
+    (route) => (pathname === route.path || pathname.startsWith(`${route.path}/`)) && (!route.action || searchParams.get('action') === route.action)
+  );
 }
 
 type DeclaredLength = { kind: 'absent' } | { kind: 'malformed' } | { kind: 'bytes'; bytes: number };
@@ -43,6 +61,13 @@ function parseContentLength(header: string | null): DeclaredLength {
 }
 
 const MALFORMED_CONTENT_LENGTH_DETAIL = 'The Content-Length header is not a whole number of bytes.';
+const LENGTH_REQUIRED_DETAIL =
+  'A request that carries a file must declare its Content-Length; send the body with its length instead of in chunks.';
+
+/** Whether a body comes without a declared length: chunked, the one framing that names none (RFC 9112, section 6). */
+function isChunkedWithoutLength(headers: HeaderSource): boolean {
+  return headers.get('content-length') === null && headers.get('transfer-encoding') !== null;
+}
 
 /** The upload flow a client of `pathname` uses for a larger file: the public one under /api/v1, the web application's elsewhere. */
 function partsFlowOf(pathname: string): { upload: string; job: string } {
@@ -66,33 +91,44 @@ function smallRequestOverflowDetail(declaredBytes: number): string {
   return `This request carries ${exactBytes(declaredBytes)}, over the ${formatBytes(SMALL_REQUEST_BODY_MAX_BYTES)} this route takes.`;
 }
 
+/** What a route that takes no file says to a body sent without a length once more than its limit arrived. */
+const COUNTED_OVERFLOW_DETAIL = `This request carries more than the ${formatBytes(SMALL_REQUEST_BODY_MAX_BYTES)} this route takes.`;
+
 /** What a part route says to a part over the largest part. */
 function partOverflowDetail(declaredBytes: number): string {
   return `This part carries ${exactBytes(declaredBytes)}, over the largest part of ${formatBytes(UPLOAD_PART_MAX_BYTES)}.`;
 }
 
-export type BodyLengthVerdict = { status: 400 | 413; detail: string } | null;
+export type BodyLengthVerdict = { status: 400 | 411 | 413; detail: string } | null;
 
-function verdictFor(header: string | null, limit: number, overflowDetail: (declaredBytes: number) => string): BodyLengthVerdict {
-  const declared = parseContentLength(header);
+function verdictFor(headers: HeaderSource, limit: number, overflowDetail: (declaredBytes: number) => string): BodyLengthVerdict {
+  const declared = parseContentLength(headers.get('content-length'));
   if (declared.kind === 'malformed') return { status: 400, detail: MALFORMED_CONTENT_LENGTH_DETAIL };
   if (declared.kind === 'absent' || declared.bytes <= limit) return null;
   return { status: 413, detail: overflowDetail(declared.bytes) };
 }
 
-/** The refusal of a request to `pathname` by its declared length, or null when it may be read. */
-export function requestBodyVerdict(pathname: string, header: string | null): BodyLengthVerdict {
-  return isFileRoute(pathname)
-    ? singleRequestVerdict(pathname, header)
-    : verdictFor(header, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
+/** `verdictFor` for a body that carries a file: one without a declared length is refused with 411. */
+function fileVerdictFor(headers: HeaderSource, limit: number, overflowDetail: (declaredBytes: number) => string): BodyLengthVerdict {
+  return isChunkedWithoutLength(headers) ? { status: 411, detail: LENGTH_REQUIRED_DETAIL } : verdictFor(headers, limit, overflowDetail);
+}
+
+/** What the middleware does with a body before the route reads it: refuse it, count it up to a limit as it arrives, or let it pass (null). */
+export type RequestBodyCheck = NonNullable<BodyLengthVerdict> | { countUpTo: number; detail: string } | null;
+
+/** The check of the body of a request to `target`. */
+export function requestBodyVerdict(target: RequestTarget, headers: HeaderSource): RequestBodyCheck {
+  if (isFileRoute(target)) return singleRequestVerdict(target.pathname, headers);
+  if (isChunkedWithoutLength(headers)) return { countUpTo: SMALL_REQUEST_BODY_MAX_BYTES, detail: COUNTED_OVERFLOW_DETAIL };
+  return verdictFor(headers, SMALL_REQUEST_BODY_MAX_BYTES, smallRequestOverflowDetail);
 }
 
 /** The refusal of a request to `pathname`, a route that takes a file whole, by its declared length, or null when it may be read. */
-export function singleRequestVerdict(pathname: string, header: string | null): BodyLengthVerdict {
-  return verdictFor(header, SINGLE_REQUEST_BODY_MAX_BYTES, (declared) => singleRequestOverflowDetail(declared, pathname));
+export function singleRequestVerdict(pathname: string, headers: HeaderSource): BodyLengthVerdict {
+  return fileVerdictFor(headers, SINGLE_REQUEST_BODY_MAX_BYTES, (declared) => singleRequestOverflowDetail(declared, pathname));
 }
 
 /** The refusal of a part by its declared length, or null when it may be read. */
-export function partBodyVerdict(header: string | null): BodyLengthVerdict {
-  return verdictFor(header, UPLOAD_PART_MAX_BYTES, partOverflowDetail);
+export function partBodyVerdict(headers: HeaderSource): BodyLengthVerdict {
+  return fileVerdictFor(headers, UPLOAD_PART_MAX_BYTES, partOverflowDetail);
 }

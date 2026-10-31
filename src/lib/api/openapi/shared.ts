@@ -106,6 +106,9 @@ export const SINGLE_REQUEST_LIMIT_DESCRIPTION = `Payload Too Large: the request 
 export const WEB_SINGLE_REQUEST_LIMIT_DESCRIPTION = `Payload Too Large: the request body is over ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} of file and form fields. The web application uploads a larger file in parts through \`/api/storage/multipart\` and converts it by \`POST /api/queue/jobs\` on the stored key.`;
 
 /** Description of the 413 answer for a file that would decode past a size limit of the engines. */
+/** The 411 of a route that takes a file, for a body sent in chunks without a length (docs/policy-decisions.md, entry 137). */
+export const LENGTH_REQUIRED_DESCRIPTION =
+  'Length Required: a request that carries a file declares its `Content-Length`; a body sent in chunks without one is refused.';
 export const DECODE_LIMIT_DESCRIPTION =
   'Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
 

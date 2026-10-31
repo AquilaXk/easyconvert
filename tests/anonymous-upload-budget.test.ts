@@ -10,17 +10,17 @@ import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
-import { sweepRetention } from '../src/lib/storage/retention-service';
+import { mayPresignDownload, sweepRetention } from '../src/lib/storage/retention-service';
 import {
   ANONYMOUS_DAILY_UPLOAD_BYTES,
   ANONYMOUS_OPEN_UPLOADS_MAX,
   OPEN_UPLOAD_IDLE_MS,
   closeUpload,
   reserveUpload,
-  resetAnonymousUploadBudget,
-  touchUpload,
+  resumeUpload,
   type UploadBudgetRecord,
 } from '../src/lib/api-keys/anonymous-upload-budget';
+import { MemoryBudgetStore, RECORD_TTL_MS } from '../src/lib/api-keys/upload-budget-store';
 
 const BASE_URL = 'http://localhost:3000';
 const MIB = 1024 * 1024;
@@ -33,7 +33,6 @@ const cleanups: Array<() => Promise<void> | void> = [];
 
 beforeEach(() => {
   vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
-  resetAnonymousUploadBudget();
 });
 
 afterEach(async () => {
@@ -48,6 +47,12 @@ describe('the upload budget of an address bucket', () => {
 
   function reserved(record: UploadBudgetRecord | undefined, id: string, bytes: number, now = NOW): UploadBudgetRecord {
     const result = reserveUpload(record, request(id, bytes, now), policy);
+    if ('refusal' in result) throw new Error(`refused: ${result.refusal}`);
+    return result.record;
+  }
+
+  function resumed(record: UploadBudgetRecord, id: string, now: number): UploadBudgetRecord {
+    const result = resumeUpload(record, id, now, policy);
     if ('refusal' in result) throw new Error(`refused: ${result.refusal}`);
     return result.record;
   }
@@ -84,9 +89,20 @@ describe('the upload budget of an address bucket', () => {
     expect('record' in reserveUpload(record, request('c', 0.5 * GIB, later), policy)).toBe(true);
     expect(reserveUpload(record, request('c', 0.6 * GIB, later), policy)).toEqual({ refusal: 'daily-bytes' });
 
-    record = touchUpload(record, 'a', later, policy);
-    record = touchUpload(record, 'b', later, policy);
+    record = resumed(record, 'a', later);
+    record = resumed(record, 'b', later);
     expect(reserveUpload(record, request('c', MIB, later), policy)).toEqual({ refusal: 'open-uploads' });
+  });
+
+  it('opens an idle session again only while fewer than the most sessions are open', () => {
+    let record = reserved(reserved(undefined, 'a', MIB), 'b', MIB);
+    const later = NOW + HOUR + 1;
+    record = reserved(reserved(record, 'c', MIB, later), 'd', MIB, later);
+
+    expect(resumeUpload(record, 'a', later + 10, policy)).toEqual({ refusal: 'open-uploads' });
+    expect('record' in resumeUpload(record, 'c', later + 10, policy)).toBe(true);
+    record = closeUpload(record, 'c', 'completed');
+    expect('record' in resumeUpload(record, 'a', later + 10, policy)).toBe(true);
   });
 
   it('returns the bytes of a session that expired without an end, and starts a new day at zero', () => {
@@ -133,6 +149,10 @@ async function initiate(headers: Record<string, string>, totalSize: number): Pro
     });
   }
   return res;
+}
+
+function csv(length: number): Buffer {
+  return Buffer.alloc(length, 'a');
 }
 
 function part(uploadId: string, bytes: Buffer, headers: Record<string, string>): NextRequest {
@@ -225,9 +245,126 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
     for (let i = 0; i < 3; i++) expect((await initiate(own, GIB)).status).toBe(200);
   });
 
-  it('does not meter the shared identity of requests no proxy attributes', async () => {
+  it('turns uploads without an account off while no proxy attributes requests, and says which setting turns them on', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '');
-    for (let i = 0; i < 3; i++) expect((await initiate({}, MIB)).status).toBe(200);
+
+    const res = await initiate({}, MIB);
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.type).toBe('https://api.easyconvert.io/problems/client-ip-trust-unconfigured');
+    expect(body.detail).toContain('TRUSTED_PROXIES');
+    expect((await initiate(await account(), MIB)).status).toBe(200);
+  });
+
+  it('refuses a session that declares no byte, which the budget could not count', async () => {
+    const res = await initiate(from('203.0.113.60'), 0);
+    expect(res.status).toBe(400);
+    expect((await res.json()).detail).toBe('"totalSize" must be at least 1 byte.');
+  });
+
+  it('refuses a part of an idle session while as many others are open, and takes it once one ends', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    cleanups.push(() => {
+      vi.useRealTimers();
+    });
+    const visitor = from('203.0.113.61');
+    const idle = await (await initiate(visitor, MIB)).json();
+    await initiate(visitor, MIB);
+    vi.setSystemTime(NOW + OPEN_UPLOAD_IDLE_MS + 1);
+    const third = await (await initiate(visitor, MIB)).json();
+    await initiate(visitor, MIB);
+
+    const refused = await multipartPost(part(idle.uploadId, csv(MIB), visitor));
+    expect(refused.status).toBe(429);
+    expect((await refused.json()).type).toBe('https://api.easyconvert.io/problems/upload-budget-exceeded');
+
+    await multipartPost(multipart('abort', { uploadId: third.uploadId }, visitor));
+    expect((await multipartPost(part(idle.uploadId, csv(MIB), visitor))).status).toBe(200);
+  });
+});
+
+describe('a budget store that cannot be reached', () => {
+  const down = () => {
+    const fail = async () => {
+      throw new Error('Connection is closed.');
+    };
+    vi.spyOn(redisKeyStore, 'getRedisClient').mockReturnValue({ get: fail, eval: fail, set: fail } as never);
+  };
+
+  it('does not refuse a part of an open session, whose bytes were reserved when it opened', async () => {
+    const visitor = from('203.0.113.62');
+    const { uploadId } = await (await initiate(visitor, 8)).json();
+    down();
+
+    const res = await multipartPost(part(uploadId, Buffer.from('a,b\n1,2\n'), visitor));
+
+    expect(res.status).toBe(200);
+    expect(s3Storage.getUploadedParts(uploadId)).toHaveLength(1);
+  });
+
+  it('answers an abort the store took, and the bytes come back when the reservation expires', async () => {
+    const visitor = from('203.0.113.63');
+    const { uploadId } = await (await initiate(visitor, 8)).json();
+    down();
+
+    const res = await multipartPost(multipart('abort', { uploadId }, visitor));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).success).toBe(true);
+    expect(s3Storage.getUploadSession(uploadId)).toBeUndefined();
+  });
+
+  it('answers a part, a completion and an abort that failed without an HTTP status with 503, worth sending again', async () => {
+    const visitor = from('203.0.113.64');
+    const { uploadId } = await (await initiate(visitor, 8)).json();
+    vi.spyOn(s3Storage, 'uploadPartStream').mockRejectedValueOnce(new Error('disk went away at /var/lib/easyconvert/x'));
+    vi.spyOn(s3Storage, 'abortMultipartUpload').mockImplementationOnce(() => {
+      throw new Error('store unreachable');
+    });
+
+    const failedPart = await multipartPost(part(uploadId, Buffer.from('a,b\n1,2\n'), visitor));
+    expect(failedPart.status).toBe(503);
+    expect(failedPart.headers.get('retry-after')).toBe('5');
+    expect((await failedPart.json()).detail).toBe('Storage operation error');
+
+    const failedAbort = await multipartPost(multipart('abort', { uploadId }, visitor));
+    expect(failedAbort.status).toBe(503);
+    expect((await failedAbort.json()).detail).toBe('store unreachable');
+  });
+
+  it('refuses to open an upload, since it cannot reserve the bytes', async () => {
+    down();
+    const res = await initiate(from('203.0.113.65'), MIB);
+    expect(res.status).toBe(500);
+  });
+});
+
+describe('the budgets of a process without Redis', () => {
+  it('forgets a record and a link once their time has passed, also those nobody reads again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    cleanups.push(() => {
+      vi.useRealTimers();
+    });
+    const store = new MemoryBudgetStore();
+    await store.update('anon:a', () => ({ day: DAY, bytes: MIB, open: {} }));
+    await store.link('up-a', { bucket: 'anon:a', reservation: 'r' }, NOW + HOUR);
+    expect(store.size).toBe(2);
+
+    vi.setSystemTime(NOW + RECORD_TTL_MS + 1);
+    await store.update('anon:b', () => ({ day: DAY, bytes: MIB, open: {} }));
+    await store.link('up-b', { bucket: 'anon:b', reservation: 'r' }, Date.now() + HOUR);
+
+    expect(store.size).toBe(2);
+    expect(await store.lookup('up-a')).toBeUndefined();
+    let seen: UploadBudgetRecord | undefined = { day: DAY, bytes: 1, open: {} };
+    await store.update('anon:a', (current) => {
+      seen = current;
+      return undefined;
+    });
+    expect(seen).toBeUndefined();
   });
 });
 
@@ -290,6 +427,18 @@ describe('a completed upload nobody converts does not stay', () => {
     expect(await storageProvider.stat(key)).toBeTruthy();
   });
 
+  it('keeps an account upload while a job reads it, and its owner can still get a signed link to it', async () => {
+    const own = await account();
+    const key = await completedUpload(own);
+    await queueJob(key, own);
+
+    const res = await multipartPost(multipart('discard', { key }, own));
+
+    expect(res.status).toBe(409);
+    expect(await storageProvider.stat(key)).toBeTruthy();
+    expect(await mayPresignDownload(key)).toBe(true);
+  });
+
   it('keeps an account upload from everyone but its owner', async () => {
     const own = await account();
     const key = await completedUpload(own);
@@ -312,8 +461,19 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     expect((await initiate(from('203.0.113.58'), MIB)).status).toBe(200);
   });
 
-  it('answers a repeat of the start with the same job, from another address too', async () => {
-    const visitor = from('203.0.113.59');
+  it('keeps the key of one address bucket from answering another with its upload', async () => {
+    const idempotencyKey = 'static-key';
+    const first = await (await initiate({ ...from('203.0.113.66'), 'Idempotency-Key': idempotencyKey }, MIB)).json();
+
+    const other = await initiate({ ...from('198.51.100.66'), 'Idempotency-Key': idempotencyKey }, MIB);
+
+    expect(other.status).toBe(200);
+    expect(other.headers.get('idempotent-replayed')).toBeNull();
+    expect((await other.json()).uploadId).not.toBe(first.uploadId);
+  });
+
+  it('answers a repeat of the start in the same address bucket with the same job, and another bucket with a job of its own', async () => {
+    const visitor = from('2001:db8:9:1::1');
     const key = await completedUpload(visitor);
     const idempotencyKey = crypto.randomUUID();
     const send = (headers: Record<string, string>) =>
@@ -324,16 +484,97 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
           body: JSON.stringify({ filename: 'a.csv', targetFormat: 'json', storageKey: key }),
         })
       );
+    const cancelLater = (jobId: string) =>
+      cleanups.push(async () => {
+        await queueJobDelete(new NextRequest(`${BASE_URL}/api/queue/jobs/${jobId}`, { method: 'DELETE' }), {
+          params: Promise.resolve({ id: jobId }),
+        });
+      });
 
     const first = await (await send(visitor)).json();
-    cleanups.push(async () => {
-      await queueJobDelete(new NextRequest(`${BASE_URL}/api/queue/jobs/${first.jobId}`, { method: 'DELETE' }), {
-        params: Promise.resolve({ id: first.jobId }),
-      });
-    });
-    const repeat = await send(from('198.51.100.59'));
-
+    cancelLater(first.jobId);
+    const repeat = await send(from('2001:db8:9:1::2'));
     expect(repeat.status).toBe(200);
     expect((await repeat.json()).jobId).toBe(first.jobId);
+
+    const elsewhere = await (await send(from('2001:db8:9:2::1'))).json();
+    cancelLater(elsewhere.jobId);
+    expect(elsewhere.jobId).not.toBe(first.jobId);
+  });
+
+  it('answers a repeat of the start with the job even when that job used the last conversion of the day', async () => {
+    vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '1');
+    const visitor = from('203.0.113.67');
+    const key = await completedUpload(visitor);
+    const idempotencyKey = crypto.randomUUID();
+    const send = () =>
+      queueJobsPost(
+        new NextRequest(`${BASE_URL}/api/queue/jobs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey, ...visitor },
+          body: JSON.stringify({ filename: 'a.csv', targetFormat: 'json', storageKey: key }),
+        })
+      );
+
+    const first = await send();
+    const firstBody = await first.json();
+    expect(first.status, JSON.stringify(firstBody)).toBe(200);
+    cleanups.push(async () => {
+      await queueJobDelete(new NextRequest(`${BASE_URL}/api/queue/jobs/${firstBody.jobId}`, { method: 'DELETE' }), {
+        params: Promise.resolve({ id: firstBody.jobId }),
+      });
+    });
+    const repeat = await send();
+
+    expect(repeat.status).toBe(200);
+    expect((await repeat.json()).jobId).toBe(firstBody.jobId);
+  });
+
+  it('answers a repeat of the completion with the file the first one stored', async () => {
+    const visitor = from('203.0.113.68');
+    const bytes = Buffer.from('a,b\n1,2\n');
+    const { uploadId } = await (await initiate(visitor, bytes.length)).json();
+    const { etag } = await (await multipartPost(part(uploadId, bytes, visitor))).json();
+    const complete = () =>
+      multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, { ...visitor, 'Idempotency-Key': `complete-${uploadId}` }));
+
+    const first = await (await complete()).json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(first.key);
+    });
+    const repeat = await complete();
+
+    expect(repeat.status).toBe(200);
+    expect((await repeat.json()).key).toBe(first.key);
+  });
+});
+
+describe('a job start reserves its conversion when it runs, and gives it back when no job is queued', () => {
+  it('leaves the day untouched by a refused start', async () => {
+    vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '1');
+    const visitor = from('203.0.113.69');
+    const key = await completedUpload(visitor);
+    const refused = await queueJobsPost(
+      new NextRequest(`${BASE_URL}/api/queue/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...visitor },
+        body: JSON.stringify({ filename: 'a.unknownformat', targetFormat: 'json', storageKey: key }),
+      })
+    );
+    expect(refused.status).toBe(400);
+
+    await queueJob(key, visitor);
+  });
+});
+
+describe('a signed part link', () => {
+  it('is not given for an upload without an account, whose parts go through the part action', async () => {
+    const visitor = from('203.0.113.70');
+    const { uploadId, key } = await (await initiate(visitor, MIB)).json();
+
+    const res = await multipartPost(multipart('presign', { type: 'upload', key, uploadId, partNumber: 1 }, visitor));
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).detail).toContain('action=chunk');
   });
 });

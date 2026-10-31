@@ -8,7 +8,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
-import { validateApiAccess, authErrorHeaders, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, rollbackQuota } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -16,9 +16,8 @@ import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-respo
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { refuseOversizeFile, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { respondOnce } from '@/lib/api/with-idempotency';
-import { uploadOwnerOf } from '@/lib/auth/anonymous-identity';
 import type { User } from '@/lib/auth/types';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES } from '@/lib/plan-limits';
 import { formatBytes } from '@/lib/format-bytes';
@@ -61,9 +60,10 @@ const INLINE_PAYLOAD_DETAIL =
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
 
-  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  // The caller is authenticated without a unit: a repeat answered from its Idempotency-Key costs nothing, and a request
+  // that runs reserves its unit when it starts.
   const auth = await validateApiAccess(req, {
-    requiredUnits: 1,
+    requiredUnits: 0,
     requiredScope: 'convert:write',
     allowAnonymous: true,
   });
@@ -75,40 +75,35 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     );
   }
   const user = auth.user;
-  const reservationId = auth.reservationId;
 
-  // An Idempotency-Key makes the request safe to send again: a repeat answers with the job the first one queued, and
-  // the unit the repeat reserved is given back, since no second job runs.
-  let queuedHere = false;
-  const res = await respondOnce(req, uploadOwnerOf(user.id), instanceUri, () => {
-    queuedHere = true;
-    return queueJob(req, user, reservationId, instanceUri);
-  });
-  if (!queuedHere && reservationId) await rollbackQuota(reservationId);
-  return res;
+  // An Idempotency-Key makes the request safe to send again: a repeat answers with the job the first one queued. Keys
+  // are scoped to the caller, an account or the address bucket of an anonymous caller.
+  return respondOnce(req, user.id, instanceUri, () => startJob(req, user, instanceUri));
 }));
 
-async function queueJob(req: NextRequest, user: User, reservationId: string | undefined, instanceUri: string): Promise<Response> {
-  const failWithRollback = async (status: number, error: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return NextResponse.json({ success: false, error }, { status });
-  };
+/** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */
+async function startJob(req: NextRequest, user: User, instanceUri: string): Promise<Response> {
+  const unit = await reserveConversionUnit(user);
+  if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
+  let res: Response | undefined;
+  try {
+    res = await queueJob(req, user, unit.reservationId, instanceUri);
+    return res;
+  } finally {
+    if (!res?.ok && unit.reservationId) await rollbackQuota(unit.reservationId);
+  }
+}
 
-  /** A problem answer, after releasing the quota reservation. */
-  const refuse = async (problem: Response) => {
-    if (reservationId) await rollbackQuota(reservationId);
-    return problem;
-  };
+async function queueJob(req: NextRequest, user: User, reservationId: string | undefined, instanceUri: string): Promise<Response> {
+  const fail = (status: number, error: string) => NextResponse.json({ success: false, error }, { status });
 
   try {
     // At most five conversions in flight (queued plus running) for an anonymous or free caller.
     const room = await mayEnqueue(user.id, user.tier);
-    if (!room.allowed) return await refuse(concurrencyLimitResponse(room.limit, instanceUri));
+    if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
 
     const parsed = await readJobRequest(req, instanceUri);
-    if ('refusal' in parsed) return await refuse(parsed.refusal);
+    if ('refusal' in parsed) return parsed.refusal;
     const { targetFormat, options, storageKey, inputBufferBase64, fileSize } = parsed.request;
     let { originalFilename } = parsed.request;
 
@@ -117,7 +112,7 @@ async function queueJob(req: NextRequest, user: User, reservationId: string | un
       storageKey &&
       (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, user.id)))
     ) {
-      return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND);
+      return fail(404, STORAGE_OBJECT_NOT_FOUND);
     }
 
     if (!originalFilename && storageKey) {
@@ -125,15 +120,15 @@ async function queueJob(req: NextRequest, user: User, reservationId: string | un
     }
 
     if (!targetFormat) {
-      return await failWithRollback(400, 'Missing required parameter: "targetFormat"');
+      return fail(400, 'Missing required parameter: "targetFormat"');
     }
 
     const detected = detectFormatFromFilename(originalFilename);
-    if (!detected) return await refuse(unknownSourceProblem(originalFilename, instanceUri));
+    if (!detected) return unknownSourceProblem(originalFilename, instanceUri);
     const sourceFormat = detected.extension;
 
     const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider);
-    const oversize = await refuseOversizeFile(user, inputBytes, instanceUri, reservationId);
+    const oversize = fileSizeLimitProblem(user, inputBytes, instanceUri);
     if (oversize) return oversize;
 
     // Add conversion task to BullMQ Distributed Queue
@@ -168,9 +163,6 @@ async function queueJob(req: NextRequest, user: User, reservationId: string | un
       queue: conversionQueue.name,
     });
   } catch (error: unknown) {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
     const queueProblem = queueErrorResponse(error, instanceUri);
     if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, instanceUri);
@@ -178,12 +170,9 @@ async function queueJob(req: NextRequest, user: User, reservationId: string | un
     if (error instanceof JobDeadlineError) {
       // The detail names a deadline setting, so it stays in the server log.
       console.error('[queue/jobs] Invalid deadline setting or input:', error);
-      return NextResponse.json({ success: false, error: 'Job enqueue error' }, { status: 500 });
+      return fail(500, 'Job enqueue error');
     }
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Job enqueue error' },
-      { status: 500 }
-    );
+    return fail(500, error instanceof Error ? error.message : 'Job enqueue error');
   }
 }
 

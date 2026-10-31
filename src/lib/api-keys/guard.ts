@@ -1,7 +1,7 @@
 import { redisKeyStore } from './redis-key-store';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
-import { anonymousUserId } from '../auth/anonymous-identity';
+import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
@@ -41,6 +41,13 @@ export interface ValidateApiAccessOptions {
 
 const WILDCARD_SCOPE = '*';
 const HTTP_BAD_REQUEST = 400;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+const QUOTA_EXCEEDED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
+const SERVICE_UNAVAILABLE_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/service-unavailable';
+const QUOTA_ENGINE_OFFLINE = 'Service Unavailable: distributed quota engine is temporarily offline';
+const ANONYMOUS_QUOTA_EXCEEDED =
+  'Daily conversion quota exceeded for anonymous usage (10 conversions per day). Please sign in or use an API key.';
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
 
@@ -414,18 +421,18 @@ async function verifyAnonymousAccess(
     if (quota.serviceUnavailable) {
       return {
         authorized: false,
-        error: 'Service Unavailable: distributed quota engine is temporarily offline',
-        status: 503,
+        error: QUOTA_ENGINE_OFFLINE,
+        status: HTTP_SERVICE_UNAVAILABLE,
         remaining: 0,
-        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+        problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE,
       };
     }
     return {
       authorized: false,
-      error: 'Daily conversion quota exceeded for anonymous usage (10 conversions per day). Please sign in or use an API key.',
-      status: 429,
+      error: ANONYMOUS_QUOTA_EXCEEDED,
+      status: HTTP_TOO_MANY_REQUESTS,
       remaining: quota.remaining,
-      problemType: 'https://api.easyconvert.io/problems/quota-exceeded',
+      problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
     };
   }
 
@@ -522,6 +529,27 @@ export async function recordUsage(userId: string, count: number = 1): Promise<{ 
  */
 export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
   return redisKeyStore.getQuotaUsage(userId);
+}
+
+/** One conversion unit of a caller, reserved after the request was authenticated with none; or why it was refused. */
+export type ConversionUnit =
+  | { reserved: true; reservationId?: string }
+  | { reserved: false; status: number; error: string; problemType: string };
+
+/**
+ * Reserves one conversion unit for `user`, whose request was authenticated with no unit so that a repeat answered from
+ * its idempotency key costs nothing. The shared identity of requests no proxy attributes has no daily quota
+ * (docs/client-ip-trust.md, item 5), so it reserves nothing.
+ */
+export async function reserveConversionUnit(user: User): Promise<ConversionUnit> {
+  if (isUnattributedAnonymous(user.id)) return { reserved: true };
+  const quota = await checkQuotaAndReserve(user.id, user.tier, 1);
+  if (quota.allowed) return { reserved: true, reservationId: quota.reservationId };
+  if (quota.serviceUnavailable) {
+    return { reserved: false, status: HTTP_SERVICE_UNAVAILABLE, error: QUOTA_ENGINE_OFFLINE, problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE };
+  }
+  const error = isAnonymousUserId(user.id) ? ANONYMOUS_QUOTA_EXCEEDED : String(quota.error);
+  return { reserved: false, status: HTTP_TOO_MANY_REQUESTS, error, problemType: QUOTA_EXCEEDED_PROBLEM_TYPE };
 }
 
 /**

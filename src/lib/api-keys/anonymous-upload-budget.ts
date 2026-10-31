@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
-import type { Redis } from 'ioredis';
 import { isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import { getUtcDateKey } from './key-store';
 import { redisKeyStore } from './redis-key-store';
+import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-budget-store';
 
 /**
  * What one anonymous address bucket may write through uploads in parts (docs/policy-decisions.md, entry 137): at most
@@ -10,8 +10,8 @@ import { redisKeyStore } from './redis-key-store';
  * declared size is reserved when the session opens, returned when it is aborted or its session expires, and kept when
  * it completes. Accounts are not metered here; their plan and quota already bound them.
  *
- * The state of a bucket is one record changed by the pure functions below and written whole with a compare-and-set,
- * in Redis beside the quota counters, or in this process when the quota store has no Redis.
+ * The state of a bucket is one record changed by the pure functions below and written whole by its store
+ * (upload-budget-store.ts): in Redis beside the quota counters, or in this process when the quota store has no Redis.
  */
 
 const GIB = 1024 * 1024 * 1024;
@@ -22,7 +22,6 @@ export const ANONYMOUS_DAILY_UPLOAD_BYTES = 2 * GIB;
 export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
 
 const RESERVATION_ID_BYTES = 12;
-const MAX_UPDATE_ATTEMPTS = 8;
 
 interface OpenUpload {
   bytes: number;
@@ -75,6 +74,11 @@ function currentRecord(record: UploadBudgetRecord | undefined, day: string, now:
   return current;
 }
 
+/** The sessions of `record` that count as open at `now`: those that received a part within the idle time. */
+function openCount(record: UploadBudgetRecord, now: number): number {
+  return Object.values(record.open).filter((entry) => entry.idleUntil > now).length;
+}
+
 /** Reserves `bytes` for a new session `id`, or names the bound it would pass. */
 export function reserveUpload(
   record: UploadBudgetRecord | undefined,
@@ -82,8 +86,7 @@ export function reserveUpload(
   policy: BudgetPolicy = POLICY
 ): { record: UploadBudgetRecord } | { refusal: BudgetRefusal } {
   const current = currentRecord(record, request.day, request.now);
-  const open = Object.values(current.open).filter((entry) => entry.idleUntil > request.now).length;
-  if (open >= policy.maxOpenUploads) return { refusal: 'open-uploads' };
+  if (openCount(current, request.now) >= policy.maxOpenUploads) return { refusal: 'open-uploads' };
   if (current.bytes + request.bytes > policy.dailyBytes) return { refusal: 'daily-bytes' };
   const entry: OpenUpload = {
     bytes: request.bytes,
@@ -94,11 +97,20 @@ export function reserveUpload(
   return { record: { ...current, bytes: current.bytes + request.bytes, open: { ...current.open, [request.id]: entry } } };
 }
 
-/** The record after a part of session `id` arrived at `now`: it counts as open again for the idle time. */
-export function touchUpload(record: UploadBudgetRecord, id: string, now: number, policy: BudgetPolicy = POLICY): UploadBudgetRecord {
+/**
+ * The record after a part of session `id` arrived at `now`: it counts as open again for the idle time. A session that
+ * went idle is opened again only while fewer than the most open sessions are open, else the part is refused.
+ */
+export function resumeUpload(
+  record: UploadBudgetRecord,
+  id: string,
+  now: number,
+  policy: BudgetPolicy = POLICY
+): { record: UploadBudgetRecord } | { refusal: BudgetRefusal } {
   const entry = record.open[id];
-  if (!entry) return record;
-  return { ...record, open: { ...record.open, [id]: { ...entry, idleUntil: Math.min(now + policy.idleMs, entry.expiresAt) } } };
+  if (!entry) return { record };
+  if (entry.idleUntil <= now && openCount(record, now) >= policy.maxOpenUploads) return { refusal: 'open-uploads' };
+  return { record: { ...record, open: { ...record.open, [id]: { ...entry, idleUntil: Math.min(now + policy.idleMs, entry.expiresAt) } } } };
 }
 
 /** The record once session `id` ended: completed (its bytes stay charged) or aborted (they are returned). */
@@ -106,109 +118,11 @@ export function closeUpload(record: UploadBudgetRecord, id: string, outcome: 'co
   return withoutUpload(record, id, outcome === 'aborted');
 }
 
-/** Where the reservation of an upload session is: its address bucket and its entry there. */
-interface ReservationRef {
-  bucket: string;
-  reservation: string;
-}
-
-interface BudgetStore {
-  update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void>;
-  link(uploadId: string, ref: ReservationRef, expiresAt: number): Promise<void>;
-  lookup(uploadId: string): Promise<ReservationRef | undefined>;
-}
-
-class MemoryBudgetStore implements BudgetStore {
-  private readonly records = new Map<string, UploadBudgetRecord>();
-  private readonly links = new Map<string, { ref: ReservationRef; expiresAt: number }>();
-
-  async update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void> {
-    const next = change(this.records.get(bucket));
-    if (next) this.records.set(bucket, next);
-  }
-
-  async link(uploadId: string, ref: ReservationRef, expiresAt: number): Promise<void> {
-    this.links.set(uploadId, { ref, expiresAt });
-  }
-
-  async lookup(uploadId: string): Promise<ReservationRef | undefined> {
-    const linked = this.links.get(uploadId);
-    if (!linked) return undefined;
-    if (linked.expiresAt > Date.now()) return linked.ref;
-    this.links.delete(uploadId);
-    return undefined;
-  }
-}
-
-const COMPARE_AND_SET_LUA = `
-local current = redis.call('GET', KEYS[1])
-if current == false then current = '' end
-if current ~= ARGV[1] then return 0 end
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
-return 1
-`;
-
-/** A record outlives its last session by a day, so a new day is never read from an old record. */
-const RECORD_TTL_MS = 2 * 24 * 60 * 60 * 1000;
-
-function parseRecord(raw: string | null): UploadBudgetRecord | undefined {
-  if (raw === null) return undefined;
-  try {
-    const parsed = JSON.parse(raw) as UploadBudgetRecord;
-    return typeof parsed.day === 'string' && typeof parsed.bytes === 'number' && typeof parsed.open === 'object' ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-class RedisBudgetStore implements BudgetStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly prefix: string
-  ) {}
-
-  private recordKey(bucket: string): string {
-    return `${this.prefix}upload-budget:{${bucket}}`;
-  }
-
-  private linkKey(uploadId: string): string {
-    return `${this.prefix}upload-budget-link:${uploadId}`;
-  }
-
-  async update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void> {
-    const key = this.recordKey(bucket);
-    for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
-      const raw = await this.redis.get(key);
-      const next = change(parseRecord(raw));
-      if (!next) return;
-      const written = await this.redis.eval(COMPARE_AND_SET_LUA, 1, key, raw ?? '', JSON.stringify(next), String(RECORD_TTL_MS));
-      if (written === 1) return;
-    }
-    throw new Error(`The upload budget of a bucket changed ${MAX_UPDATE_ATTEMPTS} times while it was being updated`);
-  }
-
-  async link(uploadId: string, ref: ReservationRef, expiresAt: number): Promise<void> {
-    await this.redis.set(this.linkKey(uploadId), JSON.stringify(ref), 'PX', Math.max(1, expiresAt - Date.now()));
-  }
-
-  async lookup(uploadId: string): Promise<ReservationRef | undefined> {
-    const raw = await this.redis.get(this.linkKey(uploadId));
-    if (raw === null) return undefined;
-    const parsed = JSON.parse(raw) as ReservationRef;
-    return typeof parsed.bucket === 'string' && typeof parsed.reservation === 'string' ? parsed : undefined;
-  }
-}
-
-let memoryStore = new MemoryBudgetStore();
+const memoryStore = new MemoryBudgetStore();
 
 function activeStore(): BudgetStore {
   const redis = redisKeyStore.getRedisClient();
   return redis ? new RedisBudgetStore(redis, redisKeyStore.getPrefix()) : memoryStore;
-}
-
-/** Forgets every budget kept in this process. For tests. */
-export function resetAnonymousUploadBudget(): void {
-  memoryStore = new MemoryBudgetStore();
 }
 
 /** Whether uploads of `callerUserId` are metered: an anonymous caller attributed to an address. */
@@ -263,16 +177,29 @@ export async function reserveAnonymousUpload(
   };
 }
 
-async function changeReservation(uploadId: string, change: (record: UploadBudgetRecord, id: string) => UploadBudgetRecord): Promise<void> {
+/** Applies `change` to the reservation of the session `uploadId`; undefined from `change` writes nothing. */
+async function changeReservation(
+  uploadId: string,
+  change: (record: UploadBudgetRecord, id: string) => UploadBudgetRecord | undefined
+): Promise<void> {
   const store = activeStore();
   const ref = await store.lookup(uploadId);
   if (!ref) return;
   await store.update(ref.bucket, (current) => current && change(current, ref.reservation));
 }
 
-/** Notes that a part of the session `uploadId` arrived, which keeps it counted as open. A session that is not metered is left alone. */
-export function noteUploadActivity(uploadId: string): Promise<void> {
-  return changeReservation(uploadId, (record, id) => touchUpload(record, id, Date.now()));
+/**
+ * Notes that a part of the session `uploadId` is arriving, which keeps it counted as open, or names the bound that
+ * refuses it: an idle session past the most open ones. A session that is not metered is left alone.
+ */
+export async function resumeUploadReservation(uploadId: string): Promise<BudgetRefusal | undefined> {
+  let refusal: BudgetRefusal | undefined;
+  await changeReservation(uploadId, (record, id) => {
+    const resumed = resumeUpload(record, id, Date.now());
+    refusal = 'refusal' in resumed ? resumed.refusal : undefined;
+    return 'refusal' in resumed ? undefined : resumed.record;
+  });
+  return refusal;
 }
 
 /** Ends the reservation of the session `uploadId`: completed keeps its bytes charged, aborted returns them. */

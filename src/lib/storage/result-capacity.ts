@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { isHeld, isRetainedKey, readIntegerSetting, type RetentionPolicy, type RetentionRecord } from './result-retention';
+import { isHeld, isResultRecord, readIntegerSetting, type RetentionPolicy, type RetentionRecord } from './result-retention';
 
 /**
  * Early deletion of results when the disk of the local storage driver runs full (docs/policy-decisions.md, entry
@@ -97,7 +97,7 @@ export function diskUsageProbe(directories: readonly string[]): DiskProbe {
  * sent (a client may resume it) within the undelivered time.
  */
 export function isCapacityCandidate(record: RetentionRecord, now: number, policy: RetentionPolicy): boolean {
-  if (!isRetainedKey(record.key) || record.goneAt !== undefined || isHeld(record, now) || (record.retryAt ?? 0) > now) return false;
+  if (!isResultRecord(record) || record.goneAt !== undefined || isHeld(record, now) || (record.retryAt ?? 0) > now) return false;
   if (record.deliveredAt !== undefined) return true;
   const recentlyServed = record.lastServedAt !== undefined && now - record.lastServedAt < policy.undeliveredTtlMs;
   return now - record.createdAt >= CAPACITY_MIN_AGE_MS && record.received.length === 0 && !recentlyServed;

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { POST as v1UploadsPost } from '../src/app/api/v1/uploads/[[...id]]/route';
@@ -21,7 +21,18 @@ const PART_BYTES = 5 * MIB;
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
+let visitorCount = 0;
+/** The address of the visitor of the running test; each test is a visitor of its own, so the upload budget of one never meets another. */
+let visitor: Record<string, string> = {};
+
+beforeEach(() => {
+  vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+  visitorCount += 1;
+  visitor = { 'x-forwarded-for': `198.51.100.${visitorCount}` };
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
@@ -34,7 +45,7 @@ async function account(): Promise<Record<string, string>> {
 function multipart(action: string, body: unknown): NextRequest {
   return new NextRequest(`${BASE_URL}/api/storage/multipart?action=${action}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...visitor },
     body: JSON.stringify(body),
   });
 }
@@ -42,7 +53,7 @@ function multipart(action: string, body: unknown): NextRequest {
 function part(uploadId: string, partNumber: number, bytes: Buffer, headers: Record<string, string> = {}): NextRequest {
   return new NextRequest(
     `${BASE_URL}/api/storage/multipart?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', ...headers }, body: new Uint8Array(bytes) }
+    { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', ...visitor, ...headers }, body: new Uint8Array(bytes) }
   );
 }
 

@@ -78,10 +78,9 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
 
 /**
  * Decides whether a caller may submit a stored object as a job input. The object must exist, not be a result the
- * retention rule already deleted, and be
- * either an upload (reachable by anyone holding its key) or an output owned by the authenticated
- * caller; anonymous callers may only use uploads. Answer a rejected key exactly like a missing
- * object, so other users' keys can be neither probed nor converted.
+ * retention rule already deleted, and be reachable by the caller the way a download of it is: an upload or a result of
+ * an anonymous caller by anyone holding its key (the capability), an account's output by that account only. Answer a
+ * rejected key exactly like a missing object, so other users' keys can be neither probed nor converted.
  */
 export async function mayUseStorageKeyAsJobInput(
   key: string,
@@ -93,9 +92,7 @@ export async function mayUseStorageKeyAsJobInput(
   if (isUploadKey(key)) {
     return true;
   }
-  if (!callerUserId) {
-    return false;
-  }
   const ownership = await resolveObjectOwnership(key);
-  return ownership.resolved && ownership.ownerUserId === callerUserId;
+  if (!ownership.resolved) return false;
+  return isAnonymousUserId(ownership.ownerUserId) || (callerUserId !== undefined && ownership.ownerUserId === callerUserId);
 }

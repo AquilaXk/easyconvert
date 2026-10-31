@@ -76,3 +76,14 @@ export function refreshViewerPlan(): Promise<void> {
     });
   return refreshing;
 }
+
+let pageRead: Promise<void> | undefined;
+
+/**
+ * Reads the session once for the page: the queue and the header's account menu both need the plan when they mount, and
+ * share this one read however far apart they mount.
+ */
+export function readViewerPlanOnce(): Promise<void> {
+  pageRead ??= refreshViewerPlan();
+  return pageRead;
+}

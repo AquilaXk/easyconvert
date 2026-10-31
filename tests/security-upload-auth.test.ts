@@ -14,6 +14,7 @@ const createdKeys: string[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const key of createdKeys.splice(0)) {
     s3Storage.deleteObject(key);
   }
@@ -37,10 +38,11 @@ function sessionHeaders(user: User, extraHeaders: Record<string, string> = {}): 
 
 describe('Security: Multipart Upload Authentication and Ownership Guard', () => {
   it('(a) lets a visitor without an account open an upload, and answers 404 for every session that is not its own', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const initRes = await multipartPost(
       new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.98' },
         body: JSON.stringify({ filename: 'test.dat', totalSize: 1024 }),
       })
     );

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { partBodyProblem } from '@/lib/api/file-size-limit';
-import { multipartPartByteLimit, storageProvider } from '@/lib/storage';
+import { MULTIPART_MAX_PART_BYTES, storageProvider } from '@/lib/storage';
+import { receivePart } from '@/lib/storage/part-admission';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
 
@@ -162,15 +163,18 @@ export async function PUT(req: NextRequest) {
   }
 
   try {
-    // The part may hold what the declared total leaves after the other stored parts, and at most the S3 part maximum.
-    const otherPartsBytes = ((await storage.getUploadedParts(uploadId)) ?? [])
-      .filter((stored) => stored.partNumber !== partNumber)
-      .reduce((sum, stored) => sum + stored.size, 0);
-    const part = await storage.uploadPartStream(
-      uploadId,
-      partNumber,
-      req.body,
-      multipartPartByteLimit(session.totalSize, otherPartsBytes)
+    // The part may hold what the declared total leaves after the other parts, stored and on the way, and at most a part.
+    const declared = req.headers.get('content-length');
+    const part = await receivePart(
+      storage,
+      {
+        uploadId,
+        partNumber,
+        declaredBytes: declared === null ? undefined : Number(declared),
+        totalSize: session.totalSize,
+        maxPartBytes: MULTIPART_MAX_PART_BYTES,
+      },
+      req.body
     );
     const headers = new Headers();
     headers.set('ETag', part.etag);

@@ -20,6 +20,7 @@ import {
   keptUntil,
   markGone,
   newRecord,
+  newAccountUploadRecord,
   newUnclaimedUploadRecord,
   newUploadRecord,
   reasonOf,
@@ -113,17 +114,18 @@ export async function registerStoredResult(storage: Pick<IStorageBackend, 'delet
 }
 
 /**
- * Starts the clock of an upload in the ownerless namespace that was just completed (every upload of an anonymous caller):
- * nobody converting it within the undelivered time of a result means it was abandoned, so it goes then. An account's
- * upload keeps the lifetime it was stored with. When the record cannot be written the object is removed again and the
- * error is rethrown, as for a result.
+ * Records an upload that was just completed, so that a job reading it holds it and `discardUpload` can see the hold.
+ * An upload in the ownerless namespace (every upload of an anonymous caller) starts its clock: nobody converting it
+ * within the undelivered time of a result means it was abandoned, so it goes then. An account's upload is kept as long
+ * as the store keeps it, and stays out of the rule for results (newAccountUploadRecord). When the record cannot be
+ * written the object is removed again and the error is rethrown, as for a result.
  */
 export async function registerCompletedUpload(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
-  if (!isUploadKey(key)) return;
+  const now = Date.now();
+  const policy = resolveRetentionPolicy();
+  const fresh = isUploadKey(key) ? newUnclaimedUploadRecord(key, now, policy) : newAccountUploadRecord(key, now);
   try {
-    const now = Date.now();
-    const policy = resolveRetentionPolicy();
-    await getRetentionLedger().update(key, (current) => current ?? newUnclaimedUploadRecord(key, now, policy));
+    await getRetentionLedger().update(key, (current) => current ?? fresh);
   } catch (error) {
     await storage.deleteObject(key);
     throw error;
@@ -199,14 +201,15 @@ export async function isResultDeleted(key: string, now: number = Date.now()): Pr
 /**
  * Whether a signed download link may be issued for `key`. Never for a result the rule tracks: the bucket would
  * answer the client, so the delivery could not be recorded and the result would not be deleted after it. A job
- * result always is one; a user's conversion is one when it has a record, and is treated as one while the ledger
- * cannot be read.
+ * result always is one; a user's conversion is one when it has a record that is not of an upload, and is treated as
+ * one while the ledger cannot be read.
  */
 export async function mayPresignDownload(key: string): Promise<boolean> {
   if (!isRetainedKey(key)) return true;
   if (classifyStorageKey(key).namespace === 'job-result') return false;
   try {
-    return (await getRetentionLedger().get(key)) === undefined;
+    const record = await getRetentionLedger().get(key);
+    return record === undefined || record.accountUpload === true;
   } catch (error) {
     console.warn(`[Retention] Could not read the record of "${key}"; refusing a signed link for it:`, error);
     return false;
@@ -221,7 +224,9 @@ export async function recordServed(key: string, range: { first: number; last: nu
   if (!isRetainedKey(key)) return;
   const now = Date.now();
   const policy = resolveRetentionPolicy();
-  await getRetentionLedger().update(key, (current) => recordServedRange(current ?? newRecord(key, now, policy), range, now, policy));
+  await getRetentionLedger().update(key, (current) =>
+    current?.accountUpload ? undefined : recordServedRange(current ?? newRecord(key, now, policy), range, now, policy)
+  );
 }
 
 let heldStorage: Pick<IStorageBackend, 'extendExpiry'> | undefined;

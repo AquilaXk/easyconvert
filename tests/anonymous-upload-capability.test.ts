@@ -13,7 +13,9 @@ import {
   isAnonymousUserId,
   mayUseUploadSession,
 } from '../src/lib/auth/anonymous-identity';
-import { resetAnonymousUploadBudget } from '../src/lib/api-keys/anonymous-upload-budget';
+import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { storageProvider } from '../src/lib/storage';
 
 const BASE_URL = 'http://localhost:3000';
 const MIB = 1024 * 1024;
@@ -23,7 +25,6 @@ const cleanups: Array<() => Promise<void> | void> = [];
 
 beforeEach(() => {
   vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
-  resetAnonymousUploadBudget();
 });
 
 afterEach(async () => {
@@ -132,6 +133,28 @@ describe('an anonymous upload is reached by its random id and key, never by the 
     expect(key).not.toContain('anon');
 
     expect((await multipartPost(part(uploadId, 1, csvBytes(4096), from('203.0.113.31')))).status).toBe(404);
+  });
+});
+
+describe('a result as the input of another job follows the rule of its download', () => {
+  const resultKey = 'results/job-anon-1/out.json';
+
+  function resultOf(ownerUserId: string): void {
+    vi.spyOn(storageProvider, 'stat').mockResolvedValue({ size: 8 } as never);
+    vi.spyOn(conversionQueue, 'getJob').mockResolvedValue({ data: { userId: ownerUserId } } as never);
+  }
+
+  it('lets anyone holding the key of an anonymous result convert it, from any address bucket', async () => {
+    resultOf(anonymousUserId('203.0.113.80'));
+    expect(await mayUseStorageKeyAsJobInput(resultKey, anonymousUserId('198.51.100.80'))).toBe(true);
+    expect(await mayUseStorageKeyAsJobInput(resultKey, 'user_1')).toBe(true);
+  });
+
+  it('keeps the result of an account to that account', async () => {
+    resultOf('user_1');
+    expect(await mayUseStorageKeyAsJobInput(resultKey, 'user_1')).toBe(true);
+    expect(await mayUseStorageKeyAsJobInput(resultKey, 'user_2')).toBe(false);
+    expect(await mayUseStorageKeyAsJobInput(resultKey, anonymousUserId('203.0.113.80'))).toBe(false);
   });
 });
 

@@ -17,16 +17,19 @@ import { requestBodyVerdict } from '@/lib/api/request-body-limit';
  * 1. Cross-Site Request Forgery (CSRF) Protection: Enforces strict Origin / Referer validation
  *    on cookie-authenticated state-changing requests (POST, PUT, PATCH, DELETE).
  * 2. Anonymous IP Edge Rate Limiting: Protective token bucket guard against burst abuse.
- * 3. Request body size: a declared body over what the route takes is refused before it is buffered.
+ * 3. Request body size: a declared body over what the route takes is refused before it is buffered, a file sent without a
+ *    length is refused, and any other body sent without one is counted as it arrives.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_LENGTH_REQUIRED = 411;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
 const PROBLEM_PAYLOAD_TOO_LARGE = 'https://api.easyconvert.io/problems/payload-too-large';
+const PROBLEM_LENGTH_REQUIRED = 'https://api.easyconvert.io/problems/length-required';
 const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
 const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
 
@@ -129,6 +132,32 @@ function warnUnattributedOnce(): void {
   );
 }
 
+/** The problem answer for a body the route does not take, by its status. */
+function bodyProblem(status: number, detail: string, pathname: string): NextResponse {
+  if (status === HTTP_BAD_REQUEST) return problemResponse(HTTP_BAD_REQUEST, PROBLEM_BAD_REQUEST, 'Bad Request', detail, pathname);
+  if (status === HTTP_LENGTH_REQUIRED) return problemResponse(HTTP_LENGTH_REQUIRED, PROBLEM_LENGTH_REQUIRED, 'Length Required', detail, pathname);
+  return problemResponse(HTTP_PAYLOAD_TOO_LARGE, PROBLEM_PAYLOAD_TOO_LARGE, 'Payload Too Large', detail, pathname);
+}
+
+/**
+ * Reads a body sent without a length as it arrives, and answers 413 once more than `limit` bytes came; the route then
+ * reads the same bytes from the copy the framework keeps for it.
+ */
+async function countedBody(request: NextRequest, limit: number, detail: string, pathname: string): Promise<NextResponse> {
+  const reader = request.body?.getReader();
+  if (reader) {
+    let received = 0;
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      received += chunk.value.byteLength;
+      if (received > limit) {
+        await reader.cancel();
+        return bodyProblem(HTTP_PAYLOAD_TOO_LARGE, detail, pathname);
+      }
+    }
+  }
+  return NextResponse.next();
+}
+
 function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean {
   try {
     const incomingUrl = new URL(incomingOrigin);
@@ -170,7 +199,7 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
   return false;
 }
 
-export function middleware(request: NextRequest) {
+export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
   // Only protect API routes
@@ -251,14 +280,11 @@ export function middleware(request: NextRequest) {
     );
   }
 
-  // 2. Body size: a malformed or oversize Content-Length is refused before any route buffers the body. A route that
-  // takes files takes one request of a file (entry 137); every other route takes a small JSON or form body.
-  const bodyVerdict = requestBodyVerdict(pathname, request.headers.get('content-length'));
-  if (bodyVerdict) {
-    return bodyVerdict.status === HTTP_BAD_REQUEST
-      ? problemResponse(HTTP_BAD_REQUEST, PROBLEM_BAD_REQUEST, 'Bad Request', bodyVerdict.detail, pathname)
-      : problemResponse(HTTP_PAYLOAD_TOO_LARGE, PROBLEM_PAYLOAD_TOO_LARGE, 'Payload Too Large', bodyVerdict.detail, pathname);
-  }
+  // 2. Body size: a malformed or oversize Content-Length, or a file without one, is refused before any route buffers the
+  // body. A route that takes files takes one request of a file (entry 137); every other route takes a small JSON or
+  // form body, counted as it arrives when it comes without a length (after the CSRF check below).
+  const bodyCheck = requestBodyVerdict(request.nextUrl, request.headers);
+  if (bodyCheck && 'status' in bodyCheck) return bodyProblem(bodyCheck.status, bodyCheck.detail, pathname);
 
   // 3. CSRF Protection for Cookie-Authenticated State Mutations
   if (MUTATING_METHODS.has(request.method.toUpperCase())) {
@@ -319,6 +345,7 @@ export function middleware(request: NextRequest) {
     }
   }
 
+  if (bodyCheck && 'countUpTo' in bodyCheck) return countedBody(request, bodyCheck.countUpTo, bodyCheck.detail, pathname);
   return NextResponse.next();
 }
 

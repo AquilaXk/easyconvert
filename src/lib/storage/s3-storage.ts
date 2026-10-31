@@ -30,12 +30,9 @@ import {
 } from './storage-config';
 import { presignSigV4QueryUrl, verifySigV4QueryUrl } from './sigv4-presigner';
 import { multipartUploadKey } from './key-namespace';
+import { EXCLUSIVE_CREATE, uniqueTempPath } from './temp-file';
 
 export * from './oci-storage';
-
-const TEMP_NAME_RANDOM_BYTES = 6;
-/** Opens a new file and fails when one of that name exists. */
-const EXCLUSIVE_CREATE = 'wx';
 
 interface S3MultipartSession {
   uploadId: string;
@@ -52,6 +49,13 @@ interface S3MultipartSession {
 }
 
 import { extendStoredExpiry, globalSharedObjects } from './shared-store';
+
+/** The bytes of the stored parts of `session` other than part `partNumber`. */
+function storedBytesBesides(session: S3MultipartSession, partNumber: number): number {
+  let bytes = 0;
+  for (const [number, part] of session.parts) if (number !== partNumber) bytes += part.size;
+  return bytes;
+}
 
 /**
  * Enterprise Zero-Heap S3 / R2 Object Storage Service.
@@ -219,9 +223,7 @@ export class S3ObjectStorageService implements IStorageBackend {
 
     const partFileName = `part-${partNumber}.bin`;
     const partFilePath = path.join(session.diskDir, partFileName);
-    // Each request writes a temporary file of its own: a retry of a part that races the first attempt must not
-    // write into, or remove, the file the other one is still writing.
-    const tempPartFilePath = `${partFilePath}.tmp.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const tempPartFilePath = uniqueTempPath(partFilePath, 'tmp');
 
     const nodeStream =
       'pipe' in (stream as any) && typeof (stream as any).pipe === 'function'
@@ -273,6 +275,12 @@ export class S3ObjectStorageService implements IStorageBackend {
       throw error;
     }
 
+    // Other parts may have landed while this one streamed, so the session's sum is checked again where it commits:
+    // reading the stored parts and renaming take no await between them, so no other part commits in between.
+    if (maxTotalBytes !== undefined && storedBytesBesides(session, partNumber) + partSize > maxTotalBytes) {
+      fs.rmSync(tempPartFilePath, { force: true });
+      throw Object.assign(new Error(`Total upload size exceeds maximum allowed size of ${maxTotalBytes} bytes.`), { statusCode: 413 });
+    }
     fs.renameSync(tempPartFilePath, partFilePath);
 
     const hashHex = hasher.digest('hex').slice(0, 32);

@@ -20,6 +20,7 @@ interface Call {
   headers: Record<string, string>;
   json?: Record<string, unknown>;
   bodyBytes?: number;
+  keepalive?: boolean;
 }
 
 type Handler = (call: Call, signal: AbortSignal | undefined) => Response | Promise<Response>;
@@ -56,6 +57,7 @@ function installFetch(handler: Handler): void {
       headers: (init.headers ?? {}) as Record<string, string>,
       json: typeof body === 'string' ? (JSON.parse(body) as Record<string, unknown>) : undefined,
       bodyBytes: body instanceof Blob ? body.size : undefined,
+      keepalive: init.keepalive,
     };
     calls.push(call);
     return handler(call, init.signal ?? undefined);
@@ -213,16 +215,45 @@ describe('a file over a single request is converted through parts and a job', ()
     expect(starts).toBe(2);
   });
 
-  it('does not send the completion again after a network error, and gives up the upload', async () => {
+  it('sends the completion again with its idempotency key, and asks with it which file a completion whose answer was lost stored', async () => {
+    let completions = 0;
     installFetch(happyServer([COMPLETED], (call) => {
-      if (call.url.includes('action=complete')) throw new TypeError('network down');
-      return undefined;
+      if (!call.url.includes('action=complete')) return undefined;
+      completions += 1;
+      return completions <= 4 ? Promise.reject(new TypeError('network down')) : undefined;
     }));
     const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
 
     await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('network down');
-    expect(calls.filter((c) => c.url.includes('action=complete'))).toHaveLength(1);
+
+    await vi.waitFor(() => expect(calls.at(-1)).toMatchObject({ url: '/api/storage/multipart?action=discard', json: { key: 'uploads/up_1_big.csv' } }));
+    const asked = calls.filter((c) => c.url.includes('action=complete'));
+    expect(asked).toHaveLength(5);
+    expect(asked[0].headers['Idempotency-Key']).toMatch(UUID);
+    expect(new Set(asked.map((c) => c.headers['Idempotency-Key'])).size).toBe(1);
+    expect(calls.some((c) => c.url.includes('action=abort'))).toBe(false);
+  });
+
+  it('aborts the upload when the completion whose answer was lost stored nothing', async () => {
+    let completions = 0;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=complete')) return undefined;
+      completions += 1;
+      return completions <= 4 ? Promise.reject(new TypeError('network down')) : json({ detail: 'Storage object not found.' }, 404);
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('network down');
+
     await vi.waitFor(() => expect(calls.at(-1)).toMatchObject({ url: '/api/storage/multipart?action=abort', json: { uploadId: 'up_1' } }));
+  });
+
+  it('shows at once that uploads without an account are off on this server', async () => {
+    installFetch(() => json({ type: 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured', detail: 'Uploads without an account are off.' }, 503));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('are off');
+    expect(calls).toHaveLength(1);
   });
 
   it('shows a refusal that lasts until tomorrow at once instead of sending again', async () => {
@@ -296,6 +327,23 @@ describe('a refusal or a failure is shown as the server worded it and leaves not
     const asked = calls.filter((c) => c.url.includes('action=initiate'));
     expect(asked).toHaveLength(5);
     expect(new Set(asked.map((c) => c.headers['Idempotency-Key'])).size).toBe(1);
+  });
+
+  it('asks again what an opening that failed with a server error made, since it may have opened the upload first', async () => {
+    let openings = 0;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=initiate')) return undefined;
+      openings += 1;
+      return openings === 1 ? json({ detail: 'Storage operation error' }, 500) : undefined;
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('Storage operation error');
+
+    await vi.waitFor(() => expect(calls.at(-1)).toMatchObject({ url: '/api/storage/multipart?action=abort', json: { uploadId: 'up_1' } }));
+    const asked = calls.filter((c) => c.url.includes('action=initiate'));
+    expect(asked).toHaveLength(2);
+    expect(asked[1].headers['Idempotency-Key']).toBe(asked[0].headers['Idempotency-Key']);
   });
 
   it('asks nothing again after the server refused the opening, since it opened nothing', async () => {
@@ -389,6 +437,30 @@ describe('cancelling stops the upload and the job', () => {
 
     await vi.waitFor(() => expect(calls.at(-1)).toMatchObject({ method: 'DELETE', url: '/api/queue/jobs/job_1' }));
     expect(calls.some((c) => c.url === '/api/queue/jobs/job_1' && c.method === 'GET')).toBe(false);
+  });
+
+  it('aborts the upload with a request that outlives the page when the page is left mid-upload', async () => {
+    const page = new EventTarget();
+    vi.stubGlobal('addEventListener', page.addEventListener.bind(page));
+    vi.stubGlobal('removeEventListener', page.removeEventListener.bind(page));
+    let release: () => void = () => undefined;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=chunk')) return undefined;
+      page.dispatchEvent(new Event('pagehide'));
+      return new Promise<Response>((resolve) => {
+        release = () => resolve(json({ detail: 'gone' }, 404));
+      });
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    const conversion = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
+    await vi.waitFor(() => expect(calls.some((c) => c.url.includes('action=abort'))).toBe(true));
+    release();
+    await expect(conversion).rejects.toThrow('gone');
+
+    const abort = calls.find((c) => c.url.includes('action=abort'));
+    expect(abort?.json).toEqual({ uploadId: 'up_1' });
+    expect(abort?.keepalive).toBe(true);
   });
 
   it('does not start when it is already cancelled', async () => {

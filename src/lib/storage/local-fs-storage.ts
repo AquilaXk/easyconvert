@@ -20,6 +20,7 @@ import { isProductionRuntime, resolveLocalStorageDir, resolveSigningSecret } fro
 import { resolveDeclaredFormat } from './declared-format';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
+import { EXCLUSIVE_CREATE, uniqueTempPath } from './temp-file';
 
 /** Part numbers run from 1 to 10,000, as in the S3 multipart limits. */
 export const MULTIPART_MAX_PARTS = 10_000;
@@ -37,9 +38,6 @@ const UPLOAD_ID_RANDOM_BYTES = 12;
 const UPLOAD_ID_PATTERN = /^up_\d{1,15}_[0-9a-f]{24}$/;
 const PART_FILE_PATTERN = /^part-(\d+)\.bin$/;
 const SESSION_FILE = 'session.json';
-const TEMP_NAME_RANDOM_BYTES = 6;
-/** Opens a file only when it does not exist yet, so two writers never share one temp file. */
-const EXCLUSIVE_CREATE = 'wx';
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -216,7 +214,7 @@ export class LocalFsStorage implements IObjectStorage {
   ): Promise<StoredObjectMetadata> {
     this.ensureDirectories();
     const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempPath = `${binPath}.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`;
+    const tempPath = uniqueTempPath(binPath, 'tmp');
 
     const nodeReadable = this.toNodeReadable(stream);
     const hasher = crypto.createHash('sha256');
@@ -379,7 +377,7 @@ export class LocalFsStorage implements IObjectStorage {
     const limit = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
 
     const partPath = path.join(sessionDir, `part-${partNumber}.bin`);
-    const tempPartPath = `${partPath}.tmp.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const tempPartPath = uniqueTempPath(partPath, 'tmp');
     const nodeReadable = this.toNodeReadable(stream);
     const hasher = crypto.createHash('sha256');
     let partSize = 0;
@@ -521,7 +519,7 @@ export class LocalFsStorage implements IObjectStorage {
     const filename = session.metadata?.filename || path.basename(key) || 'download.bin';
 
     const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempCombined = `${binPath}.comb.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const tempCombined = uniqueTempPath(binPath, 'comb');
     const writeCombined = fs.createWriteStream(tempCombined, { flags: EXCLUSIVE_CREATE });
     const overallHasher = crypto.createHash('sha256');
     let totalBytes: number;

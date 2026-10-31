@@ -5,17 +5,17 @@ import type { Plan } from '@/lib/plan-limits';
 import {
   getViewerAccount,
   getViewerPlan,
-  refreshViewerPlan,
+  readViewerPlanOnce,
   subscribeViewerPlan,
   type ViewerAccount,
 } from '@/lib/viewer-plan';
 
 const SERVER_PLAN: Plan = 'anonymous';
 
-/** Reads the session once when the component that owns the page's plan mounts: the queue, and the header's account menu. */
+/** Reads the session when a component that needs the page's plan mounts (the queue, the header's account menu), once per page. */
 export function useRefreshViewerPlan(): void {
   useEffect(() => {
-    void refreshViewerPlan();
+    void readViewerPlanOnce();
   }, []);
 }
 
