@@ -38,3 +38,19 @@ export function sheetLimitError(subject: string, count: number, what: string, sh
  * a workbook past what it holds would lose sheets there. A workbook past the bound is refused with a typed limit error, never cut.
  */
 export const WORKBOOK_MAX_SHEETS = 10_000;
+
+/**
+ * The sheets of a table written to a format that has no writer-side grid check (ODS) are bound as an XLSX worksheet is, since the office suite
+ * reads them on the same grid: 16,384 columns and 1,048,576 rows a sheet, 10,000 sheets a workbook. A table past a bound is refused with a
+ * typed limit error, never cut. The sheets are returned as they are.
+ */
+export function assertSheetsWithinGrid<Sheet extends { rows: readonly (readonly unknown[])[] }>(sheets: Sheet[]): Sheet[] {
+  if (sheets.length > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The workbook', sheets.length, 'sheets', 'a workbook', WORKBOOK_MAX_SHEETS);
+  for (const sheet of sheets) {
+    if (sheet.rows.length > XLSX_MAX_ROWS) throw sheetLimitError('The table', sheet.rows.length, 'rows', 'a worksheet', XLSX_MAX_ROWS);
+    for (const row of sheet.rows) {
+      if (row.length > XLSX_MAX_COLUMNS) throw sheetLimitError('The table', row.length, 'columns', 'a worksheet', XLSX_MAX_COLUMNS);
+    }
+  }
+  return sheets;
+}

@@ -19,13 +19,17 @@ import {
   DataLimitExceededError,
   DataParseError,
   DataRepresentationError,
+  PayloadLimitError,
   UnsupportedOptionError,
   UnsupportedTargetError,
 } from '../types';
 import { generateOdsFromData, officeSheetWorkbook } from './office';
+import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
+import { XLSX_MAX_MATERIALISED_CELLS } from './office/xlsx-sheets';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
+import { PARQUET_MAX_CELLS } from './parquet-format';
 import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
@@ -465,8 +469,48 @@ function setCell(cells: Map<string, DataValue>, path: string, value: DataValue):
   cells.set(path, value);
 }
 
+/**
+ * What a table of records may hold, checked before its matrix is built: a record of one key of its own adds a column, so R records can
+ * make R columns and R x R cells from R lines of input.
+ */
+interface TableBounds {
+  /** The sheet the table is written to when the target is a spreadsheet, or null; its columns and rows are refused as the sheet's writers refuse them. */
+  readonly sheet: string | null;
+  readonly columns: number;
+  /** Rows of the sheet, the header row included. */
+  readonly rows: number;
+  readonly cells: number;
+}
+
+/**
+ * Spreadsheet targets hold the grid of their format (`sheet-bounds.ts`: 16,384 columns and 1,048,576 rows in a worksheet, 256 and 65,536 in
+ * a BIFF8 worksheet) and no more cells than our own XLSX reader materialises for one workbook (XLSX_MAX_MATERIALISED_CELLS, 20 million,
+ * the bound of the Parquet reader for a table too), so a workbook this engine writes is one it reads. Every other table target holds
+ * the Parquet bound of rows x columns in memory at once (PARQUET_MAX_CELLS, `parquet-format.ts`).
+ */
+function tableBoundsOf(tgt: string): TableBounds {
+  if (tgt === 'xls') return { sheet: 'an .xls worksheet', columns: XLS_MAX_COLUMNS, rows: XLS_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS };
+  if (tgt === 'xlsx' || tgt === 'ods') {
+    return { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS };
+  }
+  return { sheet: null, columns: Infinity, rows: Infinity, cells: PARQUET_MAX_CELLS };
+}
+
+const HEADER_ROWS = 1;
+
+function assertTableFits(fields: number, records: number, bounds: TableBounds): void {
+  const cells = fields * records;
+  if (bounds.sheet !== null) {
+    if (fields > bounds.columns) throw sheetLimitError('The table', fields, 'columns', bounds.sheet, bounds.columns);
+    if (records + HEADER_ROWS > bounds.rows) throw sheetLimitError('The table', records + HEADER_ROWS, 'rows', bounds.sheet, bounds.rows);
+    if (cells > bounds.cells) throw sheetLimitError('The table', cells, 'cells (records times columns)', 'a workbook this engine reads', bounds.cells);
+  } else if (cells > bounds.cells) {
+    throw new PayloadLimitError(`The table of records has ${fields} columns by ${records} records, ${cells} cells, and a table is built with at most ${bounds.cells}.`);
+  }
+}
+
 /** A table over the union of all records' columns in first-seen order; a non-object record fills "value". */
-function tabulate(records: DataValue[], leadingFields: readonly string[] = []): DataTable {
+function tabulate(records: DataValue[], tgt: string, leadingFields: readonly string[] = []): DataTable {
   const flattened = records.map((record) => {
     const cells = new Map<string, DataValue>();
     if (isDataObject(record)) flattenInto(record, '', cells);
@@ -474,6 +518,7 @@ function tabulate(records: DataValue[], leadingFields: readonly string[] = []): 
     return cells;
   });
   const fields = fieldsInFirstSeenOrder(flattened.map((cells) => cells.keys()), leadingFields);
+  assertTableFits(fields.length, flattened.length, tableBoundsOf(tgt));
   return { fields, rows: flattened.map((cells) => fields.map((field) => cells.get(field) ?? null)) };
 }
 
@@ -988,7 +1033,7 @@ export async function writeTransientWorkbook(inputBuffer: Buffer, src: string, o
   assertDataOptions(options);
   const write = async (): Promise<Buffer> => {
     const source = readStructuredSource(inputBuffer, src, 'xlsx', options);
-    const table = tabulate(source.records(), source.fields);
+    const table = tabulate(source.records(), 'xls', source.fields);
     assertTableUnicode(table, 'xlsx');
     return writeXlsx(tableSheet(table), 'verbatim', 'STORE');
   };
@@ -1030,7 +1075,7 @@ async function convertStructured(
   if (!TABLE_TARGETS.has(tgt)) {
     throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
   }
-  const table = tabulate(source.records(), source.fields);
+  const table = tabulate(source.records(), tgt, source.fields);
   assertTableUnicode(table, tgt);
 
   if (tgt === 'csv' || tgt === 'tsv') {

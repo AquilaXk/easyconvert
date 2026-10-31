@@ -69,7 +69,7 @@ import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variant
 import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
 import { sourceBytesAsText } from './office/text-source';
-import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from './office/sheet-bounds';
+import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, assertSheetsWithinGrid } from './office/sheet-bounds';
 import { readWorksheetStructure, worksheetBoundError } from './office/xlsx-worksheet-structure';
 import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, writeXlsxWorkbook, type WorkbookCompression } from './xlsx-writer';
 import { readPdfSheets } from './pdf-sheets';
@@ -9095,10 +9095,9 @@ export async function generateOdsFromData(
   data: string[][] | OfficeWorksheet[],
   baseName: string
 ): Promise<Buffer> {
-  const sheets: OfficeWorksheet[] =
-    Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && 'rows' in data[0]
-      ? (data as OfficeWorksheet[])
-      : [{ name: baseName, rows: (data as string[][]) || [] }];
+  const sheets: OfficeWorksheet[] = assertSheetsWithinGrid(
+    Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && 'rows' in data[0] ? (data as OfficeWorksheet[]) : [{ name: baseName, rows: (data as string[][]) || [] }]
+  );
 
   const zip = new JSZip();
   zip.file('mimetype', 'application/vnd.oasis.opendocument.spreadsheet', { compression: 'STORE' });
