@@ -169,22 +169,6 @@ function endsSentence(text: string): boolean {
   return SENTENCE_END.test(text.trimEnd());
 }
 
-/** The end of a paragraph that is built already. */
-export function openParagraph(paragraph: Paragraph): OpenParagraph {
-  return {
-    full: paragraph.full,
-    size: paragraph.size,
-    bold: paragraph.bold,
-    italic: paragraph.italic,
-    monospace: paragraph.monospace,
-    lineCount: paragraph.lines.length,
-    lastLine: paragraph.lines[paragraph.lines.length - 1],
-    leftX: paragraph.leftX,
-    x1: paragraph.box.x1,
-    endsSentence: endsSentence(paragraph.text),
-  };
-}
-
 /**
  * A paragraph built line by line: the lines are joined (rejoining words that a hyphen broke at the end of a line) and the
  * box and the dominant style kept as each line comes. A run of paragraphs that continue into one another is added to one
@@ -197,7 +181,6 @@ export class ParagraphBuilder {
   private readonly runPieces: string[][] = [];
   private readonly pieces: string[] = [];
   private tail = '';
-  private sentenceEnd = false;
   private dominant: LayoutLine | undefined;
   private x0 = 0;
   private x1 = 0;
@@ -213,8 +196,6 @@ export class ParagraphBuilder {
   private append(piece: string): void {
     this.pieces.push(piece);
     this.tail = (this.tail + piece).slice(-TAIL_UNITS);
-    const visible = piece.trimEnd();
-    if (visible !== '') this.sentenceEnd = endsSentence(visible.slice(-2));
   }
 
   /** Drops the hyphen that ends the text so far: "adminis-" and "tration" are one word. */
@@ -267,6 +248,18 @@ export class ParagraphBuilder {
     for (const line of lines) this.add(line);
   }
 
+  /**
+   * Whether the text so far, white space at its end aside, ends in terminal punctuation. A line holds a visible character, so
+   * the scan stops at the last piece.
+   */
+  private sentenceEnded(): boolean {
+    for (let i = this.pieces.length - 1; i >= 0; i--) {
+      const visible = this.pieces[i].trimEnd();
+      if (visible !== '') return endsSentence(visible.slice(-2));
+    }
+    return false;
+  }
+
   /** The end of the paragraph so far, as `continuesInNextFlow` reads it. */
   end(): OpenParagraph {
     const dominant = this.dominant!;
@@ -280,7 +273,7 @@ export class ParagraphBuilder {
       lastLine: this.lines[this.lines.length - 1],
       leftX: this.x0,
       x1: this.x1,
-      endsSentence: this.sentenceEnd,
+      endsSentence: this.sentenceEnded(),
     };
   }
 
@@ -325,6 +318,13 @@ function paragraphOf(lines: LayoutLine[], flow: number, pageNumber: number, full
   const builder = new ParagraphBuilder(flow, pageNumber, full);
   builder.addAll(lines);
   return builder.finish();
+}
+
+/** A builder holding the lines of a paragraph that is built already, to go on with the lines that continue it. */
+export function builderOf(paragraph: Paragraph): ParagraphBuilder {
+  const builder = new ParagraphBuilder(paragraph.flow, paragraph.pageNumber, paragraph.full);
+  builder.addAll(paragraph.lines);
+  return builder;
 }
 
 /** Paragraphs of one flow of lines (top to bottom). */
