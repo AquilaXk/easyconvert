@@ -5411,9 +5411,10 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     const cellMap: Record<string, any> = {};
     const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
 
-    const columnWidths = readColumnWidths(sheetXml, entry.name);
+    const { beforeCells, cells: cellData } = splitWorksheetAtCells(sheetXml);
+    const columnWidths = readColumnWidths(beforeCells, entry.name);
 
-    const rowEls = worksheetRowElements(sheetXml, entry.name);
+    const rowEls = worksheetRowElements(cellData, entry.name);
 
     for (const rowEl of rowEls) {
       const rowAttrs = rowEl.attrs;
@@ -7972,6 +7973,19 @@ const XLSX_EMPTY_STRUCTURED_ROW: OfficeWorksheetCell[] = Object.freeze([]) as un
 
 function worksheetBoundError(sheetName: string, problem: string): ConversionFailedError {
   return new ConversionFailedError(`Invalid XLSX worksheet '${sheetName}': ${problem}.`);
+}
+
+/**
+ * A worksheet split at its cell data (ECMA-376 Part 1, 18.3.1.99: `cols` comes before `sheetData`, the merged ranges and links after it).
+ * The column definitions are looked for before the cell data and the rows inside it, so that neither scan walks the lists that follow,
+ * which a hostile sheet fills with millions of elements. SheetJS splits a worksheet the same way (xlsx 0.18.5, `parse_ws_xml`,
+ * xlsx.js lines 14527 to 14532, with `cols` read from the part before the cell data at lines 14552 to 14556). A sheet with no
+ * `sheetData` is scanned whole.
+ */
+function splitWorksheetAtCells(sheetXml: string): { beforeCells: string; cells: string } {
+  const sheetData = safeExtractFirstXmlElement(sheetXml, 'sheetData');
+  if (!sheetData) return { beforeCells: sheetXml, cells: sheetXml };
+  return { beforeCells: sheetXml.slice(0, sheetData.startIndex), cells: sheetData.content };
 }
 
 /** Every row element of a worksheet, up to the most a worksheet holds; one more is past the last row of any worksheet. */
