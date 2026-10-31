@@ -645,9 +645,11 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   html: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   json: ['xls'],
+  jsonl: ['xls'],
   key: ['html', 'pdf', 'pptx'],
   lrf: ['azw3', 'mobi', 'oeb', 'pdb'],
   mobi: ['azw3', 'lrf', 'oeb', 'pdb'],
+  ndjson: ['xls'],
   odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
   odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
@@ -671,7 +673,10 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   xls: ['jpg', 'png'],
   xlsm: ['xls'],
   xlsx: ['jpg', 'png', 'xls'],
+  xml: ['xls'],
   xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+  yaml: ['xls'],
+  yml: ['xls'],
 };
 
 /**
@@ -1584,6 +1589,11 @@ describe('native-engine pairs route through the dispatcher', () => {
     csv: 'name,amount,note\nwidget,1.5,"a,b"\ngadget,-153.375,plain\n',
     tsv: 'name\tamount\tnote\nwidget\t1.5\ta b\ngadget\t-153.375\tplain\n',
     json: '[{"name":"widget","amount":1.5,"note":"a,b"},{"name":"gadget","amount":-153.375,"note":"plain"}]',
+    ndjson: '{"name":"widget","amount":1.5,"note":"a,b"}\n{"name":"gadget","amount":-153.375,"note":"plain"}\n',
+    jsonl: '{"name":"widget","amount":1.5,"note":"a,b"}\n{"name":"gadget","amount":-153.375,"note":"plain"}\n',
+    yaml: '- {name: widget, amount: 1.5, note: "a,b"}\n- {name: gadget, amount: -153.375, note: plain}\n',
+    yml: '- {name: widget, amount: 1.5, note: "a,b"}\n- {name: gadget, amount: -153.375, note: plain}\n',
+    xml: '<rows><row><name>widget</name><amount>1.5</amount><note>a,b</note></row><row><name>gadget</name><amount>-153.375</amount><note>plain</note></row></rows>',
   };
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
   const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', xlsm: 'xlsx', ppt: 'pptx', pps: 'pptx', odp: 'pptx', odd: 'odg' };
