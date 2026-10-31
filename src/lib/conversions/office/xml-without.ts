@@ -5,7 +5,8 @@ import { safeExtractXmlElements } from '../safe-xml-scanner';
  * are, since the string itself is bounded by the size of its part.
  */
 export function withoutElements(xml: string, tagName: string): string {
-  if (!xml.includes(`<${tagName}`)) return xml;
+  // The name must end there (`<w:rt>`, `<w:rt ` or `<w:rt/>`): `<w:rtl/>` alone does not send a right-to-left document through the scan.
+  if (![`<${tagName}>`, `<${tagName} `, `<${tagName}/`].some((open) => xml.includes(open))) return xml;
   const kept: string[] = [];
   let from = 0;
   for (const element of safeExtractXmlElements(xml, tagName, { maxElements: Number.POSITIVE_INFINITY })) {

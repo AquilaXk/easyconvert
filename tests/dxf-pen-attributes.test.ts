@@ -375,6 +375,12 @@ describe('pictures', () => {
       ['a sheet smaller than the page', `<rect x="10" y="10" width="${PAGE_WIDTH - 20}" height="${PAGE_HEIGHT - 20}" fill="#fff"/>`],
       ['a sheet and an outline', `${SHEET}${outline}`],
       ['a line across the page', '<path d="M 0 50 H 200" stroke="#000" fill="none"/>'],
+      ['a filled diamond that spans the page', `<path d="M 0 ${PAGE_HEIGHT / 2} L ${PAGE_WIDTH / 2} 0 L ${PAGE_WIDTH} ${PAGE_HEIGHT / 2} L ${PAGE_WIDTH / 2} ${PAGE_HEIGHT} Z" fill="#cde" stroke="none"/>`],
+      ['a filled triangle that spans the page', `<path d="M 0 0 L ${PAGE_WIDTH} ${PAGE_HEIGHT} L 0 ${PAGE_HEIGHT} Z" fill="#cde" stroke="none"/>`],
+      [
+        'a filled frame with a hole',
+        `<path d="M 0 0 H ${PAGE_WIDTH} V ${PAGE_HEIGHT} H 0 Z M 10 10 V ${PAGE_HEIGHT - 10} H ${PAGE_WIDTH - 10} V 10 Z" fill="#cde" fill-rule="evenodd" stroke="none"/>`,
+      ],
     ])('is written with the picture left out when the page also draws %s', async (_name, geometry) => {
       const { dxf, warnings } = await conversion(`${geometry}${PICTURE}`);
       expect(dxf.entities.length).toBeGreaterThan(0);

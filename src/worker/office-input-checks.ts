@@ -34,8 +34,8 @@ export function boundedInput(input: Buffer | WorkerVfsPayload, maxBytes: number)
   if (Buffer.isBuffer(input)) return input;
   if (input.inputBuffer) return input.inputBuffer;
   if (input.inputPath === undefined) return undefined;
-  const size = fs.statSync(input.inputPath, { throwIfNoEntry: false })?.size;
-  return size === undefined || size > maxBytes ? undefined : fs.readFileSync(input.inputPath);
+  // A missing input is a fault of the job, not a large file: statSync throws it as itself.
+  return fs.statSync(input.inputPath).size > maxBytes ? undefined : fs.readFileSync(input.inputPath);
 }
 
 /** The input of a legacy binary Office document, read as far as the in-process readers of those formats read (`LEGACY_OFFICE_MAX_INPUT_BYTES`). */
@@ -45,6 +45,8 @@ export function legacyOfficeInput(input: Buffer | WorkerVfsPayload): Buffer | un
 
 /** The input of a package that is read whole before the office suite sees it: as large as a job holds in memory. */
 function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  // The checks before the office suite starts leave a missing input to the suite, as they always did.
+  if (!Buffer.isBuffer(input) && !input.inputBuffer && input.inputPath !== undefined && !fs.existsSync(input.inputPath)) return undefined;
   return boundedInput(input, getMaxInMemoryBytes());
 }
 
@@ -63,6 +65,8 @@ export async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src
 export function isEncryptedLegacyOffice(input: Buffer | WorkerVfsPayload, src: string): boolean {
   const reading = officeReadingFormat(src);
   if (reading !== 'xls' && reading !== 'doc') return false;
+  // Asked after the suite failed: a file that is gone is not called encrypted, and the suite's own error stands.
+  if (!Buffer.isBuffer(input) && !input.inputBuffer && input.inputPath !== undefined && !fs.existsSync(input.inputPath)) return false;
   const buffer = legacyOfficeInput(input);
   if (buffer === undefined) return false;
   return reading === 'xls' ? xlsHasFilePass(buffer) : isEncryptedWordDocument(buffer);

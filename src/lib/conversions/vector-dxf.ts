@@ -4,7 +4,7 @@ import { reportConversionWarning } from './conversion-warnings';
 import { pagesPhrase } from './pdf-text-types';
 import { BitmapGlyphs } from './svg-bitmap-glyph';
 import { parseSvgGeometries, type ParsedSvgVectorDocument, type SvgGeometryElement } from './svg-geometry';
-import { PAGE_CLIP_TOLERANCE_PIXELS } from './svg-page-clip';
+import { isPageSizedRectangle } from './svg-page-clip';
 import { LeftOutPictures } from './svg-picture';
 
 /**
@@ -230,18 +230,8 @@ export class PicturePages {
 
 /** Whether the element paints no outline and reaches every side of the page, to the tolerance of a page-sized clip: the sheet under a scan. */
 function isPageBackdrop(element: SvgGeometryElement, page: Pick<ParsedSvgVectorDocument, 'width' | 'height'>): boolean {
-  if (element.stroke !== null) return false;
-  let [minX, minY, maxX, maxY] = [Infinity, Infinity, -Infinity, -Infinity];
-  for (const subpath of element.subpaths) {
-    for (const point of subpath) {
-      minX = Math.min(minX, point.x);
-      maxX = Math.max(maxX, point.x);
-      minY = Math.min(minY, point.y);
-      maxY = Math.max(maxY, point.y);
-    }
-  }
-  const slack = PAGE_CLIP_TOLERANCE_PIXELS;
-  return minX <= slack && maxX >= page.width - slack && minY <= slack && maxY >= page.height - slack;
+  // One unstroked rectangle over the whole page: a diamond, a triangle or a frame with a hole that spans the page is geometry.
+  return element.stroke === null && isPageSizedRectangle(element.subpaths, page);
 }
 
 function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs, leftOut: PicturePages, page?: number): ParsedSvgVectorDocument {

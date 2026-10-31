@@ -7,7 +7,7 @@ import { boundedInput, isEncryptedLegacyOffice, legacyOfficeInput } from '../src
 
 /**
  * The one reader of an office input that the worker's checks share: an input held in memory is used as it is, a file is read only up
- * to the size the caller bounds it by, and a file past it (or a missing one) is not read at all but goes to the office suite as it is.
+ * to the size the caller bounds it by, and a file past it is not read at all but goes to the office suite as it is; a missing file is the job's fault and is thrown as itself, not mistaken for a large one.
  * Legacy binary documents are bounded by what the in-process readers of those formats read.
  */
 
@@ -44,9 +44,9 @@ describe('boundedInput', () => {
     expect(boundedInput({ inputPath: file, outputPath }, 9)).toBeUndefined();
   });
 
-  it('does not read a file past the bound, nor a missing file, nor an input with no source', () => {
+  it('does not read a file past the bound nor an input with no source, and throws a missing file as itself', () => {
     expect(boundedInput({ inputPath: fileOfSize('past.bin', 11), outputPath }, 10)).toBeUndefined();
-    expect(boundedInput({ inputPath: path.join(directory, 'missing.bin'), outputPath }, 10)).toBeUndefined();
+    expect(() => boundedInput({ inputPath: path.join(directory, 'missing.bin'), outputPath }, 10)).toThrow(/ENOENT/);
     expect(boundedInput({ outputPath }, 10)).toBeUndefined();
   });
 });
