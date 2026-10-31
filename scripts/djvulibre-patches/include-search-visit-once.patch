@@ -16,7 +16,14 @@ first file found in depth-first order is the one the recursive search found:
 a file is skipped only when an earlier visit searched it and everything it
 includes without finding what is looked for. get_fgjd() waits for the files
 still decoding and searches again, as before; each such pass searches each
-file once. get_info() calls init_rotate() on the information it finds, as
+file once. It used to be woken, and search again, for every chunk decoded in
+any file below the page: a mask without its dictionary over a chain of 60
+such files of 2000 small chunks each took 8 s to fail, where the same chain
+decodes in 2.3 s without a mask. Only get_fgjd() waits on the chunk monitor
+(wait_for_chunk()), and only a shape dictionary (Djbz) or a file that stops
+decoding, which notify_file_flags_changed() still signals, can change what
+it finds or whether it waits, so notify_chunk_done() wakes it for a Djbz
+chunk alone. get_info() calls init_rotate() on the information it finds, as
 before; its second call on the caller's own (empty) information is gone,
 which never ran, as the first call leaves rotate_count at an orientation from
 0 to 3.
@@ -54,7 +61,22 @@ map, for saving a document.
     void		wait_for_chunk(void);
 --- a/libdjvu/DjVuFile.cpp
 +++ b/libdjvu/DjVuFile.cpp
-@@ -746,30 +746,37 @@
+@@ -387,9 +387,13 @@
+ }
+ 
+ void
+-DjVuFile::notify_chunk_done(const DjVuPort *, const GUTF8String &)
++DjVuFile::notify_chunk_done(const DjVuPort *, const GUTF8String & name)
+ {
+   check();
++  // Only get_fgjd() waits for a chunk, and only a shape dictionary can
++  // change what it finds.
++  if (name != "Djbz")
++    return;
+   chunk_mon.enter();
+   chunk_mon.broadcast();
+   chunk_mon.leave();
+@@ -746,30 +750,37 @@
  DjVuFile::static_get_fgjd(void *arg)
  {
    DjVuFile *file = (DjVuFile*)arg;
@@ -95,7 +117,7 @@ map, for saving a document.
          if (fgjd)
          {
            chunk_mon.leave();
-@@ -784,6 +791,8 @@
+@@ -784,6 +795,8 @@
          break;
        // Wait until a new chunk gets decoded
        wait_for_chunk();

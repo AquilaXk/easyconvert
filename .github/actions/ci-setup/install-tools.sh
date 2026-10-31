@@ -49,13 +49,12 @@ set +a
 # Seconds each task may run. The whole step of a job took 119 s at most over the last 64 successful runs, with the
 # package install the slowest part; a limit is two to three times what a part can need, and the longest one, s3,
 # covers its counted worst case (315 s: 165 pull, 30 start, 100 wait, 20 signature checks). The DjVu renderer builds
-# only when its cache misses, after the other parts: the script took 41 s on four arm64 cores, and inside the apt task
-# it made the cold task of the first CI run take 172 to 257 s and pass the limit of 300 s once, where the warm task takes
-# 72 to 96 s; 240 s is more than twice what it can need on the four x64 cores of a runner. The job timeout is 15 minutes,
-# so the step, at most 360 s and then 240 s, never leaves a job less than five.
+# only when its cache misses, after the other parts: its cold task took 120 to 157 s on the x64 runners, so 300 s is about
+# twice the slowest. The job timeout is 15 minutes, so the step, at most 360 s and then 300 s, never leaves a job less
+# than four.
 declare -A task_limit_seconds=(
   [apt]=300
-  [djvulibre]=240
+  [djvulibre]=300
   [pip]=180
   [verapdf]=240
   [epubcheck]=120
@@ -147,17 +146,17 @@ task_apt() {
 # libjpeg and libtiff development packages of the apt task, so it follows the packages as cad-convert does. The distribution's ddjvu of
 # the same version, which that task also installs for the oracle tools, is the reference the build is checked against. The build is
 # cached by the runner image and the hash of the script and its patches; a restored build is used only when its programs still have
-# the digests written at the build. The programs are linked into /usr/local/bin, which comes before /usr/bin for the worker and the oracles.
+# the digests the build recorded beside them, which the worker checks too. The programs are linked into /usr/local/bin, which comes
+# before /usr/bin for the worker and the oracles.
 task_djvulibre() {
-  local digest_file="$djvulibre_dir/programs.sha256"
-  if [ "$djvulibre_cache_hit" = true ] && sha256sum --check --strict --status "$digest_file" 2> /dev/null; then
+  if [ "$djvulibre_cache_hit" = true ] \
+    && (cd "$djvulibre_dir/bin" && sha256sum --check --strict --status ../share/doc/djvulibre/programs.sha256 2> /dev/null); then
     sudo ln -sf "$djvulibre_dir/bin/ddjvu" /usr/local/bin/ddjvu
     sudo ln -sf "$djvulibre_dir/bin/djvused" /usr/local/bin/djvused
     return
   fi
   if [ "$djvulibre_cache_hit" = true ]; then echo "the cached djvulibre does not match its recorded digests; building it again"; fi
-  sudo env DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu "$action_path/../../../scripts/install-djvulibre.sh" "$djvulibre_dir" || return 1
-  sha256sum "$djvulibre_dir/bin/ddjvu" "$djvulibre_dir/bin/djvused" | sudo tee "$digest_file" > /dev/null
+  sudo env DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu "$action_path/../../../scripts/install-djvulibre.sh" "$djvulibre_dir"
 }
 
 # PDF/A results are refused unless veraPDF validates them.
@@ -339,12 +338,12 @@ on_interrupt() {
   trap - INT TERM
   echo "::error::tool setup interrupted before it finished; the logs so far follow"
   local task pid
-  for task in "${tasks[@]}"; do
+  for task in "${running_tasks[@]}"; do
     echo "::group::$task (interrupted)"
     cat "$task_logs/$task.log"
     echo "::endgroup::"
   done
-  for task in "${tasks[@]}"; do
+  for task in "${running_tasks[@]}"; do
     pid="${task_pids[$task]:-}"
     if [ -n "$pid" ]; then
       pkill -TERM -P "$pid" 2> /dev/null || true
@@ -353,11 +352,12 @@ on_interrupt() {
   exit 143
 }
 
-# Starts every task of `tasks` at once, waits for all of them and prints their logs. Returns 1 when any failed.
+# Starts the tasks named in its arguments at once, waits for all of them and prints their logs. Returns 1 when any failed.
 run_tasks() {
   local task
   local -a failed=()
-  for task in "${tasks[@]}"; do
+  local -a running_tasks=("$@")
+  for task in "${running_tasks[@]}"; do
     if [ -z "${task_limit_seconds[$task]:-}" ]; then
       echo "::error::no time limit for task $task"
       return 1
@@ -367,12 +367,12 @@ run_tasks() {
   task_logs="$(mktemp -d)"
   declare -gA task_pids=()
   trap on_interrupt INT TERM
-  for task in "${tasks[@]}"; do
+  for task in "${running_tasks[@]}"; do
     run_bounded "$task" > "$task_logs/$task.log" 2>&1 &
     task_pids[$task]=$!
   done
 
-  for task in "${tasks[@]}"; do
+  for task in "${running_tasks[@]}"; do
     if wait "${task_pids[$task]}"; then
       echo "::group::$task (ok)"
       cat "$task_logs/$task.log"
@@ -425,14 +425,13 @@ verify_bench_python_modules() {
 
 # Runs the tasks that need what the others installed, under the same limits.
 run_dependent_tasks() {
-  tasks=(djvulibre)
-  run_tasks
+  run_tasks djvulibre
 }
 
 main() {
   configure
   select_tasks
-  run_tasks || return 1
+  run_tasks "${tasks[@]}" || return 1
   run_dependent_tasks || return 1
   verify_cad_tools || return 1
   verify_bench_python_modules

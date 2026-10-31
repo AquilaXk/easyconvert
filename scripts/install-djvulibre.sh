@@ -9,8 +9,9 @@
 # same SHA-256, from the snapshot of the Debian archive taken when that revision entered it (https://snapshot.debian.org/package/djvulibre/).
 # The Debian patches are applied in the order of their series file, then ours, each with no fuzz, so one that no longer applies fails the
 # build. Before moving the pin, read the new release's libdjvu/DjVuImage.cpp and libdjvu/DjVuFile.cpp: a patch whose change the release
-# already holds is dropped from DJVULIBRE_PATCHES and its file deleted, and any other is rebased on the new file, which changes its digest
-# here and in DJVULIBRE_REQUIRED_PATCHES of src/worker/djvu-render.ts. Then run tests/djvu-render.test.ts with this build.
+# already holds is dropped from DJVULIBRE_PATCHES and its file deleted, and from DJVULIBRE_REQUIRED_PATCHES of src/worker/djvu-render.ts,
+# which names the patches; any other is rebased on the new file, which changes its digest here. Then run tests/djvu-render.test.ts with
+# this build.
 #
 # Usage: DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu install-djvulibre.sh [install-dir]   (default /opt/djvulibre)
 # Needs a C++ compiler, make, autoconf, automake, libtool, pkg-config, patch, curl, xz, dpkg-buildflags (dpkg-dev), the development
@@ -18,16 +19,20 @@
 # checks: on Debian, the system the worker image is built on, its package must be the revision pinned here, so that a Debian update of
 # the source (a security fix) stops the build until the pin moves to it. Installs <install-dir>/bin/{ddjvu,djvused}, their message
 # catalog in <install-dir>/share/djvu and, in <install-dir>/share/doc/djvulibre, the licence text (copyright), the source it was built
-# from (SOURCE), the patches, which the worker takes as the stamp of this build, and tool-version.txt with the packages it was built
-# with; links the programs into /usr/local/bin when it is run as root and the directory is not /usr/local.
+# from (SOURCE), the patches, the SHA-256 of the two programs as installed (programs.sha256), which with the patches the worker takes as the
+# stamp of this build, and tool-version.txt with the packages it was built with; links the programs into /usr/local/bin when it is run as
+# root and the directory is not /usr/local.
 set -euo pipefail
 
 DJVULIBRE_VERSION="3.5.28"
 DJVULIBRE_DEBIAN_REVISION="2.2"
 DJVULIBRE_ORIG_SHA256="1223b7bf7c8dfe2e290882f3bfb88ba2468b30495a1bf8dfd54dc7e810987887"
 DJVULIBRE_DEBIAN_SHA256="93c56218b7ea8d2a3dcec7dc982864ba9f3ece50c2e400003d938c67485d3ef6"
-# The pool of deb.debian.org drops a revision once a newer one replaces it; the snapshot keeps the same files at this address.
+# The snapshot keeps the files of the revision at this address; the pool of deb.debian.org serves the same files until a newer revision
+# replaces them, and is tried when the snapshot fails. Either is taken only with the digests above.
 DJVULIBRE_SNAPSHOT="https://snapshot.debian.org/archive/debian/20250721T022532Z/pool/main/d/djvulibre"
+DJVULIBRE_POOL="https://deb.debian.org/debian/pool/main/d/djvulibre"
+DJVULIBRE_SOURCES=("$DJVULIBRE_SNAPSHOT" "$DJVULIBRE_POOL")
 DJVULIBRE_ORIG="djvulibre_${DJVULIBRE_VERSION}.orig.tar.xz"
 DJVULIBRE_DEBIAN="djvulibre_${DJVULIBRE_VERSION}-${DJVULIBRE_DEBIAN_REVISION}.debian.tar.xz"
 INSTALL_DIR="${1:-/opt/djvulibre}"
@@ -39,8 +44,8 @@ REFERENCE_DDJVU="${DJVULIBRE_REFERENCE_DDJVU:?set DJVULIBRE_REFERENCE_DDJVU to t
 # decode-thread-start-failure.patch: libdjvu/DjVuFile.cpp fails the decoding of a file whose thread does not start, instead of waiting for
 # it forever.
 DJVULIBRE_PATCHES=(
-  "include-search-visit-once.patch 80c569b2ee1ac042c57bb52b8196dcd4057011de73f0dd99a3055c41ef16ac77"
-  "decode-thread-start-failure.patch a29276f77dd11f1d8a6f77a1687614ea4edef732389e92641ce24a04536e0212"
+  "include-search-visit-once.patch f5fed030a06452278288fac3583cab8a107fca1351303fd8f2b49cd90a437dfe"
+  "decode-thread-start-failure.patch 68fd3f8c5bcc10dc46a92280b5501f1812f15a47c6a29e04b13b0bee543c4480"
 )
 patch_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/djvulibre-patches"
 # The programs the worker runs; the others the build makes are not installed.
@@ -64,10 +69,17 @@ THREAD_STACK_KIB=8192
 # The exit status of ddjvu when it cannot decode a page (tools/ddjvu.cpp `die`), and of `timeout` when it stops a command.
 DDJVU_FAILED=10
 TIMED_OUT=124
+# The status of a ddjvu that crashed (SIGSEGV) after it printed the error, when the threads of a chain fail together and still look up
+# their messages while `exit` destroys the catalog (entry 135 of docs/policy-decisions.md), and of one that `timeout --signal=KILL` stopped.
+DDJVU_CRASHED_AT_EXIT=139
+KILLED=137
+# What ddjvu prints when the decoding of an included file failed (DjVuFile.decode_fail of share/djvu/osi/en/libdjvu++.xml).
+DECODE_FAILED_TEXT="Decode of an included file failed"
 
 reference_file="$(readlink -f "$REFERENCE_DDJVU")"
 reference_package="$(dpkg-query -S "$reference_file" | cut -d: -f1)"
-reference_version="$(dpkg-query -W -f='${Version}' "$reference_package")"
+# The version of the source package, so that a rebuild of the same source for a new library (a binNMU, 3.5.28-2.2+b1) passes.
+reference_version="$(dpkg-query -W -f='${source:Version}' "$reference_package")"
 case "$reference_version" in
   "${DJVULIBRE_VERSION}-"*) ;;
   *) echo "the reference $REFERENCE_DDJVU is $reference_package $reference_version, not version $DJVULIBRE_VERSION" >&2; exit 1 ;;
@@ -80,11 +92,23 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-for entry in "$DJVULIBRE_ORIG $DJVULIBRE_ORIG_SHA256" "$DJVULIBRE_DEBIAN $DJVULIBRE_DEBIAN_SHA256"; do
-  read -r archive archive_sha256 <<< "$entry"
-  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 -o "$work/$archive" "$DJVULIBRE_SNAPSHOT/$archive"
-  echo "${archive_sha256}  $work/$archive" | sha256sum --check --strict -
-done
+# fetch_checked <archive> <sha256>: downloads <archive> into the work directory from the first of DJVULIBRE_SOURCES that serves it with that
+# SHA-256, and prints that source.
+fetch_checked() {
+  local source
+  for source in "${DJVULIBRE_SOURCES[@]}"; do
+    rm -f "$work/$1"
+    if curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 -o "$work/$1" "$source/$1" \
+      && echo "${2}  $work/$1" | sha256sum --check --strict - >&2; then
+      echo "$source"
+      return 0
+    fi
+    echo "$source/$1 did not give the file of SHA-256 $2" >&2
+  done
+  return 1
+}
+orig_source="$(fetch_checked "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256")"
+debian_source="$(fetch_checked "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256")"
 tar -xJf "$work/$DJVULIBRE_ORIG" -C "$work"
 source_dir="$work/djvulibre-${DJVULIBRE_VERSION}"
 tar -xJf "$work/$DJVULIBRE_DEBIAN" -C "$source_dir"
@@ -202,17 +226,18 @@ status_of() {
   "$@" > /dev/null 2>&1 || status=$?
   echo "$status"
 }
-# same_pixels <a.pdf> <b.pdf> <pages>: whether pdftoppm renders the two PDFs to the same pixels, and to <pages> pages.
+# same_pixels <a.pdf> <b.pdf> <pages>: whether pdftoppm renders each of the two PDFs to <pages> pages, and both to the same pixels.
 same_pixels() {
-  local rendered pages=0
-  mkdir "$1.pages" "$2.pages"
-  pdftoppm -r 50 "$1" "$1.pages/page"
-  pdftoppm -r 50 "$2" "$2.pages/page"
-  for rendered in "$1.pages"/*.ppm; do
-    cmp -s "$rendered" "$2.pages/$(basename "$rendered")" || { echo "$(basename "$rendered") differs" >&2; return 1; }
-    pages=$((pages + 1))
+  local pdf page rendered
+  for pdf in "$1" "$2"; do
+    mkdir "$pdf.pages"
+    pdftoppm -r 50 "$pdf" "$pdf.pages/page"
+    rendered="$(find "$pdf.pages" -name '*.ppm' | wc -l)"
+    [ "$rendered" -eq "$3" ] || { echo "$pdf rendered to $rendered pages, not $3" >&2; return 1; }
   done
-  [ "$pages" -eq "$3" ] || { echo "$1 rendered to $pages pages, not $3" >&2; return 1; }
+  for page in "$1.pages"/*.ppm; do
+    cmp -s "$page" "$2.pages/$(basename "$page")" || { echo "$(basename "$page") differs" >&2; return 1; }
+  done
 }
 
 # The INFO chunk of a page of 8 x 8 pixels at 300 dpi (libdjvu/DjVuInfo.cpp `decode`).
@@ -249,10 +274,22 @@ status="$(status_of timeout "$CHAIN_DRAW_SECONDS" "$tools/ddjvu" -format=pdf "$c
 same_pixels "$check_dir/dictionary/chain.pdf" "$check_dir/dictionary/reference.pdf" 1 \
   || { echo "the mask found its dictionary through the chain and was drawn otherwise than $REFERENCE_DDJVU draws the page" >&2; exit 1; }
 
+# The thread patch fails the drawing with the decode failure (status 10), or the program crashes at exit after printing it; without the
+# patch it waits until it is killed.
 write_chain "$check_dir/deep" "$THREAD_CHAIN_LEVELS" 1 "$check_dir/info"
-status="$(ulimit -s "$THREAD_STACK_KIB" && status_of timeout --signal=KILL "$CHAIN_DRAW_SECONDS" prlimit --as="$THREAD_CHAIN_ADDRESS_SPACE" -- \
-  env MALLOC_ARENA_MAX=1 "$tools/ddjvu" -format=pdf "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf")"
-[ "$status" -eq "$DDJVU_FAILED" ] || { echo "ddjvu ended with status $status on a chain whose threads cannot all start: the thread patch is not in the build" >&2; exit 1; }
+deep_status=0
+(ulimit -s "$THREAD_STACK_KIB" && exec timeout --signal=KILL "$CHAIN_DRAW_SECONDS" prlimit --as="$THREAD_CHAIN_ADDRESS_SPACE" -- \
+  env MALLOC_ARENA_MAX=1 "$tools/ddjvu" -format=pdf "$check_dir/deep/chain.djvu" "$check_dir/deep/chain.pdf") > /dev/null 2> "$check_dir/deep/stderr" \
+  || deep_status=$?
+case "$deep_status" in
+  "$DDJVU_FAILED" | "$DDJVU_CRASHED_AT_EXIT")
+    grep -q "$DECODE_FAILED_TEXT" "$check_dir/deep/stderr" \
+      || { echo "ddjvu ended with status $deep_status on a chain whose threads cannot all start, without the decode failure:" >&2; cat "$check_dir/deep/stderr" >&2; exit 1; } ;;
+  "$TIMED_OUT" | "$KILLED")
+    echo "ddjvu was stopped with status $deep_status on a chain whose threads cannot all start: the thread patch is not in the build" >&2; cat "$check_dir/deep/stderr" >&2; exit 1 ;;
+  *)
+    echo "ddjvu ended with status $deep_status on a chain whose threads cannot all start:" >&2; cat "$check_dir/deep/stderr" >&2; exit 1 ;;
+esac
 
 # The patches change no pixel: the reference manual is drawn by the patched program and by the distribution's program of the same version,
 # and pdftoppm renders both PDFs to the same pages.
@@ -266,6 +303,8 @@ doc_dir="$INSTALL_DIR/share/doc/djvulibre"
 rm -rf "$doc_dir/patches" "$INSTALL_DIR/share/djvu"
 install -d "$INSTALL_DIR/bin" "$doc_dir/patches" "$INSTALL_DIR/share/djvu"
 for program in $PROGRAMS; do install -m 0755 --strip "$tools/$program" "$INSTALL_DIR/bin/$program"; done
+# The digests of the programs as installed, which the worker checks before it runs them and CI before it takes a cached build.
+(cd "$INSTALL_DIR/bin" && sha256sum $PROGRAMS) > "$doc_dir/programs.sha256"
 # The message catalog the programs read their error texts from (<prefix>/share/djvu/osi, libdjvu/DjVuMessage.cpp line 121), what the
 # Debian package libdjvulibre-text holds; without it an error prints as "Unrecognized DjVu Message" and its name.
 make install DESTDIR="$work/stage" > "$work/install.log" 2>&1 || { tail -n 40 "$work/install.log" >&2; exit 1; }
@@ -274,8 +313,8 @@ cp -a "$work/stage$INSTALL_DIR/share/djvu/." "$INSTALL_DIR/share/djvu/"
 install -m 0644 debian/copyright "$doc_dir/copyright"
 {
   printf 'djvulibre %s-%s, built from the Debian source package:\n' "$DJVULIBRE_VERSION" "$DJVULIBRE_DEBIAN_REVISION"
-  printf '  %s/%s (sha256 %s)\n' "$DJVULIBRE_SNAPSHOT" "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256"
-  printf '  %s/%s (sha256 %s), with the patches of its debian/patches/series\n' "$DJVULIBRE_SNAPSHOT" "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256"
+  printf '  %s/%s (sha256 %s)\n' "$orig_source" "$DJVULIBRE_ORIG" "$DJVULIBRE_ORIG_SHA256"
+  printf '  %s/%s (sha256 %s), with the patches of its debian/patches/series\n' "$debian_source" "$DJVULIBRE_DEBIAN" "$DJVULIBRE_DEBIAN_SHA256"
 } > "$doc_dir/SOURCE"
 {
   printf 'djvulibre %s-%s (source, sha256 %s and %s)\n' "$DJVULIBRE_VERSION" "$DJVULIBRE_DEBIAN_REVISION" "$DJVULIBRE_ORIG_SHA256" "$DJVULIBRE_DEBIAN_SHA256"

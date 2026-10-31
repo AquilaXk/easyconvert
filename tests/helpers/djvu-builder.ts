@@ -247,14 +247,15 @@ export function maskedPageOf(document: string, page: string, dictionaryFile: str
 /**
  * A bundle of the masked page including i0, and `levels` shared files of which each includes the next two, so that a search that
  * visits a file once for each path visits Fibonacci-many. With `withDictionary`, i0 also includes the shared file of the dictionary
- * after the chain, so the search reaches it last; without, the dictionary is missing and the mask cannot be decoded.
+ * after the chain, so the search reaches it last; without, the dictionary is missing and the mask cannot be decoded. Each shared file
+ * ends with the chunks of `filler`.
  */
-export function maskOverChain(page: MaskedPage, levels: number, withDictionary: boolean): Buffer {
+export function maskOverChain(page: MaskedPage, levels: number, withDictionary: boolean, filler: readonly Buffer[] = []): Buffer {
   const files: BundleFile[] = [{ form: form('DJVU', [page.info, includeChunk('i0'), page.mask]), kind: 'page', id: 'page' }];
   for (let level = 0; level < levels; level++) {
     const next = [level + 1, level + 2].filter((target) => target < levels).map((target) => includeChunk(`i${target}`));
     const dictionary = level === 0 && withDictionary ? [includeChunk('d')] : [];
-    files.push({ form: form('DJVI', [...next, ...dictionary]), kind: 'include', id: `i${level}` });
+    files.push({ form: form('DJVI', [...next, ...dictionary, ...filler]), kind: 'include', id: `i${level}` });
   }
   if (withDictionary) files.push({ form: form('DJVI', [page.dictionary]), kind: 'include', id: 'd' });
   return bundleOf(files);

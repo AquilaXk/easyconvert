@@ -12,7 +12,7 @@ import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { convertDjvu, type DjvuJob } from '../src/worker/djvu-render';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
 import { bundledDocument, bundleOf, chunk, chunksOfId, form, includeChunk, maskedPageOf, maskOverChain, pageForm, singlePage, waveletForm, type BundleFile } from './helpers/djvu-builder';
-import { DISTRIBUTION_DDJVU, djvuRunsCanStart, patchedDdjvu, stampedBinDir } from './helpers/djvulibre-build';
+import { DISTRIBUTION_DDJVU, djvuRunsCanStart, patchedDdjvu, recordDigests, stampedBinDir } from './helpers/djvulibre-build';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { withMissingBinary } from './helpers/native-tools';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -431,6 +431,7 @@ describe.skipIf(!canDraw)('documents built byte by byte, against the pages djvus
     fs.writeFileSync(path.join(dir, 'ddjvu'), `#!/bin/sh\ntouch '${started}'\n${body}\n`);
     fs.chmodSync(path.join(dir, 'ddjvu'), 0o755);
     fs.symlinkSync(requireOracleTool('djvused'), path.join(dir, 'djvused'));
+    recordDigests(dir);
     return { interpreter: path.join(dir, 'ddjvu'), started };
   }
 
@@ -637,6 +638,7 @@ describe.skipIf(runsCannotStart)('the programs and their limits', () => {
       fs.writeFileSync(path.join(dir, 'djvused'), `#!/bin/sh\n${SCRIPT_OF_RUN}\n${reporter ?? `case "$script" in n) ${DIRECTORY(pages)};; size) ${SIZES(pages, side)};; esac`}\n`);
       fs.chmodSync(path.join(dir, 'djvused'), 0o755);
     }
+    recordDigests(dir);
     return { interpreter: path.join(dir, 'ddjvu'), started };
   }
 

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   convertDjvu,
+  DJVU_CONCURRENT_RUNS,
+  DJVULIBRE_DIGESTS_FILE,
   DJVULIBRE_REQUIRED_PATCHES,
   drawBudgetMs,
   MEMORY_LIMIT_MB,
@@ -16,7 +18,7 @@ import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessE
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EngineUnavailableError } from '../src/lib/types';
 import { chunk, singlePage } from './helpers/djvu-builder';
-import { stampedBinDir } from './helpers/djvulibre-build';
+import { recordDigests, stampedBinDir } from './helpers/djvulibre-build';
 import { withBinaryAt } from './helpers/native-tools';
 
 /**
@@ -58,8 +60,9 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockImplementation(() => clock);
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'djvu-stubbed-'));
   dir = stampedBinDir(root);
-  fs.writeFileSync(path.join(dir, 'ddjvu'), '');
-  fs.writeFileSync(path.join(dir, 'djvused'), '');
+  fs.writeFileSync(path.join(dir, 'ddjvu'), 'ddjvu');
+  fs.writeFileSync(path.join(dir, 'djvused'), 'djvused');
+  recordDigests(dir);
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -139,8 +142,8 @@ const pixels = (pages: readonly Sizes[]) => pages.reduce((sum, page) => sum + pa
 describe('the budget of ddjvu', () => {
   it.each([
     ['no time spent and one 64 x 64 page in a file as small as a page: the floor and the page at 4 pixels a microsecond', 0, 4_096, 4_096, 15_002],
-    ['a hostile file of 8,786 bytes that declares a page of 9,999 x 9,999 pixels: the floor and the 64 pixels a byte its bytes can hold', 0, 9_999 * 9_999, 8_786, 15_141],
-    ['8 smooth colour pages of 100 megapixels in 2,168,046 bytes: the floor and 64 pixels a byte, three times the 16.2 s of their drawing', 0, 8 * 10_000 * 10_000, 2_168_046, 49_689],
+    ['a hostile file of 8,786 bytes that declares a page of 9,999 x 9,999 pixels: the floor and the 128 pixels a byte its bytes can hold', 0, 9_999 * 9_999, 8_786, 15_282],
+    ['8 smooth colour pages of 100 megapixels in 2,168,046 bytes: the floor and 128 pixels a byte, three times the 26.5 s of their drawing four at once on 2.5 CPUs', 0, 8 * 10_000 * 10_000, 2_168_046, 84_378],
     ['reports that took 937 ms and nothing to draw: still the floor', 937, 0, 1_000, 15_000],
     ['reports that took 1,000 ms and nothing to draw: sixteen times the reports', 1_000, 0, 1_000, 16_000],
     ['reports that took 3,000 ms and 13 million pixels a file of a million bytes can hold: sixteen times the reports and the pixels', 3_000, 13_000_000, 1_000_000, 51_250],
@@ -167,7 +170,7 @@ describe('the budget of ddjvu', () => {
     expect(drawLimitMs()).toBeLessThan(15_000 + 1_000);
     given({ sizes: PAGES });
     launch.mockClear();
-    const scarce = inputHolding(pixels(PAGES) / 128);
+    const scarce = inputHolding(pixels(PAGES) / 256);
     await convert('pdf', { timeoutMs: LONG_JOB_MS }, scarce);
     expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels(PAGES), scarce.length));
     expect(drawLimitMs()).toBeLessThan(drawBudgetMs(0, pixels(PAGES), pixels(PAGES)));
@@ -220,11 +223,103 @@ describe('the limits of every program run', () => {
   });
 });
 
+describe('the DjVu runs of a worker at once', () => {
+  const pageCountRuns = () => launch.mock.calls.filter(([binary, args]) => path.basename(binary as string) === 'djvused' && scriptOf(args as string[]) === 'n').length;
+  const QUIET_MS = 30;
+
+  /** Holds the first program of every document until the returned release is called. */
+  function holdFirstPrograms(): () => void {
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const programs = launch.getMockImplementation();
+    launch.mockImplementation(async (binary: string, args: string[], options: unknown) => {
+      if (path.basename(binary) === 'djvused' && scriptOf(args) === 'n') await held;
+      return programs?.(binary, args, options);
+    });
+    return release;
+  }
+
+  it(`runs the programs of ${DJVU_CONCURRENT_RUNS} documents at once and starts the next when one ends`, async () => {
+    given({ sizes: PAGES });
+    const release = holdFirstPrograms();
+    const conversions = Array.from({ length: DJVU_CONCURRENT_RUNS + 1 }, () => convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    await vi.waitFor(() => expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS));
+    await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS);
+    release();
+    await Promise.all(conversions);
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS + 1);
+  });
+
+  it('refuses a document whose deadline passes while it waits, with the limit of the job, and starts none of its programs', async () => {
+    given({ sizes: PAGES });
+    const release = holdFirstPrograms();
+    const running = Array.from({ length: DJVU_CONCURRENT_RUNS }, () => convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    await vi.waitFor(() => expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS));
+    const error = await refusalOf(convert('pdf', { timeoutMs: QUIET_MS }));
+    expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', message: expect.stringContaining(`${QUIET_MS} ms`) });
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS);
+    release();
+    await Promise.all(running);
+  });
+
+  it('stops waiting when the job is cancelled', async () => {
+    given({ sizes: PAGES });
+    const release = holdFirstPrograms();
+    const running = Array.from({ length: DJVU_CONCURRENT_RUNS }, () => convert('pdf', { timeoutMs: LONG_JOB_MS }));
+    await vi.waitFor(() => expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS));
+    const cancel = new AbortController();
+    const waiting = refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS, signal: cancel.signal }));
+    cancel.abort(new Error('the job was cancelled'));
+    expect(await waiting).toMatchObject({ message: 'the job was cancelled' });
+    release();
+    await Promise.all(running);
+    expect(pageCountRuns()).toBe(DJVU_CONCURRENT_RUNS);
+  });
+});
+
 describe('the djvulibre build that is run', () => {
   const patchesDir = () => path.join(root, 'share', 'doc', 'djvulibre', 'patches');
 
   it.each(DJVULIBRE_REQUIRED_PATCHES)('refuses a ddjvu whose build lacks %s as an unavailable engine, before any program starts', async (patch) => {
     fs.rmSync(path.join(patchesDir(), patch));
+    given({ sizes: PAGES });
+    const error = await refusalOf(convert('pdf'));
+    expect(error).toBeInstanceOf(EngineUnavailableError);
+    expect(error).toMatchObject({ engineName: 'ddjvu' });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it.each(['ddjvu', 'djvused'])('refuses a build whose %s is not the program it recorded, before any program starts', async (program) => {
+    fs.writeFileSync(path.join(dir, program), `${program} changed after the build`);
+    given({ sizes: PAGES });
+    const error = await refusalOf(convert('pdf'));
+    expect(error).toBeInstanceOf(EngineUnavailableError);
+    expect(error.message).toContain(`is not the ${program} its build recorded in ${DJVULIBRE_DIGESTS_FILE}`);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a build without the digests of its programs', async () => {
+    fs.rmSync(path.join(root, 'share', 'doc', 'djvulibre', DJVULIBRE_DIGESTS_FILE));
+    given({ sizes: PAGES });
+    expect(await refusalOf(convert('pdf'))).toBeInstanceOf(EngineUnavailableError);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('checks the programs again once one is replaced after a run it allowed', async () => {
+    given({ sizes: PAGES });
+    await convert('pdf', { timeoutMs: LONG_JOB_MS });
+    const replacement = path.join(dir, 'ddjvu.new');
+    fs.writeFileSync(replacement, 'another ddjvu');
+    fs.renameSync(replacement, path.join(dir, 'ddjvu'));
+    launch.mockClear();
+    expect(await refusalOf(convert('pdf'))).toBeInstanceOf(EngineUnavailableError);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a ddjvu that is a link to nothing as an unavailable engine, not as a crash of the conversion', async () => {
+    fs.rmSync(path.join(dir, 'ddjvu'));
+    fs.symlinkSync(path.join(root, 'nowhere', 'ddjvu'), path.join(dir, 'ddjvu'));
     given({ sizes: PAGES });
     const error = await refusalOf(convert('pdf'));
     expect(error).toBeInstanceOf(EngineUnavailableError);

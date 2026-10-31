@@ -78,9 +78,8 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_slow() { echo "slow task started"; sleep ${SLEEP_PAST_LIMIT_SECONDS}; echo "never reached"; }
       export -f task_slow
-      tasks=(slow)
       task_limit_seconds[slow]=2
-      run_tasks
+      run_tasks slow
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.elapsedMs).toBeLessThan(FAST_FAIL_BUDGET_MS);
@@ -95,9 +94,8 @@ describe('the bound on every setup task', () => {
     runSourced(`
       task_slow() { sleep ${SLEEP_PAST_LIMIT_SECONDS} & echo $! > "$PID_FILE"; wait; }
       export -f task_slow
-      tasks=(slow)
       task_limit_seconds[slow]=2
-      run_tasks > /dev/null
+      run_tasks slow > /dev/null
     `, { PID_FILE: pidFile });
     expect(existsSync(pidFile)).toBe(true);
     expect(await waitUntilStopped(Number(readFileSync(pidFile, 'utf-8')), CHILD_STOP_BOUND_MS)).toBe(true);
@@ -108,10 +106,9 @@ describe('the bound on every setup task', () => {
       task_good() { echo "good output"; }
       task_bad() { echo "bad output" >&2; return 3; }
       export -f task_good task_bad
-      tasks=(good bad)
       task_limit_seconds[good]=20
       task_limit_seconds[bad]=20
-      run_tasks
+      run_tasks good bad
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.stdout).toContain('::group::good (ok)');
@@ -126,9 +123,8 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_good() { echo "good output"; }
       export -f task_good
-      tasks=(good)
       task_limit_seconds[good]=20
-      run_tasks
+      run_tasks good
     `);
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toMatch(/task good finished with status 0 after \d+s/);
@@ -139,9 +135,8 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_unbound() { echo "value: $NO_SUCH_VARIABLE_FOR_THE_TEST"; }
       export -f task_unbound
-      tasks=(unbound)
       task_limit_seconds[unbound]=20
-      run_tasks
+      run_tasks unbound
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.stdout).toContain('NO_SUCH_VARIABLE_FOR_THE_TEST: unbound variable');
@@ -151,8 +146,7 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_free() { echo "unbounded"; }
       export -f task_free
-      tasks=(free)
-      run_tasks
+      run_tasks free
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.stdout).toContain('no time limit for task free');
@@ -167,9 +161,8 @@ describe('the bound on every setup task', () => {
       `source "$SCRIPT_UNDER_TEST"
 task_slow() { echo "slow task started"; sleep ${SLEEP_PAST_LIMIT_SECONDS}; }
 export -f task_slow
-tasks=(slow)
 task_limit_seconds[slow]=120
-run_tasks
+run_tasks slow
 `
     );
     const started = Date.now();
@@ -185,6 +178,12 @@ run_tasks
 });
 
 describe('the task list and its limits', () => {
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('runs the dependent tasks by name and leaves the task list of the job as it was', () => {
+    const outcome = runSourced('configure; select_tasks; run_tasks() { echo "ran $*"; }; run_dependent_tasks; echo "tasks ${tasks[*]}"', { S3_TEST_SERVER: 'false' });
+    expect(outcome.status, outcome.stderr).toBe(0);
+    expect(outcome.stdout.trim().split('\n')).toEqual([`ran ${DEPENDENT_TASKS.join(' ')}`, `tasks ${EXPECTED_TASKS.join(' ')}`]);
+  });
+
   it.skipIf(skipUnless(NEEDS, canRunSetup))('leaves the S3 test server out unless the job asked for it', () => {
     const without = runSourced('configure; select_tasks; echo "${tasks[*]}"', { S3_TEST_SERVER: 'false' });
     expect(without.status, without.stderr).toBe(0);

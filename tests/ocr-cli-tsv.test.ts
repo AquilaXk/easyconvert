@@ -421,6 +421,33 @@ describe('CliSemaphore', () => {
     await Promise.all([first, second]);
   });
 
+  it('ends a wait at its time limit with the error it names, and hands the slot to the next task still waiting', async () => {
+    const semaphore = new CliSemaphore(1, 10);
+    let release = (): void => undefined;
+    const held = semaphore.run(() => new Promise<void>((resolve) => (release = resolve)));
+    const late = semaphore.run(async () => 'late', { timeoutMs: 10, timedOut: () => new Error('waited too long') });
+    const next = semaphore.run(async () => 'next', { timeoutMs: 60_000, timedOut: () => new Error('never') });
+    await expect(late).rejects.toThrow('waited too long');
+    release();
+    await held;
+    await expect(next).resolves.toBe('next');
+    await expect(semaphore.run(async () => 'free')).resolves.toBe('free');
+  });
+
+  it('ends a wait when its signal aborts, and at once when it has already aborted', async () => {
+    const semaphore = new CliSemaphore(1, 10);
+    let release = (): void => undefined;
+    const held = semaphore.run(() => new Promise<void>((resolve) => (release = resolve)));
+    const cancel = new AbortController();
+    const waiting = semaphore.run(async () => 'ran', { timeoutMs: 60_000, timedOut: () => new Error('never'), signal: cancel.signal });
+    cancel.abort(new Error('cancelled'));
+    await expect(waiting).rejects.toThrow('cancelled');
+    await expect(semaphore.run(async () => 'ran', { timeoutMs: 60_000, timedOut: () => new Error('never'), signal: cancel.signal })).rejects.toThrow('cancelled');
+    release();
+    await held;
+    await expect(semaphore.run(async () => 'free')).resolves.toBe('free');
+  });
+
   it('frees its slot when a task fails', async () => {
     const semaphore = new CliSemaphore(1, 1);
     await expect(semaphore.run(() => Promise.reject(new Error('boom')))).rejects.toThrow('boom');

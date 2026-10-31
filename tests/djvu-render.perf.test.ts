@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { convertDjvu } from '../src/worker/djvu-render';
 import { countPagesOfReadablePdf } from '../src/worker/engines';
-import { bundleOf, form, includeChunk, maskedPageOf, maskOverChain, pageForm, type BundleFile } from './helpers/djvu-builder';
+import { bundleOf, chunk, chunksOfId, form, includeChunk, maskedPageOf, maskOverChain, pageForm, type BundleFile } from './helpers/djvu-builder';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { DISTRIBUTION_DDJVU, djvuRunsCanStart, patchedDdjvu } from './helpers/djvulibre-build';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -22,11 +22,16 @@ import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
  * The JB2 mask of a page that needs a shape dictionary made the unpatched program search the files the page includes once for each
  * path (8.2 s at 30 shared files that each include the next two, 1.7 times as long for each more); the patched program reports the
  * missing dictionary of the mask of a real page over 40 and 60 such files in 0.02 s, where the distribution's is still searching.
+ * It also searched again for every chunk decoded below the page, until the patch let only a shape dictionary wake the search: over 60
+ * such files of 600 small chunks each, 2.2 s before and 0.7 s after, the time the chain takes to decode without a mask.
  *
- * The budget of `ddjvu` counts at most 64 pixels for each byte of the file. A long document of smooth colour pages, the most pixels a
- * byte measured (8 pages of a 100 megapixel page, 369 pixels a byte), draws in 16.2 s on the 4 vCPU arm64 test VM against 49.7 s of
- * budget; 100 blank pages declared 9,999 x 9,999 in a file of 3.5 KB, which the program draws in 45.8 s, end with the budget at 15 s
- * instead of holding the worker for that long.
+ * A plain chain of 64 shared files that each carry a background is refused at the task limit once the files that started have decoded
+ * their backgrounds, in 1.2 s at 2.5 CPUs: the time a run holds its 64 tasks, of which a worker runs two at once.
+ *
+ * The budget of `ddjvu` counts at most 128 pixels for each byte of the file. A long document of smooth colour pages, the measured
+ * document that needs the most time for its bytes (8 pages of a 100 megapixel page, 369 pixels a byte), draws in 15 s alone and in 24.7
+ * to 26.5 s four at once on 2.5 CPUs, against 84.4 s of budget; 100 blank pages declared 9,999 x 9,999 in a file of 3.5 KB, which the
+ * program draws in 45.8 s, end with the budget at 15.1 s instead of holding the worker for that long.
  */
 
 const toolsMissing = skipWithoutTools('ddjvu', 'djvused', 'c44', 'djvm');
@@ -56,6 +61,18 @@ const MASK_REFUSED_WITHIN_MS = CHAIN_REFUSED_WITHIN_MS;
 const DISTRIBUTION_STILL_SEARCHING_MS = 5_000;
 const SMOOTH_PAGES = 8;
 const SMOOTH_SIDE = 10_000;
+const DATA_CHAIN_LEVELS = 64;
+/** The side of the smooth colour background each file of the data-bearing chain carries (about 51 KB of wavelet chunks, 16 megapixels). */
+const DATA_SIDE = 4_000;
+/** The data-bearing chain ends in 1.2 s at 2.5 CPUs; its tasks are held for less than a third of the floor of the budget. */
+const DATA_CHAIN_HELD_WITHIN_MS = DRAW_BUDGET_FLOOR_MS / 3;
+const WAKE_CHAIN_LEVELS = 60;
+const WAKE_CHAIN_CHUNKS = 600;
+/**
+ * The mask over the chain of small chunks ends in 0.7 s at 2.5 CPUs, the 0.8 s the chain takes to decode without the mask; searching
+ * again for every chunk made it 2.2 s, 2.8 times as long.
+ */
+const WAKE_CHAIN_SEARCH_FACTOR = 1.5;
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -73,32 +90,52 @@ function chainOfPages(pages: number, side: number): Buffer {
   return bundleOf(files);
 }
 
-/**
- * `SMOOTH_PAGES` copies of a smooth colour page of `SMOOTH_SIDE` x `SMOOTH_SIDE` pixels (low-frequency waves in each channel), encoded by
- * `c44` and bundled by `djvm`: about 370 pixels for each byte of the file.
- */
-function smoothColourDocument(): Buffer {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'djvu-smooth-'));
-  scratch.push(dir);
+/** A smooth colour page of `side` x `side` pixels (low-frequency waves in each channel) encoded by `c44` into `dir`/page.djvu. */
+function smoothColourPage(dir: string, side: number): string {
   const ppm = path.join(dir, 'page.ppm');
   const fd = fs.openSync(ppm, 'w');
-  fs.writeSync(fd, `P6\n${SMOOTH_SIDE} ${SMOOTH_SIDE}\n255\n`);
-  const row = Buffer.alloc(SMOOTH_SIDE * 3);
-  for (let y = 0; y < SMOOTH_SIDE; y++) {
-    for (let x = 0; x < SMOOTH_SIDE; x++) {
+  fs.writeSync(fd, `P6\n${side} ${side}\n255\n`);
+  const row = Buffer.alloc(side * 3);
+  for (let y = 0; y < side; y++) {
+    for (let x = 0; x < side; x++) {
       row[x * 3] = 128 + 127 * Math.sin(x / 900 + y / 1300);
       row[x * 3 + 1] = 128 + 127 * Math.sin(y / 700 - x / 2100);
-      row[x * 3 + 2] = ((x + y) * 255) / (2 * SMOOTH_SIDE);
+      row[x * 3 + 2] = ((x + y) * 255) / (2 * side);
     }
     fs.writeSync(fd, row);
   }
   fs.closeSync(fd);
-  execFileSync(requireOracleTool('c44'), [ppm, path.join(dir, 'page.djvu')]);
+  const page = path.join(dir, 'page.djvu');
+  execFileSync(requireOracleTool('c44'), [ppm, page]);
   fs.rmSync(ppm);
+  return page;
+}
+
+/**
+ * `SMOOTH_PAGES` copies of a smooth colour page of `SMOOTH_SIDE` x `SMOOTH_SIDE` pixels, bundled by `djvm`: about 370 pixels for each byte
+ * of the file.
+ */
+function smoothColourDocument(): Buffer {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'djvu-smooth-'));
+  scratch.push(dir);
+  const encoded = smoothColourPage(dir, SMOOTH_SIDE);
   const pages = Array.from({ length: SMOOTH_PAGES }, (_, index) => `p${index}.djvu`);
-  for (const page of pages) fs.copyFileSync(path.join(dir, 'page.djvu'), path.join(dir, page));
+  for (const page of pages) fs.copyFileSync(encoded, path.join(dir, page));
   execFileSync(requireOracleTool('djvm'), ['-c', 'smooth.djvu', ...pages], { cwd: dir });
   return fs.readFileSync(path.join(dir, 'smooth.djvu'));
+}
+
+/** A page that includes the first of `DATA_CHAIN_LEVELS` shared files, each including the next and carrying a background of `DATA_SIDE`. */
+function dataBearingChain(): Buffer {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'djvu-data-'));
+  scratch.push(dir);
+  const background = chunksOfId(fs.readFileSync(smoothColourPage(dir, DATA_SIDE)), 'BG44');
+  const files: BundleFile[] = [{ form: pageForm(SMALL_SIDE, SMALL_SIDE, [includeChunk('i0')]), kind: 'page', id: 'p.djvu' }];
+  for (let level = 0; level < DATA_CHAIN_LEVELS; level++) {
+    const next = level + 1 < DATA_CHAIN_LEVELS ? [includeChunk(`i${level + 1}`)] : [];
+    files.push({ form: form('DJVI', [...next, ...background]), kind: 'include', id: `i${level}` });
+  }
+  return bundleOf(files);
 }
 
 async function outcomeOf(bytes: Buffer, name: string): Promise<{ elapsedMs: number; outcome: string }> {
@@ -146,6 +183,26 @@ describe.skipIf(toolsMissing || notPatched || runsCannotStart)('the JB2 mask of 
     fs.writeFileSync(path.join(dir, 'mask.djvu'), maskOverChain(page, MASK_CHAIN_LEVELS[0], false));
     const run = spawnSync(DISTRIBUTION_DDJVU, ['-format=pdf', path.join(dir, 'mask.djvu'), path.join(dir, 'mask.pdf')], { timeout: DISTRIBUTION_STILL_SEARCHING_MS });
     expect(run.signal).toBe('SIGTERM');
+  }, TEST_TIMEOUT_MS);
+});
+
+describe.skipIf(toolsMissing || notPatched || runsCannotStart)(`a mask without its dictionary over ${WAKE_CHAIN_LEVELS} shared files of ${WAKE_CHAIN_CHUNKS} small chunks each`, () => {
+  it('is refused in about the time the chain takes to decode without the mask, as only a shape dictionary wakes the search', async (ctx) => {
+    const page = maskedPageOf((await requireRealworldSample(ctx, DOGV)).path, DOGV_FIRST_PAGE, DOGV_DICTIONARY);
+    const filler = Array.from({ length: WAKE_CHAIN_CHUNKS }, () => chunk('NOPE', Buffer.alloc(2)));
+    const unmasked = await outcomeOf(maskOverChain({ ...page, mask: chunk('NOPE', Buffer.alloc(2)) }, WAKE_CHAIN_LEVELS, false, filler), 'unmasked.djvu');
+    expect(unmasked.outcome).toBe('drawn');
+    const { elapsedMs, outcome } = await outcomeOf(maskOverChain(page, WAKE_CHAIN_LEVELS, false, filler), 'wake.djvu');
+    expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/);
+    expect(elapsedMs).toBeLessThan(WAKE_CHAIN_SEARCH_FACTOR * unmasked.elapsedMs);
+  }, TEST_TIMEOUT_MS);
+});
+
+describe.skipIf(toolsMissing || notLinux || notPatched || runsCannotStart)(`a plain chain of ${DATA_CHAIN_LEVELS} shared files that each carry a background`, () => {
+  it('is refused at the task limit once the started files have decoded, holding its tasks for less than a third of the floor of the budget', async () => {
+    const { elapsedMs, outcome } = await outcomeOf(dataBearingChain(), 'data-chain.djvu');
+    expect(outcome).toMatch(/^ConversionFailedError: ddjvu (could not draw|exceeded its output or memory limit)/);
+    expect(elapsedMs).toBeLessThan(DATA_CHAIN_HELD_WITHIN_MS);
   }, TEST_TIMEOUT_MS);
 });
 
