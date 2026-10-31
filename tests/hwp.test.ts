@@ -3,9 +3,8 @@ import { oracleTest } from './helpers/oracle-test';
 import { readHwpWithReference } from './helpers/hwp-reference';
 import { CorruptStreamError } from '../src/lib/types';
 import JSZip from 'jszip';
+import { isCfbfContainer, parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import {
-  parseCfbf,
-  isCfbfContainer,
   parseHwpDocument,
   buildHwpCompoundFile,
   convertHwp,

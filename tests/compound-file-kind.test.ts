@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCfbf, type CfbfContainer } from '../src/lib/conversions/hwp';
+import { parseCfbf, type CfbfContainer } from '../src/lib/conversions/cfbf-reader';
 import {
   compoundFileVerdict,
   compoundFileVerdictFrom,

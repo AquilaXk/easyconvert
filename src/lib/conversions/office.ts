@@ -22,7 +22,8 @@ import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
 import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
-import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf, type CfbfContainer } from './hwp';
+import { convertHwp, parseHwpDocument, buildHwpCompoundFile } from './hwp';
+import { isCfbfContainer, parseCfbf, type CfbfContainer } from './cfbf-reader';
 import { getMaxInMemoryBytes } from '../storage/errors';
 import {
   XLSX_MAX_CELL_TEXT_CHARS_ENV,
@@ -9553,5 +9554,4 @@ async function renderTextToRaster(
   const pipeline = sharp(Buffer.from(svg, 'utf-8'));
   return rasterizePipeline(pipeline, tgt);
 }
-
 

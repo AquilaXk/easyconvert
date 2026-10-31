@@ -1,7 +1,7 @@
 import fs from 'node:fs';
-import { ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
+import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
+import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
 import { readRawInputBuffer } from './worker-output';
@@ -342,7 +342,7 @@ function isOoxmlWorkbook(src: string): boolean {
 function workbookBytes(input: Buffer | WorkerVfsPayload): Buffer {
   const bytes = legacyOfficeInput(input);
   if (bytes === undefined) {
-    throw new SheetLimitError(`The workbook is larger than the ${LEGACY_OFFICE_MAX_INPUT_BYTES} bytes the check against the .xls sheet bounds reads, so it is not exported.`);
+    throw new SheetLimitError(`The workbook is larger than the ${CFBF_MAX_FILE_BYTES} bytes the check against the .xls sheet bounds reads, so it is not exported.`);
   }
   return bytes;
 }
@@ -446,6 +446,25 @@ function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
   return refusal instanceof EncryptedOfficeDocumentError && !(refusal instanceof SuiteEncryptedDocumentError) && officeReadingFormat(src) === 'xls';
 }
 
+/** How many wrappers deep `isDestroyedStructure` looks for the parser's error; a reader adds one, so a few more than that is generous and a loop of causes ends. */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * The refusal, or an error it wraps (its `cause`), is a compound file whose table of contents is destroyed. That is no damage the
+ * office suite repairs: for the real workbooks whose directory runs past the file it wrote their bytes as text. Both shapes reach
+ * this gate because the readers differ: the Excel and HWP readers call `parseCfbf` themselves, so their refusal is the bare
+ * `CompoundFileStructureError`, while the Word, PowerPoint and Outlook readers open the file with `readCfbContainer`, which wraps it in
+ * a `LegacyOfficeFormatError` that names the document and keeps the parser's error as the `cause`.
+ */
+function isDestroyedStructure(refusal: unknown): boolean {
+  let error = refusal;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH && error instanceof Error; depth++) {
+    if (error instanceof CompoundFileStructureError) return true;
+    error = error.cause;
+  }
+  return false;
+}
+
 /**
  * A legacy binary Office document (Word, Excel, PowerPoint, and their templates and slide shows) that the strict in-process
  * reader refuses as malformed, or a workbook it refuses as encrypted, is read by the office suite instead, which reads damaged files the way the application that
@@ -456,7 +475,8 @@ function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
  */
 export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest, refusal: unknown): Promise<WorkerConversionResult | undefined> {
   const interchange = legacyReaderRetryInterchange(request.src, request.tgt);
-  const refused = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError || isEncryptedWorkbookRefusal(request.src, refusal);
+  const readerRefusal = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError || isEncryptedWorkbookRefusal(request.src, refusal);
+  const refused = readerRefusal && !isDestroyedStructure(refusal);
   if (interchange === undefined || !refused || request.options.signal?.aborted) return undefined;
   const head = leadingBytes(request.input);
   if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature))) return undefined;

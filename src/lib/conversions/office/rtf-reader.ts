@@ -1,5 +1,5 @@
 import { reportConversionWarning } from '../conversion-warnings';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from './legacy-office-limits';
+import { CFBF_MAX_FILE_BYTES } from '../../compound-file-kind';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
 
@@ -580,8 +580,9 @@ class RtfReader {
  * LegacyOfficeFormatError.
  */
 export function readRtfText(data: Buffer): string {
-  if (data.length > LEGACY_OFFICE_MAX_INPUT_BYTES) {
-    throw new LegacyOfficeFormatError(`${LABEL}: the file exceeds the ${LEGACY_OFFICE_MAX_INPUT_BYTES}-byte limit.`);
+  // An RTF document is held in memory whole as a compound file is, so the legacy readers share one size limit.
+  if (data.length > CFBF_MAX_FILE_BYTES) {
+    throw new LegacyOfficeFormatError(`${LABEL}: the file exceeds the ${CFBF_MAX_FILE_BYTES}-byte limit.`);
   }
   return new RtfReader(data).read();
 }

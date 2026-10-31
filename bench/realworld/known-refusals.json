@@ -49,20 +49,20 @@
   },
   {
     "file": "govdocs1-007750.xls",
-    "detail": "^ConversionFailedError: Corrupt XLS: Workbook stream not found in CFBF container$",
-    "reason": "The file went through a text-mode transfer (every LF byte has an inserted CR, 68,946 of them), which shifted the compound file's sector tables and directory, so it holds no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text. With the inserted CRs taken out it is a BIFF8 workbook that converts to the cells xlrd reads (tests/xls-damaged-real-files.test.ts).",
+    "detail": "^CompoundFileStructureError: Corrupt CFBF container: the sector chain starting at sector \\d+ reaches sector \\d+, which the file does not hold\\.$",
+    "reason": "The file went through a text-mode transfer (every LF byte has an inserted CR, 68,946 of them), which shifted the compound file's sector tables and directory, so its directory chain runs to a sector the file does not hold and it holds no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text. With the inserted CRs taken out it is a BIFF8 workbook that converts to the cells xlrd reads (tests/xls-damaged-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-007751.xls",
-    "detail": "^ConversionFailedError: Corrupt XLS: Workbook stream not found in CFBF container$",
-    "reason": "The file went through a text-mode transfer (every LF byte has an inserted CR, 1,803 of them), which shifted the compound file's sector tables and directory, so it holds no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text. With the inserted CRs taken out it is a BIFF7 Book workbook that converts to the cells xlrd reads (tests/xls-damaged-real-files.test.ts).",
+    "detail": "^CompoundFileStructureError: Corrupt CFBF container: the sector chain starting at sector \\d+ reaches sector \\d+, which the file does not hold\\.$",
+    "reason": "The file went through a text-mode transfer (every LF byte has an inserted CR, 1,803 of them), which shifted the compound file's sector tables and directory, so its directory chain runs to a sector the file does not hold and it holds no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text. With the inserted CRs taken out it is a BIFF7 Book workbook that converts to the cells xlrd reads (tests/xls-damaged-real-files.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-008063.xls",
-    "detail": "^ConversionFailedError: Corrupt XLS: Workbook stream not found in CFBF container$",
-    "reason": "The file is cut off at 1.5 MiB while its header places the first FAT sector at sector 7953 (63 FAT sectors are listed, none is in the file), so the compound file has no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text (tests/xls-damaged-real-files.test.ts).",
+    "detail": "^CompoundFileStructureError: Corrupt CFBF container: the sector chain starting at sector \\d+ reaches sector \\d+, which the file does not hold\\.$",
+    "reason": "The file is cut off at 1.5 MiB while its header places the first FAT sector at sector 7953 (63 FAT sectors are listed, none is in the file), so the compound file has no readable stream and its directory chain starts at a sector the file does not hold; xlrd refuses it too and LibreOffice imports the bytes as text (tests/xls-damaged-real-files.test.ts).",
     "issue": 783
   },
   {
@@ -110,7 +110,7 @@
   {
     "file": "govdocs1-001630.ppt",
     "detail": "^LegacyOfficeFormatError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.$",
-    "reason": "Damaged: the FAT chain of a stream returns to sector 0 (the chain from sector 213 reaches sector 0 again), so the compound file has no readable stream. Apache POI 5.4.0 refuses to open it (POIFSFileSystem: \"Potential loop detected - Block 0 was already claimed but was just requested again\"), LibreOffice 24.2.7 does not load it (\"source file could not be loaded\") and LibreOffice 26.8 opens the bytes as a text document, so no reader reads it as a presentation. The refusal names the loop (tests/ppt-cfb-sector-loop.test.ts).",
+    "reason": "Damaged: the FAT chain of the directory returns to sector 0 (the chain from sector 213, the first directory sector, reaches sector 0 again), so the compound file has no readable stream. Apache POI 5.4.0 refuses to open it (POIFSFileSystem: \"Potential loop detected - Block 0 was already claimed but was just requested again\"), LibreOffice 24.2.7 does not load it (\"source file could not be loaded\") and LibreOffice 26.8 opens the bytes as a text document, so no reader reads it as a presentation. The refusal names the loop (tests/ppt-cfb-sector-loop.test.ts).",
     "issue": 783
   },
   {

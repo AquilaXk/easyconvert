@@ -47,7 +47,8 @@ function writeTable(file: Buffer, sectors: readonly number[], table: readonly nu
 const fatSectors = (file: Buffer): number[] =>
   Array.from({ length: file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET) }, (_, index) => file.readUInt32LE(HEADER_DIFAT_OFFSET + index * 4));
 const readFat = (file: Buffer): number[] => readTable(file, fatSectors(file));
-const miniFatSectors = (file: Buffer): number[] => chainOf(readFat(file), file.readUInt32LE(FIRST_MINI_FAT_SECTOR_OFFSET));
+/** The sectors of the mini FAT, in the order of its chain. */
+export const miniFatSectors = (file: Buffer): number[] => chainOf(readFat(file), file.readUInt32LE(FIRST_MINI_FAT_SECTOR_OFFSET));
 
 function entryOffset(file: Buffer, id: number): number {
   const directory = chainOf(readFat(file), file.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET));
@@ -75,6 +76,18 @@ export function entryFields(file: Buffer, id: number): Required<EntryFields> {
     start: file.readUInt32LE(at + ENTRY_START_OFFSET),
     size: file.readUInt32LE(at + ENTRY_SIZE_OFFSET),
   };
+}
+
+/** Sets the FAT entry of `sector` to `next`: the sector after it in its chain, or a marker. */
+export function setFatEntry(file: Buffer, sector: number, next: number): void {
+  const fat = fatSectors(file);
+  file.writeUInt32LE(next, sectorOffset(fat[Math.floor(sector / TABLE_ENTRIES_PER_SECTOR)]) + (sector % TABLE_ENTRIES_PER_SECTOR) * 4);
+}
+
+/** Sets the mini FAT entry of `miniSector` to `next`. */
+export function setMiniFatEntry(file: Buffer, miniSector: number, next: number): void {
+  const sectors = miniFatSectors(file);
+  file.writeUInt32LE(next, sectorOffset(sectors[Math.floor(miniSector / TABLE_ENTRIES_PER_SECTOR)]) + (miniSector % TABLE_ENTRIES_PER_SECTOR) * 4);
 }
 
 /** Id of the directory entry named `name`, searched in the directory sectors in order. */
