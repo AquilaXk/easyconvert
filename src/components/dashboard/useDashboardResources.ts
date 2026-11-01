@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
-import { extractApiError, type FileWithRemaining } from './dashboard-types';
+import type { FileWithRemaining } from './dashboard-types';
+import { useServerErrorMessage } from '../i18n/problems';
 
 export function useFilesAndDlqController(
   enabled: boolean,
   onReportError: (message: string | null) => void
 ) {
+  const t = useTranslations('dashboard.errors');
+  const extractApiError = useServerErrorMessage();
   const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>([]);
@@ -20,18 +24,18 @@ export function useFilesAndDlqController(
       const res = await fetch('/api/account/files');
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
-        onReportError(extractApiError(data, `Failed to load converted files (HTTP ${res.status}).`));
+        onReportError(extractApiError(data, t('loadFiles', { status: res.status })));
         return;
       }
       if (data && typeof data === 'object' && 'files' in data && Array.isArray(data.files)) {
         setUserFiles(data.files as FileWithRemaining[]);
       }
     } catch {
-      onReportError('Network error while loading converted files.');
+      onReportError(t('loadFilesNetwork'));
     } finally {
       setFilesLoading(false);
     }
-  }, [onReportError]);
+  }, [onReportError, extractApiError, t]);
 
   const fetchDlqEntries = useCallback(async () => {
     setDlqLoading(true);
@@ -39,18 +43,18 @@ export function useFilesAndDlqController(
       const res = await fetch('/api/webhooks/dlq');
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
-        onReportError(extractApiError(data, `Failed to load webhook DLQ (HTTP ${res.status}).`));
+        onReportError(extractApiError(data, t('loadDlq', { status: res.status })));
         return;
       }
       if (data && typeof data === 'object' && 'entries' in data && Array.isArray(data.entries)) {
         setDlqEntries(data.entries as WebhookDlqEntry[]);
       }
     } catch {
-      onReportError('Network error while loading webhook DLQ.');
+      onReportError(t('loadDlqNetwork'));
     } finally {
       setDlqLoading(false);
     }
-  }, [onReportError]);
+  }, [onReportError, extractApiError, t]);
 
   useEffect(() => {
     if (enabled) {
@@ -84,12 +88,12 @@ export function useFilesAndDlqController(
       const res = await fetch(`/api/account/files/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(extractApiError(data, `Failed to delete file (HTTP ${res.status}).`));
+        onReportError(extractApiError(data, t('deleteFile', { status: res.status })));
         return;
       }
       setUserFiles((prev) => prev.filter((file) => file.id !== id));
     } catch {
-      onReportError('Network error while deleting file.');
+      onReportError(t('deleteFileNetwork'));
     }
   };
 
@@ -102,15 +106,15 @@ export function useFilesAndDlqController(
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       if (res.ok && data?.success) {
         const statusLabel = typeof data.statusCode === 'number' ? data.statusCode : res.status;
-        setDlqFeedback(`Webhook replay succeeded (HTTP ${statusLabel}).`);
+        setDlqFeedback(t('replaySucceeded', { status: statusLabel }));
       } else {
         const reason = extractApiError(data, `HTTP ${res.status}`);
-        setDlqFeedback(`Webhook replay failed (${reason}).`);
+        setDlqFeedback(t('replayFailed', { reason }));
       }
       await fetchDlqEntries();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Network failure';
-      setDlqFeedback(`Replay request failed (${msg}).`);
+      const reason = err instanceof Error ? err.message : t('networkFailure');
+      setDlqFeedback(t('replayRequestFailed', { reason }));
     } finally {
       setReplayingDlqId(null);
     }
@@ -123,13 +127,13 @@ export function useFilesAndDlqController(
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
         onReportError(
-          extractApiError(data, `Failed to delete webhook entry (HTTP ${res.status}).`)
+          extractApiError(data, t('deleteDlq', { status: res.status }))
         );
         return;
       }
       setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
     } catch {
-      onReportError('Network error while deleting webhook entry.');
+      onReportError(t('deleteDlqNetwork'));
     }
   };
 
@@ -140,14 +144,14 @@ export function useFilesAndDlqController(
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
         onReportError(
-          extractApiError(data, `Failed to clear dead letter queue (HTTP ${res.status}).`)
+          extractApiError(data, t('clearDlq', { status: res.status }))
         );
         return;
       }
       setDlqEntries([]);
-      setDlqFeedback('Dead letter queue cleared.');
+      setDlqFeedback(t('dlqCleared'));
     } catch {
-      onReportError('Network error while clearing dead letter queue.');
+      onReportError(t('clearDlqNetwork'));
     }
   };
 

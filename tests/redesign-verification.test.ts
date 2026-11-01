@@ -14,7 +14,7 @@ import FaqSection from '../src/components/FaqSection';
 import StatusDashboard from '../src/components/StatusDashboard';
 import AdBanner from '../src/components/AdBanner';
 import ConversionQueue from '../src/components/ConversionQueue';
-import DynamicConverterPage from '../src/app/[slug]/page';
+import ConverterPageView from '../src/components/pages/ConverterPageView';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
   allElements,
@@ -43,16 +43,7 @@ import { callArguments, firstStringArguments, initializersOf, parseSource } from
 const rootDir = path.resolve(__dirname, '..');
 const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
-/** A resolved promise React's `use()` reads synchronously, standing in for the route's `params`. */
-function slugParams(slug: string): Promise<{ slug: string }> {
-  const value = { slug };
-  const settled = Promise.resolve(value) as Promise<{ slug: string }> & { status: string; value: { slug: string } };
-  settled.status = 'fulfilled';
-  settled.value = value;
-  return settled;
-}
-
-const renderSlug = (slug: string) => renderDom(createElement(DynamicConverterPage, { params: slugParams(slug) }));
+const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug }));
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -107,6 +98,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'How It Works', href: '/#how-it-works' },
       { text: 'API Docs', href: '/api-docs' },
       { text: 'Dashboard', href: '/dashboard' },
+      { text: 'English', href: '/en' },
+      { text: '한국어', href: '/ko' },
       { text: 'Log In', href: '/auth' },
       { text: 'Sign Up', href: '/auth?tab=register' },
     ]);
@@ -449,7 +442,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       'mailto:support@easyconvert.com',
       'mailto:support@easyconvert.com?subject=Bug%20Report',
     ]);
-    const alerts = callArguments(parseSource(sourcePath('src', 'app', '[slug]', 'page.tsx')), 'alert');
+    const alerts = callArguments(parseSource(sourcePath('src', 'components', 'pages', 'ConverterPageView.tsx')), 'alert');
     expect(alerts).toEqual([]);
   });
 

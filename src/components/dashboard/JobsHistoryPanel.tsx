@@ -1,7 +1,9 @@
 import React from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import { Clock, Download, FileText, RefreshCw, Trash2 } from 'lucide-react';
-import { formatBytes, formatCountdown, type FileWithRemaining } from './dashboard-types';
+import { Link } from '@/i18n/navigation';
+import { countdownParts, type FileWithRemaining } from './dashboard-types';
+import { useFormatBytes } from '../i18n/format';
 
 interface JobsHistoryPanelProps {
   files: FileWithRemaining[];
@@ -16,6 +18,8 @@ export function JobsHistoryPanel({
   onRefresh,
   onDeleteFile,
 }: Readonly<JobsHistoryPanelProps>) {
+  const t = useTranslations('dashboard.files');
+  const formatBytes = useFormatBytes();
   return (
     <div
       id="dashboard-panel-files"
@@ -25,9 +29,9 @@ export function JobsHistoryPanel({
     >
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-xl text-ink">Recent Conversion Files</h2>
+          <h2 className="text-xl text-ink">{t('heading')}</h2>
           <p className="text-sm text-ink-2">
-            Temporary output files are deleted after download or when their retention timer expires.
+            {t('intro')}
           </p>
         </div>
 
@@ -38,22 +42,22 @@ export function JobsHistoryPanel({
           className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-rule text-xs font-semibold hover:bg-sunken transition-colors self-start sm:self-auto"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          <span>Refresh</span>
+          <span>{t('refresh')}</span>
         </button>
       </div>
 
       {files.length === 0 ? (
         <div className="text-center py-14 border border-dashed border-rule-strong/60 rounded-sm">
           <FileText className="w-10 h-10 text-ink-3 mx-auto mb-2.5" />
-          <p className="text-base font-semibold text-ink">No active conversion files</p>
+          <p className="text-base font-semibold text-ink">{t('emptyHeading')}</p>
           <p className="text-xs text-ink-3 mt-1 max-w-sm mx-auto">
-            Files converted via your account or API keys appear here with a live automatic expiration countdown.
+            {t('emptyBody')}
           </p>
           <Link
             href="/"
             className="lift min-h-[44px] inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-xs font-semibold"
           >
-            <span>Open Converter Workbench</span>
+            <span>{t('openWorkbench')}</span>
           </Link>
         </div>
       ) : (
@@ -61,11 +65,11 @@ export function JobsHistoryPanel({
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-rule text-ink-3 text-xs uppercase">
-                <th className="pb-3 pr-4 font-semibold">File Name</th>
-                <th className="pb-3 pr-4 font-semibold">Format</th>
-                <th className="pb-3 pr-4 font-semibold">Size</th>
-                <th className="pb-3 pr-4 font-semibold">Auto-Purge TTL</th>
-                <th className="pb-3 font-semibold text-right">Actions</th>
+                <th className="pb-3 pr-4 font-semibold">{t('columns.name')}</th>
+                <th className="pb-3 pr-4 font-semibold">{t('columns.format')}</th>
+                <th className="pb-3 pr-4 font-semibold">{t('columns.size')}</th>
+                <th className="pb-3 pr-4 font-semibold">{t('columns.ttl')}</th>
+                <th className="pb-3 font-semibold text-right">{t('columns.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-rule">
@@ -76,7 +80,7 @@ export function JobsHistoryPanel({
                   </td>
                   <td className="py-3.5 pr-4 whitespace-nowrap">
                     <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-accent-soft text-accent-ink border border-accent-edge">
-                      {file.fromFormat.toUpperCase()} to {file.toFormat.toUpperCase()}
+                      {t('pair', { src: file.fromFormat.toUpperCase(), tgt: file.toFormat.toUpperCase() })}
                     </span>
                   </td>
                   <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
@@ -85,7 +89,7 @@ export function JobsHistoryPanel({
                   <td className="py-3.5 pr-4 text-xs font-medium whitespace-nowrap">
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-warning-soft text-warning border border-warning-edge">
                       <Clock className="w-3.5 h-3.5" />
-                      {formatCountdown(file.remainingSeconds)}
+                      {t('countdown', countdownParts(file.remainingSeconds))}
                     </span>
                   </td>
                   <td className="py-3.5 text-right whitespace-nowrap">
@@ -93,7 +97,7 @@ export function JobsHistoryPanel({
                       <a
                         href={file.downloadUrl}
                         download={file.fileName}
-                        aria-label={`Download ${file.fileName}`}
+                        aria-label={t('downloadLabel', { name: file.fileName })}
                         className="lift min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm bg-accent text-on-accent hover:bg-accent-hover hover:shadow-glow"
                       >
                         <Download className="w-4 h-4" />
@@ -101,7 +105,7 @@ export function JobsHistoryPanel({
                       <button
                         type="button"
                         onClick={() => onDeleteFile(file.id)}
-                        aria-label={`Delete ${file.fileName}`}
+                        aria-label={t('deleteLabel', { name: file.fileName })}
                         className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule text-ink-3 hover:text-danger transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />

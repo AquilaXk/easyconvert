@@ -1,6 +1,7 @@
 'use client';
 
 import React, { Suspense } from 'react';
+import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
@@ -8,6 +9,7 @@ import { AuthCredentialsForm, GoogleOAuthButton } from '@/components/auth/AuthFo
 import { useAuthController } from '@/components/auth/useAuthController';
 
 function LoginFormContent() {
+  const t = useTranslations('auth');
   const {
     activeTab,
     email,
@@ -35,16 +37,16 @@ function LoginFormContent() {
     <div className="glass sheen-edge max-w-md w-full rounded-md border border-rule p-6 sm:p-8">
       <div className="mb-6">
         <h1 className="text-3xl text-ink">
-          {activeTab === 'login' ? 'Sign in to EasyConvert' : 'Create an EasyConvert account'}
+          {activeTab === 'login' ? t('loginHeading') : t('registerHeading')}
         </h1>
         <p className="mt-1.5 text-sm text-ink-2">
-          Manage developer API keys, webhooks, and conversion history.
+          {t('intro')}
         </p>
       </div>
 
       <div
         role="tablist"
-        aria-label="Authentication mode"
+        aria-label={t('modeLabel')}
         className="flex rounded-md bg-sunken p-1 mb-6 border border-rule"
       >
         <button
@@ -65,7 +67,7 @@ function LoginFormContent() {
               : 'text-ink-2 hover:text-ink'
           }`}
         >
-          Sign In
+          {t('tabs.login')}
         </button>
         <button
           ref={(el) => {
@@ -85,7 +87,7 @@ function LoginFormContent() {
               : 'text-ink-2 hover:text-ink'
           }`}
         >
-          Sign Up
+          {t('tabs.register')}
         </button>
       </div>
 
@@ -124,7 +126,7 @@ function LoginFormContent() {
 
         <div className="my-6 flex items-center gap-3 text-xs uppercase tracking-widest text-ink-3">
           <span aria-hidden="true" className="flex-1 border-t border-rule" />
-          <span>or continue with email</span>
+          <span>{t('emailDivider')}</span>
           <span aria-hidden="true" className="flex-1 border-t border-rule" />
         </div>
 
@@ -151,7 +153,8 @@ function LoginFormContent() {
   );
 }
 
-export default function LoginPage() {
+export default function AuthPageView() {
+  const t = useTranslations('auth');
   return (
     <div className="min-h-screen flex flex-col">
       <Header />
@@ -160,7 +163,7 @@ export default function LoginPage() {
           fallback={
             <output aria-live="polite" className="py-12 flex items-center justify-center">
               <Loader2 className="w-7 h-7 animate-spin text-accent-ink" />
-              <span className="sr-only">Loading authentication form</span>
+              <span className="sr-only">{t('loading')}</span>
             </output>
           }
         >

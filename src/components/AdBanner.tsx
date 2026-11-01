@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 
 export type AdSlotType =
   | 'top-leaderboard'
@@ -22,6 +23,7 @@ export default function AdBanner({
   adClient,
   adSlotId,
 }: AdBannerProps) {
+  const t = useTranslations('ads');
   // Standard IAB display advertising dimensions and CLS prevention configuration
   const getSlotConfig = () => {
     switch (slot) {
@@ -29,28 +31,28 @@ export default function AdBanner({
         return {
           wrapper: 'w-full max-w-[728px] mx-auto my-3 px-4',
           container: 'min-h-[50px] sm:min-h-[90px] h-[50px] sm:h-[90px]',
-          dimensionLabel: '728 × 90 Leaderboard',
+          dimensionLabel: t('leaderboard'),
           maxWidth: 'max-w-[728px]',
         };
       case 'mid-content':
         return {
           wrapper: 'w-full max-w-[728px] lg:max-w-[970px] mx-auto my-8 px-4',
           container: 'min-h-[90px] h-[90px]',
-          dimensionLabel: '728 × 90 / 970 × 90 Responsive Banner',
+          dimensionLabel: t('responsive'),
           maxWidth: 'max-w-[728px] lg:max-w-[970px]',
         };
       case 'in-feed':
         return {
           wrapper: 'w-full max-w-[728px] mx-auto my-8 px-4',
           container: 'min-h-[90px] h-[90px]',
-          dimensionLabel: '728 × 90 In-Feed Placement',
+          dimensionLabel: t('inFeed'),
           maxWidth: 'max-w-[728px]',
         };
       case 'post-conversion':
         return {
           wrapper: 'w-full max-w-[728px] mx-auto my-6 px-4',
           container: 'min-h-[90px] h-[90px]',
-          dimensionLabel: '728 × 90 Display Placement',
+          dimensionLabel: t('display'),
           maxWidth: 'max-w-[728px]',
         };
       case 'sidebar':
@@ -58,7 +60,7 @@ export default function AdBanner({
         return {
           wrapper: 'w-[300px] mx-auto my-4',
           container: 'min-h-[250px] h-[250px]',
-          dimensionLabel: '300 × 250 Medium Rectangle',
+          dimensionLabel: t('rectangle'),
           maxWidth: 'max-w-[300px]',
         };
     }
@@ -70,13 +72,13 @@ export default function AdBanner({
 
   return (
     <aside
-      aria-label="Advertisement"
+      aria-label={t('label')}
       className={`relative z-10 flex flex-col items-center justify-center transition-all ${config.wrapper} ${className}`}
     >
       {/* Standardized Minimal Advertisement Header */}
       <div className={`flex items-center justify-center w-full mb-1 px-1 ${config.maxWidth}`}>
         <span className="text-[10px] font-mono tracking-widest uppercase text-ink-3 font-medium select-none">
-          Advertisement
+          {t('label')}
         </span>
       </div>
 

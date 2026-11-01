@@ -1,4 +1,110 @@
 {
+  "ads": {
+    "label": "광고",
+    "leaderboard": "728 × 90 리더보드",
+    "responsive": "728 × 90 / 970 × 90 반응형 배너",
+    "inFeed": "728 × 90 피드 내 광고",
+    "display": "728 × 90 디스플레이 광고",
+    "rectangle": "300 × 250 중간 직사각형"
+  },
+  "apiDocs": {
+    "masthead": {
+      "fallbackTitle": "EasyConvert 개발자 API",
+      "fallbackDescription": "비동기 변환 대기열, 멀티파트 업로드, 웹훅 전송을 위한 REST API입니다. <code>x-internal</code>로 표시된 작업은 웹 애플리케이션 전용이며 외부 클라이언트 계약에 포함되지 않습니다.",
+      "version": "OpenAPI {openapi} | v{version}",
+      "auth": "인증: Bearer API 키",
+      "base": "기본 주소:",
+      "download": "OpenAPI JSON 다운로드",
+      "dashboard": "API 키 대시보드",
+      "previewKey": "cURL 미리보기 키",
+      "previewKeyPlaceholder": "ec_live_... 키를 붙여 넣으면 cURL 예시에 바로 채워집니다(브라우저에서만 사용)"
+    },
+    "toolbar": {
+      "heading": "엔드포인트 목록",
+      "intro": "요청 매개변수, RBAC 권한 범위, 바로 실행할 수 있는 cURL 명령을 확인하십시오.",
+      "searchLabel": "API 엔드포인트 검색",
+      "searchPlaceholder": "엔드포인트 검색(convert, jobs, uploads)...",
+      "methodLegend": "HTTP 메서드로 엔드포인트 거르기",
+      "allMethods": "전체"
+    },
+    "page": {
+      "loading": "OpenAPI 명세를 불러오는 중...",
+      "loadFailedHeading": "OpenAPI 명세를 불러오지 못했습니다",
+      "loadFailedStatus": "OpenAPI 명세를 불러오지 못했습니다({status})",
+      "loadFailedUnknown": "OpenAPI 명세를 불러오는 중 알 수 없는 오류가 발생했습니다",
+      "noMatches": "일치하는 API 엔드포인트가 없습니다."
+    },
+    "endpoint": {
+      "security": "보안과 권한 범위",
+      "curl": "실행할 수 있는 cURL",
+      "copyLabel": "{method} {path} cURL 명령 복사",
+      "copied": "복사됨",
+      "copy": "cURL 복사",
+      "copiedAnnouncement": "{method} {path} cURL 명령을 복사했습니다"
+    },
+    "schema": {
+      "parameters": "매개변수",
+      "columns": {
+        "name": "이름",
+        "in": "위치",
+        "type": "유형",
+        "required": "필수",
+        "description": "설명"
+      },
+      "yes": "예",
+      "no": "아니요",
+      "optionalParameter": "선택 매개변수",
+      "requestBody": "요청 본문",
+      "binaryPayload": "바이너리 스트림 또는 구조화된 스키마 페이로드입니다.",
+      "responses": "응답",
+      "responsePayload": "응답 페이로드"
+    }
+  },
+  "auth": {
+    "loginHeading": "EasyConvert 로그인",
+    "registerHeading": "EasyConvert 계정 만들기",
+    "intro": "개발자 API 키, 웹훅, 변환 기록을 관리합니다.",
+    "modeLabel": "인증 방식",
+    "tabs": {
+      "login": "로그인",
+      "register": "회원가입"
+    },
+    "emailDivider": "또는 이메일로 계속",
+    "loading": "인증 양식을 불러오는 중",
+    "form": {
+      "google": "Google로 계속",
+      "name": "이름",
+      "namePlaceholder": "홍길동",
+      "email": "이메일 주소",
+      "emailPlaceholder": "name@example.com",
+      "password": "비밀번호",
+      "hidePassword": "비밀번호 숨기기",
+      "showPassword": "비밀번호 표시",
+      "confirmPassword": "비밀번호 확인",
+      "signIn": "로그인",
+      "createAccount": "계정 만들기"
+    },
+    "oauthErrors": {
+      "oauth_code_missing": "인증 요청이 취소되었거나 인증 코드가 없습니다.",
+      "oauth_denied": "Google 로그인이 완료되기 전에 취소되었습니다.",
+      "invalid_oauth_callback": "OAuth 콜백 값이 올바르지 않습니다. 다시 로그인하십시오.",
+      "invalid_oauth_state": "인증 상태가 올바르지 않습니다. 다시 로그인하십시오.",
+      "oauth_exchange_failed": "Google 인증 정보를 확인하지 못했습니다. 다시 로그인하십시오.",
+      "account_linking_required": "이 이메일로 만든 계정이 이미 있습니다. Google 계정을 연결하려면 먼저 비밀번호로 로그인하십시오.",
+      "generic": "인증하지 못했습니다. 다시 로그인하십시오."
+    },
+    "messages": {
+      "googleFailed": "Google 인증을 시작하지 못했습니다.",
+      "googleNetwork": "Google 인증을 시작하는 중 네트워크 오류가 발생했습니다.",
+      "missingFields": "필수 항목을 모두 입력하십시오.",
+      "passwordTooShort": "비밀번호는 8자 이상이어야 합니다.",
+      "passwordMismatch": "비밀번호가 일치하지 않습니다.",
+      "failed": "인증하지 못했습니다. 입력한 정보를 확인한 뒤 다시 시도하십시오.",
+      "created": "계정을 만들었습니다. 이동하는 중...",
+      "signedIn": "로그인했습니다. 이동하는 중...",
+      "connection": "로그인하는 중 연결 오류가 발생했습니다. 다시 시도하십시오."
+    }
+  },
   "converterPage": {
     "breadcrumb": {
       "label": "현재 위치",
@@ -109,6 +215,213 @@
       }
     }
   },
+  "dashboard": {
+    "loading": "계정 세션을 불러오는 중...",
+    "dismissError": "대시보드 오류 닫기",
+    "header": {
+      "heading": "개발자 대시보드",
+      "tier": "{tier} 등급",
+      "provider": "인증 방식 <strong>{provider}</strong>",
+      "memberSince": "가입일 {date}",
+      "signOut": "로그아웃",
+      "sectionsLabel": "대시보드 메뉴",
+      "tabs": {
+        "api": "개발자 API 키",
+        "files": "변환한 파일",
+        "dlq": "실패한 웹훅",
+        "usage": "사용량과 요청 한도"
+      }
+    },
+    "files": {
+      "heading": "최근 변환 파일",
+      "intro": "임시 결과 파일은 다운로드 후 또는 보관 시간이 지나면 삭제됩니다.",
+      "refresh": "새로고침",
+      "emptyHeading": "보관 중인 변환 파일이 없습니다",
+      "emptyBody": "계정이나 API 키로 변환한 파일이 자동 삭제까지 남은 시간과 함께 여기에 표시됩니다.",
+      "openWorkbench": "변환 작업 영역 열기",
+      "columns": {
+        "name": "파일 이름",
+        "format": "형식",
+        "size": "크기",
+        "ttl": "자동 삭제까지",
+        "actions": "작업"
+      },
+      "pair": "{src} → {tgt}",
+      "countdown": "{minutes}분 {seconds}초",
+      "downloadLabel": "{name} 다운로드",
+      "deleteLabel": "{name} 삭제"
+    },
+    "quota": {
+      "used": "오늘 사용한 API 요청",
+      "allowed": "/ {limit, number}회 허용",
+      "remaining": "남은 사용량",
+      "callsLeft": "회 남음",
+      "remainingNote": "인증된 REST 요청 기준이며, 결과 파일은 자동으로 삭제됩니다.",
+      "reset": "일일 초기화",
+      "resetNote": "API 사용량은 매일 UTC 자정에 자동으로 초기화됩니다."
+    },
+    "keys": {
+      "heading": "API 비밀 키",
+      "intro": "백엔드 스크립트와 웹훅 파이프라인에 쓸 권한 범위별 키를 만들고 폐기합니다.",
+      "generate": "새 키 만들기",
+      "defaultName": "운영용 API 키",
+      "createHeading": "새 API 키 만들기",
+      "name": "키 이름",
+      "namePlaceholder": "운영 백엔드 작업자",
+      "scopesLegend": "세부 권한 범위(RBAC)",
+      "scopes": {
+        "convertWrite": "{scope} (업로드와 변환)",
+        "convertRead": "{scope} (작업 상태 조회)",
+        "storageDownload": "{scope} (결과 파일 다운로드)"
+      },
+      "scopesRequired": "키를 만들려면 권한 범위를 하나 이상 선택하십시오.",
+      "expiry": "키 만료",
+      "expiryChoices": {
+        "30d": "30일",
+        "60d": "60일",
+        "90d": "90일",
+        "1y": "1년",
+        "never": "만료 없음"
+      },
+      "expiryNote": "만료 7일 전에 <code>key.expiring_soon</code> 웹훅이 전송됩니다.",
+      "create": "API 키 만들기",
+      "cancel": "취소",
+      "generated": {
+        "label": "생성된 API 키",
+        "copiedAnnouncement": "API 비밀 키를 클립보드에 복사했습니다.",
+        "generatedAnnouncement": "API 키를 만들었습니다.",
+        "heading": "API 키를 만들었습니다",
+        "body": "지금 이 비밀 키를 복사하십시오. 서버에는 키의 해시만 저장되며, 비밀 키는 다시 표시되지 않습니다.",
+        "inputLabel": "생성된 API 비밀 키",
+        "copyLabel": "생성된 API 키 복사",
+        "copied": "복사됨",
+        "copy": "키 복사",
+        "dismiss": "닫기"
+      },
+      "table": {
+        "never": "없음",
+        "expired": "만료됨",
+        "expiringIn": "{days}일 후 만료",
+        "emptyHeading": "아직 만든 API 키가 없습니다",
+        "emptyBody": "API 키를 만들어 프로그램에서 변환을 요청할 때 인증에 사용하십시오.",
+        "columns": {
+          "name": "이름과 권한 범위",
+          "prefix": "키 접두사",
+          "created": "만든 날짜",
+          "expires": "만료일",
+          "lastUsed": "마지막 사용",
+          "status": "상태",
+          "actions": "작업"
+        },
+        "allScopes": "모든 권한 범위(*)",
+        "status": {
+          "active": "사용 중",
+          "revoked": "폐기됨"
+        },
+        "revoked": "폐기됨",
+        "confirmLabel": "API 키 {name} 폐기 확인",
+        "confirm": "확인",
+        "cancelLabel": "API 키 {name} 폐기 취소",
+        "cancel": "취소",
+        "revokeLabel": "API 키 {name} 폐기",
+        "revoke": "폐기"
+      }
+    },
+    "dlq": {
+      "heading": "실패한 웹훅 대기열(DLQ)",
+      "failedCount": "실패 {count, number}건",
+      "intro": "재시도를 모두 마치고도 전송하지 못한 웹훅입니다. 페이로드를 확인하거나 다시 전송할 수 있습니다.",
+      "refresh": "새로고침",
+      "clear": "대기열 비우기",
+      "dismissFeedback": "웹훅 알림 닫기",
+      "emptyHeading": "실패한 웹훅이 없습니다",
+      "emptyBody": "모든 웹훅이 전송되었거나 대기 중인 실패 전송이 없습니다.",
+      "columns": {
+        "event": "이벤트",
+        "target": "대상 URL",
+        "status": "상태",
+        "failedAt": "실패 시각",
+        "retries": "재시도",
+        "actions": "작업"
+      },
+      "replayed": "재전송됨",
+      "attempts": "{count, number}회 시도",
+      "inspectLabel": "{event} 페이로드 확인",
+      "replayLabel": "웹훅 {id} 다시 전송",
+      "replay": "다시 전송",
+      "deleteLabel": "실패한 웹훅 {id} 삭제",
+      "dialog": {
+        "heading": "웹훅 페이로드 확인",
+        "close": "페이로드 보기 닫기",
+        "target": "대상 URL",
+        "error": "전송 오류",
+        "payload": "페이로드 JSON",
+        "copyLabel": "웹훅 페이로드 JSON 복사",
+        "copied": "복사됨",
+        "copy": "페이로드 복사",
+        "copiedAnnouncement": "웹훅 페이로드 JSON을 클립보드에 복사했습니다",
+        "replay": "지금 다시 전송",
+        "closeButton": "닫기"
+      }
+    },
+    "usage": {
+      "heading": "사용량과 요청 한도",
+      "intro": "현재 계정 등급, API 요청 할당량, 보관 규칙을 확인합니다.",
+      "tier": "현재 등급: {tier}",
+      "quota": "일일 API 사용량",
+      "remaining": "오늘 남은 API 요청 {count, number}회",
+      "activeKeys": "사용 중인 API 키",
+      "activeKeysNote": "이 계정에서 사용 중인 권한 범위별 키",
+      "reset": "사용량 초기화",
+      "nextReset": "다음 초기화 {date}",
+      "resetDaily": "사용량은 매일 UTC 자정에 초기화됩니다",
+      "workbench": {
+        "heading": "웹 작업 영역",
+        "free": "일일 유료 제한이나 워터마크 없이 브라우저에서 무료로 변환",
+        "local": "지원되는 형식은 WebAssembly로 기기에서 직접 처리"
+      },
+      "api": {
+        "heading": "REST API 이용 정책",
+        "scopes": "키별 RBAC 권한 범위(<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
+        "isolation": "격리된 작업 환경에서 실행하고 결과 파일은 짧은 보관 기간 후 자동 삭제"
+      },
+      "reference": "OpenAPI 문서 보기"
+    },
+    "guide": {
+      "heading": "프로그램 연동 안내",
+      "intro": "권한 범위가 지정된 API 키로 멀티파트 변환 요청을 보내십시오.",
+      "languageLabel": "SDK 언어",
+      "copyLabel": "{language} 연동 예시 복사",
+      "copied": "복사됨",
+      "copy": "복사",
+      "copiedAnnouncement": "{language} 연동 예시를 복사했습니다"
+    },
+    "errors": {
+      "loadFiles": "변환한 파일을 불러오지 못했습니다(HTTP {status}).",
+      "loadFilesNetwork": "변환한 파일을 불러오는 중 네트워크 오류가 발생했습니다.",
+      "loadDlq": "실패한 웹훅을 불러오지 못했습니다(HTTP {status}).",
+      "loadDlqNetwork": "실패한 웹훅을 불러오는 중 네트워크 오류가 발생했습니다.",
+      "deleteFile": "파일을 삭제하지 못했습니다(HTTP {status}).",
+      "deleteFileNetwork": "파일을 삭제하는 중 네트워크 오류가 발생했습니다.",
+      "replaySucceeded": "웹훅을 다시 전송했습니다(HTTP {status}).",
+      "replayFailed": "웹훅을 다시 전송하지 못했습니다({reason}).",
+      "networkFailure": "네트워크 오류",
+      "replayRequestFailed": "다시 전송 요청에 실패했습니다({reason}).",
+      "deleteDlq": "웹훅 항목을 삭제하지 못했습니다(HTTP {status}).",
+      "deleteDlqNetwork": "웹훅 항목을 삭제하는 중 네트워크 오류가 발생했습니다.",
+      "clearDlq": "실패한 웹훅 대기열을 비우지 못했습니다(HTTP {status}).",
+      "dlqCleared": "실패한 웹훅 대기열을 비웠습니다.",
+      "clearDlqNetwork": "대기열을 비우는 중 네트워크 오류가 발생했습니다.",
+      "loadKeys": "API 키를 불러오지 못했습니다(HTTP {status}).",
+      "loadKeysNetwork": "API 키를 불러오는 중 네트워크 오류가 발생했습니다.",
+      "noScopes": "API 키를 만들기 전에 권한 범위를 하나 이상 선택하십시오.",
+      "createKey": "API 키를 만들지 못했습니다(HTTP {status}).",
+      "createKeyNetwork": "API 키를 만드는 중 네트워크 오류가 발생했습니다.",
+      "revokeKey": "API 키를 폐기하지 못했습니다(HTTP {status}).",
+      "revokeKeyNetwork": "API 키를 폐기하는 중 네트워크 오류가 발생했습니다.",
+      "signOutNetwork": "로그아웃하는 중 네트워크 오류가 발생했습니다."
+    }
+  },
   "faq": {
     "title": "자주 묻는 질문",
     "subtitle": "지원 형식, 처리 위치, 일괄 변환 한도에 대한 답변입니다.",
@@ -134,6 +447,51 @@
         "q": "데스크톱 프로그램이나 브라우저 플러그인을 설치해야 합니까?",
         "a": "설치할 필요가 없습니다. EasyConvert는 macOS, Windows, Linux, iOS, Android의 최신 웹 브라우저에서 동작합니다."
       }
+    }
+  },
+  "features": {
+    "directoryHeading": "지원 파일 형식",
+    "directoryIntro": "{categories}개 분류, {formats}개 형식, 등록된 변환 조합 {pairs}개를 살펴보십시오.",
+    "extensionsHeading": "{category} 확장자 ({count})",
+    "extensionsHint": "확장자를 선택하면 해당 변환기가 열립니다",
+    "pairsHeading": "자주 쓰는 {category} 변환",
+    "pairs": {
+      "png-webp": "투명도를 유지하는 웹 이미지 압축",
+      "heic-jpg": "어느 기기에서나 열리는 카메라 사진",
+      "jpg-pdf": "인쇄용 한 페이지 문서로 내보내기",
+      "pdf-docx": "편집할 수 있는 Word 문서로 변환",
+      "docx-pdf": "레이아웃이 고정된 PDF로 배포",
+      "hwp-pdf": "한글 문서를 PDF로 렌더링",
+      "rar-zip": "표준 ZIP 파일로 다시 압축",
+      "7z-zip": "모든 운영체제에서 열리는 압축 파일",
+      "tar-zip": "묶음 파일을 ZIP으로 변환",
+      "mp4-mp3": "동영상에서 오디오 트랙 추출",
+      "mkv-mp4": "브라우저와 모바일에서 재생되는 형식",
+      "mov-mp4": "표준 H.264 MP4로 내보내기",
+      "wav-mp3": "작은 MP3 오디오로 인코딩",
+      "flac-mp3": "무손실 원본을 휴대용 MP3로",
+      "m4a-wav": "비압축 PCM 파형으로 출력",
+      "epub-pdf": "전자책을 쪽 단위 PDF로",
+      "mobi-epub": "개방형 EPUB 전자책 형식으로",
+      "fb2-txt": "일반 UTF-8 텍스트 추출",
+      "xlsx-csv": "구분 기호로 나눈 텍스트 표로 내보내기",
+      "xlsx-pdf": "서식을 유지한 스프레드시트 인쇄본",
+      "ods-xlsx": "Excel 통합 문서와 호환",
+      "pptx-pdf": "어디서나 열리는 슬라이드 배포본",
+      "pptx-html": "브라우저에서 보는 슬라이드",
+      "odp-pptx": "PowerPoint 슬라이드로 내보내기",
+      "csv-json": "구조화된 JSON 레코드 배열",
+      "yaml-json": "설정 파일 형식 통일",
+      "json-csv": "행과 열로 된 표로 내보내기",
+      "svg-png": "선명한 PNG 이미지로 래스터화",
+      "ai-pdf": "벡터 아트워크를 PDF로 보존",
+      "eps-svg": "웹에서 쓰는 확장 가능한 SVG 벡터",
+      "ttf-woff2": "압축된 WOFF2 웹 글꼴",
+      "otf-ttf": "데스크톱용 TrueType 글꼴",
+      "woff-ttf": "설치할 수 있는 TrueType 글꼴로 출력",
+      "dwg-pdf": "기술 도면을 PDF 시트로",
+      "step-stl": "3D 프린팅용 삼각형 메시",
+      "dxf-svg": "2D 벡터 CAD 도면 내보내기"
     }
   },
   "footer": {
@@ -186,6 +544,16 @@
       "sandbox": "샌드박스에서 실행하고 처리 후 자동 삭제",
       "container": "컨테이너 구조, 스트림, 메타데이터 유지"
     }
+  },
+  "formatSelector": {
+    "defaultTitle": "형식 선택",
+    "close": "형식 선택 닫기",
+    "noTargets": "이 파일을 변환할 수 있는 출력 형식이 없습니다.",
+    "noMatches": "‘{search}’ 검색 결과가 없습니다",
+    "anyFormat": "모든 형식",
+    "searchLabel": "형식 검색",
+    "searchPlaceholder": "형식 검색...",
+    "clear": "지우기"
   },
   "formatSpecs": {
     "pdf": {
@@ -303,9 +671,9 @@
       "adv3": "다중 프레임 애니메이션, ICC 색 프로필, EXIF/XMP 메타데이터 지원"
     },
     "avif": {
-      "desc": "AVIF는 AV1로 부호화한 정지 이미지를 ISO HEIF 컨테이너에 저장하며, 8비트, 10비트, 12비트 색 깊이와 HDR 전달 함수를 지원합니다.",
+      "desc": "AVIF는 AV1으로 부호화한 정지 이미지를 ISO HEIF 컨테이너에 저장하며, 8비트, 10비트, 12비트 색 깊이와 HDR 전달 함수를 지원합니다.",
       "adv1": "같은 체감 화질에서 JPEG보다 최대 50% 작은 크기",
-      "adv2": "HDR(PQ / HLG)과 넓은 색 영역 지원",
+      "adv2": "HDR(PQ / HLG)와 넓은 색 영역 지원",
       "adv3": "최신 데스크톱·모바일 브라우저에서 기본 디코딩"
     },
     "heic": {
@@ -335,7 +703,7 @@
     "mobi": {
       "desc": "MOBI는 Mobipocket이 휴대용 전자잉크 리더용으로 개발한 PalmDOC 기반 바이너리 전자책 컨테이너로, HTML 마크업, 이미지, 챕터 위치를 함께 담습니다.",
       "adv1": "구형 Kindle 전자잉크 기기와 데스크톱 리더 앱과 호환",
-      "adv2": "PalmDOC 또는 Huff/CDIC로 압축한 간결한 텍스트 레코드",
+      "adv2": "PalmDOC 또는 Huff/CDIC 방식으로 압축한 간결한 텍스트 레코드",
       "adv3": "챕터 탐색과 사전 조회 표 내장 지원"
     },
     "zip": {
@@ -438,6 +806,50 @@
       "anyFormat": "모든 형식",
       "fromTitle": "원본 형식 선택",
       "toTitle": "대상 형식 선택"
+    }
+  },
+  "home": {
+    "security": {
+      "heading": "보안과 데이터 처리",
+      "intro": "격리된 실행 환경과 짧은 보관 기간을 기준으로 설계했습니다.",
+      "tls": {
+        "heading": "TLS 1.3 전송 암호화",
+        "body": "업로드, 서명된 저장소 전송, 결과 다운로드는 모두 암호화된 HTTPS로만 이루어집니다."
+      },
+      "sandbox": {
+        "heading": "브라우저와 작업 샌드박스에서 실행",
+        "body": "지원되는 변환은 브라우저 메모리에서 바로 처리하고, 복잡한 형식은 격리된 작업 샌드박스에서 처리합니다."
+      },
+      "cleanup": {
+        "heading": "파일 자동 삭제",
+        "body": "작업용 임시 입력 파일과 변환된 결과 파일은 짧은 보관 기간이 지나면 자동으로 삭제됩니다."
+      }
+    },
+    "api": {
+      "heading": "REST API와 일괄 작업",
+      "intro": "<code>POST /api/v1/convert</code>로 단일 파일 변환을 자동화하거나, <code>POST /api/v1/jobs</code>로 여러 단계의 DAG 파이프라인을 제출하고 서명된 웹훅으로 결과를 받을 수 있습니다.",
+      "copiedAnnouncement": "API 예시를 클립보드에 복사했습니다",
+      "copyLabel": "API 예시 복사",
+      "copied": "복사됨",
+      "copy": "복사",
+      "reference": "OpenAPI 3.1 문서",
+      "manageKeys": "API 키 관리"
+    },
+    "howItWorks": {
+      "heading": "변환 방법",
+      "intro": "회원가입이나 워터마크 없이 세 단계로 끝납니다.",
+      "add": {
+        "heading": "1. 원본 파일 추가",
+        "body": "기기에서 파일을 선택하거나, 작업 영역에 끌어다 놓거나, 클립보드에서 붙여 넣거나, 공개된 HTTP URL에서 가져오십시오."
+      },
+      "pick": {
+        "heading": "2. 형식과 옵션 선택",
+        "body": "호환되는 대상 확장자를 고르고, 필요하면 코덱, 크기, 페이지 범위, 구분 기호를 조정하십시오."
+      },
+      "download": {
+        "heading": "3. 변환하고 다운로드",
+        "body": "변환이 끝난 파일을 바로 하나씩 다운로드하거나, 여러 파일을 ZIP 파일 하나로 묶어 받으십시오."
+      }
     }
   },
   "infoPages": {
@@ -565,6 +977,148 @@
       "title": "{title} | EasyConvert"
     }
   },
+  "options": {
+    "modal": {
+      "heading": "변환 옵션",
+      "subtitle": "{filename} ({src} → {tgt})",
+      "targetFallback": "대상",
+      "close": "옵션 닫기",
+      "noOptions": "이 형식 조합에는 기본 무손실 변환 설정이 적용됩니다.",
+      "reset": "초기화",
+      "apply": "옵션 적용"
+    },
+    "trim": {
+      "start": "자르기 시작(HH:MM:SS)",
+      "end": "자르기 끝(HH:MM:SS)"
+    },
+    "image": {
+      "heading": "이미지 설정",
+      "width": "너비(px)",
+      "height": "높이(px)",
+      "original": "원본",
+      "fit": "크기 조정 방식",
+      "fitAuto": "자동(크기를 바꿀 때 비율 유지)",
+      "fitChoices": {
+        "contain": "비율 유지하며 맞춤",
+        "cover": "비율 유지하며 채움",
+        "fill": "늘려서 채움",
+        "inside": "안쪽에 맞춤"
+      },
+      "quality": "압축 품질",
+      "stripMetadata": "EXIF, GPS, 카메라 메타데이터 제거"
+    },
+    "video": {
+      "heading": "동영상 스트림 설정",
+      "codec": "동영상 코덱",
+      "codecAuto": "자동(형식 기본값)",
+      "codecs": {
+        "h264": "H.264 (AVC)",
+        "hevc": "H.265 (HEVC)",
+        "vp9": "VP9",
+        "av1": "AV1",
+        "prores": "Apple ProRes"
+      },
+      "fps": "프레임 속도(FPS)",
+      "fpsKeep": "원본 프레임 속도 유지",
+      "fpsValue": "{fps}fps",
+      "maxWidth": "최대 너비(px)",
+      "maxHeight": "최대 높이(px)",
+      "original": "원본"
+    },
+    "audio": {
+      "heading": "오디오 스트림 설정",
+      "codec": "오디오 코덱",
+      "codecAuto": "형식에 맞게 자동",
+      "codecs": {
+        "aac": "AAC",
+        "mp3": "MP3",
+        "opus": "Opus",
+        "flac": "FLAC(무손실)",
+        "vorbis": "Vorbis",
+        "pcm": "PCM 16비트"
+      },
+      "bitrate": "오디오 비트레이트",
+      "bitrateAuto": "자동(형식 기본값)",
+      "kbps": "{value}kbps",
+      "sampleRate": "샘플 레이트",
+      "sampleRateKeep": "원본 샘플 레이트 유지",
+      "hertz": "{value}Hz",
+      "channels": "채널",
+      "channelsKeep": "원본 채널 유지",
+      "channelChoices": {
+        "mono": "모노(1.0)",
+        "stereo": "스테레오(2.0)",
+        "surround51": "서라운드(5.1)",
+        "surround71": "서라운드(7.1)"
+      },
+      "gain": "출력 음량"
+    },
+    "document": {
+      "heading": "문서와 페이지 레이아웃",
+      "pages": "페이지 범위",
+      "pagesPlaceholder": "전체 페이지(예: 1-5)",
+      "orientation": "용지 방향",
+      "orientationAuto": "자동(원본과 같게)",
+      "portrait": "세로",
+      "landscape": "가로",
+      "ocrAutomatic": "검색 가능한 구조화 XML 출력에는 OCR이 자동으로 실행됩니다.",
+      "ocrEnable": "OCR 문자 인식 사용",
+      "ocrLanguage": "OCR 언어",
+      "ocrLanguages": {
+        "eng": "영어",
+        "auto": "자동 감지",
+        "kor": "한국어",
+        "jpn": "일본어",
+        "chi_sim": "중국어(간체)",
+        "deu": "독일어",
+        "fra": "프랑스어",
+        "spa": "스페인어"
+      }
+    },
+    "password": {
+      "zipConstraint": "ZIP 비밀번호는 출력 가능한 ASCII 문자 최대 99자까지 사용할 수 있습니다.",
+      "placeholder": "비밀번호가 필요 없으면 비워 두십시오",
+      "encrypt": {
+        "heading": "압축 파일 암호화",
+        "label": "출력 압축 파일 비밀번호({tgt})",
+        "helper": "생성되는 압축 파일을 보호할 AES-256 비밀번호입니다. 선택 사항입니다."
+      },
+      "reencrypt": {
+        "heading": "압축 파일 비밀번호와 재암호화",
+        "label": "압축 파일 비밀번호({src} → {tgt})",
+        "sourceFallback": "원본",
+        "helper": "암호화된 {src} 압축 파일을 열고, 출력 {tgt} 압축 파일을 이 비밀번호로 암호화합니다."
+      },
+      "decrypt": {
+        "heading": "PDF 암호 해제",
+        "label": "열기 비밀번호(PDF)",
+        "helper": "원본 PDF가 암호화되어 있으면 문서 열기 비밀번호를 입력하십시오."
+      },
+      "errors": {
+        "zipCharset": "ZIP 비밀번호는 출력 가능한 ASCII 문자 1~99자만 사용할 수 있습니다.",
+        "forbiddenChars": "비밀번호에는 줄바꿈, 널 바이트, 잘못된 유니코드 문자를 넣을 수 없습니다.",
+        "tooLong": "비밀번호는 256자 이하여야 합니다."
+      }
+    },
+    "data": {
+      "heading": "표와 구조화 데이터",
+      "delimiter": "필드 구분 기호",
+      "delimiterAuto": "자동(형식에 맞게)",
+      "delimiters": {
+        "comma": "쉼표(,)",
+        "semicolon": "세미콜론(;)",
+        "tab": "탭(\\t)",
+        "pipe": "세로 막대(|)"
+      },
+      "sheetIndex": "워크시트 번호(0부터)",
+      "sheetIndexPlaceholder": "0(첫 번째 시트)"
+    },
+    "archive": {
+      "heading": "압축 설정",
+      "level": "압축 수준",
+      "levelValue": "{level}단계"
+    }
+  },
   "plans": {
     "fileLimit": "파일당 최대 {size}",
     "exactBytes": "{count, number}바이트",
@@ -574,6 +1128,63 @@
       "free": "무료",
       "pro": "Pro",
       "enterprise": "Enterprise"
+    }
+  },
+  "problems": {
+    "badRequest": "요청을 읽을 수 없습니다. 입력 값을 확인한 뒤 다시 시도하십시오.",
+    "unauthorized": "계속하려면 로그인하십시오.",
+    "forbidden": "현재 계정으로는 이 작업을 할 수 없습니다.",
+    "payloadTooLarge": "파일이 이 요청에서 받을 수 있는 크기보다 큽니다.",
+    "lengthRequired": "업로드에 크기 정보가 없습니다. 다시 시도하십시오.",
+    "unsupportedMediaType": "이 파일 유형은 여기에 보낼 수 없습니다.",
+    "rateLimited": "짧은 시간에 요청이 너무 많았습니다. 잠시 후 다시 시도하십시오.",
+    "concurrencyLimit": "동시에 진행 중인 변환이 너무 많습니다. 진행 중인 변환이 끝난 뒤 다시 시도하십시오.",
+    "quotaExceeded": "오늘의 변환 한도를 모두 사용했습니다. 내일 다시 시도하십시오.",
+    "uploadBudgetExceeded": "오늘의 업로드 한도를 모두 사용했습니다. 내일 다시 시도하십시오.",
+    "storageFull": "지금은 저장 공간이 가득 찼습니다. 나중에 다시 시도하십시오.",
+    "serviceUnavailable": "서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도하십시오.",
+    "internalError": "서버에서 문제가 발생했습니다. 다시 시도하십시오."
+  },
+  "queue": {
+    "status": {
+      "converting": "대기열의 파일을 변환하는 중입니다...",
+      "empty": "대기열에 파일이 없습니다",
+      "oversize": "파일 {count, number}개가 변환 크기 한도를 초과합니다. 계속하려면 해당 파일을 제거하십시오.",
+      "chooseFormat": "계속하려면 출력 형식을 선택하십시오",
+      "fixOptions": "계속하려면 비밀번호 옵션이나 출력 형식을 수정하십시오.",
+      "complete": "파일 {count, number}개 변환을 완료했습니다",
+      "failed": "파일 {count, number}개를 변환하지 못했습니다. 계속하려면 다시 시도하거나 제거하십시오.",
+      "ready": "파일 {count, number}개를 변환할 준비가 되었습니다"
+    },
+    "convertAllTo": "모두 변환할 형식",
+    "chooseFormat": "형식 선택",
+    "convertAllTitle": "호환되는 모든 파일을 변환할 형식",
+    "filesInQueue": "대기열의 파일 {count, number}개",
+    "clearAll": "모두 지우기",
+    "zipFailed": "ZIP 파일을 만들지 못했습니다. 알 수 없는 오류입니다",
+    "zipFailedWithDetail": "ZIP 파일을 만들지 못했습니다. {detail}",
+    "dismissZipError": "압축 오류 닫기",
+    "addMore": "+ 파일 추가",
+    "downloadAll": "모두 다운로드(.zip)",
+    "converting": "변환 중...",
+    "convert": "변환",
+    "row": {
+      "unknownFormat": "{ext} 파일",
+      "failedFallback": "변환하지 못했습니다.",
+      "uploadingLabel": "{name} 업로드 중",
+      "convertingLabel": "{name} 변환 중",
+      "done": "완료",
+      "download": "다운로드",
+      "failed": "실패",
+      "retry": "다시 시도",
+      "ready": "준비됨",
+      "to": "→",
+      "selectFormatLabel": "{name}의 출력 형식 선택",
+      "selectFormat": "형식 선택",
+      "selectorTitle": "{format} 변환 대상 형식",
+      "optionsLabel": "{name} 변환 옵션",
+      "cancelLabel": "{name} 취소",
+      "removeLabel": "{name} 제거"
     }
   },
   "siteLinks": {
@@ -747,6 +1358,151 @@
       "Vectors": "벡터"
     }
   },
+  "status": {
+    "componentsHeading": "엔진과 파이프라인 구성 요소",
+    "operationalReady": "정상 운영 중",
+    "categoriesLabel": "구성 요소 분류",
+    "operational": "정상",
+    "categories": {
+      "all": "전체 구성 요소 ({count})",
+      "core": "연산 핵심 ({count})",
+      "pipeline": "파이프라인 ({count})",
+      "privacy": "개인정보와 보관 ({count})"
+    },
+    "components": {
+      "wasm-simd": {
+        "name": "SIMD WebAssembly 핵심 엔진",
+        "description": "문서와 바이너리 스트림을 128비트 벡터 가속으로 변환"
+      },
+      "webcodecs-vpu": {
+        "name": "WebCodecs VPU 트랜스코딩 가속기",
+        "description": "H.264, VP9, 오디오 코덱을 GPU/VPU 하드웨어로 직접 가속"
+      },
+      "opfs-storage": {
+        "name": "OPFS(출처 전용 파일 시스템) 스트리밍 저장소",
+        "description": "수백 MB 크기의 큰 파일도 부담 없이 가상 디스크로 스트리밍"
+      },
+      "workers-pool": {
+        "name": "멀티스레드 Web Worker 스레드 풀",
+        "description": "CPU 코어 구성에 맞춘 비차단 동시 작업자 격리"
+      },
+      "pipeline-document": {
+        "name": "문서·오피스 파이프라인(PDF, DOCX, XLSX, PPTX)",
+        "description": "문서 렌더링, 벡터 텍스트 배치, 표 구조 복원"
+      },
+      "pipeline-imaging": {
+        "name": "래스터·벡터 이미지 파이프라인(PNG, JPG, WEBP, SVG, HEIC)",
+        "description": "색 보정 리샘플링과 벡터 도형 래스터화"
+      },
+      "pipeline-audio": {
+        "name": "오디오 DSP 파이프라인(MP3, WAV, FLAC, AAC, OGG)",
+        "description": "32비트 부동소수점 오디오 처리, 리샘플링, 무손실 코덱"
+      },
+      "pipeline-video": {
+        "name": "동영상 컨테이너 리먹싱·트랜스먹싱(MP4, MKV, WEBM)",
+        "description": "컨테이너 재구성, 코덱 트랜스코딩, 타임스탬프 동기화"
+      },
+      "pipeline-ocr": {
+        "name": "OCR 엔진(Tesseract Wasm LSTM 코어)",
+        "description": "문자를 인식해 검색 가능한 PDF 텍스트 레이어 생성"
+      },
+      "pipeline-archive": {
+        "name": "스트림 압축 엔진(ZIP, 7Z, TAR, GZ)",
+        "description": "Deflate, LZMA2, BZip2 스트리밍 압축과 해제"
+      },
+      "pipeline-cad": {
+        "name": "CAD·도형 엔진(DXF, SVG)",
+        "description": "스플라인 분할, IEEE 754 좌표 정밀도, 벡터 내보내기"
+      },
+      "privacy-zero-retention": {
+        "name": "보관 없는 임시 메모리 샌드박스",
+        "description": "디스크에 영구 저장하지 않는 휘발성 클라이언트 메모리 할당"
+      },
+      "privacy-scrubbing": {
+        "name": "휘발성 버퍼 정리와 메모리 초기화",
+        "description": "변환 결과를 다운로드하거나 대기열을 비우면 버퍼를 바로 해제"
+      },
+      "privacy-crypto": {
+        "name": "클라이언트 SHA-256 해시 검증",
+        "description": "Web Crypto API로 로컬에서 비트스트림 무결성 확인"
+      }
+    },
+    "sandbox": {
+      "heading": "브라우저 샌드박스에서 직접 실행",
+      "body": "지원되는 코덱은 WebAssembly로 컴파일되어 격리된 브라우저 작업자 샌드박스에서 실행됩니다. 기기에서 직접 처리하므로 업로드를 기다리지 않고, 메모리 버퍼는 일시적으로만 쓰이며, 변환이 끝나면 임시 저장소를 바로 해제합니다.",
+      "zeroRetention": "보관 없는 샌드박스",
+      "simd": "하드웨어 SIMD와 WebCodecs 지원",
+      "unlimited": "횟수 제한 없는 무료 변환"
+    },
+    "announcements": {
+      "running": "브라우저 진단을 실행하는 중...",
+      "complete": "브라우저 진단을 마쳤습니다. 기능 {total}개 중 {active}개를 사용할 수 있습니다."
+    },
+    "checkedAt": "브라우저 상태 확인 시각 {time}",
+    "telemetryActive": "브라우저 샌드박스에서 상태를 확인하고 있습니다",
+    "overview": {
+      "heading": "모든 브라우저 변환 엔진이 정상 동작합니다",
+      "ready": "준비됨",
+      "intro": "사용자 브라우저의 실행 샌드박스에서 직접 확인했습니다.",
+      "running": "브라우저 엔진을 점검하는 중...",
+      "run": "브라우저 진단 실행",
+      "inBrowser": "모든 처리를 브라우저에서 실행"
+    },
+    "diagnostics": {
+      "heading": "브라우저 실시간 진단 결과",
+      "activeCount": "{total}개 중 {active}개 사용 가능",
+      "unavailable": "사용 불가",
+      "probes": {
+        "wasm": {
+          "name": "WebAssembly SIMD 벡터 가속",
+          "supported": "하드웨어 SIMD 사용 가능(128비트 벡터 연산)",
+          "unsupported": "WebAssembly 128비트 SIMD를 사용할 수 없습니다"
+        },
+        "webcodecs": {
+          "name": "WebCodecs GPU 하드웨어 파이프라인",
+          "supported": "동영상·오디오 하드웨어 코덱 VPU 사용 가능",
+          "unsupported": "CPU 소프트웨어 트랜스먹서로 처리"
+        },
+        "opfs": {
+          "name": "OPFS(출처 전용 파일 시스템)",
+          "supported": "기본 스트리밍 저장소 지원",
+          "unsupported": "Blob 메모리 스트리밍으로 처리"
+        },
+        "workers": {
+          "name": "멀티스레드 Web Worker",
+          "supported": "CPU 논리 실행 스레드 {cores}개 감지",
+          "unsupported": "CPU 논리 실행 스레드 {cores}개 감지"
+        },
+        "memory-sandbox": {
+          "name": "임시 메모리 버퍼 샌드박스",
+          "supported": "임시 메모리 할당과 초기화 확인",
+          "unsupported": "임시 메모리를 할당하지 못했습니다"
+        }
+      }
+    },
+    "metrics": {
+      "execution": {
+        "label": "실행 방식",
+        "value": "모두 브라우저에서",
+        "caption": "WebAssembly와 WebCodecs"
+      },
+      "storage": {
+        "label": "영구 저장",
+        "value": "0바이트",
+        "caption": "영구 보관 없음"
+      },
+      "concurrency": {
+        "label": "하드웨어 동시성",
+        "value": "스레드 {cores}개",
+        "caption": "감지된 CPU 실행 단위"
+      },
+      "privacy": {
+        "label": "개인정보 샌드박스",
+        "value": "사용 중",
+        "caption": "휘발성 임시 버퍼"
+      }
+    }
+  },
   "statusPage": {
     "heading": "시스템 운영 상태",
     "intro": "브라우저 안의 WebAssembly, WebCodecs, OPFS 변환 파이프라인에 대한 실시간 기능 점검, 지연 시간 측정, 구성 요소 상태입니다."
@@ -755,13 +1511,470 @@
     "toLight": "라이트 모드로 전환",
     "toDark": "다크 모드로 전환"
   },
+  "unitConverter": {
+    "categoriesLegend": "단위 분류",
+    "heading": "{from} → {to} 변환",
+    "intro": "네트워크 왕복 없이 브라우저에서 정밀하게 계산합니다.",
+    "decimals": "소수 자릿수",
+    "decimalsValue": "소수점 {digits}자리",
+    "fromValue": "입력 값",
+    "sourceUnit": "원본 단위",
+    "swap": "원본 단위와 대상 단위 바꾸기",
+    "result": "변환 결과({symbol})",
+    "copyLabel": "변환 결과 복사",
+    "copied": "복사됨",
+    "copy": "복사",
+    "copiedAnnouncement": "변환 결과를 클립보드에 복사했습니다.",
+    "targetUnit": "대상 단위",
+    "formula": "계산식",
+    "private": "모두 브라우저에서 안전하게 계산",
+    "breakdownHeading": "{category} 단위로 환산한 {value} {from}",
+    "unitCount": "단위 {count}개",
+    "rowCopied": "{name} 값을 클립보드에 복사했습니다.",
+    "rowCopyLabel": "{name} 값 복사",
+    "referenceHeading": "{from} → {to} 빠른 환산표",
+    "popularHeading": "자주 쓰는 단위 변환",
+    "popular": {
+      "lbs-kg": "파운드 → 킬로그램",
+      "kg-lbs": "킬로그램 → 파운드",
+      "feet-meters": "피트 → 미터",
+      "meters-feet": "미터 → 피트",
+      "celsius-fahrenheit": "섭씨 → 화씨",
+      "fahrenheit-celsius": "화씨 → 섭씨",
+      "mb-gb": "메가바이트 → 기가바이트",
+      "miles-km": "마일 → 킬로미터",
+      "inches-cm": "인치 → 센티미터",
+      "bar-psi": "바 → PSI"
+    }
+  },
   "unitConverterPage": {
     "heading": "통합 단위 변환기",
     "intro": "물리 단위와 디지털 단위 10개 분류를 양방향으로 계산하고, 여러 단위를 한 번에 비교하는 환산표를 제공합니다."
+  },
+  "urlImport": {
+    "heading": "URL로 파일 추가",
+    "intro": "최대 {size} 크기 파일의 HTTP 또는 HTTPS 직접 링크를 입력하십시오",
+    "close": "대화상자 닫기",
+    "label": "파일 URL",
+    "cancel": "취소",
+    "fetching": "가져오는 중...",
+    "submit": "파일 가져오기",
+    "invalidUrl": "http:// 또는 https://로 시작하는 전체 링크를 입력하십시오.",
+    "fetchFailed": "파일을 가져오지 못했습니다(HTTP {status})",
+    "networkError": "URL이 올바르지 않거나 네트워크 오류가 발생했습니다"
   },
   "userNav": {
     "dashboard": "대시보드",
     "logIn": "로그인",
     "signUp": "회원가입"
+  },
+  "formatCategories": {
+    "image": "이미지",
+    "document": "문서",
+    "archive": "압축 파일",
+    "video": "동영상",
+    "audio": "오디오",
+    "ebook": "전자책",
+    "spreadsheet": "스프레드시트",
+    "presentation": "프레젠테이션",
+    "data": "데이터·표",
+    "vector": "벡터",
+    "font": "글꼴",
+    "cad": "CAD·3D"
+  },
+  "formatDescriptions": {
+    "mp3": "MPEG-1 Audio Layer III. 가장 널리 쓰이는 표준 손실 압축 오디오 형식입니다.",
+    "wav": "웨이브폼 오디오 파일 형식. 스튜디오 품질의 비압축 선형 PCM 오디오입니다.",
+    "aac": "Advanced Audio Coding. MP3를 잇는 고효율 오디오 형식입니다.",
+    "flac": "Free Lossless Audio Codec. 원본과 비트 단위까지 같은 무손실 오디오 압축입니다.",
+    "ogg": "Vorbis나 Opus 압축을 사용하는 개방형 컨테이너 형식입니다.",
+    "wma": "Windows Media Audio 독자 오디오 형식입니다.",
+    "m4a": "Apple 기기와 iTunes에서 주로 쓰는 MPEG-4 오디오 컨테이너입니다.",
+    "opus": "대화형 음성과 고음질 음악 스트리밍을 위한 IETF 표준 코덱입니다.",
+    "aiff": "Apple이 비압축 PCM용으로 개발한 오디오 교환 파일 형식입니다.",
+    "aif": "오디오 교환 파일 형식(AIFF)의 다른 확장자입니다.",
+    "alac": "무손실 오디오 보관을 위한 Apple Lossless 오디오 코덱입니다.",
+    "amr": "모바일 음성 녹음에 최적화된 적응형 다중 전송률 오디오 코덱입니다.",
+    "au": "Sun Microsystems·NeXT 오디오 파일 형식입니다.",
+    "caf": "다채널 오디오와 대용량 파일을 다루는 Apple Core Audio 형식입니다.",
+    "dts": "Digital Theater Systems 다채널 서라운드 오디오입니다.",
+    "ac3": "Dolby Digital(Audio Coding 3) 서라운드 사운드 표준입니다.",
+    "mka": "Matroska 개방형 표준 멀티미디어 오디오 컨테이너입니다.",
+    "ra": "RealNetworks의 RealAudio 스트리밍 형식입니다.",
+    "voc": "Creative Sound Blaster VOC 오디오 형식입니다.",
+    "mid": "악기 연주 정보를 담은 MIDI 악보 트랙입니다.",
+    "midi": "신시사이저 시퀀싱 데이터를 담은 표준 MIDI 파일입니다.",
+    "ape": "빠른 무손실 오디오 압축 형식인 Monkey's Audio입니다.",
+    "mpc": "고음질 서브밴드 오디오 코덱인 Musepack입니다.",
+    "spx": "음성 통신용으로 설계된 특허 부담 없는 음성 코덱 Speex입니다.",
+    "mp4": "MPEG-4 Part 14. 가장 널리 쓰이는 표준 디지털 동영상 컨테이너입니다.",
+    "webm": "VP8, VP9, AV1을 사용하는 로열티 없는 HTML5 동영상 컨테이너입니다.",
+    "mkv": "여러 동영상, 오디오, 자막 스트림을 담는 Matroska 멀티미디어 컨테이너입니다.",
+    "avi": "Microsoft가 개발한 Audio Video Interleave 컨테이너입니다.",
+    "mov": "Apple QuickTime 동영상 컨테이너입니다.",
+    "wmv": "Microsoft Windows Media Video 형식입니다.",
+    "flv": "Adobe Flash Video 스트리밍 형식입니다.",
+    "3gp": "휴대전화용 3GPP 동영상 컨테이너입니다.",
+    "3g2": "CDMA 이동통신망용 3GPP2 컨테이너 표준입니다.",
+    "ts": "디지털 방송용 MPEG-2 전송 스트림입니다.",
+    "mts": "캠코더에서 쓰는 AVCHD 고화질 동영상 형식입니다.",
+    "m2ts": "블루레이 디스크의 BDAV MPEG-2 전송 스트림입니다.",
+    "vob": "MPEG-2 스트림과 AC3 오디오를 담은 DVD 비디오 개체 컨테이너입니다.",
+    "ogv": "Theora 동영상 압축을 사용하는 Ogg 동영상 컨테이너입니다.",
+    "m4v": "iTunes 동영상에 주로 쓰이는 Apple MPEG-4 동영상 형식입니다.",
+    "f4v": "MP4 기반의 Adobe Flash 동영상 형식입니다.",
+    "asf": "디지털 오디오·동영상 스트리밍을 위한 Microsoft Advanced Systems Format입니다.",
+    "rm": "RealNetworks의 구형 RealMedia 스트리밍 형식입니다.",
+    "rmvb": "가변 비트레이트 RealMedia 동영상입니다.",
+    "divx": "MPEG-4 Part 2 기반의 고압축 동영상 코덱입니다.",
+    "xvid": "오픈 소스 MPEG-4 동영상 코덱 컨테이너입니다.",
+    "mpg": "MPEG에서 표준화한 동영상 스트림입니다.",
+    "mpeg": "MPEG 디지털 동영상 방송 형식입니다.",
+    "m2v": "MPEG-2 동영상만 담은 기본 스트림입니다.",
+    "h264": "AVC(Advanced Video Coding) 원시 비트스트림입니다.",
+    "h265": "HEVC(High Efficiency Video Coding) 원시 비트스트림입니다.",
+    "hevc": "차세대 압축 표준인 HEVC입니다.",
+    "av1": "웹 동영상을 위한 로열티 없는 개방형 동영상 코딩 형식입니다.",
+    "webpvideo": "움직이는 WebP 그래픽과 모션 시퀀스입니다.",
+    "pdf": "Portable Document Format. 레이아웃이 고정된 업계 표준 문서 형식입니다.",
+    "docx": "스타일과 표를 모두 담는 Microsoft Word OpenXML 문서 형식입니다.",
+    "doc": "구형 바이너리 Microsoft Word 문서 형식입니다.",
+    "docm": "매크로를 포함할 수 있는 Microsoft Word OpenXML 문서입니다.",
+    "dotx": "서식이 미리 정해진 문서 구조를 위한 Word 서식 파일입니다.",
+    "dot": "구형 Word 서식 파일입니다.",
+    "rtf": "텍스트 서식과 글꼴 표를 담는 플랫폼 간 문서 형식입니다.",
+    "odt": "LibreOffice와 OpenOffice에서 쓰는 OASIS OpenDocument 텍스트 표준입니다.",
+    "ott": "구조화된 오피스 문서를 만들기 위한 OpenDocument 텍스트 서식 파일입니다.",
+    "fodt": "하나의 평면 XML 파일로 저장한 OpenDocument 텍스트입니다.",
+    "txt": "서식이 없는 표준 일반 텍스트 문서입니다.",
+    "text": "일반 텍스트 파일 표준입니다.",
+    "md": "일반 텍스트 서식 문법을 쓰는 경량 마크업 언어입니다.",
+    "html": "HyperText Markup Language. 웹 페이지의 표준 문서 형식입니다.",
+    "htm": "확장자를 줄여 쓴 HTML 파일입니다.",
+    "xhtml": "XML 규칙에 따라 엄격하게 검증되는 HTML 문서입니다.",
+    "pages": "Apple iWork Pages 워드프로세서 문서입니다.",
+    "wpd": "Corel WordPerfect 구형 워드프로세서 문서입니다.",
+    "wps": "Microsoft Works 워드프로세서 문서입니다.",
+    "rst": "Python Sphinx와 Docutils에서 쓰는 구조화 텍스트 마크업입니다.",
+    "tex": "수학과 학술 논문을 위한 TeX/LaTeX 조판 원본 문서입니다.",
+    "latex": "LaTeX 출판용 매크로 패키지 문서입니다.",
+    "djvu": "스캔한 책과 고해상도 텍스트를 위해 설계된 고밀도 압축 형식입니다.",
+    "abw": "오픈 소스 워드프로세서 AbiWord의 XML 파일입니다.",
+    "zabw": "GZ로 압축한 AbiWord 문서입니다.",
+    "sdw": "StarOffice StarWriter 워드프로세서 문서입니다.",
+    "sxw": "구형 Sun OpenOffice 1.x 텍스트 문서입니다.",
+    "pdb": "Palm OS 문서 데이터베이스 파일 형식입니다.",
+    "pdfa": "장기 보존용으로 특화된 ISO 표준 PDF입니다.",
+    "xps": "Microsoft XML Paper Specification 고정 레이아웃 문서 형식입니다.",
+    "oxps": "ECMA-388로 표준화된 Open XML Paper Specification입니다.",
+    "eml": "헤더와 본문을 담은 RFC-822 표준 인터넷 이메일 메시지 파일입니다.",
+    "msg": "Microsoft Outlook의 바이너리 복합 파일 이메일 메시지 형식입니다.",
+    "log": "시스템 이벤트를 시간순으로 기록한 텍스트 파일입니다.",
+    "man": "Unix troff/groff 매뉴얼 페이지 문서 형식입니다.",
+    "hocr": "단어 위치 상자와 인식 신뢰도를 담은 hOCR 1.2 개방형 XHTML OCR 출력 형식입니다.",
+    "alto": "텍스트 배치와 OCR 좌표를 위한 미국 의회도서관 표준 ALTO 4.x XML 형식입니다.",
+    "epub": "IDPF의 공식 리플로우형 전자책 표준 형식입니다.",
+    "mobi": "Amazon Kindle Mobipocket 리플로우형 전자책 형식입니다.",
+    "azw": "Amazon Kindle의 독자 전자책 형식입니다.",
+    "azw3": "HTML5와 CSS3 스타일을 지원하는 Kindle Format 8입니다.",
+    "fb2": "구조화된 의미 메타데이터를 담는 러시아의 XML 기반 개방형 전자책 형식입니다.",
+    "ibooks": "Apple Books의 독자 멀티터치 대화형 전자책 형식입니다.",
+    "cbr": "RAR로 압축한 만화책 아카이브입니다.",
+    "cbz": "표준 ZIP으로 압축한 만화책 아카이브입니다.",
+    "cb7": "7-Zip LZMA로 압축한 만화책 아카이브입니다.",
+    "cbt": "TAR로 묶은 만화책 아카이브입니다.",
+    "lit": "Microsoft Reader의 압축 전자책 형식입니다.",
+    "lrf": "Sony 전자책 리더용 BBeB 형식입니다.",
+    "prc": "PalmOS Mobipocket으로 컴파일한 전자책 패키지입니다.",
+    "rb": "NuvoMedia Rocket eBook의 초기 전자책 리더 형식입니다.",
+    "snb": "Shanda Bambook 전자책 아카이브 형식입니다.",
+    "tcr": "Psion Series 3 팜톱 컴퓨터용 압축 전자책 형식입니다.",
+    "chm": "Microsoft 컴파일된 HTML 도움말 문서와 온라인 책 파일입니다.",
+    "djv": "스캔 문서 형식 DjVu의 짧은 확장자입니다.",
+    "csv": "쉼표로 값을 구분하는 표 형식의 구조화 데이터입니다.",
+    "tsv": "탭으로 값을 구분하는 구조화 데이터 교환 형식입니다.",
+    "json": "가볍고 널리 쓰이는 데이터 교환 형식인 JavaScript Object Notation입니다.",
+    "yaml": "사람이 읽기 쉬운 데이터 직렬화 표준입니다.",
+    "yml": "YAML 설정·데이터 형식의 짧은 확장자입니다.",
+    "xml": "계층 구조 문서를 위한 Extensible Markup Language입니다.",
+    "toml": "자료형이 있는 표, 배열, 날짜·시간을 지원하는 TOML v1.0.0 설정 형식입니다.",
+    "xlsx": "격자, 수식, 셀을 모두 담는 Microsoft Excel OpenXML 스프레드시트입니다.",
+    "xls": "Microsoft Excel 97-2003의 구형 바이너리 BIFF8 스프레드시트 형식입니다.",
+    "xlsm": "VBA 매크로를 포함할 수 있는 Excel 스프레드시트입니다.",
+    "xltx": "Microsoft Excel OpenXML 스프레드시트 서식 파일입니다.",
+    "xlt": "구형 Microsoft Excel 바이너리 스프레드시트 서식 파일입니다.",
+    "ods": "LibreOffice Calc에서 쓰는 OASIS OpenDocument 스프레드시트 형식입니다.",
+    "ots": "OpenDocument 스프레드시트 서식 파일입니다.",
+    "fods": "압축하지 않은 단일 XML로 표현한 OpenDocument 스프레드시트입니다.",
+    "numbers": "Apple iWork Numbers 스프레드시트 파일입니다.",
+    "sdc": "StarOffice StarCalc 구형 바이너리 스프레드시트입니다.",
+    "dif": "표 형식 스프레드시트를 가져오기 위한 데이터 교환 형식입니다.",
+    "dbf": "dBase 관계형 데이터베이스 관리 시스템의 표 형식입니다.",
+    "wk1": "과거 표준이던 Lotus 1-2-3 스프레드시트 통합 문서입니다.",
+    "wks": "Lotus 1-2-3 Release 1 워크시트 형식입니다.",
+    "slk": "스프레드시트를 위한 Microsoft SYLK(Symbolic Link) 텍스트 형식입니다.",
+    "qpw": "Corel Quattro Pro 스프레드시트 문서입니다.",
+    "prn": "공백으로 정렬한 인쇄용 스프레드시트 텍스트 출력입니다.",
+    "ndjson": "한 줄에 JSON 값 하나씩 담는 스트리밍용 구조화 데이터입니다.",
+    "jsonl": "레코드를 한 줄씩 처리할 수 있도록 저장하는 편리한 형식입니다.",
+    "tab": "탭으로 구분한 텍스트 데이터 표입니다.",
+    "parquet": "고성능 분석과 질의에 최적화된 오픈 소스 열 기반 저장 형식입니다.",
+    "pptx": "Microsoft PowerPoint OpenXML 슬라이드 프레젠테이션 표준입니다.",
+    "ppt": "Microsoft PowerPoint 구형 바이너리 프레젠테이션 형식입니다.",
+    "pptm": "매크로를 포함할 수 있는 Microsoft PowerPoint OpenXML 프레젠테이션입니다.",
+    "potx": "PowerPoint OpenXML 프레젠테이션 서식 파일입니다.",
+    "pot": "구형 PowerPoint 프레젠테이션 서식 파일입니다.",
+    "ppsx": "열면 바로 전체 화면 슬라이드 쇼로 시작하는 PowerPoint 프레젠테이션입니다.",
+    "pps": "구형 PowerPoint 슬라이드 쇼 바이너리 파일입니다.",
+    "odp": "LibreOffice Impress에서 쓰는 OASIS OpenDocument 프레젠테이션 표준입니다.",
+    "otp": "OpenDocument 슬라이드 프레젠테이션 서식 파일입니다.",
+    "fodp": "단일 평면 XML 파일로 된 OpenDocument 프레젠테이션입니다.",
+    "key": "Apple iWork Keynote 프레젠테이션 파일입니다.",
+    "keynotes": "여러 슬라이드를 묶은 Apple Keynote 번들입니다.",
+    "sda": "StarOffice StarDraw 그림으로, PDF나 페이지 이미지로 렌더링됩니다.",
+    "sxd": "Sun OpenOffice 1.x 그림으로, PDF나 페이지 이미지로 렌더링됩니다.",
+    "sxi": "Sun OpenOffice 1.x Impress 프레젠테이션 슬라이드 파일입니다.",
+    "dps": "WPS Office Kingsoft Presentation 슬라이드 자료입니다.",
+    "shw": "Corel Presentations 슬라이드 쇼 형식입니다.",
+    "presentation": "일반 OpenXML 프레젠테이션 슬라이드 쇼 파일입니다.",
+    "png": "Portable Network Graphics. 알파 투명도를 지원하는 무손실 래스터 형식입니다.",
+    "jpg": "Joint Photographic Experts Group. 사진을 위한 표준 손실 압축 이미지 형식입니다.",
+    "jpeg": "Joint Photographic Experts Group 표준 이미지 형식입니다.",
+    "webp": "무손실과 손실 압축 모두 뛰어난 최신 웹 이미지 형식입니다.",
+    "avif": "최신 압축 기술을 쓰는 차세대 AV1 이미지 파일 형식입니다.",
+    "tiff": "Tagged Image File Format. 출판과 인쇄에서 선호하는 고심도 래스터 형식입니다.",
+    "tif": "Tagged Image File Format(TIFF)의 짧은 확장자입니다.",
+    "gif": "애니메이션 프레임과 투명도를 지원하는 그래픽 교환 형식입니다.",
+    "bmp": "비트맵 이미지 파일. 압축하지 않은 표준 래스터 이미지입니다.",
+    "svg": "Scalable Vector Graphics. 해상도와 무관한 XML 기반 2D 벡터 형식입니다.",
+    "ico": "웹사이트 파비콘과 애플리케이션 아이콘에 쓰는 아이콘 형식입니다.",
+    "cur": "Windows 마우스 커서 그래픽 형식입니다.",
+    "heic": "최신 Apple iOS 카메라가 채택한 고효율 이미지 컨테이너 형식입니다.",
+    "heif": "MPEG에서 표준화한 고효율 이미지 파일 형식입니다.",
+    "psd": "레이어가 있는 Adobe Photoshop 래스터 그래픽 문서입니다.",
+    "psb": "최대 300,000픽셀의 대형 문서를 위한 Photoshop Big 형식입니다.",
+    "raw": "디지털 카메라 센서 데이터를 최소한으로만 처리한 원본 이미지입니다.",
+    "cr2": "Canon 디지털 카메라 RAW 이미지 형식 2판입니다.",
+    "cr3": "Canon 디지털 카메라 RAW 이미지 형식 3판입니다.",
+    "nef": "Nikon 디지털 SLR 카메라 RAW 이미지 형식입니다.",
+    "arw": "Sony Alpha 디지털 카메라 RAW 이미지 형식입니다.",
+    "dng": "Adobe의 개방형 표준 디지털 네거티브 RAW 보관 형식입니다.",
+    "orf": "Olympus 카메라 RAW 사진 형식입니다.",
+    "rw2": "Panasonic Lumix 디지털 카메라 RAW 형식입니다.",
+    "pef": "Pentax 전자 파일 카메라 RAW 형식입니다.",
+    "raf": "Fujifilm X-Trans·FinePix 카메라 RAW 사진 형식입니다.",
+    "xcf": "GNU 이미지 편집 프로그램(GIMP)의 레이어 프로젝트 형식입니다.",
+    "ai": "Adobe Illustrator 벡터 그래픽 프로젝트 형식입니다.",
+    "eps": "상업 인쇄소에서 널리 쓰는 PostScript 벡터 파일 형식입니다.",
+    "tga": "Truevision 고급 래스터 그래픽 어댑터 이미지 형식입니다.",
+    "pcx": "ZSoft PC Paintbrush의 초기 PCX 래스터 그래픽입니다.",
+    "pnm": "Netpbm 범용 애니맵 그래픽 파일입니다.",
+    "pbm": "Netpbm 1비트 흑백 비트맵 형식입니다.",
+    "pgm": "Netpbm 8비트 또는 16비트 그레이스케일 이미지 형식입니다.",
+    "ppm": "Netpbm 24비트 RGB 컬러 픽스맵 형식입니다.",
+    "wbmp": "무선 애플리케이션 프로토콜(WAP) 흑백 비트맵 형식입니다.",
+    "exr": "Industrial Light & Magic의 HDR 래스터 형식입니다.",
+    "ultrahdr": "ISO 21496-1 게인 맵 메타데이터를 담은 HDR 이미지입니다.",
+    "jfif": "표준 JPEG 파일 교환 형식입니다.",
+    "jp2": "웨이블릿 기반 고압축 JPEG 2000 이미지 형식입니다.",
+    "j2k": "JPEG 2000 원시 코드 스트림 이미지입니다.",
+    "dds": "GPU 텍스처 맵을 담는 Microsoft DirectDraw Surface 컨테이너입니다.",
+    "zip": "가장 널리 쓰이는 무손실 압축 파일 컨테이너입니다.",
+    "tar": "Unix 파일 묶음을 패키징할 때 주로 쓰는 테이프 아카이브 형식입니다.",
+    "gz": "단일 파일을 압축하는 GNU zip 형식입니다.",
+    "tgz": "GNU zip으로 압축한 tar 묶음입니다.",
+    "7z": "개방형 구조의 고압축률 LZMA/LZMA2 압축 파일입니다.",
+    "zst": "압축률이 높고 압축 해제가 매우 빠른 실시간 압축 알고리즘입니다(Yann Collet 개발).",
+    "zstd": "RFC 8878로 표준화된 고속 무손실 압축 형식입니다.",
+    "tar_zst": "Zstandard 알고리즘으로 압축한 tar 묶음입니다.",
+    "tbz2": "bzip2로 압축한 tar 아카이브입니다.",
+    "xz": "LZMA2 기반 고압축률 데이터 압축 형식입니다.",
+    "txz": "xz로 압축한 tar 아카이브입니다.",
+    "rar": "Eugene Roshal이 만든 분할 압축과 오류 복구를 지원하는 독자 압축 형식입니다.",
+    "cab": "Windows 설치 패키지용 압축 파일입니다.",
+    "deb": "Debian과 Ubuntu Linux의 바이너리 패키지 아카이브입니다.",
+    "rpm": "Red Hat Enterprise Linux와 Fedora의 소프트웨어 패키지입니다.",
+    "cpio": "표준 Unix 파일 묶음 형식입니다.",
+    "iso": "광학 디스크 파일 시스템의 섹터 이미지입니다.",
+    "dmg": "macOS에서 마운트할 수 있는 디스크 이미지입니다.",
+    "jar": "ZIP 기반으로 Java 클래스와 리소스를 묶은 아카이브입니다.",
+    "war": "Java 엔터프라이즈 웹 애플리케이션 아카이브입니다.",
+    "ear": "Java EE 엔터프라이즈 패키지 아카이브입니다.",
+    "ttf": "Apple과 Microsoft가 만든 TrueType 외곽선 글꼴 표준입니다.",
+    "otf": "고급 타이포그래피 표를 갖춘 OpenType 글꼴 표준입니다.",
+    "woff": "gzip 압축을 사용하는 W3C 권고 웹 글꼴 형식입니다.",
+    "woff2": "Brotli 압축으로 전송량을 최소화한 차세대 웹 글꼴 형식입니다.",
+    "eot": "Microsoft Internet Explorer의 구형 임베디드 웹 글꼴 형식입니다.",
+    "pfa": "Adobe PostScript Type 1 글꼴의 ASCII 표현입니다.",
+    "pfb": "Adobe PostScript Type 1 바이너리 외곽선 글꼴입니다.",
+    "bin": "MacBinary로 인코딩한 구형 Macintosh 외곽선 글꼴입니다.",
+    "dfont": "Apple Mac OS X의 데이터 포크 글꼴 컨테이너입니다.",
+    "dwg": "Autodesk AutoCAD의 바이너리 2D·3D 설계 형식입니다.",
+    "dxf": "AutoCAD의 ASCII 벡터 도면 교환 형식입니다.",
+    "step": "제품 모델 데이터 교환 표준(ISO 10303-21)입니다.",
+    "stp": "ISO 표준 STEP 3D CAD 솔리드 모델 형상 교환 형식입니다.",
+    "iges": "CAD 곡면 형상을 디지털로 표현하는 ANSI 표준입니다.",
+    "igs": "IGES CAD 파일의 짧은 확장자입니다.",
+    "stl": "3D 프린팅과 CAD에서 쓰는 스테레오리소그래피 삼각형 메시 형상입니다.",
+    "obj": "꼭짓점, 법선, 다각형 면을 표현하는 Wavefront 3D 형상 형식입니다.",
+    "svgfont": "W3C SVG 사양의 글리프 외곽선 글꼴 표현입니다.",
+    "tar_bz2": "압축률이 높은 블록 정렬 알고리즘 bzip2로 압축한 tar 아카이브입니다.",
+    "tar_gz": "표준 GNU zip으로 압축한 tar 아카이브입니다.",
+    "ace": "WinAce 압축 데이터 아카이브 컨테이너입니다.",
+    "alz": "알집(ALZip)의 독자 압축 파일 형식입니다.",
+    "arc": "SEA가 만든 표준 무손실 데이터 압축·아카이브 형식입니다.",
+    "arj": "Robert Jung이 만든 고압축 아카이브 형식입니다.",
+    "bz": "구형 Burrows-Wheeler 블록 정렬 압축 파일입니다.",
+    "bz2": "압축률이 높은 Burrows-Wheeler 압축 데이터 파일입니다.",
+    "img": "디스크를 섹터 단위로 그대로 옮긴 원시 디스크 이미지 파일입니다.",
+    "lha": "Lempel-Ziv와 Haruyasu 방식으로 압축한 아카이브 파일입니다.",
+    "lz": "장기 데이터 보관용으로 설계된 LZMA 기반 압축 파일 형식입니다.",
+    "lzma": "Lempel-Ziv-Markov 연쇄 알고리즘으로 압축한 아카이브입니다.",
+    "lzo": "Lempel-Ziv-Oberhumer 실시간 데이터 압축 형식입니다.",
+    "rz": "먼 거리의 중복까지 줄이는 압축 아카이브 파일입니다.",
+    "tar_7z": "7-Zip LZMA/LZMA2로 압축한 tar 아카이브입니다.",
+    "tar_bz": "bzip으로 압축한 tar 아카이브입니다.",
+    "tar_lzo": "고속 LZO 알고리즘으로 압축한 tar 아카이브입니다.",
+    "tar_xz": "LZMA2 XZ 알고리즘으로 압축한 tar 아카이브입니다.",
+    "tar_z": "UNIX compress로 압축한 tar 묶음입니다.",
+    "tbz": "bzip으로 압축한 tar 묶음의 짧은 확장자입니다.",
+    "tz": ".tz 확장자를 쓰는 압축 tar 아카이브입니다.",
+    "tzo": "LZOP로 압축한 tar 묶음의 짧은 확장자입니다.",
+    "z": "전통적인 UNIX LZW 방식으로 압축한 단일 파일입니다.",
+    "aifc": "압축을 지원하는 오디오 교환 파일 형식입니다.",
+    "dss": "음성 받아쓰기용으로 개발된 독자 음성 녹음 형식입니다.",
+    "m4b": "챕터 책갈피를 담은 AAC 인코딩 오디오북 컨테이너입니다.",
+    "oga": "오디오 스트림만 담도록 제한한 Ogg 컨테이너입니다.",
+    "weba": "웹 브라우저에서 Opus나 Vorbis 오디오를 재생하기 위한 WebM 컨테이너입니다.",
+    "3gpp": "3GPP 모바일 동영상·오디오 컨테이너입니다.",
+    "cavs": "AVS(Audio Video Coding Standard) 동영상 스트림 형식입니다.",
+    "dv": "캠코더가 DCT 압축으로 녹화한 디지털 비디오 스트림입니다.",
+    "dvr": "Windows Media Center가 만든 디지털 녹화 파일입니다.",
+    "mod": "디지털 캠코더에서 쓰는 MPEG-2 기반 동영상 형식입니다.",
+    "mxf": "SMPTE 표준 전문가용 디지털 동영상·오디오 컨테이너입니다.",
+    "swf": "Adobe Flash 벡터 애니메이션과 대화형 동영상 스트림 형식입니다.",
+    "wtv": "Windows Media Center의 TV 방송 녹화 컨테이너입니다.",
+    "cdr": "CorelDRAW의 독자 벡터 일러스트·디자인 파일 형식입니다.",
+    "cgm": "ISO 표준 2D 벡터·래스터 그래픽 교환 형식입니다.",
+    "dwf": "CAD 설계 데이터를 배포하기 위한 Autodesk의 간결한 벡터 형식입니다.",
+    "emf": "32비트 Windows GDI 벡터 그래픽 메타파일 형식입니다.",
+    "ps": "Adobe PostScript 페이지 기술 언어 벡터 형식입니다.",
+    "sk": "Sketch와 오픈 소스 벡터 도구에서 쓰는 벡터 그래픽 문서 형식입니다.",
+    "sk1": "오픈 소스 sK1의 여러 페이지 벡터 일러스트 형식입니다.",
+    "svgz": "Gzip으로 압축한 SVG 문서입니다.",
+    "vsd": "Microsoft Visio 기술 도표·벡터 도식 형식입니다.",
+    "wmf": "16비트 Windows GDI 벡터·비트맵 그래픽 메타파일입니다.",
+    "3fr": "Hasselblad 카메라의 비압축 센서 RAW 사진입니다.",
+    "crw": "Canon 카메라의 초기 RAW 이미지 형식입니다.",
+    "dcr": "Kodak 디지털 카메라의 비압축 센서 RAW 사진입니다.",
+    "erf": "Epson 디지털 카메라의 비압축 RAW 이미지 파일입니다.",
+    "icns": "16x16부터 1024x1024 Retina까지 지원하는 Apple macOS 앱 아이콘 컨테이너입니다.",
+    "mos": "Leaf Aptus 디지털 카메라 RAW 사진입니다.",
+    "mrw": "Konica Minolta 카메라의 비압축 RAW 사진 데이터입니다.",
+    "x3f": "Sigma Foveon X3 3층 센서의 RAW 사진입니다.",
+    "hwp": "한컴의 한국 표준 워드프로세서 문서 형식입니다.",
+    "hwpx": "KS X 6101 표준 OPC XML 기반 한글 워드프로세서 문서입니다.",
+    "lwp": "IBM Lotus SmartSuite Word Pro 문서 파일 형식입니다.",
+    "odd": "OASIS OpenDocument XML 기반 벡터 그림 서식 파일입니다.",
+    "odg": "OASIS 표준 벡터 그림·그래픽 문서 형식입니다.",
+    "pub": "Microsoft Publisher 전자 출판 레이아웃 문서 형식입니다.",
+    "azw4": "PDF를 감싼 Amazon Kindle Print Replica 전자책입니다.",
+    "cbc": "여러 만화책을 묶은 디지털 만화 아카이브 형식입니다.",
+    "htmlz": "이미지와 스타일시트를 함께 ZIP으로 묶은 HTML 문서 패키지입니다.",
+    "pml": "Palm eReader용 마크업 언어로 서식을 지정한 전자책입니다.",
+    "txtz": "메타데이터를 함께 ZIP으로 묶은 UTF-8 일반 텍스트 전자책 컨테이너입니다.",
+    "oeb": "구형 전자책 형식인 Open eBook Publication Structure입니다.",
+    "et": "Kingsoft WPS Office 통합 문서 스프레드시트 형식입니다."
+  },
+  "unitCategories": {
+    "weight": "무게·질량",
+    "length": "길이",
+    "temperature": "온도",
+    "area": "넓이",
+    "volume": "부피",
+    "speed": "속도",
+    "digital": "디지털 저장 용량",
+    "time": "시간",
+    "pressure": "압력",
+    "energy": "에너지"
+  },
+  "unitNames": {
+    "weight-kg": "킬로그램",
+    "weight-g": "그램",
+    "weight-mg": "밀리그램",
+    "weight-mcg": "마이크로그램",
+    "weight-lbs": "파운드",
+    "weight-oz": "온스",
+    "weight-stone": "스톤",
+    "weight-ton": "미터톤",
+    "weight-carat": "캐럿",
+    "length-meters": "미터",
+    "length-km": "킬로미터",
+    "length-cm": "센티미터",
+    "length-mm": "밀리미터",
+    "length-um": "마이크로미터",
+    "length-feet": "피트",
+    "length-inches": "인치",
+    "length-yards": "야드",
+    "length-miles": "마일",
+    "length-nautical": "해리",
+    "temperature-celsius": "섭씨",
+    "temperature-fahrenheit": "화씨",
+    "temperature-kelvin": "켈빈",
+    "temperature-rankine": "랭킨",
+    "area-sqm": "제곱미터",
+    "area-sqkm": "제곱킬로미터",
+    "area-sqft": "제곱피트",
+    "area-sqyd": "제곱야드",
+    "area-acres": "에이커",
+    "area-hectares": "헥타르",
+    "area-sqmi": "제곱마일",
+    "volume-liters": "리터",
+    "volume-ml": "밀리리터",
+    "volume-cubm": "세제곱미터",
+    "volume-gallons": "미국 갤런",
+    "volume-impgal": "영국 갤런",
+    "volume-quarts": "미국 쿼트",
+    "volume-pints": "미국 파인트",
+    "volume-floz": "미국 액량 온스",
+    "volume-cups": "미국 컵",
+    "volume-tbsp": "테이블스푼",
+    "volume-tsp": "티스푼",
+    "speed-kmh": "시속 킬로미터",
+    "speed-mph": "시속 마일",
+    "speed-ms": "초속 미터",
+    "speed-knots": "노트",
+    "speed-fts": "초속 피트",
+    "speed-mach": "마하(음속)",
+    "digital-bytes": "바이트",
+    "digital-kb": "킬로바이트(10진)",
+    "digital-mb": "메가바이트(10진)",
+    "digital-gb": "기가바이트(10진)",
+    "digital-tb": "테라바이트(10진)",
+    "digital-pb": "페타바이트(10진)",
+    "digital-kib": "키비바이트(2진)",
+    "digital-mib": "메비바이트(2진)",
+    "digital-gib": "기비바이트(2진)",
+    "digital-tib": "테비바이트(2진)",
+    "time-seconds": "초",
+    "time-minutes": "분",
+    "time-hours": "시간",
+    "time-days": "일",
+    "time-weeks": "주",
+    "time-months": "개월(평균 30.44일)",
+    "time-years": "년(365.25일)",
+    "pressure-pascal": "파스칼",
+    "pressure-kpa": "킬로파스칼",
+    "pressure-bar": "바",
+    "pressure-psi": "제곱인치당 파운드",
+    "pressure-atm": "표준 기압",
+    "pressure-torr": "토르(mmHg)",
+    "energy-joules": "줄",
+    "energy-kj": "킬로줄",
+    "energy-cal": "칼로리",
+    "energy-kcal": "킬로칼로리",
+    "energy-wh": "와트시",
+    "energy-kwh": "킬로와트시",
+    "energy-btu": "영국 열량 단위"
   }
 }

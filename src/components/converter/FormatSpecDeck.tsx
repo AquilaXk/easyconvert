@@ -82,7 +82,7 @@ export function ConverterBreadcrumb({
                     href={`/${srcKey}-converter`}
                     className="py-1 rounded-md hover:text-accent-ink transition-colors uppercase"
                   >
-                    {t('converter', { format: srcKey.toUpperCase() })}
+                    {t('converter', { format: srcKey })}
                   </Link>
                 </li>
                 <ChevronRight
@@ -93,7 +93,7 @@ export function ConverterBreadcrumb({
                   className="font-semibold text-ink uppercase truncate"
                   aria-current="page"
                 >
-                  {t('pair', { src: srcKey.toUpperCase(), tgt: tgtKey.toUpperCase() })}
+                  {t('pair', { src: srcKey, tgt: tgtKey })}
                 </li>
               </>
             ) : (
@@ -101,7 +101,7 @@ export function ConverterBreadcrumb({
                 className="font-semibold text-ink uppercase truncate"
                 aria-current="page"
               >
-                {t('converter', { format: srcKey.toUpperCase() })}
+                {t('converter', { format: srcKey })}
               </li>
             )}
           </>

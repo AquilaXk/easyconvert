@@ -19,6 +19,11 @@ declare global {
   }
 }
 
+/** A ZIP bundle that could not be built, with the reason the archiver gave (empty when it gave none). */
+export interface ZipFailure {
+  detail: string;
+}
+
 interface UseClientQueueOptions {
   defaultTarget?: string;
   bundlePrefix?: string;
@@ -102,9 +107,7 @@ function patchIdleItem(item: ConversionQueueItem, patch: IdleItemPatch): Convers
     ...patch,
     progress: 0,
   };
-  return optionError !== null
-    ? { ...base, status: 'error', error: optionError }
-    : { ...base, status: 'ready' };
+  return optionError !== null ? { ...base, status: 'error' } : { ...base, status: 'ready' };
 }
 
 function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>): string {
@@ -238,7 +241,7 @@ export interface QueueMutationContext {
   syncInFlight: () => void;
   setIsBatchRunning: React.Dispatch<React.SetStateAction<boolean>>;
   setInFlightCount: React.Dispatch<React.SetStateAction<number>>;
-  setZipError: React.Dispatch<React.SetStateAction<string | null>>;
+  setZipError: React.Dispatch<React.SetStateAction<ZipFailure | null>>;
 }
 
 export function createQueueMutators(ctx: QueueMutationContext) {
@@ -358,7 +361,7 @@ function createDownloadAllZipHandler(ctx: QueueMutationContext) {
       ctx.timersRef.current.add(timer);
     } catch (err: unknown) {
       if (ctx.mountedRef.current) {
-        ctx.setZipError(`Could not build ZIP archive. ${err instanceof Error ? err.message : 'Unknown error'}`);
+        ctx.setZipError({ detail: err instanceof Error ? err.message : '' });
       }
     }
   };
@@ -387,7 +390,7 @@ function failInvalidItemOptions(current: ConversionQueueItem, ctx: QueueMutation
   ctx.updateQueue((prev) =>
     prev.map((i) =>
       i.id === current.id
-        ? { ...i, status: 'error', error: optionError, progress: 0, resultUrl: undefined }
+        ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined }
         : i
     )
   );
@@ -490,7 +493,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [inFlightCount, setInFlightCount] = useState(0);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
-  const [zipError, setZipError] = useState<string | null>(null);
+  const [zipError, setZipError] = useState<ZipFailure | null>(null);
   const queueRef = useRef<ConversionQueueItem[]>(queue);
   const generationRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());

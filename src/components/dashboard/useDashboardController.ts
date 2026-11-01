@@ -1,35 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { useRouter } from '@/i18n/navigation';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
 import type { ApiKeysPanelActions, ApiKeysPanelState } from './ApiKeysPanel';
 import {
-  extractApiError,
   resolveExpiryTimestamp,
   type DashboardTab,
   type KeyExpiryOption,
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
 import { applySessionChange } from '@/lib/viewer-plan';
+import { useServerErrorMessage } from '../i18n/problems';
 
+/** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
 export function buildKeyCreationRequest(
   newKeyName: string,
   selectedScopes: ApiKeyScope[],
   keyExpiry: KeyExpiryOption,
-  nowMs: number
+  nowMs: number,
+  defaultName: string
 ):
   | { ok: true; body: { name: string; scopes: ApiKeyScope[]; expiresAt?: number } }
-  | { ok: false; error: string } {
-  if (selectedScopes.length === 0) {
-    return {
-      ok: false,
-      error: 'Select at least one permission scope before creating an API key.',
-    };
-  }
+  | { ok: false; error: 'noScopes' } {
+  if (selectedScopes.length === 0) return { ok: false, error: 'noScopes' };
   return {
     ok: true,
     body: {
-      name: newKeyName || 'Production API Key',
+      name: newKeyName || defaultName,
       scopes: selectedScopes,
       expiresAt: resolveExpiryTimestamp(keyExpiry, nowMs),
     },
@@ -75,6 +73,9 @@ function useApiKeysController(
   enabled: boolean,
   onReportError: (message: string | null) => void
 ) {
+  const t = useTranslations('dashboard.errors');
+  const tKeys = useTranslations('dashboard.keys');
+  const extractApiError = useServerErrorMessage();
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [quota, setQuota] = useState<QuotaUsage | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -101,16 +102,16 @@ function useApiKeysController(
         if (keysData.success) setApiKeys(keysData.keys);
       } else {
         const errBody: unknown = await keysRes.json().catch(() => null);
-        onReportError(extractApiError(errBody, `Failed to load API keys (HTTP ${keysRes.status}).`));
+        onReportError(extractApiError(errBody, t('loadKeys', { status: keysRes.status })));
       }
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
         if (quotaData.success) setQuota(quotaData.usage);
       }
     } catch {
-      onReportError('Network error while loading API keys.');
+      onReportError(t('loadKeysNetwork'));
     }
-  }, [onReportError]);
+  }, [onReportError, extractApiError, t]);
 
   useEffect(() => {
     if (enabled) {
@@ -120,9 +121,9 @@ function useApiKeysController(
 
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();
-    const request = buildKeyCreationRequest(newKeyName, selectedScopes, keyExpiry, Date.now());
+    const request = buildKeyCreationRequest(newKeyName, selectedScopes, keyExpiry, Date.now(), tKeys('defaultName'));
     if (!request.ok) {
-      onReportError(request.error);
+      onReportError(t(request.error));
       return;
     }
     setIsGeneratingKey(true);
@@ -149,9 +150,9 @@ function useApiKeysController(
         await fetchKeysAndQuota();
         return;
       }
-      onReportError(extractApiError(data, `Failed to create API key (HTTP ${res.status}).`));
+      onReportError(extractApiError(data, t('createKey', { status: res.status })));
     } catch {
-      onReportError('Network error while creating API key.');
+      onReportError(t('createKeyNetwork'));
     } finally {
       setIsGeneratingKey(false);
     }
@@ -163,13 +164,13 @@ function useApiKeysController(
       const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(extractApiError(data, `Failed to revoke API key (HTTP ${res.status}).`));
+        onReportError(extractApiError(data, t('revokeKey', { status: res.status })));
         return;
       }
       setRevokingKeyId(null);
       await fetchKeysAndQuota();
     } catch {
-      onReportError('Network error while revoking API key.');
+      onReportError(t('revokeKeyNetwork'));
     }
   };
 
@@ -202,6 +203,7 @@ function useApiKeysController(
 }
 
 export function useDashboardController() {
+  const t = useTranslations('dashboard.errors');
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardTab>('api');
@@ -238,7 +240,7 @@ export function useDashboardController() {
       // A sign-out the server refused leaves the session, so the header keeps the account until the page is read again.
       if (res.ok) applySessionChange(null);
     } catch {
-      setActionError('Network error while signing out.');
+      setActionError(t('signOutNetwork'));
     }
     router.push('/auth');
     router.refresh();

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { Check, Code2, Copy } from 'lucide-react';
 import { useCopyFeedback } from '@/hooks/useCopyFeedback';
 
@@ -19,6 +20,7 @@ interface IntegrationGuideProps {
 }
 
 export function IntegrationGuide({ sampleKeyDisplay }: Readonly<IntegrationGuideProps>) {
+  const t = useTranslations('dashboard.guide');
   const [codeTab, setCodeTab] = useState<SnippetLanguage>('curl');
   const { copiedKey, copyText } = useCopyFeedback(2000);
   const copiedSnippet = copiedKey === 'snippet';
@@ -104,17 +106,17 @@ print(response.json())`,
           </div>
           <div>
             <h2 className="text-lg text-ink">
-              Programmatic Integration Guide
+              {t('heading')}
             </h2>
             <p className="text-xs text-ink-2 mt-0.5">
-              Submit multipart conversion requests with your scoped API key.
+              {t('intro')}
             </p>
           </div>
         </div>
 
         <div
           role="tablist"
-          aria-label="SDK language"
+          aria-label={t('languageLabel')}
           className="flex rounded-md bg-sunken p-1 border border-rule self-start sm:self-auto"
         >
           {SNIPPET_TABS.map((tab) => {
@@ -158,23 +160,23 @@ print(response.json())`,
         <button
           type="button"
           onClick={handleCopySnippet}
-          aria-label={`Copy ${TAB_LABELS[codeTab]} integration snippet`}
+          aria-label={t('copyLabel', { language: TAB_LABELS[codeTab] })}
           className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-sm bg-surface hover:bg-canvas border border-rule text-ink-2 hover:text-ink text-xs font-semibold transition-colors"
         >
           {copiedSnippet ? (
             <>
               <Check className="w-3.5 h-3.5 text-success" aria-hidden="true" />
-              <span>Copied</span>
+              <span>{t('copied')}</span>
             </>
           ) : (
             <>
               <Copy className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Copy</span>
+              <span>{t('copy')}</span>
             </>
           )}
         </button>
         <output aria-live="polite" className="sr-only">
-          {copiedSnippet ? `Copied ${TAB_LABELS[codeTab]} integration snippet` : ''}
+          {copiedSnippet ? t('copiedAnnouncement', { language: TAB_LABELS[codeTab] }) : ''}
         </output>
       </div>
     </div>

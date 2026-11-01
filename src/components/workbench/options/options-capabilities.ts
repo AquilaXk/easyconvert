@@ -272,20 +272,19 @@ export function isValidPasswordForTarget(password: string, targetFormat: string)
   );
 }
 
+/** Why a password cannot be used for a pair; the options copy words each one (`options.password.errors.<problem>`). */
+export type PasswordProblem = 'zipCharset' | 'forbiddenChars' | 'tooLong';
+
 export function getPasswordValidationError(
   sourceFormat: string,
   targetFormat: string,
   password: string | undefined
-): string | null {
+): PasswordProblem | null {
   if (!password || resolvePasswordMode(sourceFormat, targetFormat) === null) return null;
   if (isValidPasswordForTarget(password, targetFormat)) return null;
-  if (targetFormat.toLowerCase() === 'zip') {
-    return 'ZIP passwords support 1 to 99 printable ASCII characters only.';
-  }
-  if (hasForbiddenPasswordChars(password)) {
-    return 'Passwords cannot contain line breaks, null bytes, or invalid Unicode.';
-  }
-  return 'Passwords must be 256 characters or fewer.';
+  if (targetFormat.toLowerCase() === 'zip') return 'zipCharset';
+  if (hasForbiddenPasswordChars(password)) return 'forbiddenChars';
+  return 'tooLong';
 }
 
 function applySanitizedSecurityAndArchiveOptions(

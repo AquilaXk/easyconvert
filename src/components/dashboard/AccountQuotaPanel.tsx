@@ -1,6 +1,8 @@
 import React from 'react';
-import Link from 'next/link';
+import { useFormatter, useTranslations } from 'next-intl';
 import { Check, Clock, Code2, Key, Shield } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
+import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, QuotaUsage } from '@/lib/api-keys/types';
 
@@ -11,6 +13,9 @@ interface AccountQuotaPanelProps {
 }
 
 export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuotaPanelProps>) {
+  const t = useTranslations('dashboard.usage');
+  const format = useFormatter();
+  const tierLabel = useTierLabel();
   const activeKeyCount = apiKeys.filter((key) => key.status === 'active').length;
   const dailyLimit = quota?.dailyLimit ?? 25;
   const usedToday = quota?.usedToday ?? 0;
@@ -27,47 +32,47 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-rule pb-5">
           <div>
             <h2 className="text-xl sm:text-2xl text-ink">
-              Usage &amp; Rate Limits
+              {t('heading')}
             </h2>
             <p className="text-sm text-ink-2 mt-1">
-              Live account tier telemetry, programmatic API rate allocations, and retention rules.
+              {t('intro')}
             </p>
           </div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs font-bold uppercase tracking-wider bg-accent-soft text-accent-ink border border-accent-edge self-start sm:self-auto">
             <Shield className="w-3.5 h-3.5" />
-            Active Tier: {user.tier.toUpperCase()}
+            {t('tier', { tier: tierLabel(user.tier) })}
           </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="p-4 rounded-md border border-rule">
             <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-              Daily API Quota
+              {t('quota')}
             </div>
             <div className="mt-1.5 text-2xl font-bold text-ink">
-              {usedToday} / {dailyLimit}
+              {format.number(usedToday)} / {format.number(dailyLimit)}
             </div>
             <p className="mt-1 text-xs text-ink-2">
-              {remaining} programmatic requests remaining today
+              {t('remaining', { count: remaining })}
             </p>
           </div>
 
           <div className="p-4 rounded-md border border-rule">
             <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-              Active API Keys
+              {t('activeKeys')}
             </div>
             <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
               <Key className="w-5 h-5 text-accent-ink" />
               <span>{activeKeyCount}</span>
             </div>
             <p className="mt-1 text-xs text-ink-2">
-              Scoped RBAC credentials enabled on this account
+              {t('activeKeysNote')}
             </p>
           </div>
 
           <div className="p-4 rounded-md border border-rule">
             <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
-              Quota Window Reset
+              {t('reset')}
             </div>
             <div className="mt-1.5 flex items-center gap-2 text-2xl font-bold text-ink">
               <Clock className="w-5 h-5 text-accent-ink" />
@@ -75,8 +80,10 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
             </div>
             <p className="mt-1 text-xs text-ink-2">
               {quota?.resetAt
-                ? `Next reset at ${new Date(quota.resetAt).toUTCString()}`
-                : 'Counters reset daily at midnight UTC'}
+                ? t('nextReset', {
+                    date: format.dateTime(new Date(quota.resetAt), { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }),
+                  })
+                : t('resetDaily')}
             </p>
           </div>
         </div>
@@ -84,32 +91,32 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
           <div className="p-5 rounded-md border border-rule space-y-2.5">
             <h3 className="text-sm font-bold text-ink">
-              Interactive Web Workbench
+              {t('workbench.heading')}
             </h3>
             <ul className="space-y-2 text-xs sm:text-sm text-ink-2">
               <li className="flex items-start gap-2">
                 <Check className="w-4 h-4 text-success shrink-0 mt-0.5" />
-                <span>Free interactive browser conversions without daily paywalls or watermarks</span>
+                <span>{t('workbench.free')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="w-4 h-4 text-success shrink-0 mt-0.5" />
-                <span>Local WebAssembly execution for supported client-side formats</span>
+                <span>{t('workbench.local')}</span>
               </li>
             </ul>
           </div>
 
           <div className="p-5 rounded-md border border-rule space-y-2.5">
             <h3 className="text-sm font-bold text-ink">
-              Programmatic REST API Policy
+              {t('api.heading')}
             </h3>
             <ul className="space-y-2 text-xs sm:text-sm text-ink-2">
               <li className="flex items-start gap-2">
                 <Check className="w-4 h-4 text-success shrink-0 mt-0.5" />
-                <span>Per-key RBAC scopes (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)</span>
+                <span>{t.rich('api.scopes', { code: (chunks) => <code>{chunks}</code> })}</span>
               </li>
               <li className="flex items-start gap-2">
                 <Check className="w-4 h-4 text-success shrink-0 mt-0.5" />
-                <span>Isolated worker execution with automatic short-TTL artifact deletion</span>
+                <span>{t('api.isolation')}</span>
               </li>
             </ul>
           </div>
@@ -121,7 +128,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
             className="lift min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-sm font-semibold"
           >
             <Code2 className="w-4 h-4" />
-            <span>View OpenAPI Reference</span>
+            <span>{t('reference')}</span>
           </Link>
         </div>
       </div>

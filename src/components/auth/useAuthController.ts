@@ -1,13 +1,16 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { useRouter } from '@/i18n/navigation';
+import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
+import { useServerErrorMessage } from '../i18n/problems';
 import {
-  resolveOAuthErrorMessage,
+  resolveOAuthErrorKey,
   validateRegistrationInput,
   type AuthTab,
 } from './AuthForms';
-import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
 
 export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 
@@ -15,6 +18,12 @@ export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 type AuthAnswer = { success: true; user: SessionUser } | { success: false; error?: string };
 
 export function useAuthController() {
+  const t = useTranslations('auth');
+  const serverErrorMessage = useServerErrorMessage();
+  const oauthErrorMessage = (urlError: string | null): string | null => {
+    const key = resolveOAuthErrorKey(urlError);
+    return key ? t(`oauthErrors.${key}`) : null;
+  };
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -30,9 +39,7 @@ export function useAuthController() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(() =>
-    resolveOAuthErrorMessage(urlError)
-  );
+  const [errorMessage, setErrorMessage] = useState<string | null>(() => oauthErrorMessage(urlError));
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const tabRefs = useRef<Record<AuthTab, HTMLButtonElement | null>>({
     login: null,
@@ -44,8 +51,9 @@ export function useAuthController() {
   }, [tabParam]);
 
   useEffect(() => {
-    setErrorMessage(resolveOAuthErrorMessage(urlError));
-  }, [urlError]);
+    const key = resolveOAuthErrorKey(urlError);
+    setErrorMessage(key ? t(`oauthErrors.${key}`) : null);
+  }, [urlError, t]);
 
   const handleTabSwitch = (tab: AuthTab) => {
     setActiveTab(tab);
@@ -84,10 +92,10 @@ export function useAuthController() {
         window.location.href = data.url;
         return;
       }
-      setErrorMessage('Failed to initiate Google authentication.');
+      setErrorMessage(t('messages.googleFailed'));
       setIsGoogleLoading(false);
     } catch {
-      setErrorMessage('Network error initiating Google authentication.');
+      setErrorMessage(t('messages.googleNetwork'));
       setIsGoogleLoading(false);
     }
   };
@@ -98,14 +106,14 @@ export function useAuthController() {
     setSuccessMessage(null);
 
     if (!email || !password) {
-      setErrorMessage('Fill in all required fields.');
+      setErrorMessage(t('messages.missingFields'));
       return;
     }
 
     if (activeTab === 'register') {
-      const regError = validateRegistrationInput(password, confirmPassword);
-      if (regError) {
-        setErrorMessage(regError);
+      const regProblem = validateRegistrationInput(password, confirmPassword);
+      if (regProblem) {
+        setErrorMessage(t(`messages.${regProblem}`));
         return;
       }
     }
@@ -125,24 +133,20 @@ export function useAuthController() {
       const data = (await res.json()) as AuthAnswer;
 
       if (!res.ok || !data.success) {
-        setErrorMessage(
-          (!data.success && data.error) || 'Authentication failed. Check your credentials and try again.'
-        );
+        setErrorMessage(serverErrorMessage(data, t('messages.failed')));
         setIsLoading(false);
         return;
       }
 
       // The header and the queue keep their plan across the client-side navigation; the answer names the new session.
       applySessionChange(data.user);
-      setSuccessMessage(
-        activeTab === 'register' ? 'Account created. Redirecting...' : 'Signed in. Redirecting...'
-      );
+      setSuccessMessage(activeTab === 'register' ? t('messages.created') : t('messages.signedIn'));
       setTimeout(() => {
         router.push('/dashboard');
         router.refresh();
       }, 500);
     } catch {
-      setErrorMessage('Connection error while signing in. Try again.');
+      setErrorMessage(t('messages.connection'));
       setIsLoading(false);
     }
   };

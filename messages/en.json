@@ -1,4 +1,110 @@
 {
+  "ads": {
+    "label": "Advertisement",
+    "leaderboard": "728 × 90 Leaderboard",
+    "responsive": "728 × 90 / 970 × 90 Responsive Banner",
+    "inFeed": "728 × 90 In-Feed Placement",
+    "display": "728 × 90 Display Placement",
+    "rectangle": "300 × 250 Medium Rectangle"
+  },
+  "apiDocs": {
+    "masthead": {
+      "fallbackTitle": "EasyConvert Developer API",
+      "fallbackDescription": "REST API for asynchronous conversion queues, multipart uploads, and webhook delivery. Operations marked <code>x-internal</code> serve the web application and are excluded from external client contracts.",
+      "version": "OpenAPI {openapi} | v{version}",
+      "auth": "Auth: Bearer API Key",
+      "base": "Base:",
+      "download": "Download OpenAPI JSON",
+      "dashboard": "API Key Dashboard",
+      "previewKey": "cURL Preview Key",
+      "previewKeyPlaceholder": "Paste an ec_live_... key to populate cURL snippets locally"
+    },
+    "toolbar": {
+      "heading": "Endpoints Reference",
+      "intro": "Inspect request parameters, RBAC scopes, and executable cURL commands.",
+      "searchLabel": "Search API endpoints",
+      "searchPlaceholder": "Search endpoints (convert, jobs, uploads)...",
+      "methodLegend": "Filter endpoints by HTTP method",
+      "allMethods": "all"
+    },
+    "page": {
+      "loading": "Loading OpenAPI specification...",
+      "loadFailedHeading": "Failed to Load OpenAPI Specification",
+      "loadFailedStatus": "Failed to load OpenAPI spec ({status})",
+      "loadFailedUnknown": "Unknown error loading OpenAPI specification",
+      "noMatches": "No matching API endpoints found."
+    },
+    "endpoint": {
+      "security": "Security & Scopes",
+      "curl": "Executable cURL",
+      "copyLabel": "Copy cURL command for {method} {path}",
+      "copied": "Copied",
+      "copy": "Copy cURL",
+      "copiedAnnouncement": "Copied cURL command for {method} {path}"
+    },
+    "schema": {
+      "parameters": "Parameters",
+      "columns": {
+        "name": "Name",
+        "in": "In",
+        "type": "Type",
+        "required": "Required",
+        "description": "Description"
+      },
+      "yes": "Yes",
+      "no": "No",
+      "optionalParameter": "Optional parameter",
+      "requestBody": "Request Body",
+      "binaryPayload": "Binary stream or structured schema payload.",
+      "responses": "Responses",
+      "responsePayload": "Response payload"
+    }
+  },
+  "auth": {
+    "loginHeading": "Sign in to EasyConvert",
+    "registerHeading": "Create an EasyConvert account",
+    "intro": "Manage developer API keys, webhooks, and conversion history.",
+    "modeLabel": "Authentication mode",
+    "tabs": {
+      "login": "Sign In",
+      "register": "Sign Up"
+    },
+    "emailDivider": "or continue with email",
+    "loading": "Loading authentication form",
+    "form": {
+      "google": "Continue with Google",
+      "name": "Full Name",
+      "namePlaceholder": "Alex Morgan",
+      "email": "Email Address",
+      "emailPlaceholder": "alex@example.com",
+      "password": "Password",
+      "hidePassword": "Hide password",
+      "showPassword": "Show password",
+      "confirmPassword": "Confirm Password",
+      "signIn": "Sign In",
+      "createAccount": "Create Account"
+    },
+    "oauthErrors": {
+      "oauth_code_missing": "Authentication request cancelled or authorization code missing.",
+      "oauth_denied": "Google sign-in was cancelled before completion.",
+      "invalid_oauth_callback": "Invalid OAuth callback parameters. Please try signing in again.",
+      "invalid_oauth_state": "Invalid authentication state. Try signing in again.",
+      "oauth_exchange_failed": "Could not verify Google credentials. Please try signing in again.",
+      "account_linking_required": "An account with this email already exists. Sign in with your password first to link Google.",
+      "generic": "Authentication failed. Please try signing in again."
+    },
+    "messages": {
+      "googleFailed": "Failed to initiate Google authentication.",
+      "googleNetwork": "Network error initiating Google authentication.",
+      "missingFields": "Fill in all required fields.",
+      "passwordTooShort": "Password must be at least 8 characters long.",
+      "passwordMismatch": "Passwords do not match.",
+      "failed": "Authentication failed. Check your credentials and try again.",
+      "created": "Account created. Redirecting...",
+      "signedIn": "Signed in. Redirecting...",
+      "connection": "Connection error while signing in. Try again."
+    }
+  },
   "converterPage": {
     "breadcrumb": {
       "label": "Breadcrumb",
@@ -109,6 +215,213 @@
       }
     }
   },
+  "dashboard": {
+    "loading": "Loading account session...",
+    "dismissError": "Dismiss dashboard error",
+    "header": {
+      "heading": "Developer Dashboard",
+      "tier": "{tier} TIER",
+      "provider": "Auth provider <strong>{provider}</strong>",
+      "memberSince": "Member since {date}",
+      "signOut": "Sign Out",
+      "sectionsLabel": "Dashboard sections",
+      "tabs": {
+        "api": "Developer API Keys",
+        "files": "My Converted Files",
+        "dlq": "Webhook DLQ",
+        "usage": "Usage & Rate Limits"
+      }
+    },
+    "files": {
+      "heading": "Recent Conversion Files",
+      "intro": "Temporary output files are deleted after download or when their retention timer expires.",
+      "refresh": "Refresh",
+      "emptyHeading": "No active conversion files",
+      "emptyBody": "Files converted via your account or API keys appear here with a live automatic expiration countdown.",
+      "openWorkbench": "Open Converter Workbench",
+      "columns": {
+        "name": "File Name",
+        "format": "Format",
+        "size": "Size",
+        "ttl": "Auto-Purge TTL",
+        "actions": "Actions"
+      },
+      "pair": "{src} to {tgt}",
+      "countdown": "{minutes}m {seconds}s",
+      "downloadLabel": "Download {name}",
+      "deleteLabel": "Delete {name}"
+    },
+    "quota": {
+      "used": "Daily API Requests Used",
+      "allowed": "/ {limit, number} allowed",
+      "remaining": "Remaining Quota",
+      "callsLeft": "calls left",
+      "remainingNote": "Authenticated REST requests with automatic TTL cleanup.",
+      "reset": "Daily Reset",
+      "resetNote": "Daily API counters reset automatically at midnight UTC."
+    },
+    "keys": {
+      "heading": "API Secret Keys",
+      "intro": "Create and revoke scoped keys for backend scripts and webhook pipelines.",
+      "generate": "Generate New Key",
+      "defaultName": "Production API Key",
+      "createHeading": "Create New API Key",
+      "name": "Key Name",
+      "namePlaceholder": "Production Backend Worker",
+      "scopesLegend": "Granular Scopes (RBAC)",
+      "scopes": {
+        "convertWrite": "{scope} (Upload & Convert)",
+        "convertRead": "{scope} (Job Status & Polling)",
+        "storageDownload": "{scope} (Output Artifacts)"
+      },
+      "scopesRequired": "Select at least one scope to generate a key.",
+      "expiry": "Key Expiration",
+      "expiryChoices": {
+        "30d": "30 Days",
+        "60d": "60 Days",
+        "90d": "90 Days",
+        "1y": "1 Year",
+        "never": "Never (No Expiration)"
+      },
+      "expiryNote": "A <code>key.expiring_soon</code> webhook fires 7 days before expiration.",
+      "create": "Create API Key",
+      "cancel": "Cancel",
+      "generated": {
+        "label": "Generated API key",
+        "copiedAnnouncement": "API secret key copied to clipboard.",
+        "generatedAnnouncement": "API key generated.",
+        "heading": "API Key Generated",
+        "body": "Copy this secret key now. Only the key hash is stored and the secret is not shown again.",
+        "inputLabel": "Generated API secret key",
+        "copyLabel": "Copy generated API key",
+        "copied": "Copied",
+        "copy": "Copy Key",
+        "dismiss": "Dismiss"
+      },
+      "table": {
+        "never": "Never",
+        "expired": "Expired",
+        "expiringIn": "Expiring in {days}d",
+        "emptyHeading": "No API keys created yet",
+        "emptyBody": "Generate an API key to authenticate programmatic conversion requests.",
+        "columns": {
+          "name": "Name & Scopes",
+          "prefix": "Key Prefix",
+          "created": "Created",
+          "expires": "Expires",
+          "lastUsed": "Last Used",
+          "status": "Status",
+          "actions": "Actions"
+        },
+        "allScopes": "all scopes (*)",
+        "status": {
+          "active": "ACTIVE",
+          "revoked": "REVOKED"
+        },
+        "revoked": "Revoked",
+        "confirmLabel": "Confirm revoking API key {name}",
+        "confirm": "Confirm",
+        "cancelLabel": "Cancel revoking API key {name}",
+        "cancel": "Cancel",
+        "revokeLabel": "Revoke API key {name}",
+        "revoke": "Revoke"
+      }
+    },
+    "dlq": {
+      "heading": "Webhook Dead Letter Queue (DLQ)",
+      "failedCount": "{count} Failed",
+      "intro": "Failed webhook deliveries retained after exhausted backoff retries. Inspect payloads or trigger a replay.",
+      "refresh": "Refresh",
+      "clear": "Clear DLQ",
+      "dismissFeedback": "Dismiss webhook notification",
+      "emptyHeading": "Dead Letter Queue is Empty",
+      "emptyBody": "All webhook deliveries succeeded or no failed dispatches are pending.",
+      "columns": {
+        "event": "Event",
+        "target": "Target URL",
+        "status": "Status",
+        "failedAt": "Failed At",
+        "retries": "Retries",
+        "actions": "Actions"
+      },
+      "replayed": "REPLAYED",
+      "attempts": "{count} attempts",
+      "inspectLabel": "Inspect payload for {event}",
+      "replayLabel": "Replay webhook {id}",
+      "replay": "Replay",
+      "deleteLabel": "Delete failed webhook {id}",
+      "dialog": {
+        "heading": "Inspect Webhook Payload",
+        "close": "Close payload viewer",
+        "target": "Target URL",
+        "error": "Delivery Error",
+        "payload": "Payload JSON",
+        "copyLabel": "Copy webhook payload JSON",
+        "copied": "Copied",
+        "copy": "Copy Payload",
+        "copiedAnnouncement": "Webhook payload JSON copied to clipboard",
+        "replay": "Replay Now",
+        "closeButton": "Close"
+      }
+    },
+    "usage": {
+      "heading": "Usage & Rate Limits",
+      "intro": "Live account tier telemetry, programmatic API rate allocations, and retention rules.",
+      "tier": "Active Tier: {tier}",
+      "quota": "Daily API Quota",
+      "remaining": "{count, number} programmatic requests remaining today",
+      "activeKeys": "Active API Keys",
+      "activeKeysNote": "Scoped RBAC credentials enabled on this account",
+      "reset": "Quota Window Reset",
+      "nextReset": "Next reset at {date}",
+      "resetDaily": "Counters reset daily at midnight UTC",
+      "workbench": {
+        "heading": "Interactive Web Workbench",
+        "free": "Free interactive browser conversions without daily paywalls or watermarks",
+        "local": "Local WebAssembly execution for supported client-side formats"
+      },
+      "api": {
+        "heading": "Programmatic REST API Policy",
+        "scopes": "Per-key RBAC scopes (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
+        "isolation": "Isolated worker execution with automatic short-TTL artifact deletion"
+      },
+      "reference": "View OpenAPI Reference"
+    },
+    "guide": {
+      "heading": "Programmatic Integration Guide",
+      "intro": "Submit multipart conversion requests with your scoped API key.",
+      "languageLabel": "SDK language",
+      "copyLabel": "Copy {language} integration snippet",
+      "copied": "Copied",
+      "copy": "Copy",
+      "copiedAnnouncement": "Copied {language} integration snippet"
+    },
+    "errors": {
+      "loadFiles": "Failed to load converted files (HTTP {status}).",
+      "loadFilesNetwork": "Network error while loading converted files.",
+      "loadDlq": "Failed to load webhook DLQ (HTTP {status}).",
+      "loadDlqNetwork": "Network error while loading webhook DLQ.",
+      "deleteFile": "Failed to delete file (HTTP {status}).",
+      "deleteFileNetwork": "Network error while deleting file.",
+      "replaySucceeded": "Webhook replay succeeded (HTTP {status}).",
+      "replayFailed": "Webhook replay failed ({reason}).",
+      "networkFailure": "Network failure",
+      "replayRequestFailed": "Replay request failed ({reason}).",
+      "deleteDlq": "Failed to delete webhook entry (HTTP {status}).",
+      "deleteDlqNetwork": "Network error while deleting webhook entry.",
+      "clearDlq": "Failed to clear dead letter queue (HTTP {status}).",
+      "dlqCleared": "Dead letter queue cleared.",
+      "clearDlqNetwork": "Network error while clearing dead letter queue.",
+      "loadKeys": "Failed to load API keys (HTTP {status}).",
+      "loadKeysNetwork": "Network error while loading API keys.",
+      "noScopes": "Select at least one permission scope before creating an API key.",
+      "createKey": "Failed to create API key (HTTP {status}).",
+      "createKeyNetwork": "Network error while creating API key.",
+      "revokeKey": "Failed to revoke API key (HTTP {status}).",
+      "revokeKeyNetwork": "Network error while revoking API key.",
+      "signOutNetwork": "Network error while signing out."
+    }
+  },
   "faq": {
     "title": "Frequently Asked Questions",
     "subtitle": "Answers about format support, execution boundaries, and batch limits.",
@@ -134,6 +447,51 @@
         "q": "Do I need to install desktop software or browser plugins?",
         "a": "No installation is needed. EasyConvert runs in modern web browsers across macOS, Windows, Linux, iOS, and Android."
       }
+    }
+  },
+  "features": {
+    "directoryHeading": "Supported Format Directory",
+    "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
+    "extensionsHeading": "{category} Extensions ({count})",
+    "extensionsHint": "Select an extension to open its converter",
+    "pairsHeading": "Common {category} Pairs",
+    "pairs": {
+      "png-webp": "Web image compression with alpha support",
+      "heic-jpg": "Camera photo compatibility across devices",
+      "jpg-pdf": "Printable single-page document export",
+      "pdf-docx": "Editable Word document output",
+      "docx-pdf": "Fixed-layout PDF distribution",
+      "hwp-pdf": "Hangul office document rendering",
+      "rar-zip": "Standard ZIP archive repackaging",
+      "7z-zip": "Cross-platform archive compatibility",
+      "tar-zip": "Compressed bundle conversion",
+      "mp4-mp3": "Audio track extraction from video",
+      "mkv-mp4": "Browser and mobile playback container",
+      "mov-mp4": "Standard H.264 MP4 container export",
+      "wav-mp3": "Compact MP3 audio encoding",
+      "flac-mp3": "Lossless source to portable MP3",
+      "m4a-wav": "Uncompressed PCM waveform output",
+      "epub-pdf": "Paginated PDF layout from e-book",
+      "mobi-epub": "Open EPUB e-reader format",
+      "fb2-txt": "Plain UTF-8 text extraction",
+      "xlsx-csv": "Delimited plain-text table export",
+      "xlsx-pdf": "Formatted spreadsheet printout",
+      "ods-xlsx": "Excel workbook compatibility",
+      "pptx-pdf": "Portable slide deck handout",
+      "pptx-html": "Browser-viewable slide markup",
+      "odp-pptx": "PowerPoint slide deck export",
+      "csv-json": "Structured JSON record array",
+      "yaml-json": "Configuration file normalization",
+      "json-csv": "Tabular row and column export",
+      "svg-png": "Crisp rasterized PNG graphic",
+      "ai-pdf": "Vector artwork preservation in PDF",
+      "eps-svg": "Web-ready scalable SVG vector",
+      "ttf-woff2": "Compressed WOFF2 web font",
+      "otf-ttf": "TrueType desktop font binary",
+      "woff-ttf": "Installable TrueType font output",
+      "dwg-pdf": "Technical drawing PDF sheet",
+      "step-stl": "Triangle mesh for 3D printing",
+      "dxf-svg": "2D vector CAD plot export"
     }
   },
   "footer": {
@@ -186,6 +544,16 @@
       "sandbox": "Sandboxed execution with automatic zero-retention cleanup",
       "container": "Preserves container layout, streams, and metadata"
     }
+  },
+  "formatSelector": {
+    "defaultTitle": "Select Format",
+    "close": "Close format selector",
+    "noTargets": "No supported output formats for this file.",
+    "noMatches": "No formats matching \"{search}\"",
+    "anyFormat": "ANY FORMAT",
+    "searchLabel": "Search format",
+    "searchPlaceholder": "Search format...",
+    "clear": "Clear"
   },
   "formatSpecs": {
     "pdf": {
@@ -440,6 +808,50 @@
       "toTitle": "Convert to format"
     }
   },
+  "home": {
+    "security": {
+      "heading": "Security & Data Handling",
+      "intro": "Built around isolated execution and short-lived storage boundaries.",
+      "tls": {
+        "heading": "TLS 1.3 Transport Encryption",
+        "body": "Uploads, signed storage transfers, and result downloads run strictly over encrypted HTTPS channels."
+      },
+      "sandbox": {
+        "heading": "Sandboxed Browser & Worker Execution",
+        "body": "Supported pairs run locally in browser memory, while complex formats execute inside isolated worker sandboxes."
+      },
+      "cleanup": {
+        "heading": "Automatic TTL File Cleanup",
+        "body": "Temporary job inputs and converted outputs expire automatically after short retention windows."
+      }
+    },
+    "api": {
+      "heading": "REST API & Batch Workflows",
+      "intro": "Automate single-file conversions via <code>POST /api/v1/convert</code> or submit multi-step DAG pipelines to <code>POST /api/v1/jobs</code> with signed webhook delivery.",
+      "copiedAnnouncement": "Copied API example to clipboard",
+      "copyLabel": "Copy API example",
+      "copied": "Copied",
+      "copy": "Copy",
+      "reference": "OpenAPI 3.1 Reference",
+      "manageKeys": "Manage API Keys"
+    },
+    "howItWorks": {
+      "heading": "How Conversion Works",
+      "intro": "Three direct steps without account walls or watermarks.",
+      "add": {
+        "heading": "1. Add source files",
+        "body": "Select files from your device, drag them onto the workbench, paste from clipboard, or import from a public HTTP URL."
+      },
+      "pick": {
+        "heading": "2. Pick format & options",
+        "body": "Choose any compatible target extension and optionally tune codecs, dimensions, page ranges, or delimiters."
+      },
+      "download": {
+        "heading": "3. Convert & download",
+        "body": "Download converted files individually as soon as they finish, or bundle multi-file batches into one ZIP archive."
+      }
+    }
+  },
   "infoPages": {
     "privacy": {
       "retention": {
@@ -565,6 +977,148 @@
       "title": "{title} | EasyConvert"
     }
   },
+  "options": {
+    "modal": {
+      "heading": "Conversion Options",
+      "subtitle": "{filename} ({src} to {tgt})",
+      "targetFallback": "TARGET",
+      "close": "Close options",
+      "noOptions": "Standard lossless conversion parameters apply for this format pair.",
+      "reset": "Reset",
+      "apply": "Apply Options"
+    },
+    "trim": {
+      "start": "Trim Start (HH:MM:SS)",
+      "end": "Trim End (HH:MM:SS)"
+    },
+    "image": {
+      "heading": "Image & Raster Parameters",
+      "width": "Width (px)",
+      "height": "Height (px)",
+      "original": "Original",
+      "fit": "Resize Fit",
+      "fitAuto": "Automatic (contain when resized)",
+      "fitChoices": {
+        "contain": "Contain",
+        "cover": "Cover",
+        "fill": "Stretch to Fill",
+        "inside": "Fit Inside"
+      },
+      "quality": "Compression Quality",
+      "stripMetadata": "Strip EXIF, GPS, and camera metadata"
+    },
+    "video": {
+      "heading": "Video Stream Parameters",
+      "codec": "Video Codec",
+      "codecAuto": "Automatic (format default)",
+      "codecs": {
+        "h264": "H.264 (AVC)",
+        "hevc": "H.265 (HEVC)",
+        "vp9": "VP9",
+        "av1": "AV1",
+        "prores": "Apple ProRes"
+      },
+      "fps": "Frame Rate (FPS)",
+      "fpsKeep": "Keep Source FPS",
+      "fpsValue": "{fps} fps",
+      "maxWidth": "Max Width (px)",
+      "maxHeight": "Max Height (px)",
+      "original": "Original"
+    },
+    "audio": {
+      "heading": "Audio Stream Parameters",
+      "codec": "Audio Codec",
+      "codecAuto": "Automatic for Format",
+      "codecs": {
+        "aac": "AAC",
+        "mp3": "MP3",
+        "opus": "Opus",
+        "flac": "FLAC (Lossless)",
+        "vorbis": "Vorbis",
+        "pcm": "PCM 16-bit"
+      },
+      "bitrate": "Audio Bitrate",
+      "bitrateAuto": "Automatic (format default)",
+      "kbps": "{value} kbps",
+      "sampleRate": "Sample Rate",
+      "sampleRateKeep": "Keep Source Rate",
+      "hertz": "{value} Hz",
+      "channels": "Channels",
+      "channelsKeep": "Keep Source Channels",
+      "channelChoices": {
+        "mono": "Mono (1.0)",
+        "stereo": "Stereo (2.0)",
+        "surround51": "Surround (5.1)",
+        "surround71": "Surround (7.1)"
+      },
+      "gain": "Output Gain"
+    },
+    "document": {
+      "heading": "Document & Page Layout",
+      "pages": "Page Range",
+      "pagesPlaceholder": "All pages (e.g. 1-5)",
+      "orientation": "Orientation",
+      "orientationAuto": "Auto (match source)",
+      "portrait": "Portrait",
+      "landscape": "Landscape",
+      "ocrAutomatic": "OCR runs automatically for searchable structured XML output.",
+      "ocrEnable": "Enable OCR text recognition",
+      "ocrLanguage": "OCR Language",
+      "ocrLanguages": {
+        "eng": "English",
+        "auto": "Automatic Detection",
+        "kor": "Korean",
+        "jpn": "Japanese",
+        "chi_sim": "Chinese (Simplified)",
+        "deu": "German",
+        "fra": "French",
+        "spa": "Spanish"
+      }
+    },
+    "password": {
+      "zipConstraint": "ZIP passwords support up to 99 printable ASCII characters.",
+      "placeholder": "Leave blank if no password is needed",
+      "encrypt": {
+        "heading": "Archive Encryption",
+        "label": "Output Archive Password ({tgt})",
+        "helper": "Optional AES-256 password to protect the generated archive."
+      },
+      "reencrypt": {
+        "heading": "Archive Password & Re-encryption",
+        "label": "Archive Password ({src} to {tgt})",
+        "sourceFallback": "Source",
+        "helper": "Unlocks an encrypted {src} archive and encrypts the output {tgt} archive with this password."
+      },
+      "decrypt": {
+        "heading": "PDF Decryption",
+        "label": "Open Password (PDF)",
+        "helper": "Enter the document open password if the source PDF is encrypted."
+      },
+      "errors": {
+        "zipCharset": "ZIP passwords support 1 to 99 printable ASCII characters only.",
+        "forbiddenChars": "Passwords cannot contain line breaks, null bytes, or invalid Unicode.",
+        "tooLong": "Passwords must be 256 characters or fewer."
+      }
+    },
+    "data": {
+      "heading": "Tabular & Structured Data",
+      "delimiter": "Field Delimiter",
+      "delimiterAuto": "Auto (match format)",
+      "delimiters": {
+        "comma": "Comma (,)",
+        "semicolon": "Semicolon (;)",
+        "tab": "Tab (\\t)",
+        "pipe": "Pipe (|)"
+      },
+      "sheetIndex": "Worksheet Index (0-based)",
+      "sheetIndexPlaceholder": "0 (first sheet)"
+    },
+    "archive": {
+      "heading": "Archive Compression",
+      "level": "Compression Level",
+      "levelValue": "Level {level}"
+    }
+  },
   "plans": {
     "fileLimit": "Up to {size} per file",
     "exactBytes": "{count, number} bytes",
@@ -574,6 +1128,63 @@
       "free": "Free",
       "pro": "Pro",
       "enterprise": "Enterprise"
+    }
+  },
+  "problems": {
+    "badRequest": "The request could not be read. Check the values and try again.",
+    "unauthorized": "Sign in to continue.",
+    "forbidden": "This action is not allowed for your account.",
+    "payloadTooLarge": "The file is larger than this request can take.",
+    "lengthRequired": "The upload did not state its size. Try again.",
+    "unsupportedMediaType": "This file type cannot be sent here.",
+    "rateLimited": "Too many requests in a short time. Wait a moment and try again.",
+    "concurrencyLimit": "Too many conversions are running at once. Try again when one finishes.",
+    "quotaExceeded": "You have used today's conversion limit. Try again tomorrow.",
+    "uploadBudgetExceeded": "You have used today's upload limit. Try again tomorrow.",
+    "storageFull": "Storage is full right now. Try again later.",
+    "serviceUnavailable": "The service is temporarily unavailable. Try again shortly.",
+    "internalError": "Something went wrong on our side. Try again."
+  },
+  "queue": {
+    "status": {
+      "converting": "Converting queued files...",
+      "empty": "No files in queue",
+      "oversize": "{count, plural, one {# file exceeds the conversion size limit. Remove it to continue.} other {# files exceed the conversion size limit. Remove them to continue.}}",
+      "chooseFormat": "Please select an output format to continue",
+      "fixOptions": "Update password options or output format to continue.",
+      "complete": "Conversion complete for {count, plural, one {# file} other {# files}}",
+      "failed": "{count, plural, one {# file} other {# files}} failed conversion. Retry or remove to continue.",
+      "ready": "Ready to convert {count, plural, one {# file} other {# files}}"
+    },
+    "convertAllTo": "Convert all to",
+    "chooseFormat": "Choose format",
+    "convertAllTitle": "Convert all compatible files to",
+    "filesInQueue": "{count} files in queue",
+    "clearAll": "Clear all",
+    "zipFailed": "Could not build ZIP archive. Unknown error",
+    "zipFailedWithDetail": "Could not build ZIP archive. {detail}",
+    "dismissZipError": "Dismiss archive error",
+    "addMore": "+ Add more files",
+    "downloadAll": "Download All (.zip)",
+    "converting": "Converting...",
+    "convert": "Convert",
+    "row": {
+      "unknownFormat": "{ext} File",
+      "failedFallback": "Conversion failed.",
+      "uploadingLabel": "Uploading {name}",
+      "convertingLabel": "Converting {name}",
+      "done": "Done",
+      "download": "Download",
+      "failed": "Failed",
+      "retry": "Retry",
+      "ready": "Ready",
+      "to": "to",
+      "selectFormatLabel": "Select output format for {name}",
+      "selectFormat": "Select format",
+      "selectorTitle": "Convert {format} to",
+      "optionsLabel": "Conversion options for {name}",
+      "cancelLabel": "Cancel {name}",
+      "removeLabel": "Remove {name}"
     }
   },
   "siteLinks": {
@@ -747,6 +1358,151 @@
       "Vectors": "Vectors"
     }
   },
+  "status": {
+    "componentsHeading": "Engine & Pipeline Components",
+    "operationalReady": "Operational & Ready",
+    "categoriesLabel": "Component categories",
+    "operational": "Operational",
+    "categories": {
+      "all": "All Components ({count})",
+      "core": "Compute Core ({count})",
+      "pipeline": "Pipelines ({count})",
+      "privacy": "Privacy & Retention ({count})"
+    },
+    "components": {
+      "wasm-simd": {
+        "name": "SIMD WebAssembly Core Engine",
+        "description": "128-bit vector-accelerated transformations for documents and binary streams"
+      },
+      "webcodecs-vpu": {
+        "name": "WebCodecs VPU Transcoding Accelerator",
+        "description": "Direct GPU/VPU hardware acceleration for H.264, VP9, and audio codecs"
+      },
+      "opfs-storage": {
+        "name": "Origin Private File System (OPFS) Streaming Storage",
+        "description": "Low-overhead virtual disk streaming for large multi-hundred-megabyte files"
+      },
+      "workers-pool": {
+        "name": "Multithreaded Web Worker Thread Pool",
+        "description": "Non-blocking concurrent worker isolation matching CPU core topology"
+      },
+      "pipeline-document": {
+        "name": "Document & Office Pipeline (PDF, DOCX, XLSX, PPTX)",
+        "description": "Document rendering, vector text layout, and structured table reconstruction"
+      },
+      "pipeline-imaging": {
+        "name": "Raster & Vector Imaging Pipeline (PNG, JPG, WEBP, SVG, HEIC)",
+        "description": "Color-calibrated resampling and vector geometry rasterization"
+      },
+      "pipeline-audio": {
+        "name": "Audio DSP Pipeline (MP3, WAV, FLAC, AAC, OGG)",
+        "description": "32-bit floating-point audio processing, resampling, and lossless codecs"
+      },
+      "pipeline-video": {
+        "name": "Video Container Remuxing & Transmuxing (MP4, MKV, WEBM)",
+        "description": "Container repackaging, codec transcoding, and timestamp synchronization"
+      },
+      "pipeline-ocr": {
+        "name": "OCR Engine (Tesseract Wasm LSTM Core)",
+        "description": "Optical character recognition with searchable PDF text layer synthesis"
+      },
+      "pipeline-archive": {
+        "name": "Stream Archive & Compression Engine (ZIP, 7Z, TAR, GZ)",
+        "description": "Deflate, LZMA2, and BZip2 streaming archive packing and extraction"
+      },
+      "pipeline-cad": {
+        "name": "CAD & Geometric Engine (DXF, SVG)",
+        "description": "Spline tessellation, IEEE 754 coordinate precision, and vector export"
+      },
+      "privacy-zero-retention": {
+        "name": "Zero Data Retention Ephemeral Memory Sandbox",
+        "description": "Volatile client memory allocation with zero permanent disk retention"
+      },
+      "privacy-scrubbing": {
+        "name": "Volatile Buffer Scrubbing & Memory Zeroing",
+        "description": "Immediate buffer release upon conversion download or queue clearance"
+      },
+      "privacy-crypto": {
+        "name": "Client-Side SHA-256 Cryptographic Hash Verification",
+        "description": "Local bitstream integrity checks using the Web Crypto API"
+      }
+    },
+    "sandbox": {
+      "heading": "Local Browser Sandbox Execution",
+      "body": "Supported client-side codecs compile to WebAssembly and run inside an isolated browser worker sandbox. Local execution avoids upload wait times, keeps memory buffers ephemeral, and releases temporary storage handles as soon as conversion finishes.",
+      "zeroRetention": "Zero-Retention Sandboxing",
+      "simd": "Hardware SIMD & WebCodecs Support",
+      "unlimited": "Unlimited Free Conversions"
+    },
+    "announcements": {
+      "running": "Running browser edge diagnostics...",
+      "complete": "Edge diagnostics complete. {active} of {total} capabilities active."
+    },
+    "checkedAt": "Client telemetry checked at {time}",
+    "telemetryActive": "Client telemetry active in browser sandbox",
+    "overview": {
+      "heading": "All Client-Side Conversion Engines Operational",
+      "ready": "Ready",
+      "intro": "Verified directly within your browser execution sandbox.",
+      "running": "Testing Edge Engines...",
+      "run": "Run Edge Diagnostics",
+      "inBrowser": "100% In-Browser Execution"
+    },
+    "diagnostics": {
+      "heading": "Live Browser Edge Diagnostic Results",
+      "activeCount": "{active}/{total} Active",
+      "unavailable": "Unavailable",
+      "probes": {
+        "wasm": {
+          "name": "WebAssembly SIMD Vector Acceleration",
+          "supported": "Hardware SIMD enabled (128-bit vectorization)",
+          "unsupported": "WebAssembly 128-bit SIMD unavailable"
+        },
+        "webcodecs": {
+          "name": "WebCodecs GPU Hardware Pipeline",
+          "supported": "Hardware video and audio codec VPU available",
+          "unsupported": "CPU software transmuxer active"
+        },
+        "opfs": {
+          "name": "Origin Private File System (OPFS)",
+          "supported": "Native streaming storage supported",
+          "unsupported": "Blob memory streaming active"
+        },
+        "workers": {
+          "name": "Multithreaded Web Workers",
+          "supported": "{cores} CPU logical execution threads detected",
+          "unsupported": "{cores} CPU logical execution threads detected"
+        },
+        "memory-sandbox": {
+          "name": "Ephemeral Memory Buffer Sandbox",
+          "supported": "Transient memory allocation and zeroing verified",
+          "unsupported": "Transient memory allocation failed"
+        }
+      }
+    },
+    "metrics": {
+      "execution": {
+        "label": "Execution Model",
+        "value": "100% In-Browser",
+        "caption": "WebAssembly & WebCodecs"
+      },
+      "storage": {
+        "label": "Persistent Storage",
+        "value": "0 Bytes",
+        "caption": "Zero permanent retention"
+      },
+      "concurrency": {
+        "label": "Hardware Concurrency",
+        "value": "{cores} Threads",
+        "caption": "Detected CPU execution units"
+      },
+      "privacy": {
+        "label": "Privacy Sandbox",
+        "value": "Active",
+        "caption": "Ephemeral volatile buffer"
+      }
+    }
+  },
   "statusPage": {
     "heading": "System Operational Status",
     "intro": "Real-time capability checks, latency probes, and component status for in-browser WebAssembly, WebCodecs, and OPFS conversion pipelines."
@@ -755,9 +1511,57 @@
     "toLight": "Switch to light mode",
     "toDark": "Switch to dark mode"
   },
+  "unitConverter": {
+    "categoriesLegend": "Unit categories",
+    "heading": "{from} to {to} Converter",
+    "intro": "High-precision client calculation with zero network round-trips.",
+    "decimals": "Decimals",
+    "decimalsValue": "{digits} decimals",
+    "fromValue": "From Value",
+    "sourceUnit": "Source Unit",
+    "swap": "Swap source and target units",
+    "result": "Converted Result ({symbol})",
+    "copyLabel": "Copy converted result",
+    "copied": "Copied",
+    "copy": "Copy",
+    "copiedAnnouncement": "Copied converted result to clipboard.",
+    "targetUnit": "Target Unit",
+    "formula": "Formula",
+    "private": "100% In-Browser & Private",
+    "breakdownHeading": "{value} {from} Converted to All {category} Units",
+    "unitCount": "{count} units",
+    "rowCopied": "Copied {name} value to clipboard.",
+    "rowCopyLabel": "Copy {name} value",
+    "referenceHeading": "{from} to {to} Quick Reference Table",
+    "popularHeading": "Popular Unit Conversions",
+    "popular": {
+      "lbs-kg": "Pounds to Kilograms",
+      "kg-lbs": "Kilograms to Pounds",
+      "feet-meters": "Feet to Meters",
+      "meters-feet": "Meters to Feet",
+      "celsius-fahrenheit": "Celsius to Fahrenheit",
+      "fahrenheit-celsius": "Fahrenheit to Celsius",
+      "mb-gb": "Megabytes to Gigabytes",
+      "miles-km": "Miles to Kilometers",
+      "inches-cm": "Inches to Centimeters",
+      "bar-psi": "Bar to PSI"
+    }
+  },
   "unitConverterPage": {
     "heading": "Universal Unit Converter",
     "intro": "Convert measurements across 10 physical and digital categories with bidirectional calculations and multi-unit reference tables."
+  },
+  "urlImport": {
+    "heading": "Add File from URL",
+    "intro": "Enter a direct HTTP or HTTPS link to a file of up to {size}",
+    "close": "Close dialog",
+    "label": "File URL",
+    "cancel": "Cancel",
+    "fetching": "Fetching...",
+    "submit": "Load File",
+    "invalidUrl": "Enter a full link that starts with http:// or https://.",
+    "fetchFailed": "Failed to fetch file (HTTP {status})",
+    "networkError": "Invalid URL or network error"
   },
   "userNav": {
     "dashboard": "Dashboard",

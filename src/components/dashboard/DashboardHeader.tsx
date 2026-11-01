@@ -1,8 +1,10 @@
 import React, { useRef } from 'react';
 import Image from 'next/image';
+import { useFormatter, useTranslations } from 'next-intl';
 import { FileText, Key, Layers, LogOut, Send, Shield } from 'lucide-react';
 import type { User } from '@/lib/auth/types';
 import type { DashboardTab } from './dashboard-types';
+import { useTierLabel } from '../i18n/format';
 
 interface DashboardHeaderProps {
   user: User;
@@ -21,6 +23,9 @@ export function DashboardHeader({
   onSelectTab,
   onLogout,
 }: Readonly<DashboardHeaderProps>) {
+  const t = useTranslations('dashboard.header');
+  const format = useFormatter();
+  const tierLabel = useTierLabel();
   const tabRefs = useRef<Record<DashboardTab, HTMLButtonElement | null>>({
     api: null,
     files: null,
@@ -35,10 +40,10 @@ export function DashboardHeader({
     badge?: number;
     badgeDanger?: boolean;
   }> = [
-    { id: 'api', label: 'Developer API Keys', icon: Key },
-    { id: 'files', label: 'My Converted Files', icon: FileText, badge: filesCount },
-    { id: 'dlq', label: 'Webhook DLQ', icon: Send, badge: dlqCount, badgeDanger: true },
-    { id: 'usage', label: 'Usage & Rate Limits', icon: Layers },
+    { id: 'api', label: t('tabs.api'), icon: Key },
+    { id: 'files', label: t('tabs.files'), icon: FileText, badge: filesCount },
+    { id: 'dlq', label: t('tabs.dlq'), icon: Send, badge: dlqCount, badgeDanger: true },
+    { id: 'usage', label: t('tabs.usage'), icon: Layers },
   ];
 
   const handleTabKeyDown = (
@@ -88,11 +93,11 @@ export function DashboardHeader({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-2xl sm:text-3xl text-ink">
-                Developer Dashboard
+                {t('heading')}
               </h1>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-sm text-xs font-bold uppercase tracking-wider bg-accent-soft text-accent-ink border border-accent-edge">
                 <Shield className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{user.tier.toUpperCase()} TIER</span>
+                <span>{t('tier', { tier: tierLabel(user.tier) })}</span>
               </span>
             </div>
             <p className="text-sm text-ink-2 mt-1 break-all">
@@ -100,10 +105,13 @@ export function DashboardHeader({
             </p>
             <div className="flex flex-wrap items-center gap-2.5 text-xs text-ink-3 mt-1.5">
               <span>
-                Auth provider <strong className="capitalize">{user.provider}</strong>
+                {t.rich('provider', {
+                  provider: user.provider,
+                  strong: (chunks) => <strong className="capitalize">{chunks}</strong>,
+                })}
               </span>
               <span aria-hidden="true">&bull;</span>
-              <span>Member since {new Date(user.createdAt).toLocaleDateString()}</span>
+              <span>{t('memberSince', { date: format.dateTime(new Date(user.createdAt), { dateStyle: 'medium' }) })}</span>
             </div>
           </div>
         </div>
@@ -114,13 +122,13 @@ export function DashboardHeader({
           className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm border border-rule text-ink-2 hover:text-ink hover:bg-sunken text-sm font-semibold transition-colors"
         >
           <LogOut className="w-4 h-4" />
-          <span>Sign Out</span>
+          <span>{t('signOut')}</span>
         </button>
       </div>
 
       <div
         role="tablist"
-        aria-label="Dashboard sections"
+        aria-label={t('sectionsLabel')}
         className="flex border-b border-rule mb-8 overflow-x-auto gap-1"
       >
         {tabs.map((tab) => {

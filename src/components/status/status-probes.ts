@@ -3,128 +3,108 @@ import { checkOpfsSupport, checkWasmSimdSupport } from '@/lib/edge/tier-router';
 export type ComponentCategory = 'core' | 'pipeline' | 'privacy';
 export type CategoryFilter = 'all' | ComponentCategory;
 
+/** An engine component; its name and description are `status.components.<id>` in the messages. */
 export interface ComponentStatus {
-  id: string;
-  name: string;
+  id: ComponentId;
   category: ComponentCategory;
-  description: string;
   status: 'operational' | 'ready';
 }
 
+export type ComponentId =
+  | 'wasm-simd' | 'webcodecs-vpu' | 'opfs-storage' | 'workers-pool'
+  | 'pipeline-document' | 'pipeline-imaging' | 'pipeline-audio' | 'pipeline-video' | 'pipeline-ocr' | 'pipeline-archive' | 'pipeline-cad'
+  | 'privacy-zero-retention' | 'privacy-scrubbing' | 'privacy-crypto';
+
+export type DiagnosticId = 'wasm' | 'webcodecs' | 'opfs' | 'workers' | 'memory-sandbox';
+
+/** A capability probe; its name and the sentence for each outcome are `status.diagnostics.<id>` in the messages. */
 export interface DiagnosticResult {
-  id: string;
-  name: string;
+  id: DiagnosticId;
   supported: boolean;
-  details: string;
   latencyMs: number;
+  /** Logical threads the browser reports, for the worker probe. */
+  cores?: number;
 }
 
 export const ENGINE_COMPONENTS: ComponentStatus[] = [
   {
     id: 'wasm-simd',
-    name: 'SIMD WebAssembly Core Engine',
     category: 'core',
-    description: '128-bit vector-accelerated transformations for documents and binary streams',
     status: 'operational',
   },
   {
     id: 'webcodecs-vpu',
-    name: 'WebCodecs VPU Transcoding Accelerator',
     category: 'core',
-    description: 'Direct GPU/VPU hardware acceleration for H.264, VP9, and audio codecs',
     status: 'operational',
   },
   {
     id: 'opfs-storage',
-    name: 'Origin Private File System (OPFS) Streaming Storage',
     category: 'core',
-    description: 'Low-overhead virtual disk streaming for large multi-hundred-megabyte files',
     status: 'operational',
   },
   {
     id: 'workers-pool',
-    name: 'Multithreaded Web Worker Thread Pool',
     category: 'core',
-    description: 'Non-blocking concurrent worker isolation matching CPU core topology',
     status: 'operational',
   },
   {
     id: 'pipeline-document',
-    name: 'Document & Office Pipeline (PDF, DOCX, XLSX, PPTX)',
     category: 'pipeline',
-    description: 'Document rendering, vector text layout, and structured table reconstruction',
     status: 'operational',
   },
   {
     id: 'pipeline-imaging',
-    name: 'Raster & Vector Imaging Pipeline (PNG, JPG, WEBP, SVG, HEIC)',
     category: 'pipeline',
-    description: 'Color-calibrated resampling and vector geometry rasterization',
     status: 'operational',
   },
   {
     id: 'pipeline-audio',
-    name: 'Audio DSP Pipeline (MP3, WAV, FLAC, AAC, OGG)',
     category: 'pipeline',
-    description: '32-bit floating-point audio processing, resampling, and lossless codecs',
     status: 'operational',
   },
   {
     id: 'pipeline-video',
-    name: 'Video Container Remuxing & Transmuxing (MP4, MKV, WEBM)',
     category: 'pipeline',
-    description: 'Container repackaging, codec transcoding, and timestamp synchronization',
     status: 'operational',
   },
   {
     id: 'pipeline-ocr',
-    name: 'OCR Engine (Tesseract Wasm LSTM Core)',
     category: 'pipeline',
-    description: 'Optical character recognition with searchable PDF text layer synthesis',
     status: 'operational',
   },
   {
     id: 'pipeline-archive',
-    name: 'Stream Archive & Compression Engine (ZIP, 7Z, TAR, GZ)',
     category: 'pipeline',
-    description: 'Deflate, LZMA2, and BZip2 streaming archive packing and extraction',
     status: 'operational',
   },
   {
     id: 'pipeline-cad',
-    name: 'CAD & Geometric Engine (DXF, SVG)',
     category: 'pipeline',
-    description: 'Spline tessellation, IEEE 754 coordinate precision, and vector export',
     status: 'operational',
   },
   {
     id: 'privacy-zero-retention',
-    name: 'Zero Data Retention Ephemeral Memory Sandbox',
     category: 'privacy',
-    description: 'Volatile client memory allocation with zero permanent disk retention',
     status: 'operational',
   },
   {
     id: 'privacy-scrubbing',
-    name: 'Volatile Buffer Scrubbing & Memory Zeroing',
     category: 'privacy',
-    description: 'Immediate buffer release upon conversion download or queue clearance',
     status: 'operational',
   },
   {
     id: 'privacy-crypto',
-    name: 'Client-Side SHA-256 Cryptographic Hash Verification',
     category: 'privacy',
-    description: 'Local bitstream integrity checks using the Web Crypto API',
     status: 'operational',
   },
 ];
 
-export const CATEGORY_TABS: ReadonlyArray<{ id: CategoryFilter; label: string }> = [
-  { id: 'all', label: `All Components (${ENGINE_COMPONENTS.length})` },
-  { id: 'core', label: 'Compute Core (4)' },
-  { id: 'pipeline', label: 'Pipelines (7)' },
-  { id: 'privacy', label: 'Privacy & Retention (3)' },
+/** The category filters, each with how many components it shows; the label is `status.categories.<id>`. */
+export const CATEGORY_TABS: ReadonlyArray<{ id: CategoryFilter; count: number }> = [
+  { id: 'all', count: ENGINE_COMPONENTS.length },
+  { id: 'core', count: 4 },
+  { id: 'pipeline', count: 7 },
+  { id: 'privacy', count: 3 },
 ];
 
 export function probeWasmSimd(): DiagnosticResult {
@@ -132,11 +112,7 @@ export function probeWasmSimd(): DiagnosticResult {
   const hasWasmSimd = checkWasmSimdSupport();
   return {
     id: 'wasm',
-    name: 'WebAssembly SIMD Vector Acceleration',
     supported: hasWasmSimd,
-    details: hasWasmSimd
-      ? 'Hardware SIMD enabled (128-bit vectorization)'
-      : 'WebAssembly 128-bit SIMD unavailable',
     latencyMs: Math.round(performance.now() - start),
   };
 }
@@ -151,9 +127,7 @@ function probeOpfs(): DiagnosticResult {
   }
   return {
     id: 'opfs',
-    name: 'Origin Private File System (OPFS)',
     supported: hasOpfs,
-    details: hasOpfs ? 'Native streaming storage supported' : 'Blob memory streaming active',
     latencyMs: Math.round(performance.now() - start),
   };
 }
@@ -170,11 +144,7 @@ function probeMemorySandbox(): DiagnosticResult {
   }
   return {
     id: 'memory-sandbox',
-    name: 'Ephemeral Memory Buffer Sandbox',
     supported: memValid,
-    details: memValid
-      ? 'Transient memory allocation and zeroing verified'
-      : 'Transient memory allocation failed',
     latencyMs: Math.round(performance.now() - start),
   };
 }
@@ -184,11 +154,7 @@ export function collectEdgeDiagnostics(): DiagnosticResult[] {
   const hasWebCodecs = typeof window !== 'undefined' && 'VideoEncoder' in window;
   const codecsResult: DiagnosticResult = {
     id: 'webcodecs',
-    name: 'WebCodecs GPU Hardware Pipeline',
     supported: hasWebCodecs,
-    details: hasWebCodecs
-      ? 'Hardware video and audio codec VPU available'
-      : 'CPU software transmuxer active',
     latencyMs: Math.round(performance.now() - startCodecs),
   };
 
@@ -197,9 +163,8 @@ export function collectEdgeDiagnostics(): DiagnosticResult[] {
   const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
   const workersResult: DiagnosticResult = {
     id: 'workers',
-    name: 'Multithreaded Web Workers',
     supported: hasWorkers,
-    details: `${cores} CPU logical execution threads detected`,
+    cores,
     latencyMs: Math.round(performance.now() - startWorkers),
   };
 

@@ -138,7 +138,7 @@ describe('the signed-in person of the viewer', () => {
 
     const signedIn = visibleText(renderDom(createElement(UserNav, {})));
     expect(signedIn).toContain('Ada');
-    expect(signedIn).toContain('pro');
+    expect(signedIn).toContain('Pro');
     expect(signedIn).not.toContain('Log In');
 
     shownAccount.current = null;

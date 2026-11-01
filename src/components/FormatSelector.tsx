@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useId } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslations } from 'next-intl';
 import type { FormatDefinition } from '@/lib/types';
 import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
 import { CATEGORY_ORDER } from '@/lib/registry-stats';
@@ -198,6 +199,7 @@ function useMobileBreakpoint(): boolean {
 export default function FormatSelector({
   availableFormats, selectedFormatId, sourceFormat, allowAny = false, onSelect, onClose, title,
 }: Readonly<FormatSelectorProps>) {
+  const t = useTranslations('formatSelector');
   const inputId = useId();
   const [search, setSearch] = useState('');
   const isMobile = useMobileBreakpoint();
@@ -236,7 +238,7 @@ export default function FormatSelector({
     if (!isMobile) trigger?.focus({ preventScroll: true });
   };
 
-  const dialogLabel = title || 'Select Format';
+  const dialogLabel = title || t('defaultTitle');
   const body = (
     <FormatSelectorBody
       inputId={inputId} search={search} onSearchChange={setSearch} categories={categories}

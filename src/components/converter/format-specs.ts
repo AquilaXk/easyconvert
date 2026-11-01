@@ -1,5 +1,6 @@
 import { useTranslations } from 'next-intl';
 import { FORMAT_REGISTRY } from '@/lib/registry';
+import { formatMessageKey } from '@/i18n/message-keys';
 import { MEDIA_FORMAT_SPECIFICATIONS } from './format-specs-media';
 import { PACKAGE_FORMAT_SPECIFICATIONS } from './format-specs-packages';
 
@@ -126,7 +127,8 @@ export function useFormatDetail(): (formatKey: string) => FormatSpecification {
     const name = def?.name || t('fallbackName', { ext: ext.toUpperCase() });
     const category = def?.category || 'document';
     const categoryLabel = formatCategoryLabel(t, category);
-    const desc = def && tDescriptions.has(def.id) ? tDescriptions(def.id) : t('fallbackDesc', { name });
+    const descriptionKey = def ? formatMessageKey(def.id) : undefined;
+    const desc = descriptionKey && tDescriptions.has(descriptionKey) ? tDescriptions(descriptionKey) : t('fallbackDesc', { name });
 
     return {
       title: `${ext.toUpperCase()} (${name})`,

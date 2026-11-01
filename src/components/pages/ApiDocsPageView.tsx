@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, FileCode } from 'lucide-react';
@@ -13,7 +14,8 @@ import {
 } from '@/components/api-docs/openapi-types';
 import { useCopyFeedback } from '@/hooks/useCopyFeedback';
 
-export default function ApiDocsPage() {
+export default function ApiDocsPageView() {
+  const t = useTranslations('apiDocs.page');
   const [spec, setSpec] = useState<OpenApiSpec | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,18 +32,15 @@ export default function ApiDocsPage() {
         setLoading(true);
         const res = await fetch('/api/v1/openapi.json');
         if (!res.ok) {
-          throw new Error(`Failed to load OpenAPI spec (${res.status} ${res.statusText})`);
+          if (active) setError(t('loadFailedStatus', { status: `${res.status} ${res.statusText}`.trim() }));
+          return;
         }
         const data: OpenApiSpec = await res.json();
         if (active) {
           setSpec(data);
         }
-      } catch (err: unknown) {
-        if (active) {
-          setError(
-            err instanceof Error ? err.message : 'Unknown error loading OpenAPI specification'
-          );
-        }
+      } catch {
+        if (active) setError(t('loadFailedUnknown'));
       } finally {
         if (active) {
           setLoading(false);
@@ -52,7 +51,7 @@ export default function ApiDocsPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   const toggleEndpoint = (key: string) => {
     setExpandedEndpoints((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -142,7 +141,7 @@ export default function ApiDocsPage() {
                 aria-hidden="true"
               />
               <span className="block text-ink-2 text-sm">
-                Loading OpenAPI specification...
+                {t('loading')}
               </span>
             </output>
           )}
@@ -154,7 +153,7 @@ export default function ApiDocsPage() {
             >
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
               <div>
-                <h3 className="font-semibold text-sm">Failed to Load OpenAPI Specification</h3>
+                <h3 className="font-semibold text-sm">{t('loadFailedHeading')}</h3>
                 <p className="text-xs mt-1">{error}</p>
               </div>
             </div>
@@ -166,7 +165,7 @@ export default function ApiDocsPage() {
                 <div className="py-14 text-center">
                   <FileCode className="w-8 h-8 text-ink-3 mx-auto mb-2.5" />
                   <p className="text-ink-2 text-sm">
-                    No matching API endpoints found.
+                    {t('noMatches')}
                   </p>
                 </div>
               ) : (

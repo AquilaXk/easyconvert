@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, Loader2, X } from 'lucide-react';
@@ -11,7 +12,8 @@ import { WebhooksPanel } from '@/components/dashboard/WebhooksPanel';
 import { AccountQuotaPanel } from '@/components/dashboard/AccountQuotaPanel';
 import { useDashboardController } from '@/components/dashboard/useDashboardController';
 
-export default function DashboardPage() {
+export default function DashboardPageView() {
+  const t = useTranslations('dashboard');
   const {
     user,
     loading,
@@ -35,7 +37,7 @@ export default function DashboardPage() {
         {loading || !user ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3">
             <h1 className="text-2xl text-ink">
-              Developer Dashboard
+              {t('header.heading')}
             </h1>
             <output
               aria-live="polite"
@@ -46,7 +48,7 @@ export default function DashboardPage() {
                 aria-hidden="true"
               />
               <span className="text-sm text-ink-2">
-                Loading account session...
+                {t('loading')}
               </span>
             </output>
           </div>
@@ -79,7 +81,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={clearActionError}
-                  aria-label="Dismiss dashboard error"
+                  aria-label={t('dismissError')}
                   className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm hover:bg-danger-soft shrink-0"
                 >
                   <X className="w-4 h-4" />

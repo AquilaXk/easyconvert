@@ -1,4 +1,5 @@
 import type { Messages } from 'next-intl';
+import { formatMessageKey } from './message-keys';
 
 function pickKeys(table: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
   return Object.fromEntries(keys.filter((key) => key in table).map((key) => [key, table[key]]));
@@ -10,7 +11,7 @@ function pickKeys(table: Record<string, unknown>, keys: readonly string[]): Reco
  */
 export function clientMessages(messages: Messages, formatIds: readonly string[] = []): Messages {
   const { meta: _meta, formatSpecs, formatDescriptions, ...rest } = messages;
-  const ids = formatIds.map((id) => id.toLowerCase());
+  const ids = formatIds.map((id) => formatMessageKey(id.toLowerCase()));
   return {
     ...rest,
     formatSpecs: pickKeys(formatSpecs, ids),

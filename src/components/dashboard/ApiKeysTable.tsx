@@ -1,16 +1,21 @@
 import React from 'react';
+import { useFormatter, useTranslations } from 'next-intl';
 import { Key } from 'lucide-react';
 import type { ApiKey } from '@/lib/api-keys/types';
 
+const DATE_FORMAT = { dateStyle: 'medium' } as const;
+
 function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
+  const t = useTranslations('dashboard.keys.table');
+  const format = useFormatter();
   if (!expiresAt) {
-    return <span className="text-ink-3">Never</span>;
+    return <span className="text-ink-3">{t('never')}</span>;
   }
   const now = Date.now();
   if (now > expiresAt) {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-danger-soft text-danger border border-danger-edge">
-        Expired
+        {t('expired')}
       </span>
     );
   }
@@ -20,13 +25,13 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
     const daysRemaining = Math.max(1, Math.ceil(msRemaining / (86400 * 1000)));
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-warning-soft text-warning border border-warning-edge">
-        Expiring in {daysRemaining}d
+        {t('expiringIn', { days: daysRemaining })}
       </span>
     );
   }
   return (
     <span className="text-ink-2">
-      {new Date(expiresAt).toLocaleDateString()}
+      {format.dateTime(new Date(expiresAt), DATE_FORMAT)}
     </span>
   );
 }
@@ -42,6 +47,8 @@ export function ApiKeysTable({
   onRequestRevoke: (id: string | null) => void;
   onConfirmRevoke: (id: string) => void;
 }>) {
+  const t = useTranslations('dashboard.keys.table');
+  const format = useFormatter();
   if (apiKeys.length === 0) {
     return (
       <div className="text-center py-12 border border-dashed border-rule-strong/60 rounded-sm">
@@ -50,10 +57,10 @@ export function ApiKeysTable({
           aria-hidden="true"
         />
         <p className="text-sm font-semibold text-ink">
-          No API keys created yet
+          {t('emptyHeading')}
         </p>
         <p className="text-xs text-ink-3 mt-1">
-          Generate an API key to authenticate programmatic conversion requests.
+          {t('emptyBody')}
         </p>
       </div>
     );
@@ -65,25 +72,25 @@ export function ApiKeysTable({
         <thead>
           <tr className="border-b border-rule text-ink-3 text-xs uppercase">
             <th scope="col" className="pb-3 pr-4 font-semibold">
-              Name &amp; Scopes
+              {t('columns.name')}
             </th>
             <th scope="col" className="pb-3 pr-4 font-semibold">
-              Key Prefix
+              {t('columns.prefix')}
             </th>
             <th scope="col" className="pb-3 pr-4 font-semibold">
-              Created
+              {t('columns.created')}
             </th>
             <th scope="col" className="pb-3 pr-4 font-semibold">
-              Expires
+              {t('columns.expires')}
             </th>
             <th scope="col" className="pb-3 pr-4 font-semibold">
-              Last Used
+              {t('columns.lastUsed')}
             </th>
             <th scope="col" className="pb-3 pr-4 font-semibold">
-              Status
+              {t('columns.status')}
             </th>
             <th scope="col" className="pb-3 font-semibold text-right">
-              Actions
+              {t('columns.actions')}
             </th>
           </tr>
         </thead>
@@ -110,7 +117,7 @@ export function ApiKeysTable({
                       ))
                     ) : (
                       <span className="px-1.5 py-0.5 rounded-md text-[11px] font-mono bg-sunken text-ink-2 border border-rule">
-                        all scopes (*)
+                        {t('allScopes')}
                       </span>
                     )}
                   </div>
@@ -119,13 +126,13 @@ export function ApiKeysTable({
                   {key.prefix}
                 </td>
                 <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
-                  {new Date(key.createdAt).toLocaleDateString()}
+                  {format.dateTime(new Date(key.createdAt), DATE_FORMAT)}
                 </td>
                 <td className="py-3.5 pr-4 text-xs whitespace-nowrap">
                   <KeyExpirationBadge expiresAt={key.expiresAt} />
                 </td>
                 <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
-                  {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleDateString() : 'Never'}
+                  {key.lastUsedAt ? format.dateTime(new Date(key.lastUsedAt), DATE_FORMAT) : t('never')}
                 </td>
                 <td className="py-3.5 pr-4 whitespace-nowrap">
                   <span
@@ -135,30 +142,30 @@ export function ApiKeysTable({
                         : 'bg-danger-soft text-danger border-danger-edge'
                     }`}
                   >
-                    {key.status.toUpperCase()}
+                    {t(isActive ? 'status.active' : 'status.revoked')}
                   </span>
                 </td>
                 <td className="py-3.5 text-right whitespace-nowrap">
                   {!isActive && (
-                    <span className="text-xs text-ink-3">Revoked</span>
+                    <span className="text-xs text-ink-3">{t('revoked')}</span>
                   )}
                   {isActive && isConfirming && (
                     <div className="inline-flex items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => onConfirmRevoke(key.id)}
-                        aria-label={`Confirm revoking API key ${key.name}`}
+                        aria-label={t('confirmLabel', { name: key.name })}
                         className="min-h-[44px] px-3 rounded-sm bg-danger hover:bg-danger/90 text-canvas text-xs font-semibold transition-colors"
                       >
-                        Confirm
+                        {t('confirm')}
                       </button>
                       <button
                         type="button"
                         onClick={() => onRequestRevoke(null)}
-                        aria-label={`Cancel revoking API key ${key.name}`}
+                        aria-label={t('cancelLabel', { name: key.name })}
                         className="min-h-[44px] px-3 rounded-sm border border-rule text-xs font-semibold text-ink-2"
                       >
-                        Cancel
+                        {t('cancel')}
                       </button>
                     </div>
                   )}
@@ -166,10 +173,10 @@ export function ApiKeysTable({
                     <button
                       type="button"
                       onClick={() => onRequestRevoke(key.id)}
-                      aria-label={`Revoke API key ${key.name}`}
+                      aria-label={t('revokeLabel', { name: key.name })}
                       className="min-w-[44px] min-h-[44px] px-3 rounded-sm border border-rule text-xs text-danger hover:bg-danger-soft font-semibold transition-colors"
                     >
-                      Revoke
+                      {t('revoke')}
                     </button>
                   )}
                 </td>

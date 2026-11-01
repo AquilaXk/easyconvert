@@ -38,6 +38,11 @@ import { fileTooLargeMessage } from '../src/lib/plan-limits';
 import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import type { ConversionOptions, ConversionQueueItem } from '../src/lib/types';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
+import { testTranslator } from './helpers/intl';
+
+vi.mock('next-intl', async (importOriginal) =>
+  (await import('./helpers/intl-messages')).contextFreeNextIntl(importOriginal as () => Promise<typeof import('next-intl')>)
+);
 
 interface ControlProps {
   id?: string;
@@ -414,27 +419,21 @@ describe('Workbench media, document, and tabular capability model', () => {
       sanitizeOptionsForPair({ password: 'a'.repeat(257) }, 'pdf', 'txt')
     ).toEqual({ password: 'a'.repeat(257) });
 
+    const tPassword = testTranslator('en', 'options.password.errors');
     expect(getPasswordValidationError('txt', 'tar', '비밀번호')).toBeNull();
-    expect(getPasswordValidationError('txt', 'zip', '비밀번호')).toBe(
-      'ZIP passwords support 1 to 99 printable ASCII characters only.'
-    );
+    expect(getPasswordValidationError('txt', 'zip', '비밀번호')).toBe('zipCharset');
+    expect(tPassword('zipCharset')).toBe('ZIP passwords support 1 to 99 printable ASCII characters only.');
     expect(getPasswordValidationError('txt', '7z', '비밀번호🔑')).toBeNull();
     expect(isValidPasswordForTarget('비밀번호🔑', '7z')).toBe(true);
     for (const badPw of ['bad\rpw', 'bad\npw', 'bad\0pw', 'bad\ud800pw', 'bad\udc00pw']) {
       expect(isValidPasswordForTarget(badPw, '7z')).toBe(false);
-      expect(getPasswordValidationError('txt', '7z', badPw)).toBe(
-        'Passwords cannot contain line breaks, null bytes, or invalid Unicode.'
-      );
-      expect(getPasswordValidationError('pdf', 'txt', badPw)).toBe(
-        'Passwords cannot contain line breaks, null bytes, or invalid Unicode.'
-      );
+      expect(getPasswordValidationError('txt', '7z', badPw)).toBe('forbiddenChars');
+      expect(getPasswordValidationError('pdf', 'txt', badPw)).toBe('forbiddenChars');
     }
-    expect(getPasswordValidationError('txt', '7z', 'a'.repeat(257))).toBe(
-      'Passwords must be 256 characters or fewer.'
-    );
-    expect(getPasswordValidationError('pdf', 'txt', 'a'.repeat(257))).toBe(
-      'Passwords must be 256 characters or fewer.'
-    );
+    expect(tPassword('forbiddenChars')).toBe('Passwords cannot contain line breaks, null bytes, or invalid Unicode.');
+    expect(getPasswordValidationError('txt', '7z', 'a'.repeat(257))).toBe('tooLong');
+    expect(getPasswordValidationError('pdf', 'txt', 'a'.repeat(257))).toBe('tooLong');
+    expect(tPassword('tooLong')).toBe('Passwords must be 256 characters or fewer.');
 
     const pngPdfOpts: ConversionOptions = {
       ocrEnabled: true,
@@ -825,7 +824,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(zipItem.targetFormat).toBe('zip');
     expect(zipItem.options).toEqual({ password: '비밀번호' });
     expect(zipItem.status).toBe('error');
-    expect(zipItem.error).toBe('ZIP passwords support 1 to 99 printable ASCII characters only.');
+    expect(zipItem.error).toBeUndefined();
 
     const invalidZipRowDom = renderDom(
       createElement(QueueItemRow, {

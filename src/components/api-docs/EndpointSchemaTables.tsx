@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import {
   dereferenceSchema,
   formatSchemaType,
@@ -26,20 +27,21 @@ export function ParametersTable({
   parameters: OpenApiParameter[];
   schemas?: Record<string, OpenApiSchemaObject>;
 }>) {
+  const t = useTranslations('apiDocs.schema');
   return (
     <div>
       <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider mb-2">
-        Parameters
+        {t('parameters')}
       </h3>
       <div className="rounded-md border border-rule overflow-x-auto max-w-full">
         <table className="w-full text-left text-xs">
           <thead className="bg-sunken text-ink-2 border-b border-rule">
             <tr>
-              <th className="px-4 py-2.5 font-semibold">Name</th>
-              <th className="px-4 py-2.5 font-semibold">In</th>
-              <th className="px-4 py-2.5 font-semibold">Type</th>
-              <th className="px-4 py-2.5 font-semibold">Required</th>
-              <th className="px-4 py-2.5 font-semibold">Description</th>
+              <th className="px-4 py-2.5 font-semibold">{t('columns.name')}</th>
+              <th className="px-4 py-2.5 font-semibold">{t('columns.in')}</th>
+              <th className="px-4 py-2.5 font-semibold">{t('columns.type')}</th>
+              <th className="px-4 py-2.5 font-semibold">{t('columns.required')}</th>
+              <th className="px-4 py-2.5 font-semibold">{t('columns.description')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-rule bg-surface">
@@ -59,13 +61,13 @@ export function ParametersTable({
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap">
                     {param.required ? (
-                      <span className="text-danger font-bold">Yes</span>
+                      <span className="text-danger font-bold">{t('yes')}</span>
                     ) : (
-                      <span className="text-ink-3">No</span>
+                      <span className="text-ink-3">{t('no')}</span>
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-ink min-w-[180px]">
-                    {description ? renderInlineCode(description) : 'Optional parameter'}
+                    {description ? renderInlineCode(description) : t('optionalParameter')}
                   </td>
                 </tr>
               );
@@ -84,10 +86,11 @@ export function RequestBodySection({
   content: Record<string, OpenApiMediaType>;
   schemas?: Record<string, OpenApiSchemaObject>;
 }>) {
+  const t = useTranslations('apiDocs.schema');
   return (
     <div>
       <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider mb-2">
-        Request Body
+        {t('requestBody')}
       </h3>
       <div className="space-y-3">
         {Object.entries(content).map(([contentType, media]) => {
@@ -127,7 +130,7 @@ export function RequestBodySection({
                 </div>
               ) : (
                 <div className="text-ink-3">
-                  Binary stream or structured schema payload.
+                  {t('binaryPayload')}
                 </div>
               )}
             </div>
@@ -141,10 +144,11 @@ export function RequestBodySection({
 export function ResponsesGrid({
   responses,
 }: Readonly<{ responses: NonNullable<OpenApiOperation['responses']> }>) {
+  const t = useTranslations('apiDocs.schema');
   return (
     <div>
       <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider mb-2">
-        Responses
+        {t('responses')}
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
         {Object.entries(responses).map(([statusCode, resp]) => (
@@ -162,7 +166,7 @@ export function ResponsesGrid({
               </span>
             </div>
             <p className="text-xs text-ink-2">
-              {resp.description ? renderInlineCode(resp.description) : 'Response payload'}
+              {resp.description ? renderInlineCode(resp.description) : t('responsePayload')}
             </p>
           </div>
         ))}

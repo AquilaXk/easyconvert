@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
+import { useTranslations } from 'next-intl';
 import { Globe, X, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
-import { formatBytes } from '@/lib/format-bytes';
 import { URL_IMPORT_MAX_BYTES } from '@/lib/plan-limits';
+import { useFormatBytes } from './i18n/format';
+import { useServerErrorMessage } from './i18n/problems';
 
 export interface UrlImportModalProps {
   isOpen?: boolean;
@@ -12,15 +14,14 @@ export interface UrlImportModalProps {
   onAddFile?: (file: File) => void;
 }
 
-interface FetchUrlErrorPayload {
-  error?: string;
-}
-
 export default function UrlImportModal({
   isOpen = true,
   onClose,
   onAddFile,
 }: Readonly<UrlImportModalProps>) {
+  const t = useTranslations('urlImport');
+  const formatBytes = useFormatBytes();
+  const serverErrorMessage = useServerErrorMessage();
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,11 +36,17 @@ export default function UrlImportModal({
     const targetUrl = url.trim();
     if (!targetUrl) return;
 
+    setLoading(true);
+    setError(null);
     try {
-      setLoading(true);
-      setError(null);
       new URL(targetUrl);
+    } catch {
+      setError(t('invalidUrl'));
+      setLoading(false);
+      return;
+    }
 
+    try {
       const response = await fetch('/api/fetch-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -47,8 +54,9 @@ export default function UrlImportModal({
       });
 
       if (!response.ok) {
-        const errJson = (await response.json().catch(() => ({}))) as FetchUrlErrorPayload;
-        throw new Error(errJson.error || `Failed to fetch file (HTTP ${response.status})`);
+        const payload: unknown = await response.json().catch(() => ({}));
+        setError(serverErrorMessage(payload, t('fetchFailed', { status: response.status })));
+        return;
       }
 
       const rawFilename = response.headers.get('X-Filename');
@@ -61,8 +69,8 @@ export default function UrlImportModal({
 
       onAddFile?.(file);
       onClose();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Invalid URL or network error');
+    } catch {
+      setError(t('networkError'));
     } finally {
       setLoading(false);
     }
@@ -84,17 +92,17 @@ export default function UrlImportModal({
               id="url-import-heading"
               className="text-lg text-ink"
             >
-              Add File from URL
+              {t('heading')}
             </h2>
             <p className="text-xs text-ink-3">
-              Enter a direct HTTP or HTTPS link to a file of up to {formatBytes(URL_IMPORT_MAX_BYTES)}
+              {t('intro', { size: formatBytes(URL_IMPORT_MAX_BYTES) })}
             </p>
           </div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close dialog"
+          aria-label={t('close')}
           className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
         >
           <X className="w-4 h-4" />
@@ -112,7 +120,7 @@ export default function UrlImportModal({
             htmlFor="url-input"
             className="block text-xs font-semibold text-ink mb-1.5"
           >
-            File URL
+            {t('label')}
           </label>
           <input
             id="url-input"
@@ -141,7 +149,7 @@ export default function UrlImportModal({
             onClick={onClose}
             className="min-h-[44px] px-4 text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken rounded-sm transition-colors cursor-pointer"
           >
-            Cancel
+            {t('cancel')}
           </button>
           <button
             type="submit"
@@ -151,11 +159,11 @@ export default function UrlImportModal({
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Fetching...</span>
+                <span>{t('fetching')}</span>
               </>
             ) : (
               <>
-                <span>Load File</span>
+                <span>{t('submit')}</span>
                 <ArrowRight className="w-4 h-4" />
               </>
             )}

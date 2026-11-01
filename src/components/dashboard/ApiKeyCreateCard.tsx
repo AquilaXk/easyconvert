@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import { Check, Copy, Key, Loader2 } from 'lucide-react';
 import type { ApiKeyScope } from '@/lib/api-keys/types';
 import {
@@ -7,10 +8,11 @@ import {
   type KeyExpiryOption,
 } from './dashboard-types';
 
-const RBAC_SCOPE_ITEMS: ReadonlyArray<{ id: ApiKeyScope; label: string }> = [
-  { id: 'convert:write', label: 'convert:write (Upload & Convert)' },
-  { id: 'convert:read', label: 'convert:read (Job Status & Polling)' },
-  { id: 'storage:download', label: 'storage:download (Output Artifacts)' },
+/** The scopes a new key can hold; each one's description is `dashboard.keys.scopes.<key>` in the messages. */
+const RBAC_SCOPE_ITEMS: ReadonlyArray<{ id: ApiKeyScope; key: 'convertWrite' | 'convertRead' | 'storageDownload' }> = [
+  { id: 'convert:write', key: 'convertWrite' },
+  { id: 'convert:read', key: 'convertRead' },
+  { id: 'storage:download', key: 'storageDownload' },
 ];
 
 export function GeneratedSecretBanner({
@@ -24,13 +26,14 @@ export function GeneratedSecretBanner({
   onCopy: (text: string) => void;
   onDismiss: () => void;
 }>) {
+  const t = useTranslations('dashboard.keys.generated');
   return (
     <section
-      aria-label="Generated API key"
+      aria-label={t('label')}
       className="bg-success-soft border border-success-edge/40 rounded-md p-5"
     >
       <output aria-live="polite" className="sr-only">
-        {copiedKey ? 'API secret key copied to clipboard.' : 'API key generated.'}
+        {copiedKey ? t('copiedAnnouncement') : t('generatedAnnouncement')}
       </output>
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <div className="text-accent-ink shrink-0 self-start">
@@ -38,15 +41,15 @@ export function GeneratedSecretBanner({
         </div>
         <div className="flex-1 min-w-0">
           <h2 className="text-lg text-ink">
-            API Key Generated
+            {t('heading')}
           </h2>
           <p className="text-xs text-ink-2 mt-1">
-            Copy this secret key now. Only the key hash is stored and the secret is not shown again.
+            {t('body')}
           </p>
 
           <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             <label htmlFor="generated-secret-key-input" className="sr-only">
-              Generated API secret key
+              {t('inputLabel')}
             </label>
             <input
               id="generated-secret-key-input"
@@ -58,7 +61,7 @@ export function GeneratedSecretBanner({
             <button
               type="button"
               onClick={() => onCopy(secret)}
-              aria-label="Copy generated API key"
+              aria-label={t('copyLabel')}
               className="lift min-h-[44px] px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent font-semibold text-sm inline-flex items-center justify-center gap-2 shrink-0"
             >
               {copiedKey ? (
@@ -66,14 +69,14 @@ export function GeneratedSecretBanner({
               ) : (
                 <Copy className="w-4 h-4" aria-hidden="true" />
               )}
-              <span>{copiedKey ? 'Copied' : 'Copy Key'}</span>
+              <span>{copiedKey ? t('copied') : t('copy')}</span>
             </button>
             <button
               type="button"
               onClick={onDismiss}
               className="min-h-[44px] px-3.5 py-2 rounded-sm border border-rule text-ink text-sm font-semibold hover:bg-surface"
             >
-              Dismiss
+              {t('dismiss')}
             </button>
           </div>
         </div>
@@ -105,22 +108,23 @@ export function CreateApiKeyForm({
   onSubmit,
   onCancel,
 }: Readonly<CreateApiKeyFormProps>) {
+  const t = useTranslations('dashboard.keys');
   return (
     <div className="mb-6 p-5 rounded-md border border-rule">
-      <h3 className="text-sm font-bold text-ink mb-4">Create New API Key</h3>
+      <h3 className="text-sm font-bold text-ink mb-4">{t('createHeading')}</h3>
       <form onSubmit={onSubmit} className="space-y-4">
         <div>
           <label
             htmlFor="new-key-name-input"
             className="block text-xs font-semibold text-ink-2 mb-1.5"
           >
-            Key Name
+            {t('name')}
           </label>
           <input
             id="new-key-name-input"
             type="text"
             required
-            placeholder="Production Backend Worker"
+            placeholder={t('namePlaceholder')}
             value={newKeyName}
             onChange={(e) => onNameChange(e.target.value)}
             className="w-full min-h-[44px] px-3.5 py-2 rounded-sm border border-rule-strong bg-surface/80 text-base text-ink"
@@ -130,7 +134,7 @@ export function CreateApiKeyForm({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <fieldset className="border-0 p-0 m-0 min-w-0">
             <legend className="block text-xs font-semibold text-ink-2 mb-2">
-              Granular Scopes (RBAC)
+              {t('scopesLegend')}
             </legend>
             <div className="space-y-1.5">
               {RBAC_SCOPE_ITEMS.map((scopeItem) => {
@@ -148,14 +152,14 @@ export function CreateApiKeyForm({
                       onChange={(e) => onToggleScope(scopeItem.id, e.target.checked)}
                       className="w-4 h-4 rounded-md text-base text-accent-ink"
                     />
-                    <span className="font-mono">{scopeItem.label}</span>
+                    <span className="font-mono">{t(`scopes.${scopeItem.key}`, { scope: scopeItem.id })}</span>
                   </label>
                 );
               })}
             </div>
             {selectedScopes.length === 0 && (
               <p role="alert" className="text-xs font-medium text-danger mt-1.5">
-                Select at least one scope to generate a key.
+                {t('scopesRequired')}
               </p>
             )}
           </fieldset>
@@ -165,7 +169,7 @@ export function CreateApiKeyForm({
               htmlFor="key-expiry-select"
               className="block text-xs font-semibold text-ink-2 mb-1.5"
             >
-              Key Expiration
+              {t('expiry')}
             </label>
             <select
               id="key-expiry-select"
@@ -177,14 +181,14 @@ export function CreateApiKeyForm({
               }}
               className="w-full min-h-[44px] px-3 py-2 rounded-sm border border-rule-strong bg-surface/80 text-base text-ink"
             >
-              {KEY_EXPIRY_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
+              {KEY_EXPIRY_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {t(`expiryChoices.${value}`)}
                 </option>
               ))}
             </select>
             <p className="text-[11px] text-ink-3 mt-2">
-              A <code>key.expiring_soon</code> webhook fires 7 days before expiration.
+              {t.rich('expiryNote', { code: (chunks) => <code>{chunks}</code> })}
             </p>
           </div>
         </div>
@@ -200,14 +204,14 @@ export function CreateApiKeyForm({
             ) : (
               <Key className="w-4 h-4" />
             )}
-            <span>Create API Key</span>
+            <span>{t('create')}</span>
           </button>
           <button
             type="button"
             onClick={onCancel}
             className="min-h-[44px] px-4 py-2 rounded-sm border border-rule text-sm font-semibold hover:bg-sunken"
           >
-            Cancel
+            {t('cancel')}
           </button>
         </div>
       </form>

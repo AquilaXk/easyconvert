@@ -1,6 +1,8 @@
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import { ArrowRightLeft, Check, Copy, HelpCircle } from 'lucide-react';
 import { UNIT_CATEGORIES, type UnitCategory, type UnitDefinition } from '@/lib/unit-catalog';
+import { useUnitCopy } from './unit-copy';
 
 interface CategorySelectorBarProps {
   activeCategoryKey: string;
@@ -11,9 +13,11 @@ export function CategorySelectorBar({
   activeCategoryKey,
   onSelectCategory,
 }: Readonly<CategorySelectorBarProps>) {
+  const t = useTranslations('unitConverter');
+  const { categoryName } = useUnitCopy();
   return (
     <fieldset className="border-0 p-0 m-0 min-w-0">
-      <legend className="sr-only">Unit categories</legend>
+      <legend className="sr-only">{t('categoriesLegend')}</legend>
       <div className="flex flex-wrap items-center gap-2">
         {Object.entries(UNIT_CATEGORIES).map(([key, cat]) => {
           const Icon = cat.icon;
@@ -31,7 +35,7 @@ export function CategorySelectorBar({
               }`}
             >
               <Icon className={`w-4 h-4 ${isActive ? 'text-ink' : 'text-accent-ink'}`} aria-hidden="true" />
-              <span>{cat.name}</span>
+              <span>{categoryName(cat)}</span>
             </button>
           );
         })}
@@ -72,6 +76,8 @@ export interface UnitWorkbenchCardProps {
   handlers: Readonly<UnitWorkbenchHandlers>;
 }
 
+const PRECISION_CHOICES = [2, 4, 6, 8] as const;
+
 function isEditableNumericDraft(val: string): boolean {
   let hasDot = false;
   const start = val.startsWith('-') ? 1 : 0;
@@ -92,6 +98,8 @@ export function UnitWorkbenchCard({
   values,
   handlers,
 }: Readonly<UnitWorkbenchCardProps>) {
+  const t = useTranslations('unitConverter');
+  const { unitName } = useUnitCopy();
   const { currentCategory, fromDef, toDef, fromUnitKey, toUnitKey } = selection;
   const { inputStr, formattedResult, rawCopyValue, precision, formulaText, isCopied } = values;
   const { onChangeInput, onChangeFromUnit, onChangeToUnit, onChangePrecision, onSwap, onCopyResult } = handlers;
@@ -102,16 +110,16 @@ export function UnitWorkbenchCard({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-rule pb-5">
         <div>
           <h2 className="text-2xl sm:text-3xl text-ink">
-            {fromDef.name} to {toDef.name} Converter
+            {t('heading', { from: unitName(currentCategory, fromDef), to: unitName(currentCategory, toDef) })}
           </h2>
           <p className="text-xs sm:text-sm text-ink-2 mt-1">
-            High-precision client calculation with zero network round-trips.
+            {t('intro')}
           </p>
         </div>
 
         <div className="flex items-center gap-2.5 self-start sm:self-auto">
           <label htmlFor="unit-precision-select" className="text-xs font-semibold text-ink-2">
-            Decimals
+            {t('decimals')}
           </label>
           <select
             id="unit-precision-select"
@@ -119,10 +127,9 @@ export function UnitWorkbenchCard({
             onChange={(e) => onChangePrecision(Number.parseInt(e.target.value, 10))}
             className="bg-surface/80 min-h-[44px] px-3 py-2 rounded-sm border border-rule-strong text-base text-ink font-medium focus:border-accent cursor-pointer"
           >
-            <option value={2}>2 decimals</option>
-            <option value={4}>4 decimals</option>
-            <option value={6}>6 decimals</option>
-            <option value={8}>8 decimals</option>
+            {PRECISION_CHOICES.map((digits) => (
+              <option key={digits} value={digits}>{t('decimalsValue', { digits })}</option>
+            ))}
           </select>
         </div>
       </div>
@@ -130,7 +137,7 @@ export function UnitWorkbenchCard({
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-5">
         <div className="space-y-3 p-5 rounded-md border border-rule">
           <label htmlFor="unit-from-value" className="block text-xs font-semibold uppercase tracking-wider text-ink-2">
-            From Value
+            {t('fromValue')}
           </label>
           <input
             id="unit-from-value"
@@ -146,7 +153,7 @@ export function UnitWorkbenchCard({
           />
 
           <label htmlFor="unit-from-select" className="block text-xs font-semibold text-ink-2 pt-1">
-            Source Unit
+            {t('sourceUnit')}
           </label>
           <select
             id="unit-from-select"
@@ -155,7 +162,7 @@ export function UnitWorkbenchCard({
             className="w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-surface/80 border border-rule-strong text-base font-medium text-ink focus:border-accent cursor-pointer"
           >
             {unitEntries.map(([key, def]) => (
-              <option key={key} value={key}>{def.name} ({def.symbol})</option>
+              <option key={key} value={key}>{unitName(currentCategory, def)} ({def.symbol})</option>
             ))}
           </select>
         </div>
@@ -164,7 +171,7 @@ export function UnitWorkbenchCard({
           <button
             type="button"
             onClick={onSwap}
-            aria-label="Swap source and target units"
+            aria-label={t('swap')}
             className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2.5 rounded-sm hover:bg-accent-soft text-accent-ink border border-rule transition-colors cursor-pointer"
           >
             <ArrowRightLeft className="w-5 h-5" aria-hidden="true" />
@@ -174,19 +181,19 @@ export function UnitWorkbenchCard({
         <div className="space-y-3 p-5 rounded-md bg-accent-soft/50 border border-accent-edge">
           <div className="flex items-center justify-between gap-2">
             <label htmlFor="unit-to-value" className="block text-xs font-semibold uppercase tracking-wider text-accent-ink">
-              Converted Result ({toDef.symbol})
+              {t('result', { symbol: toDef.symbol })}
             </label>
             <button
               type="button"
               onClick={() => onCopyResult(rawCopyValue)}
-              aria-label="Copy converted result"
+              aria-label={t('copyLabel')}
               className="inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-sm text-xs font-semibold bg-surface border border-rule text-accent-ink hover:border-accent transition-colors cursor-pointer"
             >
               {isCopied ? <Check className="w-3.5 h-3.5 text-success" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
-              <span>{isCopied ? 'Copied' : 'Copy'}</span>
+              <span>{isCopied ? t('copied') : t('copy')}</span>
             </button>
             <output aria-live="polite" className="sr-only">
-              {isCopied ? 'Copied converted result to clipboard.' : ''}
+              {isCopied ? t('copiedAnnouncement') : ''}
             </output>
           </div>
 
@@ -199,7 +206,7 @@ export function UnitWorkbenchCard({
           />
 
           <label htmlFor="unit-to-select" className="block text-xs font-semibold text-ink-2 pt-1">
-            Target Unit
+            {t('targetUnit')}
           </label>
           <select
             id="unit-to-select"
@@ -208,7 +215,7 @@ export function UnitWorkbenchCard({
             className="w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-surface/80 border border-rule-strong text-base font-medium text-ink focus:border-accent cursor-pointer"
           >
             {unitEntries.map(([key, def]) => (
-              <option key={key} value={key}>{def.name} ({def.symbol})</option>
+              <option key={key} value={key}>{unitName(currentCategory, def)} ({def.symbol})</option>
             ))}
           </select>
         </div>
@@ -218,12 +225,12 @@ export function UnitWorkbenchCard({
         <div className="flex flex-wrap items-center gap-2 text-ink-2">
           <HelpCircle className="w-4 h-4 text-accent-ink shrink-0" aria-hidden="true" />
           <span className="px-2 py-0.5 rounded-md bg-surface border border-rule font-semibold text-ink">
-            Formula
+            {t('formula')}
           </span>
           <code className="font-mono text-accent-ink font-semibold">{formulaText}</code>
         </div>
         <span className="text-success font-semibold self-start sm:self-auto">
-          100% In-Browser &amp; Private
+          {t('private')}
         </span>
       </div>
     </section>

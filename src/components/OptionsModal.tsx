@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { X } from 'lucide-react';
 import { ConversionOptions } from '@/lib/types';
 import { useModalDialog } from '@/hooks/useModalDialog';
@@ -100,6 +101,7 @@ function MediaAndDataGroup({ visible, options, onChange }: Readonly<ModalSection
 export default function OptionsModal({
   filename, sourceFormat, targetFormat, initialOptions, onSave, onClose,
 }: Readonly<OptionsModalProps>) {
+  const t = useTranslations('options.modal');
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [options, setOptions] = useState<ConversionOptions>(() =>
     sanitizeOptionsForPair(initialOptions, sourceFormat, targetFormat)
@@ -108,7 +110,7 @@ export default function OptionsModal({
   useModalDialog(dialogRef, true, onClose);
 
   const visible = computeVisibleSections(sourceFormat, targetFormat);
-  const targetLabel = (targetFormat || 'target').toUpperCase();
+  const targetLabel = targetFormat ? targetFormat.toUpperCase() : t('targetFallback');
   const hasInvalidPassword =
     getPasswordValidationError(sourceFormat, targetFormat, options.password) !== null;
 
@@ -127,15 +129,15 @@ export default function OptionsModal({
       <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h2 id="options-modal-title" className="text-lg text-ink">
-            Conversion Options
+            {t('heading')}
           </h2>
           <p className="text-xs text-ink-2 mt-0.5 truncate">
-            {filename} ({sourceFormat.toUpperCase()} to {targetLabel})
+            {t('subtitle', { filename, src: sourceFormat.toUpperCase(), tgt: targetLabel })}
           </p>
         </div>
         <button
           type="button"
-          aria-label="Close options"
+          aria-label={t('close')}
           onClick={onClose}
           className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm border border-rule text-ink-3 hover:text-ink hover:border-accent transition-colors cursor-pointer shrink-0"
         >
@@ -148,7 +150,7 @@ export default function OptionsModal({
         <MediaAndDataGroup visible={visible} options={options} onChange={setOptions} />
         {!visible.hasAny && (
           <p className="text-sm text-ink-2">
-            Standard lossless conversion parameters apply for this format pair.
+            {t('noOptions')}
           </p>
         )}
       </div>
@@ -159,7 +161,7 @@ export default function OptionsModal({
           onClick={() => setOptions({ ...DEFAULT_OPTIONS })}
           className="transition-colors min-h-[44px] px-4 rounded-sm border border-rule-strong text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
         >
-          Reset
+          {t('reset')}
         </button>
         <button
           type="button"
@@ -167,7 +169,7 @@ export default function OptionsModal({
           onClick={handleApply}
           className="lift min-h-[44px] px-5 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Apply Options
+          {t('apply')}
         </button>
       </div>
     </dialog>
