@@ -93,7 +93,7 @@ export function useProblemWording(): (payload: unknown, status: number, fallback
           const value = numberField(fields, field);
           return value === undefined ? undefined : t(`limits.${key}`, { limit: unit === 'bytes' ? formatBytes(value) : format.number(value) });
         };
-        const limitSentence = Object.hasOwn(LIMIT_SENTENCES, name) ? LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge }) : undefined;
+        const limitSentence = LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge });
         return { message: limitSentence ?? t(`problems.${name}`), technical };
       }
       return { message: fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server')), technical };

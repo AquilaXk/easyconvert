@@ -13,9 +13,6 @@ import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
-  ArchiveEncryptedHeaderError,
-  ArchiveEntryCollisionError,
-  MissingVolumeError,
   isUnprocessableInputError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -45,6 +42,10 @@ const UNCLASSIFIED_FAILURE = 'The conversion failed on the server.';
 const refusal = codedRefusal<ConversionRefusalCode>;
 
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+const HTTP_UNPROCESSABLE_CONTENT = 422;
+
+/** The archive refusals answered as a coded 422 by the code their class declares: an entry name collision, a missing volume, an encrypted header. */
+const CODED_ARCHIVE_REFUSALS: ReadonlySet<ConversionRefusalCode> = new Set(['archive_entry_collision', 'missing_volume', 'encrypted_input']);
 
 const isMultipartBody = (req: NextRequest): boolean => (req.headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
 
@@ -73,9 +74,6 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
   if (error instanceof PdfPostprocessError) {
     return createPdfPostprocessResponse(error, instanceUri);
   }
-  if (error instanceof ArchiveEntryCollisionError || error instanceof MissingVolumeError || error instanceof ArchiveEncryptedHeaderError) {
-    return refusal(error.status, error.refusalCode, error.message);
-  }
   const limitStatus = payloadLimitStatus(error);
   if (limitStatus !== null) {
     // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
@@ -91,13 +89,17 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
       code: error.refusalCode,
     });
   }
+  const code = refusalCodeOf(error);
+  if (error instanceof Error && (error as { status?: unknown }).status === HTTP_UNPROCESSABLE_CONTENT && code && CODED_ARCHIVE_REFUSALS.has(code)) {
+    return refusal(HTTP_UNPROCESSABLE_CONTENT, code, error.message);
+  }
   if (error instanceof WorkerOutputMissingError) {
     // A server fault, not a verdict on the input: answer 500 without the worker's file name.
     console.error('[convert] Worker output vanished before it was read:', error);
     return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
   }
   const message = error instanceof Error ? error.message : UNCLASSIFIED_FAILURE;
-  if (isValidationError(error, message)) return refusal(400, refusalCodeOf(error) ?? 'conversion_failed', message);
+  if (isValidationError(error, message)) return refusal(400, code ?? 'conversion_failed', message);
   return serverFault('convert', error, UNCLASSIFIED_FAILURE);
 }
 
