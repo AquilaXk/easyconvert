@@ -29,7 +29,7 @@ import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, officeInputWithoutMacros } from './office-input-checks';
 import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
-import { withConversionWarnings } from '../lib/conversions/conversion-warnings';
+import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
@@ -93,9 +93,10 @@ import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
 import {
-  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertWithinPixelCap,
-  hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
+  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertWithinPixelCap,
+  readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
+import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
@@ -1777,7 +1778,6 @@ export async function convertPdfPagesWithNativeTools(
 const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
 const RAW_DECODE_MAX_TIMEOUT_MS = 600_000;
-const RAW_DECODE_MAX_STDERR_CHARS = 300;
 /** Address-space ceiling for the decoder: room for the largest sensor plus LibRaw's working buffers. */
 const RAW_DECODE_MEMORY_LIMIT_MB = 4096;
 const RAW_DECODE_UNRECOGNIZED_PATTERN = /unsupported file format|not raw file/i;
@@ -1810,7 +1810,7 @@ export async function convertWithNativeRaw(
   const startTime = Date.now();
   const timeout = Math.min(stageTimeoutMs(options, RAW_DECODE_DEFAULT_TIMEOUT_MS), RAW_DECODE_MAX_TIMEOUT_MS);
 
-  return withSandboxDir('easyconvert-raw-', async (tempDir) => {
+  return withConversionWarnings(() => withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
     const decodedPath = path.join(tempDir, 'decoded.tiff');
     let decoderStderr = '';
@@ -1831,7 +1831,7 @@ export async function convertWithNativeRaw(
         throw new RawDecodeError(`Native RAW decoder exceeded its output limit or memory limit on the .${src} file`);
       }
       if (err instanceof SandboxedProcessError) {
-        const detail = err.stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, RAW_DECODE_MAX_STDERR_CHARS);
+        const detail = decoderStderrDetail(err.stderr.trim(), tempDir);
         throw new RawDecodeError(
           `Native RAW decoder rejected the .${src} file${detail ? `: ${detail}` : ''}`,
           RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr)
@@ -1844,24 +1844,19 @@ export async function convertWithNativeRaw(
     }
 
     // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
-    if (decoderStderr) {
-      throw new RawDecodeError(
-        `Native RAW decoder reported a problem with the .${src} file: ${decoderStderr.replaceAll(tempDir, '<tmp>').slice(0, RAW_DECODE_MAX_STDERR_CHARS)}`
-      );
-    }
+    const corruptedAt = decoderWarningOffset({ src, stderr: decoderStderr, inputPath, tempDir });
     const layout = readDecodedTiffLayout(decodedPath);
     assertWithinPixelCap(layout);
     assertCompleteDecodedImage(decodedPath, layout);
-    if (hasRepeatedTail(decodedPath, layout)) {
-      throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
-    }
+    assertDecodedRawWhole({ src, inputPath, decodedPath, layout, warned: corruptedAt !== null });
 
     const converted = await convertImage(readDecodedRawImage(decodedPath), tgt, options, originalFilename, 'tiff');
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
     fs.writeFileSync(tempOutputPath, converted.buffer);
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
+    if (corruptedAt !== null) reportConversionWarning(dataCorruptedWarning(corruptedAt));
     return createConversionResult(persistedPath, tgt, baseName, 'native-raw', Date.now() - startTime);
-  });
+  }));
 }
 
 /** SVG drawings written as PDF: librsvg draws the vectors and the text, so the page stays a vector page. */
