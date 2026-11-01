@@ -1,11 +1,10 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safety';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { getFormatByExtension } from '../lib/registry';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
+import { assertRegularFileSync, makeJobDirectory, moveIntoPlace, stagedOutputPath } from '../lib/storage/temp-file';
 import { readPersistedOutput } from './persisted-output';
 import { PayloadLimitError, type ConversionResult } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
@@ -16,13 +15,14 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
  */
 
 /**
- * Scoped sandbox directory runner with automated cleanup and error encapsulation.
+ * Runs `operation` in a directory of its own, removed afterwards. With the local driver the directory is in the storage
+ * directory, so the output the job writes there is stored by a rename (see `makeJobDirectory`).
  */
 export async function withSandboxDir<T>(
   prefix: string,
   operation: (tempDir: string) => Promise<T>
 ): Promise<T> {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const tempDir = makeJobDirectory(prefix);
   try {
     return await operation(tempDir);
   } finally {
@@ -97,14 +97,7 @@ export function resolveInputContext(
  */
 function resolveOutputPath(targetFormat: string, options?: WorkerEngineOptions, vfsPayload?: WorkerVfsPayload): string {
   const desiredOutput = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
-  if (desiredOutput) return desiredOutput;
-  const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
-  if (!fs.existsSync(vfsDir)) {
-    try {
-      fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
-    } catch {}
-  }
-  return path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
+  return desiredOutput || stagedOutputPath(targetFormat);
 }
 
 /**
@@ -141,12 +134,14 @@ export function internalFallbackResult(
   };
 }
 
+/** Copies the engine's output, which must be a regular file and not a link to another file, to its destination. */
 export function preserveOutput(
   tempOutputPath: string,
   targetFormat: string,
   options?: WorkerEngineOptions,
   vfsPayload?: WorkerVfsPayload
 ): string {
+  assertRegularFileSync(tempOutputPath);
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   fs.copyFileSync(tempOutputPath, finalPath);
   return finalPath;
@@ -154,25 +149,20 @@ export function preserveOutput(
 
 /**
  * Hands the finished output of a job to its destination and leaves nothing of it in the job directory. An output
- * nobody named a place for goes to a file of the worker's own naming, and the job directory is on the same volume as
- * that file in all but unusual setups, so the file is renamed into place and its bytes are not written a second time;
- * across volumes, or when the caller named the destination (which may be a link or a mount of its own), it is copied.
+ * nobody named a place for goes to a file of the worker's own naming beside the job directory, so it is renamed and its
+ * bytes are not written a second time (`moveIntoPlace` copies across volumes); when the caller named the destination
+ * (which may be a link or a mount of its own), it is copied. An output that is not a regular file is refused.
  */
-export function handOffOutput(
+export async function handOffOutput(
   tempOutputPath: string,
   targetFormat: string,
   options?: WorkerEngineOptions,
   vfsPayload?: WorkerVfsPayload
-): string {
+): Promise<string> {
   const named = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
   if (named) return preserveOutput(tempOutputPath, targetFormat, options, vfsPayload);
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
-  try {
-    fs.renameSync(tempOutputPath, finalPath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
-    fs.copyFileSync(tempOutputPath, finalPath);
-  }
+  await moveIntoPlace(tempOutputPath, finalPath, options?.signal);
   return finalPath;
 }
 

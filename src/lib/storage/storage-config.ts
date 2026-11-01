@@ -141,6 +141,18 @@ export function resolveLocalStorageDir(env: Env = process.env): string {
   return readVar(env, 'EASYCONVERT_STORAGE_DIR') ?? path.resolve(process.cwd(), DEFAULT_LOCAL_STORAGE_SUBDIR);
 }
 
+/**
+ * The parts of open uploads and the directories of running jobs live inside the storage directory, the only directory
+ * the web process and the workers share, so an upload is assembled and a result is stored there by a rename.
+ */
+export const LOCAL_PARTS_SUBDIR = '.parts';
+export const LOCAL_STAGING_SUBDIR = '.staging';
+
+/** Where the local driver's running jobs write: a folder of the storage directory. */
+export function resolveLocalStagingDir(env: Env = process.env): string {
+  return path.join(resolveLocalStorageDir(env), LOCAL_STAGING_SUBDIR);
+}
+
 /** `next build` imports route modules without a runtime environment, so nothing may be enforced then. */
 export function isProductionBuildPhase(env: Env = process.env): boolean {
   return env.NEXT_PHASE === PRODUCTION_BUILD_PHASE;

@@ -122,7 +122,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 42
+    "maxValue": 39
   },
   {
     "file": "src/app/api/v1/uploads/direct/complete/route.ts",
@@ -2425,12 +2425,6 @@
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "toNodeReadable",
     "count": 3
-  },
-  {
-    "file": "src/lib/storage/s3-storage.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "uploadPartStream",
-    "count": 6
   },
   {
     "file": "src/lib/storage/sigv4-presigner.ts",

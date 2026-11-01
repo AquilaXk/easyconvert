@@ -8,7 +8,7 @@ import type {
   ConversionOptions,
   ConversionResult,
 } from '../types';
-import type { IStorageBackend } from '../storage/oci-storage';
+import type { IStorageBackend, StoredObject } from '../storage/oci-storage';
 import { storageProvider } from '../storage';
 import { scopeStorageObjects } from '../storage/scoped-storage';
 import { convertFile } from '../conversions';
@@ -105,6 +105,22 @@ function discardConversionOutput(jobId: string, result: EngineResult): void {
       err
     );
   }
+}
+
+/**
+ * An attempt that learns after its save that it was aborted removes the result it stored, unless a later attempt has
+ * stored its own under the key since, and fails. A save the signal stopped earlier stored nothing. A backend that cannot
+ * tell two saves of a key apart keeps the result until it expires.
+ */
+async function discardResultOfAbortedAttempt(
+  storage: IStorageBackend,
+  resultKey: string,
+  written: StoredObject,
+  signal: AbortSignal
+): Promise<void> {
+  if (!signal.aborted) return;
+  await storage.deleteObjectIfUnchanged?.(resultKey, written);
+  signal.throwIfAborted();
 }
 
 /**
@@ -311,27 +327,18 @@ export async function processNodeJob(
     const resultKey = `results/${job.id}/${finalResult.filename}`;
     const { undeliveredTtlMs } = resolveRetentionPolicy();
 
-    if (
-      finalResult.filePath &&
-      fs.existsSync(finalResult.filePath) &&
-      typeof storage.saveObjectFromFile === 'function'
-    ) {
-      await storage.saveObjectFromFile(
-        resultKey,
-        finalResult.filePath,
-        finalResult.mimeType,
-        finalResult.filename,
-        undeliveredTtlMs
-      );
-    } else {
-      await storage.saveObject(
-        resultKey,
-        finalResult.buffer,
-        finalResult.mimeType,
-        finalResult.filename,
-        undeliveredTtlMs
-      );
-    }
+    const written =
+      finalResult.filePath && fs.existsSync(finalResult.filePath) && typeof storage.saveObjectFromFile === 'function'
+        ? await storage.saveObjectFromFile(
+            resultKey,
+            finalResult.filePath,
+            finalResult.mimeType,
+            finalResult.filename,
+            undeliveredTtlMs,
+            attemptSignal
+          )
+        : await storage.saveObject(resultKey, finalResult.buffer, finalResult.mimeType, finalResult.filename, undeliveredTtlMs);
+    await discardResultOfAbortedAttempt(storage, resultKey, written, attemptSignal);
 
     await registerStoredResult(storage, resultKey);
 

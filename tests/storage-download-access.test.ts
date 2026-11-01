@@ -4,6 +4,9 @@ import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
 import { storageProvider } from '../src/lib/storage';
+import { mayUseStorageKeyAsJobInput, resolveObjectOwnership } from '../src/lib/api-keys/owner-access';
+import { classifyStorageKey } from '../src/lib/storage/key-namespace';
+import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -86,6 +89,64 @@ describe('/api/storage/file owner access (#249)', () => {
     const res = await download(key, sessionHeaders(alice));
     expect(res.status).toBe(200);
     expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
+  });
+
+  it('answers a key outside the namespaces of stored files with the missing-object 404 before it reads storage or the ledger', async () => {
+    const stat = vi.spyOn(storageProvider, 'stat');
+    const ledger = vi.spyOn(getRetentionLedger(), 'get');
+    const receipt = `upload-completion/${crypto.createHash('sha256').update('some-upload-id').digest('hex')}`;
+
+    for (const key of [receipt, '.retention/record.json', 'conversions/no-file-name', 'tus:session:abc']) {
+      const res = await download(key);
+
+      expect(res.status, key).toBe(404);
+      expect(await res.json(), key).toEqual(notFoundBody(key));
+    }
+    expect(stat).not.toHaveBeenCalled();
+    expect(ledger).not.toHaveBeenCalled();
+  });
+
+  it('serves an intermediate/<graph>/<node>/ key to whoever holds its URL, as the downloadUrl of a graph node advertises', async () => {
+    const stranger = await createUser('dl_stranger');
+    const key = storeObject(`intermediate/graph_${uniqueSuffix()}/node_1/out.txt`);
+
+    const anonymous = await download(key);
+    const signedIn = await download(key, sessionHeaders(stranger));
+
+    for (const res of [anonymous, signedIn]) {
+      expect(res.status).toBe(200);
+      expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
+    }
+  });
+
+  it('resolves the keys the server writes and no other, and keeps an intermediate key out of the inputs of a job as before', async () => {
+    const stranger = await createUser('dl_job_input');
+    const key = storeObject(`intermediate/graph_${uniqueSuffix()}/node_1/out.txt`);
+
+    expect(classifyStorageKey(key)).toEqual({ namespace: 'intermediate' });
+    expect(await resolveObjectOwnership(key)).toEqual({ resolved: true, ownerUserId: undefined });
+    expect(await mayUseStorageKeyAsJobInput(key, stranger.id)).toBe(false);
+    for (const unknown of ['intermediate/graph/out.txt', 'intermediate/graph/node', 'tus:session:abc', 'uploads', '.retention/record.json']) {
+      expect(classifyStorageKey(unknown), unknown).toEqual({ namespace: 'other' });
+      expect(await resolveObjectOwnership(unknown), unknown).toEqual({ resolved: false });
+    }
+  });
+
+  it('never reads a stored object of another namespace through a key that climbs out of uploads/, plain or encoded', async () => {
+    const owner = await createUser('dl_climb_owner');
+    const secret = storeObject(`conversions/${owner.id}/${uniqueSuffix()}_secret.txt`);
+    const stat = vi.spyOn(storageProvider, 'stat');
+    const climbing = `uploads/../${secret}`;
+
+    const plain = await download(climbing);
+    const encodedSlash = await downloadRoute(new NextRequest(`${BASE_URL}/api/storage/file/${climbing.replace(/\//g, '%2F')}`), {
+      params: Promise.resolve({ key: [climbing.replace(/\//g, '%2F')] }),
+    });
+
+    for (const res of [plain, encodedSlash]) {
+      expect(res.status).toBe(404);
+    }
+    expect(stat.mock.calls.map(([asked]) => asked)).not.toContain(secret);
   });
 
   it('answers other users and anonymous callers with the missing-object 404 body', async () => {

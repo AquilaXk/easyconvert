@@ -28,24 +28,24 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
   // 1. Zero-Heap S3 / R2 Multipart Storage Engine
   // ==========================================================================
   describe('Zero-Heap S3 / R2 Storage Engine (Component 3.1)', () => {
-    it('manages zero-heap multipart upload sessions with disk-backed parts', () => {
+    it('manages zero-heap multipart upload sessions with disk-backed parts', async () => {
       const storage = new S3ObjectStorageService();
       const filename = 'large-video-recording.mp4';
       const mimeType = 'video/mp4';
-      const totalSize = 100 * 1024 * 1024; // 100 MB
+      const chunk1 = Buffer.from('Zero-Heap chunk 1 streaming bytes from network.');
+      const chunk2 = Buffer.from('Zero-Heap chunk 2 streaming bytes from network.');
+      const totalSize = chunk1.length + chunk2.length;
 
       // 1. Initiate multipart upload
-      const init = storage.initiateMultipartUpload(filename, mimeType, totalSize);
-      expect(init.uploadId).toMatch(/^oci_mp_/);
+      const init = await storage.initiateMultipartUpload(filename, mimeType, totalSize);
+      expect(init.uploadId).toMatch(/^up_/);
       expect(init.key).toContain('large-video-recording.mp4');
       expect(init.partSize).toBeGreaterThan(0);
       expect(init.totalParts).toBeGreaterThan(0);
 
       // 2. Upload chunks with zero-heap disk backing
-      const chunk1 = Buffer.from('Zero-Heap chunk 1 streaming bytes from network.');
-      const chunk2 = Buffer.from('Zero-Heap chunk 2 streaming bytes from network.');
-      const part1 = storage.uploadPart(init.uploadId, 1, chunk1);
-      const part2 = storage.uploadPart(init.uploadId, 2, chunk2);
+      const part1 = await storage.uploadPart(init.uploadId, 1, chunk1);
+      const part2 = await storage.uploadPart(init.uploadId, 2, chunk2);
 
       expect(part1.partNumber).toBe(1);
       expect(part1.size).toBe(chunk1.length);
@@ -56,10 +56,10 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
       expect(part2.etag).toBeDefined();
 
       // 3. Complete multipart upload
-      const complete = storage.completeMultipartUpload(init.uploadId);
+      const complete = await storage.completeMultipartUpload(init.uploadId);
       expect(complete.key).toBe(init.key);
       expect(complete.size).toBe(chunk1.length + chunk2.length);
-      expect(complete.etag).toContain('-2"'); // S3 multipart ETag format
+      expect(complete.etag).toMatch(/^"[0-9a-f]{64}"$/);
 
       // 4. Retrieve stored object
       const retrieved = storage.getObject(complete.key);
@@ -117,14 +117,14 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
       storage.stopGc();
     });
 
-    it('cleans up temporary disk directories on abort and sweeps expired sessions', () => {
+    it('cleans up temporary disk directories on abort and sweeps expired sessions', async () => {
       const storage = new S3ObjectStorageService();
-      const init = storage.initiateMultipartUpload('temp.bin', 'application/octet-stream', 1024);
-      storage.uploadPart(init.uploadId, 1, Buffer.from('data'));
+      const init = await storage.initiateMultipartUpload('temp.bin', 'application/octet-stream', 1024);
+      await storage.uploadPart(init.uploadId, 1, Buffer.from('data'));
 
-      const aborted = storage.abortMultipartUpload(init.uploadId);
+      const aborted = await storage.abortMultipartUpload(init.uploadId);
       expect(aborted).toBe(true);
-      expect(() => storage.completeMultipartUpload(init.uploadId)).toThrow();
+      await expect(storage.completeMultipartUpload(init.uploadId)).rejects.toThrow();
 
       // Sweeping expired objects
       const swept = storage.sweepExpiredObjects(Date.now() + 48 * 60 * 60 * 1000);

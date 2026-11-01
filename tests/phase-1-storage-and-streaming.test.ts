@@ -30,14 +30,14 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       expect(retrievedViaProvider?.buffer.toString('utf-8')).toBe('Enterprise unified storage content');
     });
 
-    it('makes S3 multipart upload output immediately accessible to OCI worker', () => {
+    it('makes S3 multipart upload output immediately accessible to OCI worker', async () => {
       const filename = 'large_payload.bin';
       const fileData = crypto.randomBytes(64 * 1024);
 
       // S3 Multipart Upload
-      const init = s3Storage.initiateMultipartUpload(filename, 'application/octet-stream', fileData.length);
-      s3Storage.uploadPart(init.uploadId, 1, fileData);
-      const completed = s3Storage.completeMultipartUpload(init.uploadId);
+      const init = await s3Storage.initiateMultipartUpload(filename, 'application/octet-stream', fileData.length);
+      await s3Storage.uploadPart(init.uploadId, 1, fileData);
+      const completed = await s3Storage.completeMultipartUpload(init.uploadId);
 
       // OCI Worker retrieves by completed.key
       const workerFound = ociStorage.getObject(completed.key);

@@ -70,7 +70,7 @@ function toInterpreterError(err: unknown, src: string, tempDir: string): unknown
     return new ConversionFailedError(`The PostScript interpreter exceeded its output or memory limit on the .${src} file.`);
   }
   if (err instanceof SandboxedProcessError) {
-    const detail = err.stderr.trim().slice(0, MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+    const detail = err.stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
     return new ConversionFailedError(`The PostScript interpreter rejected the .${src} file${detail ? `: ${detail}` : ''}`);
   }
   return err;
@@ -191,7 +191,7 @@ export async function convertPostScript(job: PostScriptJob): Promise<WorkerConve
       const { inputPath } = resolveInputContext(input, src, tempDir);
       const pdfPath = path.join(tempDir, 'rendered.pdf');
       await writePdf(job, ghostscript, { tempDir, limits, smallInput }, inputPath, pdfPath);
-      const persistedPath = handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
+      const persistedPath = await handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-postscript', Date.now() - startTime);
     });
   }

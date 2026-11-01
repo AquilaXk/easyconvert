@@ -205,15 +205,15 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       const part2 = Buffer.from('PARTS2_GHIJKLMNOPQRSTUV');
       const totalSize = part1.length + part2.length;
 
-      const init = s3Storage.initiateMultipartUpload(filename, 'application/step', totalSize);
+      const init = await s3Storage.initiateMultipartUpload(filename, 'application/step', totalSize);
       expect(init.uploadId).toBeDefined();
 
-      const p1 = s3Storage.uploadPart(init.uploadId, 1, part1);
-      const p2 = s3Storage.uploadPart(init.uploadId, 2, part2);
+      const p1 = await s3Storage.uploadPart(init.uploadId, 1, part1);
+      const p2 = await s3Storage.uploadPart(init.uploadId, 2, part2);
       expect(p1.partNumber).toBe(1);
       expect(p2.partNumber).toBe(2);
 
-      const complete = s3Storage.completeMultipartUpload(init.uploadId);
+      const complete = await s3Storage.completeMultipartUpload(init.uploadId);
       expect(complete.key).toBe(init.key);
       expect(complete.size).toBe(totalSize);
 

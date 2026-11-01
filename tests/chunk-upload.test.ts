@@ -2,23 +2,23 @@ import { describe, it, expect } from 'vitest';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 
 describe('S3 Chunked Multipart Upload Engine', () => {
-  it('handles full lifecycle: initiate, upload parts, commit and retrieve object', () => {
+  it('handles full lifecycle: initiate, upload parts, commit and retrieve object', async () => {
     const filename = 'large-dataset.bin';
     const mimeType = 'application/octet-stream';
-    const totalSize = 12 * 1024 * 1024; // 12 MB
+    const part1Data = Buffer.from('Part 1 content data block for testing chunk uploads.');
+    const part2Data = Buffer.from('Part 2 content data block for testing chunk uploads.');
+    const totalSize = part1Data.length + part2Data.length;
 
     // 1. Initiate multipart upload
-    const init = s3Storage.initiateMultipartUpload(filename, mimeType, totalSize);
-    expect(init.uploadId).toMatch(/^oci_mp_/);
+    const init = await s3Storage.initiateMultipartUpload(filename, mimeType, totalSize);
+    expect(init.uploadId).toMatch(/^up_/);
     expect(init.key).toContain('large-dataset.bin');
     expect(init.partSize).toBeGreaterThan(0);
     expect(init.totalParts).toBeGreaterThan(0);
 
     // 2. Upload chunk parts
-    const part1Data = Buffer.from('Part 1 content data block for testing chunk uploads.');
-    const part2Data = Buffer.from('Part 2 content data block for testing chunk uploads.');
-    const part1 = s3Storage.uploadPart(init.uploadId, 1, part1Data);
-    const part2 = s3Storage.uploadPart(init.uploadId, 2, part2Data);
+    const part1 = await s3Storage.uploadPart(init.uploadId, 1, part1Data);
+    const part2 = await s3Storage.uploadPart(init.uploadId, 2, part2Data);
 
     expect(part1.partNumber).toBe(1);
     expect(part1.etag).toBeDefined();
@@ -29,7 +29,7 @@ describe('S3 Chunked Multipart Upload Engine', () => {
     expect(part2.size).toBe(part2Data.length);
 
     // 3. Complete multipart upload
-    const complete = s3Storage.completeMultipartUpload(init.uploadId);
+    const complete = await s3Storage.completeMultipartUpload(init.uploadId);
     expect(complete.key).toBe(init.key);
     expect(complete.size).toBe(part1Data.length + part2Data.length);
     expect(complete.etag).toBeDefined();
@@ -48,31 +48,24 @@ describe('S3 Chunked Multipart Upload Engine', () => {
     expect(s3Storage.getObject(complete.key)).toBeUndefined();
   });
 
-  it('handles aborting a multipart upload session', () => {
-    const init = s3Storage.initiateMultipartUpload('abort-target.dat', 'application/octet-stream', 1024);
-    s3Storage.uploadPart(init.uploadId, 1, Buffer.from('chunk data'));
+  it('handles aborting a multipart upload session', async () => {
+    const init = await s3Storage.initiateMultipartUpload('abort-target.dat', 'application/octet-stream', 1024);
+    await s3Storage.uploadPart(init.uploadId, 1, Buffer.from('chunk data'));
 
-    const aborted = s3Storage.abortMultipartUpload(init.uploadId);
+    const aborted = await s3Storage.abortMultipartUpload(init.uploadId);
     expect(aborted).toBe(true);
 
     // Attempting to complete aborted upload should throw
-    expect(() => s3Storage.completeMultipartUpload(init.uploadId)).toThrow();
+    await expect(s3Storage.completeMultipartUpload(init.uploadId)).rejects.toThrow();
   });
 
-  it('fails closed on invalid part numbers or non-existent sessions', () => {
-    expect(() => {
-      s3Storage.uploadPart('non-existent-session-id', 1, Buffer.from('data'));
-    }).toThrow(/Invalid or expired/);
+  it('fails closed on invalid part numbers or non-existent sessions', async () => {
+    await expect(s3Storage.uploadPart('non-existent-session-id', 1, Buffer.from('data'))).rejects.toThrow(/Invalid or expired/);
 
-    const init = s3Storage.initiateMultipartUpload('bounds-test.dat', 'application/octet-stream', 1024);
-    expect(() => {
-      s3Storage.uploadPart(init.uploadId, 0, Buffer.from('data'));
-    }).toThrow(/Invalid OCI partNumber/);
+    const init = await s3Storage.initiateMultipartUpload('bounds-test.dat', 'application/octet-stream', 1024);
+    await expect(s3Storage.uploadPart(init.uploadId, 0, Buffer.from('data'))).rejects.toThrow(/Invalid part number/);
+    await expect(s3Storage.uploadPart(init.uploadId, 10001, Buffer.from('data'))).rejects.toThrow(/Invalid part number/);
 
-    expect(() => {
-      s3Storage.uploadPart(init.uploadId, 10001, Buffer.from('data'));
-    }).toThrow(/Invalid OCI partNumber/);
-
-    s3Storage.abortMultipartUpload(init.uploadId);
+    await s3Storage.abortMultipartUpload(init.uploadId);
   });
 });

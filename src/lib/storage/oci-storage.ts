@@ -128,12 +128,14 @@ export interface IStorageBackend {
     uploadId: string
   ): MaybePromise<Array<{ partNumber: number; etag: string; size: number }> | undefined>;
   saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): MaybePromise<StoredObject>;
+  /** Stores the regular file at `filePath`; a `signal` that aborts before the object is in place stores nothing. */
   saveObjectFromFile?(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs?: number
+    ttlMs?: number,
+    signal?: AbortSignal
   ): MaybePromise<StoredObject>;
   saveObjectFromStream(
     key: string,
@@ -147,6 +149,8 @@ export interface IStorageBackend {
   openReadStream(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
   getObjectStream?(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
   deleteObject(key: string): MaybePromise<boolean>;
+  /** Deletes the object under `key` only while it is still the save `written` describes, by its ETag and the time it was stored. */
+  deleteObjectIfUnchanged?(key: string, written: Pick<StoredObject, 'etag' | 'uploadedAt'>): MaybePromise<boolean>;
   deleteByPrefix?(prefix: string): MaybePromise<number>;
   /** Open upload sessions, or null when the backend cannot count them (sessions live on the object store). */
   getActiveSessionsCount(): MaybePromise<number | null>;
@@ -191,6 +195,7 @@ export interface IStorageBackend {
 }
 
 import { globalSharedObjects } from './shared-store';
+import { EXCLUSIVE_CREATE, uniqueTempPath } from './temp-file';
 
 /**
  * Local-disk backend that mirrors the OCI Object Storage multipart workflow. It is selected by
@@ -364,15 +369,11 @@ export class OciObjectStorageService implements IStorageBackend {
       throw new Error('Cannot commit OCI multipart upload with zero uploaded parts.');
     }
 
-    const ociDir = path.join(os.tmpdir(), 'easyconvert_oci_objects');
-    try {
-      if (!fs.existsSync(ociDir)) {
-        fs.mkdirSync(ociDir, { recursive: true });
-      }
-    } catch {}
-
-    const finalFilePath = path.join(ociDir, `${session.uploadId}.bin`);
-    const outFd = fs.openSync(finalFilePath, 'w');
+    // Assembled in the storage directory, which every process reads, beside the file it is renamed onto.
+    const finalFilePath = globalSharedObjects.objectPath(session.key);
+    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
+    const assemblyPath = uniqueTempPath(finalFilePath, 'comb');
+    const outFd = fs.openSync(assemblyPath, EXCLUSIVE_CREATE);
     const etagHashes: Buffer[] = [];
     const chunkBuf = Buffer.alloc(64 * 1024);
     let totalSize = 0;
@@ -400,9 +401,13 @@ export class OciObjectStorageService implements IStorageBackend {
         const rawMd5 = part.etag.replace(/"/g, '');
         etagHashes.push(Buffer.from(rawMd5, 'hex'));
       }
-    } finally {
+    } catch (error) {
       fs.closeSync(outFd);
+      fs.rmSync(assemblyPath, { force: true });
+      throw error;
     }
+    fs.closeSync(outFd);
+    fs.renameSync(assemblyPath, finalFilePath);
 
     // OCI composite hash
     const compositeHash = crypto.createHash('md5').update(Buffer.concat(etagHashes)).digest('hex');
@@ -508,60 +513,35 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   /**
-   * Save complete object from local disk file path into OCI Object Storage with 1-hour default TTL (Zero-Heap)
+   * Stores the file at `filePath` under `key` with a 1-hour default TTL, moving it into the storage directory that
+   * every process reads, as the local driver does; the namespaced key names it in this process only.
    */
-  saveObjectFromFile(
+  async saveObjectFromFile(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs: number = 60 * 60 * 1000
-  ): OciStoredObject {
-    const stat = fs.statSync(filePath);
+    ttlMs: number = 60 * 60 * 1000,
+    signal?: AbortSignal
+  ): Promise<OciStoredObject> {
+    const stat = fs.lstatSync(filePath);
     const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
     const now = Date.now();
-    let cachedBuffer: Buffer | null = null;
-    const stored: OciStoredObject = {
+    const shared = await globalSharedObjects.storeFile(key, filePath, {
       key: ociKey,
       filename,
       mimeType,
       size: stat.size,
       etag: `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`,
-      namespace: this.config.namespace,
-      bucket: this.config.bucketName,
       uploadedAt: now,
       expiresAt: now + ttlMs,
-      filePath,
-      get buffer(): Buffer {
-        if (stat.size > getMaxInMemoryBytes()) {
-          throw new PayloadTooLargeForMemoryError(undefined, {
-            size: stat.size,
-            limit: getMaxInMemoryBytes(),
-          });
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(filePath)) {
-          cachedBuffer = fs.readFileSync(filePath);
-          return cachedBuffer;
-        }
-        throw new StoredObjectMissingError(undefined, { key: ociKey, filePath });
-      },
-      set buffer(b: Buffer) {
-        cachedBuffer = b;
-      },
-    };
+    }, signal);
+    const stored: OciStoredObject = Object.assign(shared, { namespace: this.config.namespace, bucket: this.config.bucketName });
     this.objects.set(ociKey, stored);
-    globalSharedObjects.set(ociKey, stored);
-    if (key !== ociKey) {
-      this.objects.set(key, stored);
-      globalSharedObjects.set(key, stored);
-    }
+    if (key !== ociKey) this.objects.set(key, stored);
     return stored;
   }
 
-  /**
-   * Retrieve stored object by key with lazy expiration check
-   */
   getObject(key: string): OciStoredObject | undefined {
     const obj = this.objects.get(key) || globalSharedObjects.get(key);
     if (!obj) return undefined;
@@ -715,7 +695,6 @@ export class OciObjectStorageService implements IStorageBackend {
       } catch {}
     }
     const tempFilePath = path.join(objectsDir, `stream-${crypto.randomUUID()}.tmp`);
-    const finalFilePath = path.join(objectsDir, `oci-${crypto.randomUUID()}-${path.basename(meta.filename)}`);
 
     const outFd = fs.openSync(tempFilePath, 'w');
     const hasher = crypto.createHash('sha256');
@@ -741,47 +720,21 @@ export class OciObjectStorageService implements IStorageBackend {
       fs.closeSync(outFd);
     }
 
-    fs.renameSync(tempFilePath, finalFilePath);
-
-    const etag = `"${hasher.digest('hex').slice(0, 32)}"`;
     const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
     const now = Date.now();
-    let cachedBuffer: Buffer | null = null;
-
-    const stored: OciStoredObject = {
+    // Stored under `key` in the storage directory that every process reads; the namespaced key names it in this process only.
+    const shared = await globalSharedObjects.storeFile(key, tempFilePath, {
       key: ociKey,
       filename: meta.filename,
       mimeType: meta.mimeType,
       size: totalBytes,
-      etag,
-      namespace: this.config.namespace,
-      bucket: this.config.bucketName,
+      etag: `"${hasher.digest('hex').slice(0, 32)}"`,
       uploadedAt: now,
       expiresAt: now + ttlMs,
-      filePath: finalFilePath,
-      get buffer(): Buffer {
-        if (totalBytes > getMaxInMemoryBytes()) {
-          throw new PayloadTooLargeForMemoryError(undefined, {
-            size: totalBytes,
-            limit: getMaxInMemoryBytes(),
-          });
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(finalFilePath)) {
-          cachedBuffer = fs.readFileSync(finalFilePath);
-          return cachedBuffer;
-        }
-        throw new StoredObjectMissingError(undefined, { key: ociKey, filePath: finalFilePath });
-      },
-    };
-
+    });
+    const stored: OciStoredObject = Object.assign(shared, { namespace: this.config.namespace, bucket: this.config.bucketName });
     this.objects.set(ociKey, stored);
-    globalSharedObjects.set(ociKey, stored);
-    if (key !== ociKey) {
-      this.objects.set(key, stored);
-      globalSharedObjects.set(key, stored);
-    }
-
+    if (key !== ociKey) this.objects.set(key, stored);
     return stored;
   }
 

@@ -35,9 +35,11 @@ import {
   sweepRetention,
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { defineCompletionRecordContract, keepReceipt } from './helpers/completion-record-contract';
 import { isCapacityCandidate } from '../src/lib/storage/result-capacity';
 import { globalSharedObjects, SharedObjectStore } from '../src/lib/storage/shared-store';
 import {
+  GONE_RECORD_MS,
   JOB_INPUT_HOLD_MAX_MS,
   addInterval,
   coversWholeObject,
@@ -820,10 +822,8 @@ describe('the file ledger shared by the web server and the workers', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const realWrite = fs.writeFileSync;
       vi.spyOn(fs, 'writeFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
-        if (String(target).endsWith('.tmp')) {
-          fs.closeSync(fs.openSync(String(target), 'w'));
-          throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
-        }
+        // The record is written through a descriptor of its temporary file.
+        if (typeof target === 'number') throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
         return (realWrite as (...args: unknown[]) => void)(target, ...rest);
       }) as typeof fs.writeFileSync);
       const storageDir = globalSharedObjects.getStorageDir();
@@ -832,21 +832,21 @@ describe('the file ledger shared by the web server and the workers', () => {
 
       vi.restoreAllMocks();
       expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/Could not extend the lifetime of/);
-      expect(fs.readdirSync(storageDir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+      expect(fs.readdirSync(storageDir).filter((name) => name.includes('.tmp.'))).toEqual([]);
       await releaseResultHold(key, 'job-full');
     });
 
-    it('removes the temporary files an interrupted extension left, once they are stale, and no others', () => {
+    it('removes the temporary files an interrupted extension left, once they are stale, and no others', async () => {
       const storageDir = globalSharedObjects.getStorageDir();
       fs.mkdirSync(storageDir, { recursive: true });
-      const stale = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
-      const fresh = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
+      const stale = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`);
+      const fresh = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`);
       fs.writeFileSync(stale, '{}');
       fs.writeFileSync(fresh, '{}');
       const old = new Date(Date.now() - 61 * MINUTE_MS);
       fs.utimesSync(stale, old, old);
 
-      storageProvider.sweepExpiredObjects?.();
+      await globalSharedObjects.sweepStaleTempFiles();
 
       expect(fs.existsSync(stale)).toBe(false);
       expect(fs.existsSync(fresh)).toBe(true);
@@ -903,6 +903,33 @@ describe('the file ledger shared by the web server and the workers', () => {
     expect(await holdResultForJob(key, 'job-lost')).toBe(true);
     expect(await sweepRetention(storageProvider, Date.now() + JOB_INPUT_HOLD_MAX_MS - SECOND_MS)).toBe(0);
     expect(await sweepRetention(storageProvider, Date.now() + JOB_INPUT_HOLD_MAX_MS + SECOND_MS)).toBe(1);
+  });
+});
+
+describe('the receipt of an upload completion in the file ledger', () => {
+  let ledgerDir: string;
+
+  beforeEach(() => {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-receipt-ledger-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+  });
+
+  afterEach(() => {
+    restoreIsolatedRetentionLedger();
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  defineCompletionRecordContract(() => new FileRetentionLedger(ledgerDir));
+
+  it('is forgotten once the gone window has passed and not a moment before', async () => {
+    const ledger = new FileRetentionLedger(ledgerDir);
+    const record = await keepReceipt(ledger, `upload-id-${crypto.randomBytes(6).toString('hex')}`);
+
+    await ledger.collectDue(record.goneAt! + GONE_RECORD_MS - 1, 1000);
+    expect(await ledger.get(record.key)).toBeDefined();
+
+    await ledger.collectDue(record.goneAt! + GONE_RECORD_MS, 1000);
+    expect(await ledger.get(record.key)).toBeUndefined();
   });
 });
 

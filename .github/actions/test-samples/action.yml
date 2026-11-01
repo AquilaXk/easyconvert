@@ -1,0 +1,37 @@
+name: Test corpus files
+description: >-
+  Fetches the real-world and regression corpus files that the tests name (scripts/prefetch-test-samples.ts), so no test
+  waits on a download inside its own timeout. The cache key is the list of those samples with their pinned digests, so a
+  sample a test starts to name is downloaded once and saved, not downloaded on every run. The cache is saved right after
+  a complete strict prefetch, so a later red or cancelled step of the job does not discard it, and a failed prefetch
+  never saves an incomplete corpus under the complete key.
+
+runs:
+  using: composite
+  steps:
+    - name: List the corpus files the tests read
+      shell: bash
+      run: |
+        npm run -s list:test-samples > .test-sample-list
+        test -s .test-sample-list
+
+    - name: Restore the corpus cache
+      id: corpus-cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ~/.cache/easyconvert-realworld
+        key: test-samples-${{ hashFiles('.test-sample-list') }}
+        restore-keys: test-samples-
+
+    - name: Prefetch the corpus files the tests read
+      shell: bash
+      env:
+        ORACLE_STRICT_MODE: "1"
+      run: npm run prefetch:test-samples
+
+    - name: Save the corpus cache
+      if: steps.corpus-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ~/.cache/easyconvert-realworld
+        key: test-samples-${{ hashFiles('.test-sample-list') }}

@@ -52,10 +52,14 @@ export type ObjectOwnership =
  * A job result is resolved only while its job record can be read: jobs are never removed after
  * they finish, so a missing record or a queue outage (`QueueUnavailableError`) or a restarted
  * in-memory queue means the owner cannot be proven, and access is denied.
- * Every other key (anonymous uploads) has no owner.
+ * An upload and the output of a graph node have no owner (capability access). A key of no namespace a writer of the
+ * server produces is not resolved, so no route serves it.
  */
 export async function resolveObjectOwnership(key: string): Promise<ObjectOwnership> {
   const classified = classifyStorageKey(key);
+  if (classified.namespace === 'other') {
+    return { resolved: false };
+  }
   if (classified.namespace === 'user-conversion') {
     return { resolved: true, ownerUserId: classified.userId };
   }
