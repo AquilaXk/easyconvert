@@ -31,10 +31,20 @@ const MASKED: Array<[string, string]> = [
   ['cwd=/app, home=/home/easyconvert, tmp=/tmp, extra=/opt/ffmpeg/lib/x.so', 'cwd=***, home=***, tmp=***, extra=***'],
   ['open "/home/ubuntu/ec/tmp/a b/c.pdf"', 'open "***"'],
   ['/tmp/ec-xyz/한글.pdf: parse error', '***: parse error'],
-  ['/tmp/ec-xyz/file name with spaces.pdf: parse error', '***: parse error'],
-  ['/tmp/ec-xyz/report (1).pdf: parse error', '***: parse error'],
-  ['Error: ffmpeg exited 1: /tmp/a/b c.mp4: Invalid data found when processing input', 'Error: ffmpeg exited 1: ***: Invalid data found when processing input'],
-  ['open /tmp/foo bar/baz.pdf failed', 'open *** failed'],
+  ['/tmp/ec-xyz/report (1).pdf: parse error', '*** (1).pdf: parse error'],
+  ['/tmp/ec-xyz/report-1.pdf: parse error', '***: parse error'],
+  ['Error: ffmpeg exited 1: /tmp/a/b.mp4: Invalid data found when processing input', 'Error: ffmpeg exited 1: ***: Invalid data found when processing input'],
+  ['/tmp/my dir', '*** dir'],
+  ['/tmp/ec-xyz/file name.pdf: parse error', '*** name.pdf: parse error'],
+  ['open /tmp/foo bar/baz.pdf failed', 'open *** bar/baz.pdf failed'],
+  ['error in /usr/bin/gs version 10.02: Unrecoverable error', 'error in *** version 10.02: Unrecoverable error'],
+  ['Failed /usr/bin/convert 7.1.1: no decode delegate', 'Failed *** 7.1.1: no decode delegate'],
+  ['spawn /usr/bin/magick ENOENT; see docs/ref.md', 'spawn *** ENOENT; see docs/ref.md'],
+  ['Error: /usr/bin/pdftoppm -r 300 in.pdf out/page.png: exit 1', 'Error: *** -r 300 in.pdf out/page.png: exit 1'],
+  ["ENOENT: no such file or directory, open '/tmp/ec-abc/my file'", "ENOENT: no such file or directory, open '***'"],
+  ['"/home/my user/app" is missing', '"***" is missing'],
+  ["can't open '/tmp/it's here.pdf' now", "can't open '***' now"],
+  ["magick: unable to open image `/tmp/ec-1/my photo.heic' @ error", "magick: unable to open image `***' @ error"],
   ['open /home/my user/app/x.js failed', 'open *** failed'],
   ['Failed to convert /tmp/ec-1/in.heic using libheif: decoder error', 'Failed to convert *** using libheif: decoder error'],
   ['Could not open /tmp/job-1/out.pdf for writing: permission denied', 'Could not open *** for writing: permission denied'],
@@ -43,6 +53,7 @@ const MASKED: Array<[string, string]> = [
   ['stat /tmp/a.pdf then /tmp/b.pdf', 'stat *** then ***'],
   ['weird "/tmp/unclosed and more text: here', 'weird "*** and more text: here'],
   ['Error at /tmp/ec-1/file.xml:12:5: unexpected </note>', 'Error at ***:12:5: unexpected </note>'],
+  ['Error at /tmp/ec-1/file.xml, line 4', 'Error at ***, line 4'],
   ['error in /usr/bin/convert: /usr/lib/foo.so not found', 'error in ***: *** not found'],
   ['Invalid use of /bin/sh -c "ls /tmp/a"', 'Invalid use of *** -c "ls ***"'],
   ['path=/tmp/x/y;/etc/passwd', 'path=***;***'],
@@ -110,6 +121,12 @@ describe('redactPaths masks the paths under the server roots only', () => {
 describe('the worker image', () => {
   const dockerfile = fs.readFileSync(path.resolve(__dirname, '..', 'Dockerfile.worker'), 'utf-8');
   const installed = [...new Set(dockerfile.match(/\/opt\/[A-Za-z0-9._/-]+/g) ?? [])];
+  const engineCopies = dockerfile
+    .slice(dockerfile.indexOf(' AS runner'))
+    .split('\n')
+    .filter((line) => /^COPY --from=(?!builder\b)/.test(line))
+    .map((line) => line.trim().split(/\s+/).at(-1) as string);
+  const topSegment = (installPath: string) => `/${installPath.split('/')[1]}`;
 
   it('installs engines under /opt', () => {
     expect(installed.length).toBeGreaterThan(5);
@@ -119,6 +136,12 @@ describe('the worker image', () => {
     expect(redactPaths(`error while loading ${installPath}: cannot open shared object file`, SERVER_PATH_ROOTS)).toBe(
       'error while loading ***: cannot open shared object file'
     );
+  });
+
+  it('puts every engine it copies in, and every /opt install directory, under a standard root', () => {
+    expect(engineCopies.length).toBeGreaterThan(5);
+    const outside = [...installed, ...engineCopies].filter((installPath) => !STANDARD_PATH_ROOTS.includes(topSegment(installPath)));
+    expect(outside).toEqual([]);
   });
 });
 
@@ -134,6 +157,9 @@ describe('redactPaths terminates on adversarial shapes', () => {
     'words with inner slashes after a path': '/tmp/a' + ' b/c'.repeat(64),
     'file names after a path': '/tmp/a' + ' b/c.pdf'.repeat(64),
     'quoted spaced names without an extension': '"/tmp/a b c" ',
+    'quotes followed by letters': "'/tmp/a'b",
+    'backtick openers with apostrophes': "`/tmp/a'b",
+    'apostrophes in a quoted name': "'/tmp/it's a'b'c ",
     'roots without a lead': 'x/tmp/a',
     'one long path': '/tmp' + '/a'.repeat(64),
   };
@@ -202,8 +228,9 @@ describe('a caught failure', () => {
 
     expect(maskFailure(error)).toBe('spawn *** ENOENT: password=***');
     expect(error.message).toBe('spawn *** ENOENT: password=***');
-    expect(error.stack).not.toContain('/usr/bin/magick');
     expect(error.path).toBe('***');
+    expect(error.stack).not.toContain('hunter2');
+    expect(error.stack).toContain('redact-paths.test');
     expect(cause.message).toBe('open *** failed');
   });
 

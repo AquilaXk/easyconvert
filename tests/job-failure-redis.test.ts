@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DistributedBullMQAdapter, Worker, subscribeToJobTelemetry, type Job, type JobTelemetryEvent } from '../src/lib/queue/bullmq-engine';
 import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
-import { graphScheduler } from '../src/lib/queue/graph';
+import { RedisGraphScheduler, graphScheduler } from '../src/lib/queue/graph';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { FAIL_JOB_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
@@ -162,6 +162,23 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
     const stored = await api.getJob(job.id);
     expect(stored?.failedReason).toBe('spawn *** ENOENT');
     expect(events.find((event) => event.event === 'failed')?.data.error).toBe(stored?.failedReason);
+  });
+
+  it('stores and reads back the masked reason of a failed graph node', async () => {
+    const scheduler = new RedisGraphScheduler({ redisClient: admin, keyPrefix });
+    const graphId = `masked_${crypto.randomBytes(6).toString('hex')}`;
+    await scheduler.initGraph(graphId, {
+      failurePolicy: 'fail_fast',
+      nodes: { a: { op: 'import.upload', storageKey: 'in.bin' }, b: { op: 'convert', input: 'a', targetFormat: 'png' } },
+    });
+    await scheduler.onNodeCompleted(graphId, 'a', ['in.bin']);
+    await scheduler.onNodeStarted(graphId, 'b');
+
+    await scheduler.onNodeFailed(graphId, 'b', 'spawn /usr/bin/x ENOENT');
+
+    const state = await scheduler.getGraphState(graphId);
+    expect(state?.nodes.b.error).toBe('spawn *** ENOENT');
+    expect(state?.failedReason).toBe('spawn *** ENOENT');
   });
 
   it('sends the masked reason in the job.failed webhook and in the dead letter of a job without a signing secret', async () => {

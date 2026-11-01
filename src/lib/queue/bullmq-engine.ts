@@ -179,7 +179,7 @@ export class Job<T = any, R = any> {
   }
 
   async log(row: string): Promise<void> {
-    const entry = `[${new Date().toISOString()}] ${redactText(row)}`;
+    const entry = `[${new Date().toISOString()}] ${maskServerText(row)}`;
     this.logs.push(entry);
     if (this.onUpdateHook) {
       try {
@@ -919,7 +919,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     job.failedStatus = failure.status;
     job.failedRefusalCode = refusalCodeOf(err);
     if (err instanceof Error && err.stack) {
-      job.stacktrace.push(maskServerText(err.stack));
+      job.stacktrace.push(redactText(err.stack));
     }
 
     const maxAttempts = job.opts.attempts || 1;

@@ -474,3 +474,22 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
     });
   });
 });
+
+describe('InMemoryGraphScheduler masks the reason of a failed node', () => {
+  it('stores and reads back the reason without the server path', async () => {
+    const scheduler = new InMemoryGraphScheduler();
+    const graphId = `masked_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    await scheduler.initGraph(graphId, {
+      failurePolicy: 'fail_fast',
+      nodes: { a: { op: 'import.upload', storageKey: 'in.bin' }, b: { op: 'convert', input: 'a', targetFormat: 'png' } },
+    });
+    await scheduler.onNodeCompleted(graphId, 'a', ['in.bin']);
+    await scheduler.onNodeStarted(graphId, 'b');
+
+    await scheduler.onNodeFailed(graphId, 'b', 'spawn /usr/bin/x ENOENT');
+
+    const state = await scheduler.getGraphState(graphId);
+    expect(state?.nodes.b.error).toBe('spawn *** ENOENT');
+    expect(state?.failedReason).toBe('spawn *** ENOENT');
+  });
+});
