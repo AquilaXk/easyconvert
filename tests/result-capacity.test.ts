@@ -117,6 +117,18 @@ describe('the disk measurement', () => {
     expect(await diskUsageProbe([storageDir, tempDir])()).toBe(92);
   });
 
+  it('leaves out the bytes of uploads in parts and of running jobs, which deleting results cannot free', async () => {
+    const MIB = 1024 * 1024;
+    const partsDir = path.join(storageDir, '.parts', 'up_1700000000000_0123456789abcdef01234567');
+    fs.mkdirSync(partsDir, { recursive: true });
+    fs.writeFileSync(path.join(partsDir, 'part-1.bin'), Buffer.alloc(40 * MIB, 1));
+    vi.spyOn(fs.promises, 'statfs').mockResolvedValue({ blocks: 100, bfree: 10, bavail: 10, bsize: MIB } as unknown as fs.StatsFs);
+
+    const used = await diskUsageProbe([storageDir], [path.join(storageDir, '.parts'), path.join(storageDir, '.staging')])();
+
+    expect(used).toBeCloseTo((50 * 100) / 60, 0);
+  });
+
   it('measures a disk once when both directories are on it', async () => {
     const statfs = fakeStatfs(() => 70);
     expect(await diskUsageProbe([storageDir, tempDir])()).toBe(70);
@@ -179,6 +191,27 @@ describe('early deletion when the disk runs full', () => {
     expect(disk.deleted).toEqual([earlierDelivery, laterDelivery, oldestUndelivered]);
     expect(disk.used).toBe(78);
     expect(storageProvider.getObject(newestUndelivered)).toBeDefined();
+  });
+
+  it('does not delete results while the use over 85% is uploads in parts, which deleting results cannot free', async () => {
+    const MIB = 1024 * 1024;
+    const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-capacity-storage-'));
+    try {
+      vi.stubEnv('EASYCONVERT_STORAGE_DIR', storageDir);
+      const partsDir = path.join(storageDir, '.parts', 'up_1700000000000_0123456789abcdef01234567');
+      fs.mkdirSync(partsDir, { recursive: true });
+      fs.writeFileSync(path.join(partsDir, 'part-1.bin'), Buffer.alloc(40 * MIB, 1));
+      vi.spyOn(fs.promises, 'statfs').mockResolvedValue({ blocks: 100, bfree: 10, bavail: 10, bsize: MIB } as unknown as fs.StatsFs);
+      const user = await createUser('parts');
+      const now = Date.now();
+      await storeResult(user, 'delivered', now - 30 * MINUTE_MS, now - 20 * MINUTE_MS);
+      const deleteObject = vi.spyOn(storageProvider, 'deleteObject');
+
+      expect(await evictForCapacity(storageProvider, now)).toBe(0);
+      expect(deleteObject).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(storageDir, { recursive: true, force: true });
+    }
   });
 
   it('does nothing at or below 85%', async () => {

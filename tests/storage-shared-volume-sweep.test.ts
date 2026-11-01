@@ -21,6 +21,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.resetModules();
   fs.rmSync(storageDir, { recursive: true, force: true });
@@ -45,28 +47,30 @@ function age(target: string, ageMs: number): void {
 }
 
 describe('the temporary files beside the objects', () => {
-  it('removes a stale assembly, copy and stream save and keeps a fresh one, an object and its record', async () => {
+  it('removes a stale assembly, copy and record update and keeps a fresh one, an object and its record', async () => {
     const { globalSharedObjects } = await startProcess();
     const final = globalSharedObjects.objectPath(KEY);
+    const record = final.replace(/\.bin$/, '.meta.json');
     const staleComb = writeAged(`${final}.comb.1700000000000.abcdef012345`, 61 * MINUTE_MS);
     const staleTmp = writeAged(`${final}.tmp.1700000000000.abcdef012345`, 61 * MINUTE_MS);
-    const staleStream = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ab`, 61 * MINUTE_MS);
+    const staleRecord = writeAged(`${record}.tmp.1700000000000.abcdef012345`, 61 * MINUTE_MS);
     const freshComb = writeAged(`${final}.comb.1700000000001.abcdef012345`, MINUTE_MS);
     const freshTmp = writeAged(`${final}.tmp.1700000000001.abcdef012345`, MINUTE_MS);
     const oldObject = writeAged(final, 48 * HOUR_MS);
-    const oldRecord = writeAged(final.replace(/\.bin$/, '.meta.json'), 48 * HOUR_MS);
+    const oldRecord = writeAged(record, 48 * HOUR_MS);
+    const lookalike = writeAged(path.join(storageDir, 'notes.tmp.txt'), 48 * HOUR_MS);
 
     globalSharedObjects.sweepStaleTempFiles();
 
-    expect([staleComb, staleTmp, staleStream].filter((file) => fs.existsSync(file))).toEqual([]);
-    expect([freshComb, freshTmp, oldObject, oldRecord].filter((file) => !fs.existsSync(file))).toEqual([]);
+    expect([staleComb, staleTmp, staleRecord].filter((file) => fs.existsSync(file))).toEqual([]);
+    expect([freshComb, freshTmp, oldObject, oldRecord, lookalike].filter((file) => !fs.existsSync(file))).toEqual([]);
   });
 
   it('keeps a temporary file that was written 15 minutes ago, as a writer that has been quiet that long still owns it, and removes one 61 minutes old', async () => {
     const { globalSharedObjects } = await startProcess();
     const final = globalSharedObjects.objectPath(KEY);
-    const quiet = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ab`, 15 * MINUTE_MS);
-    const abandoned = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ac`, 61 * MINUTE_MS);
+    const quiet = writeAged(`${final}.tmp.1700000000000.abcdef012345`, 15 * MINUTE_MS);
+    const abandoned = writeAged(`${final}.tmp.1700000000001.abcdef012345`, 61 * MINUTE_MS);
 
     globalSharedObjects.sweepStaleTempFiles();
 
@@ -76,81 +80,118 @@ describe('the temporary files beside the objects', () => {
 
   it('is part of the periodic sweep of the local driver', async () => {
     const { s3Storage, globalSharedObjects } = await startProcess();
-    const stale = writeAged(`${globalSharedObjects.objectPath(KEY)}.comb.1700000000000.abcdef012345`, HOUR_MS);
+    const stale = writeAged(`${globalSharedObjects.objectPath(KEY)}.comb.1700000000000.abcdef012345`, HOUR_MS + MINUTE_MS);
 
     s3Storage.sweepExpiredObjects();
 
     expect(fs.existsSync(stale)).toBe(false);
   });
+
+  it('says once, not on every sweep, that a temporary file could not be removed', async () => {
+    const { globalSharedObjects } = await startProcess();
+    const stuck = writeAged(`${globalSharedObjects.objectPath(KEY)}.tmp.1700000000000.abcdef012345`, 2 * HOUR_MS);
+    const rmSync = fs.rmSync;
+    vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (String(target) === stuck) throw Object.assign(new Error('EACCES: permission denied, unlink'), { code: 'EACCES' });
+      return rmSync(target, options);
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    globalSharedObjects.sweepStaleTempFiles();
+    globalSharedObjects.sweepStaleTempFiles();
+
+    expect(warn.mock.calls.filter(([message]) => String(message).includes(stuck))).toHaveLength(1);
+  });
 });
 
-describe('the parts of sessions in the storage directory', () => {
-  async function openSessionWithPart(s3Storage: Awaited<ReturnType<typeof startProcess>>['s3Storage']): Promise<string> {
-    const { uploadId } = s3Storage.initiateMultipartUpload('big.bin', 'application/octet-stream', 10, undefined, 10);
-    s3Storage.uploadPart(uploadId, 1, Buffer.alloc(10, 1));
-    return path.join(storageDir, '.multipart', uploadId);
+describe('the sessions of uploads in parts in the storage directory', () => {
+  type Storage = Awaited<ReturnType<typeof startProcess>>;
+
+  /** Opens a session at `ageMs` ago and writes its first part now; returns its id and directory. */
+  async function openSession(storage: Storage, ageMs: number): Promise<{ uploadId: string; dir: string }> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() - ageMs);
+    const { uploadId } = await storage.s3Storage.initiateMultipartUpload('big.bin', 'application/octet-stream', 20, undefined, 10);
+    vi.useRealTimers();
+    return { uploadId, dir: path.join(storageDir, '.parts', uploadId) };
   }
 
-  function ageTree(dir: string, ageMs: number): void {
-    for (const name of fs.readdirSync(dir)) age(path.join(dir, name), ageMs);
-    age(dir, ageMs);
-  }
-
-  it('removes the directory of a session no process owns once nothing in it was written for a day, and keeps a younger one', async () => {
-    const opener = await startProcess();
-    const abandoned = await openSessionWithPart(opener.s3Storage);
-    const recent = await openSessionWithPart(opener.s3Storage);
-    ageTree(abandoned, 25 * HOUR_MS);
-    ageTree(recent, 23 * HOUR_MS);
+  it('removes a session an hour after its day is over by the time in its name, although a part was written into it just now', async () => {
+    const storage = await startProcess();
+    const abandoned = await openSession(storage, 25 * HOUR_MS + MINUTE_MS);
+    fs.writeFileSync(path.join(abandoned.dir, 'part-1.bin'), Buffer.alloc(10, 1));
+    const recent = await openSession(storage, 23 * HOUR_MS);
 
     const restarted = await startProcess();
-    const removed = restarted.s3Storage.sweepExpiredObjects();
+    restarted.localFsStorage.sweepExpiredObjects();
 
-    expect(removed).toBe(1);
-    expect(fs.existsSync(abandoned)).toBe(false);
-    expect(fs.existsSync(recent)).toBe(true);
+    expect(fs.existsSync(abandoned.dir)).toBe(false);
+    expect(fs.existsSync(recent.dir)).toBe(true);
   });
 
-  it('keeps a directory whose own time is old but which holds a file written within the day', async () => {
-    const opener = await startProcess();
-    const session = await openSessionWithPart(opener.s3Storage);
-    age(session, 25 * HOUR_MS);
+  it('refuses the parts of a session whose day is over, and keeps its directory for the hour a part already on the way may take', async () => {
+    const storage = await startProcess();
+    const expired = await openSession(storage, 24 * HOUR_MS + 30 * MINUTE_MS);
 
-    const restarted = await startProcess();
-    restarted.s3Storage.sweepExpiredObjects();
-
-    expect(fs.existsSync(session)).toBe(true);
-  });
-
-  it('keeps the directory of a session this process owns', async () => {
-    const { s3Storage } = await startProcess();
-    const session = await openSessionWithPart(s3Storage);
-    ageTree(session, 25 * HOUR_MS);
-
-    s3Storage.sweepExpiredObjects();
-
-    expect(fs.existsSync(session)).toBe(true);
-  });
-
-  it('touches the directory of a session whenever it writes a part, which is what keeps the directory from looking abandoned', async () => {
-    const { s3Storage } = await startProcess();
-    const session = await openSessionWithPart(s3Storage);
-    ageTree(session, 25 * HOUR_MS);
-    const agedMtime = fs.statSync(session).mtimeMs;
-
-    s3Storage.uploadPart(path.basename(session), 2, Buffer.alloc(10, 2));
-
-    expect(fs.statSync(session).mtimeMs).toBeGreaterThan(agedMtime + 24 * HOUR_MS);
+    expect(await storage.s3Storage.getUploadSession(expired.uploadId)).toBeUndefined();
+    storage.localFsStorage.sweepExpiredObjects();
+    expect(fs.existsSync(expired.dir)).toBe(true);
   });
 
   it('removes only the directories this driver names', async () => {
-    const { s3Storage } = await startProcess();
-    const foreign = path.join(storageDir, '.multipart', 'notes');
+    const { localFsStorage } = await startProcess();
+    const foreign = path.join(storageDir, '.parts', 'notes');
     fs.mkdirSync(foreign, { recursive: true });
     age(foreign, 48 * HOUR_MS);
 
-    s3Storage.sweepExpiredObjects();
+    localFsStorage.sweepExpiredObjects();
 
     expect(fs.existsSync(foreign)).toBe(true);
+  });
+
+  it('says once, not on every sweep, that a session could not be removed', async () => {
+    const storage = await startProcess();
+    const stuck = await openSession(storage, 26 * HOUR_MS);
+    const rmSync = fs.rmSync;
+    vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (String(target) === stuck.dir) throw Object.assign(new Error('EACCES: permission denied, rmdir'), { code: 'EACCES' });
+      return rmSync(target, options);
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    storage.localFsStorage.sweepExpiredObjects();
+    storage.localFsStorage.sweepExpiredObjects();
+
+    expect(warn.mock.calls.filter(([message]) => String(message).includes(stuck.dir))).toHaveLength(1);
+  });
+});
+
+describe('the directories of jobs in the storage directory', () => {
+  it('removes the directory of a job that started over a day and an hour ago, as a worker that stopped leaves it, and keeps one that started now', async () => {
+    const { s3Storage } = await startProcess();
+    const { withSandboxDir } = await import('../src/worker/worker-output');
+    let abandonedDir = '';
+    let recentDir = '';
+    let finishJobs!: () => void;
+    const jobsMayFinish = new Promise<void>((resolve) => (finishJobs = resolve));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() - 25 * HOUR_MS - MINUTE_MS);
+    const abandoned = withSandboxDir('easyconvert-ffmpeg-', async (dir) => {
+      abandonedDir = dir;
+      await jobsMayFinish;
+    });
+    vi.useRealTimers();
+    const recent = withSandboxDir('easyconvert-ffmpeg-', async (dir) => {
+      recentDir = dir;
+      await jobsMayFinish;
+    });
+
+    s3Storage.sweepExpiredObjects();
+
+    expect(path.relative(storageDir, abandonedDir).startsWith('..'), 'the job directory is in the storage directory').toBe(false);
+    expect(fs.existsSync(abandonedDir)).toBe(false);
+    expect(fs.existsSync(recentDir)).toBe(true);
+    finishJobs();
+    await Promise.all([abandoned, recent]);
   });
 });

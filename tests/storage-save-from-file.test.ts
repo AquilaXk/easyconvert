@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -49,6 +50,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.resetModules();
@@ -146,7 +148,7 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     expect(events).toEqual(['fsync', 'rename into place']);
   });
 
-  it('copies a read-only source, whose mode the copy keeps', async () => {
+  it.skipIf(process.getuid?.() === 0)('copies a read-only source, whose mode the copy keeps', async () => {
     renameFailsAcrossVolumes();
     fs.chmodSync(sourcePath, 0o444);
     const { storageProvider, globalSharedObjects } = await loadStorage();
@@ -157,20 +159,18 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     expect(leftTemporaryFiles()).toEqual([]);
   });
 
-  it('touches the temporary copy before it flushes it, so a long flush does not leave it looking abandoned', async () => {
+  it('gives the temporary copy of a source written two hours ago the time of the copy by the time it flushes it, so the sweep does not take it for abandoned', async () => {
     renameFailsAcrossVolumes();
-    const events: string[] = [];
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(sourcePath, twoHoursAgo, twoHoursAgo);
+    const copyStartedAt = Date.now();
+    const mtimeAtFlush: number[] = [];
     const open = fs.promises.open;
     vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
       const handle = await open(...(args as Parameters<typeof open>));
-      const utimes = handle.utimes.bind(handle);
       const sync = handle.sync.bind(handle);
-      handle.utimes = async (...times: Parameters<typeof utimes>) => {
-        events.push('touch');
-        return utimes(...times);
-      };
       handle.sync = async () => {
-        events.push('fsync');
+        mtimeAtFlush.push(fs.statSync(String(args[0])).mtimeMs);
         return sync();
       };
       return handle;
@@ -179,7 +179,57 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
 
     await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
 
-    expect(events).toEqual(['touch', 'fsync']);
+    expect(mtimeAtFlush).toHaveLength(1);
+    expect(mtimeAtFlush[0]).toBeGreaterThanOrEqual(copyStartedAt - 1000);
+  });
+
+  it('stores the object when the temporary copy cannot be touched, and says so', async () => {
+    renameFailsAcrossVolumes();
+    vi.spyOn(fs.promises, 'utimes').mockRejectedValue(Object.assign(new Error('EPERM: operation not permitted, utime'), { code: 'EPERM' }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { storageProvider, globalSharedObjects } = await loadStorage();
+
+    await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
+
+    expect(fs.readFileSync(globalSharedObjects.objectPath(KEY)).equals(CONTENT)).toBe(true);
+    expect(warn.mock.calls.some(([message]) => /touch/i.test(String(message)))).toBe(true);
+  });
+
+  it('copies at most two files across volumes at once, so long copies do not take every thread of the file system pool', async () => {
+    const rename = fs.promises.rename;
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (String(from).includes(`${path.sep}worker-tmp${path.sep}`)) throw exdev();
+      return rename(from, to);
+    });
+    const copy = fs.promises.copyFile;
+    let running = 0;
+    let mostAtOnce = 0;
+    const releases: Array<() => void> = [];
+    vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (from, to, mode) => {
+      running++;
+      mostAtOnce = Math.max(mostAtOnce, running);
+      await copy(from, to, mode);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      running--;
+    });
+    const { storageProvider } = await loadStorage();
+    const sources = [1, 2, 3].map((n) => {
+      const source = path.join(baseDir, 'worker-tmp', `result-${n}.bin`);
+      fs.writeFileSync(source, CONTENT);
+      return source;
+    });
+
+    const saves = sources.map((source, n) => storageProvider.saveObjectFromFile!(`results/job-${n}/result.bin`, source, 'application/octet-stream', 'result.bin'));
+    for (let turn = 0; turn < 50 && releases.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(releases, 'two copies run').toHaveLength(2);
+    expect(running).toBe(2);
+    while (releases.length > 0 || running > 0) {
+      releases.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await Promise.all(saves);
+    expect(mostAtOnce).toBe(2);
   });
 
   it('removes the temporary copy and keeps the source when the copy fails', async () => {
@@ -256,5 +306,110 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
 
     expect(stored.filePath).toBe(inPlace);
     expect(fs.readFileSync(inPlace).equals(CONTENT)).toBe(true);
+  });
+});
+
+describe('the record of an object the local driver stores', () => {
+  function failRecordWrites() {
+    const enospc = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    const openSync = fs.openSync;
+    vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      if (String(target).includes('.meta.json')) throw enospc();
+      return (openSync as (...args: unknown[]) => number)(target, ...rest);
+    }) as typeof fs.openSync);
+    const writeFileSync = fs.writeFileSync;
+    vi.spyOn(fs, 'writeFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (String(target).includes('.meta.json')) throw enospc();
+      return (writeFileSync as (...args: unknown[]) => void)(target, ...rest);
+    }) as typeof fs.writeFileSync);
+  }
+
+  it('fails the save when the record cannot be written, and never leaves the new bytes paired with the record of an earlier save of the key', async () => {
+    const { storageProvider } = await loadStorage();
+    await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
+    const retrySource = path.join(baseDir, 'worker-tmp', 'retry.bin');
+    fs.writeFileSync(retrySource, crypto.randomBytes(CONTENT.length + 4096));
+    failRecordWrites();
+
+    await expect(storageProvider.saveObjectFromFile!(KEY, retrySource, 'application/octet-stream', 'result.bin')).rejects.toThrow(/ENOSPC/);
+
+    vi.restoreAllMocks();
+    const reader = await loadStorage();
+    expect(reader.globalSharedObjects.get(KEY), 'no record describes bytes it was not written for').toBeUndefined();
+    expect(fs.existsSync(reader.globalSharedObjects.objectPath(KEY)), 'the bytes without a record are removed').toBe(false);
+  });
+
+  it('refuses an object whose bytes stay at a path only this process reads, whatever its size', async () => {
+    const { globalSharedObjects } = await loadStorage();
+    const privateFile = path.join(baseDir, 'worker-tmp', 'large.bin');
+    fs.writeFileSync(privateFile, Buffer.alloc(0));
+    fs.truncateSync(privateFile, 65 * 1024 * 1024);
+
+    expect(() =>
+      globalSharedObjects.set(KEY, {
+        key: KEY,
+        filename: 'large.bin',
+        mimeType: 'application/octet-stream',
+        size: 65 * 1024 * 1024,
+        etag: '"e"',
+        uploadedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        filePath: privateFile,
+      })
+    ).toThrow(/only this process/);
+    expect(fs.existsSync(globalSharedObjects.objectPath(KEY))).toBe(false);
+  });
+});
+
+describe('a stream the local driver stores', () => {
+  it('keeps the temporary file of a source that sends nothing for longer than the sweep waits, by touching it while it waits', async () => {
+    const { TEMP_REFRESH_MS } = await import('../src/lib/storage/temp-file');
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { storageProvider, globalSharedObjects } = await loadStorage();
+    const source = new PassThrough();
+    const saving = storageProvider.saveObjectFromStream(KEY, source, { filename: 'quiet.bin', mimeType: 'application/octet-stream' });
+    source.write(Buffer.alloc(1024, 7));
+    let temp: string | undefined;
+    for (let turn = 0; turn < 200 && !temp; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+      temp = fs.existsSync(storageDir) ? fs.readdirSync(storageDir).find((name) => name.includes('.tmp.')) : undefined;
+    }
+    expect(temp, 'the save writes a temporary file').toBeDefined();
+    const tempPath = path.join(storageDir, temp!);
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(tempPath, twoHoursAgo, twoHoursAgo);
+
+    vi.advanceTimersByTime(TEMP_REFRESH_MS);
+    for (let turn = 0; turn < 200 && fs.statSync(tempPath).mtimeMs < twoHoursAgo.getTime() + 1000; turn++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    globalSharedObjects.sweepStaleTempFiles();
+
+    expect(fs.existsSync(tempPath), 'the quiet writer keeps its file').toBe(true);
+    source.end(Buffer.alloc(1024, 8));
+    const stored = await saving;
+    vi.useRealTimers();
+    expect(stored.size).toBe(2048);
+  });
+});
+
+describe('the output of a job of the local driver', () => {
+  it('runs the job in the storage directory, so its output is stored by renames and never copied', async () => {
+    const copyFile = vi.spyOn(fs.promises, 'copyFile');
+    const copyFileSync = vi.spyOn(fs, 'copyFileSync');
+    const { storageProvider, globalSharedObjects } = await loadStorage();
+    const { withSandboxDir, handOffOutput } = await import('../src/worker/worker-output');
+
+    await withSandboxDir('easyconvert-ffmpeg-', async (jobDir) => {
+      expect(path.relative(storageDir, jobDir).startsWith('..'), 'the job directory is in the storage directory').toBe(false);
+      const output = path.join(jobDir, 'output.flac');
+      fs.writeFileSync(output, CONTENT);
+      const handed = await handOffOutput(output, 'flac');
+      await storageProvider.saveObjectFromFile!(KEY, handed, 'audio/flac', 'result.flac');
+    });
+
+    expect(fs.readFileSync(globalSharedObjects.objectPath(KEY)).equals(CONTENT)).toBe(true);
+    expect(copyFile).not.toHaveBeenCalled();
+    expect(copyFileSync).not.toHaveBeenCalled();
   });
 });

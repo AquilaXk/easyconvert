@@ -233,6 +233,34 @@ describe('WP-32: Unified Shared Node Processor', () => {
   });
 
   describe('3. Abort Handling & Temporary File Discarding', () => {
+    it('deletes the stored result and fails the attempt when the job is aborted while its result is saved', async () => {
+      const engine: ConversionEnginePort = {
+        name: 'mock-result-engine',
+        async convert() {
+          return { buffer: Buffer.from('result'), size: 6, mimeType: 'text/plain', filename: 'out.txt' };
+        },
+      };
+      const job = await queue.add('convert', {
+        jobId: 'job_abort_during_save',
+        sourceFormat: 'txt',
+        targetFormat: 'txt',
+        originalFilename: 'input.txt',
+        fileSize: 5,
+        options: {},
+        inputBufferBase64: Buffer.from('hello').toString('base64'),
+      });
+      const save = s3Storage.saveObject.bind(s3Storage);
+      vi.spyOn(s3Storage, 'saveObject').mockImplementation((...args: Parameters<typeof save>) => {
+        const stored = save(...args);
+        (job as any)._abortAttempt(new JobCancelledError('Job cancelled while its result was saved'));
+        return stored;
+      });
+
+      await expect(processNodeJob(job, engine, s3Storage)).rejects.toThrow(/cancelled while its result was saved/);
+
+      expect(await s3Storage.getObject(`results/${job.id}/out.txt`)).toBeUndefined();
+    });
+
     it('aborts immediately when signal is cancelled and cleans up temporary disk files', async () => {
       const tempOutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-abort-test-'));
       const tempOutputFile = path.join(tempOutDir, 'test-produced-output.bin');
