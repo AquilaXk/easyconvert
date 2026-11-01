@@ -1,8 +1,10 @@
 'use client';
 
 import React from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
+import { Link } from '@/i18n/navigation';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
+import { useTierLabel } from './i18n/format';
 
 interface UserNavProps {
   mobile?: boolean;
@@ -10,6 +12,8 @@ interface UserNavProps {
 }
 
 export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNavProps>) {
+  const t = useTranslations('userNav');
+  const tierLabel = useTierLabel();
   const user = useViewerAccount();
 
   if (mobile) {
@@ -22,7 +26,7 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
             </div>
             <span className="text-sm font-semibold text-ink truncate">{user.name}</span>
             <span className="text-[11px] uppercase font-semibold px-1.5 py-0.5 rounded-xs bg-accent-soft text-accent-ink shrink-0">
-              {user.tier}
+              {tierLabel(user.tier)}
             </span>
           </div>
           <Link
@@ -30,7 +34,7 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
             onClick={onItemClick}
             className="min-h-[44px] px-3 inline-flex items-center text-sm text-accent-ink font-semibold rounded-sm hover:bg-accent-soft"
           >
-            Dashboard
+            {t('dashboard')}
           </Link>
         </div>
       );
@@ -43,14 +47,14 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
           onClick={onItemClick}
           className="min-h-[44px] inline-flex items-center justify-center px-3 text-sm font-semibold rounded-sm border border-rule text-ink hover:bg-sunken transition-colors"
         >
-          Log In
+          {t('logIn')}
         </Link>
         <Link
-          href="/auth?tab=register"
+          href={{ pathname: '/auth', query: { tab: 'register' } }}
           onClick={onItemClick}
           className="lift min-h-[44px] inline-flex items-center justify-center px-3 text-sm font-semibold text-on-accent bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press rounded-sm"
         >
-          Sign Up
+          {t('signUp')}
         </Link>
       </div>
     );
@@ -67,7 +71,7 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
         </div>
         <span>{user.name.split(' ')[0]}</span>
         <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded-xs bg-sunken text-ink-2">
-          {user.tier}
+          {tierLabel(user.tier)}
         </span>
       </Link>
     );
@@ -79,13 +83,13 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
         href="/auth"
         className="min-h-[44px] inline-flex items-center px-3 text-sm font-medium text-ink-2 hover:text-ink rounded-sm transition-colors"
       >
-        Log In
+        {t('logIn')}
       </Link>
       <Link
-        href="/auth?tab=register"
+        href={{ pathname: '/auth', query: { tab: 'register' } }}
         className="lift min-h-[44px] inline-flex items-center px-4 text-sm font-semibold text-on-accent bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press rounded-sm"
       >
-        Sign Up
+        {t('signUp')}
       </Link>
     </>
   );

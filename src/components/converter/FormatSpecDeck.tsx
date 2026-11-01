@@ -1,31 +1,24 @@
 import React from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import {
   Archive, BookOpen, CheckCircle2, ChevronRight, Database, FileImage,
   FileText, Home, Layers, Music, Presentation, Type, Video,
 } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 import type { FormatSpecification } from './format-specs';
 
 export { ConverterGuaranteeBar, ConverterWorkflowSteps } from './FormatFaqAndSteps';
 
 const CATEGORY_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   audio: Music,
-  'audio media': Music,
   video: Video,
-  'video media': Video,
   image: FileImage,
-  'raster image': FileImage,
   vector: Layers,
-  'vector graphic': Layers,
   spreadsheet: Database,
   presentation: Presentation,
-  'slide deck': Presentation,
   archive: Archive,
-  'archive package': Archive,
   ebook: BookOpen,
-  'digital e-book': BookOpen,
   font: Type,
-  'vector font': Type,
 };
 
 function CategoryIcon({ category }: Readonly<{ category: string }>) {
@@ -50,8 +43,9 @@ export function ConverterBreadcrumb({
   isCategorySlug,
   isPair,
 }: Readonly<ConverterBreadcrumbProps>) {
+  const t = useTranslations('converterPage.breadcrumb');
   return (
-    <nav aria-label="Breadcrumb" className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-2.5">
+    <nav aria-label={t('label')} className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-2.5">
       <ol className="flex items-center flex-wrap gap-1.5 text-xs text-ink-3">
         <li className="inline-flex items-center">
           <Link
@@ -59,7 +53,7 @@ export function ConverterBreadcrumb({
             className="inline-flex items-center gap-1 py-1 rounded-md hover:text-accent-ink transition-colors"
           >
             <Home className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Home</span>
+            <span>{t('home')}</span>
           </Link>
         </li>
         <ChevronRight className="w-3.5 h-3.5 text-ink-3 shrink-0" aria-hidden="true" />
@@ -88,7 +82,7 @@ export function ConverterBreadcrumb({
                     href={`/${srcKey}-converter`}
                     className="py-1 rounded-md hover:text-accent-ink transition-colors uppercase"
                   >
-                    {srcKey} Converter
+                    {t('converter', { format: srcKey.toUpperCase() })}
                   </Link>
                 </li>
                 <ChevronRight
@@ -99,7 +93,7 @@ export function ConverterBreadcrumb({
                   className="font-semibold text-ink uppercase truncate"
                   aria-current="page"
                 >
-                  {srcKey} to {tgtKey}
+                  {t('pair', { src: srcKey.toUpperCase(), tgt: tgtKey.toUpperCase() })}
                 </li>
               </>
             ) : (
@@ -107,7 +101,7 @@ export function ConverterBreadcrumb({
                 className="font-semibold text-ink uppercase truncate"
                 aria-current="page"
               >
-                {srcKey} Converter
+                {t('converter', { format: srcKey.toUpperCase() })}
               </li>
             )}
           </>
@@ -124,11 +118,12 @@ function FormatDossierCard({
   meta: FormatSpecification;
   role: 'SOURCE' | 'TARGET';
 }>) {
+  const t = useTranslations('converterPage.dossier');
   const rows = [
-    { label: 'Full Name', value: meta.fullName, mono: false },
-    { label: 'Developer', value: meta.developer, mono: false },
-    { label: 'MIME Type', value: meta.mimeType, mono: true },
-    { label: 'Category', value: meta.category, mono: false },
+    { label: t('fullName'), value: meta.fullName, mono: false },
+    { label: t('developer'), value: meta.developer, mono: false },
+    { label: t('mimeType'), value: meta.mimeType, mono: true },
+    { label: t('category'), value: meta.categoryLabel, mono: false },
   ];
 
   return (
@@ -141,7 +136,7 @@ function FormatDossierCard({
             </div>
             <div className="min-w-0">
               <span className="text-[11px] font-bold tracking-wider uppercase text-accent-ink block">
-                {role === 'SOURCE' ? 'SOURCE FORMAT' : 'TARGET FORMAT'}
+                {role === 'SOURCE' ? t('source') : t('target')}
               </span>
               <h3 className="text-base sm:text-lg font-bold text-ink leading-snug break-words">
                 {meta.title}
@@ -179,7 +174,7 @@ function FormatDossierCard({
 
         <div className="space-y-2">
           <span className="text-xs font-bold uppercase tracking-wider text-accent-ink block">
-            Key Capabilities
+            {t('capabilities')}
           </span>
           {(meta.advantages || []).map((adv) => (
             <div key={adv} className="flex items-start gap-2 text-xs text-ink-2">
@@ -200,6 +195,7 @@ interface FormatSpecDeckProps {
 }
 
 export function FormatSpecDeck({ srcMeta, tgtMeta, isPair }: Readonly<FormatSpecDeckProps>) {
+  const t = useTranslations('converterPage.specs');
   const srcUpper = srcMeta.extension.toUpperCase();
   const tgtUpper = tgtMeta?.extension.toUpperCase() ?? '';
 
@@ -207,13 +203,10 @@ export function FormatSpecDeck({ srcMeta, tgtMeta, isPair }: Readonly<FormatSpec
     <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-14">
       <div className="mb-6">
         <h2 className="text-2xl sm:text-3xl text-ink">
-          {isPair
-            ? `${srcUpper} vs ${tgtUpper} Specifications`
-            : `${srcUpper} Format Specification`}
+          {isPair ? t('pairHeading', { src: srcUpper, tgt: tgtUpper }) : t('heading', { format: srcUpper })}
         </h2>
         <p className="mt-1.5 text-sm text-ink-2">
-          Technical Specifications covering container standards, MIME types, specification
-          maintainers, and format capabilities.
+          {t('intro')}
         </p>
       </div>
 

@@ -1,29 +1,31 @@
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import { Download, Settings2, UploadCloud } from 'lucide-react';
 import type { FormatSpecification } from './format-specs';
 
 export function ConverterGuaranteeBar() {
+  const t = useTranslations('converterPage.guarantee');
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 mt-2 mb-10">
       <div className="flex flex-wrap items-center justify-between gap-4 py-3 border-y border-rule text-xs text-ink-2">
         <div className="flex items-center gap-2">
           <span className="size-2 rounded-full bg-success" aria-hidden="true" />
           <span className="font-semibold text-ink">
-            Browser Edge &amp; Isolated Worker Pipeline
+            {t('pipeline')}
           </span>
         </div>
         <div className="flex items-center flex-wrap gap-3 font-medium">
           <span className="text-success font-semibold">
-            100% Free &amp; Unlimited
+            {t('free')}
           </span>
           <span className="text-ink-2" aria-hidden="true">
             &bull;
           </span>
-          <span>Encrypted Ephemeral Processing</span>
+          <span>{t('ephemeral')}</span>
           <span className="text-ink-2" aria-hidden="true">
             &bull;
           </span>
-          <span>Private &amp; Secure</span>
+          <span>{t('private')}</span>
         </div>
       </div>
     </div>
@@ -43,17 +45,20 @@ export function ConverterWorkflowSteps({
   isPair,
   totalFormatCount,
 }: Readonly<ConverterWorkflowStepsProps>) {
-  const srcUpper = srcMeta.extension.toUpperCase();
-  const tgtUpper = tgtMeta?.extension.toUpperCase() ?? '';
+  const t = useTranslations('converterPage.steps');
+  const src = srcMeta.extension.toUpperCase();
+  const tgt = tgtMeta?.extension.toUpperCase() ?? '';
+  const values = { src, tgt, count: totalFormatCount };
+  const variant = isPair ? 'pair' : 'single';
 
   return (
     <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-14">
       <div className="mb-6">
         <h2 className="text-2xl sm:text-3xl text-ink">
-          {isPair ? `How to Convert ${srcUpper} to ${tgtUpper}` : `How to Convert ${srcUpper} Files`}
+          {t(`heading.${variant}`, values)}
         </h2>
         <p className="mt-1.5 text-sm text-ink-2">
-          Step-by-Step Guide for converting and downloading your files in three steps.
+          {t('intro')}
         </p>
       </div>
 
@@ -68,11 +73,10 @@ export function ConverterWorkflowSteps({
             </div>
           </div>
           <h3 className="text-base font-bold text-ink mb-2">
-            Upload {srcUpper} File(s)
+            {t('upload.heading', values)}
           </h3>
           <p className="text-xs sm:text-sm text-ink-2 leading-relaxed">
-            Click &apos;Select File&apos; or drag and drop {srcUpper} files into the workbench. You
-            can also import a public HTTP URL.
+            {t('upload.body', values)}
           </p>
         </div>
 
@@ -86,12 +90,10 @@ export function ConverterWorkflowSteps({
             </div>
           </div>
           <h3 className="text-base font-bold text-ink mb-2">
-            {isPair ? `Choose to ${tgtUpper}` : 'Select Destination Format'}
+            {t(`choose.${variant}.heading`, values)}
           </h3>
           <p className="text-xs sm:text-sm text-ink-2 leading-relaxed">
-            {isPair
-              ? `Confirm ${tgtUpper} as the output format, or pick another target and adjust optional conversion settings.`
-              : `Pick a target format from ${totalFormatCount} supported audio, video, image, document, CAD, and archive formats.`}
+            {t(`choose.${variant}.body`, values)}
           </p>
         </div>
 
@@ -105,11 +107,10 @@ export function ConverterWorkflowSteps({
             </div>
           </div>
           <h3 className="text-base font-bold text-ink mb-2">
-            {isPair ? `Download Your ${tgtUpper}` : 'Download Converted Files'}
+            {t(`download.${variant}.heading`, values)}
           </h3>
           <p className="text-xs sm:text-sm text-ink-2 leading-relaxed">
-            Click &apos;Convert&apos; to run the conversion and save each output file directly, or
-            download a batch as one ZIP archive.
+            {t('download.body')}
           </p>
         </div>
       </div>
@@ -117,43 +118,26 @@ export function ConverterWorkflowSteps({
   );
 }
 
+type ConverterPageTranslator = ReturnType<typeof useTranslations<'converterPage'>>;
+
+/** The questions of a converter page, about its own formats, in the page's language. */
 export function buildContextualFaqs(
+  t: ConverterPageTranslator,
   srcMeta: FormatSpecification,
   tgtMeta: FormatSpecification | null,
   isPair: boolean,
   totalFormatCount: number
 ) {
-  const srcUpper = srcMeta.extension.toUpperCase();
-  const tgtUpper = tgtMeta?.extension.toUpperCase() ?? '';
+  const src = srcMeta.extension.toUpperCase();
+  const tgt = tgtMeta?.extension.toUpperCase() ?? '';
+  const values = { src, tgt, count: totalFormatCount };
+  const variant = isPair ? 'pair' : 'single';
 
   return [
-    {
-      q: isPair
-        ? `How do I convert ${srcUpper} to ${tgtUpper} for free?`
-        : `How do I convert ${srcUpper} files online for free?`,
-      a: isPair
-        ? `Drop your ${srcUpper} file into the workbench above or click 'Select File', confirm ${tgtUpper} as the output format, and click Convert. Download the converted ${tgtUpper} file right away with no watermarks or account requirement.`
-        : `Add your ${srcUpper} file to the workbench above, select any output format from ${totalFormatCount} supported formats, and click Convert. Conversions are free without watermarks or daily paywalls.`,
-    },
-    {
-      q: isPair
-        ? `How are ${srcUpper} to ${tgtUpper} files handled for privacy?`
-        : `How are ${srcUpper} files handled for privacy?`,
-      a: 'Supported client formats run directly inside your browser using WebAssembly. Server-assisted jobs transmit over TLS 1.3 into isolated worker sandboxes and delete temporary output automatically upon download or short TTL expiration.',
-    },
-    {
-      q: isPair
-        ? `Does converting ${srcUpper} to ${tgtUpper} preserve layout and quality?`
-        : `Does ${srcUpper} conversion preserve formatting and quality?`,
-      a: 'Yes. Dedicated format engines translate vector paths, embedded fonts, tables, colour profiles, and media streams to match the source structure.',
-    },
-    {
-      q: `Can I batch-convert multiple ${srcUpper} files at once?`,
-      a: 'Yes. Drop multiple files into the queue to convert them in parallel, then save each output individually or download a single consolidated ZIP archive.',
-    },
-    {
-      q: 'Do I need to install desktop software or browser extensions?',
-      a: 'No installation is needed. EasyConvert runs in standard web browsers across macOS, Windows, Linux, iOS, and Android.',
-    },
+    { q: t(`faq.howTo.${variant}.q`, values), a: t(`faq.howTo.${variant}.a`, values) },
+    { q: t(`faq.privacy.${variant}.q`, values), a: t('faq.privacy.a') },
+    { q: t(`faq.quality.${variant}.q`, values), a: t('faq.quality.a') },
+    { q: t('faq.batch.q', values), a: t('faq.batch.a') },
+    { q: t('faq.install.q'), a: t('faq.install.a') },
   ];
 }

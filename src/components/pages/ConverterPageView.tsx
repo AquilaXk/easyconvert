@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
@@ -11,11 +12,9 @@ import { FORMAT_REGISTRY } from '@/lib/registry';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { parseConverterSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
-import {
-  buildContextualFaqs,
-  getCategoryLabel,
-  getFormatDetail,
-} from '@/components/converter/format-specs';
+import { formatCategoryLabel, useFormatDetail } from '@/components/converter/format-specs';
+import { buildContextualFaqs } from '@/components/converter/FormatFaqAndSteps';
+import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import {
   ConverterBreadcrumb,
   ConverterGuaranteeBar,
@@ -25,15 +24,13 @@ import {
 import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
-interface DynamicPageProps {
-  params: Promise<{
-    slug: string;
-  }>;
-}
-
-export default function DynamicConverterPage({ params }: Readonly<DynamicPageProps>) {
-  const { slug } = React.use(params);
+export default function ConverterPageView({ slug }: Readonly<{ slug: string }>) {
+  const t = useTranslations('converterPage');
+  const tSlug = useTranslations('slugPages');
+  const tDetail = useTranslations('formatDetail');
+  const getFormatDetail = useFormatDetail();
   const parsed = parseConverterSlug(slug);
+  const copy = localizeSlugCopy(tSlug, parsed.copy);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
   const defaultTarget =
@@ -62,7 +59,7 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
   });
 
   if (parsed.isInfoPage) {
-    return <ConverterInfoPage parsed={parsed} totalFormatCount={totalFormatCount} />;
+    return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} />;
   }
 
   const srcKey = parsed.sourceFormat.toLowerCase();
@@ -87,19 +84,19 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
     .map(([key]) => key);
 
   const categoryName = sourceFormatRegistry?.category || 'document';
-  const categoryLabel = getCategoryLabel(categoryName);
+  const categoryLabel = formatCategoryLabel(tDetail, categoryName);
   const normalizedSlug = slug.toLowerCase().trim();
   const isCategorySlug =
     normalizedSlug === `${categoryName}-converter` ||
     normalizedSlug === `${categoryName}s-converter` ||
     (srcKey === categoryName.toLowerCase() && normalizedSlug.includes('-converter'));
 
-  const contextualFaqs = buildContextualFaqs(srcMeta, tgtMeta, isPair, totalFormatCount);
+  const contextualFaqs = buildContextualFaqs(t, srcMeta, tgtMeta, isPair, totalFormatCount);
   const srcUpper = srcMeta.extension.toUpperCase();
   const tgtUpper = tgtMeta?.extension.toUpperCase() ?? '';
   const faqTitle = isPair
-    ? `${srcUpper} to ${tgtUpper} Frequently Asked Questions`
-    : `${srcUpper} Converter Frequently Asked Questions`;
+    ? t('faq.pairTitle', { src: srcUpper, tgt: tgtUpper })
+    : t('faq.singleTitle', { src: srcUpper });
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -120,8 +117,8 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
           hasActiveQueue={queue.length > 0}
           activeSourceFormat={parsed.sourceFormat}
           activeTargetFormat={parsed.targetFormat}
-          categoryTitle={parsed.pageTitle}
-          categoryDescription={parsed.pageDescription}
+          categoryTitle={copy.title}
+          categoryDescription={copy.description}
         />
 
         {queue.length > 0 ? (
@@ -183,7 +180,7 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
             <FaqSection
               customFaqs={contextualFaqs}
               title={faqTitle}
-              subtitle={`Common questions about ${srcUpper} conversion fidelity, privacy, and batch downloads.`}
+              subtitle={t('faq.subtitle', { src: srcUpper })}
             />
           </>
         )}

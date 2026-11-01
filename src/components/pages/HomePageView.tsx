@@ -9,8 +9,9 @@ import FaqSection from '@/components/FaqSection';
 import AdBanner from '@/components/AdBanner';
 import Footer from '@/components/Footer';
 import { useClientQueue } from '@/hooks/useClientQueue';
+import type { QueueSummary } from '@/components/workbench/hero-copy';
 
-export default function Home() {
+export default function HomePageView() {
   const {
     queue,
     isConverting,
@@ -27,15 +28,13 @@ export default function Home() {
     handleDownloadAllZip,
   } = useClientQueue({ bundlePrefix: 'easyconvert_bundle' });
 
-  const activeQueueSummary = useMemo(() => {
+  const activeQueueSummary = useMemo<QueueSummary | undefined>(() => {
     if (queue.length === 0) return undefined;
-    const srcs = Array.from(new Set(queue.map((item) => item.sourceFormat.toUpperCase())));
-    const tgts = Array.from(
-      new Set(queue.map((item) => item.targetFormat.trim().toUpperCase()).filter(Boolean))
-    );
-    const targetSuffix = tgts.length > 0 ? ` to ${tgts.join(', ')}` : '';
-    const countLabel = queue.length === 1 ? '1 file' : `${queue.length} files`;
-    return `${countLabel} (${srcs.join(', ')}${targetSuffix})`;
+    return {
+      count: queue.length,
+      sourceFormats: Array.from(new Set(queue.map((item) => item.sourceFormat))),
+      targetFormats: Array.from(new Set(queue.map((item) => item.targetFormat.trim()).filter(Boolean))),
+    };
   }, [queue]);
 
   const handleOpenFilePicker = () => {

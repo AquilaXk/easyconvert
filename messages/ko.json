@@ -1,0 +1,767 @@
+{
+  "converterPage": {
+    "breadcrumb": {
+      "label": "현재 위치",
+      "home": "홈",
+      "converter": "{format} 변환기",
+      "pair": "{src} → {tgt}"
+    },
+    "dossier": {
+      "fullName": "정식 명칭",
+      "developer": "개발·관리",
+      "mimeType": "MIME 유형",
+      "category": "분류",
+      "source": "원본 형식",
+      "target": "대상 형식",
+      "capabilities": "주요 특징"
+    },
+    "specs": {
+      "pairHeading": "{src} · {tgt} 사양 비교",
+      "heading": "{format} 형식 사양",
+      "intro": "컨테이너 표준, MIME 유형, 사양 관리 주체, 형식별 특징을 정리한 기술 사양입니다."
+    },
+    "guarantee": {
+      "pipeline": "브라우저와 격리된 작업 환경에서 처리",
+      "free": "완전 무료 · 횟수 제한 없음",
+      "ephemeral": "암호화 전송 · 처리 후 자동 삭제",
+      "private": "안전한 개인 파일 처리"
+    },
+    "steps": {
+      "heading": {
+        "pair": "{src} 파일을 {tgt} 형식으로 변환하는 방법",
+        "single": "{src} 파일 변환 방법"
+      },
+      "intro": "세 단계로 파일을 변환하고 다운로드하는 방법을 안내합니다.",
+      "upload": {
+        "heading": "{src} 파일 업로드",
+        "body": "‘파일 선택’을 누르거나 {src} 파일을 작업 영역에 끌어다 놓으십시오. 공개된 HTTP URL에서 가져올 수도 있습니다."
+      },
+      "choose": {
+        "pair": {
+          "heading": "{tgt} 형식 선택",
+          "body": "출력 형식이 {tgt}인지 확인하거나 다른 대상 형식을 고르고, 필요하면 변환 옵션을 조정하십시오."
+        },
+        "single": {
+          "heading": "대상 형식 선택",
+          "body": "지원되는 오디오, 동영상, 이미지, 문서, CAD, 압축 파일 등 {count}개 형식 가운데 대상 형식을 고르십시오."
+        }
+      },
+      "download": {
+        "pair": {
+          "heading": "{tgt} 파일 다운로드"
+        },
+        "single": {
+          "heading": "변환된 파일 다운로드"
+        },
+        "body": "‘변환’을 눌러 변환을 시작하고 결과 파일을 하나씩 저장하거나, 여러 파일을 ZIP 파일 하나로 다운로드하십시오."
+      }
+    },
+    "crossLinks": {
+      "from": {
+        "heading": "{format} 파일 변환",
+        "body": "{format} 파일을 변환할 대상 형식을 고르십시오."
+      },
+      "to": {
+        "heading": "{format} 형식으로 변환",
+        "body": "{format} 형식으로 변환할 원본 형식을 고르십시오."
+      },
+      "pair": "{src} → {tgt}"
+    },
+    "faq": {
+      "pairTitle": "{src} {tgt} 변환 자주 묻는 질문",
+      "singleTitle": "{src} 변환 자주 묻는 질문",
+      "subtitle": "{src} 변환 품질, 개인정보 보호, 일괄 다운로드에 대해 자주 묻는 질문입니다.",
+      "howTo": {
+        "pair": {
+          "q": "{src} 파일을 {tgt} 형식으로 무료로 변환하려면 어떻게 합니까?",
+          "a": "위 작업 영역에 {src} 파일을 끌어다 놓거나 ‘파일 선택’을 누르고, 출력 형식이 {tgt}인지 확인한 뒤 ‘변환’을 누르십시오. 변환된 {tgt} 파일은 워터마크나 계정 없이 바로 다운로드할 수 있습니다."
+        },
+        "single": {
+          "q": "{src} 파일을 온라인에서 무료로 변환하려면 어떻게 합니까?",
+          "a": "위 작업 영역에 {src} 파일을 추가하고, 지원되는 {count}개 형식 가운데 출력 형식을 고른 뒤 ‘변환’을 누르십시오. 워터마크나 일일 유료 제한 없이 무료로 변환할 수 있습니다."
+        }
+      },
+      "privacy": {
+        "pair": {
+          "q": "{src} {tgt} 변환 파일은 개인정보 보호를 위해 어떻게 처리됩니까?"
+        },
+        "single": {
+          "q": "{src} 파일은 개인정보 보호를 위해 어떻게 처리됩니까?"
+        },
+        "a": "브라우저에서 지원하는 형식은 WebAssembly로 사용자 브라우저 안에서 바로 처리됩니다. 서버 처리가 필요한 작업은 TLS 1.3으로 격리된 작업 샌드박스에 전송되며, 임시 결과 파일은 다운로드 후 또는 짧은 보관 기간이 지나면 자동으로 삭제됩니다."
+      },
+      "quality": {
+        "pair": {
+          "q": "{src} 파일을 {tgt} 형식으로 변환해도 레이아웃과 품질이 유지됩니까?"
+        },
+        "single": {
+          "q": "{src} 파일을 변환해도 서식과 품질이 유지됩니까?"
+        },
+        "a": "예. 형식별 전용 엔진이 벡터 경로, 임베디드 글꼴, 표, 색 프로필, 미디어 스트림을 원본 구조에 맞게 변환합니다."
+      },
+      "batch": {
+        "q": "여러 {src} 파일을 한 번에 변환할 수 있습니까?",
+        "a": "예. 여러 파일을 대기열에 끌어다 놓으면 동시에 변환되며, 결과 파일을 하나씩 저장하거나 ZIP 파일 하나로 다운로드할 수 있습니다."
+      },
+      "install": {
+        "q": "데스크톱 프로그램이나 브라우저 확장 프로그램을 설치해야 합니까?",
+        "a": "설치할 필요가 없습니다. EasyConvert는 macOS, Windows, Linux, iOS, Android의 일반 웹 브라우저에서 동작합니다."
+      }
+    }
+  },
+  "faq": {
+    "title": "자주 묻는 질문",
+    "subtitle": "지원 형식, 처리 위치, 일괄 변환 한도에 대한 답변입니다.",
+    "paidLimits": "Pro 요금제는 {pro}, Enterprise 요금제는 {enterprise}까지 늘어납니다.",
+    "items": {
+      "free": {
+        "q": "EasyConvert는 무료입니까?",
+        "a": "예. 계정 없이도 파일당 최대 {limit}까지, 하루 변환 한도 안에서 무료로 변환할 수 있습니다.{paidLimits}"
+      },
+      "handling": {
+        "q": "변환하는 동안 파일은 어떻게 처리됩니까?",
+        "a": "지원되는 이미지, 오디오, 데이터 변환은 사용자 기기의 브라우저 메모리 안에서 바로 처리됩니다. 네이티브 코덱이나 문서 엔진이 필요한 형식은 TLS 1.3으로 격리된 작업 샌드박스에 전송되며, 짧은 보관 기간이 지나면 자동으로 삭제됩니다."
+      },
+      "maxSize": {
+        "q": "파일 크기 한도는 얼마입니까?",
+        "a": "계정 유무와 관계없이 파일당 최대 {limit}까지 변환할 수 있습니다.{paidLimits} 브라우저에서 처리하는 변환은 업로드를 기다리지 않고 바로 시작합니다. 서버가 필요한 파일은 여러 부분으로 나누어 업로드하므로 큰 파일도 진행률을 확인하고 취소할 수 있습니다."
+      },
+      "batch": {
+        "q": "여러 파일을 한 번에 변환할 수 있습니까?",
+        "a": "예. 여러 파일을 끌어다 놓거나 선택해 대기열에 함께 추가하고, 출력 형식을 일괄 또는 파일별로 지정하고, 필요한 옵션을 조정한 뒤 완료된 파일을 하나씩 또는 ZIP 파일 하나로 다운로드할 수 있습니다."
+      },
+      "install": {
+        "q": "데스크톱 프로그램이나 브라우저 플러그인을 설치해야 합니까?",
+        "a": "설치할 필요가 없습니다. EasyConvert는 macOS, Windows, Linux, iOS, Android의 최신 웹 브라우저에서 동작합니다."
+      }
+    }
+  },
+  "footer": {
+    "categories": {
+      "video": "동영상 변환기",
+      "audio": "오디오 변환기",
+      "image": "이미지 변환기",
+      "documentEbook": "문서·전자책",
+      "archive": "압축 파일",
+      "dataUnits": "데이터·단위 도구",
+      "webApps": "웹 도구",
+      "clientEdge": "브라우저 처리 도구"
+    },
+    "secondaryNavLabel": "바닥글 보조 메뉴",
+    "copyright": "© 2026 EasyConvert.com",
+    "assurance": "암호화 전송 · 처리 후 자동 삭제"
+  },
+  "formatDetail": {
+    "categories": {
+      "audio": "오디오 미디어",
+      "video": "동영상 미디어",
+      "image": "래스터 이미지",
+      "vector": "벡터 그래픽",
+      "document": "문서",
+      "spreadsheet": "스프레드시트",
+      "presentation": "슬라이드 자료",
+      "archive": "압축 파일",
+      "ebook": "전자책",
+      "font": "벡터 글꼴",
+      "cad": "CAD 도면",
+      "data": "구조화 데이터",
+      "fallback": "파일 형식"
+    },
+    "developers": {
+      "audio": "오디오 공학 표준",
+      "video": "동영상 표준",
+      "image": "디지털 이미징 표준",
+      "document": "개방형 문서 표준",
+      "archive": "압축 표준",
+      "spreadsheet": "표 데이터 표준",
+      "ebook": "디지털 출판 표준",
+      "cad": "공학 CAD 표준",
+      "font": "디지털 타이포그래피 표준",
+      "fallback": "표준 사양"
+    },
+    "fallbackName": "{ext} 형식",
+    "fallbackDesc": "{name} 형식은 최신 운영체제와 변환 작업 전반에서 지원되는 구조화된 파일 형식입니다.",
+    "advantages": {
+      "structure": "{category} 구조를 정확하게 변환",
+      "sandbox": "샌드박스에서 실행하고 처리 후 자동 삭제",
+      "container": "컨테이너 구조, 스트림, 메타데이터 유지"
+    }
+  },
+  "formatSpecs": {
+    "pdf": {
+      "desc": "PDF는 전자 문서 교환을 위한 개방형 ISO 표준 형식입니다. 서식이 있는 텍스트, 벡터 그래픽, 래스터 이미지, 임베디드 글꼴을 운영체제나 뷰어 하드웨어와 관계없이 담습니다.",
+      "adv1": "벡터 글꼴, 페이지 구성, 시각적 레이아웃 유지",
+      "adv2": "모든 플랫폼에서 통용되는 문서 열람 표준",
+      "adv3": "전자 서명, 대화형 양식, 메타데이터 지원"
+    },
+    "docx": {
+      "desc": "DOCX는 Microsoft Word가 사용하는 XML 기반 문서 컨테이너입니다. 서식이 있는 텍스트, 표, 차트, 임베디드 미디어, 스타일을 압축된 ZIP 파일 안에 담습니다.",
+      "adv1": "글꼴, 머리글, 바닥글, 표를 편집 가능",
+      "adv2": "호환성이 넓은 간결한 XML 압축 구조",
+      "adv3": "데스크톱과 모바일 워드프로세서에서 기본 지원"
+    },
+    "doc": {
+      "desc": "DOC 형식은 Microsoft가 Word 97부터 2003까지 사용한 바이너리 문서 형식입니다. 스타일이 적용된 텍스트, 인라인 그래픽, 표, 서식을 OLE 복합 파일 컨테이너에 저장합니다.",
+      "adv1": "기존 워드프로세서 작업 환경과 호환",
+      "adv2": "임베디드 OLE 개체, 도형, 글꼴 메트릭 지원",
+      "adv3": "DOCX, PDF 같은 최신 개방형 표준으로 바로 옮길 수 있는 원본"
+    },
+    "csv": {
+      "desc": "CSV는 2차원 표 데이터를 구분 기호로 나눈 필드와 RFC 4180 인용 규칙에 따라 일반 UTF-8 텍스트 줄로 저장합니다.",
+      "adv1": "어떤 편집기나 스크립트로도 읽을 수 있는 일반 텍스트 표",
+      "adv2": "SQL 데이터베이스, 스프레드시트, 데이터프레임 도구와 바로 주고받기 가능",
+      "adv3": "용량 부담이 적어 줄 단위 스트리밍 파서에 적합"
+    },
+    "json": {
+      "desc": "JSON은 키와 값으로 된 객체, 배열, 숫자, 불리언, UTF-8 문자열을 RFC 8259와 ECMA-404에 따라 표현하는 텍스트 데이터 교환 형식입니다.",
+      "adv1": "HTTP API와 설정 스키마의 기본 전송 형식",
+      "adv2": "JavaScript, TypeScript, Python, Go, Rust에 기본 파서 내장",
+      "adv3": "중첩된 계층 구조 데이터를 깔끔하게 표현"
+    },
+    "xlsx": {
+      "desc": "XLSX는 여러 시트로 된 통합 문서, 자료형이 있는 셀 값, 공유 문자열 표, 수식, 숫자 서식을 ZIP으로 압축한 OpenXML 파일에 담습니다.",
+      "adv1": "워크시트당 최대 1,048,576행, 16,384열 지원",
+      "adv2": "자료형 셀, 수식, 숫자 서식을 갖춘 다중 시트 통합 문서",
+      "adv3": "스프레드시트 프로그램 간 표준 통합 문서 교환 형식"
+    },
+    "xls": {
+      "desc": "XLS는 Excel 97부터 2003까지 사용한 BIFF8 바이너리 통합 문서 형식으로, 워크시트, 셀 레코드, 수식을 복합 파일 바이너리 스트림에 저장합니다.",
+      "adv1": "기존 회계·보고 시스템의 내보내기 파일과 호환",
+      "adv2": "XLSX, CSV, JSON, PDF로 깔끔하게 변환",
+      "adv3": "셀 자료형, 워크시트 이름, 숫자 서식 유지"
+    },
+    "pptx": {
+      "desc": "PPTX는 프레젠테이션 슬라이드, 마스터 레이아웃, DrawingML 벡터 도형, 임베디드 이미지, 발표자 노트를 OpenXML ZIP 패키지에 저장합니다.",
+      "adv1": "구조화된 슬라이드 마스터, 벡터 도형, 임베디드 미디어",
+      "adv2": "슬라이드 렌더링과 PDF 내보내기에 적합한 깔끔한 XML 구조",
+      "adv3": "데스크톱, 웹, 모바일 프레젠테이션 도구에서 지원"
+    },
+    "mp4": {
+      "desc": "MP4는 동영상, 오디오, 자막 스트림을 저장하는 디지털 멀티미디어 컨테이너입니다. ISO 기본 미디어 파일 형식에서 파생되어 높은 압축 효율과 브라우저·하드웨어 기본 재생을 함께 제공합니다.",
+      "adv1": "최신 기기, TV, 웹 브라우저에서 재생 가능",
+      "adv2": "해상도와 색 재현을 유지하는 높은 압축 효율",
+      "adv3": "점진적 스트리밍과 빠른 웹 재생 시작 지원"
+    },
+    "mp3": {
+      "desc": "MP3는 손실 압축 디지털 오디오 형식입니다. 심리음향 기반 지각 부호화로 들리지 않는 주파수 성분을 줄여 파일 크기를 줄이면서도 깨끗한 소리를 유지합니다.",
+      "adv1": "비압축 PCM 오디오의 약 10% 크기",
+      "adv2": "디지털 오디오 플레이어와 웹 브라우저에서 기본 재생",
+      "adv3": "대역폭 부담이 적어 스트리밍과 휴대용 저장에 적합"
+    },
+    "wav": {
+      "desc": "WAV는 선형 펄스 부호 변조(LPCM) 샘플을 저장하는 비압축 오디오 컨테이너입니다. 손실 압축의 왜곡 없이 음파를 샘플 단위로 그대로 기록합니다.",
+      "adv1": "인코딩 왜곡이 없는 비압축 PCM 음질",
+      "adv2": "디코딩 부담이 적어 지연 없는 오디오 편집에 적합",
+      "adv3": "스튜디오 제작과 마스터링의 표준 원본 교환 형식"
+    },
+    "aac": {
+      "desc": "AAC는 MP3의 후속으로 설계된 지각 오디오 부호화 표준입니다. 같은 비트레이트에서 스테레오와 다채널 구성 모두 더 깨끗한 고음역을 들려줍니다.",
+      "adv1": "같은 비트레이트에서 MP3보다 높은 부호화 효율",
+      "adv2": "MP4 스트리밍과 모바일 플랫폼의 기본 오디오 코덱",
+      "adv3": "최대 48개 전대역 채널과 높은 샘플 레이트 지원"
+    },
+    "flac": {
+      "desc": "FLAC은 로열티가 없는 개방형 무손실 오디오 코덱입니다. 압축된 FLAC 스트림은 원본 PCM 오디오와 비트 단위까지 똑같이 복원됩니다.",
+      "adv1": "크기를 30~50% 줄이면서 비트 단위로 똑같이 복원",
+      "adv2": "CRC 체크섬을 내장한 로열티 없는 오픈 소스 사양",
+      "adv3": "최대 32비트 샘플 깊이, 최대 655kHz 샘플 레이트 지원"
+    },
+    "ogg": {
+      "desc": "OGG는 Vorbis나 Opus 오디오 코덱과 함께 쓰이는 개방형 멀티미디어 비트스트림 컨테이너로, 특허 부담 없는 스트리밍과 게임 리소스 배포에 널리 쓰입니다.",
+      "adv1": "특허 부담이 없는 오픈 소스 컨테이너·코덱 표준",
+      "adv2": "프레임 부담이 적은 가변 비트레이트 인코딩",
+      "adv3": "게임 엔진과 데스크톱 웹 브라우저에서 폭넓게 지원"
+    },
+    "m4a": {
+      "desc": "M4A는 AAC나 Apple Lossless(ALAC) 스트림을 챕터, 앨범 아트 같은 메타데이터와 함께 담는 오디오 전용 MPEG-4 컨테이너입니다.",
+      "adv1": "ISO MP4 컨테이너에 담긴 간결한 AAC 또는 무손실 ALAC 오디오",
+      "adv2": "macOS, iOS, 웹 브라우저에서 기본 재생과 메타데이터 태그 지원",
+      "adv3": "챕터 표시, 앨범 아트, 끊김 없는 재생 지원"
+    },
+    "png": {
+      "desc": "PNG는 무손실 DEFLATE 압축을 사용하는 래스터 그래픽 형식입니다. 인덱스 팔레트, 그레이스케일, 채널당 최대 16비트의 RGBA 투명도를 지원합니다.",
+      "adv1": "여러 번 저장해도 화질 저하가 없는 무손실 압축",
+      "adv2": "8비트와 16비트 알파 채널 투명도 지원",
+      "adv3": "UI 그래픽, 도표, 로고, 스크린샷에 적합한 래스터 형식"
+    },
+    "jpg": {
+      "desc": "JPG는 연속 색조 사진 이미지를 위한 ISO 표준으로, 자연스러운 색 변화에 맞춘 이산 코사인 변환(DCT) 압축을 사용합니다.",
+      "adv1": "화질과 파일 크기를 조절하는 품질 설정",
+      "adv2": "모든 웹 브라우저, 운영체제, 카메라에서 기본 지원",
+      "adv3": "웹 게시와 메시지 전송에 알맞은 작은 크기"
+    },
+    "jpeg": {
+      "desc": "JPEG 형식은 JPG와 비트스트림 구조가 같은 표준 연속 색조 사진 형식으로, 자연 이미지에 DCT 블록 압축을 사용합니다.",
+      "adv1": "모든 하드웨어와 소프트웨어에서 디코딩 지원",
+      "adv2": "색차 서브샘플링과 양자화 품질 설정 가능",
+      "adv3": "디지털 카메라와 스캐너의 기본 출력 형식"
+    },
+    "webp": {
+      "desc": "WebP는 웹 이미지용으로 손실 VP8 프레임 내 부호화와 무손실 사전 압축을 모두 제공하며, 알파 투명도, ICC 프로필, 애니메이션을 지원합니다.",
+      "adv1": "알파 투명도를 유지하면서 무손실 기준 PNG보다 26% 작은 크기",
+      "adv2": "같은 SSIM에서 손실 기준 JPEG보다 25~34% 작은 크기",
+      "adv3": "다중 프레임 애니메이션, ICC 색 프로필, EXIF/XMP 메타데이터 지원"
+    },
+    "avif": {
+      "desc": "AVIF는 AV1로 부호화한 정지 이미지를 ISO HEIF 컨테이너에 저장하며, 8비트, 10비트, 12비트 색 깊이와 HDR 전달 함수를 지원합니다.",
+      "adv1": "같은 체감 화질에서 JPEG보다 최대 50% 작은 크기",
+      "adv2": "HDR(PQ / HLG)과 넓은 색 영역 지원",
+      "adv3": "최신 데스크톱·모바일 브라우저에서 기본 디코딩"
+    },
+    "heic": {
+      "desc": "HEIC 형식은 HEVC(H.265)로 부호화한 사진을 ISO 기본 미디어 컨테이너에 저장해, 기본 JPEG보다 저장 용량을 절반 가까이 줄입니다.",
+      "adv1": "같은 사진 기준 JPEG의 약 절반 크기",
+      "adv2": "10비트 색, 보조 깊이 맵, 연속 촬영 사진 저장",
+      "adv3": "iOS와 iPadOS 기기의 기본 카메라 저장 형식"
+    },
+    "svg": {
+      "desc": "SVG는 2차원 경로, 도형, 텍스트, 그라데이션을 수학적으로 기술하는 XML 벡터 그래픽 사양으로, 어떤 해상도에서도 선명하게 렌더링됩니다.",
+      "adv1": "작은 UI 아이콘부터 인쇄용 레이아웃까지 해상도와 무관하게 확대·축소",
+      "adv2": "GZIP이나 Brotli로 잘 압축되는 간결한 텍스트 기반 XML 구조",
+      "adv3": "웹 문서에서 CSS와 스크립트로 바로 다룰 수 있음"
+    },
+    "gif": {
+      "desc": "GIF는 프레임당 최대 256색을 무손실 LZW로 압축하는 인덱스 팔레트 비트맵 형식으로, 반복 재생되는 프레임 시퀀스를 지원합니다.",
+      "adv1": "브라우저와 메신저에서 자동으로 반복 재생되는 애니메이션",
+      "adv2": "1비트 인덱스 투명도와 프레임 전환 시간 제어",
+      "adv3": "짧은 화면 녹화 클립을 만들기에 편리한 형식"
+    },
+    "epub": {
+      "desc": "EPUB 형식은 XHTML 본문, CSS 스타일시트, 글꼴, 탐색 목록을 ZIP 컨테이너에 담는 리플로우형 전자책 형식입니다.",
+      "adv1": "화면 너비와 리더의 글꼴 설정에 맞춰 다시 배치되는 본문",
+      "adv2": "전용 전자책 리더에서 지원하는 개방형 W3C 출판 표준",
+      "adv3": "구조화된 목차, 랜드마크, OPF 출판 메타데이터"
+    },
+    "mobi": {
+      "desc": "MOBI는 Mobipocket이 휴대용 전자잉크 리더용으로 개발한 PalmDOC 기반 바이너리 전자책 컨테이너로, HTML 마크업, 이미지, 챕터 위치를 함께 담습니다.",
+      "adv1": "구형 Kindle 전자잉크 기기와 데스크톱 리더 앱과 호환",
+      "adv2": "PalmDOC 또는 Huff/CDIC로 압축한 간결한 텍스트 레코드",
+      "adv3": "챕터 탐색과 사전 조회 표 내장 지원"
+    },
+    "zip": {
+      "desc": "ZIP은 하나 이상의 파일과 폴더 구조를 항목별 DEFLATE 압축과 중앙 디렉터리 색인으로 묶습니다.",
+      "adv1": "macOS, Windows, Linux, iOS, Android에서 기본으로 압축 해제",
+      "adv2": "중앙 디렉터리로 원하는 항목만 빠르게 추출",
+      "adv3": "모든 항목에 CRC-32 무결성 체크섬 포함"
+    },
+    "rar": {
+      "desc": "RAR는 솔리드 사전 압축, 리드-솔로몬 복구 레코드, 분할 압축을 지원하는 압축 파일 컨테이너입니다.",
+      "adv1": "손상된 압축 파일 영역을 복원하는 복구 레코드 선택 가능",
+      "adv2": "분할 압축과 비슷한 파일 간 솔리드 압축",
+      "adv3": "내용과 파일 이름의 AES-256 암호화 지원"
+    },
+    "7z": {
+      "desc": "7Z는 LZMA와 LZMA2 사전 압축, 큰 솔리드 블록, 선택적 AES-256 암호화를 사용하는 개방형 모듈식 압축 파일 컨테이너입니다.",
+      "adv1": "대용량 파일 묶음에서 높은 LZMA·LZMA2 압축률",
+      "adv2": "관련 파일 간 중복을 줄이는 솔리드 블록 압축",
+      "adv3": "내용과 헤더의 AES-256 암호화 지원"
+    },
+    "tar": {
+      "desc": "TAR는 파일과 폴더 구조를 512바이트 블록 단위로 차례대로 기록하며, POSIX 권한, 소유자, 수정 시각을 유지합니다.",
+      "adv1": "POSIX 권한, 시각 정보, 폴더 구조 유지",
+      "adv2": "Unix와 Linux 도구에서 쓰이는 표준 소스 배포 컨테이너",
+      "adv3": "GZIP, BZip2, XZ, Zstandard 스트림 압축과 함께 사용"
+    },
+    "dxf": {
+      "desc": "DXF는 2D와 3D 개체, 레이어, 블록, 호, 폴리라인, 스플라인을 표현하는 태그 기반 CAD 데이터 교환 형식으로, CAD/CAM 프로그램 간 호환에 쓰입니다.",
+      "adv1": "제도와 CAM 소프트웨어에서 지원하는 벡터 CAD 교환 형식",
+      "adv2": "이름이 붙은 레이어, 좌표 형상, 호, 스플라인 개체 유지",
+      "adv3": "레이저 절단, 플로팅, CNC 작업의 일반적인 입력 형식"
+    },
+    "ttf": {
+      "desc": "TTF는 2차 베지어 글리프 외곽선, 문자-글리프 cmap 표, 커닝 메트릭, 힌팅 명령을 하나의 바이너리 글꼴 파일에 정의합니다.",
+      "adv1": "데스크톱과 모바일 화면에서 선명한 외곽선 글리프 렌더링",
+      "adv2": "그리드 맞춤 힌팅 표로 작은 본문 글자도 또렷하게 표시",
+      "adv3": "macOS, Windows, Linux, iOS, Android에 바로 설치 가능"
+    },
+    "woff2": {
+      "desc": "WOFF2는 TrueType이나 OpenType 글리프 표를 글꼴 전용 전처리와 Brotli 압축으로 감싸 웹의 `@font-face` 전송에 사용합니다.",
+      "adv1": "WOFF 1.0보다 약 30% 작은 Brotli 압축 글꼴",
+      "adv2": "웹 글꼴 전송이 빨라 페이지를 불러오는 동안 레이아웃 흔들림 감소",
+      "adv3": "모든 최신 데스크톱·모바일 브라우저에서 기본 지원"
+    }
+  },
+  "header": {
+    "homeLabel": "EasyConvert 홈",
+    "primaryNavLabel": "주 메뉴",
+    "mobileNavLabel": "모바일 주 메뉴",
+    "tools": "도구",
+    "menuLabel": "탐색 메뉴",
+    "openMenu": "메뉴 열기",
+    "closeMenu": "메뉴 닫기"
+  },
+  "hero": {
+    "fileInputLabel": "변환할 파일 선택",
+    "queueSummary": "파일 {count, number}개 ({sources})",
+    "queueSummaryWithTargets": "파일 {count, number}개 ({sources} → {targets})",
+    "title": {
+      "pair": "{src} {tgt} 변환기",
+      "source": "{src} 변환기",
+      "target": "{tgt} 형식으로 변환",
+      "default": "파일 변환기"
+    },
+    "subtitle": {
+      "queue": "출력 형식을 고르고 옵션을 조정한 뒤 변환된 파일을 다운로드하십시오. {categories}개 분류, {formats}개 형식을 지원합니다.",
+      "pair": "{src} 파일을 {tgt} 형식으로 온라인에서 변환합니다. {categories}개 분류, {formats}개 형식을 암호화 전송과 처리 후 자동 삭제로 지원합니다.",
+      "source": "{src} 파일을 온라인에서 변환합니다. {categories}개 분류, {formats}개 형식을 암호화 전송과 처리 후 자동 삭제로 지원합니다.",
+      "default": "문서, 이미지, 오디오, 동영상, 구조화 데이터, 압축 파일을 온라인에서 변환합니다. {categories}개 분류, {formats}개 형식을 지원합니다."
+    },
+    "dropzone": {
+      "heading": "변환할 파일을 선택하십시오",
+      "hint": "파일을 여기에 끌어다 놓거나 클립보드에서 붙여 넣으십시오",
+      "selectFile": "파일 선택",
+      "moreSources": "다른 파일 가져오기",
+      "sourcesMenu": "파일 가져오기",
+      "fromDevice": "기기에서",
+      "fromUrl": "URL에서",
+      "addFromUrl": "URL로 추가",
+      "formatsSupported": "{count}개 형식 지원",
+      "assurance": "암호화 · 자동 삭제",
+      "popular": "인기"
+    },
+    "popularPairs": {
+      "pdfToWord": "PDF Word 변환",
+      "wordToPdf": "Word PDF 변환",
+      "imageToWebp": "이미지 WebP 변환",
+      "videoToMp3": "동영상 MP3 변환",
+      "heicToJpg": "HEIC JPG 변환",
+      "epubToPdf": "EPUB PDF 변환"
+    },
+    "tiles": {
+      "convert": "변환",
+      "from": "원본",
+      "to": "대상",
+      "joiner": "→",
+      "any": "전체",
+      "sourceLabel": "원본 형식 {format}",
+      "targetLabel": "대상 형식 {format}",
+      "anyFormat": "모든 형식",
+      "fromTitle": "원본 형식 선택",
+      "toTitle": "대상 형식 선택"
+    }
+  },
+  "infoPages": {
+    "privacy": {
+      "retention": {
+        "heading": "파일을 영구 보관하지 않습니다",
+        "body": "브라우저에서 처리할 수 있는 변환은 원본 파일을 외부 저장소에 업로드하지 않고 사용자 브라우저의 메모리 안에서 바로 처리합니다."
+      },
+      "isolation": {
+        "heading": "격리된 작업 실행과 자동 삭제",
+        "body": "서버 처리가 필요한 형식이나 REST API 요청은 TLS 1.3으로 격리된 임시 작업 컨테이너에 전송됩니다. 결과 파일은 다운로드 후 또는 짧은 보관 기간이 지나면 자동으로 삭제됩니다."
+      },
+      "noResale": {
+        "heading": "파일 내용을 판매하거나 열람하지 않습니다",
+        "body": "사용자의 파일을 판매하거나 대여하지 않으며 모델 학습에 사용하지 않습니다. 업로드된 데이터는 요청한 변환을 마치는 데에만 사용됩니다."
+      }
+    },
+    "terms": {
+      "acceptance": {
+        "heading": "1. 약관 동의",
+        "body": "EasyConvert에 접속하거나 서비스를 이용하면 본 이용약관에 동의하는 것으로 간주합니다. 동의하지 않는 경우 서비스 이용을 중단하십시오."
+      },
+      "acceptableUse": {
+        "heading": "2. 허용되는 이용",
+        "body": "처리할 권한이 없는 콘텐츠를 변환하거나, 악성 실행 파일, 취약점 공격 코드, 불법 자료를 제출하지 않는 데 동의합니다."
+      },
+      "availability": {
+        "heading": "3. 서비스 제공과 무료 이용",
+        "body": "EasyConvert 웹 애플리케이션은 횟수 제한 없이 완전히 무료로 변환할 수 있습니다. 브라우저에서 진행하는 변환에는 구독, 이용권, 유료 계정이 필요하지 않습니다."
+      }
+    },
+    "about": {
+      "purpose": {
+        "heading": "파일 변환에 집중한 도구",
+        "body": "EasyConvert는 문서, 스프레드시트, 프레젠테이션, 래스터 및 RAW 이미지, 벡터 그래픽, CAD 도면, 오디오, 동영상, 글꼴, 전자책, 압축 파일에 걸쳐 등록된 {count}개 형식을 빠르고 정확하게 변환합니다."
+      },
+      "architecture": {
+        "heading": "브라우저와 임시 샌드박스를 함께 쓰는 구조",
+        "body": "브라우저가 지원하는 형식은 WebAssembly와 WebCodecs로 사용자 기기에서 직접 처리합니다. 무겁거나 특수한 형식은 TLS 1.3으로 전송되어 격리된 작업 샌드박스에서 처리되고, 짧은 보관 기간이 지나면 자동으로 삭제됩니다."
+      }
+    },
+    "security": {
+      "transport": {
+        "heading": "TLS 1.3 전송 암호화",
+        "body": "모든 HTTPS 통신은 TLS 1.3과 엄격한 HSTS 헤더를 사용합니다. 쿠키로 인증하는 경로에는 CSRF 검증을, 프로그램으로 호출하는 API에는 권한 범위가 지정된 Bearer 키를 적용합니다. 지원 형식은 {count}개입니다."
+      },
+      "isolation": {
+        "heading": "브라우저와 작업 프로세스 격리",
+        "body": "브라우저 변환은 브라우저의 출처 샌드박스 안에서만 실행됩니다. 서버 처리 작업은 자원이 제한된 작업 프로세스에서 엄격한 입력 검증, 압축 해제 한도, 결과 파일 자동 삭제와 함께 실행됩니다."
+      }
+    },
+    "accessibility": {
+      "conformance": {
+        "heading": "준수 목표",
+        "body": "EasyConvert는 데스크톱, 태블릿, 모바일 화면과 라이트·다크 테마 모두에서 웹 콘텐츠 접근성 지침(WCAG) 2.1 AA 수준 준수를 목표로 합니다."
+      },
+      "keyboard": {
+        "heading": "키보드 탐색과 단축키",
+        "body": "모든 대화형 컨트롤은 키보드만으로 조작할 수 있습니다. 바로가기 링크로 <code>#main-content</code>에 바로 이동할 수 있고, 모든 대화형 요소에 초점 표시가 보이며, 형식 선택기와 탭은 화살표 키와 Tab 키로 이동할 수 있습니다. 모달 대화상자는 HTML 기본 <code>'<'dialog></code>로 초점을 가두고 <code>Escape</code> 키로 닫힙니다."
+      },
+      "landmarks": {
+        "heading": "화면 낭독기 랜드마크와 실시간 알림",
+        "body": "각 페이지는 <code>'<'header></code>, <code>'<'nav></code>, <code>'<'main></code>, <code>'<'footer></code> 랜드마크와 <code>h1</code>부터 <code>h3</code>까지 순서대로 이어지는 제목 수준을 제공합니다. 모든 입력란과 선택기에는 <code>'<'label htmlFor></code> 연결이, 아이콘만 있는 컨트롤에는 설명적인 <code>aria-label</code> 이름이 있으며, 변환 진행률과 클립보드 복사 결과는 polite 상태 영역으로 알립니다."
+      },
+      "contrast": {
+        "heading": "색 대비, 움직임, 확대",
+        "body": "본문은 4.5:1 이상, 대화형 UI의 경계는 3:1 이상의 명암비를 라이트·다크 팔레트 모두에서 유지합니다. 모바일 브라우저가 화면을 강제로 확대하지 않도록 입력 컨트롤의 글자 크기는 16px 이상이고, 주요 버튼과 아이콘 버튼은 44px 터치 영역을 제공합니다. 390px 너비와 200% 확대에서도 가로 스크롤 없이 레이아웃이 다시 배치되며, 필수가 아닌 움직임은 <code>prefers-reduced-motion</code> 설정을 따릅니다."
+      },
+      "feedback": {
+        "heading": "의견 보내기와 지원",
+        "body": "EasyConvert 페이지나 API 도구에서 접근성 장벽을 발견하면 팀에 알려 주십시오. 문제를 재현해 빠르게 해결하겠습니다.",
+        "link": "support@easyconvert.com (접근성 의견)"
+      }
+    },
+    "contact": {
+      "heading": "문의하기",
+      "intro": "지원 형식, 변환 품질, API 연동에 대한 질문을 엔지니어링 팀에 직접 보내십시오.",
+      "email": {
+        "heading": "지원 이메일",
+        "body": "기술 문의, API 관련 질문, 일반 의견은 엔지니어링 팀으로 보내십시오."
+      },
+      "bugs": {
+        "heading": "버그 신고",
+        "body": "예외 상황이나 렌더링 차이를 발견하셨습니까? 재현 단계와 민감하지 않은 예시 파일을 이메일로 보내 주십시오.",
+        "link": "문제 신고하기"
+      }
+    }
+  },
+  "languageSwitcher": {
+    "label": "언어"
+  },
+  "layout": {
+    "skipToContent": "본문으로 바로가기"
+  },
+  "meta": {
+    "site": {
+      "title": "EasyConvert | 온라인 파일 변환기",
+      "description": "문서, 이미지, 오디오, 동영상, 스프레드시트, 구조화 데이터, 압축 파일을 온라인에서 변환합니다. 전송은 암호화되고 파일은 처리 후 자동으로 삭제됩니다."
+    },
+    "home": {
+      "title": "EasyConvert | 온라인 파일 변환기",
+      "description": "문서, 이미지, 오디오, 동영상, 스프레드시트, 구조화 데이터, 압축 파일을 온라인에서 변환합니다. 전송은 암호화되고 파일은 처리 후 자동으로 삭제됩니다."
+    },
+    "auth": {
+      "title": "로그인 | EasyConvert",
+      "description": "EasyConvert에 로그인하거나 계정을 만들어 개발자 API 키, 웹훅, 변환 기록을 관리하십시오."
+    },
+    "dashboard": {
+      "title": "개발자 대시보드 | EasyConvert",
+      "description": "EasyConvert 계정의 API 키, 변환된 파일, 웹훅 전송, 사용량 한도를 관리합니다."
+    },
+    "apiDocs": {
+      "title": "API 문서 | EasyConvert",
+      "description": "EasyConvert REST API의 OpenAPI 3.1 문서입니다. 엔드포인트, 스키마, 바로 실행할 수 있는 cURL 요청을 제공합니다."
+    },
+    "status": {
+      "title": "브라우저 엔진 상태 | EasyConvert",
+      "description": "EasyConvert의 WebAssembly, WebCodecs, OPFS 변환 파이프라인에 대한 실시간 운영 상태, 브라우저 엔진 진단, 기능 점검 결과입니다."
+    },
+    "unitConverter": {
+      "title": "무료 온라인 단위 변환기 | EasyConvert",
+      "description": "길이, 무게, 온도, 부피, 넓이, 속도, 시간, 디지털 저장 용량, 에너지, 압력 단위를 브라우저에서 바로 변환합니다."
+    },
+    "converter": {
+      "title": "{title} | EasyConvert"
+    }
+  },
+  "plans": {
+    "fileLimit": "파일당 최대 {size}",
+    "exactBytes": "{count, number}바이트",
+    "tooLarge": "파일 크기({size})가 {plan, select, anonymous {비로그인 이용} free {무료 요금제} pro {Pro 요금제} other {Enterprise 요금제}}의 한도({limit})를 초과합니다.",
+    "nextPlanAllows": "{plan, select, anonymous {비로그인 이용} free {무료 요금제} pro {Pro 요금제} other {Enterprise 요금제}}에서는 최대 {limit}까지 변환할 수 있습니다.",
+    "tier": {
+      "free": "무료",
+      "pro": "Pro",
+      "enterprise": "Enterprise"
+    }
+  },
+  "siteLinks": {
+    "pdfConverter": "PDF 변환기",
+    "imageConverter": "이미지 변환기",
+    "videoConverter": "동영상 변환기",
+    "audioConverter": "오디오 변환기",
+    "archiveConverter": "압축 파일 변환기",
+    "spreadsheetConverter": "스프레드시트 변환기",
+    "unitConverter": "단위 변환기",
+    "pdfOcr": "PDF OCR",
+    "compressPdf": "PDF 압축",
+    "mergePdf": "PDF 병합",
+    "systemStatus": "시스템 상태",
+    "formats": "파일 형식",
+    "howItWorks": "이용 방법",
+    "apiDocs": "API 문서",
+    "dashboard": "대시보드",
+    "mp4Converter": "MP4 변환기",
+    "videoToGif": "동영상 GIF 변환",
+    "movToMp4": "MOV MP4 변환",
+    "mp3Converter": "MP3 변환기",
+    "mp4ToMp3": "MP4 MP3 변환",
+    "videoToMp3": "동영상 MP3 변환",
+    "jpgToPdf": "JPG PDF 변환",
+    "pdfToJpg": "PDF JPG 변환",
+    "heicToJpg": "HEIC JPG 변환",
+    "imageToPdf": "이미지 PDF 변환",
+    "pdfToWord": "PDF Word 변환",
+    "epubToPdf": "EPUB PDF 변환",
+    "documentConverter": "문서 변환기",
+    "rarToZip": "RAR ZIP 변환",
+    "sevenZipToZip": "7Z ZIP 변환",
+    "csvToJson": "CSV JSON 변환",
+    "jsonToCsv": "JSON CSV 변환",
+    "lbsToKg": "파운드 킬로그램 변환",
+    "saveWebsiteAsPdf": "웹사이트 PDF 저장",
+    "imageResizer": "이미지 크기 조정",
+    "websiteScreenshot": "웹사이트 스크린샷",
+    "mp4Remuxer": "MP4 리먹서",
+    "losslessPng": "무손실 PNG",
+    "vectorConverter": "벡터 변환기",
+    "securityArchitecture": "보안 구조",
+    "aboutUs": "서비스 소개",
+    "privacy": "개인정보 처리방침",
+    "terms": "이용약관",
+    "security": "보안",
+    "accessibility": "접근성",
+    "contact": "문의",
+    "status": "상태"
+  },
+  "slugPages": {
+    "info": {
+      "terms": {
+        "title": "이용약관",
+        "description": "EasyConvert 이용에 적용되는 약관과 조건을 확인하십시오."
+      },
+      "privacy": {
+        "title": "개인정보 처리방침",
+        "description": "파일을 보관하지 않는 원칙과 메모리 안에서만 이루어지는 일시 처리 방식을 안내합니다."
+      },
+      "contact": {
+        "title": "문의",
+        "description": "질문, 의견, 오픈 소스 관련 문제는 팀에 직접 문의하십시오."
+      },
+      "about": {
+        "title": "서비스 소개",
+        "description": "EasyConvert는 브라우저에서 바로 처리하는 무료 파일·데이터 변환 서비스로, 파일을 안전하게 다룹니다."
+      },
+      "security": {
+        "title": "보안 개요",
+        "description": "메모리 기반 처리 파이프라인, TLS 암호화, 파일을 저장하지 않는 구조를 소개합니다."
+      },
+      "status": {
+        "title": "시스템 상태",
+        "description": "EasyConvert 브라우저 변환 파이프라인의 실시간 운영 상태와 진단 결과입니다."
+      },
+      "accessibility": {
+        "title": "접근성 안내",
+        "description": "EasyConvert의 키보드 탐색, 화면 낭독기 랜드마크, 색 대비, WCAG 2.1 AA 준수 내용을 안내합니다."
+      },
+      "unit": {
+        "title": "단위 변환기",
+        "description": "무게, 길이, 부피, 데이터 단위를 실시간으로 정확하게 변환합니다."
+      }
+    },
+    "ocr": {
+      "title": "PDF OCR 변환기",
+      "description": "문자를 인식해 검색하고 선택할 수 있는 문서를 만듭니다. 파일은 보관하지 않습니다."
+    },
+    "unitPair": {
+      "title": "{src} {tgt} 단위 변환기",
+      "description": "{src} 값을 {tgt} 값으로 실시간으로 정확하게 변환합니다."
+    },
+    "units": {
+      "lbs": "파운드(lbs)",
+      "kg": "킬로그램(kg)",
+      "feet": "피트(ft)",
+      "meters": "미터(m)"
+    },
+    "pair": {
+      "title": "{src} {tgt} 변환기",
+      "description": {
+        "videoToAudio": "{src} 파일을 {tgt} 형식으로 무료로 변환합니다. 동영상에서 깨끗한 고음질 오디오를 브라우저에서 바로 추출하며, 서버에 저장하지 않습니다.",
+        "media": "{src} 파일을 {tgt} 형식으로 무료로 변환합니다. 브라우저에서 바로 빠르고 충실하게 트랜스코딩하며, 서버에 보관하지 않습니다.",
+        "image": "{src} 파일을 {tgt} 형식으로 무료로 변환합니다. 브라우저에서 바로 정밀하게 렌더링하고 손실 없이 래스터화합니다.",
+        "archive": "{src} 압축 파일을 {tgt} 형식으로 브라우저에서 안전하게 변환하고 풉니다. 클라우드에 저장하지 않습니다.",
+        "data": "{src} 데이터와 표를 {tgt} 형식으로 브라우저에서 바로 변환합니다. 데이터 구조를 그대로 유지하며 보관하지 않습니다.",
+        "document": "{src} 파일을 {tgt} 형식으로 무료로 변환합니다. 레이아웃, 서식, 글꼴을 충실하게 유지하며 서버에 저장하지 않습니다."
+      }
+    },
+    "format": {
+      "title": "{name} 변환기",
+      "description": {
+        "audio": "{name} 오디오 파일을 MP3, WAV, AAC 등으로 무료로 변환합니다. 고음질로 인코딩하며 서버에 저장하지 않습니다.",
+        "video": "{name} 동영상 파일을 MP4, WebM, AVI 등 여러 미디어 형식으로 브라우저에서 바로 무료로 변환합니다.",
+        "image": "{name} 파일을 PNG, JPG, WebP, SVG 등 여러 그래픽 형식으로 화질 손실 없이 무료로 변환합니다.",
+        "archive": "{name} 압축 파일을 브라우저에서 안전하게 변환하고 풉니다. 클라우드에 업로드하지 않습니다.",
+        "data": "{name} 스프레드시트와 데이터를 CSV, Excel, JSON 등 구조화된 형식으로 정밀하게 변환합니다.",
+        "presentation": "{name} 프레젠테이션 슬라이드를 레이아웃을 유지한 채 PDF, PPTX, 이미지 등으로 변환합니다.",
+        "ebook": "{name} 전자책을 EPUB, PDF, MOBI 등 여러 리더 형식으로 브라우저에서 바로 변환합니다.",
+        "document": "{name} 문서를 PDF, DOCX 등 여러 형식으로 무료로 변환합니다. 레이아웃, 글꼴, 표를 유지하며 서버에 저장하지 않습니다."
+      }
+    },
+    "merge": {
+      "title": "{format} 병합",
+      "description": "여러 {format} 파일을 몇 초 만에 하나의 문서로 합칩니다. 파일은 보관하지 않습니다."
+    },
+    "compress": {
+      "title": "{format} 압축",
+      "description": "화질과 글자의 선명도를 최대한 유지하면서 {format} 파일 크기를 줄입니다."
+    },
+    "saveWebsiteAsPdf": {
+      "title": "웹사이트 PDF 저장",
+      "description": "공개된 웹사이트 주소를 CSS와 벡터 그래픽을 유지한 고해상도 PDF로 저장합니다."
+    },
+    "websiteScreenshot": {
+      "title": "웹사이트 {format} 스크린샷",
+      "description": "웹사이트 전체 페이지나 보이는 화면을 무손실 {format} 형식으로 캡처합니다."
+    },
+    "generic": {
+      "title": "{name} 변환기",
+      "description": "{name} 파일을 브라우저에서 바로 변환합니다. 파일은 보관하지 않습니다."
+    },
+    "names": {
+      "Video": "동영상",
+      "Audio": "오디오",
+      "Image": "이미지",
+      "Vector": "벡터",
+      "Word": "Word",
+      "Excel": "Excel",
+      "PowerPoint": "PowerPoint",
+      "Document": "문서",
+      "Spreadsheet": "스프레드시트",
+      "Archive": "압축 파일",
+      "Presentation": "프레젠테이션",
+      "Ebook": "전자책",
+      "Data": "데이터",
+      "Font": "글꼴",
+      "Photo": "사진",
+      "Picture": "그림",
+      "Music": "음악",
+      "Images": "이미지",
+      "Videos": "동영상",
+      "Documents": "문서",
+      "Archives": "압축 파일",
+      "Spreadsheets": "스프레드시트",
+      "Presentations": "프레젠테이션",
+      "Ebooks": "전자책",
+      "Fonts": "글꼴",
+      "Vectors": "벡터"
+    }
+  },
+  "statusPage": {
+    "heading": "시스템 운영 상태",
+    "intro": "브라우저 안의 WebAssembly, WebCodecs, OPFS 변환 파이프라인에 대한 실시간 기능 점검, 지연 시간 측정, 구성 요소 상태입니다."
+  },
+  "theme": {
+    "toLight": "라이트 모드로 전환",
+    "toDark": "다크 모드로 전환"
+  },
+  "unitConverterPage": {
+    "heading": "통합 단위 변환기",
+    "intro": "물리 단위와 디지털 단위 10개 분류를 양방향으로 계산하고, 여러 단위를 한 번에 비교하는 환산표를 제공합니다."
+  },
+  "userNav": {
+    "dashboard": "대시보드",
+    "logIn": "로그인",
+    "signUp": "회원가입"
+  }
+}

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import createIntlMiddleware from 'next-intl/middleware';
+import { routing } from '@/i18n/routing';
 import {
   CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
   ClientIpError,
@@ -19,6 +21,9 @@ import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-lim
  * 2. Anonymous IP Edge Rate Limiting: Protective token bucket guard against burst abuse.
  * 3. Request body size: a declared body over what the route takes is refused before the route reads it, and a body sent
  *    without a length is counted as it arrives: a file route refuses its first byte, any other route takes 1 MiB.
+ * 4. Locale routing of pages: English at the unprefixed paths, every other locale under its prefix. A visitor's language
+ *    (cookie, then Accept-Language) is negotiated on the root only, so a shared link opens in the language it names, and
+ *    only the root and the language selector write the locale cookie, so no other page answer carries a Set-Cookie.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -198,12 +203,18 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
   return false;
 }
 
+const handleRootLocale = createIntlMiddleware(routing);
+const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
+
+function isApiPath(pathname: string): boolean {
+  return pathname === '/api' || pathname.startsWith('/api/');
+}
+
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
-  // Only protect API routes
-  if (!pathname.startsWith('/api')) {
-    return NextResponse.next();
+  if (!isApiPath(pathname)) {
+    return pathname === '/' ? handleRootLocale(request) : handlePageLocale(request);
   }
 
   const isHealthProbe = pathname === HEALTH_PATH && HEALTH_METHODS.has(request.method.toUpperCase());
@@ -349,5 +360,6 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 }
 
 export const config = {
-  matcher: ['/api/:path*'],
+  // API routes, and every page path that is not a framework internal or a file (a path with a dot).
+  matcher: ['/api/:path*', '/((?!api(?:/|$)|_next|_vercel|.*\\..*).*)'],
 };

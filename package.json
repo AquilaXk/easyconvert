@@ -53,6 +53,7 @@
     "lucide-react": "^0.454.0",
     "markdown-it": "^14.3.3",
     "next": "^15.5.28",
+    "next-intl": "^4.14.9",
     "papaparse": "^5.4.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",

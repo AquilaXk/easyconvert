@@ -1,18 +1,20 @@
 import React from 'react';
-import type { Metadata } from 'next';
+import { getTranslations } from 'next-intl/server';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import UnitConverter from '@/components/UnitConverter';
 import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
+import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 
-export const metadata: Metadata = {
-  title: 'Free Online Unit Converter | EasyConvert',
-  description:
-    'Convert length, weight, temperature, volume, area, speed, time, digital storage, energy, and pressure units directly in your browser.',
-};
+export function generateMetadata({ params }: { params: LocaleParams }) {
+  return localizedPageMetadata(params, 'unitConverter', '/unit-converter');
+}
 
-export default function UnitConverterPage() {
+export default async function UnitConverterPage({ params }: Readonly<{ params: LocaleParams }>) {
+  await resolvePageLocale(params);
+  const t = await getTranslations('unitConverterPage');
+
   return (
     <div className="flex flex-col min-h-screen">
       <Header />
@@ -20,10 +22,10 @@ export default function UnitConverterPage() {
       <main id="main-content" className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12">
         <div className="mb-8">
           <h1 className="text-3xl sm:text-5xl text-ink">
-            Universal Unit Converter
+            {t('heading')}
           </h1>
           <p className="mt-2 text-sm sm:text-base text-ink-2 max-w-3xl">
-            Convert measurements across 10 physical and digital categories with bidirectional calculations and multi-unit reference tables.
+            {t('intro')}
           </p>
         </div>
 
