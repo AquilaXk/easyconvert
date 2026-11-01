@@ -56,6 +56,31 @@ import { extendStoredExpiry, globalSharedObjects } from './shared-store';
 const MULTIPART_PARTS_DIR = '.multipart';
 const COPY_CHUNK_BYTES = 64 * 1024;
 
+/**
+ * Puts the file at `sourcePath` at `storedPath` in the storage directory, which is what a process that shares only that
+ * directory can read, and leaves nothing at `sourcePath`. The file is renamed when both are on one volume, and otherwise
+ * (as `handOffOutput` does) copied beside `storedPath` and renamed into place, so a reader never sees half of it.
+ */
+function moveIntoStorage(sourcePath: string, storedPath: string): void {
+  if (path.resolve(sourcePath) === storedPath) return;
+  fs.mkdirSync(path.dirname(storedPath), { recursive: true });
+  try {
+    fs.renameSync(sourcePath, storedPath);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+  }
+  const tempPath = uniqueTempPath(storedPath, 'tmp');
+  try {
+    fs.copyFileSync(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
+    fs.renameSync(tempPath, storedPath);
+  } catch (err) {
+    fs.rmSync(tempPath, { force: true });
+    throw err;
+  }
+  fs.rmSync(sourcePath, { force: true });
+}
+
 /** The bytes of the stored parts of `session` other than part `partNumber`. */
 function storedBytesBesides(session: S3MultipartSession, partNumber: number): number {
   let bytes = 0;
@@ -481,8 +506,10 @@ export class S3ObjectStorageService implements IStorageBackend {
     filename: string,
     ttlMs: number = 24 * 60 * 60 * 1000
   ): StoredObject {
-    const stat = fs.statSync(filePath);
-    const etag = `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
+    const storedPath = globalSharedObjects.objectPath(key);
+    moveIntoStorage(filePath, storedPath);
+    const stat = fs.statSync(storedPath);
+    const etag = `"${crypto.createHash('sha256').update(storedPath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
     let cachedBuffer: Buffer | null = null;
     const obj: StoredObject = {
       key,
@@ -492,7 +519,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       etag,
       uploadedAt: Date.now(),
       expiresAt: Date.now() + ttlMs,
-      filePath,
+      filePath: storedPath,
       get buffer(): Buffer {
         if (stat.size > getMaxInMemoryBytes()) {
           throw new PayloadTooLargeForMemoryError(undefined, {
@@ -501,11 +528,11 @@ export class S3ObjectStorageService implements IStorageBackend {
           });
         }
         if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(filePath)) {
-          cachedBuffer = fs.readFileSync(filePath);
+        if (fs.existsSync(storedPath)) {
+          cachedBuffer = fs.readFileSync(storedPath);
           return cachedBuffer;
         }
-        throw new StoredObjectMissingError(undefined, { key, filePath });
+        throw new StoredObjectMissingError(undefined, { key, filePath: storedPath });
       },
       set buffer(b: Buffer) {
         cachedBuffer = b;

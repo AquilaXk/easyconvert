@@ -70,7 +70,8 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
         's3_payload.json'
       );
 
-      expect(s3Stored.filePath).toBe(filePath);
+      expect(s3Stored.filePath).toBe(globalSharedObjects.objectPath(key));
+      expect(fs.existsSync(filePath), 'the file is moved into the storage directory').toBe(false);
       expect(s3Stored.size).toBe(Buffer.byteLength(jsonContent, 'utf-8'));
       expect(s3Stored.buffer.toString('utf-8')).toBe(jsonContent);
     });
