@@ -3,6 +3,7 @@ import { hashPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { readJsonObject } from '@/lib/api/json-body';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
@@ -10,10 +11,8 @@ export const dynamic = 'force-dynamic';
 const refusal = codedRefusal<AuthErrorCode>;
 
 export async function POST(req: NextRequest) {
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
+  const body = await readJsonObject(req);
+  if (!body) {
     return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
   }
 

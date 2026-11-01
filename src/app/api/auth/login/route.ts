@@ -4,6 +4,7 @@ import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
 import { RATE_LIMITED_PROBLEM_TYPE, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { readJsonObject } from '@/lib/api/json-body';
 import {
   CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
   ClientIpError,
@@ -30,10 +31,8 @@ const DUMMY_HASH = '0'.repeat(128);
 const DUMMY_SALT = '0'.repeat(32);
 
 export async function POST(req: NextRequest) {
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
+  const body = await readJsonObject(req);
+  if (!body) {
     return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
   }
 

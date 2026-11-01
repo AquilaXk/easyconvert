@@ -215,6 +215,24 @@ describe('sign-in refusals are worded by their code', () => {
     }
   });
 
+  it.each([
+    ['malformed JSON', '{"email":'],
+    ['an empty body', ''],
+    ['JSON null', 'null'],
+    ['a JSON array', '["a@b.test", "LongEnough1"]'],
+  ])('answers sign-in and sign-up %s 400 with the code invalid_json, and logs nothing', async (_, body) => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const answers = [
+      await bodyOf(await login(jsonRequest('/api/auth/login', body))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', body))),
+    ];
+    expect(answers.map(({ status, body: answer }) => [status, answer.code])).toEqual([
+      [400, 'invalid_json'],
+      [400, 'invalid_json'],
+    ]);
+    expect(logged).not.toHaveBeenCalled();
+  });
+
   it('names an undeterminable client address and a missing proxy configuration', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const malformed = await bodyOf(await login(jsonRequest('/api/auth/login', { email: 'a@b.test', password: 'x' }, { 'x-forwarded-for': 'not-an-address' })));

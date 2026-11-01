@@ -8,6 +8,7 @@ import {
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
+import { readJsonObject } from '@/lib/api/json-body';
 import { formatBytes } from '@/lib/format-bytes';
 import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
 import type { UrlImportErrorCode } from '@/lib/refusal-codes';
@@ -15,12 +16,6 @@ import type { UrlImportErrorCode } from '@/lib/refusal-codes';
 export const dynamic = 'force-dynamic';
 
 const refusal = codedRefusal<UrlImportErrorCode>;
-
-/** The request body as a JSON object; null for a body that is not JSON or is JSON of another kind (`null`, an array). */
-async function readJsonObject(req: NextRequest): Promise<Record<string, unknown> | null> {
-  const body: unknown = await req.json().catch(() => null);
-  return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
-}
 
 /** File name extensions for the content types of a link whose name has none. */
 const EXTENSIONS_BY_CONTENT_TYPE: ReadonlyArray<readonly [string, string]> = [
