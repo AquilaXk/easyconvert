@@ -352,7 +352,7 @@ export async function convertWithCalibre(deps: CalibreDeps, request: CalibreRequ
     const delivered = target.finalize ? await target.finalize(outputPath, run) : outputPath;
     assertOutputFormat(delivered, src, tgt, target.signature);
     const format = target.deliveredAs ?? tgt;
-    const persistedPath = handOffOutput(delivered, format, options, Buffer.isBuffer(input) ? undefined : input);
+    const persistedPath = await handOffOutput(delivered, format, options, Buffer.isBuffer(input) ? undefined : input);
     return createConversionResult(persistedPath, format, baseNameOf(originalFilename), 'native-calibre', Date.now() - startTime);
   });
 }

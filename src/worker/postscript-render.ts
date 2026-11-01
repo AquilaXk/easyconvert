@@ -191,7 +191,7 @@ export async function convertPostScript(job: PostScriptJob): Promise<WorkerConve
       const { inputPath } = resolveInputContext(input, src, tempDir);
       const pdfPath = path.join(tempDir, 'rendered.pdf');
       await writePdf(job, ghostscript, { tempDir, limits, smallInput }, inputPath, pdfPath);
-      const persistedPath = handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
+      const persistedPath = await handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-postscript', Date.now() - startTime);
     });
   }

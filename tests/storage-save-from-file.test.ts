@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const KEY = 'results/job-1/result.bin';
+const MINUTE_MS = 60 * 1000;
 const CONTENT = crypto.randomBytes(256 * 1024);
 
 let baseDir: string;
@@ -148,6 +149,7 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     expect(events).toEqual(['fsync', 'rename into place']);
   });
 
+  // skip-ok: root reads a file whatever its mode, so a read-only source cannot be set up.
   it.skipIf(process.getuid?.() === 0)('copies a read-only source, whose mode the copy keeps', async () => {
     renameFailsAcrossVolumes();
     fs.chmodSync(sourcePath, 0o444);
@@ -376,14 +378,14 @@ describe('a stream the local driver stores', () => {
     }
     expect(temp, 'the save writes a temporary file').toBeDefined();
     const tempPath = path.join(storageDir, temp!);
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    fs.utimesSync(tempPath, twoHoursAgo, twoHoursAgo);
+    const lastWrite = new Date(Date.now() - 50 * MINUTE_MS);
+    fs.utimesSync(tempPath, lastWrite, lastWrite);
 
     vi.advanceTimersByTime(TEMP_REFRESH_MS);
-    for (let turn = 0; turn < 200 && fs.statSync(tempPath).mtimeMs < twoHoursAgo.getTime() + 1000; turn++) {
+    for (let turn = 0; turn < 200 && fs.statSync(tempPath).mtimeMs < lastWrite.getTime() + 1000; turn++) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    globalSharedObjects.sweepStaleTempFiles();
+    globalSharedObjects.sweepStaleTempFiles(Date.now() + 20 * MINUTE_MS);
 
     expect(fs.existsSync(tempPath), 'the quiet writer keeps its file').toBe(true);
     source.end(Buffer.alloc(1024, 8));

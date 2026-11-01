@@ -820,10 +820,8 @@ describe('the file ledger shared by the web server and the workers', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const realWrite = fs.writeFileSync;
       vi.spyOn(fs, 'writeFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
-        if (String(target).endsWith('.tmp')) {
-          fs.closeSync(fs.openSync(String(target), 'w'));
-          throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
-        }
+        // The record is written through a descriptor of its temporary file.
+        if (typeof target === 'number') throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
         return (realWrite as (...args: unknown[]) => void)(target, ...rest);
       }) as typeof fs.writeFileSync);
       const storageDir = globalSharedObjects.getStorageDir();
@@ -832,15 +830,15 @@ describe('the file ledger shared by the web server and the workers', () => {
 
       vi.restoreAllMocks();
       expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/Could not extend the lifetime of/);
-      expect(fs.readdirSync(storageDir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+      expect(fs.readdirSync(storageDir).filter((name) => name.includes('.tmp.'))).toEqual([]);
       await releaseResultHold(key, 'job-full');
     });
 
     it('removes the temporary files an interrupted extension left, once they are stale, and no others', () => {
       const storageDir = globalSharedObjects.getStorageDir();
       fs.mkdirSync(storageDir, { recursive: true });
-      const stale = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
-      const fresh = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
+      const stale = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`);
+      const fresh = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`);
       fs.writeFileSync(stale, '{}');
       fs.writeFileSync(fresh, '{}');
       const old = new Date(Date.now() - 61 * MINUTE_MS);

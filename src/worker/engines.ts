@@ -612,7 +612,7 @@ export async function convertWithNativeFfmpeg(
       assertOutputWritten(tempOutputPath, media, ffmpegBin, tgt);
 
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = handOffOutput(tempOutputPath, tgt, options, vfsPayload);
+      const persistedPath = await handOffOutput(tempOutputPath, tgt, options, vfsPayload);
 
       const transcoded = createConversionResult(
         persistedPath,

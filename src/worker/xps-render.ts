@@ -185,7 +185,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {
       const pdfPath = await writePdf(job, entries, tempDir, { maxBytes: MAX_OUTPUT_BYTES, pageCount });
-      const persistedPath = handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
+      const persistedPath = await handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-xps', Date.now() - startTime);
     });
   }

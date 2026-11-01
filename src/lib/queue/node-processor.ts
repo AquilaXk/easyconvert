@@ -107,6 +107,13 @@ function discardConversionOutput(jobId: string, result: EngineResult): void {
   }
 }
 
+/** An attempt aborted while its result was saved (a long copy) leaves no result nobody holds or registers, and fails. */
+async function discardResultOfAbortedAttempt(storage: IStorageBackend, resultKey: string, signal: AbortSignal): Promise<void> {
+  if (!signal.aborted) return;
+  await storage.deleteObject(resultKey);
+  signal.throwIfAborted();
+}
+
 /**
  * Canonical unified node processor.
  * Routes graph node jobs, multi-stage task pipelines, and single conversions
@@ -332,6 +339,7 @@ export async function processNodeJob(
         undeliveredTtlMs
       );
     }
+    await discardResultOfAbortedAttempt(storage, resultKey, attemptSignal);
 
     await registerStoredResult(storage, resultKey);
 

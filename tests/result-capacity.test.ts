@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { POST as directUploadRoute } from '../src/app/api/v1/uploads/direct/route';
@@ -601,7 +600,8 @@ describe('early deletion when the disk runs full', () => {
 
     async function storeInWorker(user: User, label: string, at: number): Promise<string> {
       const key = `conversions/${user.id}/${label}_${crypto.randomBytes(4).toString('hex')}.bin`;
-      await savedByWorker.saveStream(key, Readable.from([BODY]), { filename: `${label}.bin`, mimeType: MIME_TYPE });
+      const now = Date.now();
+      savedByWorker.set(key, { key, filename: `${label}.bin`, mimeType: MIME_TYPE, buffer: BODY, size: BODY.length, etag: '"e"', uploadedAt: now, expiresAt: now + 24 * 60 * MINUTE_MS });
       storedKeys.push(key);
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(at);

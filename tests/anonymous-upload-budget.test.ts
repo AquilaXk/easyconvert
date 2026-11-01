@@ -146,8 +146,8 @@ async function initiate(headers: Record<string, string>, totalSize: number): Pro
   const res = await multipartPost(multipart('initiate', { filename: 'big.csv', totalSize }, headers));
   if (res.status === 200) {
     const { uploadId } = await res.clone().json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
   }
   return res;
@@ -303,7 +303,7 @@ describe('a budget store that cannot be reached', () => {
     const res = await multipartPost(part(uploadId, Buffer.from('a,b\n1,2\n'), visitor));
 
     expect(res.status).toBe(200);
-    expect(s3Storage.getUploadedParts(uploadId)).toHaveLength(1);
+    expect(await s3Storage.getUploadedParts(uploadId)).toHaveLength(1);
   });
 
   it('answers an abort the store took, and the bytes come back when the reservation expires', async () => {
@@ -315,7 +315,7 @@ describe('a budget store that cannot be reached', () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).success).toBe(true);
-    expect(s3Storage.getUploadSession(uploadId)).toBeUndefined();
+    expect(await s3Storage.getUploadSession(uploadId)).toBeUndefined();
   });
 
   it('answers a part, a completion and an abort that failed without an HTTP status with 503, worth sending again', async () => {

@@ -1,8 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable, PassThrough } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import {
   MultipartUploadInit,
   UploadedPart,
@@ -13,10 +12,9 @@ import {
   StoredObject,
   PresignedUrlResult,
   ObjectStat,
-  PayloadTooLargeForMemoryError,
-  StoredObjectMissingError,
-  getMaxInMemoryBytes,
+  UploadSessionInfo,
 } from './oci-storage';
+import { StorageServiceError } from './adapters/adapter-interface';
 import { StorageSigningSecretMissingError } from './errors';
 import { lazySingleton } from './lazy-singleton';
 import {
@@ -29,166 +27,79 @@ import {
 } from './storage-config';
 import { presignSigV4QueryUrl, verifySigV4QueryUrl } from './sigv4-presigner';
 import { multipartUploadKey } from './key-namespace';
-import { EXCLUSIVE_CREATE, uniqueTempPath } from './temp-file';
+import { LocalFsStorage, localFsStorage, type LocalMultipartSession, type StoredPart } from './local-fs-storage';
+import { extendStoredExpiry, fileBackedObject, globalSharedObjects } from './shared-store';
+import { sweepStaleJobDirectories } from './temp-file';
 
 export * from './oci-storage';
 
-interface S3MultipartSession {
-  uploadId: string;
-  key: string;
-  filename: string;
-  mimeType: string;
-  totalSize: number;
-  partSize: number;
-  totalParts: number;
-  createdAt: number;
-  diskDir: string;
-  parts: Map<number, { filePath: string; etag: string; size: number }>;
-  ownerUserId?: string;
+const DEFAULT_OBJECT_TTL_MS = 24 * 60 * 60 * 1000;
+const UPLOAD_KEY_RANDOM_BYTES = 8;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
+
+function invalidSession(uploadId: string): Error {
+  return new Error(`Invalid or expired multipart upload session: ${uploadId}`);
 }
 
-import { extendStoredExpiry, globalSharedObjects } from './shared-store';
+function sessionInfo(session: LocalMultipartSession): UploadSessionInfo {
+  const totalSize = session.totalSize ?? 0;
+  return {
+    uploadId: session.uploadId,
+    key: session.key,
+    filename: session.metadata?.filename ?? path.basename(session.key),
+    mimeType: session.metadata?.contentType ?? 'application/octet-stream',
+    totalSize,
+    partSize: session.partSize,
+    totalParts: Math.max(1, Math.ceil(totalSize / session.partSize)),
+    createdAt: session.createdAt,
+    ownerUserId: session.ownerUserId,
+  };
+}
 
-/**
- * The parts of open sessions live in the storage directory, next to the objects they are assembled into: the web process
- * and the workers share only that directory, so an object assembled anywhere else would be out of a worker's reach.
- */
-const MULTIPART_PARTS_DIR = '.multipart';
-/** How long a session stays open from its creation, and so how long its directory may go without a write before it is nobody's. */
-const MULTIPART_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-/** Starts the id of every session of this driver, and so the name of its directory. */
-const MULTIPART_UPLOAD_ID_PREFIX = 'oci_mp_s3_';
-const COPY_CHUNK_BYTES = 64 * 1024;
-
-/**
- * Puts the file at `sourcePath` at `storedPath` in the storage directory, which is what a process that shares only that
- * directory can read, and leaves nothing at `sourcePath`. The file is renamed when both are on one volume, and otherwise
- * (as `handOffOutput` does) copied beside `storedPath` and renamed into place, so a reader never sees half of it. The
- * copy runs in libuv's thread pool: the worker's event loop keeps its heartbeat while a multi-GiB result is copied.
- */
-async function moveIntoStorage(sourcePath: string, storedPath: string): Promise<void> {
-  if (path.resolve(sourcePath) === storedPath) return;
-  await fs.promises.mkdir(path.dirname(storedPath), { recursive: true });
-  try {
-    await fs.promises.rename(sourcePath, storedPath);
-    return;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+/** The parts to complete from: the listed ones, which must be stored with the ETag they list, else every stored part in order. */
+function partsToComplete(uploadId: string, stored: readonly StoredPart[], expectedParts?: { partNumber: number; etag?: string }[]): StoredPart[] {
+  if (expectedParts === undefined) {
+    if (stored.length === 0) throw new Error(`Cannot complete empty multipart upload session: ${uploadId}`);
+    return [...stored].sort((a, b) => a.partNumber - b.partNumber);
   }
-  await copyIntoPlace(sourcePath, storedPath);
-  try {
-    await fs.promises.rm(sourcePath, { force: true });
-  } catch (err) {
-    console.warn(`Could not remove "${sourcePath}" after storing it at "${storedPath}"`, err);
+  if (!Array.isArray(expectedParts) || expectedParts.length === 0) {
+    throw new Error(`Cannot complete multipart upload with zero parts: ${uploadId}`);
   }
-}
-
-/** Copies `sourcePath` to a unique temporary file beside `storedPath`, makes it durable, checks its size and renames it into place. */
-async function copyIntoPlace(sourcePath: string, storedPath: string): Promise<void> {
-  const tempPath = uniqueTempPath(storedPath, 'tmp');
-  try {
-    const expectedSize = (await fs.promises.stat(sourcePath)).size;
-    await fs.promises.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
-    const handle = await fs.promises.open(tempPath, 'r');
-    let copiedSize: number;
-    try {
-      const now = new Date();
-      await handle.utimes(now, now);
-      await handle.sync();
-      copiedSize = (await handle.stat()).size;
-    } finally {
-      await handle.close();
-    }
-    if (copiedSize !== expectedSize) {
-      throw new Error(`Copy of "${sourcePath}" holds ${copiedSize} bytes, expected ${expectedSize}`);
-    }
-    await fs.promises.rename(tempPath, storedPath);
-  } catch (err) {
-    await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
-    throw err;
-  }
-}
-
-/**
- * Whether nothing in the directory `dirPath` was written for `maxAgeMs`. The directory's own time moves with every file
- * created or removed in it, so a young directory is answered by one stat; its files are looked at only when it is old.
- */
-function untouchedFor(dirPath: string, maxAgeMs: number, now: number): boolean {
-  if (now - fs.statSync(dirPath).mtimeMs < maxAgeMs) return false;
-  for (const name of fs.readdirSync(dirPath)) {
-    try {
-      if (now - fs.statSync(path.join(dirPath, name)).mtimeMs < maxAgeMs) return false;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
-  }
-  return true;
-}
-
-/** The bytes of the stored parts of `session` other than part `partNumber`. */
-function storedBytesBesides(session: S3MultipartSession, partNumber: number): number {
-  let bytes = 0;
-  for (const [number, part] of session.parts) if (number !== partNumber) bytes += part.size;
-  return bytes;
-}
-
-/** Copies the parts `partNumbers` of `session` in order to `outFd`, through one fixed buffer; returns each part's hash and the bytes written. */
-function writeParts(outFd: number, session: S3MultipartSession, partNumbers: number[]): { partHashes: Buffer[]; totalSize: number } {
-  const partHashes: Buffer[] = [];
-  let totalSize = 0;
-  const chunkBuf = Buffer.alloc(COPY_CHUNK_BYTES);
-  for (const partNum of partNumbers) {
-    const partInfo = session.parts.get(partNum)!;
-    if (!fs.existsSync(partInfo.filePath)) {
-      console.error(`Part file missing on disk: "${partInfo.filePath}"`);
-      throw new Error(`Part file missing on disk for part ${partNum}`);
-    }
-    const inFd = fs.openSync(partInfo.filePath, 'r');
-    const partHasher = crypto.createHash('sha256');
-    let bytesRead = 0;
-    try {
-      while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
-        fs.writeSync(outFd, chunkBuf, 0, bytesRead);
-        partHasher.update(chunkBuf.subarray(0, bytesRead));
+  const byNumber = new Map(stored.map((part) => [part.partNumber, part] as const));
+  return expectedParts
+    .map((listed) => {
+      const part = byNumber.get(listed?.partNumber);
+      if (!part) throw new Error(`Missing part number ${listed?.partNumber} in multipart upload session: ${uploadId}`);
+      if (listed.etag && listed.etag !== part.etag) {
+        throw new Error(`ETag mismatch for part number ${listed.partNumber}: expected ${listed.etag}, got ${part.etag}`);
       }
-    } finally {
-      fs.closeSync(inFd);
-    }
-    partHashes.push(partHasher.digest());
-    totalSize += partInfo.size;
-  }
-  return { partHashes, totalSize };
+      return part;
+    })
+    .sort((a, b) => a.partNumber - b.partNumber);
 }
 
 /**
- * Enterprise Zero-Heap S3 / R2 Object Storage Service.
- * Implements disk-backed chunk streaming (part-${partNumber}.bin) to keep Node.js heap flat
- * during large file ingestions, and authentic AWS SigV4 presigned URL generation and verification.
+ * Job storage of the local driver: objects in the storage directory that the web process and the workers share
+ * (`SharedObjectStore`), and uploads in parts through `LocalFsStorage`, whose sessions live on that disk beside their
+ * parts and so survive a restart of the web process. Signed part URLs are verified with the signing secret.
  */
 export class S3ObjectStorageService implements IStorageBackend {
   readonly providerName: string = 's3';
   readonly kind = 'local' as const;
-  private readonly sessions = new Map<string, S3MultipartSession>();
   private readonly objects = new Map<string, StoredObject>();
   private gcTimer: NodeJS.Timeout | null = null;
   private readonly configuredSigningSecret: string | undefined;
+  private readonly multipart: LocalFsStorage;
 
   readonly DEFAULT_PART_SIZE = 5 * 1024 * 1024; // 5 MB S3 minimum part size
-  private readonly baseUploadDir: string;
 
-  constructor(options?: { signingSecret?: string; baseUploadDir?: string }) {
+  constructor(options?: { signingSecret?: string; multipart?: LocalFsStorage }) {
     const secret = options?.signingSecret || resolveSigningSecret();
     if (!secret && isProductionRuntime()) {
       throw new Error('Missing required STORAGE_SIGNING_SECRET environment variable in production');
     }
     this.configuredSigningSecret = secret;
-
-    this.baseUploadDir = options?.baseUploadDir || path.join(globalSharedObjects.getStorageDir(), MULTIPART_PARTS_DIR);
-    try {
-      if (!fs.existsSync(this.baseUploadDir)) {
-        fs.mkdirSync(this.baseUploadDir, { recursive: true });
-      }
-    } catch {}
+    this.multipart = options?.multipart ?? localFsStorage;
 
     this.gcTimer = setInterval(() => {
       this.sweepExpiredObjects();
@@ -205,319 +116,85 @@ export class S3ObjectStorageService implements IStorageBackend {
     }
   }
 
-  initiateMultipartUpload(
+  async initiateMultipartUpload(
     filename: string,
     mimeType: string,
     totalSize: number,
     ownerUserId?: string,
     partSize?: number
-  ): MultipartUploadInit {
-    const timestamp = Date.now();
-    const randomHex = crypto.randomBytes(8).toString('hex');
-    const uploadId = `${MULTIPART_UPLOAD_ID_PREFIX}${timestamp}_${randomHex}`;
+  ): Promise<MultipartUploadInit> {
     const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = multipartUploadKey(ownerUserId, `${timestamp}_${randomHex}_${sanitizedFilename}`);
-
+    const unique = `${Date.now()}_${crypto.randomBytes(UPLOAD_KEY_RANDOM_BYTES).toString('hex')}`;
+    const key = multipartUploadKey(ownerUserId, `${unique}_${sanitizedFilename}`);
     const resolvedPartSize = partSize && partSize > 0 ? partSize : this.DEFAULT_PART_SIZE;
-    const totalParts = Math.max(1, Math.ceil(totalSize / resolvedPartSize));
-
-    const sessionDir = path.join(this.baseUploadDir, uploadId);
-    try {
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
-      }
-    } catch {}
-
-    const session: S3MultipartSession = {
-      uploadId,
+    const session = await this.multipart.createMultipart(
       key,
-      filename,
-      mimeType,
-      totalSize,
-      partSize: resolvedPartSize,
-      totalParts,
-      createdAt: timestamp,
-      diskDir: sessionDir,
-      parts: new Map(),
-      ownerUserId,
-    };
-
-    this.sessions.set(uploadId, session);
-
+      { filename, contentType: mimeType },
+      { ownerUserId, totalSize, partSize: resolvedPartSize }
+    );
     return {
-      uploadId,
+      uploadId: session.uploadId,
       key,
       partSize: resolvedPartSize,
-      totalParts,
-      expiresAt: timestamp + MULTIPART_SESSION_TTL_MS,
+      totalParts: Math.max(1, Math.ceil(totalSize / resolvedPartSize)),
+      expiresAt: session.expiresAt,
     };
   }
 
-  getUploadSession(uploadId: string): S3MultipartSession | undefined {
-    return this.sessions.get(uploadId);
+  async getUploadSession(uploadId: string): Promise<UploadSessionInfo | undefined> {
+    const session = await this.multipart.getMultipartSession(uploadId);
+    return session ? sessionInfo(session) : undefined;
   }
 
-  getUploadOwner(uploadId: string): string | undefined {
-    return this.sessions.get(uploadId)?.ownerUserId;
+  async getUploadOwner(uploadId: string): Promise<string | undefined> {
+    return (await this.multipart.getMultipartSession(uploadId))?.ownerUserId;
   }
 
-  getUploadedParts(uploadId: string): Array<{ partNumber: number; etag: string; size: number }> | undefined {
-    const session = this.sessions.get(uploadId);
-    if (!session) return undefined;
-    return Array.from(session.parts.entries()).map(([partNumber, part]) => ({
-      partNumber,
-      etag: part.etag,
-      size: part.size,
-    }));
+  async getUploadedParts(uploadId: string): Promise<StoredPart[] | undefined> {
+    return this.multipart.listPartSizes(uploadId);
   }
 
-  uploadPart(
-    uploadId: string,
-    partNumber: number,
-    buffer: Buffer
-  ): UploadedPart {
-    const session = this.sessions.get(uploadId);
-    if (!session) {
-      throw new Error(`Invalid or expired multipart upload session: ${uploadId}`);
-    }
-
-    if (partNumber < 1 || partNumber > 10000) {
-      throw new Error(`Invalid OCI partNumber: ${partNumber}. Must be between 1 and 10000.`);
-    }
-
-    // Disk-backed chunk streaming (Zero-Heap Ingestion)
-    const partFileName = `part-${partNumber}.bin`;
-    const partFilePath = path.join(session.diskDir, partFileName);
-
-    fs.writeFileSync(partFilePath, buffer);
-
-    const hashHex = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 32);
-    const etag = `"${hashHex}"`;
-
-    session.parts.set(partNumber, {
-      filePath: partFilePath,
-      etag,
-      size: buffer.length,
-    });
-
-    return {
-      partNumber,
-      size: buffer.length,
-      etag,
-    };
+  async uploadPart(uploadId: string, partNumber: number, buffer: Buffer): Promise<UploadedPart> {
+    return this.uploadPartStream(uploadId, partNumber, Readable.from([buffer]));
   }
 
+  /** Stores one part; a part over what the session has room for fails with `statusCode` 413, as part admission answers. */
   async uploadPartStream(
     uploadId: string,
     partNumber: number,
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
-    maxPartBytes?: number,
-    maxTotalBytes?: number,
-    currentSessionBytes: number = 0
+    maxPartBytes?: number
   ): Promise<UploadedPart> {
-    const session = this.sessions.get(uploadId);
-    if (!session) {
-      throw new Error(`Invalid or expired multipart upload session: ${uploadId}`);
-    }
-
-    if (partNumber < 1 || partNumber > 10000) {
-      throw new Error(`Invalid OCI partNumber: ${partNumber}. Must be between 1 and 10000.`);
-    }
-
-    const partFileName = `part-${partNumber}.bin`;
-    const partFilePath = path.join(session.diskDir, partFileName);
-    const tempPartFilePath = uniqueTempPath(partFilePath, 'tmp');
-
-    const nodeStream =
-      'pipe' in (stream as any) && typeof (stream as any).pipe === 'function'
-        ? (stream as NodeJS.ReadableStream)
-        : Readable.fromWeb(stream as any);
-
-    const outStream = fs.createWriteStream(tempPartFilePath, { flags: EXCLUSIVE_CREATE });
-    const hasher = crypto.createHash('sha256');
-    let partSize = 0;
-    let limitExceededMessage: string | null = null;
-
-    const passThrough = new PassThrough();
-    passThrough.on('data', (chunk: Buffer | string) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      partSize += buf.length;
-      if (maxPartBytes !== undefined && partSize > maxPartBytes) {
-        limitExceededMessage = `Part size exceeds maximum allowed part size of ${maxPartBytes} bytes.`;
-        outStream.destroy(new Error(limitExceededMessage));
-        return;
-      }
-      if (maxTotalBytes !== undefined && currentSessionBytes + partSize > maxTotalBytes) {
-        limitExceededMessage = `Total upload size exceeds maximum allowed size of ${maxTotalBytes} bytes.`;
-        outStream.destroy(new Error(limitExceededMessage));
-        return;
-      }
-      hasher.update(buf);
-    });
-
+    if (!(await this.multipart.getMultipartSession(uploadId))) throw invalidSession(uploadId);
     try {
-      await pipeline(nodeStream, passThrough, outStream);
-    } catch (err: any) {
-      try {
-        if (fs.existsSync(tempPartFilePath)) fs.unlinkSync(tempPartFilePath);
-      } catch {}
-      if (limitExceededMessage) {
-        const error = new Error(limitExceededMessage);
-        (error as any).statusCode = 413;
-        throw error;
+      return await this.multipart.savePartStream(uploadId, partNumber, stream, maxPartBytes);
+    } catch (error) {
+      if (error instanceof StorageServiceError && error.code === 'EntityTooLarge') {
+        throw Object.assign(new Error(error.message), { statusCode: HTTP_PAYLOAD_TOO_LARGE });
       }
-      throw err;
-    }
-
-    if (partSize === 0) {
-      try {
-        if (fs.existsSync(tempPartFilePath)) fs.unlinkSync(tempPartFilePath);
-      } catch {}
-      const error = new Error('Chunk payload is empty (0 bytes).');
-      (error as any).statusCode = 400;
       throw error;
     }
-
-    // Other parts may have landed while this one streamed, so the session's sum is checked again where it commits:
-    // reading the stored parts and renaming take no await between them, so no other part commits in between.
-    if (maxTotalBytes !== undefined && storedBytesBesides(session, partNumber) + partSize > maxTotalBytes) {
-      fs.rmSync(tempPartFilePath, { force: true });
-      throw Object.assign(new Error(`Total upload size exceeds maximum allowed size of ${maxTotalBytes} bytes.`), { statusCode: 413 });
-    }
-    fs.renameSync(tempPartFilePath, partFilePath);
-
-    const hashHex = hasher.digest('hex').slice(0, 32);
-    const etag = `"${hashHex}"`;
-
-    session.parts.set(partNumber, {
-      filePath: partFilePath,
-      etag,
-      size: partSize,
-    });
-
-    return {
-      partNumber,
-      size: partSize,
-      etag,
-    };
   }
 
-  completeMultipartUpload(
+  async completeMultipartUpload(
     uploadId: string,
     expectedParts?: { partNumber: number; etag?: string }[]
-  ): MultipartUploadComplete {
-    const session = this.sessions.get(uploadId);
-    if (!session) {
-      throw new Error(`Invalid or expired multipart upload session: ${uploadId}`);
-    }
-
-    if (session.parts.size === 0) {
-      throw new Error(`Cannot complete empty multipart upload session: ${uploadId}`);
-    }
-
-    if (expectedParts !== undefined) {
-      if (!Array.isArray(expectedParts) || expectedParts.length === 0) {
-        throw new Error(`Cannot complete multipart upload with zero parts: ${uploadId}`);
-      }
-      for (const p of expectedParts) {
-        if (!p || typeof p.partNumber !== 'number' || p.partNumber < 1 || p.partNumber > 10000) {
-          throw new Error(`Invalid part number ${p?.partNumber} in expected parts list.`);
-        }
-        const sessionPart = session.parts.get(p.partNumber);
-        if (!sessionPart) {
-          throw new Error(`Missing part number ${p.partNumber} in multipart upload session: ${uploadId}`);
-        }
-        if (p.etag && p.etag !== sessionPart.etag) {
-          throw new Error(`ETag mismatch for part number ${p.partNumber}: expected ${p.etag}, got ${sessionPart.etag}`);
-        }
-      }
-    }
-
-    const sortedPartNumbers = expectedParts
-      ? expectedParts.map((p) => p.partNumber).sort((a, b) => a - b)
-      : Array.from(session.parts.keys()).sort((a, b) => a - b);
-    const finalFilePath = globalSharedObjects.objectPath(session.key);
-    const tempFilePath = uniqueTempPath(finalFilePath, 'comb');
-    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
-    const outFd = fs.openSync(tempFilePath, EXCLUSIVE_CREATE);
-    let assembled: { partHashes: Buffer[]; totalSize: number };
-    try {
-      assembled = writeParts(outFd, session, sortedPartNumbers);
-    } catch (err) {
-      fs.closeSync(outFd);
-      fs.rmSync(tempFilePath, { force: true });
-      throw err;
-    }
-    fs.closeSync(outFd);
-    fs.renameSync(tempFilePath, finalFilePath);
-    const { partHashes, totalSize } = assembled;
-
-    // S3 composite multipart ETag format: "${HASH_OF_CONCATENATED_PART_HASHES}-${PART_COUNT}"
-    const compositeHash = crypto
-      .createHash('sha256')
-      .update(Buffer.concat(partHashes))
-      .digest('hex')
-      .slice(0, 32);
-    const multipartEtag = `"${compositeHash}-${sortedPartNumbers.length}"`;
-
-    let cachedBuffer: Buffer | null = null;
-    const storedObject: StoredObject = {
-      key: session.key,
-      filename: session.filename,
-      mimeType: session.mimeType,
-      size: totalSize,
-      etag: multipartEtag,
-      uploadedAt: Date.now(),
-      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-      filePath: finalFilePath,
-      get buffer(): Buffer {
-        if (totalSize > getMaxInMemoryBytes()) {
-          throw new PayloadTooLargeForMemoryError(undefined, {
-            size: totalSize,
-            limit: getMaxInMemoryBytes(),
-          });
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(finalFilePath)) {
-          cachedBuffer = fs.readFileSync(finalFilePath);
-          return cachedBuffer;
-        }
-        throw new StoredObjectMissingError(undefined, { key: session.key, filePath: finalFilePath });
-      },
-    };
-
-    this.objects.set(session.key, storedObject);
-    globalSharedObjects.set(session.key, storedObject);
-
-    // Clean up temporary disk chunk directory
-    try {
-      if (fs.existsSync(session.diskDir)) {
-        fs.rmSync(session.diskDir, { recursive: true, force: true });
-      }
-    } catch {}
-
-    this.sessions.delete(uploadId);
-
+  ): Promise<MultipartUploadComplete> {
+    const session = await this.multipart.getMultipartSession(uploadId);
+    if (!session) throw invalidSession(uploadId);
+    const parts = partsToComplete(uploadId, (await this.multipart.listPartSizes(uploadId)) ?? [], expectedParts);
+    const stored = await this.multipart.assembleMultipart(uploadId, parts, Date.now() + DEFAULT_OBJECT_TTL_MS);
     return {
-      location: `/api/storage/file/${encodeURIComponent(session.key)}`,
-      key: session.key,
-      size: totalSize,
-      etag: multipartEtag,
+      location: `/api/storage/file/${encodeURIComponent(stored.key)}`,
+      key: stored.key,
+      size: stored.size,
+      etag: stored.etag,
     };
   }
 
-  abortMultipartUpload(uploadId: string): boolean {
-    const session = this.sessions.get(uploadId);
-    if (!session) return false;
-
-    try {
-      if (fs.existsSync(session.diskDir)) {
-        fs.rmSync(session.diskDir, { recursive: true, force: true });
-      }
-    } catch {}
-
-    this.sessions.delete(uploadId);
-    return true;
+  async abortMultipartUpload(uploadId: string): Promise<boolean> {
+    const session = await this.multipart.getMultipartSession(uploadId);
+    return session ? this.multipart.abortMultipart(session.key, uploadId) : false;
   }
 
   saveObject(
@@ -525,7 +202,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     buffer: Buffer,
     mimeType: string,
     filename: string,
-    ttlMs: number = 24 * 60 * 60 * 1000
+    ttlMs: number = DEFAULT_OBJECT_TTL_MS
   ): StoredObject {
     const etag = `"${crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 32)}"`;
     const obj: StoredObject = {
@@ -543,47 +220,26 @@ export class S3ObjectStorageService implements IStorageBackend {
     return obj;
   }
 
+  /** Moves the file into the storage directory (a rename, or a copy across volumes) and stores it there for every process. */
   async saveObjectFromFile(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs: number = 24 * 60 * 60 * 1000
+    ttlMs: number = DEFAULT_OBJECT_TTL_MS
   ): Promise<StoredObject> {
-    const storedPath = globalSharedObjects.objectPath(key);
-    await moveIntoStorage(filePath, storedPath);
-    const stat = await fs.promises.stat(storedPath);
-    const etag = `"${crypto.createHash('sha256').update(storedPath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
-    let cachedBuffer: Buffer | null = null;
-    const obj: StoredObject = {
+    const stat = await fs.promises.stat(filePath);
+    const now = Date.now();
+    const obj = await globalSharedObjects.storeFile(key, filePath, {
       key,
       filename,
       mimeType,
       size: stat.size,
-      etag,
-      uploadedAt: Date.now(),
-      expiresAt: Date.now() + ttlMs,
-      filePath: storedPath,
-      get buffer(): Buffer {
-        if (stat.size > getMaxInMemoryBytes()) {
-          throw new PayloadTooLargeForMemoryError(undefined, {
-            size: stat.size,
-            limit: getMaxInMemoryBytes(),
-          });
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(storedPath)) {
-          cachedBuffer = fs.readFileSync(storedPath);
-          return cachedBuffer;
-        }
-        throw new StoredObjectMissingError(undefined, { key, filePath: storedPath });
-      },
-      set buffer(b: Buffer) {
-        cachedBuffer = b;
-      },
-    };
+      etag: `"${crypto.createHash('sha256').update(`${globalSharedObjects.objectPath(key)}${stat.mtimeMs}${stat.size}`).digest('hex').slice(0, 32)}"`,
+      uploadedAt: now,
+      expiresAt: now + ttlMs,
+    });
     this.objects.set(key, obj);
-    globalSharedObjects.set(key, obj);
     return obj;
   }
 
@@ -658,77 +314,16 @@ export class S3ObjectStorageService implements IStorageBackend {
     key: string,
     stream: NodeJS.ReadableStream,
     meta: { filename: string; mimeType: string; size?: number },
-    ttlMs: number = 24 * 60 * 60 * 1000
+    ttlMs: number = DEFAULT_OBJECT_TTL_MS
   ): Promise<StoredObject> {
-    const finalFilePath = globalSharedObjects.objectPath(key);
-    const tempFilePath = uniqueTempPath(finalFilePath, 'tmp');
-    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
-
-    const outFd = fs.openSync(tempFilePath, EXCLUSIVE_CREATE);
-    const hasher = crypto.createHash('sha256');
-    let totalBytes = 0;
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        stream.on('data', (chunk: Buffer | string) => {
-          try {
-            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            fs.writeSync(outFd, buf, 0, buf.length, null);
-            hasher.update(buf);
-            totalBytes += buf.length;
-          } catch (err) {
-            reject(err);
-          }
-        });
-        stream.on('end', () => resolve());
-        stream.on('error', (err) => reject(err));
-      });
-      fs.fsyncSync(outFd);
-    } catch (err) {
-      fs.rmSync(tempFilePath, { force: true });
-      throw err;
-    } finally {
-      fs.closeSync(outFd);
-    }
-
-    fs.renameSync(tempFilePath, finalFilePath);
-
-    const etag = `"${hasher.digest('hex').slice(0, 32)}"`;
-    const now = Date.now();
-    let cachedBuffer: Buffer | null = null;
-
-    const stored: StoredObject = {
-      key,
-      filename: meta.filename,
-      mimeType: meta.mimeType,
-      size: totalBytes,
-      etag,
-      uploadedAt: now,
-      expiresAt: now + ttlMs,
-      filePath: finalFilePath,
-      get buffer(): Buffer {
-        if (totalBytes > getMaxInMemoryBytes()) {
-          throw new PayloadTooLargeForMemoryError(undefined, {
-            size: totalBytes,
-            limit: getMaxInMemoryBytes(),
-          });
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(finalFilePath)) {
-          cachedBuffer = fs.readFileSync(finalFilePath);
-          return cachedBuffer;
-        }
-        throw new StoredObjectMissingError(undefined, { key, filePath: finalFilePath });
-      },
-    };
-
+    const record = await this.multipart.putStream(key, stream, { filename: meta.filename, contentType: meta.mimeType, ttlSeconds: ttlMs / 1000 });
+    const stored = fileBackedObject(record, globalSharedObjects.objectPath(key));
     this.objects.set(key, stored);
-    globalSharedObjects.set(key, stored);
     return stored;
   }
 
   getActiveSessionsCount(): number {
-    return this.sessions.size;
+    return this.multipart.countOpenSessions();
   }
 
   getObjectsCount(): number {
@@ -866,44 +461,9 @@ export class S3ObjectStorageService implements IStorageBackend {
       }
     }
 
-    for (const [uploadId, session] of this.sessions.entries()) {
-      if (session.createdAt + MULTIPART_SESSION_TTL_MS <= now) {
-        this.abortMultipartUpload(uploadId);
-        swept++;
-      }
-    }
-
-    swept += this.sweepOrphanedSessionDirs(now);
     globalSharedObjects.sweepStaleTempFiles(now);
+    sweepStaleJobDirectories(now);
     return swept;
-  }
-
-  /**
-   * Removes the directories of sessions that no process owns any more. The sessions live in the memory of the process
-   * that opened them, while their directories live on the volume every process shares: a restart of that process leaves
-   * them behind. A directory is orphaned once nothing in it was written for a session's whole lifetime; an open session
-   * is aborted at that age by its owner, and each part it writes touches its directory.
-   */
-  private sweepOrphanedSessionDirs(now: number): number {
-    let removed = 0;
-    let names: string[];
-    try {
-      names = fs.readdirSync(this.baseUploadDir);
-    } catch {
-      return 0;
-    }
-    for (const name of names) {
-      if (!name.startsWith(MULTIPART_UPLOAD_ID_PREFIX) || this.sessions.has(name)) continue;
-      const dirPath = path.join(this.baseUploadDir, name);
-      try {
-        if (!untouchedFor(dirPath, MULTIPART_SESSION_TTL_MS, now)) continue;
-        fs.rmSync(dirPath, { recursive: true, force: true });
-        removed++;
-      } catch {
-        // gone already, or not ours to remove
-      }
-    }
-    return removed;
   }
 }
 
