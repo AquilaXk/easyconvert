@@ -102,7 +102,7 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
     : `${srcUpper} Converter Frequently Asked Questions`;
 
   return (
-    <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
+    <div className="flex flex-col min-h-screen">
       <Header />
 
       <ConverterBreadcrumb

@@ -122,14 +122,14 @@ export default function OptionsModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="options-modal-title"
-      className="w-full max-w-2xl rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl"
+      className="w-full max-w-2xl rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2"
     >
-      <div className="px-5 sm:px-6 py-4 border-b border-neutral-border dark:border-dark-border flex items-start justify-between gap-4">
+      <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 id="options-modal-title" className="text-base font-bold text-brand-950 dark:text-white">
+          <h2 id="options-modal-title" className="text-lg text-ink">
             Conversion Options
           </h2>
-          <p className="text-xs text-ink-secondary dark:text-neutral-400 mt-0.5 truncate">
+          <p className="text-xs text-ink-2 mt-0.5 truncate">
             {filename} ({sourceFormat.toUpperCase()} to {targetLabel})
           </p>
         </div>
@@ -137,27 +137,27 @@ export default function OptionsModal({
           type="button"
           aria-label="Close options"
           onClick={onClose}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md border border-neutral-border dark:border-dark-border text-ink-muted hover:text-brand-950 dark:hover:text-white hover:border-brand-700 transition-colors cursor-pointer shrink-0"
+          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm border border-rule text-ink-3 hover:text-ink hover:border-accent transition-colors cursor-pointer shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      <div className="px-5 sm:px-6 py-5 space-y-6 max-h-[70dvh] overflow-y-auto divide-y divide-neutral-border dark:divide-dark-border [&>section:not(:first-child)]:pt-5">
+      <div className="px-5 sm:px-6 py-5 space-y-6 max-h-[70dvh] overflow-y-auto divide-y divide-rule [&>section:not(:first-child)]:pt-5">
         <DocumentAndSecurityGroup visible={visible} options={options} onChange={setOptions} />
         <MediaAndDataGroup visible={visible} options={options} onChange={setOptions} />
         {!visible.hasAny && (
-          <p className="text-sm text-ink-secondary dark:text-neutral-300">
+          <p className="text-sm text-ink-2">
             Standard lossless conversion parameters apply for this format pair.
           </p>
         )}
       </div>
 
-      <div className="px-5 sm:px-6 py-4 bg-neutral-subtle dark:bg-[#121629] border-t border-neutral-border dark:border-dark-border rounded-b-xl flex items-center justify-between gap-3">
+      <div className="px-5 sm:px-6 py-4 bg-sunken/50 border-t border-rule rounded-b-md flex items-center justify-between gap-3">
         <button
           type="button"
           onClick={() => setOptions({ ...DEFAULT_OPTIONS })}
-          className="min-h-[44px] px-4 rounded-md border border-neutral-300 dark:border-dark-border bg-white dark:bg-dark-surface text-sm font-medium text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-700 transition-colors cursor-pointer"
+          className="transition-colors min-h-[44px] px-4 rounded-sm border border-rule-strong text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
         >
           Reset
         </button>
@@ -165,7 +165,7 @@ export default function OptionsModal({
           type="button"
           disabled={hasInvalidPassword}
           onClick={handleApply}
-          className="min-h-[44px] px-5 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="lift min-h-[44px] px-5 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Apply Options
         </button>

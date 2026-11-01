@@ -50,18 +50,18 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
   const faqs = customFaqs && customFaqs.length > 0 ? customFaqs : DEFAULT_FAQS;
 
   return (
-    <section className="py-14 border-t border-neutral-border dark:border-dark-border">
+    <section className="py-14 border-t border-rule">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="mb-8">
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-brand-950 dark:text-white">
+          <h2 className="text-2xl sm:text-3xl text-ink">
             {title || 'Frequently Asked Questions'}
           </h2>
-          <p className="mt-1.5 text-sm text-ink-secondary dark:text-dark-muted">
+          <p className="mt-1.5 text-sm text-ink-2">
             {subtitle || 'Answers about format support, execution boundaries, and batch limits.'}
           </p>
         </div>
 
-        <div className="rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface divide-y divide-neutral-border dark:divide-dark-border overflow-hidden">
+        <div className="border-y border-rule-strong divide-y divide-rule">
           {faqs.map((faq, idx) => {
             const isOpen = openIndex === idx;
             const questionId = `faq-question-${idx}`;
@@ -75,13 +75,13 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                   onClick={() => setOpenIndex(isOpen ? null : idx)}
                   aria-expanded={isOpen}
                   aria-controls={answerId}
-                  className="w-full min-h-[52px] px-5 py-4 text-left flex items-center justify-between gap-4 hover:bg-neutral-scaffold/70 dark:hover:bg-dark-elevated/40 transition-colors cursor-pointer"
+                  className="group w-full min-h-[52px] px-1 py-4 text-left flex items-center justify-between gap-4 rounded-xs cursor-pointer"
                 >
-                  <span className="text-sm sm:text-base font-semibold text-brand-950 dark:text-dark-text">
+                  <span className="text-sm sm:text-base font-semibold text-ink group-hover:text-accent-ink transition-colors">
                     {faq.q}
                   </span>
                   <ChevronDown
-                    className={`w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0 transition-transform duration-200 ${
+                    className={`w-4 h-4 text-accent-ink shrink-0 transition-transform duration-500 ease-spring ${
                       isOpen ? 'rotate-180' : ''
                     }`}
                   />
@@ -91,7 +91,7 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                     id={answerId}
                     role="region"
                     aria-labelledby={questionId}
-                    className="px-5 pb-5 text-sm text-ink-secondary dark:text-dark-muted leading-relaxed"
+                    className="settle px-1 pb-5 max-w-3xl text-sm text-ink-2 leading-relaxed"
                   >
                     {faq.a}
                   </div>

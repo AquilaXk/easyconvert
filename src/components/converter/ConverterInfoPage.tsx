@@ -9,7 +9,7 @@ import type { ParsedSlug } from '@/lib/slug-parser';
 import { ContactContent, getPolicySections } from './info-page-sections';
 
 const ROOT_SHELL_CLASS =
-  'flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors';
+  'flex flex-col min-h-screen';
 
 interface ConverterInfoPageProps {
   parsed: ParsedSlug;
@@ -26,10 +26,10 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
           className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12"
         >
           <div className="mb-8">
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-brand-950 dark:text-white">
+            <h1 className="text-3xl sm:text-4xl text-ink">
               {parsed.pageTitle}
             </h1>
-            <p className="mt-2 text-sm sm:text-base text-ink-secondary dark:text-neutral-400 max-w-3xl">
+            <p className="mt-2 text-sm sm:text-base text-ink-2 max-w-3xl">
               {parsed.pageDescription}
             </p>
           </div>
@@ -49,10 +49,10 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
           className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12"
         >
           <div className="mb-8">
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-brand-950 dark:text-white">
+            <h1 className="text-3xl sm:text-4xl text-ink">
               {parsed.pageTitle}
             </h1>
-            <p className="mt-2 text-sm sm:text-base text-ink-secondary dark:text-neutral-400 max-w-2xl">
+            <p className="mt-2 text-sm sm:text-base text-ink-2 max-w-2xl">
               {parsed.pageDescription}
             </p>
           </div>
@@ -79,21 +79,21 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
         className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14"
       >
         <div className="mb-8">
-          <h1 className="text-2xl sm:text-3xl font-bold text-brand-950 dark:text-white tracking-tight">
+          <h1 className="text-3xl sm:text-4xl text-ink">
             {parsed.pageTitle}
           </h1>
-          <p className="mt-2 text-sm sm:text-base text-ink-secondary dark:text-neutral-400">
+          <p className="mt-2 text-sm sm:text-base text-ink-2">
             {parsed.pageDescription}
           </p>
         </div>
 
-        <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 sm:p-8 shadow-sm space-y-6 text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed">
+        <div className="border-t border-rule-strong pt-6 sm:pt-8 space-y-6 text-sm text-ink-2 leading-relaxed">
           {parsed.infoType === 'contact' ? (
             <ContactContent />
           ) : (
             sections.map((section) => (
               <section key={section.heading} className="space-y-2">
-                <h2 className="text-lg font-bold text-brand-950 dark:text-white">
+                <h2 className="text-xl text-ink">
                   {section.heading}
                 </h2>
                 <p>{section.body}</p>

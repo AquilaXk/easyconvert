@@ -21,12 +21,12 @@ export function JobsHistoryPanel({
       id="dashboard-panel-files"
       role="tabpanel"
       aria-labelledby="dashboard-tab-files"
-      className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm"
+      className="border-t border-rule-strong pt-6"
     >
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h2 className="text-lg font-bold text-brand-950 dark:text-white">Recent Conversion Files</h2>
-          <p className="text-sm text-ink-secondary dark:text-dark-muted">
+          <h2 className="text-xl text-ink">Recent Conversion Files</h2>
+          <p className="text-sm text-ink-2">
             Temporary output files are deleted after download or when their retention timer expires.
           </p>
         </div>
@@ -35,7 +35,7 @@ export function JobsHistoryPanel({
           type="button"
           onClick={onRefresh}
           disabled={loading}
-          className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-md border border-neutral-border dark:border-dark-border text-xs font-semibold hover:bg-neutral-subtle dark:hover:bg-dark-elevated transition-colors self-start sm:self-auto"
+          className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-rule text-xs font-semibold hover:bg-sunken transition-colors self-start sm:self-auto"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           <span>Refresh</span>
@@ -43,15 +43,15 @@ export function JobsHistoryPanel({
       </div>
 
       {files.length === 0 ? (
-        <div className="text-center py-14 border border-neutral-border dark:border-dark-border rounded-xl bg-neutral-scaffold/50 dark:bg-dark-scaffold/40">
-          <FileText className="w-10 h-10 text-ink-muted dark:text-dark-muted mx-auto mb-2.5" />
-          <p className="text-base font-semibold text-brand-950 dark:text-white">No active conversion files</p>
-          <p className="text-xs text-ink-muted dark:text-dark-muted mt-1 max-w-sm mx-auto">
+        <div className="text-center py-14 border border-dashed border-rule-strong/60 rounded-sm">
+          <FileText className="w-10 h-10 text-ink-3 mx-auto mb-2.5" />
+          <p className="text-base font-semibold text-ink">No active conversion files</p>
+          <p className="text-xs text-ink-3 mt-1 max-w-sm mx-auto">
             Files converted via your account or API keys appear here with a live automatic expiration countdown.
           </p>
           <Link
             href="/"
-            className="min-h-[44px] inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-800 text-white text-xs font-semibold shadow-sm"
+            className="lift min-h-[44px] inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-xs font-semibold"
           >
             <span>Open Converter Workbench</span>
           </Link>
@@ -60,7 +60,7 @@ export function JobsHistoryPanel({
         <div className="overflow-x-auto max-w-full">
           <table className="w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-neutral-border dark:border-dark-border text-ink-muted dark:text-dark-muted text-xs uppercase">
+              <tr className="border-b border-rule text-ink-3 text-xs uppercase">
                 <th className="pb-3 pr-4 font-semibold">File Name</th>
                 <th className="pb-3 pr-4 font-semibold">Format</th>
                 <th className="pb-3 pr-4 font-semibold">Size</th>
@@ -68,22 +68,22 @@ export function JobsHistoryPanel({
                 <th className="pb-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-border dark:divide-dark-border">
+            <tbody className="divide-y divide-rule">
               {files.map((file) => (
-                <tr key={file.id} className="hover:bg-neutral-scaffold/40 dark:hover:bg-dark-elevated/40">
-                  <td className="py-3.5 pr-4 font-semibold text-brand-950 dark:text-white break-all">
+                <tr key={file.id} className="hover:bg-sunken/50">
+                  <td className="py-3.5 pr-4 font-semibold text-ink break-all">
                     {file.fileName}
                   </td>
                   <td className="py-3.5 pr-4 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold px-2 py-0.5 rounded bg-brand-50 dark:bg-white/10 text-brand-800 dark:text-brand-300 border border-brand-200 dark:border-white/10">
+                    <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-accent-soft text-accent-ink border border-accent-edge">
                       {file.fromFormat.toUpperCase()} to {file.toFormat.toUpperCase()}
                     </span>
                   </td>
-                  <td className="py-3.5 pr-4 text-xs text-ink-secondary dark:text-dark-muted whitespace-nowrap">
+                  <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
                     {formatBytes(file.size)}
                   </td>
                   <td className="py-3.5 pr-4 text-xs font-medium whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-warning-soft text-warning border border-warning-edge">
                       <Clock className="w-3.5 h-3.5" />
                       {formatCountdown(file.remainingSeconds)}
                     </span>
@@ -94,7 +94,7 @@ export function JobsHistoryPanel({
                         href={file.downloadUrl}
                         download={file.fileName}
                         aria-label={`Download ${file.fileName}`}
-                        className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md bg-brand-700 text-white hover:bg-brand-800 transition-colors shadow-sm"
+                        className="lift min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm bg-accent text-on-accent hover:bg-accent-hover hover:shadow-glow"
                       >
                         <Download className="w-4 h-4" />
                       </a>
@@ -102,7 +102,7 @@ export function JobsHistoryPanel({
                         type="button"
                         onClick={() => onDeleteFile(file.id)}
                         aria-label={`Delete ${file.fileName}`}
-                        className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md border border-neutral-border dark:border-dark-border text-ink-muted hover:text-status-danger dark:hover:text-rose-400 transition-colors"
+                        className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule text-ink-3 hover:text-danger transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

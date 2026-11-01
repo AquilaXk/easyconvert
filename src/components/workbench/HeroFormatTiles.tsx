@@ -34,7 +34,7 @@ export default function HeroFormatTiles({
 
   return (
     <div className="inline-flex items-center justify-center gap-2.5 sm:gap-3">
-      <span className="hidden sm:inline text-xs uppercase tracking-wider text-slate-300 font-semibold">
+      <span className="hidden sm:inline text-xs uppercase tracking-widest text-ink-3 font-medium">
         Convert
       </span>
 
@@ -46,15 +46,15 @@ export default function HeroFormatTiles({
           aria-expanded={openPicker === 'source'}
           aria-label={`Source format ${sourceDisplay}`}
           onClick={() => setOpenPicker((cur) => (cur === 'source' ? null : 'source'))}
-          className="min-w-[104px] sm:min-w-[116px] min-h-[84px] sm:min-h-[96px] rounded-lg bg-white/[0.07] hover:bg-white/[0.12] border border-white/15 px-4 py-3 text-white flex flex-col items-start justify-between transition-colors cursor-pointer"
+          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
         >
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+          <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
             FROM
           </span>
-          <span className="w-full flex items-center justify-between gap-2 text-lg sm:text-xl font-mono font-bold uppercase">
+          <span className="w-full flex items-center justify-between gap-2 font-display text-3xl uppercase">
             <span>{sourceDisplay}</span>
             <ChevronDown
-              className={`w-4 h-4 text-slate-300 shrink-0 transition-transform duration-150 ${
+              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-300 ease-spring ${
                 openPicker === 'source' ? 'rotate-180' : ''
               }`}
             />
@@ -75,7 +75,7 @@ export default function HeroFormatTiles({
         )}
       </div>
 
-      <span className="text-xs uppercase tracking-wider text-slate-300 font-semibold">to</span>
+      <span className="text-xs uppercase tracking-widest text-ink-3 font-medium">to</span>
 
       <div className="relative">
         <button
@@ -85,15 +85,15 @@ export default function HeroFormatTiles({
           aria-expanded={openPicker === 'target'}
           aria-label={`Target format ${targetDisplay === '...' ? 'any' : targetDisplay}`}
           onClick={() => setOpenPicker((cur) => (cur === 'target' ? null : 'target'))}
-          className="min-w-[104px] sm:min-w-[116px] min-h-[84px] sm:min-h-[96px] rounded-lg bg-white/[0.07] hover:bg-white/[0.12] border border-white/15 px-4 py-3 text-white flex flex-col items-start justify-between transition-colors cursor-pointer"
+          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
         >
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+          <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
             TO
           </span>
-          <span className="w-full flex items-center justify-between gap-2 text-lg sm:text-xl font-mono font-bold uppercase">
+          <span className="w-full flex items-center justify-between gap-2 font-display text-3xl uppercase">
             <span>{targetDisplay}</span>
             <ChevronDown
-              className={`w-4 h-4 text-slate-300 shrink-0 transition-transform duration-150 ${
+              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-300 ease-spring ${
                 openPicker === 'target' ? 'rotate-180' : ''
               }`}
             />

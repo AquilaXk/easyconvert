@@ -17,12 +17,12 @@ export interface ConversionRow {
 
 function getBreakdownCardClass(isTarget: boolean, isSelf: boolean): string {
   if (isTarget) {
-    return 'bg-brand-50 dark:bg-dark-elevated border-brand-400 dark:border-brand-500/60 shadow-sm';
+    return 'bg-accent-soft border-accent';
   }
   if (isSelf) {
-    return 'bg-neutral-subtle dark:bg-dark-elevated/60 border-neutral-border dark:border-dark-border opacity-80';
+    return 'bg-sunken border-rule opacity-80';
   }
-  return 'bg-neutral-scaffold dark:bg-dark-elevated border-neutral-border dark:border-dark-border hover:border-brand-400';
+  return 'border-rule hover:border-accent';
 }
 
 interface CategoryBreakdownSectionProps {
@@ -51,12 +51,12 @@ export function CategoryBreakdownSection({
   const copiedRow = copiedKey ? rows.find((item) => item.key === copiedKey) : undefined;
 
   return (
-    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
+    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+        <h2 className="text-lg sm:text-xl text-ink">
           {inputVal} {fromName} Converted to All {categoryName} Units
         </h2>
-        <span className="text-xs text-ink-muted dark:text-neutral-400">{rows.length} units</span>
+        <span className="text-xs text-ink-3">{rows.length} units</span>
       </div>
 
       <output aria-live="polite" className="sr-only">
@@ -74,15 +74,15 @@ export function CategoryBreakdownSection({
           return (
             <div
               key={conv.key}
-              className={`p-3.5 rounded-lg border transition-colors flex items-center justify-between gap-2 ${cardClass}`}
+              className={`p-3.5 rounded-md border transition-colors flex items-center justify-between gap-2 ${cardClass}`}
             >
               <div className="min-w-0">
-                <div className="text-xs font-bold text-brand-950 dark:text-white truncate">
+                <div className="text-xs font-bold text-ink truncate">
                   {conv.name}
                 </div>
-                <div className="text-sm font-mono font-bold text-brand-700 dark:text-brand-300 truncate">
+                <div className="text-sm font-mono font-bold text-accent-ink truncate">
                   <span>{formatted}</span>{' '}
-                  <span className="text-xs text-ink-muted font-sans">{conv.symbol}</span>
+                  <span className="text-xs text-ink-3 font-sans">{conv.symbol}</span>
                 </div>
               </div>
 
@@ -90,10 +90,10 @@ export function CategoryBreakdownSection({
                 type="button"
                 onClick={() => onCopyRow(copyText, conv.key)}
                 aria-label={`Copy ${conv.name} value`}
-                className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2 rounded-md text-ink-muted hover:text-brand-700 dark:hover:text-white hover:bg-brand-100 dark:hover:bg-dark-border transition-colors shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
+                className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2 rounded-sm text-ink-3 hover:text-accent-ink hover:bg-accent-soft transition-colors shrink-0 cursor-pointer"
               >
                 {copiedKey === conv.key ? (
-                  <Check className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+                  <Check className="w-4 h-4 text-success" aria-hidden="true" />
                 ) : (
                   <Copy className="w-4 h-4" aria-hidden="true" />
                 )}
@@ -118,15 +118,15 @@ export function QuickReferenceSection({
   precision,
 }: Readonly<QuickReferenceSectionProps>) {
   return (
-    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
-      <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+      <h2 className="text-lg sm:text-xl text-ink">
         {fromDef.name} to {toDef.name} Quick Reference Table
       </h2>
 
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs sm:text-sm">
           <thead>
-            <tr className="border-b border-neutral-border dark:border-dark-border text-ink-muted dark:text-neutral-400">
+            <tr className="border-b border-rule text-ink-3">
               <th scope="col" className="py-2.5 px-4 font-bold">
                 {fromDef.name} ({fromDef.symbol})
               </th>
@@ -135,18 +135,18 @@ export function QuickReferenceSection({
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-neutral-border dark:divide-dark-border">
+          <tbody className="divide-y divide-rule">
             {REFERENCE_VALUES.map((refVal) => {
               const converted = convertValue(refVal, fromDef, toDef);
               return (
                 <tr
                   key={refVal}
-                  className="hover:bg-neutral-subtle/50 dark:hover:bg-dark-elevated transition-colors"
+                  className="hover:bg-sunken/50 transition-colors"
                 >
-                  <td className="py-2.5 px-4 font-mono font-semibold text-brand-950 dark:text-white">
+                  <td className="py-2.5 px-4 font-mono font-semibold text-ink">
                     {refVal} {fromDef.symbol}
                   </td>
-                  <td className="py-2.5 px-4 font-mono text-brand-700 dark:text-brand-300 font-bold">
+                  <td className="py-2.5 px-4 font-mono text-accent-ink font-bold">
                     {converted.toLocaleString(undefined, { maximumFractionDigits: precision })}{' '}
                     {toDef.symbol}
                   </td>
@@ -168,10 +168,10 @@ export function PopularConversionsSection({
   onSelectPreset,
 }: Readonly<PopularConversionsSectionProps>) {
   return (
-    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-4">
+    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
       <div className="flex items-center gap-2">
-        <TrendingUp className="w-4 h-4 text-brand-700 dark:text-brand-400" aria-hidden="true" />
-        <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+        <TrendingUp className="w-4 h-4 text-accent-ink" aria-hidden="true" />
+        <h2 className="text-lg sm:text-xl text-ink">
           Popular Unit Conversions
         </h2>
       </div>
@@ -182,7 +182,7 @@ export function PopularConversionsSection({
             key={item.label}
             type="button"
             onClick={() => onSelectPreset(item.category, item.from, item.to)}
-            className="min-h-[44px] px-3.5 py-2 rounded-md text-xs font-semibold bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-400 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
+            className="min-h-[44px] px-3.5 py-2 rounded-sm text-xs font-semibold border border-rule text-ink-2 hover:text-ink hover:border-accent transition-colors cursor-pointer"
           >
             {item.label}
           </button>

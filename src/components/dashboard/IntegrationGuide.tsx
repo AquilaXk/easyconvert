@@ -96,17 +96,17 @@ print(response.json())`,
   const activeTabId = `sdk-guide-tab-${codeTab}`;
 
   return (
-    <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm min-w-0">
+    <div className="border-t border-rule-strong pt-6 min-w-0">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-start gap-3">
-          <div className="p-2 rounded-lg bg-brand-50 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-neutral-border dark:border-dark-border shrink-0">
+          <div className="text-accent-ink shrink-0">
             <Code2 className="w-5 h-5" aria-hidden="true" />
           </div>
           <div>
-            <h2 className="text-base font-bold text-brand-950 dark:text-white">
+            <h2 className="text-lg text-ink">
               Programmatic Integration Guide
             </h2>
-            <p className="text-xs text-ink-secondary dark:text-dark-muted mt-0.5">
+            <p className="text-xs text-ink-2 mt-0.5">
               Submit multipart conversion requests with your scoped API key.
             </p>
           </div>
@@ -115,7 +115,7 @@ print(response.json())`,
         <div
           role="tablist"
           aria-label="SDK language"
-          className="flex rounded-lg bg-neutral-subtle dark:bg-dark-elevated p-1 border border-neutral-border dark:border-dark-border self-start sm:self-auto"
+          className="flex rounded-md bg-sunken p-1 border border-rule self-start sm:self-auto"
         >
           {SNIPPET_TABS.map((tab) => {
             const isSelected = codeTab === tab;
@@ -133,10 +133,10 @@ print(response.json())`,
                 tabIndex={isSelected ? 0 : -1}
                 onClick={() => setCodeTab(tab)}
                 onKeyDown={(event) => handleTabKeyDown(event, tab)}
-                className={`min-h-[44px] px-3 py-1.5 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 ${
+                className={`min-h-[44px] px-3 py-1.5 text-xs font-semibold rounded-sm transition-colors ${
                   isSelected
-                    ? 'bg-white dark:bg-dark-surface text-brand-700 dark:text-white shadow-sm'
-                    : 'text-ink-secondary dark:text-dark-muted hover:text-brand-950 dark:hover:text-white'
+                    ? 'bg-surface text-accent-ink'
+                    : 'text-ink-2 hover:text-ink'
                 }`}
               >
                 {TAB_LABELS[tab]}
@@ -152,18 +152,18 @@ print(response.json())`,
         aria-labelledby={activeTabId}
         className="relative mt-4 min-w-0"
       >
-        <pre className="p-4 pr-24 rounded-lg bg-brand-950 dark:bg-dark-scaffold text-neutral-subtle font-mono text-xs overflow-x-auto max-w-full leading-relaxed border border-neutral-border dark:border-dark-border">
+        <pre className="p-4 pr-24 rounded-md bg-sunken text-ink-2 font-mono text-xs overflow-x-auto max-w-full leading-relaxed border border-rule">
           <code>{codeSnippets[codeTab]}</code>
         </pre>
         <button
           type="button"
           onClick={handleCopySnippet}
           aria-label={`Copy ${TAB_LABELS[codeTab]} integration snippet`}
-          className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-md bg-white/10 hover:bg-white/20 text-white text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 transition-colors"
+          className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-sm bg-surface hover:bg-canvas border border-rule text-ink-2 hover:text-ink text-xs font-semibold transition-colors"
         >
           {copiedSnippet ? (
             <>
-              <Check className="w-3.5 h-3.5 text-emerald-300" aria-hidden="true" />
+              <Check className="w-3.5 h-3.5 text-success" aria-hidden="true" />
               <span>Copied</span>
             </>
           ) : (

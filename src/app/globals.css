@@ -2,58 +2,397 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Colour tokens are RGB channels so Tailwind can apply opacity (`bg-surface/60`); `.dark` redefines each one. */
 :root {
   color-scheme: light;
-  --brand-50: #F8F9FF;
-  --brand-100: #F0F2FE;
-  --brand-200: #E2E5FD;
-  --brand-300: #CCD2FC;
-  --brand-400: #B4BCFB;
-  --brand-500: #8E9CE6;
-  --brand-600: #7480D2;
-  --brand-700: #5C6BC0;
-  --brand-800: #4A58A9;
-  --brand-900: #3B4890;
-  --brand-950: #1F2340;
+  --radius-unit: 0.1rem;
 
-  --bg-scaffold: #F7F8FC;
-  --surface-card: #FFFFFF;
-  --surface-subtle: #F0F2F7;
-  --border-subtle: #E1E4EE;
-  --ink-primary: #1F2340;
-  --ink-secondary: #4D536B;
-  --ink-muted: #697089;
+  --c-canvas: 244 244 247;
+  --c-surface: 255 255 255;
+  --c-sunken: 236 237 242;
+  --c-ink: 26 29 46;
+  --c-ink-2: 70 75 98;
+  --c-ink-3: 91 96 119;
+  --c-on-accent: 255 255 255;
+  --c-rule: 220 222 231;
+  --c-rule-strong: 128 133 156;
+  --c-accent: 92 107 192;
+  --c-accent-hover: 74 88 169;
+  --c-accent-press: 59 72 144;
+  --c-accent-ink: 74 88 169;
+  --c-accent-soft: 238 240 252;
+  --c-accent-edge: 201 207 245;
+  --c-success: 10 110 88;
+  --c-success-soft: 233 246 241;
+  --c-success-edge: 169 217 200;
+  --c-warning: 143 80 0;
+  --c-warning-soft: 252 241 222;
+  --c-warning-edge: 235 203 148;
+  --c-danger: 180 45 48;
+  --c-danger-soft: 252 235 235;
+  --c-danger-edge: 237 180 180;
+  --c-info: 33 94 168;
+  --c-info-soft: 234 242 252;
+  --c-info-edge: 178 205 238;
+
+  /* Iridescent stops: the coloured reflections of a feather, used only as hairline fragments. */
+  --sheen-1: 142 156 230;
+  --sheen-2: 201 169 217;
+  --sheen-3: 140 199 188;
+  --sheen-4: 228 185 162;
+
+  --texture: 60 66 110 / 0.1;
+  --glass-alpha: 0.55;
+  --glass-blur: 14px;
+  --glass-edge: rgb(255 255 255 / 0.9);
+  --scrim: rgb(26 29 46 / 0.36);
+
+  --elev-1: 0 14px 36px -16px rgb(46 52 96 / 0.24), 0 2px 6px -3px rgb(46 52 96 / 0.1);
+  --elev-2: 0 28px 64px -24px rgb(46 52 96 / 0.3), 0 4px 12px -6px rgb(46 52 96 / 0.12);
+  --glow: 0 0 0 3px rgb(var(--c-accent) / 0.16);
+  --focus-glow: none;
+
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    /* A damped spring (damping ratio 0.7) sampled at 25 points: a soft start and a 4.5% overshoot that settles. */
+    --ease-spring: linear(0, 0.061, 0.201, 0.372, 0.543, 0.694, 0.816, 0.908, 0.973, 1.013, 1.036, 1.045, 1.045, 1.04, 1.033, 1.025, 1.018, 1.011, 1.006, 1.003, 1, 0.999, 0.998, 0.998, 1);
+  }
 }
 
 .dark {
   color-scheme: dark;
-  --bg-scaffold: #141724;
-  --surface-card: #1B2032;
-  --surface-subtle: #242B42;
-  --border-subtle: #2C3452;
-  --ink-primary: #F8F9FD;
-  --ink-secondary: #C4CBE0;
-  --ink-muted: #8A94B8;
+  --c-canvas: 14 17 32;
+  --c-surface: 23 27 44;
+  --c-sunken: 30 35 56;
+  --c-ink: 243 244 250;
+  --c-ink-2: 196 201 221;
+  --c-ink-3: 158 165 192;
+  --c-on-accent: 255 255 255;
+  --c-rule: 42 48 73;
+  --c-rule-strong: 106 114 148;
+  --c-accent: 92 107 192;
+  --c-accent-hover: 106 121 207;
+  --c-accent-press: 74 88 169;
+  --c-accent-ink: 170 180 246;
+  --c-accent-soft: 34 40 74;
+  --c-accent-edge: 60 70 119;
+  --c-success: 94 214 172;
+  --c-success-soft: 18 41 31;
+  --c-success-edge: 36 83 63;
+  --c-warning: 240 184 96;
+  --c-warning-soft: 45 35 18;
+  --c-warning-edge: 90 69 32;
+  --c-danger: 245 135 136;
+  --c-danger-soft: 48 26 31;
+  --c-danger-edge: 94 46 52;
+  --c-info: 132 180 242;
+  --c-info-soft: 21 35 58;
+  --c-info-edge: 43 68 105;
+
+  --texture: 180 188 251 / 0.085;
+  --glass-edge: rgb(226 229 253 / 0.12);
+  --scrim: rgb(5 7 14 / 0.66);
+
+  --elev-1: 0 16px 40px -16px rgb(0 0 0 / 0.65), 0 0 0 1px rgb(226 229 253 / 0.05);
+  --elev-2: 0 30px 70px -24px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(226 229 253 / 0.06);
+  /* Light passing through a feather: a soft halo in the accent's lighter stop. */
+  --glow: 0 0 0 1px rgb(var(--sheen-1) / 0.5), 0 0 22px -4px rgb(var(--sheen-1) / 0.55);
+  --focus-glow: 0 0 0 4px rgb(var(--sheen-1) / 0.16), 0 0 18px rgb(var(--sheen-1) / 0.4);
 }
 
-body {
-  background-color: var(--bg-scaffold);
-  color: var(--ink-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  overflow-x: hidden;
-  transition: background-color 0.2s ease, color 0.2s ease;
+@layer base {
+  /* In-page anchors land below the sticky header. */
+  html {
+    scroll-padding-top: 4.5rem;
+    accent-color: rgb(var(--c-accent));
+  }
+
+  body {
+    background-color: rgb(var(--c-canvas));
+    color: rgb(var(--c-ink));
+    overflow-x: hidden;
+  }
+
+  /* The woven ground: warp and weft hairlines, masked so one pattern serves both themes. It drifts slower than the page
+     (WovenGround.tsx), so it extends below the viewport by the furthest it drifts. */
+  .woven-ground {
+    position: fixed;
+    inset: 0 0 -240px 0;
+    z-index: -1;
+    pointer-events: none;
+    background-color: rgb(var(--texture));
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg fill='none' stroke='%23000' stroke-width='.6'%3E%3Cpath d='M1 2h10M1 5h10M1 8h10M13 14h10M13 17h10M13 20h10M14 1v10M17 1v10M20 1v10M2 13v10M5 13v10M8 13v10'/%3E%3C/g%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg fill='none' stroke='%23000' stroke-width='.6'%3E%3Cpath d='M1 2h10M1 5h10M1 8h10M13 14h10M13 17h10M13 20h10M14 1v10M17 1v10M20 1v10M2 13v10M5 13v10M8 13v10'/%3E%3C/g%3E%3C/svg%3E");
+    -webkit-mask-size: 24px 24px;
+    mask-size: 24px 24px;
+    will-change: transform;
+  }
+
+  h1,
+  h2 {
+    font-family: var(--font-display), ui-serif, Georgia, serif;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 2px;
+    box-shadow: var(--focus-glow);
+  }
+
+  /* Icons are drawn as hairlines, like the threads of the ground. */
+  svg.lucide {
+    stroke-width: 1.5;
+  }
+
+  ::selection {
+    background: rgb(var(--c-accent-edge));
+    color: rgb(var(--c-ink));
+  }
 }
 
-:focus-visible {
-  outline: 2px solid #5C6BC0;
-  outline-offset: 2px;
+@layer components {
+  /* Translucent surface over the woven ground, like a perforated lace panel: the threads show through unblurred. A
+     blur would only erase the hairlines, so resting panels have none. */
+  .glass {
+    background-color: rgb(var(--c-surface) / var(--glass-alpha));
+    background-image: linear-gradient(var(--glass-edge), var(--glass-edge));
+    background-size: 100% 1px;
+    background-repeat: no-repeat;
+  }
+
+  /* Frosted: for a surface that page content moves under (the sticky header), where the blur is what shows. */
+  .glass-frost,
+  .glass-raised {
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  }
+
+  /* Floating layers sit over busy content, so they keep more of their surface under a stronger blur. */
+  .glass-raised {
+    --glass-alpha: 0.86;
+    --glass-blur: 18px;
+  }
+
+  /* An iridescent hairline: colour appears only as a fragment of reflected light. */
+  .sheen-edge {
+    position: relative;
+  }
+  .sheen-edge::after {
+    content: "";
+    position: absolute;
+    inset: -1px -1px auto -1px;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, rgb(var(--sheen-1)), rgb(var(--sheen-2)) 35%, rgb(var(--sheen-3)) 65%, rgb(var(--sheen-4)));
+    opacity: 0.85;
+    border-radius: inherit;
+  }
+
+  /* Feather-light response: the control lifts on hover and settles with a spring, pressing is immediate. */
+  .lift {
+    transition:
+      transform 0.52s var(--ease-spring),
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease,
+      box-shadow 0.32s ease;
+  }
+  .lift:not(:disabled):hover {
+    transform: translateY(-2px);
+  }
+  .lift:not(:disabled):active {
+    transform: translateY(0) scale(0.98);
+    transition-duration: 0.1s;
+  }
+
+  /* Backwards fill only: once settled, the element's own transform (a hover lift) applies again. */
+  .settle {
+    animation: settle 0.6s var(--ease-spring) backwards;
+  }
+
+  /* The progress thread: a 3px strand whose filled part carries a slowly flowing sheen. Nothing clips it, so the dark
+     theme's halo can spread past the strand. */
+  .thread {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    width: 100%;
+    height: 3px;
+    border: 0;
+    border-radius: 9999px;
+    background: rgb(var(--c-rule));
+    color: rgb(var(--c-accent));
+  }
+  .thread::-webkit-progress-bar {
+    background: rgb(var(--c-rule));
+    border-radius: 9999px;
+  }
+  .thread::-webkit-progress-value {
+    border-radius: 9999px;
+    background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--sheen-2)), rgb(var(--sheen-3)), rgb(var(--c-accent))) 0 0 / 200% 100%;
+    animation: thread-flow 1.8s linear infinite;
+    transition: width 0.5s var(--ease-spring);
+  }
+  .thread::-moz-progress-bar {
+    border-radius: 9999px;
+    background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--sheen-2)), rgb(var(--sheen-3)), rgb(var(--c-accent))) 0 0 / 200% 100%;
+    animation: thread-flow 1.8s linear infinite;
+  }
+  /* Vendor pseudo-elements stay in separate rules: a browser drops a whole selector list it cannot parse. */
+  .dark .thread::-webkit-progress-value {
+    box-shadow: 0 0 8px rgb(var(--sheen-1) / 0.6);
+  }
+  .dark .thread::-moz-progress-bar {
+    box-shadow: 0 0 8px rgb(var(--sheen-1) / 0.6);
+  }
+
+  /* Native range: a 3px track filled to the thumb (`--range-ratio` from 0 to 1, set by the field) and a ringed thumb. */
+  .range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    min-height: 44px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .range::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(var(--c-accent)) calc(9px + var(--range-ratio, 0) * (100% - 18px)),
+      rgb(var(--c-rule-strong)) 0
+    );
+  }
+  .range::-moz-range-track {
+    height: 3px;
+    border-radius: 9999px;
+    background: rgb(var(--c-rule-strong));
+  }
+  .range::-moz-range-progress {
+    height: 3px;
+    border-radius: 9999px;
+    background: rgb(var(--c-accent));
+  }
+  .range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -7.5px;
+    border-radius: 9999px;
+    border: 2px solid rgb(var(--c-accent));
+    background: rgb(var(--c-surface));
+    box-shadow: var(--elev-1);
+  }
+  .range::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    box-sizing: border-box;
+    border-radius: 9999px;
+    border: 2px solid rgb(var(--c-accent));
+    background: rgb(var(--c-surface));
+    box-shadow: var(--elev-1);
+  }
+
+  /* Native select without the platform arrow: a hairline chevron in the secondary ink, drawn as two diagonal strokes. */
+  .select-chevron {
+    -webkit-appearance: none;
+    appearance: none;
+    background-image:
+      linear-gradient(45deg, transparent calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% + 0.75px), transparent calc(50% + 0.75px)),
+      linear-gradient(135deg, transparent calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+    background-position:
+      right 1.25rem center,
+      right 0.875rem center;
+    background-size: 6px 6px;
+    background-repeat: no-repeat;
+  }
+
+  /* Forced colors replace author colours, so the drawn chevron and track would vanish: the select takes the platform arrow
+     back, and the range paints its track and thumb in system colours (Highlight for the filled part). */
+  @media (forced-colors: active) {
+    .select-chevron {
+      appearance: auto;
+      background-image: none;
+    }
+    .range::-webkit-slider-runnable-track {
+      forced-color-adjust: none;
+      background: linear-gradient(to right, Highlight calc(9px + var(--range-ratio, 0) * (100% - 18px)), ButtonText 0);
+    }
+    .range::-moz-range-track {
+      forced-color-adjust: none;
+      background: ButtonText;
+    }
+    .range::-moz-range-progress {
+      forced-color-adjust: none;
+      background: Highlight;
+    }
+    .range::-webkit-slider-thumb {
+      forced-color-adjust: none;
+      border-color: ButtonText;
+      background: Canvas;
+      box-shadow: none;
+    }
+    .range::-moz-range-thumb {
+      forced-color-adjust: none;
+      border-color: ButtonText;
+      background: Canvas;
+      box-shadow: none;
+    }
+  }
 }
 
-.masthead-grid {
-  background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-  background-size: 32px 32px;
+@keyframes settle {
+  0% {
+    opacity: 0;
+    transform: translateY(3px) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes thread-flow {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes ground-drift {
+  to {
+    transform: translate3d(0, -240px, 0);
+  }
+}
+
+/* The same drift as WovenGround.tsx: a fifth of the scroll until 240px, reached at 1200px of scroll. */
+@supports (animation-timeline: scroll()) {
+  .woven-ground {
+    animation: ground-drift linear both;
+    animation-timeline: scroll(root);
+    animation-range: 0 1200px;
+  }
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass-frost,
+  .glass-raised {
+    background-color: rgb(var(--c-surface));
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background-color: rgb(var(--c-surface));
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 
 dialog:modal {
@@ -64,7 +403,7 @@ dialog:modal {
 }
 
 dialog::backdrop {
-  background: rgb(10 13 24 / 0.62);
+  background: var(--scrim);
   overflow: hidden;
   overscroll-behavior: contain;
 }
@@ -83,16 +422,12 @@ html:has(dialog:modal) {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #E5E7EB;
-  border-radius: 4px;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: #343A40;
+  background: rgb(var(--c-rule));
+  border-radius: var(--radius-unit);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #5C6BC0;
+  background: rgb(var(--c-accent));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -104,5 +439,24 @@ html:has(dialog:modal) {
     animation-iteration-count: 1;
     transition-duration: 0.01ms;
     scroll-behavior: auto;
+  }
+
+  .woven-ground {
+    animation: none;
+    transform: none;
+  }
+
+  /* Pseudo-elements the universal selectors above do not reach, one rule per vendor. */
+  .thread::-webkit-progress-value {
+    animation: none;
+    transition: none;
+  }
+  .thread::-moz-progress-bar {
+    animation: none;
+  }
+
+  .lift:not(:disabled):hover,
+  .lift:not(:disabled):active {
+    transform: none;
   }
 }

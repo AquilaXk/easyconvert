@@ -95,17 +95,17 @@ function QueueBatchHeader({
   onUpdateAllTargets, onToggleBatchSelector, onCloseBatchSelector, onSelectBatchTarget, onClearAll,
 }: Readonly<QueueBatchHeaderProps>) {
   return (
-    <div className="px-4 sm:px-5 py-3 border-b border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between gap-3">
+    <div className="px-4 sm:px-5 py-3 border-b border-rule flex flex-wrap items-center justify-between gap-3">
       {onUpdateAllTargets && canBatchSelect ? (
         <div className="flex items-center flex-wrap gap-2.5">
-          <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">Convert all to</span>
+          <span className="text-xs font-medium text-ink-2">Convert all to</span>
           <div className="relative">
             <button
               type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-md border border-neutral-300 dark:border-dark-border bg-white dark:bg-dark-elevated text-xs font-mono font-semibold uppercase text-brand-950 dark:text-white hover:border-brand-700 dark:hover:border-brand-400 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border border-rule-strong text-xs font-mono font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : 'Choose format'}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
+              <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
             </button>
             {isBatchSelectorOpen && (
               <FormatSelector
@@ -116,11 +116,11 @@ function QueueBatchHeader({
           </div>
         </div>
       ) : (
-        <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">{itemCount} files in queue</span>
+        <span className="text-xs font-medium text-ink-2">{itemCount} files in queue</span>
       )}
       <button
         type="button" disabled={effectiveBusy} onClick={onClearAll}
-        className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-md text-xs font-medium text-ink-secondary dark:text-neutral-300 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-sm text-xs font-medium text-ink-2 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <Trash2 className="w-3.5 h-3.5" /><span>Clear all</span>
       </button>
@@ -139,16 +139,16 @@ function QueueFooterBar({
   allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
 }: Readonly<QueueFooterBarProps>) {
   return (
-    <div className="bg-neutral-subtle dark:bg-[#121629] border-t border-neutral-border dark:border-dark-border rounded-b-xl px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
+    <div className="bg-sunken/50 border-t border-rule rounded-b-md px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
       <div className="min-w-0">
-        <output aria-live="polite" className="block text-sm text-ink-secondary dark:text-neutral-300">{statusSummary}</output>
+        <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
         {zipError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
             <span>{zipError}</span>
             {onDismissZipError && (
               <button
                 type="button" aria-label="Dismiss archive error" onClick={onDismissZipError}
-                className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-red-100 dark:hover:bg-red-950/40 cursor-pointer"
+                className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm hover:bg-danger-soft cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -159,22 +159,22 @@ function QueueFooterBar({
       <div className="flex items-center flex-wrap sm:flex-nowrap gap-2.5 w-full sm:w-auto justify-end">
         <button
           type="button" disabled={effectiveBusy} onClick={onAddMoreFiles}
-          className="min-h-[48px] px-4 rounded-md bg-white hover:bg-neutral-50 active:bg-neutral-100 dark:bg-dark-surface dark:hover:bg-dark-elevated text-brand-950 dark:text-neutral-200 border border-neutral-300 dark:border-[#2C3452] text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors min-h-[48px] px-4 rounded-sm text-ink border border-rule-strong hover:border-ink-3 text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span>+ Add more files</span>
         </button>
         {completedCount > 1 && (
           <button
             type="button" onClick={onDownloadAllZip}
-            className="min-h-[48px] px-4 rounded-md bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/40 dark:hover:bg-brand-900/60 text-brand-800 dark:text-brand-200 border border-brand-200 dark:border-brand-700/50 text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            className="transition-colors min-h-[48px] px-4 rounded-sm bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            <Package className="w-4 h-4 text-brand-700 dark:text-brand-300" /><span>Download All (.zip)</span>
+            <Package className="w-4 h-4" /><span>Download All (.zip)</span>
           </button>
         )}
         {!allDone && (
           <button
             type="button" disabled={!canConvert} onClick={onConvertAll}
-            className="min-h-[48px] px-6 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="lift bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent min-h-[48px] px-6 rounded-sm text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {effectiveBusy ? (
               <><Loader2 className="w-4 h-4 animate-spin" /><span>Converting...</span></>
@@ -232,7 +232,7 @@ export default function ConversionQueue({
 
   return (
     <>
-      <div className="w-full rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm overflow-visible">
+      <div className="glass w-full rounded-md border border-rule overflow-visible">
         {items.length > 1 && (
           <QueueBatchHeader
             itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
@@ -243,7 +243,7 @@ export default function ConversionQueue({
             onClearAll={onClearAll}
           />
         )}
-        <div className="divide-y divide-neutral-border dark:divide-dark-border">
+        <div className="divide-y divide-rule">
           {items.map((item) => (
             <QueueItemRow
               key={item.id} item={item} isFormatSelectorOpen={activeFormatSelectorId === item.id}

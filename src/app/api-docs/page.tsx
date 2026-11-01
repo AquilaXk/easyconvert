@@ -117,7 +117,7 @@ export default function ApiDocsPage() {
   const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : undefined;
 
   return (
-    <div className="min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text flex flex-col transition-colors">
+    <div className="min-h-screen flex flex-col">
       <Header />
 
       <main id="main-content" className="flex-1">
@@ -135,13 +135,13 @@ export default function ApiDocsPage() {
           {loading && (
             <output
               aria-live="polite"
-              className="block py-16 text-center rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm"
+              className="block py-16 text-center border-t border-rule-strong"
             >
               <span
-                className="inline-block w-7 h-7 border-2 border-brand-700 border-t-transparent rounded-full animate-spin mb-3"
+                className="inline-block w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin mb-3"
                 aria-hidden="true"
               />
-              <span className="block text-ink-secondary dark:text-dark-muted text-sm">
+              <span className="block text-ink-2 text-sm">
                 Loading OpenAPI specification...
               </span>
             </output>
@@ -150,7 +150,7 @@ export default function ApiDocsPage() {
           {error && (
             <div
               role="alert"
-              className="p-5 rounded-xl bg-status-dangerSoft dark:bg-rose-950/30 border border-status-danger/30 dark:border-rose-800/50 text-status-danger dark:text-rose-300 flex items-start gap-3"
+              className="p-5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger flex items-start gap-3"
             >
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
               <div>
@@ -161,11 +161,11 @@ export default function ApiDocsPage() {
           )}
 
           {!loading && !error && (
-            <div className="space-y-3">
+            <div className="border-t border-rule-strong">
               {filteredEndpoints.length === 0 ? (
-                <div className="py-14 text-center rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm">
-                  <FileCode className="w-8 h-8 text-ink-muted dark:text-dark-muted mx-auto mb-2.5" />
-                  <p className="text-ink-secondary dark:text-dark-muted text-sm">
+                <div className="py-14 text-center">
+                  <FileCode className="w-8 h-8 text-ink-3 mx-auto mb-2.5" />
+                  <p className="text-ink-2 text-sm">
                     No matching API endpoints found.
                   </p>
                 </div>

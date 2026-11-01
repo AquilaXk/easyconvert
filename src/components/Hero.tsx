@@ -173,29 +173,29 @@ export default function Hero({
       />
 
       {hasActiveQueue ? (
-        <section className="bg-brand-950 dark:bg-[#111526] masthead-grid text-white py-6 sm:py-7 border-b border-white/10">
+        <section className="py-6 sm:py-8 border-b border-rule">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">{title}</h1>
+              <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{title}</h1>
               {queueSummaryText?.includes('files') && (
-                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-mono font-medium bg-white/10 text-slate-200 border border-white/15">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-mono font-medium tabular-nums text-ink-2 border border-rule">
                   {queueSummaryText}
                 </span>
               )}
             </div>
-            <p className="mt-1.5 text-sm text-slate-300 max-w-2xl">{subtitle}</p>
+            <p className="mt-1.5 text-sm text-ink-2 max-w-2xl">{subtitle}</p>
           </div>
         </section>
       ) : (
         <div>
-          <section className="bg-brand-950 dark:bg-[#111526] masthead-grid text-white border-b border-white/10 pt-10 pb-24 lg:pt-14 lg:pb-28">
+          <section className="pt-12 pb-24 lg:pt-16 lg:pb-28">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="lg:grid lg:grid-cols-12 lg:items-center lg:gap-10">
                 <div className="lg:col-span-7 text-center lg:text-left">
-                  <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-bold tracking-tight text-white leading-[1.15]">
+                  <h1 className="text-5xl sm:text-6xl lg:text-7xl text-ink leading-[1.02]">
                     {title}
                   </h1>
-                  <p className="mt-3 text-sm sm:text-base text-slate-300 max-w-2xl mx-auto lg:mx-0 leading-relaxed">
+                  <p className="mt-4 text-base text-ink-2 max-w-xl mx-auto lg:mx-0 leading-relaxed">
                     {subtitle}
                   </p>
                 </div>
