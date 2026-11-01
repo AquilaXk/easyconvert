@@ -45,6 +45,11 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     return this.storageDir;
   }
 
+  /** Where the bytes of `key` live, which every process sharing the storage directory reads. */
+  public objectPath(key: string): string {
+    return this.getPathsForKey(key).binPath;
+  }
+
   private getPathsForKey(key: string): { metaPath: string; binPath: string } {
     const hash = crypto.createHash('sha256').update(key).digest('hex');
     return {

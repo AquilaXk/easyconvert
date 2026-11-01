@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Readable, PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -50,11 +49,46 @@ interface S3MultipartSession {
 
 import { extendStoredExpiry, globalSharedObjects } from './shared-store';
 
+/**
+ * The parts of open sessions live in the storage directory, next to the objects they are assembled into: the web process
+ * and the workers share only that directory, so an object assembled anywhere else would be out of a worker's reach.
+ */
+const MULTIPART_PARTS_DIR = '.multipart';
+const COPY_CHUNK_BYTES = 64 * 1024;
+
 /** The bytes of the stored parts of `session` other than part `partNumber`. */
 function storedBytesBesides(session: S3MultipartSession, partNumber: number): number {
   let bytes = 0;
   for (const [number, part] of session.parts) if (number !== partNumber) bytes += part.size;
   return bytes;
+}
+
+/** Copies the parts `partNumbers` of `session` in order to `outFd`, through one fixed buffer; returns each part's hash and the bytes written. */
+function writeParts(outFd: number, session: S3MultipartSession, partNumbers: number[]): { partHashes: Buffer[]; totalSize: number } {
+  const partHashes: Buffer[] = [];
+  let totalSize = 0;
+  const chunkBuf = Buffer.alloc(COPY_CHUNK_BYTES);
+  for (const partNum of partNumbers) {
+    const partInfo = session.parts.get(partNum)!;
+    if (!fs.existsSync(partInfo.filePath)) {
+      console.error(`Part file missing on disk: "${partInfo.filePath}"`);
+      throw new Error(`Part file missing on disk for part ${partNum}`);
+    }
+    const inFd = fs.openSync(partInfo.filePath, 'r');
+    const partHasher = crypto.createHash('sha256');
+    let bytesRead = 0;
+    try {
+      while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
+        fs.writeSync(outFd, chunkBuf, 0, bytesRead);
+        partHasher.update(chunkBuf.subarray(0, bytesRead));
+      }
+    } finally {
+      fs.closeSync(inFd);
+    }
+    partHashes.push(partHasher.digest());
+    totalSize += partInfo.size;
+  }
+  return { partHashes, totalSize };
 }
 
 /**
@@ -80,7 +114,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     }
     this.configuredSigningSecret = secret;
 
-    this.baseUploadDir = options?.baseUploadDir || path.join(os.tmpdir(), 'easyconvert_s3_uploads');
+    this.baseUploadDir = options?.baseUploadDir || path.join(globalSharedObjects.getStorageDir(), MULTIPART_PARTS_DIR);
     try {
       if (!fs.existsSync(this.baseUploadDir)) {
         fs.mkdirSync(this.baseUploadDir, { recursive: true });
@@ -333,44 +367,21 @@ export class S3ObjectStorageService implements IStorageBackend {
     const sortedPartNumbers = expectedParts
       ? expectedParts.map((p) => p.partNumber).sort((a, b) => a - b)
       : Array.from(session.parts.keys()).sort((a, b) => a - b);
-    const objectsDir = path.join(this.baseUploadDir, 'objects');
+    const finalFilePath = globalSharedObjects.objectPath(session.key);
+    const tempFilePath = uniqueTempPath(finalFilePath, 'comb');
+    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
+    const outFd = fs.openSync(tempFilePath, EXCLUSIVE_CREATE);
+    let assembled: { partHashes: Buffer[]; totalSize: number };
     try {
-      if (!fs.existsSync(objectsDir)) {
-        fs.mkdirSync(objectsDir, { recursive: true });
-      }
-    } catch {}
-
-    const finalFilePath = path.join(objectsDir, `${session.uploadId}.bin`);
-    const outFd = fs.openSync(finalFilePath, 'w');
-
-    const partHashes: Buffer[] = [];
-    let totalSize = 0;
-    const chunkBuf = Buffer.alloc(64 * 1024);
-
-    try {
-      for (const partNum of sortedPartNumbers) {
-        const partInfo = session.parts.get(partNum)!;
-        if (!fs.existsSync(partInfo.filePath)) {
-          console.error(`Part file missing on disk: "${partInfo.filePath}"`);
-          throw new Error(`Part file missing on disk for part ${partNum}`);
-        }
-        const inFd = fs.openSync(partInfo.filePath, 'r');
-        const partHasher = crypto.createHash('sha256');
-        let bytesRead = 0;
-        try {
-          while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
-            fs.writeSync(outFd, chunkBuf, 0, bytesRead);
-            partHasher.update(chunkBuf.subarray(0, bytesRead));
-          }
-        } finally {
-          fs.closeSync(inFd);
-        }
-        partHashes.push(partHasher.digest());
-        totalSize += partInfo.size;
-      }
-    } finally {
+      assembled = writeParts(outFd, session, sortedPartNumbers);
+    } catch (err) {
       fs.closeSync(outFd);
+      fs.rmSync(tempFilePath, { force: true });
+      throw err;
     }
+    fs.closeSync(outFd);
+    fs.renameSync(tempFilePath, finalFilePath);
+    const { partHashes, totalSize } = assembled;
 
     // S3 composite multipart ETag format: "${HASH_OF_CONCATENATED_PART_HASHES}-${PART_COUNT}"
     const compositeHash = crypto
@@ -578,16 +589,11 @@ export class S3ObjectStorageService implements IStorageBackend {
     meta: { filename: string; mimeType: string; size?: number },
     ttlMs: number = 24 * 60 * 60 * 1000
   ): Promise<StoredObject> {
-    const objectsDir = path.join(this.baseUploadDir, 'objects');
-    if (!fs.existsSync(objectsDir)) {
-      try {
-        fs.mkdirSync(objectsDir, { recursive: true });
-      } catch {}
-    }
-    const tempFilePath = path.join(objectsDir, `stream-${crypto.randomUUID()}.tmp`);
-    const finalFilePath = path.join(objectsDir, `s3-${crypto.randomUUID()}-${path.basename(meta.filename)}`);
+    const finalFilePath = globalSharedObjects.objectPath(key);
+    const tempFilePath = uniqueTempPath(finalFilePath, 'tmp');
+    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
 
-    const outFd = fs.openSync(tempFilePath, 'w');
+    const outFd = fs.openSync(tempFilePath, EXCLUSIVE_CREATE);
     const hasher = crypto.createHash('sha256');
     let totalBytes = 0;
 
@@ -607,6 +613,9 @@ export class S3ObjectStorageService implements IStorageBackend {
         stream.on('error', (err) => reject(err));
       });
       fs.fsyncSync(outFd);
+    } catch (err) {
+      fs.rmSync(tempFilePath, { force: true });
+      throw err;
     } finally {
       fs.closeSync(outFd);
     }
