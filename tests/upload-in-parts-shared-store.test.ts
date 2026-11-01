@@ -134,3 +134,53 @@ describe('a file uploaded in parts to the web process is read by a worker that s
     expect(bytesUnder(sharedDir) + bytesUnder(webTmp), 'no copy of the upload is left on any disk').toBeLessThan(MIB);
   });
 });
+
+const RESULT_BYTES = 64 * MIB + MIB;
+
+/** What the worker does with an engine's output file (node-processor.ts): writes it in its own temporary directory and stores it from there. */
+async function saveResultAsWorker(key: string, bytes: Buffer): Promise<string> {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-out-'));
+  const outputPath = path.join(outputDir, 'result.bin');
+  fs.writeFileSync(outputPath, bytes);
+  const { storageProvider } = await import('../src/lib/storage');
+  await storageProvider.saveObjectFromFile!(key, outputPath, 'application/octet-stream', 'result.bin', 60_000);
+  return outputPath;
+}
+
+/** The web process: it submitted the job, so it can tell whose result a key is, and it serves the download. */
+async function startWebProcess() {
+  const { conversionQueue } = await import('../src/lib/queue/conversion-queue');
+  const { GET } = await import('../src/app/api/storage/file/[...key]/route');
+  const job = await conversionQueue.add(
+    'convert',
+    { jobId: 'web-submitted', originalFilename: 'in.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 1, options: {}, inputBufferBase64: 'YQ==' },
+    { attempts: 1, delay: 60 * 60 * 1000 }
+  );
+  const download = (key: string) => {
+    vi.stubEnv('TMPDIR', webTmp);
+    return GET(new NextRequest(`${BASE_URL}/api/storage/file/${key}`, { headers: { 'x-forwarded-for': '198.51.100.7' } }), {
+      params: Promise.resolve({ key: key.split('/') }),
+    });
+  };
+  return { resultKey: `results/${job.id}/result.bin`, download };
+}
+
+describe('a result the worker saves from a file reaches the web process that shares only the storage directory', () => {
+  it('serves every byte of a result over 64 MiB after the worker and its temporary directory are gone', async () => {
+    const bytes = Buffer.alloc(RESULT_BYTES);
+    for (let offset = 0; offset < bytes.length; offset += 4) bytes.writeUInt32LE((offset >>> 2) ^ 0x5a5a5a5a, offset);
+    const web = await asProcess(webTmp, startWebProcess);
+    const key = web.resultKey;
+
+    await asProcess(workerTmp, () => saveResultAsWorker(key, bytes));
+    fs.rmSync(workerTmp, { recursive: true, force: true });
+
+    const response = await web.download(key);
+
+    expect(response.status).toBe(HTTP_OK);
+    const served = Buffer.from(await response.arrayBuffer());
+    expect(served.length).toBe(bytes.length);
+    expect(sha256(served)).toBe(sha256(bytes));
+  });
+});
+
