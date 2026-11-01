@@ -6,6 +6,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {
@@ -34,10 +35,7 @@ import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
-// Maximum allowed payload for real-time zero-retention in-memory conversion
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
-
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/convert';
 
@@ -88,17 +86,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
 
     if (file.size === 0) {
       return await failWithRollback(400, 'Conversion payload is empty. File buffer has 0 bytes.');
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            'File size exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, files larger than 100 MB are not supported.',
-        },
-        { status: 400 }
-      );
     }
 
     if (!targetFormat) {
@@ -281,4 +268,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-});
+}));

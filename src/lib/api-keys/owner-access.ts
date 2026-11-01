@@ -5,13 +5,16 @@ import { storageProvider } from '../storage';
 import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
 import { isResultDeleted } from '../storage/retention-service';
 import { QueueUnavailableError } from '../types';
+import { isAnonymousUserId } from '../auth/anonymous-identity';
 
 /** Response detail for a job input key that is missing or that the caller may not use. */
 export const STORAGE_OBJECT_NOT_FOUND = 'Storage object not found.';
 
 /**
  * Restricts a resource to the user that owns it.
- * Resources without an owner (anonymous uploads) keep capability-URL access.
+ * Resources without an owner keep capability-URL access, and so do those of an anonymous caller: an anonymous
+ * identity is the address bucket of the client, which no request can prove to be the same person, so the job id and
+ * the storage key (a random token each) are the capability.
  * For an owned resource, any caller other than the owner gets the route's regular not-found
  * response so resource identifiers cannot be probed; the owner still sees the guard's own
  * rejection (missing scope, burst limit) so the request can be fixed.
@@ -23,7 +26,7 @@ export async function denyUnlessOwner(
   requiredScope: string,
   notFound: () => NextResponse
 ): Promise<NextResponse | null> {
-  if (!ownerUserId) {
+  if (!ownerUserId || isAnonymousUserId(ownerUserId)) {
     return null;
   }
 
@@ -75,10 +78,9 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
 
 /**
  * Decides whether a caller may submit a stored object as a job input. The object must exist, not be a result the
- * retention rule already deleted, and be
- * either an upload (reachable by anyone holding its key) or an output owned by the authenticated
- * caller; anonymous callers may only use uploads. Answer a rejected key exactly like a missing
- * object, so other users' keys can be neither probed nor converted.
+ * retention rule already deleted, and be reachable by the caller the way a download of it is: an upload or a result of
+ * an anonymous caller by anyone holding its key (the capability), an account's output by that account only. Answer a
+ * rejected key exactly like a missing object, so other users' keys can be neither probed nor converted.
  */
 export async function mayUseStorageKeyAsJobInput(
   key: string,
@@ -90,9 +92,7 @@ export async function mayUseStorageKeyAsJobInput(
   if (isUploadKey(key)) {
     return true;
   }
-  if (!callerUserId) {
-    return false;
-  }
   const ownership = await resolveObjectOwnership(key);
-  return ownership.resolved && ownership.ownerUserId === callerUserId;
+  if (!ownership.resolved) return false;
+  return isAnonymousUserId(ownership.ownerUserId) || (callerUserId !== undefined && ownership.ownerUserId === callerUserId);
 }

@@ -4,7 +4,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
-import { executeItemConversion, getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { executeItemConversion } from '@/lib/client-converter';
+import { getViewerMaxFileBytes } from '@/lib/viewer-plan';
+import { useRefreshViewerPlan, useViewerPlan } from './useViewerPlan';
 import {
   DEFAULT_OPTIONS,
   getPasswordValidationError,
@@ -118,12 +120,11 @@ function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Se
   return candidate;
 }
 
-function buildQueuedFileItem(file: File, maxLimit: number, effectiveDefault?: string): ConversionQueueItem {
+/** A queue item for a dropped file. Whether it is over the viewer's limit is read when the row renders, since the plan can still change. */
+export function buildQueuedFileItem(file: File, effectiveDefault?: string): ConversionQueueItem {
   const detected = detectFormatFromFilename(file.name);
   const ext = detected?.extension ?? (file.name.split('.').pop() || 'bin');
   const sourceFormat = ext.toLowerCase();
-  const isOverSize = file.size > maxLimit;
-  const limitMb = Math.round(maxLimit / (1024 * 1024));
   return {
     id: createQueueItemId(file.name),
     file,
@@ -131,8 +132,7 @@ function buildQueuedFileItem(file: File, maxLimit: number, effectiveDefault?: st
     size: file.size,
     sourceFormat,
     targetFormat: resolveInitialTargetFormat(sourceFormat, effectiveDefault),
-    status: isOverSize ? 'error' : 'ready',
-    error: isOverSize ? `File exceeds the ${limitMb} MB real-time conversion limit.` : undefined,
+    status: 'ready',
     progress: 0,
     options: { ...DEFAULT_OPTIONS },
   };
@@ -162,6 +162,15 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
   return zipUrl;
 }
 
+function isRunning(item: ConversionQueueItem): boolean {
+  return item.status === 'uploading' || item.status === 'converting';
+}
+
+function abortAll(aborters: Map<string, AbortController>): void {
+  for (const controller of aborters.values()) controller.abort();
+  aborters.clear();
+}
+
 function clearTimersAndBlobs(
   timers: Set<ReturnType<typeof setTimeout>>,
   urls: Set<string>
@@ -180,6 +189,7 @@ function useQueueLifecycleEffects(
   mountedRef: React.MutableRefObject<boolean>,
   blobUrlsRef: React.MutableRefObject<Set<string>>,
   timersRef: React.MutableRefObject<Set<ReturnType<typeof setTimeout>>>,
+  abortersRef: React.MutableRefObject<Map<string, AbortController>>,
   handleFilesSelectedRef: React.MutableRefObject<(files: File[], overrideTarget?: string) => void>,
   handleFilesSelected: (files: File[], overrideTarget?: string) => void
 ): void {
@@ -191,11 +201,13 @@ function useQueueLifecycleEffects(
     mountedRef.current = true;
     const urls = blobUrlsRef.current;
     const timers = timersRef.current;
+    const aborters = abortersRef.current;
     return () => {
       mountedRef.current = false;
+      abortAll(aborters);
       clearTimersAndBlobs(timers, urls);
     };
-  }, [mountedRef, blobUrlsRef, timersRef]);
+  }, [mountedRef, blobUrlsRef, timersRef, abortersRef]);
 
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') return;
@@ -214,6 +226,8 @@ export interface QueueMutationContext {
   queueRef: React.MutableRefObject<ConversionQueueItem[]>;
   generationRef: React.MutableRefObject<Map<string, number>>;
   inFlightIdsRef: React.MutableRefObject<Set<string>>;
+  /** The cancellation of each running conversion: removing the item ends its upload and cancels its job. */
+  abortersRef: React.MutableRefObject<Map<string, AbortController>>;
   blobUrlsRef: React.MutableRefObject<Set<string>>;
   timersRef: React.MutableRefObject<Set<ReturnType<typeof setTimeout>>>;
   batchGenRef: React.MutableRefObject<number>;
@@ -232,7 +246,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
     predicate: (item: ConversionQueueItem) => boolean,
     getPatch: (item: ConversionQueueItem) => IdleItemPatch
   ) => {
-    const maxLimit = getEffectiveMaxFileSize();
+    const maxLimit = getViewerMaxFileBytes();
     const canEdit = (item: ConversionQueueItem) =>
       !ctx.isItemBusy(item) && item.size <= maxLimit && predicate(item);
     const matches = ctx.queueRef.current.filter(canEdit);
@@ -248,10 +262,12 @@ export function createQueueMutators(ctx: QueueMutationContext) {
   const handleRemoveItem = (id: string) => {
     ctx.revokeBlobUrl(ctx.queueRef.current.find((i) => i.id === id)?.resultUrl);
     ctx.generationRef.current.set(id, (ctx.generationRef.current.get(id) ?? 0) + 1);
+    ctx.abortersRef.current.get(id)?.abort();
+    ctx.abortersRef.current.delete(id);
     ctx.inFlightIdsRef.current.delete(id);
     ctx.syncInFlight();
     ctx.updateQueue((prev) => prev.filter((i) => i.id !== id));
-    const maxLimit = getEffectiveMaxFileSize();
+    const maxLimit = getViewerMaxFileBytes();
     const hasPendingConvertible = ctx.queueRef.current.some((i) =>
       isConvertiblePendingItem(i, maxLimit)
     );
@@ -267,6 +283,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
       ctx.revokeBlobUrl(item.resultUrl);
       ctx.generationRef.current.set(item.id, (ctx.generationRef.current.get(item.id) ?? 0) + 1);
     }
+    abortAll(ctx.abortersRef.current);
     clearTimersAndBlobs(ctx.timersRef.current, ctx.blobUrlsRef.current);
     ctx.batchGenRef.current += 1;
     ctx.batchRunningRef.current = false;
@@ -354,7 +371,7 @@ function canConvertBatchTarget(
   if (!item || ctx.isItemBusy(item) || item.status === 'completed') return false;
   return (
     Boolean(item.targetFormat) &&
-    item.size <= getEffectiveMaxFileSize() &&
+    item.size <= getViewerMaxFileBytes() &&
     hasValidItemOptions(item)
   );
 }
@@ -381,20 +398,26 @@ export function createConversionRunners(ctx: QueueMutationContext) {
   const convertSingleItem = async (itemOrId: ConversionQueueItem | string): Promise<void> => {
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
     const current = ctx.queueRef.current.find((i) => i.id === id);
-    if (!current?.targetFormat || current.size > getEffectiveMaxFileSize() || ctx.inFlightIdsRef.current.has(id)) return;
+    if (!current?.targetFormat || current.size > getViewerMaxFileBytes() || ctx.inFlightIdsRef.current.has(id)) return;
     if (failInvalidItemOptions(current, ctx)) return;
     const gen = (ctx.generationRef.current.get(id) ?? 0) + 1;
     ctx.generationRef.current.set(id, gen);
     ctx.inFlightIdsRef.current.add(id);
+    const aborter = new AbortController();
+    ctx.abortersRef.current.set(id, aborter);
     ctx.syncInFlight();
     ctx.revokeBlobUrl(current.resultUrl);
     ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'converting', progress: 15, error: undefined, resultUrl: undefined } : i)));
     const isFresh = () => ctx.mountedRef.current && ctx.generationRef.current.get(id) === gen && ctx.queueRef.current.some((i) => i.id === id);
+    const setStage = (status: 'uploading' | 'converting') => {
+      if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, status } : i)));
+    };
     try {
       await executeItemConversion(current, {
         onProgress: (progress) => {
-          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && i.status === 'converting' ? { ...i, progress } : i)));
+          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, progress } : i)));
         },
+        onStage: setStage,
         onSuccess: (resultUrl, resultSize, edgeProcessed, edgeTier) => {
           if (!isFresh()) { ctx.revokeBlobUrl(resultUrl); return; }
           if (resultUrl.startsWith('blob:')) ctx.blobUrlsRef.current.add(resultUrl);
@@ -403,9 +426,10 @@ export function createConversionRunners(ctx: QueueMutationContext) {
         onError: (msg) => {
           if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: msg, progress: 0 } : i)));
         },
-      });
+      }, aborter.signal);
     } finally {
       if (ctx.generationRef.current.get(id) === gen) {
+        ctx.abortersRef.current.delete(id);
         ctx.inFlightIdsRef.current.delete(id);
         ctx.syncInFlight();
       }
@@ -427,7 +451,7 @@ export function createConversionRunners(ctx: QueueMutationContext) {
 
   const handleConvertAll = async () => {
     if (ctx.batchRunningRef.current) return;
-    const maxLimit = getEffectiveMaxFileSize();
+    const maxLimit = getViewerMaxFileBytes();
     const ids = ctx.queueRef.current
       .filter((i) => isConvertiblePendingItem(i, maxLimit))
       .map((i) => i.id);
@@ -460,6 +484,9 @@ const updateQueueState = (
 };
 
 export function useClientQueue(options?: UseClientQueueOptions) {
+  // The queue owns the page's read of the session: its rows only follow the plan.
+  useRefreshViewerPlan();
+  useViewerPlan();
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [inFlightCount, setInFlightCount] = useState(0);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
@@ -467,6 +494,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const queueRef = useRef<ConversionQueueItem[]>(queue);
   const generationRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());
+  const abortersRef = useRef<Map<string, AbortController>>(new Map());
   const blobUrlsRef = useRef<Set<string>>(new Set());
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const mountedRef = useRef(true);
@@ -482,17 +510,16 @@ export function useClientQueue(options?: UseClientQueueOptions) {
     blobUrlsRef.current.delete(url);
   };
   const isItemBusy = (i: ConversionQueueItem) =>
-    i.status === 'uploading' || i.status === 'converting' || inFlightIdsRef.current.has(i.id);
+    isRunning(i) || inFlightIdsRef.current.has(i.id);
   const handleFilesSelected = (files: File[], overrideTarget?: string) => {
-    const maxLimit = getEffectiveMaxFileSize();
     const def = overrideTarget || options?.defaultTarget;
-    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, maxLimit, def))]);
+    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, def))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
-  useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, handleFilesSelectedRef, handleFilesSelected);
+  useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, abortersRef, handleFilesSelectedRef, handleFilesSelected);
 
   const mutationCtx: QueueMutationContext = {
-    bundlePrefix: options?.bundlePrefix, mountedRef, queueRef, generationRef, inFlightIdsRef,
+    bundlePrefix: options?.bundlePrefix, mountedRef, queueRef, generationRef, inFlightIdsRef, abortersRef,
     blobUrlsRef, timersRef, batchGenRef, batchRunningRef, updateQueue, revokeBlobUrl, isItemBusy,
     syncInFlight, setIsBatchRunning, setInFlightCount, setZipError,
   };

@@ -4,7 +4,8 @@ import React, { useMemo, useState } from 'react';
 import { ArrowRight, ChevronDown, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
 import { getAvailableTargetFormats } from '@/lib/registry';
-import { getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { maxFileBytes } from '@/lib/plan-limits';
+import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
@@ -216,7 +217,8 @@ export default function ConversionQueue({
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
-  const maxLimit = getEffectiveMaxFileSize();
+  const plan = useViewerPlan();
+  const maxLimit = maxFileBytes(plan);
   const convertibleItems = useMemo(
     () => items.filter((item) => item.size <= maxLimit),
     [items, maxLimit]

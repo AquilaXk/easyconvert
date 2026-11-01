@@ -10,6 +10,7 @@ import {
   type KeyExpiryOption,
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
+import { applySessionChange } from '@/lib/viewer-plan';
 
 export function buildKeyCreationRequest(
   newKeyName: string,
@@ -233,7 +234,9 @@ export function useDashboardController() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      const res = await fetch('/api/auth/logout', { method: 'POST' });
+      // A sign-out the server refused leaves the session, so the header keeps the account until the page is read again.
+      if (res.ok) applySessionChange(null);
     } catch {
       setActionError('Network error while signing out.');
     }

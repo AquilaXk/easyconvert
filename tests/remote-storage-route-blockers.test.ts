@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
+import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 import { startS3StubServer, type S3StubServer, type StubRequestRecord } from './helpers/s3-stub-server';
 
 /**
@@ -30,7 +31,7 @@ const PROVIDER_DETAIL = ['SlowDown', 'AccessDenied', 'AKIAOCIEXAMPLE', 'S3 reque
 const PART_URL_WINDOW_SECONDS = 900;
 const SEVEN_DAYS_SECONDS = 604_800;
 const MIB = 1024 * 1024;
-const FREE_TIER_CAP_BYTES = 100 * MIB;
+const FREE_TIER_CAP_BYTES = PLAN_MAX_FILE_BYTES.free;
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n');
 const CSV = Buffer.from('name,score\nAlice,100\nBob,95\n');
@@ -221,7 +222,7 @@ describe('object-store routes after the final review', () => {
       return POST(jsonPost(`/api/storage/multipart?action=${action}`, cookie, body));
     };
 
-    it('deletes an object that grew past the tier cap between the size check and the completion', async () => {
+    it('assembles only the parts it checked, so a part that appears before the completion is left out', async () => {
       const { cookie } = await loadUser('race', 'free');
       const init = await (await multipart(cookie, 'initiate', { filename: 'grow.bin', totalSize: 10 })).json();
       const { POST } = await import('../src/app/api/storage/multipart/route');
@@ -250,12 +251,10 @@ describe('object-store routes after the final review', () => {
       });
 
       const res = await multipart(cookie, 'complete', { uploadId: init.uploadId });
-      expect(res.status).toBe(HTTP_BAD_REQUEST);
-      expect((await res.json()).detail).toBe(
-        `Completed upload size ${FREE_TIER_CAP_BYTES + 1 + 10} bytes exceeds maximum allowed upload size of ${FREE_TIER_CAP_BYTES} bytes for tier 'free'.`
-      );
+      expect(res.status).toBe(HTTP_OK);
+      expect((await res.json()).size).toBe(10);
       expect(listings).toBe(2);
-      expect(server.objects.size).toBe(0);
+      expect(server.objects.get(init.key)?.body.toString()).toBe('0123456789');
     });
 
     it('lets a download-sized upload within the cap complete', async () => {
@@ -312,7 +311,7 @@ describe('object-store routes after the final review', () => {
       const init = await (await multipart(cookie, 'initiate', { filename: 'e.bin', totalSize: 4 })).json();
       const res = await multipart(cookie, 'complete', { uploadId: init.uploadId });
       expect(res.status).toBe(HTTP_BAD_REQUEST);
-      expect((await res.json()).detail).toBe(`Cannot complete empty multipart upload session: ${init.uploadId}`);
+      expect((await res.json()).detail).toBe('The upload has no part to complete.');
     });
   });
 

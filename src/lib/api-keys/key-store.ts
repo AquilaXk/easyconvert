@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { hmacSha256, sha256 } from '../auth/crypto';
 import { redisUserStore } from '../auth/redis-user-store';
+import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
@@ -466,7 +467,7 @@ export class KeyStore {
   public async getQuotaUsage(userId: string): Promise<QuotaUsage> {
     this.ensureInitialized();
 
-    const isAnonymous = userId.startsWith('anon:');
+    const isAnonymous = isAnonymousUserId(userId);
     const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier || 'free';
     const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
@@ -488,7 +489,7 @@ export class KeyStore {
   public async recordUsage(userId: string, units: number = 1): Promise<{ allowed: boolean; remaining: number }> {
     this.ensureInitialized();
 
-    const isAnonymous = userId.startsWith('anon:');
+    const isAnonymous = isAnonymousUserId(userId);
     const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];

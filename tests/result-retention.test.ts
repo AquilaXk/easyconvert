@@ -35,12 +35,14 @@ import {
   sweepRetention,
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { isCapacityCandidate } from '../src/lib/storage/result-capacity';
 import { globalSharedObjects, SharedObjectStore } from '../src/lib/storage/shared-store';
 import {
   JOB_INPUT_HOLD_MAX_MS,
   addInterval,
   coversWholeObject,
   holdRecord,
+  newAccountUploadRecord,
   newRecord,
   newUploadRecord,
   recordServedRange,
@@ -172,6 +174,26 @@ describe('the record of one result', () => {
   it('holds a result for a day from the moment a job takes it', () => {
     const held = holdRecord(newRecord('results/j/a.pdf', NOW, POLICY), 'job-a', NOW + 30 * SECOND_MS);
     expect(held?.holds).toEqual({ 'job-a': NOW + 30 * SECOND_MS + JOB_INPUT_HOLD_MAX_MS });
+  });
+
+  it('treats an account upload as an upload by the kind it was created with, though its key looks like a result', () => {
+    const accountUpload = newAccountUploadRecord('conversions/u1/a.csv', NOW);
+    expect(holdRecord(accountUpload, 'job-a', NOW + SECOND_MS)?.holds).toEqual({ 'job-a': NOW + JOB_INPUT_HOLD_MAX_MS });
+    expect(isCapacityCandidate({ ...accountUpload, deliveredAt: NOW }, NOW + ONE_HOUR_MS, POLICY)).toBe(false);
+    expect(isCapacityCandidate({ ...newRecord('conversions/u1/b.pdf', NOW, POLICY), deliveredAt: NOW }, NOW + ONE_HOUR_MS, POLICY)).toBe(true);
+  });
+
+  it('reads a record written before records had a kind by its key', () => {
+    const written = (key: string) => ({ key, createdAt: NOW, deleteAt: NOW + ONE_HOUR_MS, received: [] });
+    expect(holdRecord(written('uploads/a.csv'), 'job-a', NOW + SECOND_MS)?.holds).toEqual({ 'job-a': NOW + JOB_INPUT_HOLD_MAX_MS });
+    expect(holdRecord(written('results/j/a.pdf'), 'job-a', NOW + SECOND_MS)?.holds).toEqual({ 'job-a': NOW + SECOND_MS + JOB_INPUT_HOLD_MAX_MS });
+    expect(isCapacityCandidate({ ...written('results/j/a.pdf'), deliveredAt: NOW }, NOW + ONE_HOUR_MS, POLICY)).toBe(true);
+  });
+
+  it('reads an account upload marked the way an earlier build wrote it, though its key looks like a result', () => {
+    const marked = { ...newRecord('conversions/u1/a.csv', NOW, POLICY), kind: undefined, accountUpload: true };
+    expect(holdRecord(marked, 'job-a', NOW + SECOND_MS)?.holds).toEqual({ 'job-a': NOW + JOB_INPUT_HOLD_MAX_MS });
+    expect(isCapacityCandidate({ ...marked, deliveredAt: NOW }, NOW + ONE_HOUR_MS, POLICY)).toBe(false);
   });
 
   it('never keeps a result longer than the undelivered time because of the grace period', () => {

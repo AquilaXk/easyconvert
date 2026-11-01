@@ -1,4 +1,5 @@
 import { CONFIG_SCHEMA, ConfigRuleError, parseKind } from '../config/schema';
+import type { MultipartUploadComplete } from '../types';
 import { classifyStorageKey, isUploadKey } from './key-namespace';
 
 /**
@@ -79,7 +80,25 @@ export interface RetentionRecord {
   holds?: Record<string, number>;
   /** A sweep could not delete the object; the next attempt waits until then, so the key does not block the others. */
   retryAt?: number;
+  /** What the record is of, set when it is created; a record written before the field existed is read by its key (`recordKind`). */
+  kind?: RecordKind;
+  /** What the completion of an upload answered; only on a record of kind `completion`. */
+  completion?: UploadCompletion;
 }
+
+/** The first answer of the completion of an upload and the owner its session recorded, kept to answer a repeat. */
+export interface UploadCompletion {
+  ownerUserId: string;
+  result: MultipartUploadComplete;
+}
+
+/**
+ * What a record is of. A result follows the retention rule. An upload (ownerless, in `uploads/`) is kept for the jobs that
+ * read it. An account's upload, under the account's own key, is kept for its jobs too, and is not a result: its owner may
+ * still get a signed link to it, a download does not deliver it, and it is not deleted for space. A completion is the
+ * receipt of a completed upload, not a file (`newCompletionRecord`).
+ */
+export type RecordKind = 'result' | 'upload' | 'account-upload' | 'completion';
 
 export type RetentionReason = 'delivered' | 'expired' | 'capacity';
 
@@ -104,8 +123,28 @@ export function isRetainedKey(key: string): boolean {
   return namespace === 'job-result' || namespace === 'user-conversion';
 }
 
+/** What an earlier build marked a record of an account's upload with, before records had a kind. */
+type LegacyMarkedRecord = RetentionRecord & { accountUpload?: boolean };
+
+/** What `record` is of: its kind, or for a record written before kinds existed, its legacy mark or what its key says. */
+export function recordKind(record: RetentionRecord): RecordKind {
+  if (record.kind) return record.kind;
+  if ((record as LegacyMarkedRecord).accountUpload === true) return 'account-upload';
+  return isUploadKey(record.key) ? 'upload' : 'result';
+}
+
+/** Whether `record` is of an upload, ownerless or an account's, not of a result. */
+export function isUploadRecord(record: RetentionRecord): boolean {
+  return recordKind(record) !== 'result';
+}
+
+/** Whether `record` is of a result the retention rule tracks. */
+export function isResultRecord(record: RetentionRecord): boolean {
+  return recordKind(record) === 'result' && isRetainedKey(record.key);
+}
+
 export function newRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
-  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [] };
+  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [], kind: 'result' };
 }
 
 /** `intervals` with `[first, last]` added; ranges that overlap or touch become one. Undefined when it would exceed MAX_RECEIVED_RANGES. */
@@ -187,7 +226,7 @@ export function holdRecord(record: RetentionRecord, holder: string, now: number)
   const holds = activeHolds(record, now);
   if (!(holder in holds) && Object.keys(holds).length >= MAX_HOLDS) return undefined;
   const until = now + JOB_INPUT_HOLD_MAX_MS;
-  return { ...record, holds: { ...holds, [holder]: isUploadKey(record.key) ? Math.min(until, record.createdAt + JOB_INPUT_HOLD_MAX_MS) : until } };
+  return { ...record, holds: { ...holds, [holder]: isUploadRecord(record) ? Math.min(until, record.createdAt + JOB_INPUT_HOLD_MAX_MS) : until } };
 }
 
 /** The record once the job `holder` ended; undefined when it held nothing. */
@@ -203,7 +242,32 @@ export function releaseHold(record: RetentionRecord, holder: string): RetentionR
  * JOB_INPUT_HOLD_MAX_MS, which is as long as an upload lives anyway: a job whose end is never reported cannot keep it longer.
  */
 export function newUploadRecord(key: string, now: number): RetentionRecord {
-  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [] };
+  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [], kind: 'upload' };
+}
+
+/**
+ * The record of a file an account just uploaded in parts: kept for the jobs that read it for as long as an upload lives
+ * (JOB_INPUT_HOLD_MAX_MS), which is the lifetime the store gives the completed object.
+ */
+export function newAccountUploadRecord(key: string, now: number): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [], kind: 'account-upload' };
+}
+
+/**
+ * The record of an upload that was just completed and that no job reads yet. Nobody converting it within the
+ * undelivered time of a result means it is abandoned, so it is deleted then, as a result nobody downloads is.
+ */
+export function newUnclaimedUploadRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [], kind: 'upload' };
+}
+
+/**
+ * The receipt of an upload completion, under `key`, which names no object. No sweep deletes anything for it: it is
+ * created already ended (`goneAt`), so it is never due and the ledger forgets it after GONE_RECORD_MS, the time an
+ * idempotent answer is kept.
+ */
+export function newCompletionRecord(key: string, now: number, completion: UploadCompletion): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now, goneAt: now, received: [], kind: 'completion', completion };
 }
 
 /**

@@ -17,6 +17,8 @@ import { middleware } from '../src/middleware';
 import { POST as convertHandler } from '../src/app/api/convert/route';
 import { POST as multipartHandler } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsHandler } from '../src/app/api/queue/jobs/route';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 
 describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware', () => {
   beforeEach(() => {
@@ -329,12 +331,14 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       });
     });
 
-    it('rejects unauthenticated multipart upload initiation with 401', async () => {
+    it('opens an upload for an anonymous caller within the anonymous limit, and refuses one past it', async () => {
+      // An anonymous upload needs a caller a declared proxy attributes (docs/policy-decisions.md, entry 137).
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'cf-connecting-ip': '198.51.100.99',
+          'x-forwarded-for': '198.51.100.99',
         },
         body: JSON.stringify({
           filename: 'document.pdf',
@@ -344,7 +348,18 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       });
 
       const res = await multipartHandler(req);
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(200);
+      const { uploadId } = await res.json();
+      s3Storage.abortMultipartUpload(uploadId);
+
+      const tooLarge = await multipartHandler(
+        new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.99' },
+          body: JSON.stringify({ filename: 'document.pdf', totalSize: PLAN_MAX_FILE_BYTES.anonymous + 1 }),
+        })
+      );
+      expect(tooLarge.status).toBe(413);
     });
 
     it('permits authenticated multipart upload initiation within tier limit', async () => {
@@ -358,7 +373,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         body: JSON.stringify({
           filename: 'document.pdf',
           mimeType: 'application/pdf',
-          totalSize: 45 * 1024 * 1024, // 45 MiB (< 100 MiB free cap)
+          totalSize: 45 * 1024 * 1024, // 45 MiB (< 1 GiB free cap)
         }),
       });
 
@@ -369,7 +384,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(json.uploadId).toBeDefined();
     });
 
-    it('rejects multipart upload exceeding free tier 100MB cap with 413 Payload Too Large', async () => {
+    it('rejects multipart upload exceeding the free plan 1 GB limit with 413 Payload Too Large', async () => {
       const token = createSessionToken(testUser);
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
         method: 'POST',
@@ -380,7 +395,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         body: JSON.stringify({
           filename: 'giant-video.mp4',
           mimeType: 'video/mp4',
-          totalSize: 120 * 1024 * 1024, // 120 MiB (> 100 MiB free cap)
+          totalSize: 1024 * 1024 * 1024 + 1, // one byte over the 1 GiB free limit
         }),
       });
 
@@ -388,7 +403,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(res.status).toBe(413);
       const json = await res.json();
       expect(json.status).toBe(413);
-      expect(json.detail).toMatch(/exceeds maximum allowed upload size of 104857600 bytes for tier 'free'/i);
+      expect(json.detail).toBe('File size 1,073,741,825 bytes exceeds the 1 GiB limit for the free plan.');
     });
   });
 

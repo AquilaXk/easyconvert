@@ -14,7 +14,7 @@ import {
   buildScopedKey,
   canonicalJSON,
 } from '../src/lib/api/idempotency';
-import { withIdempotency } from '../src/lib/api/with-idempotency';
+import { respondOnce } from '../src/lib/api/with-idempotency';
 import { setDiskProbe } from '../src/lib/storage/retention-service';
 
 const DEFAULT_REDIS_URL = 'redis://127.0.0.1:6379';
@@ -490,34 +490,22 @@ describe.each([
 
   it('replays null-body responses (204 No Content) safely without throwing TypeError', async () => {
     const idempotencyKey = `null-body-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    const send = () =>
+      respondOnce(
+        new NextRequest('http://localhost:3000/api/v1/test-endpoint', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey.secretKey}`, 'Idempotency-Key': idempotencyKey },
+        }),
+        testUser.id,
+        '/api/v1/test-endpoint',
+        async () => new NextResponse(null, { status: 204 }),
+        { afterFailedRecord: 'keep-lock' }
+      );
 
-    const testHandler = withIdempotency(
-      async () => {
-        return new NextResponse(null, { status: 204 });
-      },
-      { store }
-    );
-
-    const req1 = new NextRequest('http://localhost:3000/api/v1/test-endpoint', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey.secretKey}`,
-        'Idempotency-Key': idempotencyKey,
-      },
-    });
-
-    const res1 = await testHandler(req1);
+    const res1 = await send();
     expect(res1.status).toBe(204);
 
-    const req2 = new NextRequest('http://localhost:3000/api/v1/test-endpoint', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey.secretKey}`,
-        'Idempotency-Key': idempotencyKey,
-      },
-    });
-
-    const res2 = await testHandler(req2);
+    const res2 = await send();
     expect(res2.status).toBe(204);
     expect(res2.headers.get('idempotent-replayed')).toBe('true');
   });

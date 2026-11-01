@@ -13,14 +13,18 @@ import {
 import {
   endUploadUse,
   holdRecord,
+  isHeld,
   isDeleted,
   isHoldableKey,
   isRetainedKey,
   keptUntil,
   markGone,
   newRecord,
+  newAccountUploadRecord,
+  newUnclaimedUploadRecord,
   newUploadRecord,
   reasonOf,
+  recordKind,
   recordServedRange,
   releaseHold,
   reopenAfterFailedDelete,
@@ -101,13 +105,56 @@ export async function registerStoredResult(storage: Pick<IStorageBackend, 'delet
   try {
     await registerResult(key);
   } catch (error) {
-    try {
-      await storage.deleteObject(key);
-    } catch (cleanupError) {
-      console.warn(`[Retention] Could not remove the unregistered result "${key}":`, cleanupError);
-    }
+    await removeUnregistered(storage, key);
     throw error;
   }
+}
+
+/**
+ * Removes an object nobody will convert or deliver, because its record could not be written or it is not the file that was
+ * asked for: no sweep would ever find it. A removal that fails is logged with the key, and the error that caused the
+ * removal stays the caller's to throw or answer.
+ */
+export async function removeUnregistered(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
+  try {
+    await storage.deleteObject(key);
+  } catch (cleanupError) {
+    console.warn(`[Retention] Could not remove the unregistered object "${key}":`, cleanupError);
+  }
+}
+
+/**
+ * Records an upload that was just completed, so that a job reading it holds it and `discardUpload` can see the hold.
+ * An upload in the ownerless namespace (every upload of an anonymous caller) starts its clock: nobody converting it
+ * within the undelivered time of a result means it was abandoned, so it goes then. An account's upload is kept as long
+ * as the store keeps it, and stays out of the rule for results (newAccountUploadRecord). When the record cannot be
+ * written the object is removed again and the error is rethrown, as for a result.
+ */
+export async function registerCompletedUpload(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
+  const now = Date.now();
+  const policy = resolveRetentionPolicy();
+  const fresh = isUploadKey(key) ? newUnclaimedUploadRecord(key, now, policy) : newAccountUploadRecord(key, now);
+  try {
+    await getRetentionLedger().update(key, (current) => current ?? fresh);
+  } catch (error) {
+    await removeUnregistered(storage, key);
+    throw error;
+  }
+}
+
+/**
+ * Deletes the completed upload under `key` at once, for a client that gave it up: unless a job holds it, it is due now
+ * and taken out of service like any other. Returns false, leaving it as it was, while a job reads it.
+ */
+export async function discardUpload(storage: DeletableStorage, key: string, now: number = Date.now()): Promise<boolean> {
+  let held = false;
+  await getRetentionLedger().update(key, (current) => {
+    held = current !== undefined && isHeld(current, now);
+    return current && !held ? { ...current, deleteAt: Math.min(current.deleteAt, now) } : undefined;
+  });
+  if (held) return false;
+  await deleteRecordedResult(storage, key, now, undefined);
+  return true;
 }
 
 /** Stores a result that lives for the undelivered time and registers it, so that the sweep and the download route know it. */
@@ -164,14 +211,15 @@ export async function isResultDeleted(key: string, now: number = Date.now()): Pr
 /**
  * Whether a signed download link may be issued for `key`. Never for a result the rule tracks: the bucket would
  * answer the client, so the delivery could not be recorded and the result would not be deleted after it. A job
- * result always is one; a user's conversion is one when it has a record, and is treated as one while the ledger
- * cannot be read.
+ * result always is one; a user's conversion is one when it has a record that is not of an upload, and is treated as
+ * one while the ledger cannot be read.
  */
 export async function mayPresignDownload(key: string): Promise<boolean> {
   if (!isRetainedKey(key)) return true;
   if (classifyStorageKey(key).namespace === 'job-result') return false;
   try {
-    return (await getRetentionLedger().get(key)) === undefined;
+    const record = await getRetentionLedger().get(key);
+    return record === undefined || recordKind(record) === 'account-upload';
   } catch (error) {
     console.warn(`[Retention] Could not read the record of "${key}"; refusing a signed link for it:`, error);
     return false;
@@ -186,7 +234,9 @@ export async function recordServed(key: string, range: { first: number; last: nu
   if (!isRetainedKey(key)) return;
   const now = Date.now();
   const policy = resolveRetentionPolicy();
-  await getRetentionLedger().update(key, (current) => recordServedRange(current ?? newRecord(key, now, policy), range, now, policy));
+  await getRetentionLedger().update(key, (current) =>
+    current && recordKind(current) === 'account-upload' ? undefined : recordServedRange(current ?? newRecord(key, now, policy), range, now, policy)
+  );
 }
 
 let heldStorage: Pick<IStorageBackend, 'extendExpiry'> | undefined;
@@ -257,7 +307,7 @@ export async function releaseResultHold(key: string, holder: string): Promise<vo
   if (!isHoldableKey(key)) return;
   const policy = resolveRetentionPolicy();
   const now = Date.now();
-  await changeHold(key, holder, (current) => (isUploadKey(key) ? endUploadUse(current, holder, now, policy) : releaseHold(current, holder)));
+  await changeHold(key, holder, (current) => (recordKind(current) === 'upload' ? endUploadUse(current, holder, now, policy) : releaseHold(current, holder)));
 }
 
 /** Gives up the hold of `holder` on `key` without the job having run: the file keeps the deletion time it had. */
@@ -299,8 +349,8 @@ export async function withInputHeld<T>(key: string | undefined, holder: string, 
  * Whether a missing object is worth a warning when its deletion runs: not for a result that expires, whose object
  * leaves storage at the same time through the lifetime it was stored with.
  */
-function expectsObject(record: RetentionRecord | undefined, key: string, reason: 'capacity' | undefined): boolean {
-  return reason === 'capacity' || isUploadKey(key) || record?.deliveredAt !== undefined;
+function expectsObject(record: RetentionRecord, reason: 'capacity' | undefined): boolean {
+  return reason === 'capacity' || recordKind(record) === 'upload' || record.deliveredAt !== undefined;
 }
 
 /** `call`, which fails when it takes longer than STORAGE_CALL_TIMEOUT_MS, so that one hung store call cannot stop every deletion of the process. */
@@ -364,12 +414,12 @@ async function deleteRecordedResult(
   if (!marked) return 'skipped';
   let found: boolean;
   try {
-    found = await removeObject(storage, key, expectsObject(tracked, key, reason));
+    found = await removeObject(storage, key, expectsObject(tracked, reason));
   } catch (error) {
     await reopenAfterDeleteFailure(key, now);
     throw error;
   }
-  if (isUploadKey(key)) {
+  if (recordKind(tracked) === 'upload') {
     await ledger.forget(key).catch((forgetError: unknown) => {
       console.warn(`[Retention] Could not forget the record of the deleted upload "${key}":`, forgetError);
     });

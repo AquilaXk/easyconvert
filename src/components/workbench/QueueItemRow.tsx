@@ -7,7 +7,9 @@ import {
 } from 'lucide-react';
 import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
-import { getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { fileTooLargeMessage, maxFileBytes } from '@/lib/plan-limits';
+import { formatBytes } from '@/lib/format-bytes';
+import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
 import { getPasswordValidationError } from './options/options-capabilities';
 
@@ -36,14 +38,6 @@ const CATEGORY_ICONS: Partial<Record<FormatCategory, { Icon: LucideIcon; color: 
   font: { Icon: Type, color: 'text-blue-600 dark:text-blue-400' },
 };
 
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  const value = bytes / Math.pow(1024, index);
-  return `${Number.parseFloat(value.toFixed(1))} ${units[index]}`;
-}
-
 function getFormatLabel(ext: string): string {
   const clean = ext.toLowerCase();
   return FORMAT_REGISTRY[clean]?.name || `${clean.toUpperCase()} File`;
@@ -65,7 +59,8 @@ function resolveOptionError(item: ConversionQueueItem): string | null {
   return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password);
 }
 
-function resolveRowError(item: ConversionQueueItem, optionError: string | null): string | null {
+function resolveRowError(item: ConversionQueueItem, optionError: string | null, oversizeError: string | null): string | null {
+  if (oversizeError) return oversizeError;
   if (optionError) return optionError;
   return item.status === 'error' ? item.error || 'Conversion failed.' : null;
 }
@@ -93,7 +88,7 @@ function RowStatusDisplay({
     return (
       <div className="flex items-center gap-2 min-w-[140px]">
         <progress
-          value={rounded} max={100} aria-label={`Converting ${item.name}`}
+          value={rounded} max={100} aria-label={`${item.status === 'uploading' ? 'Uploading' : 'Converting'} ${item.name}`}
           className="flex-1 h-2 w-full rounded-full overflow-hidden accent-brand-700 [&::-webkit-progress-bar]:bg-neutral-200 dark:[&::-webkit-progress-bar]:bg-dark-elevated [&::-webkit-progress-value]:bg-brand-700 [&::-moz-progress-bar]:bg-brand-700"
         />
         <span className="text-xs font-mono text-ink-secondary dark:text-neutral-300 tabular-nums">{rounded}%</span>
@@ -116,7 +111,7 @@ function RowStatusDisplay({
       </div>
     );
   }
-  if (item.status === 'error' || optionError !== null) {
+  if (item.status === 'error' || isOversize || optionError !== null) {
     return (
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-dangerSoft text-status-danger dark:bg-red-950/40 dark:text-red-300 border border-red-500/30">Failed</span>
@@ -146,11 +141,14 @@ export default function QueueItemRow({
   onRemove,
 }: Readonly<QueueItemRowProps>) {
   const isBusy = item.status === 'uploading' || item.status === 'converting';
-  const isOversize = item.size > getEffectiveMaxFileSize();
+  const plan = useViewerPlan();
+  const isIdle = !isBusy && item.status !== 'completed';
+  // Read at render, not when the file was dropped: the plan of the session may answer after the drop.
+  const isOversize = isIdle && item.size > maxFileBytes(plan);
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
-  const optionError = !isBusy && item.status !== 'completed' ? resolveOptionError(item) : null;
-  const rowError = !isBusy && item.status !== 'completed' ? resolveRowError(item, optionError) : null;
+  const optionError = isIdle ? resolveOptionError(item) : null;
+  const rowError = isIdle ? resolveRowError(item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null) : null;
 
   const iconTileClass = isPdf
     ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40'
@@ -234,10 +232,9 @@ export default function QueueItemRow({
 
         <button
           type="button"
-          aria-label={`Remove ${item.name}`}
-          disabled={isBusy}
+          aria-label={`${isBusy ? 'Cancel' : 'Remove'} ${item.name}`}
           onClick={onRemove}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
         >
           <X className="w-4 h-4" />
         </button>

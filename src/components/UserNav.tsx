@@ -1,32 +1,16 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import Link from 'next/link';
-import type { User as AuthUser } from '@/lib/auth/types';
+import { useViewerAccount } from '@/hooks/useViewerPlan';
 
 interface UserNavProps {
   mobile?: boolean;
   onItemClick?: () => void;
 }
 
-interface AuthMeResponse {
-  success?: boolean;
-  user?: AuthUser;
-}
-
 export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNavProps>) {
-  const [user, setUser] = useState<AuthUser | null>(null);
-
-  useEffect(() => {
-    fetch('/api/auth/me')
-      .then((res) => (res.ok ? (res.json() as Promise<AuthMeResponse>) : null))
-      .then((data) => {
-        if (data?.success && data.user) {
-          setUser(data.user);
-        }
-      })
-      .catch(() => {});
-  }, []);
+  const user = useViewerAccount();
 
   if (mobile) {
     if (user) {

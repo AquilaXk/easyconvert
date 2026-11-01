@@ -19,12 +19,18 @@ import { lazySingleton } from './lazy-singleton';
 import { isProductionRuntime, resolveLocalStorageDir, resolveSigningSecret } from './storage-config';
 import { resolveDeclaredFormat } from './declared-format';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
+import { LARGEST_PLAN_FILE_BYTES, UPLOAD_PART_MAX_BYTES } from '../plan-limits';
+import { EXCLUSIVE_CREATE, uniqueTempPath } from './temp-file';
 
-/** Part numbers run from 1 to 10,000 and one part holds at most 5 GiB, as in the S3 multipart limits. */
+/** Part numbers run from 1 to 10,000, as in the S3 multipart limits. */
 export const MULTIPART_MAX_PARTS = 10_000;
-export const MULTIPART_MAX_PART_BYTES = 5 * 1024 * 1024 * 1024;
+/**
+ * A part reaches this application in one request, so it holds at most what one request may carry (entry 137), not the
+ * 5 GiB of an object store part: a larger body would be cut short by the framework before the route reads it.
+ */
+export const MULTIPART_MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
 /** The most one multipart upload may hold in all, and the cap of a session that declared no size. */
-export const MULTIPART_MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024;
+export const MULTIPART_MAX_TOTAL_BYTES = LARGEST_PLAN_FILE_BYTES;
 
 const PROVIDER_NAME = 'local-fs';
 const UPLOAD_ID_RANDOM_BYTES = 12;
@@ -32,9 +38,6 @@ const UPLOAD_ID_RANDOM_BYTES = 12;
 const UPLOAD_ID_PATTERN = /^up_\d{1,15}_[0-9a-f]{24}$/;
 const PART_FILE_PATTERN = /^part-(\d+)\.bin$/;
 const SESSION_FILE = 'session.json';
-const TEMP_NAME_RANDOM_BYTES = 6;
-/** Opens a file only when it does not exist yet, so two writers never share one temp file. */
-const EXCLUSIVE_CREATE = 'wx';
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -186,15 +189,24 @@ export class LocalFsStorage implements IObjectStorage {
     return this.readSession(this.sessionDirFor(uploadId));
   }
 
-  private async otherPartsBytes(sessionDir: string, partNumber: number): Promise<number> {
-    const sizes = await Promise.all(
+  private async partSizesIn(sessionDir: string): Promise<Array<{ partNumber: number; size: number }>> {
+    const parts = await Promise.all(
       (await fs.promises.readdir(sessionDir)).map(async (name) => {
         const match = PART_FILE_PATTERN.exec(name);
-        if (!match || Number(match[1]) === partNumber) return 0;
-        return (await fs.promises.stat(path.join(sessionDir, name))).size;
+        return match ? { partNumber: Number(match[1]), size: (await fs.promises.stat(path.join(sessionDir, name))).size } : undefined;
       })
     );
-    return sizes.reduce((sum, size) => sum + size, 0);
+    return parts.filter((part) => part !== undefined);
+  }
+
+  private async otherPartsBytes(sessionDir: string, partNumber: number): Promise<number> {
+    return (await this.partSizesIn(sessionDir)).reduce((sum, part) => (part.partNumber === partNumber ? sum : sum + part.size), 0);
+  }
+
+  /** The stored parts of the session `uploadId`, by number and size; undefined when the id names no session. */
+  async listPartSizes(uploadId: string): Promise<Array<{ partNumber: number; size: number }> | undefined> {
+    if (!(await this.getMultipartSession(uploadId))) return undefined;
+    return this.partSizesIn(this.sessionDirFor(uploadId));
   }
 
   private toNodeReadable(stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>): NodeJS.ReadableStream {
@@ -211,7 +223,7 @@ export class LocalFsStorage implements IObjectStorage {
   ): Promise<StoredObjectMetadata> {
     this.ensureDirectories();
     const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempPath = `${binPath}.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`;
+    const tempPath = uniqueTempPath(binPath, 'tmp');
 
     const nodeReadable = this.toNodeReadable(stream);
     const hasher = crypto.createHash('sha256');
@@ -361,20 +373,22 @@ export class LocalFsStorage implements IObjectStorage {
     return session;
   }
 
+  /** Stores part `partNumber` of the session `uploadId`, at most `maxPartBytes` and what the declared total leaves after the other parts. */
   async savePartStream(
     uploadId: string,
     partNumber: number,
-    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>
-  ): Promise<CompletedPart> {
+    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+    maxPartBytes: number = MULTIPART_MAX_PART_BYTES
+  ): Promise<Required<CompletedPart>> {
     const sessionDir = this.sessionDirFor(uploadId);
     assertPartNumber(partNumber);
     const session = await this.readSession(sessionDir);
     if (!session) throw noSuchUpload();
     const declaredTotal = session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES;
-    const limit = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
+    const limit = Math.min(maxPartBytes, multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber)));
 
     const partPath = path.join(sessionDir, `part-${partNumber}.bin`);
-    const tempPartPath = `${partPath}.tmp.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const tempPartPath = uniqueTempPath(partPath, 'tmp');
     const nodeReadable = this.toNodeReadable(stream);
     const hasher = crypto.createHash('sha256');
     let partSize = 0;
@@ -516,7 +530,7 @@ export class LocalFsStorage implements IObjectStorage {
     const filename = session.metadata?.filename || path.basename(key) || 'download.bin';
 
     const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempCombined = `${binPath}.comb.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const tempCombined = uniqueTempPath(binPath, 'comb');
     const writeCombined = fs.createWriteStream(tempCombined, { flags: EXCLUSIVE_CREATE });
     const overallHasher = crypto.createHash('sha256');
     let totalBytes: number;

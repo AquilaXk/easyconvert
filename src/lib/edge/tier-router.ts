@@ -15,6 +15,7 @@ import { isAudioStreamPair, isStreamableAudioPair, type RawPcmOptions } from './
 import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
 import { EdgeUnsupportedError } from './workers/worker-errors';
+import { OPFS_MAX_FILE_BYTES } from './opfs/limits';
 
 export type ConversionTier = 'L0' | 'L1' | 'L1A' | 'L2' | 'L3' | 'L4';
 
@@ -537,6 +538,13 @@ function serverTierBecauseEdgeCannotRead(sourceFormat: string): TierResolution {
   };
 }
 
+function largeFileCloudReason(opfsAvailable: boolean, fitsOpfs: boolean): string {
+  if (!fitsOpfs) return 'File is larger than the browser can stream through OPFS';
+  return opfsAvailable
+    ? 'Format conversion requires cloud serverless streaming engine'
+    : 'Large file exceeds client RAM and OPFS is unavailable in this browser';
+}
+
 /**
  * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
  */
@@ -563,7 +571,8 @@ export function resolveConversionTier(
   // 2. High-volume streaming file (> 100 MB)
   const isLargeFile = fileSize > 100 * 1024 * 1024;
   const opfsAvailable = capabilities?.hasOpfsSyncAccess ?? checkOpfsSupport();
-  const isOpfsEligible = isLargeFile && opfsAvailable && isOpfsStreamingSupported(src, tgt, options);
+  const fitsOpfs = fileSize <= OPFS_MAX_FILE_BYTES;
+  const isOpfsEligible = isLargeFile && fitsOpfs && opfsAvailable && isOpfsStreamingSupported(src, tgt, options);
 
   if (isLargeFile) {
     if (isOpfsEligible) {
@@ -578,9 +587,7 @@ export function resolveConversionTier(
       tier: 'L4',
       tierName: 'Cloud (Zero-Retention)',
       isClientEdge: false,
-      reason: opfsAvailable
-        ? 'Format conversion requires cloud serverless streaming engine'
-        : 'Large file exceeds client RAM and OPFS is unavailable in this browser',
+      reason: largeFileCloudReason(opfsAvailable, fitsOpfs),
     };
   }
 

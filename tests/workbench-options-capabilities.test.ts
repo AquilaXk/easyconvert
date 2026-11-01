@@ -34,6 +34,8 @@ import {
   type QueueMutationContext,
 } from '../src/hooks/useClientQueue';
 import * as clientConverter from '../src/lib/client-converter';
+import { fileTooLargeMessage } from '../src/lib/plan-limits';
+import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import type { ConversionOptions, ConversionQueueItem } from '../src/lib/types';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
 
@@ -95,6 +97,7 @@ function buildTestQueueContext(initialItems: ConversionQueueItem[]) {
   const mountedRef = { current: true };
   const generationRef = { current: new Map<string, number>() };
   const inFlightIdsRef = { current: new Set<string>() };
+  const abortersRef = { current: new Map<string, AbortController>() };
   const blobUrlsRef = { current: new Set<string>() };
   const timersRef = { current: new Set<ReturnType<typeof setTimeout>>() };
   const batchGenRef = { current: 0 };
@@ -106,6 +109,7 @@ function buildTestQueueContext(initialItems: ConversionQueueItem[]) {
     queueRef,
     generationRef,
     inFlightIdsRef,
+    abortersRef,
     blobUrlsRef,
     timersRef,
     batchGenRef,
@@ -672,7 +676,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       )
     ).toBe(false);
 
-    const maxBytes = clientConverter.getEffectiveMaxFileSize();
+    const maxBytes = getViewerMaxFileBytes();
     const noop = () => undefined;
     const rowNoops = {
       isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
@@ -702,7 +706,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       createElement(QueueItemRow, {
         item: makeItem({
           id: 'over-1', size: maxBytes + 1024, targetFormat: 'webm',
-          status: 'error', error: 'File exceeds the 100 MB real-time conversion limit.',
+          status: 'error', error: fileTooLargeMessage('anonymous', maxBytes + 1024),
         }),
         ...rowNoops,
       })
@@ -733,7 +737,7 @@ describe('Workbench media, document, and tabular capability model', () => {
         sourceFormat: 'mp4',
         targetFormat: '',
         status: 'error',
-        error: 'File exceeds the 100 MB real-time conversion limit.',
+        error: fileTooLargeMessage('anonymous', maxBytes + 10),
       }),
     ]);
 
@@ -879,6 +883,43 @@ describe('Workbench media, document, and tabular capability model', () => {
       expect(pwHarness.ctx.queueRef.current[0].status).toBe('ready');
       expect(pwHarness.ctx.queueRef.current[0].error).toBeUndefined();
       expect(pwHarness.ctx.queueRef.current[0].options).toEqual({ password: 'Secret123' });
+    } finally {
+      execSpy.mockRestore();
+    }
+  });
+});
+
+describe('removing an item that is on its way to the server', () => {
+  it('cancels the conversion of that item only, and clearing the queue cancels every one', () => {
+    const harness = buildTestQueueContext([makeItem({ id: 'a', status: 'uploading' }), makeItem({ id: 'b', status: 'converting' })]);
+    const first = new AbortController();
+    const second = new AbortController();
+    harness.ctx.abortersRef.current.set('a', first);
+    harness.ctx.abortersRef.current.set('b', second);
+
+    harness.mutators.handleRemoveItem('a');
+    expect(first.signal.aborted).toBe(true);
+    expect(second.signal.aborted).toBe(false);
+    expect([...harness.ctx.abortersRef.current.keys()]).toEqual(['b']);
+    expect(harness.ctx.queueRef.current.map((i) => i.id)).toEqual(['b']);
+
+    harness.mutators.handleClearAll();
+    expect(second.signal.aborted).toBe(true);
+    expect(harness.ctx.abortersRef.current.size).toBe(0);
+    expect(harness.ctx.queueRef.current).toEqual([]);
+  });
+
+  it('passes the cancellation of a conversion to the converter and releases it when the conversion ends', async () => {
+    const harness = buildTestQueueContext([makeItem({ id: 'c', status: 'ready', targetFormat: 'webm' })]);
+    let seen: AbortSignal | undefined;
+    const execSpy = vi.spyOn(clientConverter, 'executeItemConversion').mockImplementation(async (_item, _callbacks, signal) => {
+      seen = signal;
+      expect(harness.ctx.abortersRef.current.has('c')).toBe(true);
+    });
+    try {
+      await harness.runners.convertSingleItem('c');
+      expect(seen?.aborted).toBe(false);
+      expect(harness.ctx.abortersRef.current.size).toBe(0);
     } finally {
       execSpy.mockRestore();
     }

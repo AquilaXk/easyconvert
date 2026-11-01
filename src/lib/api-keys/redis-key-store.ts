@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
+import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { UserTier } from '../auth/types';
 import { KeyStore, TIER_LIMITS, ANONYMOUS_DAILY_LIMIT, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
 import type {
@@ -309,7 +310,7 @@ export class RedisKeyStore extends KeyStore {
 
     if (this.redisClient) {
       try {
-        const isAnonymous = userId.startsWith('anon:');
+        const isAnonymous = isAnonymousUserId(userId);
         const user = isAnonymous ? null : await redisUserStore.findById(userId);
         const tier: UserTier = user?.tier || 'free';
         const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
@@ -353,7 +354,7 @@ export class RedisKeyStore extends KeyStore {
     }
     this.cleanExpiredReservations();
     this.ensureInitialized();
-    const isAnonymous = userId.startsWith('anon:');
+    const isAnonymous = isAnonymousUserId(userId);
     const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
@@ -427,7 +428,7 @@ export class RedisKeyStore extends KeyStore {
     this.cleanExpiredReservations();
     this.ensureInitialized();
 
-    const isAnonymous = userId.startsWith('anon:');
+    const isAnonymous = isAnonymousUserId(userId);
     const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];

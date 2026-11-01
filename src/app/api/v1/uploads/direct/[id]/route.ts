@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { storageProvider } from '@/lib/storage';
+import { forgetUploadParts } from '@/lib/storage/part-admission';
 
 export const dynamic = 'force-dynamic';
 
@@ -83,6 +84,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   } catch (err: unknown) {
     return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
   }
+  forgetUploadParts(uploadId);
   if (!aborted) {
     return createProblemDetailsResponse(
       404,

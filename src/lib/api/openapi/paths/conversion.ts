@@ -18,12 +18,17 @@ import {
   CLIENT_CLOSED_DESCRIPTION,
   CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
+  DECODE_LIMIT_DESCRIPTION,
+  LENGTH_REQUIRED_DESCRIPTION,
+  PLAN_FILE_LIMIT_DESCRIPTION,
+  SINGLE_REQUEST_LIMIT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).${PDFA_ENGINE_NOTE}`;
-const PAYLOAD_LIMIT_DESCRIPTION =
-  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows (quota reservation rolled back).';
+/** A file sent in the request: one request carries at most 64 MiB, so the plan limit is reached only by a stored file. */
+const REQUEST_PAYLOAD_LIMIT_DESCRIPTION = `${SINGLE_REQUEST_LIMIT_DESCRIPTION} ${DECODE_LIMIT_DESCRIPTION} The quota reservation is rolled back.`;
+const STORED_PAYLOAD_LIMIT_DESCRIPTION = `${PLAN_FILE_LIMIT_DESCRIPTION} Or: ${REQUEST_PAYLOAD_LIMIT_DESCRIPTION}`;
 
 /** Conversion, archive inspection, job, and format catalog operations. */
 export const conversionPaths = {
@@ -90,7 +95,8 @@ export const conversionPaths = {
         '400': createProblemResponse('Bad request or missing required parameters.'),
         '401': createProblemResponse('Unauthorized: API key or session required.'),
         '403': createProblemResponse('Forbidden: Insufficient scope or quota exhausted.'),
-        '413': createProblemResponse(PAYLOAD_LIMIT_DESCRIPTION),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
+        '413': createProblemResponse(STORED_PAYLOAD_LIMIT_DESCRIPTION),
         '422': createProblemResponse('Unprocessable Entity: Header encrypted, missing volume, or invalid archive.'),
         '500': createProblemResponse('Internal server error.'),
       },
@@ -130,7 +136,8 @@ export const conversionPaths = {
         '422': createPdfaProblemResponse(
           `An idempotency key was reused with a different request payload or parameters, or the document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`
         ),
-        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
+        '413': createProblemResponse(`${REQUEST_PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
@@ -181,7 +188,7 @@ export const conversionPaths = {
                 file: {
                   type: 'string',
                   format: 'binary',
-                  description: 'Source input file binary (up to 500 MB).',
+                  description: 'Source input file binary, up to 32 MiB in the request. A larger file is uploaded through `/api/v1/uploads` and named by `storageKey`.',
                 },
                 targetFormat: {
                   type: 'string',
@@ -241,6 +248,7 @@ export const conversionPaths = {
         '403': createProblemResponse('Access denied due to IP address or missing "convert:write" scope.'),
         '404': createProblemResponse('Storage object not found, or not usable by the caller as an input.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '422': createProblemResponse(
           'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), or an idempotency key was reused with a different request payload.'
         ),

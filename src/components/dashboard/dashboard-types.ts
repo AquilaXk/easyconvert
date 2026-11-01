@@ -41,13 +41,7 @@ export function formatCountdown(seconds: number): string {
   return `${minutes}m ${secs < 10 ? '0' : ''}${secs}s`;
 }
 
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const base = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const index = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(base)));
-  return `${Number.parseFloat((bytes / Math.pow(base, index)).toFixed(1))} ${sizes[index]}`;
-}
+export { formatBytes } from '@/lib/format-bytes';
 
 export function extractApiError(payload: unknown, fallback: string): string {
   if (payload && typeof payload === 'object') {

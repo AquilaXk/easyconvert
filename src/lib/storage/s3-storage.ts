@@ -29,6 +29,8 @@ import {
   resolveSigningSecret,
 } from './storage-config';
 import { presignSigV4QueryUrl, verifySigV4QueryUrl } from './sigv4-presigner';
+import { multipartUploadKey } from './key-namespace';
+import { EXCLUSIVE_CREATE, uniqueTempPath } from './temp-file';
 
 export * from './oci-storage';
 
@@ -47,6 +49,13 @@ interface S3MultipartSession {
 }
 
 import { extendStoredExpiry, globalSharedObjects } from './shared-store';
+
+/** The bytes of the stored parts of `session` other than part `partNumber`. */
+function storedBytesBesides(session: S3MultipartSession, partNumber: number): number {
+  let bytes = 0;
+  for (const [number, part] of session.parts) if (number !== partNumber) bytes += part.size;
+  return bytes;
+}
 
 /**
  * Enterprise Zero-Heap S3 / R2 Object Storage Service.
@@ -104,9 +113,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     const randomHex = crypto.randomBytes(8).toString('hex');
     const uploadId = `oci_mp_s3_${timestamp}_${randomHex}`;
     const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = ownerUserId
-      ? `conversions/${ownerUserId}/${timestamp}_${randomHex}_${sanitizedFilename}`
-      : `uploads/${timestamp}_${randomHex}_${sanitizedFilename}`;
+    const key = multipartUploadKey(ownerUserId, `${timestamp}_${randomHex}_${sanitizedFilename}`);
 
     const resolvedPartSize = partSize && partSize > 0 ? partSize : this.DEFAULT_PART_SIZE;
     const totalParts = Math.max(1, Math.ceil(totalSize / resolvedPartSize));
@@ -216,14 +223,14 @@ export class S3ObjectStorageService implements IStorageBackend {
 
     const partFileName = `part-${partNumber}.bin`;
     const partFilePath = path.join(session.diskDir, partFileName);
-    const tempPartFilePath = `${partFilePath}.tmp`;
+    const tempPartFilePath = uniqueTempPath(partFilePath, 'tmp');
 
     const nodeStream =
       'pipe' in (stream as any) && typeof (stream as any).pipe === 'function'
         ? (stream as NodeJS.ReadableStream)
         : Readable.fromWeb(stream as any);
 
-    const outStream = fs.createWriteStream(tempPartFilePath);
+    const outStream = fs.createWriteStream(tempPartFilePath, { flags: EXCLUSIVE_CREATE });
     const hasher = crypto.createHash('sha256');
     let partSize = 0;
     let limitExceededMessage: string | null = null;
@@ -268,6 +275,12 @@ export class S3ObjectStorageService implements IStorageBackend {
       throw error;
     }
 
+    // Other parts may have landed while this one streamed, so the session's sum is checked again where it commits:
+    // reading the stored parts and renaming take no await between them, so no other part commits in between.
+    if (maxTotalBytes !== undefined && storedBytesBesides(session, partNumber) + partSize > maxTotalBytes) {
+      fs.rmSync(tempPartFilePath, { force: true });
+      throw Object.assign(new Error(`Total upload size exceeds maximum allowed size of ${maxTotalBytes} bytes.`), { statusCode: 413 });
+    }
     fs.renameSync(tempPartFilePath, partFilePath);
 
     const hashHex = hasher.digest('hex').slice(0, 32);

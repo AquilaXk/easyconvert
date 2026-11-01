@@ -26,6 +26,8 @@ import {
   getMaxInMemoryBytes,
 } from './errors';
 import { PART_URL_TTL_SECONDS } from './presign-limits';
+import { multipartUploadKey } from './key-namespace';
+import { MAX_UPLOAD_ID_LENGTH } from './upload-id';
 import { buildPutOptions, isObjectExpired, isValidContentType, limitFilename, toStoredObjectMetadata } from './object-attributes';
 import type {
   IStorageBackend,
@@ -71,7 +73,6 @@ export const REMOTE_STAGED_FILE_MAX_AGE_MS = 6 * HOUR_MS;
 export const REMOTE_DELETE_BY_PREFIX_MAX_OBJECTS = 10_000;
 const DELETE_CONCURRENCY = 8;
 const UPLOAD_TOKEN_VERSION = 'v1';
-const MAX_UPLOAD_TOKEN_LENGTH = 4096;
 const MAX_FILENAME_KEY_LENGTH = 200;
 const STAGED_FILE_SUFFIX = '.staged';
 const STAGED_DIR_MODE = 0o700;
@@ -149,7 +150,7 @@ export class RemoteStorageBackend implements IStorageBackend {
 
   /** The session behind an upload id, or undefined when the token is malformed, forged, or expired. */
   private decodeToken(uploadId: string): UploadToken | undefined {
-    if (typeof uploadId !== 'string' || uploadId.length > MAX_UPLOAD_TOKEN_LENGTH) return undefined;
+    if (typeof uploadId !== 'string' || uploadId.length > MAX_UPLOAD_ID_LENGTH) return undefined;
     const pieces = uploadId.split('.');
     if (pieces.length !== 3 || pieces[0] !== UPLOAD_TOKEN_VERSION) return undefined;
     const expected = Buffer.from(this.sign(pieces[1]), 'utf-8');
@@ -253,9 +254,7 @@ export class RemoteStorageBackend implements IStorageBackend {
     const now = Date.now();
     const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, MAX_FILENAME_KEY_LENGTH);
     const unique = `${now}_${crypto.randomBytes(8).toString('hex')}`;
-    const key = ownerUserId
-      ? `conversions/${ownerUserId}/${unique}_${safeName}`
-      : `uploads/${unique}_${safeName}`;
+    const key = multipartUploadKey(ownerUserId, `${unique}_${safeName}`);
 
     const rawUploadId = await this.client.createMultipartUpload(
       key,

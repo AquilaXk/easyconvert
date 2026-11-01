@@ -2,15 +2,27 @@ import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { fetch as undiciFetch } from 'undici';
 import {
-  MAX_STREAM_BYTES,
   MAX_REDIRECTS,
   validateUrlForSsrf,
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { formatBytes } from '@/lib/format-bytes';
+import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * The 413 for a file past the limit of an import from a link. The limit is its own and smaller than the plan limit,
+ * because the server reads the whole file before the browser has it, so the answer names both and the way to use the larger.
+ */
+function linkImportTooLarge(caller: PlanCaller | undefined): NextResponse {
+  const error =
+    `A file imported from a link may be at most ${formatBytes(URL_IMPORT_MAX_BYTES)}. ` +
+    `Download it and add it from your device to convert a file of up to ${formatBytes(maxFileBytes(planOfCaller(caller)))}.`;
+  return NextResponse.json({ success: false, error }, { status: 413 });
+}
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/fetch-url';
@@ -40,6 +52,11 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       await rollbackQuota(reservationId);
     }
     return NextResponse.json({ success: false, error }, { status });
+  };
+
+  const refuseTooLarge = async () => {
+    if (reservationId) await rollbackQuota(reservationId);
+    return linkImportTooLarge(auth.user);
   };
 
   const ssrfAgent = createSsrfSafeAgent();
@@ -150,11 +167,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const contentLengthHeader = res.headers.get('content-length');
     if (contentLengthHeader) {
       const contentLength = parseInt(contentLengthHeader, 10);
-      if (!isNaN(contentLength) && contentLength > MAX_STREAM_BYTES) {
-        return NextResponse.json(
-          { success: false, error: 'File size exceeds 100MB limit.' },
-          { status: 413 }
-        );
+      if (!isNaN(contentLength) && contentLength > URL_IMPORT_MAX_BYTES) {
+        return await refuseTooLarge();
       }
     }
 
@@ -162,7 +176,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Empty response body from remote server' }, { status: 502 });
     }
 
-    // Stream chunks with strict 100MB limit counter
+    // Stream chunks with a strict byte counter
     const reader = res.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
@@ -173,12 +187,9 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         if (done) break;
         if (value) {
           totalBytes += value.length;
-          if (totalBytes > MAX_STREAM_BYTES) {
+          if (totalBytes > URL_IMPORT_MAX_BYTES) {
             await reader.cancel();
-            return NextResponse.json(
-              { success: false, error: 'File size exceeds 100MB limit.' },
-              { status: 413 }
-            );
+            return await refuseTooLarge();
           }
           chunks.push(value);
         }

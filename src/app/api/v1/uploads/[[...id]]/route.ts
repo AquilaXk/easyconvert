@@ -24,8 +24,13 @@ import {
 } from '@/lib/storage/tus-engine';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
+import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
+import type { User } from '@/lib/auth/types';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
+import { declaredPartBytes, partFailureResponse, systemErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -34,7 +39,6 @@ import { DELETE as directDeleteHandler } from '../direct/[id]/route';
 export const dynamic = 'force-dynamic';
 
 const TUS_RESUMABLE_VERSION = '1.0.0';
-const TUS_MAX_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
 
 function checkTusVersion(req: NextRequest): NextResponse | null {
   const clientVersion = req.headers.get('tus-resumable');
@@ -46,7 +50,6 @@ function checkTusVersion(req: NextRequest): NextResponse | null {
 }
 
 const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB
-const UPLOAD_SESSION_NOT_FOUND = 'Upload session not found or has expired.';
 /** Part URLs handed out with an initiate response: at most this many parts, each good for 15 minutes. */
 const MAX_PREGENERATED_PART_URLS = 100;
 const LOCAL_KEY_RANDOM_BYTES = 8;
@@ -142,6 +145,8 @@ async function handlePartUpload(
     );
   }
 
+  const lengthProblem = partBodyProblem(req, instanceUri);
+  if (lengthProblem) return lengthProblem;
   if (!req.body) {
     return createProblemDetailsResponse(400, 'Empty part payload body.', instanceUri);
   }
@@ -155,19 +160,40 @@ async function handlePartUpload(
       instanceUri
     );
   }
-  if (!(await findOwnLocalSession(uploadId, userId))) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+  const session = await findOwnLocalSession(uploadId, userId);
+  if (!session) {
+    return uploadSessionNotFoundResponse(instanceUri);
   }
 
-  const part = await objectStorage.savePartStream(uploadId, partNumber, req.body);
+  // Parts sent at once are held together to the declared size, as on the other part routes (entry 137).
+  const part = await receivePart(
+    localPartStore(objectStorage),
+    {
+      uploadId,
+      partNumber,
+      declaredBytes: declaredPartBytes(req.headers),
+      totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
+      maxPartBytes: MULTIPART_MAX_PART_BYTES,
+    },
+    req.body
+  );
   return NextResponse.json({ success: true, part });
+}
+
+/** The part operations of local storage in the shape the part ledger takes. */
+function localPartStore(storage: LocalFsStorage): PartStore {
+  return {
+    getUploadedParts: (uploadId) => storage.listPartSizes(uploadId),
+    uploadPartStream: (uploadId, partNumber, stream, maxPartBytes) => storage.savePartStream(uploadId, partNumber, stream, maxPartBytes),
+  };
 }
 
 async function handleInitiateUpload(
   req: NextRequest,
   instanceUri: string,
-  userId: string
+  user: User
 ): Promise<Response> {
+  const userId = user.id;
   const body: InitiateUploadBody = await req.json().catch(() => ({}));
   const { filename, mimeType = 'application/octet-stream', totalSize } = body;
 
@@ -179,13 +205,8 @@ async function handleInitiateUpload(
     return createProblemDetailsResponse(400, 'Missing or invalid "totalSize" in request body.', instanceUri);
   }
 
-  if (totalSize > MULTIPART_MAX_TOTAL_BYTES) {
-    return createProblemDetailsResponse(
-      413,
-      `totalSize ${totalSize} exceeds maximum allowed upload size ${MULTIPART_MAX_TOTAL_BYTES} bytes.`,
-      instanceUri
-    );
-  }
+  const tooLarge = fileSizeLimitProblem(user, totalSize, instanceUri);
+  if (tooLarge) return tooLarge;
 
   const chosenPartSize = computeChosenPartSize(totalSize, body.partSize);
   const totalParts = Math.max(1, Math.ceil(totalSize / chosenPartSize));
@@ -262,7 +283,7 @@ async function completeRemoteUpload(
   }
   const session = await storageProvider.getUploadSession?.(uploadId);
   if (session?.ownerUserId !== userId) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   if (key !== undefined && key !== session.key) {
     return createProblemDetailsResponse(400, '"key" does not belong to this upload session.', instanceUri);
@@ -305,13 +326,14 @@ async function completeLocalUpload(
   }
   const session = await findOwnLocalSession(uploadId, userId);
   if (!session) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   if (expectedSize !== undefined && expectedSize !== session.totalSize) {
     return createProblemDetailsResponse(400, '"expectedSize" does not match the size declared at initiation.', instanceUri);
   }
 
   const completedObject = await objectStorage.completeMultipart(session.key, session.uploadId, parts);
+  forgetUploadParts(session.uploadId);
 
   return NextResponse.json({
     success: true,
@@ -348,7 +370,7 @@ async function handleAbortUpload(
   if (storageProvider.kind === 'remote') {
     const owner = await storageProvider.getUploadOwner?.(uploadId);
     if (!owner || owner !== userId) {
-      return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+      return uploadSessionNotFoundResponse(instanceUri);
     }
     const abortedRemote = (await storageProvider.abortMultipartUpload?.(uploadId)) ?? false;
     return NextResponse.json({ success: true, aborted: abortedRemote });
@@ -356,39 +378,30 @@ async function handleAbortUpload(
 
   const session = await findOwnLocalSession(uploadId, userId);
   if (!session) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   const aborted = await objectStorage.abortMultipart(session.key, session.uploadId);
+  forgetUploadParts(session.uploadId);
   return NextResponse.json({ success: true, aborted });
 }
 
-function uploadActionErrorResponse(err: unknown, instanceUri: string): Response {
+/** The one answer to an error of an upload action: a part fails like a part on every route, any other action by its own rules. */
+function uploadActionErrorResponse(err: unknown, instanceUri: string, action: string): Response {
+  if (action === 'part') return partFailureResponse(err, instanceUri);
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }
-  const storageProblem = storageErrorResponse(err, instanceUri);
+  const storageProblem = storageErrorResponse(err, instanceUri) ?? systemErrorResponse(err, instanceUri);
   if (storageProblem) return storageProblem;
-  if (isSystemError(err)) {
-    // A session removed under a running request is a missing session, not a server fault.
-    if (err.code === 'ENOENT') return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
-    console.error(`[uploads] ${err.code} ${err.syscall}: ${err.message}`);
-    return createProblemDetailsResponse(500, 'Upload storage error', instanceUri, 'Internal Server Error');
-  }
   const message = err instanceof Error && err.message ? err.message : 'Error executing upload operation';
   return createProblemDetailsResponse(400, message, instanceUri);
-}
-
-/** An error from the operating system (it carries an errno code and syscall); its message names server paths. */
-function isSystemError(err: unknown): err is NodeJS.ErrnoException & { code: string; syscall: string } {
-  const { code, syscall } = (err ?? {}) as NodeJS.ErrnoException;
-  return err instanceof Error && typeof code === 'string' && typeof syscall === 'string';
 }
 
 export function OPTIONS() {
   const headers = createTusHeaders({
     'Tus-Version': TUS_RESUMABLE_VERSION,
     'Tus-Extension': 'creation,creation-with-upload,termination,expiration,checksum',
-    'Tus-Max-Size': String(TUS_MAX_SIZE),
+    'Tus-Max-Size': String(LARGEST_PLAN_FILE_BYTES),
     'Tus-Checksum-Algorithm': 'sha256',
     'Access-Control-Allow-Methods': 'POST, GET, HEAD, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers':
@@ -453,7 +466,7 @@ export const POST = admittingNewFiles(async function POST(
         case 'part':
           return await handlePartUpload(req, searchParams, instanceUri, auth.user.id);
         case 'initiate':
-          return await handleInitiateUpload(req, instanceUri, auth.user.id);
+          return await handleInitiateUpload(req, instanceUri, auth.user);
         case 'complete':
           return await handleCompleteUpload(req, instanceUri, auth.user.id);
         case 'abort':
@@ -462,7 +475,7 @@ export const POST = admittingNewFiles(async function POST(
           return createProblemDetailsResponse(400, `Unsupported action "${action}".`, instanceUri);
       }
     } catch (err: unknown) {
-      return uploadActionErrorResponse(err, instanceUri);
+      return uploadActionErrorResponse(err, instanceUri, action);
     }
   }
 
@@ -484,16 +497,8 @@ export const POST = admittingNewFiles(async function POST(
     });
   }
 
-  if (uploadLength > TUS_MAX_SIZE) {
-    return createProblemDetailsResponse(
-      413,
-      `Upload-Length exceeds maximum size of ${TUS_MAX_SIZE} bytes.`,
-      instanceUri,
-      undefined,
-      undefined,
-      { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
-    );
-  }
+  const tooLarge = fileSizeLimitProblem(auth.user, uploadLength, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+  if (tooLarge) return tooLarge;
 
   const metadataHeader = req.headers.get('upload-metadata') || undefined;
 

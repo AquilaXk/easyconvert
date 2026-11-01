@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { ChevronDown, Upload, HardDrive, Globe } from 'lucide-react';
-import { getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { fileLimitCopy } from '@/lib/plan-limits';
+import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 
 interface HeroDropzoneCardProps {
@@ -24,8 +25,6 @@ const POPULAR_PAIRS: readonly { label: string; href: string }[] = [
   { label: 'EPUB to PDF', href: '/epub-to-pdf' },
 ];
 
-const TWO_GIB = 2 * 1024 * 1024 * 1024;
-
 export default function HeroDropzoneCard({
   isDragOver,
   onDragOver,
@@ -35,12 +34,8 @@ export default function HeroDropzoneCard({
   onOpenUrlModal,
 }: Readonly<HeroDropzoneCardProps>) {
   const [showSourceMenu, setShowSourceMenu] = useState(false);
-  const [maxSizeCopy, setMaxSizeCopy] = useState('Up to 2 GB (OPFS)');
+  const plan = useViewerPlan();
   const splitButtonRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setMaxSizeCopy(getEffectiveMaxFileSize() >= TWO_GIB ? 'Up to 2 GB' : 'Up to 100 MB');
-  }, []);
 
   useEffect(() => {
     if (!showSourceMenu) return;
@@ -154,7 +149,7 @@ export default function HeroDropzoneCard({
         <div className="mt-5 pt-4 border-t border-neutral-border/70 dark:border-dark-border text-xs text-ink-muted dark:text-dark-muted flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
           <span>{REGISTRY_STATS.formatCount} Formats Supported</span>
           <span aria-hidden="true">&middot;</span>
-          <span>{maxSizeCopy}</span>
+          <span>{fileLimitCopy(plan)}</span>
           <span aria-hidden="true">&middot;</span>
           <span>Encrypted &amp; Ephemeral</span>
         </div>

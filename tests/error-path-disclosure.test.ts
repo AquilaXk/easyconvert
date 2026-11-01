@@ -155,7 +155,7 @@ describe('Security: Error Path Disclosure Prevention', () => {
         'Content-Type': 'application/json',
         Cookie: `easyconvert_session=${sessionToken}`,
       },
-      body: JSON.stringify({ filename: 'assembly_leak.bin', totalSize: 2048 }),
+      body: JSON.stringify({ filename: 'assembly_leak.bin', totalSize: 'chunk-data'.length }),
     });
     const initRes = await multipartPost(initReq);
     expect(initRes.status).toBe(200);
@@ -189,7 +189,7 @@ describe('Security: Error Path Disclosure Prevention', () => {
       body: JSON.stringify({ uploadId }),
     });
     const completeRes = await multipartPost(completeReq);
-    expect(completeRes.status).toBe(500);
+    expect(completeRes.status).toBe(503);
 
     const rawBody = await completeRes.text();
     expect(rawBody).not.toContain(part1Info.filePath);

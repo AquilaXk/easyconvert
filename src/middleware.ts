@@ -10,19 +10,26 @@ import {
   resolveClientIp,
   type ResolvedClientIp,
 } from '@/lib/security/client-ip';
+import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-limit';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
  * 1. Cross-Site Request Forgery (CSRF) Protection: Enforces strict Origin / Referer validation
  *    on cookie-authenticated state-changing requests (POST, PUT, PATCH, DELETE).
  * 2. Anonymous IP Edge Rate Limiting: Protective token bucket guard against burst abuse.
+ * 3. Request body size: a declared body over what the route takes is refused before the route reads it, and a body sent
+ *    without a length is counted as it arrives: a file route refuses its first byte, any other route takes 1 MiB.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_LENGTH_REQUIRED = 411;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
+const PROBLEM_PAYLOAD_TOO_LARGE = 'https://api.easyconvert.io/problems/payload-too-large';
+const PROBLEM_LENGTH_REQUIRED = 'https://api.easyconvert.io/problems/length-required';
 const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
 const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
 
@@ -125,6 +132,31 @@ function warnUnattributedOnce(): void {
   );
 }
 
+/** The problem answer for a body the route does not take, by its status. */
+function bodyProblem(status: number, detail: string, pathname: string): NextResponse {
+  if (status === HTTP_BAD_REQUEST) return problemResponse(HTTP_BAD_REQUEST, PROBLEM_BAD_REQUEST, 'Bad Request', detail, pathname);
+  if (status === HTTP_LENGTH_REQUIRED) return problemResponse(HTTP_LENGTH_REQUIRED, PROBLEM_LENGTH_REQUIRED, 'Length Required', detail, pathname);
+  return problemResponse(HTTP_PAYLOAD_TOO_LARGE, PROBLEM_PAYLOAD_TOO_LARGE, 'Payload Too Large', detail, pathname);
+}
+
+/**
+ * Reads a body sent without a length as it arrives, and refuses it once more than `count.countUpTo` bytes came; the route
+ * then reads the same bytes from the copy the framework keeps for it. The count decides the answer only: the framework
+ * keeps its copy of what arrived either way, up to its own body limit.
+ */
+async function countedBody(body: ReadableStream<Uint8Array>, count: CountedBody, pathname: string): Promise<NextResponse> {
+  const reader = body.getReader();
+  let received = 0;
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+    received += chunk.value.byteLength;
+    if (received > count.countUpTo) {
+      await reader.cancel();
+      return bodyProblem(count.status, count.detail, pathname);
+    }
+  }
+  return NextResponse.next();
+}
+
 function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean {
   try {
     const incomingUrl = new URL(incomingOrigin);
@@ -166,7 +198,7 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
   return false;
 }
 
-export function middleware(request: NextRequest) {
+export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
   // Only protect API routes
@@ -247,7 +279,13 @@ export function middleware(request: NextRequest) {
     );
   }
 
-  // 2. CSRF Protection for Cookie-Authenticated State Mutations
+  // 2. Body size: a malformed or oversize Content-Length is refused before any route reads the body. A route that takes
+  // files takes one request of a file (entry 137); every other route takes a small JSON or form body. A body without a
+  // length is counted as it arrives, after the CSRF check below.
+  const bodyCheck = requestBodyVerdict(request.nextUrl, request.headers);
+  if (bodyCheck && !('countUpTo' in bodyCheck)) return bodyProblem(bodyCheck.status, bodyCheck.detail, pathname);
+
+  // 3. CSRF Protection for Cookie-Authenticated State Mutations
   if (MUTATING_METHODS.has(request.method.toUpperCase())) {
     const hasSessionCookie =
       request.cookies.has('easyconvert_session') || request.cookies.has('session');
@@ -306,6 +344,7 @@ export function middleware(request: NextRequest) {
     }
   }
 
+  if (bodyCheck && request.body) return countedBody(request.body, bodyCheck, pathname);
   return NextResponse.next();
 }
 

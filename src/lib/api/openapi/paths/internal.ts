@@ -19,8 +19,14 @@ import {
   CLIENT_CLOSED_DESCRIPTION,
   CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
+  DECODE_LIMIT_DESCRIPTION,
+  LENGTH_REQUIRED_DESCRIPTION,
+  PLAN_FILE_LIMIT_DESCRIPTION,
+  WEB_SINGLE_REQUEST_LIMIT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
+import { formatBytes } from '@/lib/format-bytes';
+import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 
 /**
  * Routes that serve the web application. They are documented for completeness and
@@ -30,8 +36,7 @@ import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 const INTERNAL = { 'x-internal': true };
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).${PDFA_ENGINE_NOTE}`;
-const PAYLOAD_LIMIT_DESCRIPTION =
-  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
+const PAYLOAD_LIMIT_DESCRIPTION = `${WEB_SINGLE_REQUEST_LIMIT_DESCRIPTION} ${DECODE_LIMIT_DESCRIPTION}`;
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -255,6 +260,7 @@ export const internalPaths = {
             'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
           },
         },
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createErrorResponse('Conversion failed.'),
@@ -272,7 +278,7 @@ export const internalPaths = {
       operationId: 'convertBatchInternal',
       security: ANONYMOUS_OR_SCOPE('convert:write'),
       requestBody: multipartBody({
-        files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Up to 100 MB in total.' },
+        files: { type: 'array', items: { type: 'string', format: 'binary' }, description: `Up to ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total, the most one request carries.` },
         targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
         options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
       }, ['files']),
@@ -288,6 +294,7 @@ export const internalPaths = {
         },
         '401': createProblemResponse('Authentication required.'),
         '422': createPdfaProblemResponse(`The document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createErrorResponse('Conversion failed.'),
@@ -317,7 +324,7 @@ export const internalPaths = {
         '400': createErrorResponse('Missing or invalid URL, or the remote server returned 4xx.'),
         '401': createProblemResponse('Authentication required.'),
         '403': createErrorResponse('URL resolves to a private address.'),
-        '413': createErrorResponse('Remote file exceeds 100 MB.'),
+        '413': createErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.'),
         '502': createErrorResponse('Redirect failure, remote 5xx, or empty body.'),
       },
     },
@@ -389,6 +396,9 @@ export const internalPaths = {
         '400': createErrorResponse('Missing target format or invalid input.'),
         '401': createErrorResponse('Authentication required.'),
         '404': createErrorResponse('Storage object not found or not usable by the caller.'),
+        '409': createProblemResponse('A request with the same `Idempotency-Key` is still running; send it again after `Retry-After`.'),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
+        '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} Or: a file in the request (multipart \`file\` or \`inputBufferBase64\`) is over ${formatBytes(INLINE_JOB_PAYLOAD_MAX_BYTES)}; a larger file is uploaded through \`/api/storage/multipart\` and named by \`storageKey\`.`),
         '500': createErrorResponse('Enqueue failed.'),
       },
     },
@@ -473,15 +483,15 @@ export const internalPaths = {
       ...INTERNAL,
       summary: 'Legacy Multipart Upload',
       description:
-        'Web application upload flow selected by `action`: `initiate`, `chunk` (raw body with `x-upload-id` and `x-part-number`), `complete`, `abort`, or `presign`. Public clients use `/api/v1/uploads`.',
+        'Web application upload flow selected by `action`: `initiate` (JSON `filename`, `totalSize`, optional `mimeType` and `partSize` from 5 MiB to 64 MiB, and an optional `Idempotency-Key` header that makes it safe to send again), `chunk` (raw body of at most 64 MiB with `x-upload-id` and `x-part-number`, and a `Content-Length`; parts sent at once are held together to `totalSize`), `complete` (parts numbered 1, 2, 3 and so on, holding exactly `totalSize`, and an optional `Idempotency-Key`), `abort`, `discard` (JSON `key`: deletes a completed upload no job reads), or `presign` (no part link for an upload without an account). The browser sends a file over 64 MiB this way, then starts a job with `POST /api/queue/jobs` on the stored `key`; an upload no job reads is deleted after an hour. An anonymous visitor may use it: its session and its stored key are reached by their random id and key, and it may have 2 uploads open and declare 2 GiB a day. An `Idempotency-Key` is scoped to the account, or to the address bucket of an anonymous visitor. Public clients use `/api/v1/uploads`.',
       operationId: 'legacyMultipartUpload',
-      security: requireScope('convert:write'),
+      security: ANONYMOUS_OR_SCOPE('convert:write'),
       parameters: [
         {
           name: 'action',
           in: 'query',
           required: false,
-          schema: { type: 'string', enum: ['initiate', 'chunk', 'complete', 'abort', 'presign'], default: 'initiate' },
+          schema: { type: 'string', enum: ['initiate', 'chunk', 'complete', 'abort', 'discard', 'presign'], default: 'initiate' },
         },
       ],
       requestBody: {
@@ -495,8 +505,13 @@ export const internalPaths = {
         '200': createJsonResponse('Action result.', { success: { type: 'boolean' } }),
         '400': createProblemResponse('Unknown action or invalid input.'),
         '401': createProblemResponse('Authentication required.'),
-        '404': createProblemResponse('Upload not found or owned by another user.'),
-        '413': createProblemResponse('Part or total size exceeds the limit.'),
+        '403': createProblemResponse('`presign` of a part of an upload without an account.'),
+        '404': createProblemResponse('Upload not found, or not usable by the caller.'),
+        '409': createProblemResponse('`discard` of an upload a job reads, or a repeat of an `Idempotency-Key` that is still running.'),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
+        '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} Or: a part is over 64 MiB, or would bring the upload past its \`totalSize\` with the parts stored and on the way.`),
+        '429': createProblemResponse('No conversion could start for the caller now (the daily quota or the conversions in progress), or an anonymous visitor has 2 uploads open or has declared 2 GiB today.'),
+        '503': createProblemResponse('A part, a completion or an abort could not reach the store or the budget; send it again after `Retry-After`. Or: uploads without an account are off because no proxy is declared (`TRUSTED_PROXIES`).'),
       },
     },
   },

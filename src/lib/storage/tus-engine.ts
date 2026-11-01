@@ -9,7 +9,9 @@ import { localFsStorage } from './local-fs-storage';
 import { objectStorage, storageProvider } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
+import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
+import { multipartUploadKey } from './key-namespace';
 import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
 
 export class TusOffsetMismatchError extends Error {
@@ -411,7 +413,7 @@ export class TusEngine {
   private readonly tusDir: string;
   private readonly defaultTtlSeconds: number;
   private readonly lockManager = new SessionLockManager();
-  readonly maxUploadSize: number = 5 * 1024 * 1024 * 1024; // 5 GiB
+  readonly maxUploadSize: number = LARGEST_PLAN_FILE_BYTES;
 
   constructor(options?: { tusDir?: string; defaultTtlSeconds?: number }) {
     this.tusDir =
@@ -476,13 +478,9 @@ export class TusEngine {
     const now = Date.now();
     const expiresAt = now + (params.ttlSeconds || this.defaultTtlSeconds) * 1000;
 
-    // User namespace registration:
-    // If ownerUserId is provided, register under user conversions namespace, otherwise uploads
     const base = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '');
     const sanitizedFilename = base.length > 0 ? base : `upload-${id}.bin`;
-    const key = params.ownerUserId
-      ? `conversions/${params.ownerUserId}/${id}_${sanitizedFilename}`
-      : `uploads/${id}_${sanitizedFilename}`;
+    const key = multipartUploadKey(params.ownerUserId, `${id}_${sanitizedFilename}`);
 
     const session: TusSession = {
       id,

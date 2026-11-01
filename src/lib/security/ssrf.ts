@@ -2,7 +2,6 @@ import dns, { type LookupAddress } from 'node:dns';
 import net from 'node:net';
 import { Agent } from 'undici';
 
-export const MAX_STREAM_BYTES = 100 * 1024 * 1024; // 100MB limit
 export const MAX_REDIRECTS = 5;
 
 export function parseIpv4MappedIpv6(ip: string): string | null {
