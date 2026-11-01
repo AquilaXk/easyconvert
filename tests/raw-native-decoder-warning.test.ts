@@ -143,6 +143,18 @@ describe('what the decoder prints decides whether its image is developed', () =>
     ['a picture the size of a preview of its raw image', decodedTiff(WIDTH / 2, GOOD_ROWS / 2, GOOD_ROWS / 2), DNG_BYTES, /its raw image is not the size of the decoded picture/],
     ['a file that is no classic TIFF', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), bigTiff(), /the file is not a classic TIFF/],
     ['a DNG that lists no raw image', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), buildTiff(4096, [{ at: 8, entries: imageEntries([[200, 100]], { photometric: PHOTOMETRIC.yCbCr }) }]), /it lists no CFA or Linear Raw image/],
+    [
+      'a DNG with an entry through which the decoder reads a directory the check does not follow',
+      decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS),
+      buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]]), { tag: TAG.hasselblad, type: TYPE.long, values: [300] }] }]),
+      /it holds an entry through which the decoder reads a directory this check does not follow/,
+    ],
+    [
+      'a DNG whose ActiveArea runs backwards',
+      decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS),
+      buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]]), { tag: TAG.activeArea, type: TYPE.long, values: [100, 0, 50, 64], at: 300 }] }]),
+      /its ActiveArea is negative or wider or taller than 65535/,
+    ],
   ])('refuses the line for %s, saying why it could not be checked', async (_name, decoded, input, reason) => {
     const error = await convertWith(decoderStub('unchecked', decoded, '"$input: data corrupted at 3"'), input);
     expect(error).toBeInstanceOf(RawDecodeError);

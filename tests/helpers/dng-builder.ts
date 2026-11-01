@@ -17,9 +17,22 @@ export const TAG = {
   subIfds: 330,
   defaultScale: 50718,
   activeArea: 50829,
+  panasonicFlag: 1,
+  bitsPerSample: 258,
+  make: 271,
+  panasonicCameraIfd: 288,
+  exifIfd: 34665,
+  hasselblad: 50459,
+  dngVersion: 50706,
+  uniqueCameraModel: 50708,
+  dngPrivateData: 50740,
+  fujiTable: 0xf000,
+  fujiWidth: 0xf001,
+  fujiHeight: 0xf002,
+  fujiBitsPerSample: 0xf003,
 } as const;
-/** A RATIONAL entry lists its values as numerator and denominator pairs. */
-export const TYPE = { short: 3, long: 4, rational: 5, ifd: 13 } as const;
+/** A RATIONAL entry lists its values as numerator and denominator pairs; a BYTE or ASCII entry lists one byte for each value. */
+export const TYPE = { byte: 1, ascii: 2, short: 3, long: 4, rational: 5, ifd: 13 } as const;
 
 const TIFF_MAGIC = 42;
 const ENTRY_BYTES = 12;
@@ -45,7 +58,8 @@ export interface TiffDirectorySpec {
   next?: number;
 }
 
-const valueBytes = (type: number): number => (type === TYPE.short ? 2 : 4);
+const VALUE_BYTES: Readonly<Record<number, number>> = { [TYPE.byte]: 1, [TYPE.ascii]: 1, [TYPE.short]: 2 };
+const valueBytes = (type: number): number => VALUE_BYTES[type] ?? 4;
 const numbersPerValue = (type: number): number => (type === TYPE.rational ? 2 : 1);
 
 /** A file of `size` bytes holding `directories`; the header points at `first`, by default the first directory. */
@@ -55,7 +69,11 @@ export function buildTiff(size: number, directories: TiffDirectorySpec[], option
   const u16 = (value: number, at: number) => (little ? file.writeUInt16LE(value, at) : file.writeUInt16BE(value, at));
   const u32 = (value: number, at: number) => (little ? file.writeUInt32LE(value, at) : file.writeUInt32BE(value, at));
   const write = (type: number, values: number[], at: number) =>
-    values.forEach((value, index) => (type === TYPE.short ? u16(value, at + index * 2) : u32(value, at + index * 4)));
+    values.forEach((value, index) => {
+      if (valueBytes(type) === 1) file.writeUInt8(value, at + index);
+      else if (type === TYPE.short) u16(value, at + index * 2);
+      else u32(value, at + index * 4);
+    });
   file.write(little ? 'II' : 'MM', 0, 'latin1');
   u16(TIFF_MAGIC, 2);
   u32(options.first ?? directories[0].at, 4);
@@ -103,6 +121,11 @@ export function imageEntries(strips: Array<[number, number]>, options: ImageOpti
     { tag: countsTag, type: arrayType, values: strips.map(([, bytes]) => bytes), at: arraysAt + strips.length * valueBytes(arrayType) },
   ];
 }
+
+/** An ASCII entry holding `text` and its terminating zero. */
+export const asciiEntry = (tag: number, text: string, at = 0): TiffEntrySpec => ({
+  tag, type: TYPE.ascii, values: [...Buffer.from(text, 'latin1'), 0], at,
+});
 
 const DATA_AT = 128;
 

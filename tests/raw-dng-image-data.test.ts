@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dngRawImageData, type ImageSize } from '../src/worker/raw-dng-image-data';
 import {
-  COMPRESSION, PHOTOMETRIC, RAW_SIZE, REDUCED_RESOLUTION, TAG, TYPE, buildTiff, imageEntries, minimalDng, type TiffDirectorySpec, type TiffEntrySpec,
+  COMPRESSION, PHOTOMETRIC, RAW_SIZE, REDUCED_RESOLUTION, TAG, TYPE, asciiEntry, buildTiff, imageEntries, minimalDng, type TiffDirectorySpec, type TiffEntrySpec,
 } from './helpers/dng-builder';
+import { rawSamplePath, skipWithoutRawSamples } from './helpers/strict-skip';
 
 /**
  * A DNG holds its raw image when every strip or tile of the directory LibRaw develops lies inside the file. LibRaw reads at most 10
@@ -112,6 +113,18 @@ describe('the size of the raw image', () => {
     expect(check(below(1), turned)).toBe('whole');
     expect(check(below(3))).toBe('whole');
     expect(check(below(3), turned)).toBe('dimensions');
+  });
+
+  it('is refused when an ActiveArea extent is negative or above 65535, which LibRaw keeps in 16 bits, and read up to 65535', () => {
+    const withArea = (values: number[]) => buildTiff(SIZE, [{
+      at: 8, entries: [...imageEntries([[400, 100]]), { tag: TAG.activeArea, type: TYPE.long, values, at: 200 }],
+    }]);
+    expect(check(withArea([0, 0, 65_535, 64]), { width: 64, height: 65_535 })).toBe('whole');
+    expect(check(withArea([0, 0, 65_536, 64]))).toBe('unreadable-area');
+    expect(check(withArea([0, 0, 100, 65_536]))).toBe('unreadable-area');
+    expect(check(withArea([100, 0, 50, 64]))).toBe('unreadable-area');
+    expect(check(withArea([0, 64, 100, 32]))).toBe('unreadable-area');
+    expect(check(withArea([0xffff_ff9c, 0, 100, 64]), { width: 64, height: 100 })).toBe('unreadable-area');
   });
 
   it('is its ActiveArea when it has one, and ImageWidth or ImageLength where the area is empty', () => {
@@ -284,5 +297,218 @@ describe('directories laid out to make the reader loop or explode', () => {
     const offsets = Array.from({ length: 1_000_000 }, () => 8);
     const file = buildTiff(4_100_000, [preview(8, 0, [subIfds(offsets, 200)])]);
     expect(check(file)).toBe('no-raw-image');
+  });
+});
+
+const fujiTable = (offset: number): TiffEntrySpec => ({ tag: TAG.fujiTable, type: TYPE.long, values: [offset] });
+const cut = (at: number): TiffDirectorySpec => ({ at, entries: imageEntries([[3000, 2000]]) });
+const longEntry = (tag: number, value: number): TiffEntrySpec => ({ tag, type: TYPE.long, values: [value] });
+
+describe('a directory reached through tag 0xf000, which LibRaw parses from the offset in its first value', () => {
+  it('takes the next place, before the directory the chain lists next', () => {
+    const tree = (first: (at: number) => TiffDirectorySpec, second: (at: number) => TiffDirectorySpec) =>
+      buildTiff(SIZE, [preview(8, 300, [fujiTable(200)]), first(200), second(300)]);
+    expect(check(tree(raw, cut))).toBe('whole');
+    expect(check(tree(cut, raw))).toBe('outside-file');
+  });
+
+  it('is read where its entry is met among the SubIFDs of its parent', () => {
+    const tree = (entries: TiffEntrySpec[]) => buildTiff(SIZE, [preview(8, 0, entries), cut(200), raw(300)]);
+    expect(check(tree([fujiTable(200), subIfds([300], 150)]))).toBe('outside-file');
+    expect(check(tree([subIfds([300], 150), fujiTable(200)]))).toBe('whole');
+  });
+
+  it('does not end the SubIFD list after it, whatever it returns', () => {
+    const tree = (fuji: number) => buildTiff(SIZE, [preview(8, 0, [fujiTable(fuji), subIfds([200], 150)]), raw(200)]);
+    expect(check(tree(SIZE + 8))).toBe('whole');
+    expect(check(tree(0))).toBe('whole');
+  });
+
+  it('lists SubIFDs of its own and counts toward the 10 directories, so one that points at its own directory ends', () => {
+    expect(check(buildTiff(SIZE, [preview(8, 0, [fujiTable(8)])]))).toBe('no-raw-image');
+    const nested = (levels: number) => Array.from({ length: levels }, (_, index): TiffDirectorySpec => {
+      const at = 8 + index * 250;
+      return index === levels - 1 ? { at, entries: imageEntries([[3900, 100]]) } : preview(at, 0, [fujiTable(at + 250)]);
+    });
+    expect(check(buildTiff(SIZE, nested(10)))).toBe('whole');
+    expect(check(buildTiff(SIZE, nested(11)))).toBe('no-raw-image');
+  });
+
+  it('sets the width and height of its directory as ImageWidth and ImageLength do, the entry read last winning', () => {
+    const sized = (entries: TiffEntrySpec[]) => buildTiff(SIZE, [{ at: 8, entries }]);
+    const strips = imageEntries([[400, 100]]);
+    const fuji = [longEntry(TAG.fujiWidth, 32), longEntry(TAG.fujiHeight, 50)];
+    const small = { width: 32, height: 50 };
+    expect(check(sized([...strips, ...fuji]), small)).toBe('whole');
+    expect(check(sized([...strips, ...fuji]))).toBe('dimensions');
+    expect(check(sized([...fuji, ...strips]))).toBe('whole');
+    expect(check(sized([...fuji, ...strips]), small)).toBe('dimensions');
+    const unsized = strips.filter((entry) => entry.tag !== TAG.imageWidth && entry.tag !== TAG.imageLength);
+    expect(check(sized([...unsized, ...fuji]), small)).toBe('whole');
+  });
+});
+
+describe('a Canon DNG with tag 0xf000 in its first directory, as LibRaw chooses the directory it decodes', () => {
+  const noSample = skipWithoutRawSamples('dng');
+  const DECODED = { width: 960, height: 540 };
+  const NEXT_AFTER_ENTRIES = (entries: number) => 2 + entries * 12;
+
+  function entryAt(file: Buffer, directory: number, tag: number): number {
+    const count = file.readUInt16LE(directory);
+    for (let index = 0; index < count; index += 1) {
+      const at = directory + 2 + index * 12;
+      if (file.readUInt16LE(at) === tag) return at;
+    }
+    throw new Error(`no entry ${tag} in the directory at ${directory}`);
+  }
+
+  /** The sample with two copies of its first directory appended: IFD0 points at the first by tag 0xf000 and at the second as its next. */
+  function withFujiTable(original: Buffer, edit: (file: Buffer, first: number, second: number) => void): Buffer {
+    expect(original.toString('latin1', 0, 2)).toBe('II');
+    const count = original.readUInt16LE(8);
+    const length = NEXT_AFTER_ENTRIES(count) + 4;
+    const padding = original.length % 2;
+    const first = original.length + padding;
+    const second = first + length;
+    const file = Buffer.concat([original, Buffer.alloc(padding), original.subarray(8, 8 + length), original.subarray(8, 8 + length)]);
+    file.writeUInt32LE(0, first + NEXT_AFTER_ENTRIES(count));
+    file.writeUInt32LE(0, second + NEXT_AFTER_ENTRIES(count));
+    file.writeUInt32LE(1, entryAt(file, 8, TAG.newSubfileType) + 8);
+    const table = entryAt(file, 8, 50_714);
+    file.writeUInt16LE(TAG.fujiTable, table);
+    file.writeUInt32LE(first, table + 8);
+    file.writeUInt32LE(second, 8 + NEXT_AFTER_ENTRIES(count));
+    edit(file, first, second);
+    return file;
+  }
+
+  const pastEnd = (file: Buffer, directory: number) => {
+    const at = entryAt(file, directory, 279) + 8;
+    file.writeUInt32LE(file.readUInt32LE(at) + 1000, at);
+  };
+  const crafted = (edit: (file: Buffer, first: number, second: number) => void) => {
+    const source = readFileSync(rawSamplePath('dng'));
+    return withFujiTable(source, edit);
+  };
+
+  it.skipIf(noSample)('develops the directory 0xf000 names, whose strips are whole, though the next one lists a strip past the end', () => {
+    expect(check(crafted((file, _first, second) => pastEnd(file, second)), DECODED)).toBe('whole');
+  });
+
+  it.skipIf(noSample)('develops it by its size, not the size of the next directory, which has another width and no ActiveArea', () => {
+    const file = crafted((copy, _first, second) => {
+      pastEnd(copy, second);
+      copy.writeUInt32LE(944, entryAt(copy, second, TAG.imageWidth) + 8);
+      copy.writeUInt16LE(0x9999, entryAt(copy, second, TAG.activeArea));
+    });
+    expect(check(file, DECODED)).toBe('whole');
+  });
+
+  it.skipIf(noSample)('refuses the file when the directory 0xf000 names lists a strip past the end, though the next one is whole', () => {
+    expect(check(crafted((file, first) => pastEnd(file, first)), DECODED)).toBe('outside-file');
+  });
+});
+
+const dngVersion = (...bytes: number[]): TiffEntrySpec => ({ tag: TAG.dngVersion, type: TYPE.byte, values: bytes });
+const privateData = (): TiffEntrySpec => ({ tag: TAG.dngPrivateData, type: TYPE.byte, values: [0, 0, 0, 0, 0, 0, 0, 0], at: 1000 });
+const panasonicFlag = (value: number, count = 4): TiffEntrySpec => ({
+  tag: TAG.panasonicFlag, type: TYPE.long, values: Array.from({ length: count }, (_, index) => (index === 0 ? value : 0)), at: 1200,
+});
+const cameraIfd = (): TiffEntrySpec => ({ tag: TAG.panasonicCameraIfd, type: TYPE.long, values: [200] });
+const exifPointer = (): TiffEntrySpec => ({ tag: TAG.exifIfd, type: TYPE.long, values: [200] });
+const make = (text: string): TiffEntrySpec => asciiEntry(TAG.make, text, 1400);
+const rawBelow = (entries: TiffEntrySpec[]) => buildTiff(SIZE, [preview(8, 0, [...entries, subIfds([200], 150)]), raw(200)]);
+
+describe('an entry through which LibRaw reads a directory the walk does not follow', () => {
+  it('is Hasselblad tag 0xc51b, which restores the directory count, whatever the make says', () => {
+    const entry = longEntry(TAG.hasselblad, 200);
+    expect(check(rawBelow([entry]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([make('Hasselblad'), entry]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([]))).toBe('whole');
+  });
+
+  it('is the Hasselblad SubIFD branch, which needs tag 0xc51b before it and so is refused there, while a make alone reads the SubIFDs as any other', () => {
+    expect(check(rawBelow([make('Hasselblad')]))).toBe('whole');
+    expect(check(rawBelow([make('Hasselblad'), longEntry(TAG.hasselblad, 200)]))).toBe('unmodelled-layout');
+  });
+
+  it('is the SubIFD tag of a directory 3872 pixels wide, which the DSLR-A100 branch reads as one offset of raw data', () => {
+    const wide = (width: number) => buildTiff(SIZE, [{
+      at: 8,
+      entries: [...imageEntries([[400, 100]]).map((entry) => (entry.tag === TAG.imageWidth ? { ...entry, values: [width] } : entry)), subIfds([200], 150)],
+    }, raw(200)]);
+    expect(check(wide(3872), { width: 3872, height: RAW_SIZE.height })).toBe('unmodelled-layout');
+    expect(check(wide(3871), { width: 3871, height: RAW_SIZE.height })).toBe('whole');
+    expect(check(wide(3873), { width: 3873, height: RAW_SIZE.height })).toBe('whole');
+  });
+
+  it('is the Panasonic CameraIFD tag 0x0120 after a tag 0x0001 of 4 values holding a number, and no other order or count', () => {
+    expect(check(rawBelow([panasonicFlag(1), cameraIfd()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([cameraIfd(), panasonicFlag(1)]))).toBe('whole');
+    expect(check(rawBelow([panasonicFlag(0), cameraIfd()]))).toBe('whole');
+    expect(check(rawBelow([panasonicFlag(1, 2), cameraIfd()]))).toBe('whole');
+    expect(check(rawBelow([cameraIfd()]))).toBe('whole');
+  });
+
+  it('is DNGPrivateData when no DNGVersion has been read before it, and not after a DNGVersion that is not zero', () => {
+    expect(check(rawBelow([privateData()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([dngVersion(0, 0, 0, 0), privateData()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([privateData(), dngVersion(1, 4, 0, 0)]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([dngVersion(1, 4, 0, 0), privateData()]))).toBe('whole');
+    expect(check(rawBelow([dngVersion(0, 0, 0, 1), privateData()]))).toBe('whole');
+    expect(check(rawBelow([dngVersion(0, 0, 0, 0), dngVersion(1, 4, 0, 0), privateData()]))).toBe('whole');
+    expect(check(rawBelow([dngVersion(1, 4, 0, 0), dngVersion(0, 0, 0, 0), privateData()]))).toBe('unmodelled-layout');
+  });
+
+  it('is the Nikon makernote, reached from the EXIF tag or the DNGPrivateData of a file whose make is NIKON', () => {
+    const nikon = make('NIKON CORPORATION');
+    expect(check(rawBelow([nikon, exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([nikon, dngVersion(1, 4, 0, 0), privateData()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([asciiEntry(TAG.uniqueCameraModel, 'NIKON D80', 1400), exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([nikon, asciiEntry(TAG.uniqueCameraModel, 'Canon EOS', 1400 + 32), exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([nikon]))).toBe('whole');
+    expect(check(rawBelow([make('Canon'), exifPointer()]))).toBe('whole');
+    expect(check(rawBelow([exifPointer()]))).toBe('whole');
+    expect(check(rawBelow([exifPointer(), nikon]))).toBe('whole');
+  });
+
+  it.each([[TAG.stripOffsets], [513], [0xf007]])('is the JPEG stream at the offset of tag %i in a directory with no BitsPerSample yet, which LibRaw reads as a TIFF', (tag) => {
+    const bitsPerSample: TiffEntrySpec = { tag: TAG.bitsPerSample, type: TYPE.short, values: [12] };
+    const strips = imageEntries([[tag === TAG.stripOffsets ? 300 : 400, 100]]);
+    const extra = tag === TAG.stripOffsets ? [] : [longEntry(tag, 300)];
+    const probe = (entries: TiffEntrySpec[], jpeg: boolean): string => {
+      const file = buildTiff(SIZE, [{ at: 8, entries }]);
+      if (jpeg) file.writeUInt16BE(0xffd8, 300);
+      return check(file);
+    };
+    expect(probe([...strips, ...extra], true)).toBe('unmodelled-layout');
+    expect(probe([...strips, ...extra], false)).toBe('whole');
+    expect(probe([bitsPerSample, ...strips, ...extra], true)).toBe('whole');
+    expect(probe([...strips, ...extra, bitsPerSample], true)).toBe('unmodelled-layout');
+    expect(probe([{ ...bitsPerSample, tag: TAG.fujiBitsPerSample }, ...strips, ...extra], true)).toBe('whole');
+    expect(probe([{ ...bitsPerSample, values: [0] }, ...strips, ...extra], true)).toBe('unmodelled-layout');
+  });
+
+  it('is the JPEG stream at the offset of the Panasonic strip tag 0x0118 when the Panasonic flag is set, and then not at that of tags 0x0201 and 0xf007', () => {
+    const jpegAt300 = (entries: TiffEntrySpec[]): string => {
+      const file = buildTiff(SIZE, [{ at: 8, entries: [...imageEntries([[400, 100]]), ...entries] }]);
+      file.writeUInt16BE(0xffd8, 300);
+      return check(file);
+    };
+    const strips = (type: number) => ({ tag: 280, type, values: [300] });
+    expect(jpegAt300([panasonicFlag(1), strips(TYPE.long)])).toBe('unmodelled-layout');
+    expect(jpegAt300([panasonicFlag(1), strips(TYPE.short)])).toBe('whole');
+    expect(jpegAt300([strips(TYPE.long)])).toBe('whole');
+    expect(jpegAt300([panasonicFlag(1), longEntry(513, 300)])).toBe('whole');
+    expect(jpegAt300([panasonicFlag(1), longEntry(0xf007, 300)])).toBe('whole');
+  });
+
+  it('is a Phase One marker in the first 32 bytes, which runs a second parser before the TIFF one', () => {
+    const junk = (value: number) => longEntry(0x8000, value);
+    const marked = (...junks: number[]) => buildTiff(SIZE, [{ at: 8, entries: [...junks.map(junk), ...imageEntries([[400, 100]])] }]);
+    expect(check(marked(0x4949_4949))).toBe('unmodelled-layout');
+    expect(check(marked(0x4d4d_4d4d))).toBe('unmodelled-layout');
+    expect(check(marked(0x4949_494d))).toBe('whole');
+    expect(check(marked(0, 0, 0x4949_4949))).toBe('whole');
   });
 });
