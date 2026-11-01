@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { minimalDng } from './helpers/dng-builder';
+import { PHOTOMETRIC, RAW_SIZE, TAG, TYPE, buildTiff, imageEntries, minimalDng } from './helpers/dng-builder';
 import { withBinaryAt } from './helpers/native-tools';
 import { rawSamplePath, skipWithoutRawSamples, skipWithoutTools } from './helpers/strict-skip';
 
@@ -29,8 +29,10 @@ const S23 = 'dng-s23';
 const S23_WIDTH = 4000;
 const S23_HEIGHT = 2252;
 const WARNING_PATTERN = /corrupted data at byte 4384328 of the file; some samples of the picture may be wrong/;
-/** Cut points of the S23 file (25,412,616 bytes): far inside its one strip, and where only about 10 % of its rows are left to fill. */
-const S23_CUTS = [5_000_000, 23_000_000];
+/** The S23 file is 25,412,616 bytes; its one strip ends at byte 25,412,551. */
+const S23_STRIP_END = 25_412_551;
+/** A cut where only about 10 % of the S23 rows are left to fill. */
+const S23_LATE_CUT = 23_000_000;
 const PREVIEW_GRID_WIDTH = 64;
 const PREVIEW_GRID_HEIGHT = 36;
 const PREVIEW_BANDS = 4;
@@ -66,16 +68,29 @@ describe('a camera file whose decoder warns about samples outside the stated bit
     });
   }
 
-  it.skipIf(noTool).each(S23_CUTS)('the same file cut to %i bytes is refused as truncated, though the decoder prints only the warning', async (cut) => {
+  it.skipIf(noTool).each([S23_LATE_CUT, S23_STRIP_END - 1])('the same file cut to %i bytes is refused as truncated, though the decoder prints only the warning', async (cut) => {
     const error = await dispatchConversion(s23().subarray(0, cut), 'dng', 'jpg', {}, 'samsung-s23.dng').catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated/);
+    expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated: its raw image data runs past the end of the file/);
+  });
+
+  it.skipIf(noTool)('the same file cut where its strip ends, without the bytes after it, is developed with the warning', async () => {
+    const result = await dispatchConversion(s23().subarray(0, S23_STRIP_END), 'dng', 'jpg', {}, 'samsung-s23.dng');
+    expect(result.metadata?.warnings).toEqual([expect.stringMatching(WARNING_PATTERN)]);
+  });
+
+  // A download that stopped early but kept the file's size, the rest zeros, holds every strip in the directory's eyes; the bottom-run
+  // test of the decoded image is what refuses it.
+  it.skipIf(noTool)('the same file cut late and padded with zeros to its full size is refused by its repeated bottom rows', async () => {
+    const padded = Buffer.alloc(s23().length);
+    s23().copy(padded, 0, 0, S23_LATE_CUT);
+    const error = await dispatchConversion(padded, 'dng', 'jpg', {}, 'samsung-s23.dng').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated: the decoded image ends in repeated filler rows/);
   });
 });
 
 describe('what the decoder prints decides whether its image is developed', () => {
-  const GOOD_ROWS = 100;
-  const WIDTH = 64;
 
   it('develops a complete image after the data-corrupted line and keeps the line as a warning', async () => {
     const stub = decoderStub('good', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
@@ -89,6 +104,28 @@ describe('what the decoder prints decides whether its image is developed', () =>
     const error = await convertWith(stub, minimalDng(DNG_STRIP_BYTES, DNG_BYTES.length - 1));
     expect(error).toBeInstanceOf(RawDecodeError);
     expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated: its raw image data runs past the end of the file/);
+  });
+
+  it('refuses the line for a DNG whose full-resolution IFD0 is no raw image and whose raw SubIFD is cut inside its strip', async () => {
+    const stub = decoderStub('cut-subifd', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
+    const file = buildTiff(4096, [
+      { at: 8, entries: [...imageEntries([[2000, 1000]], { photometric: PHOTOMETRIC.yCbCr }), { tag: TAG.subIfds, type: TYPE.ifd, values: [200] }] },
+      { at: 200, entries: imageEntries([[3000, 1200]]) },
+    ]);
+    const error = await convertWith(stub, file);
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated: its raw image data runs past the end of the file/);
+  });
+
+  it.each([
+    ['a raw image of another size than the decoded picture', decodedTiff(WIDTH, GOOD_ROWS - 2, GOOD_ROWS - 2), DNG_BYTES, /its raw image is not the size of the decoded picture/],
+    ['a file that is no classic TIFF', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), bigTiff(), /the file is not a classic TIFF/],
+    ['a DNG that lists no raw image', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), buildTiff(4096, [{ at: 8, entries: imageEntries([[200, 100]], { photometric: PHOTOMETRIC.yCbCr }) }]), /it lists no CFA or Linear Raw image/],
+  ])('refuses the line for %s, saying why it could not be checked', async (_name, decoded, input, reason) => {
+    const error = await convertWith(decoderStub('unchecked', decoded, '"$input: data corrupted at 3"'), input);
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/reported corrupted data in the \.dng file, and the file cannot be shown to be whole/);
+    expect((error as RawDecodeError).message).toMatch(reason);
   });
 
   it('refuses the line for a camera format other than DNG, whose directory does not show a cut', async () => {
@@ -158,6 +195,15 @@ describe('what the decoder prints decides whether its image is developed', () =>
 
 const DNG_STRIP_BYTES = 200;
 const DNG_BYTES = minimalDng(DNG_STRIP_BYTES);
+const WIDTH = RAW_SIZE.width;
+const GOOD_ROWS = RAW_SIZE.height;
+
+/** The stand-in DNG with the magic number of BigTIFF. */
+function bigTiff(): Buffer {
+  const file = minimalDng(DNG_STRIP_BYTES);
+  file.writeUInt16LE(43, 2);
+  return file;
+}
 
 function convertWith(stub: string, input = DNG_BYTES): Promise<unknown> {
   return withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(input, 'dng', 'png', {}, 'stub.dng').catch((error: unknown) => error));

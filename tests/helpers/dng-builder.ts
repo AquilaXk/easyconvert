@@ -5,21 +5,28 @@
 
 export const TAG = {
   newSubfileType: 254,
+  imageWidth: 256,
+  imageLength: 257,
   compression: 259,
+  photometric: 262,
   stripOffsets: 273,
   stripByteCounts: 279,
   tileOffsets: 324,
   tileByteCounts: 325,
   subIfds: 330,
+  activeArea: 50829,
 } as const;
 export const TYPE = { short: 3, long: 4, ifd: 13 } as const;
 
 const TIFF_MAGIC = 42;
 const ENTRY_BYTES = 12;
 const INLINE_BYTES = 4;
-const LOSSLESS_JPEG = 7;
+export const COMPRESSION = { losslessJpeg: 7, jpeg: 6 } as const;
+export const PHOTOMETRIC = { yCbCr: 6, cfa: 32803, linearRaw: 34892 } as const;
 /** NewSubFileType of a reduced-resolution image, such as a preview. */
 export const REDUCED_RESOLUTION = 1;
+/** Width and height of the raw image `imageEntries` describes. */
+export const RAW_SIZE = { width: 64, height: 100 } as const;
 
 export interface TiffEntrySpec {
   tag: number;
@@ -66,21 +73,36 @@ export function buildTiff(size: number, directories: TiffDirectorySpec[], option
   return file;
 }
 
-/** The entries of an image directory with lossless JPEG data in `strips` ([offset, bytes] each), the arrays at `arraysAt` when needed. */
-export function imageEntries(strips: Array<[number, number]>, options: { subfileType?: number; arraysAt?: number; tiles?: boolean } = {}): TiffEntrySpec[] {
+export interface ImageOptions {
+  subfileType?: number;
+  compression?: number;
+  photometric?: number;
+  /** Where the strip or tile arrays go when they do not fit in their entries. */
+  arraysAt?: number;
+  /** SHORT or LONG strip or tile arrays. */
+  arrayType?: number;
+  tiles?: boolean;
+}
+
+/** The entries of an image directory with data in `strips` ([offset, bytes] each): by default a 64 x 100 CFA image in lossless JPEG. */
+export function imageEntries(strips: Array<[number, number]>, options: ImageOptions = {}): TiffEntrySpec[] {
   const [offsetsTag, countsTag] = options.tiles ? [TAG.tileOffsets, TAG.tileByteCounts] : [TAG.stripOffsets, TAG.stripByteCounts];
   const arraysAt = options.arraysAt ?? 0;
+  const arrayType = options.arrayType ?? TYPE.long;
   return [
     { tag: TAG.newSubfileType, type: TYPE.long, values: [options.subfileType ?? 0] },
-    { tag: TAG.compression, type: TYPE.short, values: [LOSSLESS_JPEG] },
-    { tag: offsetsTag, type: TYPE.long, values: strips.map(([offset]) => offset), at: arraysAt },
-    { tag: countsTag, type: TYPE.long, values: strips.map(([, bytes]) => bytes), at: arraysAt + strips.length * 4 },
+    { tag: TAG.imageWidth, type: TYPE.long, values: [RAW_SIZE.width] },
+    { tag: TAG.imageLength, type: TYPE.long, values: [RAW_SIZE.height] },
+    { tag: TAG.compression, type: TYPE.short, values: [options.compression ?? COMPRESSION.losslessJpeg] },
+    { tag: TAG.photometric, type: TYPE.short, values: [options.photometric ?? PHOTOMETRIC.cfa] },
+    { tag: offsetsTag, type: arrayType, values: strips.map(([offset]) => offset), at: arraysAt },
+    { tag: countsTag, type: arrayType, values: strips.map(([, bytes]) => bytes), at: arraysAt + strips.length * valueBytes(arrayType) },
   ];
 }
 
-const DATA_AT = 64;
+const DATA_AT = 128;
 
-/** A DNG whose raw image is one strip of `stripBytes` at byte 64, cut to `size` bytes when that is shorter. */
-export function minimalDng(stripBytes: number, size = DATA_AT + stripBytes): Buffer {
-  return buildTiff(Math.max(size, DATA_AT), [{ at: 8, entries: imageEntries([[DATA_AT, stripBytes]]) }]).subarray(0, size);
+/** A DNG whose raw image is one strip of `stripBytes` at byte 128, cut to `size` bytes when that is shorter. */
+export function minimalDng(stripBytes: number, size = DATA_AT + stripBytes, options: { little?: boolean } = {}): Buffer {
+  return buildTiff(Math.max(size, DATA_AT), [{ at: 8, entries: imageEntries([[DATA_AT, stripBytes]]) }], options).subarray(0, size);
 }

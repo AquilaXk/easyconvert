@@ -94,10 +94,9 @@ import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertWithinPixelCap,
-  endsInRepeatedRows, hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
+  hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { dataCorruptedOffset, dataCorruptedWarning, decoderStderrDetail } from './raw-decoder-report';
-import { dngHoldsRawImageData } from './raw-dng-image-data';
+import { acceptedDecoderWarning, dataCorruptedWarning, decoderStderrDetail, repeatedRowsRefusal } from './raw-decoder-report';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
@@ -1833,7 +1832,10 @@ export async function convertWithNativeRaw(
       }
       if (err instanceof SandboxedProcessError) {
         const detail = decoderStderrDetail(err.stderr.trim(), tempDir);
-        throw new RawDecodeError(`Native RAW decoder rejected the .${src} file${detail ? `: ${detail}` : ''}`, RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr));
+        throw new RawDecodeError(
+          `Native RAW decoder rejected the .${src} file${detail ? `: ${detail}` : ''}`,
+          RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr)
+        );
       }
       throw err;
     }
@@ -1841,15 +1843,13 @@ export async function convertWithNativeRaw(
       throw new RawDecodeError(`Native RAW decoder produced no image for the .${src} file`);
     }
 
-    // LibRaw's `data corrupted at` line is a warning only for a DNG, whose directory shows a cut; any other text marks damaged input.
-    const corruptedAt = src === 'dng' && decoderStderr ? dataCorruptedOffset(decoderStderr, inputPath) : null;
-    if (decoderStderr && corruptedAt === null) throw new RawDecodeError(`Native RAW decoder reported a problem with the .${src} file: ${decoderStderrDetail(decoderStderr, tempDir)}`);
-    if (corruptedAt !== null && !dngHoldsRawImageData(inputPath)) throw new RawDecodeError(`The .${src} file is truncated: its raw image data runs past the end of the file`);
     const layout = readDecodedTiffLayout(decodedPath);
     assertWithinPixelCap(layout);
     assertCompleteDecodedImage(decodedPath, layout);
-    if (hasRepeatedTail(decodedPath, layout) || (corruptedAt !== null && endsInRepeatedRows(decodedPath, layout))) {
-      throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
+    // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
+    const corruptedAt = acceptedDecoderWarning({ src, stderr: decoderStderr, inputPath, tempDir, decodedPath, layout });
+    if (hasRepeatedTail(decodedPath, layout)) {
+      throw repeatedRowsRefusal(src);
     }
 
     const converted = await convertImage(readDecodedRawImage(decodedPath), tgt, options, originalFilename, 'tiff');
