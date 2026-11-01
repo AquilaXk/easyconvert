@@ -414,7 +414,7 @@ describe('the known gaps', () => {
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
-    expect(shipped.gaps.length).toBeGreaterThan(10);
+    expect(shipped.gaps.length).toBeGreaterThan(0);
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
       // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).

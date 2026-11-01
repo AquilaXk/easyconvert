@@ -2,38 +2,6 @@
   "schemaVersion": 1,
   "gaps": [
     {
-      "id": "raw/raw-samsung-s23.dng->jpg/converts",
-      "issue": 686,
-      "ratio": null,
-      "note": "the product refuses the file (RawDecodeError: data corrupted at 4384328); the reference develops it",
-      "recorded": 0,
-      "reference": 1
-    },
-    {
-      "id": "raw/raw-samsung-s23.dng->png/converts",
-      "issue": 686,
-      "ratio": null,
-      "note": "the product refuses the file (RawDecodeError: data corrupted at 4384328); the reference develops it",
-      "recorded": 0,
-      "reference": 1
-    },
-    {
-      "id": "raw/class-phone->jpg/converts",
-      "issue": 686,
-      "ratio": null,
-      "note": "mean over the 2 phone files: follows from the Samsung S23 row (1 of 2 files refused)",
-      "recorded": 0.5,
-      "reference": 1
-    },
-    {
-      "id": "raw/class-phone->png/converts",
-      "issue": 686,
-      "ratio": null,
-      "note": "mean over the 2 phone files: follows from the Samsung S23 row (1 of 2 files refused)",
-      "recorded": 0.5,
-      "reference": 1
-    },
-    {
       "id": "raw/raw-canon-r5-raw.cr3->jpg/bd_rate_psnr",
       "issue": 686,
       "ratio": null,
