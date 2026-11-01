@@ -26,11 +26,11 @@ port.on('message', (message: TaskMessage) => {
       if (silent !== true) port.postMessage({ id: message.id, ok: true, result }, transfer ?? []);
     })
     .catch((error: unknown) => {
-      const failure = error as { name?: string; message?: string; status?: number };
+      const failure = error as { name?: string; message?: string; status?: number; refusalCode?: string };
       port.postMessage({
         id: message.id,
         ok: false,
-        error: { name: failure.name ?? 'Error', message: failure.message ?? String(error), status: failure.status },
+        error: { name: failure.name ?? 'Error', message: failure.message ?? String(error), status: failure.status, refusalCode: failure.refusalCode },
       });
     });
 });

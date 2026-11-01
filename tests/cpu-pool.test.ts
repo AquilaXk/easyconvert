@@ -1,12 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import {
   CPU_POOL_MAX,
   CPU_POOL_QUEUE_MAX,
   CpuPool,
+  runCpuTask,
+  shutdownCpuPool,
   type CpuPoolOptions,
 } from '../src/lib/workers/cpu-pool';
 import { CorruptStreamError, CpuPoolOverloadedError, CpuTaskAbortedError, CpuTaskTimeoutError, EngineUnavailableError } from '../src/lib/types';
+import { refusalCodeOf } from '../src/lib/refusal-codes';
+import { payloadLimitStatus } from '../src/lib/api/payload-limit';
+import { WOFF2_MAX_TABLES, Woff2LimitError } from '../src/lib/conversions/font-woff2-primitives';
 
 /**
  * The CPU pool's own behaviour (bounded queue, 503 on overflow, abort and timeout freeing the thread, typed errors
@@ -118,6 +123,13 @@ describe('CpuPool', () => {
     expect((unknown as Error).message).toMatch(/unknown kind nope/);
   }, TEST_TIMEOUT_MS);
 
+  it('keeps the refusal code of an error whose class the pool does not rebuild', async () => {
+    const pool = makePool({ size: 1 });
+    const error = await pool.submit('typedFailure', { name: 'GlyphBudgetError', message: 'too many glyphs', refusalCode: 'input_over_limit' }).catch((e: unknown) => e);
+    expect((error as Error).name).toBe('GlyphBudgetError');
+    expect(refusalCodeOf(error)).toBe('input_over_limit');
+  }, TEST_TIMEOUT_MS);
+
   it('fails the task of a thread that dies and starts a new thread for the next task', async () => {
     const pool = makePool({ size: 1 });
     await expect(pool.submit('exit', {})).rejects.toBeInstanceOf(EngineUnavailableError);
@@ -179,5 +191,20 @@ describe('CpuPool', () => {
     expect(pool.stats.threads).toBe(2);
     const reply = await pool.submit<{ value: number }>('echo', { value: 9 });
     expect(reply.value).toBe(9);
+  }, TEST_TIMEOUT_MS);
+});
+
+describe('the shared pool', () => {
+  afterAll(async () => {
+    await shutdownCpuPool();
+  });
+
+  it('answers a font past the WOFF2 limits with the limit error, its code and its 413', async () => {
+    const SFNT_FLAVOR = 0x00010000;
+    const tables = Array.from({ length: WOFF2_MAX_TABLES + 1 }, (_, i) => ({ tag: i.toString(36).padStart(4, '0'), data: new Uint8Array(0) }));
+    const error = await runCpuTask('woff2', { flavor: SFNT_FLAVOR, tables }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Woff2LimitError);
+    expect(refusalCodeOf(error)).toBe('input_over_limit');
+    expect(payloadLimitStatus(error)).toBe(413);
   }, TEST_TIMEOUT_MS);
 });
