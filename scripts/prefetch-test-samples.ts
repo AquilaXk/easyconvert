@@ -33,15 +33,23 @@ export function findTestSampleIds(manifestIds: readonly string[], testsDirectory
   return manifestIds.filter((id) => named.has(id));
 }
 
+/** One line per sample the tests name, with its pinned digest: CI keys the corpus cache on the hash of this text. */
+export function testSampleListing(selected: readonly CorpusFile[]): string {
+  return selected.map((file) => `${file.id} ${file.sha256}\n`).join('');
+}
+
 async function main(): Promise<number> {
   const files = readTestSampleFiles();
-  const byId = new Map(files.map((file) => [file.id, file]));
-  const ids = findTestSampleIds(files.map((file) => file.id), TESTS_DIRECTORY);
+  const named = new Set(findTestSampleIds(files.map((file) => file.id), TESTS_DIRECTORY));
+  const selected = files.filter((file) => named.has(file.id));
+  if (process.argv.includes('--list')) {
+    process.stdout.write(testSampleListing(selected));
+    return 0;
+  }
   const cacheDirectory = testSampleCacheDirectory();
   const failures: string[] = [];
   let alreadyCached = 0;
-  await mapLimit(ids, FETCH_CONCURRENCY, async (id) => {
-    const file = byId.get(id) as CorpusFile;
+  await mapLimit(selected, FETCH_CONCURRENCY, async (file) => {
     if (findCached(file, cacheDirectory) !== undefined) {
       alreadyCached += 1;
       return;
@@ -49,11 +57,11 @@ async function main(): Promise<number> {
     try {
       await ensureCached(file, cacheDirectory);
     } catch (error) {
-      failures.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
+      failures.push(`${file.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
-  const fetched = ids.length - alreadyCached - failures.length;
-  console.log(`prefetch-test-samples: ${ids.length} samples named by tests, ${alreadyCached} already cached, ${fetched} fetched, ${failures.length} failed (${cacheDirectory})`);
+  const fetched = selected.length - alreadyCached - failures.length;
+  console.log(`prefetch-test-samples: ${selected.length} samples named by tests, ${alreadyCached} already cached, ${fetched} fetched, ${failures.length} failed (${cacheDirectory})`);
   for (const failure of failures) console.error(`  ${failure}`);
   return failures.length > 0 && process.env.ORACLE_STRICT_MODE === '1' ? 1 : 0;
 }
