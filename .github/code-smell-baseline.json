@@ -250,7 +250,7 @@
     "file": "src/lib/client-converter.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "executeItemConversion",
-    "count": 2
+    "count": 1
   },
   {
     "file": "src/lib/client-converter.ts",
