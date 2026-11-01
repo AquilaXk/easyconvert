@@ -232,12 +232,12 @@ host_of() { # host_of <absolute URL>: its host, lowercased, without user, port o
 }
 
 # The public origin the web server of a release runs with, as Compose resolves `APP_ORIGIN: ${APP_ORIGIN:-${APP_URL}}` from the
-# env file (quotes and comments as Compose reads them); empty when Compose names none. Only that key leaves the pipe, and the
-# call fails, with Compose's own error on stderr, when Compose cannot resolve the web service.
+# env file (quotes and comments as Compose reads them), from indented or compact JSON; empty when Compose names none. Only
+# that key leaves the pipe, and the call fails, with Compose's own error on stderr, when Compose cannot resolve the web service.
 release_origin() { # release_origin <release-dir>
-  local origins
-  origins="$(compose "$1" config --format json web | sed -nE 's/^ *"APP_ORIGIN": *"([^"]*)",?$/\1/p')" || return 1
-  printf '%s' "${origins%%$'\n'*}"
+  local origin
+  origin="$(compose "$1" config --format json web | sed -nE 's/.*"APP_ORIGIN": *"([^"]*)".*/\1/p' | head -n 1)" || return 1
+  printf '%s' "$origin"
 }
 
 # The home page, saved to PAGE_FILE: tried as often as the health check, since the web may still be warming its pages. curl runs

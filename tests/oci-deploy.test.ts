@@ -717,7 +717,11 @@ case "$1" in
         origin="$(grep -E '^APP_ORIGIN=' "$dir/.env" | tail -n 1 | cut -d= -f2-)"
         [ -n "$origin" ] || origin="$(grep -E '^APP_URL=' "$dir/.env" | tail -n 1 | cut -d= -f2-)"
         origin="\${origin%\\"}"; origin="\${origin#\\"}"
-        printf '{\\n  "services": {\\n    "web": {\\n      "environment": {\\n        "APP_ORIGIN": "%s"\\n      }\\n    }\\n  }\\n}\\n' "\${STUB_RESOLVED_ORIGIN-$origin}" ;;
+        if [ -n "\${STUB_COMPACT_CONFIG:-}" ]; then
+          printf '{"name":"easyconvert","services":{"web":{"environment":{"APP_ORIGIN":"%s","APP_URL":"x"}}}}\\n' "\${STUB_RESOLVED_ORIGIN-$origin}"
+        else
+          printf '{\\n  "services": {\\n    "web": {\\n      "environment": {\\n        "APP_ORIGIN": "%s"\\n      }\\n    }\\n  }\\n}\\n' "\${STUB_RESOLVED_ORIGIN-$origin}"
+        fi ;;
       *" ps "*)
         service="\${@: -1}"; count=1
         [ "$service" = web ] && count="\${STUB_WEB_REPLICAS:-1}"
@@ -947,6 +951,14 @@ exit 0`
     expect(result.stderr).toContain('ERROR: Compose could not resolve the origin of the web service');
     expect(calls().filter((call) => / up /.test(call))).toEqual([]);
     expect(existsSync(path.join(home, 'current'))).toBe(false);
+  });
+
+  it.each([
+    ['indented', {}],
+    ['compact', { STUB_COMPACT_CONFIG: '1' }],
+  ])('reads the origin from %s Compose output', (_, extra) => {
+    expect(run(['deploy', ref('a')], { env: hostEnv(extra) }).status).toBe(0);
+    expect(calls().filter((call) => call.startsWith('curl') && call.endsWith('http://127.0.0.1:8090/'))).toHaveLength(1);
   });
 
   it('expects the origin Compose resolves, with the quotes of the env file taken off and an empty APP_ORIGIN unset', () => {
