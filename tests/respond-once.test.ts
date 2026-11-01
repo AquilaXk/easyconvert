@@ -205,7 +205,7 @@ describe('respondOnce', () => {
       expect(complete).toHaveBeenCalledTimes(3);
     });
 
-    it('tells a repeat that meets the kept lock to wait for what is left of the lock', async () => {
+    it('tells a repeat that meets the kept lock to try again in a second, whatever is left of the lock, since a longer wait lands it after the lock ended', async () => {
       let now = 1_000_000;
       store.setClock(() => now);
       vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: connection reset'));
@@ -216,7 +216,7 @@ describe('respondOnce', () => {
       const repeat = await respondOnce(post('k14'), 'u', ROUTE, async () => created(), KEEP_LOCK);
 
       expect(repeat.status).toBe(409);
-      expect(repeat.headers.get('retry-after')).toBe('40');
+      expect(repeat.headers.get('retry-after')).toBe('1');
     });
 
     it('tells a repeat that meets a running request to try again in a second, not when the lock would end', async () => {

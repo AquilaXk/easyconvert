@@ -30,10 +30,13 @@ const MISSING_FILE_CODE = 'ENOENT';
 const TRANSIENT_SYSTEM_CODES: ReadonlySet<string> = new Set(['EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE']);
 
 /**
- * The actions that work on an upload session the caller already holds: a missing file of the session then means the
- * session is gone. `initiate`, `discard` and `presign` work on no session, so a missing file there is the host failing.
+ * How an upload route reads an error of the disk. `sessionBound` is true for an action that works on an upload session
+ * the caller already holds: a missing file of the session then means the session is gone. An action that opens or lists
+ * no session (`initiate`, `discard`, `presign`) is not session bound, so a missing file there is the host failing.
  */
-const SESSION_BOUND_ACTIONS: ReadonlySet<string> = new Set(['chunk', 'part', 'complete', 'abort']);
+export interface UploadErrorContext {
+  sessionBound: boolean;
+}
 
 /** The 503 with `Retry-After` for a failure with no HTTP status of its own: a service the upload needs could not be reached. */
 export function uploadUnavailableResponse(instanceUri: string, extraHeaders: Record<string, string> = {}): NextResponse {
@@ -52,11 +55,11 @@ function isSystemError(error: unknown): error is NodeJS.ErrnoException & { code:
 /**
  * The problem an error of the local disk maps to, or undefined when the error is not one: 503 with `Retry-After` while
  * the host is busy for now (TRANSIENT_SYSTEM_CODES), 404 when the files of the upload session an action works on are
- * gone (SESSION_BOUND_ACTIONS), else a fixed 500 whose sentence names no path. The error itself goes to the server log.
+ * gone (`sessionBound`), else a fixed 500 whose sentence names no path. The error itself goes to the server log.
  */
-function systemErrorResponse(error: unknown, instanceUri: string, action: string, extraHeaders: Record<string, string>): NextResponse | undefined {
+function systemErrorResponse(error: unknown, instanceUri: string, { sessionBound }: UploadErrorContext, extraHeaders: Record<string, string>): NextResponse | undefined {
   if (!isSystemError(error)) return undefined;
-  if (error.code === MISSING_FILE_CODE && SESSION_BOUND_ACTIONS.has(action)) return uploadSessionNotFoundResponse(instanceUri, extraHeaders);
+  if (error.code === MISSING_FILE_CODE && sessionBound) return uploadSessionNotFoundResponse(instanceUri, extraHeaders);
   console.error(`${UPLOAD_LOG_PREFIX} ${error.code} ${error.syscall}: ${error.message}`);
   if (TRANSIENT_SYSTEM_CODES.has(error.code)) return uploadUnavailableResponse(instanceUri, extraHeaders);
   return createProblemDetailsResponse(HTTP_INTERNAL_SERVER_ERROR, UPLOAD_STORAGE_ERROR_DETAIL, instanceUri, 'Internal Server Error', undefined, extraHeaders);
@@ -64,10 +67,10 @@ function systemErrorResponse(error: unknown, instanceUri: string, action: string
 
 /**
  * The one answer to an error of an upload action that has a mapping: a storage error, or an error of the local disk
- * as `action` reads it. Undefined for any other error, which each route answers by its own rule.
+ * as the action reads it (`context`). Undefined for any other error, which each route answers by its own rule.
  */
-export function uploadErrorResponse(error: unknown, instanceUri: string, action: string, extraHeaders: Record<string, string> = {}): NextResponse | undefined {
-  return storageErrorResponse(error, instanceUri, extraHeaders) ?? systemErrorResponse(error, instanceUri, action, extraHeaders);
+export function uploadErrorResponse(error: unknown, instanceUri: string, context: UploadErrorContext, extraHeaders: Record<string, string> = {}): NextResponse | undefined {
+  return storageErrorResponse(error, instanceUri, extraHeaders) ?? systemErrorResponse(error, instanceUri, context, extraHeaders);
 }
 
 /** The length a part request declared, when its Content-Length is a whole number of bytes (the route refused any other). */
@@ -98,7 +101,7 @@ function partRefusalResponse(error: PartRefusedError, instanceUri: string, extra
  */
 export function partFailureResponse(error: unknown, instanceUri: string, extraHeaders: Record<string, string> = {}): NextResponse {
   if (error instanceof PartRefusedError) return partRefusalResponse(error, instanceUri, extraHeaders);
-  const mapped = uploadErrorResponse(error, instanceUri, 'chunk', extraHeaders);
+  const mapped = uploadErrorResponse(error, instanceUri, { sessionBound: true }, extraHeaders);
   if (mapped) return mapped;
   const status = (error as { statusCode?: unknown } | null)?.statusCode;
   if (typeof status === 'number') {

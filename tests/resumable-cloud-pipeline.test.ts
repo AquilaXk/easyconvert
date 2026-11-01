@@ -16,7 +16,7 @@ import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../src/lib/p
 import { NextRequest } from 'next/server';
 import { partFailureResponse } from '../src/lib/api/part-response';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
-import { getIdempotencyStore } from '../src/lib/api/idempotency';
+import { InMemoryIdempotencyStore, getIdempotencyStore, setIdempotencyStore } from '../src/lib/api/idempotency';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { forgetUploadParts, receivePart, type PartStore } from '../src/lib/storage/part-admission';
 import { DEFAULT_MAX_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT_MS } from '../src/lib/storage/adapters/s3';
@@ -60,6 +60,16 @@ function bigFile(name: string, size: number): { file: File; slices: Array<[numbe
 }
 
 let calls: Call[];
+
+/** Moves the faked clock a second at a time, between the real file operations of the routes, until `settled` ends. */
+async function runClockUntilSettled(settled: Promise<unknown>): Promise<void> {
+  let done = false;
+  void settled.then(() => (done = true));
+  for (let second = 0; second < 1_000 && !done; second++) {
+    await vi.advanceTimersByTimeAsync(1_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 function installFetch(handler: Handler): void {
   calls = [];
@@ -510,6 +520,55 @@ describe('a refusal or a failure is shown as the server worded it and leaves not
     const asked = calls.filter((c) => c.url.includes('action=initiate'));
     expect(asked).toHaveLength(5);
     expect(new Set(asked.map((c) => c.headers['Idempotency-Key'])).size).toBe(1);
+  });
+
+  it('opens one upload when the answer to the opening was lost and the store could not record it, since a repeat meets the kept lock and waits inside it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setIdempotencyStore(new InMemoryIdempotencyStore());
+    try {
+      vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
+      const visitor = { 'x-forwarded-for': '203.0.113.202' };
+      const opened: string[] = [];
+      let openings = 0;
+      const openByTheRoute = async (call: Call): Promise<Response> => {
+        openings += 1;
+        const res = await multipartPost(
+          new NextRequest(`http://localhost:3000${call.url}`, {
+            method: 'POST',
+            headers: { ...call.headers, ...visitor },
+            body: JSON.stringify(call.json),
+          })
+        );
+        if (res.ok) opened.push((await res.clone().json()).uploadId);
+        if (openings === 1) throw new TypeError('network down');
+        return res;
+      };
+      installFetch(happyServer([COMPLETED], (call) => (call.url.includes('action=initiate') ? openByTheRoute(call) : undefined)));
+      const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+      const ended = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT).then(
+        () => undefined,
+        (error: Error) => error
+      );
+      await runClockUntilSettled(ended);
+
+      expect(opened).toHaveLength(1);
+      expect(openings).toBeGreaterThan(1);
+      expect(await ended).toBeInstanceOf(Error);
+      vi.useRealTimers();
+      await multipartPost(
+        new NextRequest('http://localhost:3000/api/storage/multipart?action=abort', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...visitor },
+          body: JSON.stringify({ uploadId: opened[0] }),
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+      setIdempotencyStore(null);
+    }
   });
 
   it('asks again what an opening that failed with a server error made, since it may have opened the upload first', async () => {

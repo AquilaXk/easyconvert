@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Redis from 'ioredis';
 import { InMemoryIdempotencyStore, RedisIdempotencyStore, type IdempotencyStore } from '../src/lib/api/idempotency';
 
@@ -48,6 +48,26 @@ describe.each([
     }
   });
 
+  /** Lets the lock of `scopedKey` run out: the process store by its clock, Redis by an expiry of one millisecond. */
+  async function endLockByTime(): Promise<void> {
+    if (!redis) {
+      now += MINUTE_MS + 1;
+      return;
+    }
+    await redis.pexpire(scopedKey, 1);
+    await vi.waitFor(async () => expect(await redis?.exists(scopedKey)).toBe(0));
+  }
+
+  /** The in-flight record an older build wrote: no token in it. */
+  async function plantTokenlessLock(): Promise<void> {
+    if (redis) {
+      await redis.set(scopedKey, JSON.stringify({ status: 'in_flight', fingerprint: FINGERPRINT, createdAt: now }), 'PX', LOCK_MS);
+      return;
+    }
+    await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'placeholder');
+    delete (await store.getRecord?.(scopedKey))?.lockToken;
+  }
+
   it('removes the lock when the token is the one the lock was taken with', async () => {
     await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-a');
 
@@ -80,16 +100,44 @@ describe.each([
     expect(await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-b')).toEqual({ status: 'in_flight', retryAfterSeconds: 1 });
   });
 
-  it('tells a repeat that meets a kept lock to try again when the lock ends', async () => {
+  it('turns a repeat that meets a kept lock away like one that meets a running request, so a client that waits and sends again stays inside the lock', async () => {
     await store.acquire(scopedKey, FINGERPRINT, MINUTE_MS, 'run-a');
 
     expect(await store.keepLock(scopedKey, 'run-a')).toBe(true);
-    const repeat = await store.acquire(scopedKey, FINGERPRINT, MINUTE_MS, 'run-b');
 
-    expect(repeat.status).toBe('in_flight');
-    const retryAfter = repeat.status === 'in_flight' ? repeat.retryAfterSeconds : 0;
-    expect(retryAfter).toBeGreaterThanOrEqual(58);
-    expect(retryAfter).toBeLessThanOrEqual(60);
+    expect(await store.acquire(scopedKey, FINGERPRINT, MINUTE_MS, 'run-b')).toEqual({ status: 'in_flight', retryAfterSeconds: 1 });
+    expect((await store.getRecord?.(scopedKey))?.kept).toBe(true);
+  });
+
+  it('keeps nothing for a key that holds no lock or an answer, whatever the token', async () => {
+    expect(await store.keepLock(scopedKey, 'run-a')).toBe(false);
+
+    await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-a');
+    await store.complete(scopedKey, FINGERPRINT, RESPONSE);
+
+    expect(await store.keepLock(scopedKey, 'run-a')).toBe(false);
+    expect((await store.getRecord?.(scopedKey))?.kept).toBeUndefined();
+    expect((await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-b')).status).toBe('completed');
+  });
+
+  it('keeps nothing once the lock ended, and the key is free for the next run', async () => {
+    await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-a');
+    await endLockByTime();
+
+    expect(await store.keepLock(scopedKey, 'run-a')).toBe(false);
+    expect((await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-b')).status).toBe('acquired');
+  });
+
+  it('neither releases nor keeps a lock an older build wrote without a token, and it ends with its time', async () => {
+    await plantTokenlessLock();
+
+    expect(await store.releaseLock(scopedKey, 'run-a')).toBe(false);
+    expect(await store.keepLock(scopedKey, 'run-a')).toBe(false);
+    expect(await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-b')).toEqual({ status: 'in_flight', retryAfterSeconds: 1 });
+
+    await endLockByTime();
+
+    expect((await store.acquire(scopedKey, FINGERPRINT, LOCK_MS, 'run-c')).status).toBe('acquired');
   });
 
   it('keeps the lock only for the run that took it', async () => {

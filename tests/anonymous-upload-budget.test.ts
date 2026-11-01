@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
@@ -11,10 +11,6 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { getIdempotencyStore } from '../src/lib/api/idempotency';
-import { StorageServiceError } from '../src/lib/storage/adapters/adapter-interface';
-import { digestOfPartList } from '../src/lib/storage/upload-completion';
-import type { UploadCompletion } from '../src/lib/storage/result-retention';
-import { ANONYMOUS_UPLOAD_OWNER } from '../src/lib/auth/anonymous-identity';
 import { mayPresignDownload, sweepRetention } from '../src/lib/storage/retention-service';
 import {
   ANONYMOUS_DAILY_UPLOAD_BYTES,
@@ -26,26 +22,16 @@ import {
   type UploadBudgetRecord,
 } from '../src/lib/api-keys/anonymous-upload-budget';
 import { MemoryBudgetStore, RECORD_TTL_MS } from '../src/lib/api-keys/upload-budget-store';
+import { UNAVAILABLE_DETAIL, cleanups, from, initiate, multipart, part, stagedUpload, installUploadFlowHooks } from './helpers/anonymous-upload-flow';
 
 const BASE_URL = 'http://localhost:3000';
-const UNAVAILABLE_DETAIL = 'A service this upload needs is temporarily unavailable. Retry the request shortly.';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const HOUR = 60 * 60 * 1000;
 const DAY = '2026-11-01';
 const NOW = Date.UTC(2026, 10, 1, 12);
 
-const cleanups: Array<() => Promise<void> | void> = [];
-
-beforeEach(() => {
-  vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
-});
-
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  vi.restoreAllMocks();
-  for (const cleanup of cleanups.splice(0)) await cleanup();
-});
+installUploadFlowHooks();
 
 describe('the upload budget of an address bucket', () => {
   const policy = { maxOpenUploads: 2, dailyBytes: 2 * GIB, idleMs: HOUR };
@@ -128,45 +114,14 @@ describe('the upload budget of an address bucket', () => {
   });
 });
 
-function from(address: string): Record<string, string> {
-  return { 'x-forwarded-for': address };
-}
-
 async function account(): Promise<Record<string, string>> {
   const email = `budget_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@budget.test`;
   const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'budget', tier: 'free' }));
   return { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 }
 
-function multipart(action: string, body: unknown, headers: Record<string, string>): NextRequest {
-  return new NextRequest(`${BASE_URL}/api/storage/multipart?action=${action}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify(body),
-  });
-}
-
-async function initiate(headers: Record<string, string>, totalSize: number): Promise<Response> {
-  const res = await multipartPost(multipart('initiate', { filename: 'big.csv', totalSize }, headers));
-  if (res.status === 200) {
-    const { uploadId } = await res.clone().json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
-    });
-  }
-  return res;
-}
-
 function csv(length: number): Buffer {
   return Buffer.alloc(length, 'a');
-}
-
-function part(uploadId: string, bytes: Buffer, headers: Record<string, string>): NextRequest {
-  return new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=1`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream', ...headers },
-    body: new Uint8Array(bytes),
-  });
 }
 
 /** A completed one-part upload of a CSV. */
@@ -701,14 +656,6 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
 });
 
 describe('a completion the store took is final', () => {
-  async function stagedUpload(address: string): Promise<{ visitor: Record<string, string>; uploadId: string; etag: string; bytes: Buffer }> {
-    const visitor = from(address);
-    const bytes = Buffer.from('a,b\n1,2\n');
-    const { uploadId } = await (await initiate(visitor, bytes.length)).json();
-    const { etag } = await (await multipartPost(part(uploadId, bytes, visitor))).json();
-    return { visitor, uploadId, etag, bytes };
-  }
-
   it('answers with the stored file when the idempotency store cannot keep the answer, and logs it', async () => {
     const { visitor, uploadId, etag } = await stagedUpload('203.0.113.81');
     vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
@@ -775,138 +722,6 @@ describe('a completion the store took is final', () => {
     expect(moved.status).toBe(200);
     expect((await moved.json()).key).toBe(firstBody.key);
     expect(signedIn.status).toBe(404);
-  });
-
-  describe('the receipt of a completion', () => {
-    const RECEIPT_PREFIX = 'upload-completion/';
-    const receiptReads = () => vi.spyOn(getRetentionLedger(), 'get');
-
-    async function completedUpload(address: string) {
-      const staged = await stagedUpload(address);
-      /** Completes with the listed part, or with the list given as the one argument after the headers (`undefined` sends none). */
-      const complete = (headers: Record<string, string>, ...list: [unknown?]) =>
-        multipartPost(multipart('complete', { uploadId: staged.uploadId, parts: list.length > 0 ? list[0] : [{ partNumber: 1, etag: staged.etag }] }, headers));
-      const firstBody = await (await complete(staged.visitor)).json();
-      cleanups.push(() => {
-        s3Storage.deleteObject(firstBody.key);
-      });
-      return { ...staged, complete, firstBody };
-    }
-
-    it('is told apart from a missing receipt: a receipt that cannot be read answers a repeat 503 with Retry-After, and the repeat after it is answered', async () => {
-      const { visitor, complete, firstBody } = await completedUpload('203.0.113.91');
-      const read = receiptReads().mockRejectedValueOnce(new Error('redis: connection reset'));
-      vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-      const unreadable = await complete(visitor);
-
-      expect(read).toHaveBeenCalled();
-      expect(unreadable.status).toBe(503);
-      expect(unreadable.headers.get('retry-after')).toBe('5');
-      expect((await unreadable.json()).detail).toBe(UNAVAILABLE_DETAIL);
-      const again = await complete(visitor);
-      expect(again.status).toBe(200);
-      expect(await again.json()).toEqual(firstBody);
-    });
-
-    it('releases the key of an idempotent repeat that met an unreadable receipt, so the next repeat is answered', async () => {
-      const staged = await stagedUpload('203.0.113.92');
-      const headers = { ...staged.visitor, 'Idempotency-Key': `unreadable-${staged.uploadId}` };
-      vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
-      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      vi.spyOn(console, 'error').mockImplementation(() => undefined);
-      const complete = () => multipartPost(multipart('complete', { uploadId: staged.uploadId, parts: [{ partNumber: 1, etag: staged.etag }] }, headers));
-      const firstBody = await (await complete()).json();
-      cleanups.push(() => {
-        s3Storage.deleteObject(firstBody.key);
-      });
-      receiptReads().mockRejectedValueOnce(new Error('redis: connection reset'));
-
-      const unreadable = await complete();
-      const answered = await complete();
-
-      expect(unreadable.status).toBe(503);
-      expect(answered.status).toBe(200);
-      expect(await answered.json()).toEqual(firstBody);
-    });
-
-    it('answers a repeat that lists the same parts, whatever quotes the ETags carry, and no repeat that lists others', async () => {
-      const { visitor, etag, complete, firstBody } = await completedUpload('203.0.113.93');
-
-      const quoted = await complete(visitor, [{ partNumber: 1, etag: `"${etag.replace(/"/g, '')}"` }]);
-      const otherTag = await complete(visitor, [{ partNumber: 1, etag: 'not-the-etag' }]);
-      const otherNumber = await complete(visitor, [{ partNumber: 2, etag }]);
-      const noList = await complete(visitor, undefined);
-      const emptyList = await complete(visitor, []);
-
-      expect(quoted.status).toBe(200);
-      expect(await quoted.json()).toEqual(firstBody);
-      for (const refused of [otherTag, otherNumber, noList, emptyList]) {
-        expect(refused.status).toBe(404);
-        expect((await refused.json()).detail).toBe('Upload session not found or has expired.');
-      }
-    });
-
-    it('answers a repeat of a completion that listed no part with a repeat that lists none', async () => {
-      const staged = await stagedUpload('203.0.113.94');
-      const complete = (parts?: unknown) => multipartPost(multipart('complete', { uploadId: staged.uploadId, parts }, staged.visitor));
-      const firstBody = await (await complete()).json();
-      cleanups.push(() => {
-        s3Storage.deleteObject(firstBody.key);
-      });
-
-      expect(await (await complete()).json()).toEqual(firstBody);
-      expect((await complete([{ partNumber: 1, etag: staged.etag }])).status).toBe(404);
-    });
-
-    it('keeps the owner the session recorded and the digest of the part list with the first answer', async () => {
-      const ledger = getRetentionLedger();
-      const update = ledger.update.bind(ledger);
-      const written: UploadCompletion[] = [];
-      vi.spyOn(ledger, 'update').mockImplementation(async (key, change) => {
-        const record = await update(key, change);
-        if (key.startsWith(RECEIPT_PREFIX) && record?.completion) written.push(record.completion);
-        return record;
-      });
-
-      const { etag, firstBody } = await completedUpload('203.0.113.97');
-
-      const { success: _success, ...answer } = firstBody;
-      expect(written).toEqual([{ ownerUserId: ANONYMOUS_UPLOAD_OWNER, partsDigest: digestOfPartList([{ partNumber: 1, etag }]), result: answer }]);
-    });
-
-    it('looks up no receipt for an upload id that is not an id', async () => {
-      const visitor = from('203.0.113.95');
-      const read = receiptReads();
-
-      for (const uploadId of ['x'.repeat(5000), 'up 1\n2']) {
-        const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag: 'e' }] }, visitor));
-        expect(res.status).toBe(404);
-      }
-      expect(read.mock.calls.filter(([key]) => String(key).startsWith(RECEIPT_PREFIX))).toEqual([]);
-    });
-
-    it('answers the repeat that an object store lets through to its ended session, from the receipt', async () => {
-      const staged = await stagedUpload('203.0.113.96');
-      const openSession = s3Storage.getUploadSession(staged.uploadId);
-      const complete = (parts: unknown) => multipartPost(multipart('complete', { uploadId: staged.uploadId, parts }, staged.visitor));
-      const listed = [{ partNumber: 1, etag: staged.etag }];
-      const firstBody = await (await complete(listed)).json();
-      cleanups.push(() => {
-        s3Storage.deleteObject(firstBody.key);
-      });
-      vi.spyOn(s3Storage, 'getUploadSession').mockReturnValue(openSession);
-      vi.spyOn(s3Storage, 'getUploadedParts').mockImplementation(() => {
-        throw new StorageServiceError('Multipart upload no longer exists', 'oci', { statusCode: 404, code: 'NoSuchUpload', retryable: false });
-      });
-
-      const repeat = await complete(listed);
-      const other = await complete([{ partNumber: 1, etag: 'other' }]);
-
-      expect(repeat.status).toBe(200);
-      expect(await repeat.json()).toEqual(firstBody);
-      expect(other.status).toBe(404);
-    });
   });
 
   it('answers a repeat with a missing session once the stored file is gone', async () => {

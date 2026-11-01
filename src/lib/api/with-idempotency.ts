@@ -216,9 +216,8 @@ export interface IdempotencyContext {
   complete: (res: NextResponse | Response) => Promise<void>;
   /** Removes the lock of this call, and nothing else: the lock of a later run that took the key, or a recorded answer, stays. */
   abort: () => Promise<void>;
-  /** Marks the lock of this call as kept until it ends, so a repeat that meets it is told how long that is. */
+  /** Marks the lock of this call as kept until it ends, so a repeat that meets it is turned away like one that meets a running request. */
   keepLock: () => Promise<void>;
-  renewLock?: (ttlMs?: number) => Promise<boolean>;
 }
 
 export interface AcquireIdempotencyResult {
@@ -287,12 +286,6 @@ export async function acquireIdempotency(
       keepLock: async () => {
         await activeStore.keepLock(scopedKey, lockToken);
       },
-      renewLock: async (ttlMs: number = 60000) => {
-        if (activeStore.renewLock) {
-          return activeStore.renewLock(scopedKey, ttlMs);
-        }
-        return false;
-      },
     },
   };
 }
@@ -303,8 +296,8 @@ export type AfterFailedRecord = 'keep-lock' | 'release';
 export interface RespondOnceOptions extends Pick<AcquireIdempotencyOptions, 'parsedBody'> {
   /**
    * `keep-lock` for an action that creates something a second run would create again (a job, an upload session): the
-   * lock stays, and a repeat gets 409 with the time that is left of it as `Retry-After`. The lock ends a minute after
-   * it was taken, so a repeat sent after that runs the action again. `release` for an action whose repeat finds the
+   * lock stays, and a repeat gets the same 409 and one-second `Retry-After` as a repeat that meets a running request.
+   * The lock bounds the repeats for the minute it lasts; a repeat sent after that runs the action again. `release` for an action whose repeat finds the
    * state the first run left and answers from it, as `complete` does: the next repeat runs the action and gets that
    * answer.
    */

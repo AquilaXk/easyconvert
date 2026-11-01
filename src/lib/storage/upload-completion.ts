@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { stripEtagQuotes } from './etag';
 import { getRetentionLedger } from './retention-ledger';
 import { newCompletionRecord, type UploadCompletion } from './result-retention';
 
@@ -17,13 +18,15 @@ function receiptKey(uploadId: string): string {
 }
 
 /**
- * A digest of the part list a completion was sent with, as the request gave it: the numbers and the ETags without their
- * quotes, in order. A request that lists no part (the upload is completed from every stored one) has its own digest.
- * An object store answers a repeat of a completion only when it lists the same parts, and so does the receipt.
+ * A digest of the part list a completion was sent with, each entry read as the completion reads it (`listedPart` in the
+ * multipart route): the part number, and the ETag without its quotes when it is a non-empty text, else none, since the
+ * completion checks no other. A request that lists no part (the upload is completed from every stored one), whether the
+ * list is absent or null, has its own digest. An object store answers a repeat of a completion only when it lists the
+ * same parts, and so does the receipt.
  */
 export function digestOfPartList(parts: unknown): string {
   const listed = Array.isArray(parts)
-    ? parts.map((part: { partNumber?: unknown; etag?: unknown } | null) => [part?.partNumber ?? null, typeof part?.etag === 'string' ? part.etag.replace(/"/g, '') : null])
+    ? parts.map((part: { partNumber?: unknown; etag?: unknown } | null) => [part?.partNumber ?? null, typeof part?.etag === 'string' && part.etag ? stripEtagQuotes(part.etag) : null])
     : null;
   return crypto.createHash('sha256').update(JSON.stringify(listed)).digest('hex');
 }

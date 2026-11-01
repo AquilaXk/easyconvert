@@ -16,11 +16,20 @@ export interface IdempotencyRecord {
   fingerprint: string;
   createdAt: number;
   response?: StoredResponse;
-  /** The random value of the run that took the lock; only that run releases it (the compare-and-delete of the Redis lock pattern). */
+  /**
+   * The random value of the run that took the lock; only that run releases it (the compare-and-delete of the Redis lock
+   * pattern). A record an older build wrote has none, so no run releases or keeps it and it ends with its time.
+   */
   lockToken?: string;
-  /** Set on a lock that stays until it ends because the answer could not be recorded: a repeat is told when that is. */
+  /** Set on a lock that stays until it ends because the answer could not be recorded. */
   kept?: boolean;
 }
+
+/**
+ * What a repeat that meets a lock is told, whether the run still goes or its lock was kept: a browser sends the repeat
+ * again after this wait, at most four times, so a longer wait would land it after the lock ended and run the action again.
+ */
+export const IN_FLIGHT_RETRY_AFTER_SECONDS = 1;
 
 export type AcquireResult =
   | { status: 'acquired' }
@@ -29,16 +38,22 @@ export type AcquireResult =
   | { status: 'mismatched_fingerprint' };
 
 export interface IdempotencyStore {
-  acquire(scopedKey: string, fingerprint: string, lockTtlMs?: number, lockToken?: string): Promise<AcquireResult>;
+  /**
+   * Takes the lock of `scopedKey` for `lockTtlMs` under `lockToken`, or says what holds it: a repeat that meets a lock,
+   * whether the run is still going or its lock was kept, is told to ask again in a second.
+   */
+  acquire(scopedKey: string, fingerprint: string, lockTtlMs: number, lockToken: string): Promise<AcquireResult>;
   complete(scopedKey: string, fingerprint: string, response: StoredResponse, ttlMs?: number): Promise<boolean>;
   /**
    * Removes the lock of `scopedKey` only while it is still the lock taken with `lockToken`, in one step: a run whose
    * lock ended and was taken again by a later run cannot remove the later run's lock, and a recorded answer is never removed.
    */
   releaseLock(scopedKey: string, lockToken: string): Promise<boolean>;
-  /** Marks the lock taken with `lockToken` as kept until it ends, so a repeat that meets it is told the time that is left. */
+  /**
+   * Marks the lock taken with `lockToken` as kept: it stays until its time ends, and a repeat that meets it is turned
+   * away like one that meets a running request. A repeat sent after the lock ended runs the action again.
+   */
   keepLock(scopedKey: string, lockToken: string): Promise<boolean>;
-  renewLock?(scopedKey: string, ttlMs?: number): Promise<boolean>;
   getRecord?(scopedKey: string): Promise<IdempotencyRecord | null>;
   reset?(): Promise<void> | void;
 }
@@ -144,8 +159,7 @@ export function isValidIdempotencyKey(key: unknown): key is string {
 export const ACQUIRE_IDEMPOTENCY_LUA_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if not current then
-  local record = { status = "in_flight", fingerprint = ARGV[1], createdAt = tonumber(ARGV[3]) }
-  if ARGV[4] ~= '' then record.lockToken = ARGV[4] end
+  local record = { status = "in_flight", fingerprint = ARGV[1], createdAt = tonumber(ARGV[3]), lockToken = ARGV[4] }
   redis.call('SET', KEYS[1], cjson.encode(record), 'PX', tonumber(ARGV[2]))
   return { "ACQUIRED" }
 end
@@ -157,10 +171,7 @@ if parsed.fingerprint ~= ARGV[1] then
   return { "MISMATCH" }
 end
 if parsed.status == "in_flight" then
-  if parsed.kept then
-    return { "IN_FLIGHT", tostring(math.max(1, math.ceil(redis.call('PTTL', KEYS[1]) / 1000))) }
-  end
-  return { "IN_FLIGHT", "1" }
+  return { "IN_FLIGHT" }
 elseif parsed.status == "completed" then
   return { "COMPLETED", current }
 else
@@ -203,17 +214,6 @@ redis.call('SET', KEYS[1], cjson.encode(parsed), 'PX', ttl)
 return 1
 `;
 
-export const RENEW_LOCK_LUA_SCRIPT = `
-local current = redis.call('GET', KEYS[1])
-if current then
-  local parsed = cjson.decode(current)
-  if parsed.status == "in_flight" then
-    return redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[1]))
-  end
-end
-return 0
-`;
-
 export interface InMemoryIdempotencyStoreOptions {
   clock?: () => number;
 }
@@ -230,7 +230,7 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     this.clock = clock;
   }
 
-  public acquire(scopedKey: string, fingerprint: string, lockTtlMs: number = 60000, lockToken?: string): Promise<AcquireResult> {
+  public acquire(scopedKey: string, fingerprint: string, lockTtlMs: number, lockToken: string): Promise<AcquireResult> {
     const now = this.clock();
     const existing = this.records.get(scopedKey);
 
@@ -242,8 +242,7 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
           return Promise.resolve({ status: 'mismatched_fingerprint' });
         }
         if (existing.record.status === 'in_flight') {
-          const retryAfterSeconds = existing.record.kept ? Math.max(1, Math.ceil((existing.expiresAt - now) / 1000)) : 1;
-          return Promise.resolve({ status: 'in_flight', retryAfterSeconds });
+          return Promise.resolve({ status: 'in_flight', retryAfterSeconds: IN_FLIGHT_RETRY_AFTER_SECONDS });
         }
         if (existing.record.status === 'completed' && existing.record.response) {
           return Promise.resolve({ status: 'completed', response: existing.record.response });
@@ -256,7 +255,7 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
         status: 'in_flight',
         fingerprint,
         createdAt: now,
-        ...(lockToken ? { lockToken } : {}),
+        lockToken,
       },
       expiresAt: now + lockTtlMs,
     });
@@ -302,16 +301,6 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
     const lock = this.lockOf(scopedKey, lockToken);
     if (lock) lock.record.kept = true;
     return Promise.resolve(lock !== undefined);
-  }
-
-  public renewLock(scopedKey: string, ttlMs: number = 60000): Promise<boolean> {
-    const now = this.clock();
-    const existing = this.records.get(scopedKey);
-    if (existing && existing.expiresAt > now && existing.record.status === 'in_flight') {
-      existing.expiresAt = now + ttlMs;
-      return Promise.resolve(true);
-    }
-    return Promise.resolve(false);
   }
 
   public getRecord(scopedKey: string): Promise<IdempotencyRecord | null> {
@@ -364,7 +353,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     this.clock = clock;
   }
 
-  public async acquire(scopedKey: string, fingerprint: string, lockTtlMs: number = 60000, lockToken: string = ''): Promise<AcquireResult> {
+  public async acquire(scopedKey: string, fingerprint: string, lockTtlMs: number, lockToken: string): Promise<AcquireResult> {
     const now = this.clock();
     const res = (await this.redis.eval(
       ACQUIRE_IDEMPOTENCY_LUA_SCRIPT,
@@ -381,7 +370,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
       return { status: 'acquired' };
     }
     if (status === 'IN_FLIGHT') {
-      return { status: 'in_flight', retryAfterSeconds: res[1] ? Number.parseInt(res[1], 10) : 1 };
+      return { status: 'in_flight', retryAfterSeconds: IN_FLIGHT_RETRY_AFTER_SECONDS };
     }
     if (status === 'MISMATCH') {
       return { status: 'mismatched_fingerprint' };
@@ -427,16 +416,6 @@ export class RedisIdempotencyStore implements IdempotencyStore {
 
   public async keepLock(scopedKey: string, lockToken: string): Promise<boolean> {
     return (await this.redis.eval(KEEP_LOCK_LUA_SCRIPT, 1, scopedKey, lockToken)) === 1;
-  }
-
-  public async renewLock(scopedKey: string, ttlMs: number = 60000): Promise<boolean> {
-    const res = (await this.redis.eval(
-      RENEW_LOCK_LUA_SCRIPT,
-      1,
-      scopedKey,
-      ttlMs.toString()
-    )) as number;
-    return res === 1;
   }
 
   public async getRecord(scopedKey: string): Promise<IdempotencyRecord | null> {

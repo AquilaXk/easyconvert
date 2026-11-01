@@ -30,7 +30,7 @@ import type { User } from '@/lib/auth/types';
 import { storageErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
-import { declaredPartBytes, partFailureResponse, uploadErrorResponse } from '@/lib/api/part-response';
+import { declaredPartBytes, partFailureResponse, uploadErrorResponse, type UploadErrorContext } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -390,12 +390,25 @@ async function handleAbortUpload(
   return NextResponse.json({ success: true, aborted });
 }
 
+interface UploadAction {
+  run: (req: NextRequest, searchParams: URLSearchParams, instanceUri: string, user: User) => Promise<Response>;
+  /** The action works on an upload session the caller holds, so a missing file of the session means the session is gone. */
+  sessionBound: boolean;
+}
+
+const UPLOAD_ACTIONS: ReadonlyMap<string, UploadAction> = new Map([
+  ['part', { run: (req, searchParams, instanceUri, user) => handlePartUpload(req, searchParams, instanceUri, user.id), sessionBound: true }],
+  ['initiate', { run: (req, _searchParams, instanceUri, user) => handleInitiateUpload(req, instanceUri, user), sessionBound: false }],
+  ['complete', { run: (req, _searchParams, instanceUri, user) => handleCompleteUpload(req, instanceUri, user.id), sessionBound: true }],
+  ['abort', { run: (req, _searchParams, instanceUri, user) => handleAbortUpload(req, instanceUri, user.id), sessionBound: true }],
+]);
+
 /** The one answer to an error of an upload action: the shared mapping of the upload routes, else the message of the error as a 400. */
-function uploadActionErrorResponse(err: unknown, instanceUri: string, action: string): Response {
+function uploadActionErrorResponse(err: unknown, instanceUri: string, context: UploadErrorContext): Response {
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }
-  const storageProblem = uploadErrorResponse(err, instanceUri, action);
+  const storageProblem = uploadErrorResponse(err, instanceUri, context);
   if (storageProblem) return storageProblem;
   const message = err instanceof Error && err.message ? err.message : 'Error executing upload operation';
   return createProblemDetailsResponse(400, message, instanceUri);
@@ -465,21 +478,12 @@ export const POST = admittingNewFiles(async function POST(
 
   // Handle direct multipart upload actions if 'action' query param is provided
   if (action) {
+    const spec = UPLOAD_ACTIONS.get(action);
+    if (!spec) return createProblemDetailsResponse(400, `Unsupported action "${action}".`, instanceUri);
     try {
-      switch (action) {
-        case 'part':
-          return await handlePartUpload(req, searchParams, instanceUri, auth.user.id);
-        case 'initiate':
-          return await handleInitiateUpload(req, instanceUri, auth.user);
-        case 'complete':
-          return await handleCompleteUpload(req, instanceUri, auth.user.id);
-        case 'abort':
-          return await handleAbortUpload(req, instanceUri, auth.user.id);
-        default:
-          return createProblemDetailsResponse(400, `Unsupported action "${action}".`, instanceUri);
-      }
+      return await spec.run(req, searchParams, instanceUri, auth.user);
     } catch (err: unknown) {
-      return uploadActionErrorResponse(err, instanceUri, action);
+      return uploadActionErrorResponse(err, instanceUri, { sessionBound: spec.sessionBound });
     }
   }
 

@@ -5,6 +5,7 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { discardUpload, mayPresignDownload, registerCompletedUpload, removeUnregistered } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
 import type { IStorageBackend, UploadSessionInfo } from '@/lib/storage/oci-storage';
+import { stripEtagQuotes } from '@/lib/storage/etag';
 import { isUploadKey } from '@/lib/storage/key-namespace';
 import { validateApiAccess, authErrorHeaders, getQuotaUsage } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -298,14 +299,18 @@ function initiateUpload(context: ActionContext): Promise<Response> {
   return onceForCaller(context, openSession);
 }
 
-/** A session with the owner it recorded, which every session the caller may use has. */
-type OwnedSession = UploadSessionInfo & { ownerUserId: string };
+/** A session the caller may use, with the owner it recorded, which every such session has. */
+interface UsableSession {
+  session: UploadSessionInfo;
+  ownerUserId: string;
+}
 
 /** The session `uploadId` names when the caller may use it. */
-async function usableSession(storage: MultipartCapableStorage, uploadId: unknown, userId: string): Promise<OwnedSession | undefined> {
+async function usableSession(storage: MultipartCapableStorage, uploadId: unknown, userId: string): Promise<UsableSession | undefined> {
   if (typeof uploadId !== 'string' || !uploadId) return undefined;
   const session = await storage.getUploadSession(uploadId);
-  return session?.ownerUserId && mayUseUploadSession(session.ownerUserId, userId) ? { ...session, ownerUserId: session.ownerUserId } : undefined;
+  const ownerUserId = session?.ownerUserId;
+  return session && ownerUserId && mayUseUploadSession(ownerUserId, userId) ? { session, ownerUserId } : undefined;
 }
 
 function parsePartNumber(raw: string): number | undefined {
@@ -314,16 +319,13 @@ function parsePartNumber(raw: string): number | undefined {
   return partNumber >= 1 && partNumber <= MULTIPART_MAX_PARTS ? partNumber : undefined;
 }
 
-/** Actions that change an open session and may be sent again: a part, the completion, the abort. */
-const RETRYABLE_ACTIONS: ReadonlySet<string> = new Set(['chunk', 'complete', 'abort']);
-
 /**
  * The answer to a request that failed with an error no HTTP status was given to: the store or the budget could not be
  * reached, so it is worth sending again (503), except on the actions that create something new (500).
  */
-function unexpectedFailure(error: unknown, action: string, instanceUri: string): NextResponse {
+function unexpectedFailure(error: unknown, action: string, sessionBound: boolean, instanceUri: string): NextResponse {
   console.error(`[multipart] ${action} failed:`, error);
-  return RETRYABLE_ACTIONS.has(action) ? uploadUnavailableResponse(instanceUri) : createProblemDetailsResponse(500, FAILURE_DETAIL, instanceUri);
+  return sessionBound ? uploadUnavailableResponse(instanceUri) : createProblemDetailsResponse(500, FAILURE_DETAIL, instanceUri);
 }
 
 /**
@@ -349,8 +351,8 @@ async function storePart({ req, storage, user, instanceUri }: ActionContext): Pr
   const lengthProblem = partBodyProblem(req, instanceUri);
   if (lengthProblem) return lengthProblem;
 
-  const session = await usableSession(storage, uploadId, user.id);
-  if (!session) return uploadSessionNotFoundResponse(instanceUri);
+  const usable = await usableSession(storage, uploadId, user.id);
+  if (!usable) return uploadSessionNotFoundResponse(instanceUri);
   const partNumber = parsePartNumber(partNumberRaw);
   if (partNumber === undefined) return badRequest(`Invalid part number: ${partNumberRaw}`, instanceUri);
   if (!req.body) return badRequest('Chunk payload is empty (0 bytes).', instanceUri);
@@ -360,7 +362,7 @@ async function storePart({ req, storage, user, instanceUri }: ActionContext): Pr
   try {
     const partResult = await receivePart(
       storage,
-      { uploadId, partNumber, declaredBytes: declaredPartBytes(req.headers), totalSize: session.totalSize, maxPartBytes: MAX_PART_BYTES },
+      { uploadId, partNumber, declaredBytes: declaredPartBytes(req.headers), totalSize: usable.session.totalSize, maxPartBytes: MAX_PART_BYTES },
       req.body
     );
     return NextResponse.json({ success: true, ...partResult });
@@ -378,7 +380,7 @@ interface StoredPart {
 type PartSelection = { parts: Array<{ partNumber: number; etag: string }> } | { problem: string };
 
 function sameEtag(a: string, b: string): boolean {
-  return a.replace(/"/g, '') === b.replace(/"/g, '');
+  return stripEtagQuotes(a) === stripEtagQuotes(b);
 }
 
 /** The stored part a listed one names, or the reason it cannot be used. */
@@ -464,10 +466,10 @@ async function finishSession(context: ActionContext): Promise<Response> {
   const { uploadId, parts } = body;
   if (typeof uploadId !== 'string' || !uploadId) return badRequest('Missing required "uploadId" in complete request.', instanceUri);
   const answerOfEndedSession = async () => (await answerOfCompletedUpload(storage, uploadId, user.id, parts, instanceUri)) ?? uploadSessionNotFoundResponse(instanceUri);
-  const session = await usableSession(storage, uploadId, user.id);
-  if (!session) return answerOfEndedSession();
+  const usable = await usableSession(storage, uploadId, user.id);
+  if (!usable) return answerOfEndedSession();
   try {
-    return await completeOpenSession(storage, session, parts, instanceUri);
+    return await completeOpenSession(storage, usable, parts, instanceUri);
   } catch (error) {
     // An object store keeps handing out a session until it expires, so a repeat finds it ended only when the store says so.
     if (isNoSuchUploadError(error)) return answerOfEndedSession();
@@ -475,7 +477,7 @@ async function finishSession(context: ActionContext): Promise<Response> {
   }
 }
 
-async function completeOpenSession(storage: MultipartCapableStorage, session: OwnedSession, parts: unknown, instanceUri: string): Promise<Response> {
+async function completeOpenSession(storage: MultipartCapableStorage, { session, ownerUserId }: UsableSession, parts: unknown, instanceUri: string): Promise<Response> {
   const { uploadId } = session;
   const selection = selectCompletionParts(parts, (await storage.getUploadedParts(uploadId)) ?? [], session.totalSize);
   if ('problem' in selection) return badRequest(selection.problem, instanceUri);
@@ -495,15 +497,16 @@ async function completeOpenSession(storage: MultipartCapableStorage, session: Ow
     await closeReservation(uploadId, 'aborted');
     return createProblemDetailsResponse(500, UNRECORDED_UPLOAD_DETAIL, instanceUri);
   }
-  await keepAnswerOfCompletion(uploadId, session.ownerUserId, parts, completeResult);
+  await keepAnswerOfCompletion(uploadId, ownerUserId, parts, completeResult);
   await closeReservation(uploadId, 'completed');
   return NextResponse.json({ success: true, ...completeResult });
 }
 
 /**
  * An `Idempotency-Key` lets a client whose answer was lost ask again which file the completion stored. The key is scoped
- * to the upload and the owner its session records, not to the address bucket: an anonymous visitor holds the upload by
- * its id, and keeps getting the first answer when its address moves to another bucket. A repeat is authorised by the key
+ * to the upload and to the caller's upload owner (`uploadOwnerOf`: the account, or one shared owner for every anonymous
+ * caller), not to the address bucket: an anonymous visitor holds the upload by its id, and keeps getting the first
+ * answer when its address moves to another bucket. A repeat is authorised by the key
  * value alone, which only the client that sent the first request knows, as the upload id is.
  */
 async function completeUpload(context: ActionContext): Promise<Response> {
@@ -577,17 +580,23 @@ async function presign({ storage, user, instanceUri, body }: ActionContext): Pro
 
 interface ActionSpec {
   run: (context: ActionContext) => Promise<Response>;
+  /**
+   * The action works on an upload session the caller holds and may be sent again (a part, the completion, the abort): a
+   * missing file of the session is the session gone, and a failure with no status is worth sending again (503). The
+   * others create something new or work on no session.
+   */
+  sessionBound: boolean;
   /** The body of the request is the bytes of a part, which the action streams: the dispatcher leaves it unread. */
   streamsBody?: boolean;
 }
 
 const ACTIONS: ReadonlyMap<string, ActionSpec> = new Map([
-  ['initiate', { run: initiateUpload }],
-  ['chunk', { run: storePart, streamsBody: true }],
-  ['complete', { run: completeUpload }],
-  ['abort', { run: abortUpload }],
-  ['discard', { run: discardCompletedUpload }],
-  ['presign', { run: presign }],
+  ['initiate', { run: initiateUpload, sessionBound: false }],
+  ['chunk', { run: storePart, streamsBody: true, sessionBound: true }],
+  ['complete', { run: completeUpload, sessionBound: true }],
+  ['abort', { run: abortUpload, sessionBound: true }],
+  ['discard', { run: discardCompletedUpload, sessionBound: false }],
+  ['presign', { run: presign, sessionBound: false }],
 ]);
 
 function actionOf(req: NextRequest): string {
@@ -625,6 +634,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   try {
     return await spec.run({ req, storage: storageProvider, user: auth.user, instanceUri, body: spec.streamsBody ? {} : await readJson(req) });
   } catch (error: unknown) {
-    return uploadErrorResponse(error, instanceUri, action) ?? unexpectedFailure(error, action, instanceUri);
+    return uploadErrorResponse(error, instanceUri, { sessionBound: spec.sessionBound }) ?? unexpectedFailure(error, action, spec.sessionBound, instanceUri);
   }
 }, isNewMultipartUpload);
