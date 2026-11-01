@@ -18,7 +18,7 @@ import {
 } from './lua-scripts';
 import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
-import { redactText } from '../../security/redact';
+import { maskServerText } from '../../security/server-paths';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { storageProvider } from '../../storage';
 import { releaseGraphInputHolds } from './input-cleanup';
@@ -234,8 +234,8 @@ export class RedisGraphScheduler implements IGraphScheduler {
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
-    // The reason is stored, returned by the job API and sent in webhooks: it is masked once, here.
-    const error = redactText(reportedError);
+    // The reason is stored, returned by the job API and sent in webhooks: credentials and server paths are masked here, on write.
+    const error = maskServerText(reportedError);
     const k = this.graphKeys(graphId);
     const raw = (await this.redisClient.eval(
       NODE_FAILED_LUA_SCRIPT,

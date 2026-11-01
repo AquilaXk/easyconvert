@@ -11,7 +11,7 @@ import type {
 } from './scheduler-types';
 import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
-import { redactText } from '../../security/redact';
+import { maskServerText } from '../../security/server-paths';
 import { storageProvider } from '../../storage';
 import { releaseGraphInputHolds } from './input-cleanup';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
@@ -194,8 +194,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     nodeId: NodeId,
     reportedError: string
   ): Promise<NodeFailureResult> {
-    // The reason is stored, returned by the job API and sent in webhooks: it is masked once, here.
-    const error = redactText(reportedError);
+    // The reason is stored, returned by the job API and sent in webhooks: credentials and server paths are masked here, on write.
+    const error = maskServerText(reportedError);
     const data = this.graphs.get(graphId);
     const nodeState = data?.state.nodes[nodeId];
     if (!data || data.state.status !== 'running' || !nodeState || !RUNNABLE_NODE_STATUSES.has(nodeState.status)) {

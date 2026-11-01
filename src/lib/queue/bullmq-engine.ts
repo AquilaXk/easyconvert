@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
-import { redactForOutput, redactText, scrubError } from '../security/redact';
-import { maskedFailureReason } from '../security/server-paths';
+import { redactForOutput, redactText } from '../security/redact';
+import { maskFailure, maskServerText } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
 import {
@@ -911,16 +911,15 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
-    // Mask the error itself so the failed event, console output and rethrows also show masked text.
-    scrubError(err);
-    const errorMessage = maskedFailureReason(err);
+    // Mask the error itself so the failed event, its webhook and dead letter, console output and rethrows show the stored text.
+    const errorMessage = maskFailure(err);
     job.failedReason = errorMessage;
     const failure = classifyJobFailure(err);
     job.failedCode = failure.code;
     job.failedStatus = failure.status;
     job.failedRefusalCode = refusalCodeOf(err);
     if (err instanceof Error && err.stack) {
-      job.stacktrace.push(redactText(err.stack));
+      job.stacktrace.push(maskServerText(err.stack));
     }
 
     const maxAttempts = job.opts.attempts || 1;

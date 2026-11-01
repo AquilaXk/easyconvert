@@ -372,30 +372,73 @@ export function redactText(text: string): string {
   return redactKeyValuePairs(withoutBearer);
 }
 
-/** Characters after which a path may start: the start of a token, a quote or a bracket, or the `:` or `=` of a field. */
-const PATH_LEADS: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '`', '(', '[', '{', '<', ':', '=', ',']);
+/**
+ * The characters a word or a path goes on with: letters, marks and digits of any script, `_`, `.`, `~`, `/` and `-`. A root
+ * right after one is inside a word (`x/tmp`, `./tmp`, `~/tmp`, `//tmp`, `-I/usr`), not the start of a path.
+ */
+const PATH_BODY_CLASS = '[\\p{L}\\p{M}\\p{N}_.~/-]';
+const PATH_BODY = new RegExp(PATH_BODY_CLASS, 'u');
+/** What may follow a root that names the directory: the end, a slash, a backslash, a space, a quote or a closing mark. Not `>`, so `</tmp>` stays an end tag. */
+const ROOT_END = `(?=$|[/\\\\\\s"'\`)\\]},;:])`;
+const FILE_URL_PREFIX = '[Ff][Ii][Ll][Ee]://';
 /** Characters that end a path that is not quoted. */
 const PATH_ENDS: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '`', ')', ']', '}', '<', '>', ',', ';', ':', '=']);
+/** Characters that stop the search for the end of a path with spaces in it. */
+const SPACED_PATH_STOPS: ReadonlySet<string> = new Set(['\t', '\r', '\n', '"', "'", '`', ':']);
 const PATH_QUOTES: ReadonlySet<string> = new Set(['"', "'", '`']);
 const LINE_BREAKS: ReadonlySet<string> = new Set(['\r', '\n']);
-const FILE_URL_PREFIX = 'file://';
+/** Longest file extension a path with spaces may end in (`.webm`, `.so`, `.backup`). */
+const MAX_FILE_EXTENSION_LENGTH = 8;
+const FILE_EXTENSION_CHARACTER = /[A-Za-z0-9]/;
 
 function escapeRegExp(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 }
 
-/** Where a path that is not quoted ends: before its first space, or before the `: ` that follows it on its line (`/a/b c.pdf: error`). */
-function unquotedPathEnd(text: string, start: number): number {
-  let end = start;
+function withoutTrailingSlashes(root: string): string {
+  let end = root.length;
+  while (end > 0 && root[end - 1] === '/') end--;
+  return root.slice(0, end);
+}
+
+/** Whether the text before `end` ends in a short file extension: a dot and one to eight ASCII letters or digits. */
+function endsInFileExtension(text: string, end: number): boolean {
+  let start = end;
+  while (start > 0 && end - start <= MAX_FILE_EXTENSION_LENGTH && FILE_EXTENSION_CHARACTER.test(text[start - 1])) start--;
+  const length = end - start;
+  return length > 0 && length <= MAX_FILE_EXTENSION_LENGTH && text[start - 1] === '.';
+}
+
+/** Whether the `/` at `index` starts a path rather than going on with a word (`and/or`) or a path. */
+function startsPath(text: string, index: number): boolean {
+  return text[index] === '/' && (index === 0 || !PATH_BODY.test(text[index - 1]));
+}
+
+/**
+ * Where a path that is not quoted ends, scanning from the end of its root. It ends at its first space, unless the text up to
+ * the `: ` that follows it (`/a/b c.pdf: error`) or up to a later word with a slash inside (`/a/b c/d.pdf failed`) ends in a
+ * short file extension. That search stops at a line break, a tab, a quote, a colon or the start of another path, so no
+ * path's scan crosses the start of another.
+ */
+function unquotedPathEnd(text: string, from: number): number {
+  let end = from;
   while (end < text.length && !PATH_ENDS.has(text[end])) end++;
   if (text[end] !== ' ') return end;
-  // A space may belong to the file name when the line goes on to `: ` with no quote, line break or other path in between.
-  for (let cursor = end; cursor < text.length; cursor++) {
+  let spacedEnd = end;
+  let wordHasSlash = false;
+  for (let cursor = end + 1; cursor <= text.length; cursor++) {
     const ch = text[cursor];
-    if (ch === ':') return cursor + 1 === text.length || WHITESPACE.has(text[cursor + 1]) ? cursor : end;
-    if (LINE_BREAKS.has(ch) || PATH_QUOTES.has(ch) || (ch === '/' && PATH_LEADS.has(text[cursor - 1]))) return end;
+    const stops = cursor === text.length || SPACED_PATH_STOPS.has(ch) || startsPath(text, cursor);
+    if (stops || ch === ' ') {
+      const colonFollows = ch === ':' && (cursor + 1 === text.length || WHITESPACE.has(text[cursor + 1]));
+      if ((wordHasSlash || colonFollows) && endsInFileExtension(text, cursor)) spacedEnd = cursor;
+      if (stops) return spacedEnd;
+      wordHasSlash = false;
+    } else if (ch === '/') {
+      wordHasSlash = true;
+    }
   }
-  return end;
+  return spacedEnd;
 }
 
 /** The quote that closes a quoted path on its line, or -1 when the line ends first. */
@@ -407,36 +450,42 @@ function closingQuote(text: string, start: number, quote: string): number {
 }
 
 /**
- * Masks the paths under `roots` (absolute directories, without a trailing slash) in free text, written plainly, as a
- * `file://` URL or after the `:` or `=` of a field, with spaces and any letters up to the end of the path. Other slashes
- * stay: a PDF name, an end tag, a JSON pointer, a MIME type or a URL path names what went wrong, not where the server
- * keeps its files. One forward pass: no path's scan crosses the start of another.
+ * Masks the paths under `roots` (absolute directories) in free text, written plainly, as a `file://` URL or after any mark
+ * that is not part of a word (`:`, `=`, `>`, `|`, `;`, a quote or a bracket). A quoted path runs to its closing quote when
+ * the quoted text ends in a short file extension; any other path ends at its first space unless it goes on to a file name
+ * (see `unquotedPathEnd`), so the words after a path stay. Other slashes stay: a PDF name, an end tag, a JSON pointer, a
+ * MIME type or a URL path names what went wrong, not where the server keeps its files. One forward pass.
  */
 export function redactPaths(text: string, roots: readonly string[]): string {
-  if (roots.length === 0) return text;
-  const alternatives = [...roots].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
-  const pathStart = new RegExp(`(${escapeRegExp(FILE_URL_PREFIX)})?(?:${alternatives})(?=$|[/\\s"'\`)\\]}<>,;:=])`, 'g');
+  const directories = [...new Set(roots.map(withoutTrailingSlashes))].filter((root) => root.length > 0);
+  if (directories.length === 0) return text;
+  const alternatives = directories.sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+  const pathStart = new RegExp(`(?<!${PATH_BODY_CLASS})(${FILE_URL_PREFIX})?(?:${alternatives})${ROOT_END}`, 'gu');
   // Per quote, the end of the line on which it has no closing quote, so a line of unclosed quotes is scanned once.
   const unclosedUntil = new Map<string, number>();
   let out = '';
   let cursor = 0;
   for (let match = pathStart.exec(text); match; match = pathStart.exec(text)) {
     const lead = text[match.index - 1];
-    if (match.index > 0 && !PATH_LEADS.has(lead)) {
-      continue;
-    }
     const pathAt = match.index + (match[1]?.length ?? 0);
+    const rootEnd = match.index + match[0].length;
     let end = -1;
-    if (PATH_QUOTES.has(lead) && (unclosedUntil.get(lead) ?? -1) < pathAt) {
-      end = closingQuote(text, pathAt, lead);
-      if (end < 0) unclosedUntil.set(lead, lineEnd(text, pathAt));
+    if (PATH_QUOTES.has(lead) && (unclosedUntil.get(lead) ?? -1) < rootEnd) {
+      const close = closingQuote(text, rootEnd, lead);
+      if (close < 0) unclosedUntil.set(lead, lineEnd(text, rootEnd));
+      else if (endsInFileExtension(text, close)) end = close;
     }
-    if (end < 0) end = unquotedPathEnd(text, pathAt);
+    if (end < 0) end = unquotedPathEnd(text, rootEnd);
     out += text.slice(cursor, pathAt) + REDACTION_MASK;
     cursor = end;
-    pathStart.lastIndex = Math.max(end, pathStart.lastIndex);
+    pathStart.lastIndex = end;
   }
   return out + text.slice(cursor);
+}
+
+/** Masks credentials, and the paths under `pathRoots`, in a text a failure carries. */
+export function redactFailureText(text: string, pathRoots: readonly string[]): string {
+  return redactText(redactPaths(text, pathRoots));
 }
 
 /**
@@ -542,7 +591,7 @@ export function redactForOutput<T>(value: T): T {
   return walk(value, 0, { nodes: 0, ancestors: new Set(), lenient: true }) as T;
 }
 
-function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }[], depth: number): void {
+function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }[], depth: number, pathRoots: readonly string[]): void {
   const record = error as unknown as Record<string, unknown>;
   for (const key of Object.keys(error).slice(0, MAX_ERROR_PROPERTIES)) {
     const item = record[key];
@@ -550,7 +599,7 @@ function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }
       if (item instanceof Error) {
         queue.push({ error: item, depth: depth + 1 });
       } else if (typeof item === 'string') {
-        record[key] = redactText(item);
+        record[key] = redactFailureText(item, pathRoots);
       } else if (typeof item === 'object' && item !== null) {
         record[key] = redactForOutput(item);
       }
@@ -564,10 +613,11 @@ function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }
  * Masks an error in place, so that every later reader of the same error (a log line, an event
  * listener, a rethrow) sees the masked text: its message and stack, its `cause` chain, the errors
  * of an AggregateError, and its own enumerable properties such as an HTTP client's request and
- * response. Bounded by MAX_ERROR_CAUSE_DEPTH, MAX_SCRUBBED_ERRORS and MAX_ERROR_PROPERTIES.
+ * response. Credentials are masked, and so are the paths under `pathRoots` in its texts.
+ * Bounded by MAX_ERROR_CAUSE_DEPTH, MAX_SCRUBBED_ERRORS and MAX_ERROR_PROPERTIES.
  * Values that are not errors are returned unchanged.
  */
-export function scrubError<T>(error: T): T {
+export function scrubError<T>(error: T, pathRoots: readonly string[]): T {
   const queue: { error: Error; depth: number }[] = error instanceof Error ? [{ error, depth: 0 }] : [];
   const seen = new Set<Error>();
   for (let next = queue.shift(); next && seen.size < MAX_SCRUBBED_ERRORS; next = queue.shift()) {
@@ -577,9 +627,9 @@ export function scrubError<T>(error: T): T {
     seen.add(next.error);
     const current = next.error;
     try {
-      current.message = redactText(current.message);
+      current.message = redactFailureText(current.message, pathRoots);
       if (current.stack) {
-        current.stack = redactText(current.stack);
+        current.stack = redactFailureText(current.stack, pathRoots);
       }
     } catch {
       // A frozen error cannot be edited; callers also mask the text they copy out of it.
@@ -597,7 +647,7 @@ export function scrubError<T>(error: T): T {
         }
       }
     }
-    scrubOwnProperties(current, queue, next.depth);
+    scrubOwnProperties(current, queue, next.depth, pathRoots);
   }
   return error;
 }

@@ -4,6 +4,8 @@ import path from 'node:path';
 import Redis from 'ioredis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DistributedBullMQAdapter, Worker, subscribeToJobTelemetry, type Job, type JobTelemetryEvent } from '../src/lib/queue/bullmq-engine';
+import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
+import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
@@ -27,11 +29,11 @@ const PUBSUB_SUBSCRIBERS = 2;
 describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
   let keyPrefix: string;
   let admin: Redis;
-  const adapters: DistributedBullMQAdapter<{ payload: string }, string>[] = [];
+  const adapters: { close(): Promise<void> }[] = [];
 
-  function connect(queueName: string): DistributedBullMQAdapter<{ payload: string }, string> {
+  function connect<T = { payload: string }, R = string>(queueName: string): DistributedBullMQAdapter<T, R> {
     const client = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
-    const adapter = new DistributedBullMQAdapter<{ payload: string }, string>(queueName, { redisClient: client, keyPrefix });
+    const adapter = new DistributedBullMQAdapter<T, R>(queueName, { redisClient: client, keyPrefix });
     adapters.push(adapter);
     return adapter;
   }
@@ -160,6 +162,34 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
     const stored = await api.getJob(job.id);
     expect(stored?.failedReason).toBe('spawn *** ENOENT');
     expect(events.find((event) => event.event === 'failed')?.data.error).toBe(stored?.failedReason);
+  });
+
+  it('sends the masked reason in the job.failed webhook and in the dead letter of a job without a signing secret', async () => {
+    const queue = connect<ConversionJobData, ConversionJobResult>('webhook-failure');
+    const owner = `webhook-owner-${crypto.randomBytes(6).toString('hex')}`;
+    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({} as never);
+    const worker = new Worker(queue, async () => {
+      throw new Error(`spawn ${MISSING_PROGRAM} ENOENT`);
+    }, { concurrency: 1 });
+    attachJobLifecycleListeners(worker);
+    const webhook = { webhookUrl: 'https://hooks.example.test/failed', userId: owner, originalFilename: 'in.heic' };
+    try {
+      await queue.add('convert', { ...webhook, webhookSecret: 'signing-secret' } as unknown as ConversionJobData, { attempts: 1 });
+      await queue.add('convert', webhook as unknown as ConversionJobData, { attempts: 1 });
+      await vi.waitFor(async () => {
+        expect(dispatched).toHaveBeenCalledTimes(1);
+        expect(await webhookDispatcher.getDlqEntries(owner)).toHaveLength(1);
+      }, { timeout: 10_000 });
+
+      expect(dispatched.mock.calls[0][1]).toBe('job.failed');
+      expect(dispatched.mock.calls[0][2]).toMatchObject({ error: 'spawn *** ENOENT' });
+      const [deadLetter] = await webhookDispatcher.getDlqEntries(owner);
+      expect(deadLetter.payload).toMatchObject({ error: 'spawn *** ENOENT' });
+      expect(JSON.stringify([dispatched.mock.calls[0][2], deadLetter])).not.toContain(MISSING_PROGRAM);
+    } finally {
+      await worker.close();
+      await webhookDispatcher.clearDlq(owner);
+    }
   });
 });
 
