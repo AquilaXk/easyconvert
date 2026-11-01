@@ -9,13 +9,16 @@ import { routing } from '@/i18n/routing';
 import { siteMetadataBase } from '@/i18n/metadata';
 import '../globals.css';
 
-// Latin subsets of the two OFL families, vendored so a build needs no network (licences beside the files).
+// Latin subsets of the two OFL families, vendored so a build needs no network (licences beside the files). Their middle
+// dot advances 0.1 em, so an unspaced Korean 가운뎃점 between two syllables vanished: the faces leave U+00B7 to the
+// metric-matched fallback below them (next/font takes only literal options, so the range is written out twice).
 const uiFont = localFont({
   src: '../fonts/InstrumentSans-latin.woff2',
   weight: '400 700',
   display: 'swap',
   variable: '--font-ui',
   adjustFontFallback: 'Arial',
+  declarations: [{ prop: 'unicode-range', value: 'U+0000-00B6, U+00B8-10FFFF' }],
 });
 const displayFont = localFont({
   src: '../fonts/InstrumentSerif-latin.woff2',
@@ -23,6 +26,7 @@ const displayFont = localFont({
   display: 'swap',
   variable: '--font-display',
   adjustFontFallback: 'Times New Roman',
+  declarations: [{ prop: 'unicode-range', value: 'U+0000-00B6, U+00B8-10FFFF' }],
 });
 // Instrument Serif has no Hangul: Korean headings take theirs from an OFL Noto Serif KR subset of the Korean messages
 // (scripts/subset-hangul-display-font.py), which a page downloads only when it shows Hangul in a display face.

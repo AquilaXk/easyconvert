@@ -25,7 +25,6 @@ export interface MobileFormatDialogHeaderProps {
   onClose: () => void;
 }
 
-type SelectorTranslator = ReturnType<typeof useTranslations<'formatSelector'>>;
 type CategoryTranslator = ReturnType<typeof useTranslations<'formatCategories'>>;
 
 function isFormatCategory(value: string): value is FormatCategory {
@@ -38,15 +37,24 @@ function formatCategoryLabel(tCategory: CategoryTranslator, category: string): s
   return category.charAt(0).toUpperCase() + category.slice(1).toLowerCase();
 }
 
-function renderFormatList(
-  t: SelectorTranslator,
-  hasNoSupportedFormats: boolean,
-  displayedFormats: FormatDefinition[],
-  showAnyOption: boolean,
-  search: string,
-  normalizedSelected: string | undefined,
-  onChoose: (id: string) => void
-): React.ReactNode {
+interface FormatListProps {
+  hasNoSupportedFormats: boolean;
+  displayedFormats: FormatDefinition[];
+  showAnyOption: boolean;
+  search: string;
+  normalizedSelected: string | undefined;
+  onChoose: (id: string) => void;
+}
+
+function FormatList({
+  hasNoSupportedFormats,
+  displayedFormats,
+  showAnyOption,
+  search,
+  normalizedSelected,
+  onChoose,
+}: Readonly<FormatListProps>) {
+  const t = useTranslations('formatSelector');
   if (hasNoSupportedFormats) {
     return (
       <div className="flex items-center justify-center h-full text-ink-3 text-xs text-center py-6">
@@ -200,15 +208,14 @@ export function FormatSelectorBody({
             </button>
           )}
           <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-            {renderFormatList(
-              t,
-              hasNoSupportedFormats,
-              displayedFormats,
-              showAnyOption,
-              search,
-              normalizedSelected,
-              onChoose
-            )}
+            <FormatList
+              hasNoSupportedFormats={hasNoSupportedFormats}
+              displayedFormats={displayedFormats}
+              showAnyOption={showAnyOption}
+              search={search}
+              normalizedSelected={normalizedSelected}
+              onChoose={onChoose}
+            />
           </div>
         </div>
       </div>
