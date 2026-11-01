@@ -7,6 +7,7 @@ import { config, middleware } from '../src/middleware';
 import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { canonicalSlugPath, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
 
 /**
  * Locale routing as a visitor meets it: English at the unprefixed paths, Korean under /ko, the visitor's language
@@ -167,5 +168,22 @@ describe('page metadata names every language', () => {
       canonical: '/',
       languages: { en: '/', ko: '/ko', 'x-default': '/' },
     });
+  });
+});
+
+describe('converter slug pages name one canonical URL, and unknown ones are not indexed', () => {
+  it('names the lowercased slug as the canonical path', () => {
+    expect(canonicalSlugPath('PNG-to-JPG')).toBe('/png-to-jpg');
+    expect(canonicalSlugPath('Zip-To-Tar.GZ')).toBe('/zip-to-tar.gz');
+    expect(canonicalSlugPath('png-to-jpg')).toBe('/png-to-jpg');
+  });
+
+  it('indexes pages of registered formats and the site pages, and no page a slug only names', () => {
+    for (const slug of ['png-to-jpg', 'zip-to-tar.gz', 'video-to-gif', 'pdf-converter', 'terms', 'pdf-ocr', 'lbs-to-kg', 'merge-pdf', 'website-png-screenshot']) {
+      expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(true);
+    }
+    for (const slug of ['hello-world', 'foo-to-bar', 'png-to-xyz', 'xyz-converter', 'merge-xyz']) {
+      expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(false);
+    }
   });
 });

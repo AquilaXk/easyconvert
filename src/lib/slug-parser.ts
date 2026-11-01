@@ -139,8 +139,41 @@ function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
   };
 }
 
+/** A slug as the parser reads it: lowercased, without leading slashes or surrounding space. */
+function normalizeSlug(slug: string): string {
+  return slug.toLowerCase().replace(/^\/+/, '').trim();
+}
+
+/** The one canonical path of a converter slug page, however its slug was cased. */
+export function canonicalSlugPath(slug: string): string {
+  return `/${normalizeSlug(slug)}`;
+}
+
+const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
+
+/**
+ * Whether search engines should index the page of a slug: a site page, or a page of formats the registry has. Any other
+ * slug still opens a converter page, but only names what it converts.
+ */
+export function isIndexableSlug(parsed: ParsedSlug): boolean {
+  const { copy } = parsed;
+  switch (copy.kind) {
+    case 'generic':
+      return false;
+    case 'pair':
+    case 'format':
+      return isRegistered(parsed.sourceFormat) && (parsed.targetFormat === 'any' || isRegistered(parsed.targetFormat));
+    case 'merge':
+    case 'compress':
+    case 'websiteScreenshot':
+      return isRegistered(copy.format);
+    default:
+      return true;
+  }
+}
+
 export function parseConverterSlug(slug: string): ParsedSlug {
-  const cleanSlug = slug.toLowerCase().replace(/^\/+/, '').trim();
+  const cleanSlug = normalizeSlug(slug);
 
   if (OCR_SLUGS.has(cleanSlug)) {
     return {

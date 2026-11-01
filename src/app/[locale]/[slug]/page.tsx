@@ -5,7 +5,7 @@ import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
-import { parseConverterSlug } from '@/lib/slug-parser';
+import { canonicalSlugPath, isIndexableSlug, parseConverterSlug } from '@/lib/slug-parser';
 
 interface ConverterPageProps {
   params: Promise<{ locale: string; slug: string }>;
@@ -18,11 +18,13 @@ export async function generateMetadata({ params }: ConverterPageProps): Promise<
     getTranslations({ locale, namespace: 'slugPages' }),
     getTranslations({ locale, namespace: 'meta.converter' }),
   ]);
-  const copy = localizeSlugCopy(tSlug, parseConverterSlug(slug).copy);
+  const parsed = parseConverterSlug(slug);
+  const copy = localizeSlugCopy(tSlug, parsed.copy);
   return {
     title: tMeta('title', { title: copy.title }),
     description: copy.description,
-    alternates: localeAlternates(locale, `/${slug}`),
+    alternates: localeAlternates(locale, canonicalSlugPath(slug)),
+    ...(isIndexableSlug(parsed) ? {} : { robots: { index: false } }),
   };
 }
 
