@@ -36,6 +36,15 @@ function decodeStorageKey(rawKey: string): string | undefined {
   }
 }
 
+/**
+ * Whether `key` names a file a client may fetch and who owns it (`resolveObjectOwnership`, which refuses every key no
+ * writer of the server produces), and the object stored under it. Storage is asked only about a key that resolved.
+ */
+async function lookUp(key: string) {
+  const ownership = await resolveObjectOwnership(key);
+  return { ownership, stored: ownership.resolved ? await s3Storage.stat(key) : undefined };
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ key: string[] }> }
@@ -58,12 +67,15 @@ export async function GET(
 
   const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
   let resolvedKey = fullKey;
-  let stored;
+  let found;
   try {
-    stored = await s3Storage.stat(fullKey);
-    if (!stored) {
-      stored = await s3Storage.stat(rawKey);
-      if (stored) resolvedKey = rawKey;
+    found = await lookUp(fullKey);
+    if (!found.stored && rawKey !== fullKey) {
+      const literal = await lookUp(rawKey);
+      if (literal.stored) {
+        resolvedKey = rawKey;
+        found = literal;
+      }
     }
   } catch (err: unknown) {
     const problem = storageErrorResponse(err, instanceUri);
@@ -71,7 +83,7 @@ export async function GET(
     throw err;
   }
 
-  const ownership = await resolveObjectOwnership(resolvedKey);
+  const { ownership, stored } = found;
   if (!ownership.resolved) {
     return notFound();
   }

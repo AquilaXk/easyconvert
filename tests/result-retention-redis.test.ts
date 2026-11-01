@@ -17,7 +17,8 @@ import {
   stopRetentionSweep,
   sweepRetention,
 } from '../src/lib/storage/retention-service';
-import { recordServedRange, resolveRetentionPolicy } from '../src/lib/storage/result-retention';
+import { GONE_RECORD_MS, recordServedRange, resolveRetentionPolicy } from '../src/lib/storage/result-retention';
+import { defineCompletionRecordContract, keepReceipt } from './helpers/completion-record-contract';
 
 /**
  * The retention records of a scaled-out deployment live in Redis, so every web instance and worker sees the
@@ -198,5 +199,20 @@ describe.skipIf(!REDIS_URL)('retention records in Redis', () => {
       (selected as unknown as { redis: Redis }).redis.disconnect();
       setRetentionLedger(new RedisRetentionLedger(redis));
     }
+  });
+
+  describe('the receipt of an upload completion', () => {
+    defineCompletionRecordContract(() => new RedisRetentionLedger(redis));
+
+    it('expires in Redis after the gone window, and has no place in the set of keys still to delete', async () => {
+      const record = await keepReceipt(new RedisRetentionLedger(redis), `upload-id-${crypto.randomBytes(6).toString('hex')}`);
+      const recordKey = `${RETENTION_REDIS_PREFIX}record:${record.key}`;
+
+      const remainingMs = await redis.pttl(recordKey);
+
+      expect(remainingMs).toBeGreaterThan(GONE_RECORD_MS - 60 * SECOND_MS);
+      expect(remainingMs).toBeLessThanOrEqual(GONE_RECORD_MS);
+      expect(await redis.zscore(`${RETENTION_REDIS_PREFIX}due`, record.key)).toBeNull();
+    });
   });
 });

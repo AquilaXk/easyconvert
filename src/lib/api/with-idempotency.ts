@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import {
@@ -12,6 +13,12 @@ import {
 
 export const IDEMPOTENCY_KEY_REUSED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-reused';
 export const IDEMPOTENCY_KEY_IN_FLIGHT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/idempotency-key-in-flight';
+
+/** How long the lock of a key lasts, which is also the longest a request that crashed holds its key. */
+const LOCK_TTL_MS = 60_000;
+/** Times a store is asked to record an answer before the lock is kept or released; the record is the same each time, so a repeat of the call is safe. */
+const RECORD_ATTEMPTS = 3;
+const RECORD_RETRY_DELAY_MS = 50;
 
 /**
  * Extracts non-file fields and hashes file blobs from multipart form data.
@@ -207,8 +214,10 @@ export interface IdempotencyContext {
   fingerprint: string;
   store: IdempotencyStore;
   complete: (res: NextResponse | Response) => Promise<void>;
+  /** Removes the lock of this call, and nothing else: the lock of a later run that took the key, or a recorded answer, stays. */
   abort: () => Promise<void>;
-  renewLock?: (ttlMs?: number) => Promise<boolean>;
+  /** Marks the lock of this call as kept until it ends, so a repeat that meets it is turned away like one that meets a running request. */
+  keepLock: () => Promise<void>;
 }
 
 export interface AcquireIdempotencyResult {
@@ -252,7 +261,8 @@ export async function acquireIdempotency(
   const scopedKey = buildScopedKey(userId, instanceUri, rawKey);
   const activeStore = store || getIdempotencyStore();
 
-  const acquireResult = await activeStore.acquire(scopedKey, fingerprint, 60000);
+  const lockToken = crypto.randomUUID();
+  const acquireResult = await activeStore.acquire(scopedKey, fingerprint, LOCK_TTL_MS, lockToken);
   const earlyResponse = handleAcquireOutcome(acquireResult, instanceUri);
   if (earlyResponse) {
     return { response: earlyResponse };
@@ -265,19 +275,16 @@ export async function acquireIdempotency(
       store: activeStore,
       complete: async (res: NextResponse | Response) => {
         if (res.status >= 500) {
-          await activeStore.delete(scopedKey);
+          await activeStore.releaseLock(scopedKey, lockToken);
         } else {
           await storeCompletedResponse(activeStore, scopedKey, fingerprint, res);
         }
       },
       abort: async () => {
-        await activeStore.delete(scopedKey);
+        await activeStore.releaseLock(scopedKey, lockToken);
       },
-      renewLock: async (ttlMs: number = 60000) => {
-        if (activeStore.renewLock) {
-          return activeStore.renewLock(scopedKey, ttlMs);
-        }
-        return false;
+      keepLock: async () => {
+        await activeStore.keepLock(scopedKey, lockToken);
       },
     },
   };
@@ -289,24 +296,26 @@ export type AfterFailedRecord = 'keep-lock' | 'release';
 export interface RespondOnceOptions extends Pick<AcquireIdempotencyOptions, 'parsedBody'> {
   /**
    * `keep-lock` for an action that creates something a second run would create again (a job, an upload session): the
-   * lock stays, so a repeat gets 409 until it expires (a minute), never a second run. `release` for an action whose
-   * repeat finds the state the first run left and answers from it, as `complete` does: the next repeat runs the action
-   * and gets that answer.
+   * lock stays, and a repeat gets the same 409 and one-second `Retry-After` as a repeat that meets a running request.
+   * The lock bounds the repeats for the minute it lasts; a repeat sent after that runs the action again. `release` for an action whose repeat finds the
+   * state the first run left and answers from it, as `complete` does: the next repeat runs the action and gets that
+   * answer.
    */
   afterFailedRecord: AfterFailedRecord;
 }
 
 /**
- * Runs `handler` once per `Idempotency-Key` of `scopeUserId` on this route. A repeat of the same request gets the first
- * answer, so a client may send it again after a network error and learns what the first one created; a repeat while the
- * first runs gets 409 with `Retry-After`. Only a success is kept: after a refusal the same request may be sent again.
- * Without the header the handler just runs.
+ * Runs `handler` once per `Idempotency-Key` of `scopeUserId` on this route (IETF Idempotency-Key header draft). A repeat
+ * of the same request gets the first answer, so a client may send it again after a network error and learns what the
+ * first one created; a repeat while the first runs gets 409 with `Retry-After`. Only a success is kept: after a refusal
+ * the same request may be sent again. Without the header the handler just runs.
  *
- * Once the handler returned, its answer is returned even when the store cannot record it, and `afterFailedRecord` says
- * what happens to the lock. A handler that threw, or answered with a refusal, releases the key. A release that fails is
- * logged; the lock then ends when its time runs out. A release leaves a recorded answer alone, so a good replay is never
- * deleted; it cannot tell this call's lock from the equal lock of a second run that took the key after a lock outlived
- * its minute, and removes that one too.
+ * Once the handler returned, its answer is returned even when the store cannot record it. The store is asked three
+ * times, and `afterFailedRecord` says what happens to the lock when all fail. A handler that threw, or answered with a
+ * refusal, releases the key. A release removes only the lock this call took (compare-and-delete on a random value, as
+ * the Redis lock pattern does), so a call that outlived its lock never removes the lock of the run that took the key
+ * after it, and a recorded answer is never removed. A release that fails is logged; the lock then ends when its time
+ * runs out.
  */
 export async function respondOnce(
   req: NextRequest | Request,
@@ -323,32 +332,41 @@ export async function respondOnce(
   try {
     res = await handler();
   } catch (error) {
-    await releaseQuietly(context, instanceUri);
+    await settleLock(context, 'release', instanceUri);
     throw error;
   }
   if (!res.ok) {
-    await releaseQuietly(context, instanceUri);
+    await settleLock(context, 'release', instanceUri);
     return res;
   }
-  try {
-    await context.complete(res);
-  } catch (error) {
-    console.warn(`[idempotency] Could not record the answer of ${instanceUri}; the answer is returned without a replay:`, error);
-    if (afterFailedRecord === 'release') await releaseQuietly(context, instanceUri);
-  }
+  if (!(await recordAnswer(context, res, instanceUri))) await settleLock(context, afterFailedRecord, instanceUri);
   return res;
 }
 
-/**
- * Releases the lock of a key, whatever the store does: the answer or the error the caller is about to give must not
- * change. A key that already holds a recorded answer is left as it is: the store took the answer and only its reply was
- * lost, so the record is the replay.
- */
-async function releaseQuietly(context: IdempotencyContext, instanceUri: string): Promise<void> {
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Asks the store to record `res` up to RECORD_ATTEMPTS times; false, with the last error logged, when none took it. */
+async function recordAnswer(context: IdempotencyContext, res: Response, instanceUri: string): Promise<boolean> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= RECORD_ATTEMPTS; attempt++) {
+    try {
+      await context.complete(res);
+      return true;
+    } catch (error) {
+      lastError = error;
+      if (attempt < RECORD_ATTEMPTS) await delay(RECORD_RETRY_DELAY_MS * attempt);
+    }
+  }
+  console.warn(`[idempotency] Could not record the answer of ${instanceUri}; the answer is returned without a replay:`, lastError);
+  return false;
+}
+
+/** Releases or keeps the lock of this call, whatever the store does: the answer or the error the caller is about to give must not change. */
+async function settleLock(context: IdempotencyContext, how: AfterFailedRecord, instanceUri: string): Promise<void> {
   try {
-    const held = context.store.getRecord ? await context.store.getRecord(context.scopedKey) : null;
-    if (held?.status !== 'completed') await context.abort();
+    await (how === 'release' ? context.abort() : context.keepLock());
   } catch (error) {
-    console.warn(`[idempotency] Could not release the idempotency key of ${instanceUri}; it ends when its lock expires:`, error);
+    const outcome = how === 'release' ? 'release the idempotency key' : 'mark the idempotency key as kept';
+    console.warn(`[idempotency] Could not ${outcome} of ${instanceUri}; it ends when its lock expires:`, error);
   }
 }

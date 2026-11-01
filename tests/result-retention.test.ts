@@ -35,9 +35,11 @@ import {
   sweepRetention,
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { defineCompletionRecordContract, keepReceipt } from './helpers/completion-record-contract';
 import { isCapacityCandidate } from '../src/lib/storage/result-capacity';
 import { globalSharedObjects, SharedObjectStore } from '../src/lib/storage/shared-store';
 import {
+  GONE_RECORD_MS,
   JOB_INPUT_HOLD_MAX_MS,
   addInterval,
   coversWholeObject,
@@ -903,6 +905,33 @@ describe('the file ledger shared by the web server and the workers', () => {
     expect(await holdResultForJob(key, 'job-lost')).toBe(true);
     expect(await sweepRetention(storageProvider, Date.now() + JOB_INPUT_HOLD_MAX_MS - SECOND_MS)).toBe(0);
     expect(await sweepRetention(storageProvider, Date.now() + JOB_INPUT_HOLD_MAX_MS + SECOND_MS)).toBe(1);
+  });
+});
+
+describe('the receipt of an upload completion in the file ledger', () => {
+  let ledgerDir: string;
+
+  beforeEach(() => {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-receipt-ledger-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+  });
+
+  afterEach(() => {
+    restoreIsolatedRetentionLedger();
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  defineCompletionRecordContract(() => new FileRetentionLedger(ledgerDir));
+
+  it('is forgotten once the gone window has passed and not a moment before', async () => {
+    const ledger = new FileRetentionLedger(ledgerDir);
+    const record = await keepReceipt(ledger, `upload-id-${crypto.randomBytes(6).toString('hex')}`);
+
+    await ledger.collectDue(record.goneAt! + GONE_RECORD_MS - 1, 1000);
+    expect(await ledger.get(record.key)).toBeDefined();
+
+    await ledger.collectDue(record.goneAt! + GONE_RECORD_MS, 1000);
+    expect(await ledger.get(record.key)).toBeUndefined();
   });
 });
 

@@ -7,9 +7,12 @@ import {
   validateRegistrationInput,
   type AuthTab,
 } from './AuthForms';
-import { applySignInAnswer } from '@/lib/viewer-plan';
+import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
 
 export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
+
+/** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else an error. */
+type AuthAnswer = { success: true; user: SessionUser } | { success: false; error?: string };
 
 export function useAuthController() {
   const router = useRouter();
@@ -119,18 +122,18 @@ export function useAuthController() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as AuthAnswer;
 
       if (!res.ok || !data.success) {
         setErrorMessage(
-          data.error || 'Authentication failed. Check your credentials and try again.'
+          (!data.success && data.error) || 'Authentication failed. Check your credentials and try again.'
         );
         setIsLoading(false);
         return;
       }
 
       // The header and the queue keep their plan across the client-side navigation; the answer names the new session.
-      applySignInAnswer(data.user);
+      applySessionChange(data.user);
       setSuccessMessage(
         activeTab === 'register' ? 'Account created. Redirecting...' : 'Signed in. Redirecting...'
       );
