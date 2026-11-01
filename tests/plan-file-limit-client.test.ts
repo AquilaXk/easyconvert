@@ -185,7 +185,7 @@ describe('a file over the limit', () => {
     expect(item.error).toBeUndefined();
   });
 
-  function rowFor(size: number, error?: string) {
+  function rowFor(size: number) {
     const item: ConversionQueueItem = {
       id: 'row-1',
       file: claimedFile('clip.mp4', size),
@@ -193,8 +193,7 @@ describe('a file over the limit', () => {
       size,
       sourceFormat: 'mp4',
       targetFormat: 'webm',
-      status: error ? 'error' : 'ready',
-      error,
+      status: 'ready',
       progress: 0,
       options: {},
     };
