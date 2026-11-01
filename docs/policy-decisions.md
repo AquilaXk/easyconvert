@@ -181,6 +181,10 @@ Compression
 112. [Wall-clock assertions of the unit tests: counts, forced states, CPU time and bounds sized from measured spread](#112-wall-clock-assertions-of-the-unit-tests-counts-forced-states-cpu-time-and-bounds-sized-from-measured-spread)
 117. [Archive entry names are refused, never repaired, in tar, 7z and RAR, and a compressed tar converted on disk yields the members of the tar inside it](#117-archive-entry-names-are-refused-never-repaired-in-tar-7z-and-rar-and-a-compressed-tar-converted-on-disk-yields-the-members-of-the-tar-inside-it)
 
+Interface
+
+138. [The web interface draws its colours, radii and shadows from tokens: one palette for both themes, a radius scale on a 0.1rem unit, two elevations and a glow, glass on a few chosen surfaces](#138-the-web-interface-draws-its-colours-radii-and-shadows-from-tokens-one-palette-for-both-themes-a-radius-scale-on-a-01rem-unit-two-elevations-and-a-glow-glass-on-a-few-chosen-surfaces)
+
 ---
 
 ## 1. AVIF chroma and bit depth
@@ -4922,3 +4926,35 @@ Compression
   - `tests/edge-phase-4.test.ts`: a file of exactly 2 GiB stays in OPFS, one byte more goes to the server.
   - Production build, 2026-11-01: a visitor's 300 MB ZIP converted to TAR in five parts, a cancel ending with `abort`, a 1 GiB upload peaking at 787 MiB; after the third review, a sign-in through the page naming "Ada PRO" in the header and "Up to 5 GiB per file" in the drop zone after client navigation and the visitor's limit after sign-out, a 70 MiB upload completing with 200 and showing Done while every budget read failed, a chunked 512 KiB JSON body reaching its route, 411 for a chunked file body, and a repeat of a part taken 218 ms after its first client disconnected. After the fifth review: a sign-in and a sign-out through the page with every session read answered 503, the header naming the account after the sign-in and the visitor after the sign-out, on one client-side navigation each.
 - **Revisit when**: the web server runs as more than one process (the ledger moves to Redis), the paid plans go on sale, the scratch or the retention times change, accounts need an upload budget, a plan limit changes (one edit in `src/lib/plan-limits.ts`, then this entry), the CDN plan or the nginx body limit changes, the memory per part in flight limits the web container, progress has to move by byte, or a route gets the request body before it ended (a stalled body would then hold its part number, so the read needs its own bound).
+
+## 138. The web interface draws its colours, radii and shadows from tokens: one palette for both themes, a radius scale on a 0.1rem unit, two elevations and a glow, glass on a few chosen surfaces
+
+- **Status**: Implemented (QA request of 2026-11-01: the rounded boxes read as generic generated UI), decided 2026-11-01. Keeps the layout and behaviour of the responsive workbench (#929) and changes its visual language.
+- **Decision**:
+  - **Colour tokens.** `src/app/globals.css` defines every colour as RGB channels under `:root` and again under `.dark` (canvas, surface, sunken, three inks, the text on the accent, two rules, six accent roles, and a fg, soft and edge colour for success, warning, danger and info). `tailwind.config.ts` replaces the Tailwind palette with those names only, so a raw palette class generates nothing, and no component carries a `dark:` colour class: the tokens switch with the theme.
+  - **Radius scale.** One unit, `--radius-unit: 0.1rem` (1.6 px), and every step a multiple: `xs` 0.5, `sm` 1, `md` and the bare `rounded` 1.5, `lg` 2, `xl` 3, `2xl` 4, `3xl` 6, `full` for true circles. Controls and inputs use `sm`, panels, menus and dialogs `md`. Organic curves appear only in decorative drawings (the hero feather, the drop-zone quill), never as the outline of a component.
+  - **Elevation.** `shadow-elev-1` for menus and popovers, `shadow-elev-2` for dialogs, `shadow-float` (the second elevation and the glow) for the drop zone while a file is dragged over it, and `shadow-glow` for the hover of a primary action. Resting panels have no shadow and, where a panel only grouped content, no box: a hairline top rule stays.
+  - **Glass.** The header, the drop zone, the queue, the auth card, menus and dialogs are translucent (`.glass`: the surface at 0.62 alpha, `backdrop-filter: blur(14px) saturate(1.4)`, a 1 px light edge). Floating layers keep 0.86 alpha and an 18 px blur so text over busy content stays legible. Without `backdrop-filter` support and under `prefers-reduced-transparency` every glass surface is the solid surface colour.
+  - **Ground and parallax.** The body paints a woven hairline pattern (an SVG mask over a token colour) on a fixed layer that drifts 240 px over the whole scroll; the hero feather rises 110 px over the first 600 px. CSS scroll-driven animations move both where supported, `ParallaxDriver` writes the scroll offset once per frame elsewhere, and `prefers-reduced-motion` stops both.
+  - **Motion.** Hover and press use a spring easing (`--ease-spring`, a damped spring with damping ratio 0.7 sampled at 25 points, 4.5 % overshoot, `cubic-bezier(0.34, 1.3, 0.64, 1)` where `linear()` is missing). Progress is a 2 px thread with a flowing sheen, a finished row settles in, and `prefers-reduced-motion` reduces every transition to an instant change.
+  - **Type.** Headings (`h1`, `h2`) use Instrument Serif and UI text Instrument Sans, both OFL fonts self-hosted at build by `next/font` with `display: swap` and the size-adjusted fallback it generates. Sizes and progress use tabular figures. Icons draw at a 1.5 stroke.
+  - **Focus.** Every focusable element shows a 2 px accent outline; in dark mode it also carries the glow.
+- **Why**:
+  - **The reference converter that QA named as the least generic** draws every radius from one small unit and keeps shadows to a few floating surfaces; tight, measured corners read as built rather than generated.
+  - **The design language follows a featherwork practice QA chose as the reference (2026-11-01)**: material research first, construction from textile crafts (weaving, lace, embroidery) laid in a precise structure rather than boxed, colour seen as fragments and reflections rather than flat fills, and restraint and lightness. Hence the woven ground, the lace-like translucent surfaces, the iridescent colour kept to hairlines, and the removal of boxes.
+  - **Tokens make the language enforceable**: one change of a variable restyles both themes, and a source scan can refuse anything outside them.
+- **Trade-offs**:
+  - **Paint work grows.** In a traced run at 390 px with a 4x CPU slowdown the page painted for 92 ms over 6.1 s against 5 ms before (the blur and the patterned ground repaint while content scrolls behind them). Five alternating runs per side held 60 fps with no frame over 25 ms while scrolling and while dragging a file over the drop zone, before and after.
+  - **Two web fonts load** (68 KiB of WOFF2 across four files, two preloaded); the stylesheet shrank from 52.3 KB to 41.0 KB and the first load JavaScript of every page by up to 1 kB.
+  - **Glass depends on what lies behind it**, so contrast was measured against the rendered pixels rather than the token pair.
+  - **Category icons in the queue lost their colours**: one accent hue, told apart by shape.
+- **Alternatives rejected**:
+  - **Keeping the Tailwind palette beside the tokens**: a raw class would keep working and the language would drift one component at a time.
+  - **Glass on every panel**: it costs paint per surface and flattens the hierarchy; the resting panels became hairline sections instead.
+  - **An animation library for the springs**: CSS `linear()` easing gives the same curve with no runtime code.
+  - **A woven pattern as an image**: a raster tile cannot change colour with the theme; the SVG mask over a token can.
+- **Verified by**:
+  - `tests/frontend-design-tokens.test.ts`: no raw palette, hex or rgb colour class, no `dark:` colour class, no arbitrary radius or inline border radius, only elevation shadow classes, the radius steps as multiples of the unit, and every colour token defined in both themes (a probe file with one of each made four of its checks fail).
+  - `tests/redesign-verification.test.ts` and `tests/frontend-wcag-responsive.test.ts`: the workbench structure, labels, touch targets and text sizes.
+  - Production build, 2026-11-01: 2,960 text runs on six pages in both themes at 1440 and 390 px, each measured against the worst rendered pixel behind it, all at WCAG AA (lowest 4.62); input borders and the focus outline at 3.12 or more against every surface they sit on; computed radii 1.6 px for a button and an input, 2.4 px for the drop zone, the queue, the format menu and a dialog; no horizontal scroll at 390 px.
+- **Revisit when**: a page needs a surface the tokens do not name (add the token, never a raw class), real devices show the blur dropping frames (lower `--glass-blur` or the number of glass layers first), or the fonts change licence or size.

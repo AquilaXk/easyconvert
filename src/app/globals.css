@@ -105,6 +105,11 @@
 }
 
 @layer base {
+  /* In-page anchors land below the sticky header. */
+  html {
+    scroll-padding-top: 4.5rem;
+  }
+
   body {
     background-color: rgb(var(--c-canvas));
     color: rgb(var(--c-ink));
