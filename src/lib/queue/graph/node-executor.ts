@@ -12,7 +12,8 @@ import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
-import { redactText, redactUrl, scrubError } from '../../security/redact';
+import { redactUrl, scrubError } from '../../security/redact';
+import { maskedFailureReason } from '../../security/server-paths';
 import { graphNodeJobId } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
@@ -819,8 +820,7 @@ export async function processGraphNodeJob(
     const pastDeadline = attemptSignal.reason instanceof JobTimeoutError;
     const failure: unknown = pastDeadline ? attemptSignal.reason : err;
     if ((!attemptSignal.aborted || pastDeadline) && isFinalFailure({ attemptsMade: job.attemptsMade, opts: { attempts: job.opts?.attempts ?? 1 } }, failure)) {
-      const errorMsg = redactText(failure instanceof Error ? failure.message : String(failure));
-      await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
+      await graphScheduler.onNodeFailed(graphId, nodeId, maskedFailureReason(failure));
     }
     throw failure;
   } finally {

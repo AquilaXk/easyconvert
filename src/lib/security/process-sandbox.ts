@@ -198,13 +198,16 @@ export function detectSandboxEnvironment(): SandboxEnvironment {
   return cachedEnv;
 }
 
+/** The program search path of a sandboxed run when the server's own `PATH` is unset. */
+export const SANDBOX_DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin';
+
 /**
  * Sanitizes the process environment variables, stripping credentials, API keys, and sensitive tokens.
  */
 export function getSanitizedEnvironment(customEnv: Record<string, string> = {}, networkIsolated = true): NodeJS.ProcessEnv {
   const sanitized: NodeJS.ProcessEnv = {
     NODE_ENV: (process.env.NODE_ENV as 'development' | 'production' | 'test') || 'production',
-    PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin',
+    PATH: process.env.PATH || SANDBOX_DEFAULT_PATH,
     TMPDIR: os.tmpdir(),
     LANG: 'C.UTF-8',
     LC_ALL: 'C.UTF-8',

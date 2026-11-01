@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
-import { redactForOutput, redactPaths, redactText, scrubError } from '../security/redact';
+import { redactForOutput, redactText, scrubError } from '../security/redact';
+import { maskedFailureReason } from '../security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { classifyJobFailure } from './job-failure';
 import {
@@ -78,7 +79,6 @@ export class JobCancelledError extends Error {
 
 /** Abort reason for an attempt that exceeded `JobOptions.timeout`. A typed 504 failure that is not retried. */
 export { JobTimeoutError };
-export * from './lua-scripts';
 
 /** Abort reason for an attempt that lost its job to another attempt (Redis mode, after stall recovery). */
 export class JobOwnershipLostError extends Error {
@@ -913,7 +913,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
     // Mask the error itself so the failed event, console output and rethrows also show masked text.
     scrubError(err);
-    const errorMessage = redactText(redactPaths(err instanceof Error ? err.message : String(err)));
+    const errorMessage = maskedFailureReason(err);
     job.failedReason = errorMessage;
     const failure = classifyJobFailure(err);
     job.failedCode = failure.code;
@@ -2157,7 +2157,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         this.getHeartbeatKey(job.id),
         job.id,
         String(job.finishedOn || Date.now()),
-        job.failedReason || redactText(String(err)),
+        job.failedReason ?? '',
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
         job.opts?.removeOnFail === true ? '1' : '0',
@@ -2172,7 +2172,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         );
         return false;
       }
-      await this.publishEvent({ event: 'failed', jobId: job.id, error: redactText(String(err)) });
+      await this.publishEvent({ event: 'failed', jobId: job.id, error: job.failedReason });
       if (job.opts?.removeOnFail === true) {
         const userId = (job.data as any)?.userId;
         if (userId) {

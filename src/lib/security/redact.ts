@@ -372,12 +372,71 @@ export function redactText(text: string): string {
   return redactKeyValuePairs(withoutBearer);
 }
 
-/** An absolute path that starts a word (`/usr/bin/magick`), not the path of a URL or the slash of `I/O`; the servers run Linux. */
-const ABSOLUTE_PATH = /(?<![\w.:/-])\/[\w.@+-]+(?:\/[\w.@+-]+)*/g;
+/** Characters after which a path may start: the start of a token, a quote or a bracket, or the `:` or `=` of a field. */
+const PATH_LEADS: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '`', '(', '[', '{', '<', ':', '=', ',']);
+/** Characters that end a path that is not quoted. */
+const PATH_ENDS: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '`', ')', ']', '}', '<', '>', ',', ';', ':', '=']);
+const PATH_QUOTES: ReadonlySet<string> = new Set(['"', "'", '`']);
+const LINE_BREAKS: ReadonlySet<string> = new Set(['\r', '\n']);
+const FILE_URL_PREFIX = 'file://';
 
-/** Masks the absolute file system paths in free text, such as the program a failed conversion could not start. */
-export function redactPaths(text: string): string {
-  return text.replaceAll(ABSOLUTE_PATH, REDACTION_MASK);
+function escapeRegExp(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
+/** Where a path that is not quoted ends: before its first space, or before the `: ` that follows it on its line (`/a/b c.pdf: error`). */
+function unquotedPathEnd(text: string, start: number): number {
+  let end = start;
+  while (end < text.length && !PATH_ENDS.has(text[end])) end++;
+  if (text[end] !== ' ') return end;
+  // A space may belong to the file name when the line goes on to `: ` with no quote, line break or other path in between.
+  for (let cursor = end; cursor < text.length; cursor++) {
+    const ch = text[cursor];
+    if (ch === ':') return cursor + 1 === text.length || WHITESPACE.has(text[cursor + 1]) ? cursor : end;
+    if (LINE_BREAKS.has(ch) || PATH_QUOTES.has(ch) || (ch === '/' && PATH_LEADS.has(text[cursor - 1]))) return end;
+  }
+  return end;
+}
+
+/** The quote that closes a quoted path on its line, or -1 when the line ends first. */
+function closingQuote(text: string, start: number, quote: string): number {
+  for (let cursor = start; cursor < text.length && !LINE_BREAKS.has(text[cursor]); cursor++) {
+    if (text[cursor] === quote) return cursor;
+  }
+  return -1;
+}
+
+/**
+ * Masks the paths under `roots` (absolute directories, without a trailing slash) in free text, written plainly, as a
+ * `file://` URL or after the `:` or `=` of a field, with spaces and any letters up to the end of the path. Other slashes
+ * stay: a PDF name, an end tag, a JSON pointer, a MIME type or a URL path names what went wrong, not where the server
+ * keeps its files. One forward pass: no path's scan crosses the start of another.
+ */
+export function redactPaths(text: string, roots: readonly string[]): string {
+  if (roots.length === 0) return text;
+  const alternatives = [...roots].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+  const pathStart = new RegExp(`(${escapeRegExp(FILE_URL_PREFIX)})?(?:${alternatives})(?=$|[/\\s"'\`)\\]}<>,;:=])`, 'g');
+  // Per quote, the end of the line on which it has no closing quote, so a line of unclosed quotes is scanned once.
+  const unclosedUntil = new Map<string, number>();
+  let out = '';
+  let cursor = 0;
+  for (let match = pathStart.exec(text); match; match = pathStart.exec(text)) {
+    const lead = text[match.index - 1];
+    if (match.index > 0 && !PATH_LEADS.has(lead)) {
+      continue;
+    }
+    const pathAt = match.index + (match[1]?.length ?? 0);
+    let end = -1;
+    if (PATH_QUOTES.has(lead) && (unclosedUntil.get(lead) ?? -1) < pathAt) {
+      end = closingQuote(text, pathAt, lead);
+      if (end < 0) unclosedUntil.set(lead, lineEnd(text, pathAt));
+    }
+    if (end < 0) end = unquotedPathEnd(text, pathAt);
+    out += text.slice(cursor, pathAt) + REDACTION_MASK;
+    cursor = end;
+    pathStart.lastIndex = Math.max(end, pathStart.lastIndex);
+  }
+  return out + text.slice(cursor);
 }
 
 /**

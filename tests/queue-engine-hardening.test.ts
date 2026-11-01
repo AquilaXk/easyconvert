@@ -6,14 +6,16 @@ import {
   DistributedBullMQAdapter,
   calculateJobPriorityScore,
   subscribeToJobTelemetry,
+  Job,
+} from '@/lib/queue/bullmq-engine';
+import {
   ADD_JOB_LUA_SCRIPT,
   POP_NEXT_WAITING_JOB_LUA_SCRIPT,
   PROMOTE_DELAYED_JOBS_LUA_SCRIPT,
   CANCEL_JOB_LUA_SCRIPT,
   REQUEUE_JOB_LUA_SCRIPT,
   RECOVER_STALLED_JOBS_LUA_SCRIPT,
-  Job,
-} from '@/lib/queue/bullmq-engine';
+} from '@/lib/queue/lua-scripts';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';

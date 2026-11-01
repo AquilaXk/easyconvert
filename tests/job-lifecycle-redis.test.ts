@@ -10,9 +10,9 @@ import {
   HEARTBEAT_INTERVAL_MS,
   STALL_TIMEOUT_MS,
   STALLED_SWEEP_INTERVAL_MS,
-  COMPLETE_JOB_LUA_SCRIPT,
   COMPLETION_COMMIT_MAX_ATTEMPTS,
 } from '../src/lib/queue/bullmq-engine';
+import { COMPLETE_JOB_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
 import {
   processConversionJob,
   attachJobLifecycleListeners,

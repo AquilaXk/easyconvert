@@ -294,7 +294,7 @@ export const FAIL_JOB_LUA_SCRIPT = `
 -- ARGV[7]: attempt token of the caller
 -- ARGV[8]: error class of a typed failure, or '' for an untyped one
 -- ARGV[9]: HTTP status of a typed failure, or ''
--- ARGV[10]: refusal code of the failure's error class, or ''
+-- ARGV[10]: refusal code of the failure's error class, or '' (absent from a caller older than the field)
 -- Returns 1 after moving the job from active to failed, or 0 when it is no longer active
 -- or another attempt owns it.
 if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[7] then
@@ -313,7 +313,7 @@ else
     table.insert(fields, 'failedStatus')
     table.insert(fields, ARGV[9])
   end
-  if ARGV[10] ~= '' then
+  if ARGV[10] and ARGV[10] ~= '' then
     table.insert(fields, 'failedRefusalCode')
     table.insert(fields, ARGV[10])
   end
