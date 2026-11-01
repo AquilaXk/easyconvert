@@ -1,4 +1,5 @@
 import { PIPELINE_OPERATIONS } from './api/contracts/enums';
+import type { ConversionFailure } from './conversion-failure';
 
 export type FormatCategory =
   | 'image'
@@ -426,7 +427,7 @@ export interface ConversionQueueItem {
   progress: number;
   resultUrl?: string;
   resultSize?: number;
-  error?: string;
+  error?: ConversionFailure;
   options: ConversionOptions;
   edgeProcessed?: boolean;
   edgeTier?: string;

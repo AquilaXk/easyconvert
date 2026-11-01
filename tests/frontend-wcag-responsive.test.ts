@@ -371,7 +371,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(attrOf(progressBars[0], 'value')).toBe('64');
 
     const errorQueue = render(ConversionQueue, {
-      items: [makeQueueItem({ status: 'error', error: 'Corrupt PNG header signature' })],
+      items: [makeQueueItem({ status: 'error', error: { code: 'server', problem: { detail: 'Corrupt PNG header signature' } } })],
       onRemoveItem: noop,
       onClearAll: noop,
       onUpdateTargetFormat: noop,

@@ -1170,7 +1170,6 @@
     "convert": "Convert",
     "row": {
       "unknownFormat": "{ext} File",
-      "failedFallback": "Conversion failed.",
       "uploadingLabel": "Uploading {name}",
       "convertingLabel": "Converting {name}",
       "done": "Done",
@@ -1185,6 +1184,12 @@
       "optionsLabel": "Conversion options for {name}",
       "cancelLabel": "Cancel {name}",
       "removeLabel": "Remove {name}"
+    },
+    "failures": {
+      "conversionFailed": "Conversion failed. Try another format or try again.",
+      "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
+      "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
+      "jobTimedOut": "The conversion did not finish in time. Try again."
     }
   },
   "siteLinks": {

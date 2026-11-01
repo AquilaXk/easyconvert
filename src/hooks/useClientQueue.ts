@@ -426,8 +426,8 @@ export function createConversionRunners(ctx: QueueMutationContext) {
           if (resultUrl.startsWith('blob:')) ctx.blobUrlsRef.current.add(resultUrl);
           ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize, edgeProcessed, edgeTier } : i)));
         },
-        onError: (msg) => {
-          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: msg, progress: 0 } : i)));
+        onError: (failure) => {
+          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: failure, progress: 0 } : i)));
         },
       }, aborter.signal);
     } finally {

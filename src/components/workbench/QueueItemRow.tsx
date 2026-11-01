@@ -12,6 +12,7 @@ import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
 import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
+import { useConversionFailureMessage } from '../i18n/problems';
 import { getPasswordValidationError } from './options/options-capabilities';
 
 export interface QueueItemRowProps {
@@ -60,14 +61,15 @@ function resolveOptionError(tPassword: PasswordErrorTranslator, item: Conversion
 }
 
 function resolveRowError(
-  t: RowTranslator,
+  failureMessage: ReturnType<typeof useConversionFailureMessage>,
   item: ConversionQueueItem,
   optionError: string | null,
   oversizeError: string | null
 ): string | null {
   if (oversizeError) return oversizeError;
   if (optionError) return optionError;
-  return item.status === 'error' ? item.error || t('failedFallback') : null;
+  if (item.status !== 'error') return null;
+  return failureMessage(item.error ?? { code: 'conversionFailed' });
 }
 
 function isRetryDisabled(
@@ -150,6 +152,7 @@ export default function QueueItemRow({
   const tPassword = useTranslations('options.password.errors');
   const formatBytes = useFormatBytes();
   const fileTooLargeMessage = useFileTooLargeMessage();
+  const failureMessage = useConversionFailureMessage();
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const plan = useViewerPlan();
   const isIdle = !isBusy && item.status !== 'completed';
@@ -158,7 +161,7 @@ export default function QueueItemRow({
   const hasTarget = Boolean(item.targetFormat);
   const optionError = isIdle ? resolveOptionError(tPassword, item) : null;
   const rowError = isIdle
-    ? resolveRowError(t, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
+    ? resolveRowError(failureMessage, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
     : null;
 
   const targetButtonClass = hasTarget

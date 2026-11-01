@@ -35,7 +35,6 @@ import {
   type ZipFailure,
 } from '../src/hooks/useClientQueue';
 import * as clientConverter from '../src/lib/client-converter';
-import { fileTooLargeMessage } from '../src/lib/plan-limits';
 import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import type { ConversionOptions, ConversionQueueItem } from '../src/lib/types';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
@@ -686,7 +685,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       createElement(QueueItemRow, {
         item: makeItem({
           id: 'cells-err-1', name: 'sheet.csv', size: 2048, sourceFormat: 'csv', targetFormat: 'parquet',
-          status: 'error', error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
+          status: 'error', error: { code: 'server', problem: { detail: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.' } },
         }),
         ...rowNoops,
       })
@@ -706,7 +705,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       createElement(QueueItemRow, {
         item: makeItem({
           id: 'over-1', size: maxBytes + 1024, targetFormat: 'webm',
-          status: 'error', error: fileTooLargeMessage('anonymous', maxBytes + 1024),
+          status: 'error',
         }),
         ...rowNoops,
       })
@@ -737,7 +736,6 @@ describe('Workbench media, document, and tabular capability model', () => {
         sourceFormat: 'mp4',
         targetFormat: '',
         status: 'error',
-        error: fileTooLargeMessage('anonymous', maxBytes + 10),
       }),
     ]);
 
@@ -798,7 +796,7 @@ describe('Workbench media, document, and tabular capability model', () => {
         items: [
           makeItem({
             id: 'parquet-err', name: 'sheet.csv', size: 2048, sourceFormat: 'csv', targetFormat: 'parquet',
-            status: 'error', error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
+            status: 'error', error: { code: 'server', problem: { detail: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.' } },
           }),
         ],
         ...queueNoops,

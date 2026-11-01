@@ -10,6 +10,7 @@
  */
 
 import { ConversionFailedError, ConversionOptions, ConversionQueueItem } from '../../types';
+import { serverRefusal } from '../../conversion-failure';
 import { resolveConversionTier, TierResolution, EdgeCapabilities } from '../tier-router';
 
 /**
@@ -95,8 +96,7 @@ export async function executeServerlessCloudFallback(
   onProgress?.(80);
 
   if (!res.ok) {
-    const errJson = await res.json().catch(() => ({}));
-    throw new Error(errJson.error || 'Serverless cloud conversion failed.');
+    throw serverRefusal(await res.json().catch(() => ({})), res.status, 'Serverless cloud conversion failed.');
   }
 
   const blob = await res.blob();

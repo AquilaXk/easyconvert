@@ -1170,7 +1170,6 @@
     "convert": "변환",
     "row": {
       "unknownFormat": "{ext} 파일",
-      "failedFallback": "변환하지 못했습니다.",
       "uploadingLabel": "{name} 업로드 중",
       "convertingLabel": "{name} 변환 중",
       "done": "완료",
@@ -1185,6 +1184,12 @@
       "optionsLabel": "{name} 변환 옵션",
       "cancelLabel": "{name} 취소",
       "removeLabel": "{name} 제거"
+    },
+    "failures": {
+      "conversionFailed": "변환에 실패했습니다. 다른 형식을 고르거나 다시 시도하십시오.",
+      "clientEdgeFailed": "브라우저에서 이 파일을 변환하지 못했습니다. 브라우저에서만 변환하도록 설정되어 있어 파일은 기기 밖으로 보내지 않았습니다.",
+      "clientOnlyBlocked": "{source} → {target} 변환은 서버에서만 할 수 있지만, 이 파일은 브라우저에서만 변환하도록 설정되어 있습니다.",
+      "jobTimedOut": "변환이 제한 시간 안에 끝나지 않았습니다. 다시 시도하십시오."
     }
   },
   "siteLinks": {
