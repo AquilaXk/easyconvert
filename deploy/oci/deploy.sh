@@ -232,12 +232,12 @@ host_of() { # host_of <absolute URL>: its host, lowercased, without user, port o
 }
 
 # The public origin the web server of a release runs with, as Compose resolves `APP_ORIGIN: ${APP_ORIGIN:-${APP_URL}}` from the
-# env file (quotes and comments as Compose reads them); empty when Compose names none.
+# env file (quotes and comments as Compose reads them); empty when Compose names none. Only that key leaves the pipe, and the
+# call fails, with Compose's own error on stderr, when Compose cannot resolve the web service.
 release_origin() { # release_origin <release-dir>
-  local config pattern='"APP_ORIGIN": *"([^"]*)"'
-  config="$(compose "$1" config --format json web)" || return 0
-  [[ "$config" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
-  return 0
+  local origins
+  origins="$(compose "$1" config --format json web | sed -nE 's/^ *"APP_ORIGIN": *"([^"]*)",?$/\1/p')" || return 1
+  printf '%s' "${origins%%$'\n'*}"
 }
 
 # The home page, saved to PAGE_FILE: tried as often as the health check, since the web may still be warming its pages. curl runs
@@ -256,9 +256,9 @@ fetch_home_page() {
 # canonical links, and the running server answers for the origin Compose gives it. A release whose two hosts differ would point
 # every page at another site, so a new release is refused (a rollback or a reconcile starts a release that passed it, or one older
 # than the check). Only the two hosts are logged, never the page or the env file.
-canonical_host_matches() { # canonical_host_matches <release-dir>
+canonical_host_matches() { # canonical_host_matches <origin the release runs with>
   local expected served="" ok=1 pattern='<link rel="canonical" href="([^"]+)"'
-  expected="$(host_of "$(release_origin "$1")")"
+  expected="$(host_of "$1")"
   PAGE_FILE="$(mktemp)"
   if ! fetch_home_page; then
     log "the home page ($PAGE_URL) did not answer"
@@ -348,7 +348,7 @@ prune_releases() {
 
 deploy() {
   local ref="${1:-}" source_dir="${SOURCE_DIR:?SOURCE_DIR (the checkout)}" raw_env="${ENV_FILE:?ENV_FILE (the filtered env)}"
-  local release worker web previous budget_env
+  local release worker web previous budget_env origin
   [[ "$ref" =~ $IMAGE_REF_PATTERN ]] || die "the image ref must be main or sha-<40 hex characters>"
   guard "$raw_env"
   check_profile
@@ -383,9 +383,10 @@ deploy() {
   chmod 600 "$release/.env"
 
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
+  origin="$(release_origin "$release")" || die "Compose could not resolve the origin of the web service"
   child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
 
-  if start_release "$release" && canonical_host_matches "$release"; then
+  if start_release "$release" && canonical_host_matches "$origin"; then
     trap '' INT TERM
     PENDING_RELEASE=""
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"

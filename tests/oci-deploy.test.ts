@@ -713,6 +713,7 @@ case "$1" in
     for arg in "$@"; do [ "$prev" = "--project-directory" ] && dir="$arg"; prev="$arg"; done
     case " $* " in
       *" config --format json "*)
+        if [ -n "\${STUB_FAIL_CONFIG_JSON:-}" ]; then echo "stub compose: \$STUB_FAIL_CONFIG_JSON" >&2; exit 1; fi
         origin="$(grep -E '^APP_ORIGIN=' "$dir/.env" | tail -n 1 | cut -d= -f2-)"
         [ -n "$origin" ] || origin="$(grep -E '^APP_URL=' "$dir/.env" | tail -n 1 | cut -d= -f2-)"
         origin="\${origin%\\"}"; origin="\${origin#\\"}"
@@ -936,6 +937,15 @@ exit 0`
     const result = run(['deploy', ref('a')], { env: hostEnv(extra) });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(message);
+    expect(existsSync(path.join(home, 'current'))).toBe(false);
+  });
+
+  it('stops with the Compose error before the release starts when Compose cannot resolve the web service', () => {
+    const result = run(['deploy', ref('a')], { env: hostEnv({ STUB_FAIL_CONFIG_JSON: 'service "web" refers to undefined network' }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('stub compose: service "web" refers to undefined network');
+    expect(result.stderr).toContain('ERROR: Compose could not resolve the origin of the web service');
+    expect(calls().filter((call) => / up /.test(call))).toEqual([]);
     expect(existsSync(path.join(home, 'current'))).toBe(false);
   });
 
