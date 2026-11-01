@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { PHOTOMETRIC, RAW_SIZE, TAG, TYPE, buildTiff, imageEntries, minimalDng } from './helpers/dng-builder';
+import { PHOTOMETRIC, RAW_SIZE, TAG, TYPE, buildTiff, imageEntries, minimalDng, withIfd0Values } from './helpers/dng-builder';
 import { withBinaryAt } from './helpers/native-tools';
 import { rawSamplePath, skipWithoutRawSamples, skipWithoutTools } from './helpers/strict-skip';
 
@@ -90,8 +90,30 @@ describe('a camera file whose decoder warns about samples outside the stated bit
   });
 });
 
-describe('what the decoder prints decides whether its image is developed', () => {
+describe('a DNG whose decoder writes a picture of another size than its raw directory', () => {
+  const noTool = skipWithoutTools('dcraw_emu') || skipWithoutRawSamples('dng');
 
+  // The Canon CFA DNG is 960 x 540 with ActiveArea 0 0 540 960. LibRaw drops a row or a column to start on an even Bayer margin and
+  // stretches non-square pixels, so these copies decode smaller or taller than their directory says; a decoder that also prints the line
+  // must still develop them.
+  it.skipIf(noTool).each([
+    ['ActiveArea 1 1 540 960', TAG.activeArea, [1, 1, 540, 960], { width: 958, height: 538 }],
+    ['ActiveArea 1 0 540 960', TAG.activeArea, [1, 0, 540, 960], { width: 960, height: 538 }],
+    ['ActiveArea 0 1 540 960', TAG.activeArea, [0, 1, 540, 960], { width: 958, height: 540 }],
+    ['ActiveArea 3 3 540 960', TAG.activeArea, [3, 3, 540, 960], { width: 956, height: 536 }],
+    ['DefaultScale 1:2', TAG.defaultScale, [1, 1, 2, 1], { width: 960, height: 1080 }],
+  ])('develops the Canon CFA DNG with %s at the size LibRaw writes, with the warning', async (_name, tag, values, size) => {
+    const input = withIfd0Values(readFileSync(rawSamplePath('dng')), tag, values);
+    const result = await convertWith(warningDecoder(), input);
+    expect(result).not.toBeInstanceOf(Error);
+    const developed = result as { buffer: Buffer; metadata?: { warnings?: string[] } };
+    expect(developed.metadata?.warnings).toEqual([expect.stringMatching(/corrupted data at byte 3 of the file/)]);
+    const meta = await sharp(developed.buffer).metadata();
+    expect({ width: meta.width, height: meta.height }).toEqual(size);
+  });
+});
+
+describe('what the decoder prints decides whether its image is developed', () => {
   it('develops a complete image after the data-corrupted line and keeps the line as a warning', async () => {
     const stub = decoderStub('good', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
     const result = await convertWith(stub);
@@ -118,7 +140,7 @@ describe('what the decoder prints decides whether its image is developed', () =>
   });
 
   it.each([
-    ['a raw image of another size than the decoded picture', decodedTiff(WIDTH, GOOD_ROWS - 2, GOOD_ROWS - 2), DNG_BYTES, /its raw image is not the size of the decoded picture/],
+    ['a picture the size of a preview of its raw image', decodedTiff(WIDTH / 2, GOOD_ROWS / 2, GOOD_ROWS / 2), DNG_BYTES, /its raw image is not the size of the decoded picture/],
     ['a file that is no classic TIFF', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), bigTiff(), /the file is not a classic TIFF/],
     ['a DNG that lists no raw image', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), buildTiff(4096, [{ at: 8, entries: imageEntries([[200, 100]], { photometric: PHOTOMETRIC.yCbCr }) }]), /it lists no CFA or Linear Raw image/],
   ])('refuses the line for %s, saying why it could not be checked', async (_name, decoded, input, reason) => {
@@ -148,6 +170,16 @@ describe('what the decoder prints decides whether its image is developed', () =>
     const result = await convertWith(decoderStub('silent', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), ''));
     expect(result).not.toBeInstanceOf(Error);
     expect((result as { metadata?: unknown }).metadata).toBeUndefined();
+  });
+
+  it.each([
+    ['a DNG that printed a line it is refused for', 'dng', '"something went wrong"', /reported a problem with the \.dng file: something went wrong/],
+    ['a NEF that printed the data-corrupted line', 'nef', '"$input: data corrupted at 3"', /reported a problem with the \.nef file: .*data corrupted at 3/],
+  ])('reports what the decoder printed, not the unreadable image it wrote, for %s', async (_name, format, line, message) => {
+    const stub = decoderStub(`unreadable-${format}`, Buffer.from('not a TIFF image'), line);
+    const error = await withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(DNG_BYTES, format, 'png', {}, `stub.${format}`).catch((caught: unknown) => caught));
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(message);
   });
 
   it('still refuses a cut file whose image ends in repeated rows, warning or not', async () => {
@@ -207,6 +239,14 @@ function bigTiff(): Buffer {
 
 function convertWith(stub: string, input = DNG_BYTES): Promise<unknown> {
   return withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(input, 'dng', 'png', {}, 'stub.dng').catch((error: unknown) => error));
+}
+
+/** The real dcraw_emu, followed by LibRaw's data-corrupted line for the file it was given. */
+function warningDecoder(): string {
+  const script = path.join(stubDirectory, 'warning-decoder.sh');
+  writeFileSync(script, `#!/bin/sh\n'${requireOracleTool('dcraw_emu')}' "$@" || exit $?\nfor input; do :; done\nprintf '%s\\n' "$input: data corrupted at 3" >&2\n`);
+  chmodSync(script, 0o755);
+  return script;
 }
 
 /**

@@ -1,6 +1,4 @@
 import { RawDecodeError } from '../lib/types';
-import { endsInRepeatedRows, type DecodedTiffLayout } from './raw-decoded-tiff';
-import { dngRawImageData, type DngRawImageData } from './raw-dng-image-data';
 
 /**
  * What the native RAW decoder (`dcraw_emu` of LibRaw) wrote to stderr, read the way LibRaw writes it.
@@ -38,45 +36,22 @@ export function dataCorruptedWarning(offset: number): string {
   return `The RAW decoder reported corrupted data at byte ${offset} of the file; some samples of the picture may be wrong.`;
 }
 
-/** The refusal of a RAW file whose decoded image ends in rows that repeat, the filler a decoder leaves past the end of a cut file. */
-export function repeatedRowsRefusal(src: string): RawDecodeError {
-  return new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
-}
-
-/** Why a DNG that printed the line is refused, for each finding of `dngRawImageData` but `whole`. */
-const UNCHECKED_DNG_REASONS: Readonly<Record<Exclude<DngRawImageData, 'whole' | 'outside-file'>, string>> = {
-  'not-classic-tiff': 'the file is not a classic TIFF',
-  'no-raw-image': 'it lists no CFA or Linear Raw image in a compression the check reads',
-  'unreadable-layout': 'its raw image does not list one byte count for each of its strips or tiles, none empty',
-  dimensions: 'its raw image is not the size of the decoded picture',
-};
-
-function dngRefusal(finding: Exclude<DngRawImageData, 'whole'>, src: string): RawDecodeError {
-  if (finding === 'outside-file') return new RawDecodeError(`The .${src} file is truncated: its raw image data runs past the end of the file`);
-  return new RawDecodeError(`Native RAW decoder reported corrupted data in the .${src} file, and the file cannot be shown to be whole: ${UNCHECKED_DNG_REASONS[finding]}`);
-}
-
-export interface DecoderRun {
+export interface DecoderReport {
   src: string;
   /** The decoder's stderr, trimmed. */
   stderr: string;
   inputPath: string;
   tempDir: string;
-  decodedPath: string;
-  layout: DecodedTiffLayout;
 }
 
 /**
- * The offset of LibRaw's `data corrupted at` line when the decoder's report allows its image to be developed with that warning, or null
- * when the decoder printed nothing. Throws a RawDecodeError for any other report, for the line from a format other than DNG, for a DNG
- * that does not hold every strip or tile of a raw image the size of the decoded picture, and for a decoded image that ends in repeated rows.
+ * What the decoder's report says, read before its image: null when it printed nothing, the offset of LibRaw's `data corrupted at` line
+ * when a DNG printed exactly that line, which the engine then checks against the file and the image. Throws a RawDecodeError with the
+ * decoder's own words for any other report, and for that line from a format other than DNG.
  */
-export function acceptedDecoderWarning(run: DecoderRun): number | null {
-  if (run.stderr === '') return null;
-  const offset = run.src === 'dng' ? dataCorruptedOffset(run.stderr, run.inputPath) : null;
-  if (offset === null) throw new RawDecodeError(`Native RAW decoder reported a problem with the .${run.src} file: ${decoderStderrDetail(run.stderr, run.tempDir)}`);
-  const finding = dngRawImageData(run.inputPath, run.layout);
-  if (finding !== 'whole') throw dngRefusal(finding, run.src);
-  if (endsInRepeatedRows(run.decodedPath, run.layout)) throw repeatedRowsRefusal(run.src);
+export function decoderWarningOffset(report: DecoderReport): number | null {
+  if (report.stderr === '') return null;
+  const offset = report.src === 'dng' ? dataCorruptedOffset(report.stderr, report.inputPath) : null;
+  if (offset === null) throw new RawDecodeError(`Native RAW decoder reported a problem with the .${report.src} file: ${decoderStderrDetail(report.stderr, report.tempDir)}`);
   return offset;
 }

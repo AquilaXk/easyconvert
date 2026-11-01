@@ -4,10 +4,11 @@
 // (real files that single tests read for a case of their own) into tests/fixtures/raw/.cache/,
 // verifying byte size and SHA-256. A manifest file is <format>.<format>, a variant file is
 // <format>-<variant>.<format>. Optional arguments restrict the download to those cache names
-// (for example `x3f raw x3f-sd14`).
+// (for example `x3f raw x3f-sd14`). Files in the cache that no list names, and `.part` files left by
+// an interrupted run, are deleted at the end, so a cache restored from an older key does not keep them.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -74,6 +75,15 @@ async function fetchEntry(entry) {
   throw new Error(lastError);
 }
 
+function pruneCache(entries) {
+  const listed = new Set(entries.map((entry) => path.basename(cachePathFor(entry))));
+  for (const file of readdirSync(CACHE_DIR, { withFileTypes: true })) {
+    if (!file.isFile() || listed.has(file.name)) continue;
+    rmSync(path.join(CACHE_DIR, file.name), { force: true });
+    console.log(`pruned: ${file.name}`);
+  }
+}
+
 /**
  * Node's built-in fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set at startup, so a
  * proxied environment re-runs this script once with it enabled.
@@ -109,6 +119,7 @@ async function main() {
       console.error(`FAILED: ${cacheNameFor(entry)}: ${err.message}`);
     }
   }
+  pruneCache(entries);
   if (failures > 0) {
     console.error(`${failures} of ${manifest.length} RAW samples could not be fetched`);
     process.exit(1);

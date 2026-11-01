@@ -10,13 +10,16 @@ export const TAG = {
   compression: 259,
   photometric: 262,
   stripOffsets: 273,
+  orientation: 274,
   stripByteCounts: 279,
   tileOffsets: 324,
   tileByteCounts: 325,
   subIfds: 330,
+  defaultScale: 50718,
   activeArea: 50829,
 } as const;
-export const TYPE = { short: 3, long: 4, ifd: 13 } as const;
+/** A RATIONAL entry lists its values as numerator and denominator pairs. */
+export const TYPE = { short: 3, long: 4, rational: 5, ifd: 13 } as const;
 
 const TIFF_MAGIC = 42;
 const ENTRY_BYTES = 12;
@@ -43,6 +46,7 @@ export interface TiffDirectorySpec {
 }
 
 const valueBytes = (type: number): number => (type === TYPE.short ? 2 : 4);
+const numbersPerValue = (type: number): number => (type === TYPE.rational ? 2 : 1);
 
 /** A file of `size` bytes holding `directories`; the header points at `first`, by default the first directory. */
 export function buildTiff(size: number, directories: TiffDirectorySpec[], options: { little?: boolean; first?: number } = {}): Buffer {
@@ -61,7 +65,7 @@ export function buildTiff(size: number, directories: TiffDirectorySpec[], option
       const at = directory.at + 2 + index * ENTRY_BYTES;
       u16(entry.tag, at);
       u16(entry.type, at + 2);
-      u32(entry.values.length, at + 4);
+      u32(entry.values.length / numbersPerValue(entry.type), at + 4);
       if (entry.values.length * valueBytes(entry.type) <= INLINE_BYTES) write(entry.type, entry.values, at + 8);
       else {
         u32(entry.at as number, at + 8);
@@ -105,4 +109,25 @@ const DATA_AT = 128;
 /** A DNG whose raw image is one strip of `stripBytes` at byte 128, cut to `size` bytes when that is shorter. */
 export function minimalDng(stripBytes: number, size = DATA_AT + stripBytes, options: { little?: boolean } = {}): Buffer {
   return buildTiff(Math.max(size, DATA_AT), [{ at: 8, entries: imageEntries([[DATA_AT, stripBytes]]) }], options).subarray(0, size);
+}
+
+/** A copy of `file` whose IFD0 entry `tag` holds `values` (numerator and denominator pairs for a RATIONAL) over its own, as many. */
+export function withIfd0Values(file: Buffer, tag: number, values: number[]): Buffer {
+  const copy = Buffer.from(file);
+  const little = copy.toString('latin1', 0, 2) === 'II';
+  const u16 = (at: number) => (little ? copy.readUInt16LE(at) : copy.readUInt16BE(at));
+  const u32 = (at: number) => (little ? copy.readUInt32LE(at) : copy.readUInt32BE(at));
+  const first = u32(4);
+  for (let index = 0; index < u16(first); index += 1) {
+    const at = first + 2 + index * ENTRY_BYTES;
+    if (u16(at) !== tag) continue;
+    const type = u16(at + 2);
+    const valuesAt = values.length * valueBytes(type) <= INLINE_BYTES ? at + 8 : u32(at + 8);
+    const write = type === TYPE.short
+      ? (little ? copy.writeUInt16LE : copy.writeUInt16BE)
+      : (little ? copy.writeUInt32LE : copy.writeUInt32BE);
+    values.forEach((value, position) => write.call(copy, value, valuesAt + position * valueBytes(type)));
+    return copy;
+  }
+  throw new Error(`IFD0 has no entry ${tag}`);
 }

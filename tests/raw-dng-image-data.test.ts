@@ -4,14 +4,14 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dngRawImageData, type ImageSize } from '../src/worker/raw-dng-image-data';
 import {
-  COMPRESSION, PHOTOMETRIC, RAW_SIZE, REDUCED_RESOLUTION, TAG, TYPE, buildTiff, imageEntries, minimalDng, type TiffDirectorySpec,
+  COMPRESSION, PHOTOMETRIC, RAW_SIZE, REDUCED_RESOLUTION, TAG, TYPE, buildTiff, imageEntries, minimalDng, type TiffDirectorySpec, type TiffEntrySpec,
 } from './helpers/dng-builder';
 
 /**
- * A DNG holds its raw image when every strip or tile its raw directory lists lies inside the file, with the directory rules of rawspeed:
- * the raw image is the first full-resolution directory, chain and SubIFDs, in a compression rawspeed decodes and, as LibRaw requires,
- * a CFA or Linear Raw image; at most 10 children per parent, 28 directories and 5 levels, no two directories overlapping. The raw image
- * must also be the size of the picture the decoder wrote.
+ * A DNG holds its raw image when every strip or tile of the directory LibRaw develops lies inside the file. LibRaw reads at most 10
+ * directories, a parent before its SubIFDs, and with the engine's options develops the first of NewSubFileType 0 whose width and height
+ * are 1 to 65535 and which is a CFA or Linear Raw image. The picture it writes is that directory's size, at most 23 pixels smaller on each
+ * axis, stretched by DefaultScale and turned when the first Orientation that turns or flips says so.
  */
 
 const directory = mkdtempSync(path.join(os.tmpdir(), 'dng-image-data-'));
@@ -69,8 +69,9 @@ describe('a DNG whose raw image is in its first directory', () => {
     expect(check(buildTiff(SIZE, [{ at: 8, entries: imageEntries([[200, 100], [300, 100], [4000, 100]], { tiles: true, arraysAt: 100 }) }]))).toBe('outside-file');
   });
 
-  it('does not when a strip is empty or the counts do not match the offsets', () => {
+  it('does not when a strip is empty, the arrays list none or the counts do not match the offsets', () => {
     expect(check(minimalDng(0))).toBe('unreadable-layout');
+    expect(check(buildTiff(SIZE, [{ at: 8, entries: imageEntries([]) }]))).toBe('unreadable-layout');
     const entries = imageEntries([[200, 100]]).map((entry) => (entry.tag === TAG.stripByteCounts ? { ...entry, values: [100, 100], at: 100 } : entry));
     expect(check(buildTiff(SIZE, [{ at: 8, entries }]))).toBe('unreadable-layout');
   });
@@ -80,22 +81,64 @@ describe('a DNG whose raw image is in its first directory', () => {
   });
 });
 
+const orientation = (value: number): TiffEntrySpec => ({ tag: TAG.orientation, type: TYPE.short, values: [value] });
+const defaultScale = (horizontal: number, vertical: number, at: number): TiffEntrySpec => ({
+  tag: TAG.defaultScale, type: TYPE.rational, values: [horizontal, 1, vertical, 1], at,
+});
+const raw = (at: number, extra: TiffEntrySpec[] = []): TiffDirectorySpec => ({ at, entries: [...imageEntries([[3000, 100]]), ...extra] });
+
 describe('the size of the raw image', () => {
-  it('is its ImageWidth and ImageLength, in either orientation, and must be that of the decoded picture', () => {
-    expect(check(minimalDng(200), { width: RAW_SIZE.height, height: RAW_SIZE.width })).toBe('whole');
-    expect(check(minimalDng(200), { width: RAW_SIZE.width, height: RAW_SIZE.height - 1 })).toBe('dimensions');
+  it('is that of the decoded picture or at most 23 pixels smaller on each axis, never larger, so a preview is not taken for it', () => {
+    expect(check(minimalDng(200))).toBe('whole');
+    expect(check(minimalDng(200), { width: RAW_SIZE.width - 23, height: RAW_SIZE.height - 23 })).toBe('whole');
+    for (const decoded of [
+      { width: RAW_SIZE.width - 24, height: RAW_SIZE.height },
+      { width: RAW_SIZE.width, height: RAW_SIZE.height - 24 },
+      { width: RAW_SIZE.width + 1, height: RAW_SIZE.height },
+      { width: RAW_SIZE.width, height: RAW_SIZE.height + 1 },
+      { width: RAW_SIZE.width / 2, height: RAW_SIZE.height / 2 },
+    ]) expect(check(minimalDng(200), decoded), `${decoded.width} x ${decoded.height}`).toBe('dimensions');
   });
 
-  it('is its ActiveArea when it has one', () => {
-    const area = { tag: TAG.activeArea, type: TYPE.short, values: [2, 4, 82, 54], at: 200 };
-    const file = buildTiff(SIZE, [{ at: 8, entries: [...imageEntries([[400, 100]]), area] }]);
-    expect(check(file, { width: 50, height: 80 })).toBe('whole');
-    expect(check(file)).toBe('dimensions');
+  it('is turned only when the first Orientation that turns or flips the picture says so, as LibRaw writes it', () => {
+    const turned = { width: RAW_SIZE.height, height: RAW_SIZE.width };
+    expect(check(minimalDng(200), turned)).toBe('dimensions');
+    for (const value of [5, 6, 7, 8]) {
+      const file = buildTiff(SIZE, [raw(8, [orientation(value)])]);
+      expect(check(file, turned), `Orientation ${value}`).toBe('whole');
+      expect(check(file), `Orientation ${value}`).toBe('dimensions');
+    }
+    const below = (parent: number) => buildTiff(SIZE, [preview(8, 0, [orientation(parent), subIfds([200])]), raw(200, [orientation(6)])]);
+    expect(check(below(1), turned)).toBe('whole');
+    expect(check(below(3))).toBe('whole');
+    expect(check(below(3), turned)).toBe('dimensions');
   });
 
-  it('is unknown without ImageLength', () => {
-    const entries = imageEntries([[400, 100]]).filter((entry) => entry.tag !== TAG.imageLength);
-    expect(check(buildTiff(SIZE, [{ at: 8, entries }]))).toBe('dimensions');
+  it('is its ActiveArea when it has one, and ImageWidth or ImageLength where the area is empty', () => {
+    const withArea = (values: number[]) => buildTiff(SIZE, [{ at: 8, entries: [...imageEntries([[400, 100]]), { tag: TAG.activeArea, type: TYPE.short, values, at: 200 }] }]);
+    expect(check(withArea([2, 4, 82, 54]), { width: 50, height: 80 })).toBe('whole');
+    expect(check(withArea([2, 4, 82, 54]))).toBe('dimensions');
+    expect(check(withArea([0, 0, 0, 0]))).toBe('whole');
+  });
+
+  it('is stretched by DefaultScale, taller when its pixels are narrower and wider when they are wider, and not within half a percent of square', () => {
+    const scaled = (horizontal: number, vertical: number) => buildTiff(SIZE, [raw(8, [defaultScale(horizontal, vertical, 200)])]);
+    expect(check(scaled(1, 2), { width: RAW_SIZE.width, height: RAW_SIZE.height * 2 })).toBe('whole');
+    expect(check(scaled(1, 2))).toBe('dimensions');
+    expect(check(scaled(2, 1), { width: RAW_SIZE.width * 2, height: RAW_SIZE.height })).toBe('whole');
+    expect(check(scaled(2, 1))).toBe('dimensions');
+    const tall = buildTiff(SIZE, [raw(8, [defaultScale(996, 1000, 200), { tag: TAG.activeArea, type: TYPE.short, values: [0, 0, 1000, 64], at: 300 }])]);
+    expect(check(tall, { width: RAW_SIZE.width, height: 1000 })).toBe('whole');
+    expect(check(tall, { width: RAW_SIZE.width, height: 1004 })).toBe('dimensions');
+  });
+
+  it('is stretched by the DefaultScale LibRaw reads last, a parent\'s own after those of the SubIFDs it lists before it', () => {
+    const file = buildTiff(SIZE, [
+      preview(8, 0, [subIfds([200]), defaultScale(1, 1, 150)]),
+      raw(200, [defaultScale(1, 2, 400)]),
+    ]);
+    expect(check(file)).toBe('whole');
+    expect(check(file, { width: RAW_SIZE.width, height: RAW_SIZE.height * 2 })).toBe('dimensions');
   });
 });
 
@@ -119,26 +162,43 @@ describe('where the raw image is', () => {
     expect(check(tree(1200))).toBe('outside-file');
   });
 
-  it('skips a CFA directory whose compression the raw decoder does not read', () => {
-    const tree = (rawStripBytes: number) => buildTiff(SIZE, [
-      { at: 8, entries: [...imageEntries([[2000, 1000]], { compression: COMPRESSION.jpeg }), subIfds([200])] },
-      { at: 200, entries: imageEntries([[3000, rawStripBytes]], { photometric: PHOTOMETRIC.linearRaw }) },
+  it('is a directory of NewSubFileType 0 only, so an enhanced image (16) before it is not the one checked', () => {
+    const tree = buildTiff(SIZE, [
+      { at: 8, entries: [...imageEntries([[2000, 4000]], { subfileType: 16 }), subIfds([200])] },
+      { at: 200, entries: imageEntries([[3000, 1000]], { photometric: PHOTOMETRIC.linearRaw }) },
     ]);
-    expect(check(tree(1000))).toBe('whole');
-    expect(check(tree(1200))).toBe('outside-file');
+    expect(check(tree)).toBe('whole');
+  });
+
+  it('is taken whatever its Compression, as LibRaw chooses it before it looks for a decoder', () => {
+    const tree = buildTiff(SIZE, [
+      { at: 8, entries: [...imageEntries([[2000, 4000]], { compression: COMPRESSION.jpeg }), subIfds([200])] },
+      { at: 200, entries: imageEntries([[3000, 1000]], { photometric: PHOTOMETRIC.linearRaw }) },
+    ]);
+    expect(check(tree)).toBe('outside-file');
+  });
+
+  it('skips a directory with no width or height, or one above 65535', () => {
+    const sized = (entries: TiffEntrySpec[]) => buildTiff(SIZE, [
+      { at: 8, entries: [...entries, subIfds([200])] },
+      { at: 200, entries: imageEntries([[3000, 1000]]) },
+    ]);
+    const cut = imageEntries([[2000, 4000]]);
+    expect(check(sized(cut))).toBe('outside-file');
+    expect(check(sized(cut.filter((entry) => entry.tag !== TAG.imageLength)))).toBe('whole');
+    expect(check(sized(cut.map((entry) => (entry.tag === TAG.imageWidth ? { ...entry, values: [65_536] } : entry))))).toBe('whole');
   });
 
   it('is found further down the chain', () => {
     expect(check(buildTiff(SIZE, [preview(8, 200), { at: 200, entries: imageEntries([[400, 100]]) }]))).toBe('whole');
   });
 
-  it('is none when every directory is a preview or a transparency mask, has no Compression or no PhotometricInterpretation', () => {
-    const mask = imageEntries([[400, 100]], { subfileType: 4 });
-    expect(check(buildTiff(SIZE, [preview(8, 200), { at: 200, entries: mask }]))).toBe('no-raw-image');
-    for (const tag of [TAG.compression, TAG.photometric]) {
-      const entries = imageEntries([[400, 100]]).filter((entry) => entry.tag !== tag);
-      expect(check(buildTiff(SIZE, [{ at: 8, entries }]))).toBe('no-raw-image');
+  it('is none when every directory is a preview, a transparency mask or an enhanced image, or has no PhotometricInterpretation', () => {
+    for (const subfileType of [4, 16]) {
+      expect(check(buildTiff(SIZE, [preview(8, 200), { at: 200, entries: imageEntries([[400, 100]], { subfileType }) }]))).toBe('no-raw-image');
     }
+    const entries = imageEntries([[400, 100]]).filter((entry) => entry.tag !== TAG.photometric);
+    expect(check(buildTiff(SIZE, [{ at: 8, entries }]))).toBe('no-raw-image');
   });
 
   it('is none when the file is not a classic TIFF, BigTIFF included', () => {
@@ -150,70 +210,74 @@ describe('where the raw image is', () => {
 });
 
 describe('directories laid out to make the reader loop or explode', () => {
-  it('stops at a chain that points back at itself', () => {
+  it('reads 10 directories in all, so a chain that points back at itself ends', () => {
     expect(check(buildTiff(SIZE, [preview(8, 8)]))).toBe('no-raw-image');
   });
 
-  it('stops at a SubIFD that points at its parent or overlaps a directory read before', () => {
+  it('reads a SubIFD that points at its parent or into it as a directory of its own, until the 10 are read', () => {
     expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([8])])]))).toBe('no-raw-image');
     expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([12])])]))).toBe('no-raw-image');
   });
 
-  it('reads no directory from a SubIFD offset below 8, inside the header, nor the SubIFDs listed after it', () => {
-    const raw = { at: 200, entries: imageEntries([[400, 100]]) };
-    expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([200], 150)]), raw]))).toBe('whole');
-    for (const offset of [0, 2, 4, 6]) expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([offset, 200], 150)]), raw]))).toBe('no-raw-image');
+  it('ends the SubIFD list at offset 0, whose byte order reads as more than 512 entries, and reads the header bytes at 2, 4 and 6 as a directory', () => {
+    const rawAt200 = { at: 200, entries: imageEntries([[400, 100]]) };
+    expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([200], 150)]), rawAt200]))).toBe('whole');
+    expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([0, 200], 150)]), rawAt200]))).toBe('no-raw-image');
+    for (const offset of [2, 4, 6]) expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([offset, 200], 150)]), rawAt200])), `offset ${offset}`).toBe('whole');
   });
 
-  it('does not read a directory twice, so a chain that reaches a SubIFD already read ends there', () => {
-    const raw = { at: 300, entries: imageEntries([[400, 100]]) };
-    expect(check(buildTiff(SIZE, [preview(8, 200), preview(200, 300), raw]))).toBe('whole');
-    expect(check(buildTiff(SIZE, [preview(8, 200, [subIfds([200])]), preview(200, 300), raw]))).toBe('no-raw-image');
+  it('counts a directory of more than 512 entries, or one past the end of the file, and ends its list there', () => {
+    const size = 16_384;
+    const filler = (count: number): TiffDirectorySpec => ({ at: 1000, entries: Array.from({ length: count }, () => ({ tag: 0x8000, type: TYPE.short, values: [0] })) });
+    const tree = (offsets: number[], count: number) => buildTiff(size, [preview(8, 0, [subIfds(offsets, 150)]), raw(200), filler(count)]);
+    expect(check(tree([1000, 200], 512))).toBe('whole');
+    expect(check(tree([1000, 200], 513))).toBe('no-raw-image');
+    expect(check(tree([size + 8, 200], 0))).toBe('no-raw-image');
+    expect(check(tree([200, size + 8], 0))).toBe('whole');
   });
 
-  it('follows 10 SubIFDs of one directory and not an 11th', () => {
+  it('reads a value past the end of the file as 0xff bytes, and skips an entry of more than 8 values that would end past twice the file size', () => {
+    const size = 2000;
+    const tree = (kind: TiffEntrySpec) => buildTiff(5 * size, [
+      { at: 8, entries: [kind, ...imageEntries([[1000, 4000]]).slice(1), subIfds([200])] },
+      { at: 200, entries: imageEntries([[1000, 100]]) },
+    ]).subarray(0, size);
+    expect(check(tree({ tag: TAG.newSubfileType, type: TYPE.long, values: [0, 0], at: size + 100 }))).toBe('whole');
+    expect(check(tree({ tag: TAG.newSubfileType, type: TYPE.long, values: Array(9).fill(0), at: 2 * size - 8 }))).toBe('outside-file');
+  });
+
+  it('reads a directory again when the chain reaches a SubIFD already read', () => {
+    const rawAt300 = raw(300);
+    expect(check(buildTiff(SIZE, [preview(8, 200), preview(200, 300), rawAt300]))).toBe('whole');
+    expect(check(buildTiff(SIZE, [preview(8, 200, [subIfds([200])]), preview(200, 300), rawAt300]))).toBe('whole');
+  });
+
+  it('reads 10 directories in all: a parent and 9 of its SubIFDs, not a 10th', () => {
     const tree = (rawIndex: number) => {
       const offsets = Array.from({ length: 12 }, (_, index) => 400 + index * 100);
-      const children = offsets.map((at, index): TiffDirectorySpec => (index === rawIndex
-        ? { at, entries: imageEntries([[3000, 100]]) }
-        : preview(at)));
+      const children = offsets.map((at, index): TiffDirectorySpec => (index === rawIndex ? raw(at) : preview(at)));
       return buildTiff(SIZE, [preview(8, 0, [subIfds(offsets, 200)]), ...children]);
     };
-    expect(check(tree(9))).toBe('whole');
-    expect(check(tree(10))).toBe('no-raw-image');
+    expect(check(tree(8))).toBe('whole');
+    expect(check(tree(9))).toBe('no-raw-image');
   });
 
   it('follows 10 directories of the chain and not an 11th', () => {
     const chain = (length: number) => Array.from({ length }, (_, index): TiffDirectorySpec => {
       const at = 8 + index * 100;
-      return index === length - 1 ? { at, entries: imageEntries([[3000, 100]]) } : preview(at, at + 100);
+      return index === length - 1 ? raw(at) : preview(at, at + 100);
     });
     expect(check(buildTiff(SIZE, chain(10)))).toBe('whole');
     expect(check(buildTiff(SIZE, chain(11)))).toBe('no-raw-image');
   });
 
-  it('nests 5 levels and not a 6th', () => {
+  it('nests 10 levels and not an 11th', () => {
     const nested = (levels: number) => Array.from({ length: levels }, (_, index): TiffDirectorySpec => {
-      const at = 8 + index * 200;
-      return index === levels - 1 ? { at, entries: imageEntries([[3000, 100]]) } : preview(at, 0, [subIfds([at + 200])]);
+      const at = 8 + index * 250;
+      return index === levels - 1 ? { at, entries: imageEntries([[3900, 100]]) } : preview(at, 0, [subIfds([at + 250])]);
     });
-    expect(check(buildTiff(SIZE, nested(5)))).toBe('whole');
-    expect(check(buildTiff(SIZE, nested(6)))).toBe('no-raw-image');
-  });
-
-  it('reads at most 28 directories in the file', () => {
-    const size = 16_384;
-    const chain = [8, 1508, 3008];
-    const tree = (rawChild: number) => buildTiff(size, chain.flatMap((at, index): TiffDirectorySpec[] => {
-      const children = Array.from({ length: 9 }, (_, child) => at + 300 + child * 100);
-      return [
-        preview(at, chain[index + 1] ?? 0, [subIfds(children, at + 200)]),
-        ...children.map((childAt, child) => (index === 2 && child === rawChild ? { at: childAt, entries: imageEntries([[12_000, 100]]) } : preview(childAt))),
-      ];
-    }));
-    // In reading order the third chain directory is the 21st, so its seventh child is the 28th and its eighth the 29th.
-    expect(check(tree(6))).toBe('whole');
-    expect(check(tree(7))).toBe('no-raw-image');
+    expect(check(buildTiff(SIZE, nested(10)))).toBe('whole');
+    expect(check(buildTiff(SIZE, nested(11)))).toBe('no-raw-image');
   });
 
   it('stops at a SubIFD tag that claims a million directories, all of them its parent', () => {

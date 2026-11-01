@@ -93,10 +93,10 @@ import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
 import {
-  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertWithinPixelCap,
-  hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
+  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertWithinPixelCap,
+  readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { acceptedDecoderWarning, dataCorruptedWarning, decoderStderrDetail, repeatedRowsRefusal } from './raw-decoder-report';
+import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
@@ -1843,14 +1843,12 @@ export async function convertWithNativeRaw(
       throw new RawDecodeError(`Native RAW decoder produced no image for the .${src} file`);
     }
 
+    // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
+    const corruptedAt = decoderWarningOffset({ src, stderr: decoderStderr, inputPath, tempDir });
     const layout = readDecodedTiffLayout(decodedPath);
     assertWithinPixelCap(layout);
     assertCompleteDecodedImage(decodedPath, layout);
-    // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
-    const corruptedAt = acceptedDecoderWarning({ src, stderr: decoderStderr, inputPath, tempDir, decodedPath, layout });
-    if (hasRepeatedTail(decodedPath, layout)) {
-      throw repeatedRowsRefusal(src);
-    }
+    assertDecodedRawWhole({ src, inputPath, decodedPath, layout, warned: corruptedAt !== null });
 
     const converted = await convertImage(readDecodedRawImage(decodedPath), tgt, options, originalFilename, 'tiff');
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
