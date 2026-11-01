@@ -28,6 +28,8 @@ async function answer(pathname: string, headers: Record<string, string> = {}) {
     rewrite: res.headers.get('x-middleware-rewrite'),
     setCookie: res.headers.get('set-cookie'),
     link: res.headers.get('link'),
+    vary: res.headers.get('vary'),
+    cacheControl: res.headers.get('cache-control'),
   };
 }
 
@@ -91,6 +93,23 @@ describe('locale routing of pages', () => {
     expect((await answer('/', { ...KOREAN_BROWSER, cookie: 'NEXT_LOCALE=en' })).location).toBeNull();
     expect((await answer('/ko/status', { cookie: 'NEXT_LOCALE=en' })).setCookie).toBeNull();
     expect((await answer('/status', { cookie: 'NEXT_LOCALE=ko' })).setCookie).toBeNull();
+  });
+
+  it('answers the root privately and by language and cookie, so no shared cache hands one visitor another language', async () => {
+    for (const headers of [{}, KOREAN_BROWSER, { cookie: 'NEXT_LOCALE=ko' }, { cookie: 'NEXT_LOCALE=en' }]) {
+      const root = await answer('/', headers);
+      expect(root.vary, JSON.stringify(headers)).toBe('Accept-Language, Cookie');
+      expect(root.cacheControl, JSON.stringify(headers)).toBe('private, no-store');
+    }
+    expect((await answer('/status')).cacheControl).toBeNull();
+  });
+
+  it('writes the locale cookie only from the language selector, never while negotiating the root', async () => {
+    for (const headers of [{}, KOREAN_BROWSER, { 'accept-language': 'fr-FR' }, { cookie: 'NEXT_LOCALE=ko' }]) {
+      const res = await middleware(request('/', headers));
+      expect(res.headers.get('set-cookie'), JSON.stringify(headers)).toBeNull();
+      expect(res.headers.get('x-middleware-set-cookie'), JSON.stringify(headers)).toBeNull();
+    }
   });
 
   it('names the page in every language in a Link header', async () => {

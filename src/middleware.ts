@@ -23,7 +23,7 @@ import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-lim
  *    without a length is counted as it arrives: a file route refuses its first byte, any other route takes 1 MiB.
  * 4. Locale routing of pages: English at the unprefixed paths, every other locale under its prefix. A visitor's language
  *    (cookie, then Accept-Language) is negotiated on the root only, so a shared link opens in the language it names, and
- *    only the root and the language selector write the locale cookie, so no other page answer carries a Set-Cookie.
+ *    only the language selector writes the locale cookie, so no page answer carries a Set-Cookie.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -208,6 +208,20 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
 const handleRootLocale = createIntlMiddleware(routing);
 const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
 
+/**
+ * The root's answer: the home page in the visitor's language (the cookie the language selector wrote, then
+ * Accept-Language). It differs by those two headers, so it says so and stays out of shared caches. next-intl writes the
+ * cookie it negotiated for a visitor who sent none; only the selector writes it, so that answer carries no cookie.
+ */
+function rootLocaleAnswer(request: NextRequest): NextResponse {
+  const response = handleRootLocale(request);
+  response.headers.delete('set-cookie');
+  response.headers.delete('x-middleware-set-cookie');
+  response.headers.set('Vary', 'Accept-Language, Cookie');
+  response.headers.set('Cache-Control', 'private, no-store');
+  return response;
+}
+
 function isApiPath(pathname: string): boolean {
   return pathname === '/api' || pathname.startsWith('/api/');
 }
@@ -225,7 +239,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
     return problemResponse(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', 'API routes take no language prefix.', pathname);
   }
   if (!isApiPath(pathname)) {
-    return pathname === '/' ? handleRootLocale(request) : handlePageLocale(request);
+    return pathname === '/' ? rootLocaleAnswer(request) : handlePageLocale(request);
   }
 
   const isHealthProbe = pathname === HEALTH_PATH && HEALTH_METHODS.has(request.method.toUpperCase());
