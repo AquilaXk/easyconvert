@@ -98,7 +98,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'How It Works', href: '/#how-it-works' },
       { text: 'API Docs', href: '/api-docs' },
       { text: 'Dashboard', href: '/dashboard' },
-      { text: 'English', href: '/en' },
+      { text: 'English', href: '/' },
       { text: '한국어', href: '/ko' },
       { text: 'Log In', href: '/auth' },
       { text: 'Sign Up', href: '/auth?tab=register' },

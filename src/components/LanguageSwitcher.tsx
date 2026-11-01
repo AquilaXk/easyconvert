@@ -29,7 +29,7 @@ export default function LanguageSwitcher({ className = '' }: Readonly<{ classNam
             <li key={target} className="flex items-center">
               <Link
                 href={pathname}
-                locale={target}
+                locale={isCurrent ? undefined : target}
                 lang={target}
                 aria-current={isCurrent ? 'true' : undefined}
                 className={`min-h-[44px] px-2.5 inline-flex items-center rounded-sm text-sm transition-colors ${
