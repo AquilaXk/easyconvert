@@ -1,47 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BRAND_PALETTE } from '../src/lib/theme';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { UNIT_CATEGORIES, convertValue } from '../src/components/UnitConverter';
 import sharp from 'sharp';
 import { oracleTest } from './helpers/oracle-test';
 import { xmlWellFormed, xpathAttributes, xpathCount, xpathString } from './helpers/xml-oracle';
 
+/** The static brand files keep the signature colours; the app draws the same mark from its colour tokens. */
+const BRAND = { accent: '#5C6BC0', lavender: '#B4BCFB', ink: '#1F2340', chrome: '#F8F9FF' } as const;
+
 describe('Brand Signature Palette & Design Tokens Verification', () => {
-  it('verifies exact Brand Palette color tokens match specification', () => {
-    // brand.700: #5C6BC0 (Main signature accent)
-    expect(BRAND_PALETTE.brand[700].toUpperCase()).toBe('#5C6BC0');
-    // brand.400: #B4BCFB (Signature surface)
-    expect(BRAND_PALETTE.brand[400].toUpperCase()).toBe('#B4BCFB');
-    // brand.50: #F8F9FF (Chrome / top bar surface)
-    expect(BRAND_PALETTE.brand[50].toUpperCase()).toBe('#F8F9FF');
-    // brand.100: #F0F2FE (Secondary button background)
-    expect(BRAND_PALETTE.brand[100].toUpperCase()).toBe('#F0F2FE');
-    // brand.200: #E2E5FD (Secondary button pressed)
-    expect(BRAND_PALETTE.brand[200].toUpperCase()).toBe('#E2E5FD');
-    // brand.300: #CCD2FC (Decorative divider)
-    expect(BRAND_PALETTE.brand[300].toUpperCase()).toBe('#CCD2FC');
-    // brand.600: #7480D2 (Secondary button border)
-    expect(BRAND_PALETTE.brand[600].toUpperCase()).toBe('#7480D2');
-    // brand.800: #4A58A9 (Main CTA button pressed)
-    expect(BRAND_PALETTE.brand[800].toUpperCase()).toBe('#4A58A9');
-    // brand.900: #3B4890 (Signature surface text/border)
-    expect(BRAND_PALETTE.brand[900].toUpperCase()).toBe('#3B4890');
-    // brand.950: #1F2340 (Content primary body text)
-    expect(BRAND_PALETTE.brand[950].toUpperCase()).toBe('#1F2340');
-  });
-
-  it('verifies Neutral & Ink palette color tokens match specification', () => {
-    expect(BRAND_PALETTE.neutral.white.toUpperCase()).toBe('#FFFFFF');
-    expect(BRAND_PALETTE.neutral.scaffold.toUpperCase()).toBe('#F7F8FC');
-    expect(BRAND_PALETTE.neutral.subtle.toUpperCase()).toBe('#F0F2F7');
-    expect(BRAND_PALETTE.neutral.border.toUpperCase()).toBe('#E1E4EE');
-    expect(BRAND_PALETTE.ink.secondary.toUpperCase()).toBe('#4D536B');
-    expect(BRAND_PALETTE.ink.muted.toUpperCase()).toBe('#697089');
-    expect(BRAND_PALETTE.ink.primary.toUpperCase()).toBe('#1F2340');
-  });
-
   oracleTest('verifies official logo.svg and icon.svg are valid XML with the circular emblem badge, EC monogram and lavender arrow', ['xmllint'], async () => {
     const logoSvg = fs.readFileSync(path.join(process.cwd(), 'public/logo.svg'), 'utf-8');
     const iconSvg = fs.readFileSync(path.join(process.cwd(), 'public/icon.svg'), 'utf-8');
@@ -51,15 +20,15 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(xmlWellFormed(iconSvg).ok).toBe(true);
 
     // The drawing, read with XPath: root size, the emblem circle, the monogram and arrow paths with their palette
-    // colours (brand.700 monogram, brand.400 lavender arrow), and no obsolete badge groups.
+    // colours (accent monogram, lavender arrow), and no obsolete badge groups.
     const circle = (svg: string, attribute: string) => xpathString(svg, `string(//*[local-name()='circle']/@${attribute})`);
     for (const svg of [logoSvg, iconSvg]) {
       expect(['cx', 'cy', 'r', 'fill', 'stroke', 'stroke-width'].map((attribute) => circle(svg, attribute))).toEqual([
-        '60', '60', '50', '#F4F5FD', BRAND_PALETTE.brand[700].toUpperCase(), '3.75',
+        '60', '60', '50', '#F4F5FD', BRAND.accent, '3.75',
       ]);
       expect(xpathAttributes(svg, "//*[local-name()='path']/@fill").map((fill) => fill.toUpperCase())).toEqual([
-        BRAND_PALETTE.brand[400].toUpperCase(),
-        BRAND_PALETTE.brand[700].toUpperCase(),
+        BRAND.lavender,
+        BRAND.accent,
       ]);
       expect(xpathString(svg, "string(//*[local-name()='g']/@id)")).toBe('brand-signature-icon');
       expect(xpathCount(svg, "//*[contains(@id, 'badge')]")).toBe(0);
@@ -67,10 +36,10 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(xpathAttributes(logoSvg, "/*[local-name()='svg']/@viewBox")).toEqual(['0 0 420 120']);
     expect(xpathAttributes(iconSvg, "/*[local-name()='svg']/@viewBox")).toEqual(['0 0 120 120']);
     expect(xpathString(logoSvg, "string(//*[local-name()='text'])")).toBe('EasyConvert');
-    expect(xpathString(logoSvg, "string(//*[local-name()='text']/@fill)").toUpperCase()).toBe(BRAND_PALETTE.brand[950].toUpperCase());
-    // The icon sits on a rounded plate in the chrome colour (brand.50).
+    expect(xpathString(logoSvg, "string(//*[local-name()='text']/@fill)").toUpperCase()).toBe(BRAND.ink);
+    // The icon sits on a rounded plate in the chrome colour.
     expect(['width', 'height', 'rx', 'fill'].map((attribute) => xpathString(iconSvg, `string(//*[local-name()='rect']/@${attribute})`))).toEqual([
-      '120', '120', '28', BRAND_PALETTE.brand[50].toUpperCase(),
+      '120', '120', '28', BRAND.chrome,
     ]);
 
     // Rendered with librsvg: the plate, the emblem disc, a monogram pixel and the rounded corner.

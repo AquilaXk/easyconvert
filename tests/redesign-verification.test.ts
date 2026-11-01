@@ -296,7 +296,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     const selectFile = select(hero, 'button').filter((b) => visibleText(b) === 'Select File');
     expect(selectFile).toHaveLength(1);
-    expect(classAttr(selectFile[0])).toMatch(/\bbg-brand-700\b/);
+    expect(classAttr(selectFile[0])).toMatch(/\bbg-accent\b/);
     expect(phrasesMissing(text, ['Select your file to convert', `${REGISTRY_STATS.formatCount} Formats Supported`, 'Popular'])).toEqual([]);
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(1);
     expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(1);
@@ -306,11 +306,13 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies semantic design token alignment across FormatSelector and Features', () => {
+    // The selector floats as a glass layer with the menu elevation; the directory rests on hairline rules without a box.
     const selector = classTokens(render(FormatSelector, {} as never));
-    expect(missingFrom(selector, ['bg-white', 'dark:bg-dark-surface', 'border-neutral-border', 'dark:border-dark-border'])).toEqual([]);
+    expect(missingFrom(selector, ['glass', 'border-rule', 'shadow-elev-1'])).toEqual([]);
 
     const features = classTokens(render(Features, {} as never));
-    expect(missingFrom(features, ['bg-white', 'dark:bg-dark-surface', 'border-neutral-border', 'dark:border-dark-border'])).toEqual([]);
+    expect(missingFrom(features, ['border-rule', 'border-rule-strong'])).toEqual([]);
+    expect(presentIn(features, ['bg-surface', 'shadow-elev-1', 'shadow-elev-2'])).toEqual([]);
   });
 
   it('verifies Dynamic Converter Page implements dynamic breadcrumb navigation', () => {
@@ -488,7 +490,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     for (const slug of ['pdf-to-docx', 'terms', 'status', 'unit-converter']) {
       const page = renderSlug(slug);
       const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
-      expect(classAttr(root), slug).toBe('flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors');
+      // The body paints the woven ground for both themes, so the page root carries layout only and never covers it.
+      expect(classAttr(root), slug).toBe('flex flex-col min-h-screen');
     }
   });
 
@@ -541,18 +544,18 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // Must NOT have jarring dark navy background in light mode
     expect(presentIn(tokens, ['bg-[#1F2340]'])).toEqual([]);
 
-    // The dock: subtle light surface with its dark-mode surface, a rounded bottom edge and a top rule
-    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-neutral-subtle') && (attrOf(e, 'class') ?? '').includes('rounded-b-xl'));
-    expect(classAttr(dock)).toMatch(/dark:bg-\[#121629\]/);
+    // The dock: a translucent sunken strip under the glass queue, a rounded bottom edge and a top rule
+    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-sunken/50'));
+    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['rounded-b-md', 'border-t', 'border-rule'])).toEqual([]);
 
-    // Tactile "Add more files" button and legible helper text tokens
+    // "Add more files" is a hairline control with a 3:1 boundary, the helper text uses the secondary ink
     const addMore = select(queue, 'button').find((b) => visibleText(b) === '+ Add more files');
-    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-neutral-300', 'dark:border-[#2C3452]'])).toEqual([]);
-    expect(missingFrom(tokens, ['text-ink-secondary', 'dark:text-neutral-300'])).toEqual([]);
+    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule-strong'])).toEqual([]);
+    expect(missingFrom(tokens, ['text-ink-2'])).toEqual([]);
 
-    // Prominent brand.700 Convert CTA and responsive layout classes preventing mobile overflow
+    // The accent Convert CTA with its hover and press states, and responsive layout classes preventing mobile overflow
     const convert = select(queue, 'button').find((b) => visibleText(b) === 'Convert');
-    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['bg-brand-700', 'hover:bg-brand-800', 'active:bg-brand-900'])).toEqual([]);
+    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['bg-accent', 'hover:bg-accent-hover', 'active:bg-accent-press'])).toEqual([]);
     expect(missingFrom(tokens, ['flex-wrap', 'sm:flex-nowrap'])).toEqual([]);
   });
 });

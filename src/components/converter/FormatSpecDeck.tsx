@@ -30,7 +30,7 @@ const CATEGORY_ICON_MAP: Record<string, React.ComponentType<{ className?: string
 
 function CategoryIcon({ category }: Readonly<{ category: string }>) {
   const Icon = CATEGORY_ICON_MAP[category.toLowerCase()] ?? FileText;
-  return <Icon className="w-5 h-5 text-brand-700 dark:text-brand-400" />;
+  return <Icon className="w-5 h-5 text-accent-ink" />;
 }
 
 interface ConverterBreadcrumbProps {
@@ -52,20 +52,20 @@ export function ConverterBreadcrumb({
 }: Readonly<ConverterBreadcrumbProps>) {
   return (
     <nav aria-label="Breadcrumb" className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-2.5">
-      <ol className="flex items-center flex-wrap gap-1.5 text-xs text-ink-muted dark:text-neutral-400">
+      <ol className="flex items-center flex-wrap gap-1.5 text-xs text-ink-3">
         <li className="inline-flex items-center">
           <Link
             href="/"
-            className="inline-flex items-center gap-1 py-1 rounded hover:text-brand-700 dark:hover:text-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
+            className="inline-flex items-center gap-1 py-1 rounded-md hover:text-accent-ink transition-colors"
           >
             <Home className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Home</span>
           </Link>
         </li>
-        <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" aria-hidden="true" />
+        <ChevronRight className="w-3.5 h-3.5 text-ink-3 shrink-0" aria-hidden="true" />
         {isCategorySlug ? (
           <li
-            className="font-semibold text-brand-950 dark:text-white capitalize truncate"
+            className="font-semibold text-ink capitalize truncate"
             aria-current="page"
           >
             {categoryLabel}
@@ -75,28 +75,28 @@ export function ConverterBreadcrumb({
             <li className="inline-flex items-center">
               <Link
                 href={`/${categoryName}-converter`}
-                className="py-1 rounded hover:text-brand-700 dark:hover:text-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors capitalize"
+                className="py-1 rounded-md hover:text-accent-ink transition-colors capitalize"
               >
                 {categoryLabel}
               </Link>
             </li>
-            <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" aria-hidden="true" />
+            <ChevronRight className="w-3.5 h-3.5 text-ink-3 shrink-0" aria-hidden="true" />
             {isPair ? (
               <>
                 <li className="inline-flex items-center">
                   <Link
                     href={`/${srcKey}-converter`}
-                    className="py-1 rounded hover:text-brand-700 dark:hover:text-brand-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors uppercase"
+                    className="py-1 rounded-md hover:text-accent-ink transition-colors uppercase"
                   >
                     {srcKey} Converter
                   </Link>
                 </li>
                 <ChevronRight
-                  className="w-3.5 h-3.5 text-neutral-400 shrink-0"
+                  className="w-3.5 h-3.5 text-ink-3 shrink-0"
                   aria-hidden="true"
                 />
                 <li
-                  className="font-semibold text-brand-950 dark:text-white uppercase truncate"
+                  className="font-semibold text-ink uppercase truncate"
                   aria-current="page"
                 >
                   {srcKey} to {tgtKey}
@@ -104,7 +104,7 @@ export function ConverterBreadcrumb({
               </>
             ) : (
               <li
-                className="font-semibold text-brand-950 dark:text-white uppercase truncate"
+                className="font-semibold text-ink uppercase truncate"
                 aria-current="page"
               >
                 {srcKey} Converter
@@ -132,23 +132,23 @@ function FormatDossierCard({
   ];
 
   return (
-    <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm flex flex-col justify-between min-w-0">
+    <div className="border-t border-rule-strong pt-6 flex flex-col justify-between min-w-0">
       <div>
-        <div className="flex items-start justify-between gap-3 pb-4 mb-4 border-b border-neutral-border dark:border-dark-border">
+        <div className="flex items-start justify-between gap-3 pb-4 mb-4 border-b border-rule">
           <div className="flex items-start gap-3 min-w-0">
-            <div className="p-2.5 rounded-lg bg-brand-50 dark:bg-white/5 text-brand-700 dark:text-brand-400 border border-neutral-border dark:border-dark-border shrink-0">
+            <div className="text-accent-ink shrink-0">
               <CategoryIcon category={meta.category} />
             </div>
             <div className="min-w-0">
-              <span className="text-[11px] font-bold tracking-wider uppercase text-brand-700 dark:text-brand-400 block">
+              <span className="text-[11px] font-bold tracking-wider uppercase text-accent-ink block">
                 {role === 'SOURCE' ? 'SOURCE FORMAT' : 'TARGET FORMAT'}
               </span>
-              <h3 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white leading-snug break-words">
+              <h3 className="text-base sm:text-lg font-bold text-ink leading-snug break-words">
                 {meta.title}
               </h3>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-md text-xs font-mono font-bold bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border uppercase text-brand-950 dark:text-neutral-200 shrink-0">
+          <span className="px-2.5 py-1 rounded-sm text-xs font-mono font-bold bg-sunken border border-rule uppercase text-ink shrink-0">
             .{meta.extension}
           </span>
         </div>
@@ -157,14 +157,14 @@ function FormatDossierCard({
           {rows.map((row) => (
             <div
               key={row.label}
-              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 py-1.5 border-b border-neutral-border/50 dark:border-dark-border/50"
+              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 py-1.5 border-b border-rule/50"
             >
-              <dt className="text-ink-secondary dark:text-neutral-400 shrink-0">{row.label}</dt>
+              <dt className="text-ink-2 shrink-0">{row.label}</dt>
               <dd
                 className={
                   row.mono
-                    ? 'font-mono text-xs text-brand-700 dark:text-brand-400 sm:text-right break-all'
-                    : 'font-semibold text-brand-950 dark:text-white sm:text-right break-words'
+                    ? 'font-mono text-xs text-accent-ink sm:text-right break-all'
+                    : 'font-semibold text-ink sm:text-right break-words'
                 }
               >
                 {row.value}
@@ -173,17 +173,17 @@ function FormatDossierCard({
           ))}
         </dl>
 
-        <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-300 leading-relaxed mb-5">
+        <p className="text-xs sm:text-sm text-ink-2 leading-relaxed mb-5">
           {meta.desc}
         </p>
 
         <div className="space-y-2">
-          <span className="text-xs font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400 block">
+          <span className="text-xs font-bold uppercase tracking-wider text-accent-ink block">
             Key Capabilities
           </span>
           {(meta.advantages || []).map((adv) => (
-            <div key={adv} className="flex items-start gap-2 text-xs text-ink-secondary dark:text-neutral-300">
-              <CheckCircle2 className="size-3.5 text-brand-700 dark:text-brand-400 shrink-0 mt-0.5" />
+            <div key={adv} className="flex items-start gap-2 text-xs text-ink-2">
+              <CheckCircle2 className="size-3.5 text-accent-ink shrink-0 mt-0.5" />
               <span>{adv}</span>
             </div>
           ))}
@@ -206,12 +206,12 @@ export function FormatSpecDeck({ srcMeta, tgtMeta, isPair }: Readonly<FormatSpec
   return (
     <section className="max-w-5xl mx-auto px-4 sm:px-6 mb-14">
       <div className="mb-6">
-        <h2 className="text-xl sm:text-2xl font-bold text-brand-950 dark:text-white tracking-tight">
+        <h2 className="text-2xl sm:text-3xl text-ink">
           {isPair
             ? `${srcUpper} vs ${tgtUpper} Specifications`
             : `${srcUpper} Format Specification`}
         </h2>
-        <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-400">
+        <p className="mt-1.5 text-sm text-ink-2">
           Technical Specifications covering container standards, MIME types, specification
           maintainers, and format capabilities.
         </p>

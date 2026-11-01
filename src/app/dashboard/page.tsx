@@ -25,7 +25,7 @@ export default function DashboardPage() {
   } = useDashboardController();
 
   return (
-    <div className="min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold flex flex-col text-brand-950 dark:text-dark-text transition-colors">
+    <div className="min-h-screen flex flex-col">
       <Header />
 
       <main
@@ -34,7 +34,7 @@ export default function DashboardPage() {
       >
         {loading || !user ? (
           <div className="py-20 flex flex-col items-center justify-center gap-3">
-            <h1 className="text-xl font-bold text-brand-950 dark:text-white">
+            <h1 className="text-2xl text-ink">
               Developer Dashboard
             </h1>
             <output
@@ -42,10 +42,10 @@ export default function DashboardPage() {
               className="flex flex-col items-center justify-center gap-3"
             >
               <Loader2
-                className="w-7 h-7 animate-spin text-brand-700 dark:text-brand-400"
+                className="w-7 h-7 animate-spin text-accent-ink"
                 aria-hidden="true"
               />
-              <span className="text-sm text-ink-secondary dark:text-dark-muted">
+              <span className="text-sm text-ink-2">
                 Loading account session...
               </span>
             </output>
@@ -70,7 +70,7 @@ export default function DashboardPage() {
             {actionError && (
               <div
                 role="alert"
-                className="mb-6 pl-4 pr-2 py-2.5 rounded-xl bg-status-dangerSoft dark:bg-rose-950/30 border border-status-danger/30 dark:border-rose-800/50 text-status-danger dark:text-rose-300 text-sm flex items-center justify-between gap-3"
+                className="mb-6 pl-4 pr-2 py-2.5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger text-sm flex items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
@@ -80,7 +80,7 @@ export default function DashboardPage() {
                   type="button"
                   onClick={clearActionError}
                   aria-label="Dismiss dashboard error"
-                  className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-rose-100 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 shrink-0"
+                  className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm hover:bg-danger-soft shrink-0"
                 >
                   <X className="w-4 h-4" />
                 </button>

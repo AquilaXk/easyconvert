@@ -17,11 +17,11 @@ function ConversionGridCard({
   const upperName = formatName.toUpperCase();
 
   return (
-    <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm">
-      <h2 className="text-lg sm:text-xl font-bold text-brand-950 dark:text-white mb-1">
+    <div className="border-t border-rule-strong pt-6">
+      <h2 className="text-xl sm:text-2xl text-ink mb-1">
         Convert {direction} {upperName}
       </h2>
-      <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mb-5">
+      <p className="text-xs sm:text-sm text-ink-2 mb-5">
         {isFrom
           ? `Pick a target format to start a ${upperName} conversion.`
           : `Pick a source format to convert into ${upperName}.`}
@@ -35,12 +35,12 @@ function ConversionGridCard({
             <Link
               key={fmt}
               href={`/${fromFmt.toLowerCase()}-to-${toFmt.toLowerCase()}`}
-              className="min-h-[44px] sm:min-h-[40px] flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-colors group"
+              className="min-h-[44px] sm:min-h-[40px] flex items-center justify-between gap-2 px-3 py-2 rounded-sm bg-sunken border border-rule hover:border-accent hover:bg-accent-soft text-xs font-semibold text-ink transition-colors group"
             >
               <span className="truncate">
                 {fromFmt.toUpperCase()} to {toFmt.toUpperCase()}
               </span>
-              <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 shrink-0 transition-colors" />
+              <ArrowRight className="w-3.5 h-3.5 text-ink-3 group-hover:text-accent-ink shrink-0 transition-colors" />
             </Link>
           );
         })}

@@ -75,14 +75,14 @@ export default function AdBanner({
     >
       {/* Standardized Minimal Advertisement Header */}
       <div className={`flex items-center justify-center w-full mb-1 px-1 ${config.maxWidth}`}>
-        <span className="text-[10px] font-mono tracking-widest uppercase text-neutral-400 dark:text-neutral-500 font-medium select-none">
+        <span className="text-[10px] font-mono tracking-widest uppercase text-ink-3 font-medium select-none">
           Advertisement
         </span>
       </div>
 
       {/* CLS-Stabilized Display Ad Container */}
       <div
-        className={`w-full rounded-lg border border-neutral-200/90 dark:border-neutral-800 bg-neutral-100/60 dark:bg-neutral-900/40 overflow-hidden flex items-center justify-center p-2 relative transition-all ${config.container} ${config.maxWidth}`}
+        className={`w-full rounded-sm border border-rule overflow-hidden flex items-center justify-center p-2 relative transition-all ${config.container} ${config.maxWidth}`}
       >
         {effectiveClient && effectiveSlot ? (
           /* Production Script Placement (Google AdSense / Network Target) */
@@ -95,7 +95,7 @@ export default function AdBanner({
           />
         ) : (
           /* Realistic Industry-Standard Publisher Ad Unit */
-          <div className="flex flex-col items-center justify-center gap-0.5 text-center select-none py-1 text-neutral-400 dark:text-neutral-500">
+          <div className="flex flex-col items-center justify-center gap-0.5 text-center select-none py-1 text-ink-3">
             <span className="text-xs font-mono font-medium tracking-wide">
               {config.dimensionLabel}
             </span>

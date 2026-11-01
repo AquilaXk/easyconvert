@@ -46,7 +46,7 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
+    <div className="flex flex-col min-h-screen">
       <Header />
 
       <main id="main-content" className="flex-1">

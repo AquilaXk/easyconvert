@@ -103,12 +103,12 @@ export default function Footer() {
   const { isDark, toggleDarkMode } = useThemeToggle();
 
   return (
-    <footer className="bg-white dark:bg-[#0E111D] text-ink-secondary dark:text-slate-300 border-t border-neutral-border dark:border-dark-border transition-colors mt-auto font-sans">
+    <footer className="text-ink-2 border-t border-rule mt-auto">
       <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-8">
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-x-6 gap-y-8">
           {DIRECTORY_CATEGORIES.map((category) => (
             <div key={category.title} className="flex flex-col min-w-0">
-              <h2 className="text-brand-950 dark:text-white font-semibold text-sm mb-3 tracking-tight">
+              <h2 className="text-ink font-semibold text-sm mb-3 tracking-tight font-sans">
                 {category.title}
               </h2>
               <ul className="space-y-1 sm:space-y-2">
@@ -116,7 +116,7 @@ export default function Footer() {
                   <li key={`${category.title}-${link.label}`}>
                     <Link
                       href={link.href}
-                      className="min-h-[44px] sm:min-h-0 inline-flex items-center text-ink-secondary hover:text-brand-700 dark:text-slate-400 dark:hover:text-white text-[13px] transition-colors leading-snug py-0.5"
+                      className="min-h-[44px] sm:min-h-0 inline-flex items-center text-ink-2 hover:text-accent-ink text-[13px] transition-colors leading-snug py-0.5"
                     >
                       {link.label}
                     </Link>
@@ -127,13 +127,13 @@ export default function Footer() {
           ))}
         </div>
 
-        <div className="pt-8 mt-10 border-t border-neutral-border dark:border-dark-border">
+        <div className="pt-8 mt-10 border-t border-rule">
           <nav aria-label="Footer secondary" className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px]">
             {SECONDARY_LINKS.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
-                className="min-h-[44px] sm:min-h-[36px] inline-flex items-center text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors font-medium"
+                className="min-h-[44px] sm:min-h-[36px] inline-flex items-center text-ink-2 hover:text-ink transition-colors font-medium"
               >
                 {item.label}
               </Link>
@@ -141,15 +141,15 @@ export default function Footer() {
           </nav>
         </div>
 
-        <div className="pt-6 mt-6 border-t border-neutral-border/80 dark:border-dark-border flex flex-col sm:flex-row items-center justify-between gap-4">
-          <Link href="/" className="inline-flex items-center gap-2.5 min-h-[44px] rounded-md">
-            <BrandLogo size="sm" textClassName="text-brand-950 dark:text-white" />
+        <div className="pt-6 mt-6 border-t border-rule flex flex-col sm:flex-row items-center justify-between gap-4">
+          <Link href="/" className="inline-flex items-center gap-2.5 min-h-[44px] rounded-sm">
+            <BrandLogo size="sm" />
           </Link>
 
-          <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-ink-muted dark:text-slate-400">
+          <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-ink-3">
             <span>© 2026 EasyConvert.com</span>
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-subtle dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-slate-300">
-              <ShieldCheck className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400 shrink-0" />
+            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-2">
+              <ShieldCheck className="w-3.5 h-3.5 text-accent-ink shrink-0" />
               <span>Encrypted Transfer &amp; Ephemeral Processing</span>
             </div>
           </div>
@@ -158,12 +158,12 @@ export default function Footer() {
             type="button"
             onClick={toggleDarkMode}
             aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="min-w-[44px] sm:min-w-[36px] min-h-[44px] sm:min-h-[36px] inline-flex items-center justify-center rounded-md text-ink-secondary hover:text-brand-950 bg-neutral-subtle hover:bg-neutral-border/60 border border-neutral-border dark:bg-dark-surface dark:border-dark-border dark:text-slate-300 dark:hover:text-white transition-colors cursor-pointer"
+            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
           >
             {isDark ? (
-              <Sun className="w-4 h-4 text-amber-400" />
+              <Sun className="w-4 h-4" />
             ) : (
-              <Moon className="w-4 h-4 text-ink-secondary" />
+              <Moon className="w-4 h-4" />
             )}
           </button>
         </div>

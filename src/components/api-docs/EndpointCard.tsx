@@ -5,20 +5,20 @@ import { ParametersTable, RequestBodySection, ResponsesGrid } from './EndpointSc
 import { renderInlineCode, type OpenApiSchemaObject, type ParsedEndpointItem } from './openapi-types';
 
 const METHOD_BADGE_CLASSES: Record<string, string> = {
-  get: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30',
-  post: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30',
-  put: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30',
-  patch: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30',
-  delete: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/30',
+  get: 'bg-info-soft text-info border-info-edge',
+  post: 'bg-success-soft text-success border-success-edge',
+  put: 'bg-warning-soft text-warning border-warning-edge',
+  patch: 'bg-warning-soft text-warning border-warning-edge',
+  delete: 'bg-danger-soft text-danger border-danger-edge',
   options:
-    'bg-neutral-subtle text-brand-950 border-neutral-border dark:bg-dark-elevated dark:text-dark-text dark:border-dark-border',
-  head: 'bg-neutral-subtle text-brand-950 border-neutral-border dark:bg-dark-elevated dark:text-dark-text dark:border-dark-border',
+    'bg-sunken text-ink border-rule',
+  head: 'bg-sunken text-ink border-rule',
 };
 
 function getMethodBadgeClass(method: string): string {
   return (
     METHOD_BADGE_CLASSES[method] ??
-    'bg-neutral-subtle text-brand-950 border-neutral-border dark:bg-dark-elevated dark:text-dark-text dark:border-dark-border'
+    'bg-sunken text-ink border-rule'
   );
 }
 
@@ -27,8 +27,8 @@ function SecurityBadges({
 }: Readonly<{ security: Array<Record<string, string[]>> }>) {
   return (
     <div>
-      <h3 className="text-xs font-bold text-ink-secondary dark:text-dark-muted uppercase tracking-wider mb-2 flex items-center gap-1.5">
-        <Shield className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" aria-hidden="true" />
+      <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+        <Shield className="w-3.5 h-3.5 text-accent-ink" aria-hidden="true" />
         <span>Security &amp; Scopes</span>
       </h3>
       <div className="flex flex-wrap gap-2">
@@ -36,7 +36,7 @@ function SecurityBadges({
           Object.entries(sec).map(([scheme, scopes]) => (
             <span
               key={scheme}
-              className="px-2.5 py-1 rounded-md bg-neutral-subtle dark:bg-dark-elevated border border-neutral-border dark:border-dark-border text-xs font-mono text-brand-950 dark:text-dark-text"
+              className="px-2.5 py-1 rounded-sm bg-sunken border border-rule text-xs font-mono text-ink"
             >
               <strong>{scheme}</strong>
               {scopes.length > 0 && ` (${scopes.join(', ')})`}
@@ -67,19 +67,19 @@ function ExecutableCurlSection({
   return (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-2 mb-2">
-        <h3 className="text-xs font-bold text-ink-secondary dark:text-dark-muted uppercase tracking-wider flex items-center gap-1.5">
-          <Terminal className="w-3.5 h-3.5 text-brand-700 dark:text-brand-400" aria-hidden="true" />
+        <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider flex items-center gap-1.5">
+          <Terminal className="w-3.5 h-3.5 text-accent-ink" aria-hidden="true" />
           <span>Executable cURL</span>
         </h3>
         <button
           type="button"
           onClick={() => onCopy(curlSnippet, copyId)}
           aria-label={`Copy cURL command for ${upperMethod} ${path}`}
-          className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-neutral-subtle dark:bg-dark-elevated hover:bg-brand-50 dark:hover:bg-dark-border border border-neutral-border dark:border-dark-border text-brand-950 dark:text-dark-text text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
+          className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-sm bg-sunken hover:bg-accent-soft border border-rule text-ink text-xs font-semibold transition-colors"
         >
           {isCopied ? (
             <>
-              <Check className="w-3.5 h-3.5 text-status-success dark:text-emerald-400" />
+              <Check className="w-3.5 h-3.5 text-success" />
               <span>Copied</span>
             </>
           ) : (
@@ -93,7 +93,7 @@ function ExecutableCurlSection({
           {isCopied ? `Copied cURL command for ${upperMethod} ${path}` : ''}
         </output>
       </div>
-      <pre className="p-3.5 rounded-lg bg-brand-950 dark:bg-dark-scaffold border border-neutral-border dark:border-dark-border text-xs font-mono text-neutral-subtle overflow-x-auto max-w-full leading-relaxed">
+      <pre className="p-3.5 rounded-md border border-rule text-xs font-mono text-ink-3 overflow-x-auto max-w-full leading-relaxed">
         <code>{curlSnippet}</code>
       </pre>
     </div>
@@ -129,32 +129,32 @@ export function EndpointCard({
   const panelId = `endpoint-panel-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
   return (
-    <div className="rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface shadow-sm overflow-hidden min-w-0">
+    <div className="border-b border-rule min-w-0">
       <button
         type="button"
         onClick={() => onToggle(key)}
         aria-expanded={isExpanded}
         aria-controls={panelId}
-        className="w-full min-h-[52px] px-4 sm:px-5 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-neutral-subtle/60 dark:hover:bg-dark-elevated/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-700 transition-colors"
+        className="w-full min-h-[52px] px-1 sm:px-2 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-sunken/50 transition-colors"
       >
         <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3.5 min-w-0">
           <span
-            className={`px-2.5 py-1 rounded-md text-xs font-bold uppercase tracking-wider border shrink-0 ${getMethodBadgeClass(
+            className={`px-2.5 py-1 rounded-sm text-xs font-bold uppercase tracking-wider border shrink-0 ${getMethodBadgeClass(
               method
             )}`}
           >
             {method}
           </span>
-          <span className="font-mono text-sm sm:text-base font-semibold text-brand-950 dark:text-white break-all sm:truncate">
+          <span className="font-mono text-sm sm:text-base font-semibold text-ink break-all sm:truncate">
             {path}
           </span>
           {operation.summary && (
-            <span className="hidden md:inline-block text-xs text-ink-secondary dark:text-dark-muted truncate max-w-md">
+            <span className="hidden md:inline-block text-xs text-ink-2 truncate max-w-md">
               {operation.summary}
             </span>
           )}
         </div>
-        <div className="flex items-center shrink-0 text-ink-muted dark:text-dark-muted">
+        <div className="flex items-center shrink-0 text-ink-3">
           {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
         </div>
       </button>
@@ -162,15 +162,15 @@ export function EndpointCard({
       {isExpanded && (
         <div
           id={panelId}
-          className="px-4 sm:px-5 pb-6 pt-4 border-t border-neutral-border dark:border-dark-border space-y-6 min-w-0"
+          className="px-4 sm:px-5 pb-6 pt-4 border-t border-rule space-y-6 min-w-0"
         >
           {operation.summary && (
-            <p className="md:hidden text-xs font-semibold text-brand-950 dark:text-white">
+            <p className="md:hidden text-xs font-semibold text-ink">
               {operation.summary}
             </p>
           )}
           {operation.description && (
-            <p className="text-xs sm:text-sm text-ink-secondary dark:text-dark-muted leading-relaxed">
+            <p className="text-xs sm:text-sm text-ink-2 leading-relaxed">
               {renderInlineCode(operation.description)}
             </p>
           )}

@@ -12,7 +12,6 @@ interface BrandLogoProps {
   size?: LogoSizePreset | number;
   showText?: boolean;
   className?: string;
-  textClassName?: string;
   iconClassName?: string;
 }
 
@@ -36,15 +35,15 @@ export function BrandIcon({
       viewBox="0 0 120 120"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={`shrink-0 transition-transform duration-200 ${className}`}
+      className={`shrink-0 text-accent-ink transition-transform duration-200 ${className}`}
       aria-hidden={decorative ? 'true' : undefined}
       role={decorative ? undefined : 'img'}
       aria-label={decorative ? undefined : 'EasyConvert'}
     >
-      <circle cx="60" cy="60" r="50" fill="#F4F5FD" stroke="#5C6BC0" strokeWidth="3.75" />
+      <circle cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="3.75" style={{ fill: 'rgb(var(--c-accent-soft))' }} />
       <g transform="translate(60, 60) scale(0.00743, -0.00743) translate(-7200, -7200)">
-        <path fill="#B4BCFB" d={LAVENDER_ACCENT_AND_ARROW_PATH} />
-        <path fill="#5C6BC0" d={EC_MONOGRAM_PATH} />
+        <path d={LAVENDER_ACCENT_AND_ARROW_PATH} style={{ fill: 'rgb(var(--sheen-1))' }} />
+        <path fill="currentColor" d={EC_MONOGRAM_PATH} />
       </g>
     </svg>
   );
@@ -67,7 +66,6 @@ export default function BrandLogo({
   size = 'md',
   showText = true,
   className = '',
-  textClassName = '',
   iconClassName = '',
 }: Readonly<BrandLogoProps>) {
   const resolved =
@@ -75,14 +73,12 @@ export default function BrandLogo({
       ? { pixelSize: size, textClass: resolveNumericTextClass(size) }
       : SIZE_MAP[size];
 
-  const effectiveTextClass = textClassName || 'text-[#1F2340] dark:text-white';
-
   return (
     <div className={`inline-flex items-center gap-2.5 select-none ${className}`}>
       <BrandIcon size={resolved.pixelSize} className={iconClassName} decorative={showText} />
       {showText && (
         <span
-          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} ${effectiveTextClass}`}
+          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} text-ink`}
         >
           EasyConvert
         </span>
