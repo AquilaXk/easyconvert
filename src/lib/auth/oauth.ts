@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { GoogleUserInfo } from './types';
 import { redisUserStore } from './redis-user-store';
+import { routing, type AppLocale } from '@/i18n/routing';
 
 export const OAUTH_STATE_COOKIE_NAME = 'easyconvert_oauth_state';
 export const OAUTH_STATE_TTL_SECONDS = 600; // 10 minutes
@@ -11,6 +12,13 @@ export interface OAuthSessionState {
   codeVerifier: string;
   codeChallenge: string;
   createdAt: number;
+  /** The language the sign-in started in, so that the callback answers in it. */
+  locale: AppLocale;
+}
+
+/** `value` when it names a language the site offers, else the default language. */
+export function offeredLocale(value: unknown): AppLocale {
+  return routing.locales.find((locale) => locale === value) ?? routing.defaultLocale;
 }
 
 // In-memory fallback cache for CSRF protection in local dev / unit tests
@@ -45,6 +53,7 @@ export async function createOAuthSession(options?: {
   state?: string;
   nonce?: string;
   codeVerifier?: string;
+  locale?: AppLocale;
 }): Promise<OAuthSessionState> {
   cleanStaleStates();
   const state = options?.state || crypto.randomBytes(24).toString('hex');
@@ -70,6 +79,7 @@ export async function createOAuthSession(options?: {
     codeVerifier,
     codeChallenge,
     createdAt: Date.now(),
+    locale: options?.locale ?? routing.defaultLocale,
   };
 
   const redis = redisUserStore.getRedisClient();
@@ -104,7 +114,8 @@ export async function consumeOAuthSession(state: string): Promise<OAuthSessionSt
       if (raw) {
         await redis.del(key);
         activeStates.delete(state);
-        return JSON.parse(raw);
+        const stored = JSON.parse(raw) as OAuthSessionState;
+        return { ...stored, locale: offeredLocale(stored.locale) };
       }
     } catch {
       // Fallback
@@ -134,6 +145,7 @@ export function generateOAuthState(): string {
     codeVerifier: pkce.codeVerifier,
     codeChallenge: pkce.codeChallenge,
     createdAt: Date.now(),
+    locale: routing.defaultLocale,
   };
   activeStates.set(state, session);
 

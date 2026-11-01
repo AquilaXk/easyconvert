@@ -3,6 +3,7 @@ import {
   getGoogleOAuthUrl,
   createOAuthSession,
   getAppOrigin,
+  offeredLocale,
   OAUTH_STATE_COOKIE_NAME,
   OAUTH_STATE_TTL_SECONDS,
 } from '@/lib/auth/oauth';
@@ -14,7 +15,7 @@ export async function GET(req: NextRequest) {
   const redirectUri = `${origin}/api/auth/google/callback`;
 
   try {
-    const session = await createOAuthSession();
+    const session = await createOAuthSession({ locale: offeredLocale(req.nextUrl.searchParams.get('locale')) });
     const url = getGoogleOAuthUrl(redirectUri, session);
 
     const res = NextResponse.json({

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
 import { useAuthErrorMessage } from './auth-errors';
@@ -19,6 +19,7 @@ type AuthAnswer = { success: true; user: SessionUser } | { success: false; error
 
 export function useAuthController() {
   const t = useTranslations('auth');
+  const locale = useLocale();
   const authErrorMessage = useAuthErrorMessage();
   const oauthErrorMessage = (urlError: string | null): string | null => {
     const key = resolveOAuthErrorKey(urlError);
@@ -86,7 +87,7 @@ export function useAuthController() {
     setIsGoogleLoading(true);
     setErrorMessage(null);
     try {
-      const res = await fetch('/api/auth/google/url');
+      const res = await fetch(`/api/auth/google/url?locale=${encodeURIComponent(locale)}`);
       const data = await res.json();
       if (data.success && data.url) {
         window.location.href = data.url;
