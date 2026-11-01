@@ -9,7 +9,8 @@
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
 #   deploy.sh sweep                            delete scratch temp files and job staging entries older than two hours, from inside
 #                                              the worker image
-#   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health and one conversion, roll back on failure,
+#   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health, one conversion and the canonical host of the
+#                                              pages, roll back on failure,
 #                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
 #   deploy.sh reconcile                        start the current release again from its pinned images and check it (the repair after an
@@ -31,6 +32,7 @@ WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
 SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/convert}"
+PAGE_URL="${PAGE_URL:-http://127.0.0.1:8090/}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/easysubway-data}"
 MIN_FREE_GB="${MIN_FREE_GB:-15}"
 SCRATCH_WARN_PERCENT="${SCRATCH_WARN_PERCENT:-85}"
@@ -220,6 +222,27 @@ smoke_conversion() {
   return "$ok"
 }
 
+host_of() { # host_of <absolute URL>: its host, lowercased, without user, port or path
+  local rest="${1#*://}"
+  rest="${rest%%[/?#]*}"
+  rest="${rest##*@}"
+  printf '%s' "${rest%:*}" | tr '[:upper:]' '[:lower:]'
+}
+
+# The prerendered pages name the public origin the image was built with (APP_ORIGIN, a build argument of the workflow) in
+# their canonical links, and the running server answers for APP_URL of the env secret. A release whose two hosts differ would
+# point every page at another site, so a new release is refused (a rollback or a reconcile starts a release that passed it, or one
+# older than the check). Only the two hosts are logged, never the page or the env file.
+canonical_host_matches() { # canonical_host_matches <release-dir>
+  local expected served html pattern='<link rel="canonical" href="([^"]+)"'
+  expected="$(host_of "$(env_value "$1/.env" APP_URL)")"
+  html="$(child curl --fail --silent --max-time 15 "$PAGE_URL")" || { log "the home page ($PAGE_URL) did not answer"; return 1; }
+  [[ "$html" =~ $pattern ]] && served="$(host_of "${BASH_REMATCH[1]}")" || served=""
+  [ -n "$expected" ] && [ "$served" = "$expected" ] && return 0
+  log "the pages name the canonical host '${served:-none}', but APP_URL names '${expected:-none}': rebuild the image with the APP_ORIGIN of APP_URL"
+  return 1
+}
+
 # Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile
 # option dropped) would run under another profile and pass every other check on a host that happens to allow it.
 profiles_applied() { # profiles_applied <release-dir>: every replica; the web needs one, the all-queue worker may have none
@@ -330,7 +353,7 @@ deploy() {
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
   child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
 
-  if start_release "$release"; then
+  if start_release "$release" && canonical_host_matches "$release"; then
     trap '' INT TERM
     PENDING_RELEASE=""
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"

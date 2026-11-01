@@ -302,6 +302,9 @@ describe('Dockerfile.web', () => {
     expect(build).toBeGreaterThan(0);
     expect(builder.search(/^ARG APP_ORIGIN$/m)).toBeGreaterThan(0);
     expect(builder.search(/^ARG APP_ORIGIN$/m)).toBeLessThan(build);
+    const originRequired = builder.search(/^RUN test -n "\$APP_ORIGIN" \|\| /m);
+    expect(originRequired).toBeGreaterThan(builder.search(/^ARG APP_ORIGIN$/m));
+    expect(originRequired).toBeLessThan(build);
     expect(builder.slice(build)).toMatch(/node scripts\/check-built-alternates\.mjs \.next\/server\/app/);
   });
 
@@ -742,6 +745,9 @@ case "$*" in
     exit 0 ;;
 esac
 case "$last_up" in *"$STUB_FAIL_HEALTH"*) [ -n "$STUB_FAIL_HEALTH" ] && exit 22 ;; esac
+case "$*" in
+  *8090/) printf '<html><head><link rel="canonical" href="https://%s/"/></head></html>' "\${STUB_CANONICAL_HOST:-convert.example.test}" ;;
+esac
 exit 0`
     );
     stub('flock', '[ -z "$STUB_LOCK_BUSY" ]');
@@ -885,6 +891,22 @@ exit 0`
     const upload = readFileSync(path.join(sandbox, 'upload.ppm'));
     expect(upload.subarray(0, 11).toString('latin1')).toBe('P6\n1 1\n255\n');
     expect(upload.length).toBe(11 + 3);
+  });
+
+  it('checks that the pages name the host of APP_URL as canonical before it moves the links', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    expect(calls().filter((call) => call.startsWith('curl') && call.endsWith('http://127.0.0.1:8090/'))).toHaveLength(1);
+  });
+
+  it('rolls back a release whose pages name another canonical host than APP_URL, and logs the two hosts only', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('e')], { env: hostEnv({ STUB_CANONICAL_HOST: 'Other.Example.Test:443' }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("the pages name the canonical host 'other.example.test', but APP_URL names 'convert.example.test'");
+    expect(result.stderr).not.toContain('redis-password-value');
+    expect(result.stderr).not.toContain('<link');
+    expect(currentRelease()).toBe(good);
   });
 
   it.each([
