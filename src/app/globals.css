@@ -318,7 +318,6 @@
      back, and the range paints its track and thumb in system colours (Highlight for the filled part). */
   @media (forced-colors: active) {
     .select-chevron {
-      -webkit-appearance: auto;
       appearance: auto;
       background-image: none;
     }
