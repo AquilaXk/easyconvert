@@ -13,3 +13,7 @@ RAW checks; with `ORACLE_STRICT_MODE=1` (CI) a missing sample fails them.
 `x3f-merrill`, `x3f-quattro`) and two more Raspberry Pi sensors (`raw-imx219`, `raw-imx477`). They
 are cached as `<format>-<variant>.<format>`. `npm run fixtures:raw -- x3f-sd14 raw-imx477` fetches only
 the named samples.
+
+`cases.json` lists real files that a single test reads for a case of its own, which the conformance suite does
+not probe: the Samsung Galaxy S23 DNG (`dng-s23`, CC0), whose decoder warns and still writes the whole image
+(`tests/raw-native-decoder-warning.test.ts`). They are cached as `<format>-<variant>.<format>` as well.

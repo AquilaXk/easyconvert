@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { RawDecodeError } from '../lib/types';
 import { withoutAbsoluteResolution } from '../lib/conversions/image-tiff-directories';
 import { RAW_DECODE_MAX_PIXELS } from '../lib/conversions/raw-formats';
+import { dngRawImageData, dngRefusal } from './raw-dng-image-data';
 
 const TIFF_HEADER_READ_BYTES = 8192;
 const TIFF_IFD_ENTRY_BYTES = 12;
@@ -32,6 +33,8 @@ const TAIL_MIN_PAIRS = 8;
 const TAIL_ROW_PERIOD = 2;
 /** Share of examined row pairs that must be byte-identical to call the tail a repeated fill. */
 const TAIL_REPEATED_RATIO = 0.9;
+/** Rows at the very bottom that may each repeat the row two above in an image whose decoder warned. */
+const BOTTOM_RUN_MAX_ROWS = 8;
 
 export interface DecodedTiffLayout {
   width: number;
@@ -93,29 +96,79 @@ export function assertWithinPixelCap(layout: DecodedTiffLayout): void {
   }
 }
 
+/** `count` rows of the decoded image from `firstRow` on, in one buffer. */
+function readRows(filePath: string, layout: DecodedTiffLayout, firstRow: number, count: number): Buffer {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const rows = Buffer.alloc(count * layout.rowBytes);
+    fs.readSync(fd, rows, 0, rows.length, layout.dataOffset + firstRow * layout.rowBytes);
+    return rows;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Whether row `row` of `rows` holds the same bytes as the row `TAIL_ROW_PERIOD` above it. */
+function repeatsRowAbove(rows: Buffer, rowBytes: number, row: number): boolean {
+  const above = row - TAIL_ROW_PERIOD;
+  return rows.subarray(row * rowBytes, (row + 1) * rowBytes).equals(rows.subarray(above * rowBytes, (above + 1) * rowBytes));
+}
+
 /**
  * A RAW file cut short decodes to its full size, with the rows after the cut repeating one row
  * (the decoder reads zero deltas past the end of file). Camera images never repeat a whole row of
  * 16-bit samples across most of a window at the bottom, so such a tail marks a truncated file.
  */
-export function hasRepeatedTail(filePath: string, layout: DecodedTiffLayout): boolean {
+function hasRepeatedTail(filePath: string, layout: DecodedTiffLayout): boolean {
   const windowRows = Math.floor(layout.height * TAIL_WINDOW_FRACTION);
   const lastRow = layout.height - 1 - TAIL_SKIP_BORDER_ROWS;
   const firstRow = lastRow - windowRows - TAIL_ROW_PERIOD;
   if (windowRows < TAIL_MIN_PAIRS || firstRow < 0) return false;
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const rows = Buffer.alloc((windowRows + TAIL_ROW_PERIOD) * layout.rowBytes);
-    fs.readSync(fd, rows, 0, rows.length, layout.dataOffset + firstRow * layout.rowBytes);
-    let repeated = 0;
-    for (let row = 0; row < windowRows; row += 1) {
-      const current = rows.subarray(row * layout.rowBytes, (row + 1) * layout.rowBytes);
-      const next = rows.subarray((row + TAIL_ROW_PERIOD) * layout.rowBytes, (row + TAIL_ROW_PERIOD + 1) * layout.rowBytes);
-      if (current.equals(next)) repeated += 1;
-    }
-    return repeated / windowRows >= TAIL_REPEATED_RATIO;
-  } finally {
-    fs.closeSync(fd);
+  const rows = readRows(filePath, layout, firstRow, windowRows + TAIL_ROW_PERIOD);
+  let repeated = 0;
+  for (let row = TAIL_ROW_PERIOD; row < windowRows + TAIL_ROW_PERIOD; row += 1) {
+    if (repeatsRowAbove(rows, layout.rowBytes, row)) repeated += 1;
+  }
+  return repeated / windowRows >= TAIL_REPEATED_RATIO;
+}
+
+/**
+ * Whether more than BOTTOM_RUN_MAX_ROWS rows at the very bottom each repeat the row two above. After LibRaw has reported corrupted
+ * data it no longer stops at the end of the stream, so a file cut later decodes to its full size with every row past the cut repeating
+ * the one before, and a cut near the end leaves too few such rows for `hasRepeatedTail`'s share of its window.
+ */
+function endsInRepeatedRows(filePath: string, layout: DecodedTiffLayout): boolean {
+  const checked = BOTTOM_RUN_MAX_ROWS + 1;
+  const firstRow = layout.height - checked - TAIL_ROW_PERIOD;
+  if (firstRow < 0) return false;
+  const rows = readRows(filePath, layout, firstRow, checked + TAIL_ROW_PERIOD);
+  for (let row = TAIL_ROW_PERIOD; row < checked + TAIL_ROW_PERIOD; row += 1) {
+    if (!repeatsRowAbove(rows, layout.rowBytes, row)) return false;
+  }
+  return true;
+}
+
+export interface DecodedRaw {
+  src: string;
+  inputPath: string;
+  decodedPath: string;
+  layout: DecodedTiffLayout;
+  /** Whether the decoder printed LibRaw's `data corrupted at` line, which only a DNG may. */
+  warned: boolean;
+}
+
+/**
+ * Rejects a decoded image that shows its file was cut: a tail of repeated rows, and after the decoder's warning a DNG that does not hold
+ * every strip of the raw image LibRaw develops into this picture, or a picture whose last rows each repeat the row two above.
+ */
+export function assertDecodedRawWhole(decoded: DecodedRaw): void {
+  const { src, inputPath, decodedPath, layout, warned } = decoded;
+  if (warned) {
+    const finding = dngRawImageData(inputPath, layout);
+    if (finding !== 'whole') throw dngRefusal(finding, src);
+  }
+  if (hasRepeatedTail(decodedPath, layout) || (warned && endsInRepeatedRows(decodedPath, layout))) {
+    throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
   }
 }
 

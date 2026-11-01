@@ -104,7 +104,9 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: tests/fixtures/raw/.cache
-        key: raw-fixtures-${{ hashFiles('tests/fixtures/raw/manifest.json', 'tests/fixtures/raw/variants.json') }}
+        key: raw-fixtures-${{ hashFiles('tests/fixtures/raw/manifest.json', 'tests/fixtures/raw/variants.json', 'tests/fixtures/raw/cases.json') }}
+        # A new key starts from the newest older cache, and the fetcher downloads only the files missing from it or failing their SHA-256.
+        restore-keys: raw-fixtures-
 
     # The S3 test server image is pinned by digest in s3-test-server-image.txt, which is also the key of its cache:
     # a job that starts the server loads the image from the cache instead of pulling it from the registry, which
