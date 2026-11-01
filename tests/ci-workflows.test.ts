@@ -160,7 +160,7 @@ describe('the pull request workflow', () => {
     expect(ci.jobs.verify.if).toBe('always()');
   });
 
-  it('fetches the real-world test files, cached by manifest digest, before any step that runs vitest', () => {
+  it('fetches the real-world test files, cached by the list of samples the tests name, before any step that runs vitest', () => {
     const prefetch = 'npm run prefetch:test-samples';
     const runsVitest = (step: Step): boolean => (step.run ?? '').includes('vitest run');
     // A job that calls a workflow has no steps of its own.
@@ -173,7 +173,10 @@ describe('the pull request workflow', () => {
       expect(job.steps[prefetchAt].env?.ORACLE_STRICT_MODE, `${name} prefetch is strict`).toBe('1');
       const cache = job.steps.slice(0, prefetchAt).find((step) => String(step.uses).startsWith('actions/cache@'));
       expect(cache?.with?.path, `${name} cache path`).toBe('~/.cache/easyconvert-realworld');
-      expect(cache?.with?.key, `${name} cache key`).toBe("test-samples-${{ hashFiles('bench/realworld/manifest.json') }}");
+      expect(cache?.with?.key, `${name} cache key`).toBe("test-samples-${{ hashFiles('.test-sample-list') }}");
+      const listAt = job.steps.findIndex((step) => step.run === 'npx tsx scripts/prefetch-test-samples.ts --list > .test-sample-list');
+      expect(listAt, `${name} lists the samples before the cache`).toBeLessThan(job.steps.indexOf(cache as Step));
+      expect(listAt, `${name} lists the samples`).toBeGreaterThan(-1);
     }
   });
 });
@@ -205,7 +208,7 @@ describe('the nightly workflow', () => {
     expect(licences?.run).toBe(guarded('licenses:check', 'package.json has no licenses:check script yet'));
   });
 
-  it('fetches the real-world test files, cached by manifest digest, before the timing suites read them', () => {
+  it('fetches the real-world test files, cached by the list of samples the tests name, before the timing suites read them', () => {
     const steps = nightly.jobs.perf.steps;
     const vitestAt = steps.findIndex((step) => (step.run ?? '').includes('vitest run'));
     const prefetchAt = steps.findIndex((step) => step.run === 'npm run prefetch:test-samples');
@@ -214,7 +217,10 @@ describe('the nightly workflow', () => {
     expect(steps[prefetchAt].env?.ORACLE_STRICT_MODE, 'perf prefetch is strict').toBe('1');
     const cache = steps.slice(0, prefetchAt).find((step) => String(step.uses).startsWith('actions/cache@'));
     expect(cache?.with?.path).toBe('~/.cache/easyconvert-realworld');
-    expect(cache?.with?.key).toBe("test-samples-${{ hashFiles('bench/realworld/manifest.json') }}");
+    expect(cache?.with?.key).toBe("test-samples-${{ hashFiles('.test-sample-list') }}");
+    const listAt = steps.findIndex((step) => step.run === 'npx tsx scripts/prefetch-test-samples.ts --list > .test-sample-list');
+    expect(listAt, 'perf lists the samples').toBeGreaterThan(-1);
+    expect(listAt, 'perf lists the samples before the cache').toBeLessThan(steps.indexOf(cache as Step));
   });
 
   it('opens or updates one nightly-regression issue when a job fails, through the workflow it shares with the regression corpus run', () => {
