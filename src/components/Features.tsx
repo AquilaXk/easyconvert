@@ -119,7 +119,7 @@ function FormatDirectoryCard({
                 className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs transition-colors cursor-pointer ${buttonStyle}`}
               >
                 <span>{cat.label}</span>
-                <span className={`px-1.5 py-0.5 rounded font-mono text-[11px] ${badgeStyle}`}>
+                <span className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] ${badgeStyle}`}>
                   {cat.count}
                 </span>
               </button>

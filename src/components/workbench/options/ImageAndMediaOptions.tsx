@@ -4,6 +4,9 @@ import React from 'react';
 import { AudioCodec, ConversionOptions } from '@/lib/types';
 import {
   INPUT_CLASS,
+  SELECT_CLASS,
+  RANGE_CLASS,
+  rangeFill,
   LABEL_CLASS,
   parseOptionalPositiveInt,
   SECTION_HEADING_CLASS,
@@ -157,7 +160,7 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
   return (
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>Image &amp; Raster Parameters</h3>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label htmlFor="opt-image-width" className={LABEL_CLASS}>Width (px)</label>
           <input id="opt-image-width" type="number" min={1} value={options.width ?? ''} onChange={(e) => onChange({ ...options, width: parseOptionalPositiveInt(e.target.value) })} placeholder="Original" className={INPUT_CLASS} />
@@ -166,7 +169,7 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
           <label htmlFor="opt-image-height" className={LABEL_CLASS}>Height (px)</label>
           <input id="opt-image-height" type="number" min={1} value={options.height ?? ''} onChange={(e) => onChange({ ...options, height: parseOptionalPositiveInt(e.target.value) })} placeholder="Original" className={INPUT_CLASS} />
         </div>
-        <div>
+        <div className="sm:col-span-2">
           <label htmlFor="opt-image-fit" className={LABEL_CLASS}>Resize Fit</label>
           <select
             id="opt-image-fit"
@@ -177,7 +180,7 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
                 fit: e.target.value ? (e.target.value as ConversionOptions['fit']) : undefined,
               })
             }
-            className={INPUT_CLASS}
+            className={SELECT_CLASS}
           >
             <option value="">Automatic (contain when resized)</option>
             {FIT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -189,10 +192,10 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
           <label htmlFor="opt-image-quality" className="text-xs font-semibold text-ink">Compression Quality</label>
           <span className="text-xs font-mono text-accent-ink">{effectiveQuality}%</span>
         </div>
-        <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className="w-full min-h-[44px] accent-accent cursor-pointer" />
+        <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className={RANGE_CLASS} style={rangeFill(effectiveQuality, 1, 100)} />
       </div>
       <div className="flex items-center gap-3 min-h-[44px]">
-        <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="w-4 h-4 rounded accent-accent cursor-pointer" />
+        <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="size-4 cursor-pointer" />
         <label htmlFor="opt-strip-metadata" className="text-sm text-ink cursor-pointer select-none">Strip EXIF, GPS, and camera metadata</label>
       </div>
     </section>
@@ -274,7 +277,7 @@ export function VideoOptionsSection({ options, onChange, showCodec, targetFormat
               id="opt-video-codec"
               value={selectedCodec}
               onChange={(e) => onChange(applyVideoCodecChange(options, targetFormat, codecChoices, e.target.value))}
-              className={INPUT_CLASS}
+              className={SELECT_CLASS}
             >
               <option value="">Automatic (format default)</option>
               {codecChoices.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -283,7 +286,7 @@ export function VideoOptionsSection({ options, onChange, showCodec, targetFormat
         )}
         <div>
           <label htmlFor="opt-video-fps" className={LABEL_CLASS}>Frame Rate (FPS)</label>
-          <select id="opt-video-fps" value={options.videoFps ?? ''} onChange={(e) => onChange({ ...options, videoFps: parseFps(e.target.value) })} className={INPUT_CLASS}>
+          <select id="opt-video-fps" value={options.videoFps ?? ''} onChange={(e) => onChange({ ...options, videoFps: parseFps(e.target.value) })} className={SELECT_CLASS}>
             <option value="">Keep Source FPS</option>
             {VIDEO_FPS_VALUES.map((fps) => <option key={fps} value={String(fps)}>{fps} fps</option>)}
           </select>
@@ -325,7 +328,7 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
         {allowedCodecChoices.length > 0 && (
           <div>
             <label htmlFor="opt-audio-codec" className={LABEL_CLASS}>Audio Codec</label>
-            <select id="opt-audio-codec" value={options.audio?.codec || ''} onChange={(e) => updateAudioCodec(e.target.value)} className={INPUT_CLASS}>
+            <select id="opt-audio-codec" value={options.audio?.codec || ''} onChange={(e) => updateAudioCodec(e.target.value)} className={SELECT_CLASS}>
               <option value="">Automatic for Format</option>
               {allowedCodecChoices.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -343,7 +346,7 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
                   audioBitrate: e.target.value ? AUDIO_BITRATE_VALUES.find((br) => br === e.target.value) : undefined,
                 })
               }
-              className={INPUT_CLASS}
+              className={SELECT_CLASS}
             >
               <option value="">Automatic (format default)</option>
               {AUDIO_BITRATE_VALUES.map((br) => <option key={br} value={br}>{br.replace('k', ' kbps')}</option>)}
@@ -353,7 +356,7 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
         {audioCaps.allowedSampleRates.length > 0 && (
           <div>
             <label htmlFor="opt-audio-sample-rate" className={LABEL_CLASS}>Sample Rate</label>
-            <select id="opt-audio-sample-rate" value={options.audioSampleRate ?? ''} onChange={(e) => onChange({ ...options, audioSampleRate: parseSampleRate(e.target.value) })} className={INPUT_CLASS}>
+            <select id="opt-audio-sample-rate" value={options.audioSampleRate ?? ''} onChange={(e) => onChange({ ...options, audioSampleRate: parseSampleRate(e.target.value) })} className={SELECT_CLASS}>
               <option value="">Keep Source Rate</option>
               {audioCaps.allowedSampleRates.map((sr) => <option key={sr} value={String(sr)}>{sr.toLocaleString('en-US')} Hz</option>)}
             </select>
@@ -371,7 +374,7 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
                   audioChannels: e.target.value ? audioCaps.allowedChannels.find((ch) => ch === e.target.value) : undefined,
                 })
               }
-              className={INPUT_CLASS}
+              className={SELECT_CLASS}
             >
               <option value="">Keep Source Channels</option>
               {allowedChannelChoices.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -395,7 +398,8 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
             const nextVol = Number(e.target.value);
             onChange({ ...options, audioVolume: nextVol === 100 ? undefined : nextVol });
           }}
-          className="w-full min-h-[44px] accent-accent cursor-pointer"
+          className={RANGE_CLASS}
+          style={rangeFill(volumeValue, 0, 200)}
         />
       </div>
       {includeTrim && <TrimRangeFields options={options} onChange={onChange} prefix="opt-audio" />}

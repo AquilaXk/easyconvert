@@ -154,7 +154,7 @@ export function ResponsesGrid({
           >
             <div className="flex items-center gap-2 mb-1">
               <span
-                className={`px-2 py-0.5 rounded text-[11px] font-bold font-mono border ${getStatusBadgeClass(
+                className={`px-2 py-0.5 rounded-md text-[11px] font-bold font-mono border ${getStatusBadgeClass(
                   statusCode
                 )}`}
               >

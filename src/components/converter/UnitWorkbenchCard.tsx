@@ -217,7 +217,7 @@ export function UnitWorkbenchCard({
       <div className="p-4 rounded-md border border-rule flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
         <div className="flex flex-wrap items-center gap-2 text-ink-2">
           <HelpCircle className="w-4 h-4 text-accent-ink shrink-0" aria-hidden="true" />
-          <span className="px-2 py-0.5 rounded bg-surface border border-rule font-semibold text-ink">
+          <span className="px-2 py-0.5 rounded-md bg-surface border border-rule font-semibold text-ink">
             Formula
           </span>
           <code className="font-mono text-accent-ink font-semibold">{formulaText}</code>

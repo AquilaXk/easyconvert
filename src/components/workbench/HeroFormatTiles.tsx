@@ -46,7 +46,7 @@ export default function HeroFormatTiles({
           aria-expanded={openPicker === 'source'}
           aria-label={`Source format ${sourceDisplay}`}
           onClick={() => setOpenPicker((cur) => (cur === 'source' ? null : 'source'))}
-          className="lift min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
+          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
         >
           <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
             FROM
@@ -85,7 +85,7 @@ export default function HeroFormatTiles({
           aria-expanded={openPicker === 'target'}
           aria-label={`Target format ${targetDisplay === '...' ? 'any' : targetDisplay}`}
           onClick={() => setOpenPicker((cur) => (cur === 'target' ? null : 'target'))}
-          className="lift min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
+          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
         >
           <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
             TO

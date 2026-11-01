@@ -114,7 +114,7 @@ export function getPolicySections(
             <div>
               <a
                 href="mailto:support@easyconvert.com?subject=Accessibility%20Feedback"
-                className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-accent-ink hover:underline rounded"
+                className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-accent-ink hover:underline rounded-md"
               >
                 support@easyconvert.com (Accessibility Feedback)
               </a>
@@ -147,7 +147,7 @@ export function ContactContent() {
           </p>
           <a
             href="mailto:support@easyconvert.com"
-            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded"
+            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded-md"
           >
             support@easyconvert.com
           </a>
@@ -163,7 +163,7 @@ export function ContactContent() {
           </p>
           <a
             href="mailto:support@easyconvert.com?subject=Bug%20Report"
-            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded"
+            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded-md"
           >
             Report an Issue
           </a>

@@ -43,7 +43,7 @@ function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
     <dialog
       ref={dialogRef}
       aria-label="Navigation menu"
-      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 glass text-ink border border-rule shadow-elev-2"
+      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2"
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-rule">
         <BrandLogo size="sm" />
@@ -124,7 +124,7 @@ export default function Header() {
   }, [isToolsOpen]);
 
   return (
-    <header className="glass text-ink border-b border-rule sticky top-0 z-40 h-16">
+    <header className="glass glass-frost text-ink border-b border-rule sticky top-0 z-40 h-16">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
         <div className="flex items-center gap-6 min-w-0">
           <Link
@@ -157,7 +157,7 @@ export default function Header() {
               </button>
 
               {isToolsOpen && (
-                <div className="absolute top-full left-0 mt-2 max-w-[calc(100dvw-2rem)] w-[380px] rounded-md glass text-ink border border-rule shadow-elev-1 p-3 z-50">
+                <div className="absolute top-full left-0 mt-2 max-w-[calc(100dvw-2rem)] w-[380px] rounded-md bg-surface text-ink border border-rule shadow-elev-1 p-3 z-50">
                   <div className="grid grid-cols-2 gap-1">
                     {TOOL_ROUTES.map((tool) => (
                       <Link

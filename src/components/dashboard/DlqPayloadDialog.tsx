@@ -61,7 +61,7 @@ export function DlqPayloadDialog({
     <dialog
       ref={dialogRef}
       aria-labelledby="dlq-payload-dialog-title"
-      className="glass rounded-md border border-rule shadow-elev-2 text-ink max-w-2xl w-[calc(100%-2rem)] p-0"
+      className="glass glass-raised rounded-md border border-rule shadow-elev-2 text-ink max-w-2xl w-[calc(100%-2rem)] p-0"
     >
       <div className="p-6 space-y-4">
         <div className="flex items-start justify-between gap-3">

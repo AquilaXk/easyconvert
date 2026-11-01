@@ -38,12 +38,8 @@ const config: Config = {
       none: "0",
       xs: radius(0.5),
       sm: radius(1),
-      DEFAULT: radius(1.5),
       md: radius(1.5),
-      lg: radius(2),
       xl: radius(3),
-      "2xl": radius(4),
-      "3xl": radius(6),
       full: "9999px",
     },
     boxShadow: {

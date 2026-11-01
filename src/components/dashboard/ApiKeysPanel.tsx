@@ -22,7 +22,7 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
             / {quota.dailyLimit} allowed
           </span>
         </div>
-        <div className="mt-3 w-full bg-sunken rounded-full h-2 overflow-hidden">
+        <div className="mt-3 w-full bg-rule rounded-full h-2 overflow-hidden">
           <div
             className="bg-accent h-2 rounded-full transition-all duration-300"
             style={{ width: `${pct}%` }}

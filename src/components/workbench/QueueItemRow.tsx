@@ -112,7 +112,7 @@ function RowStatusDisplay({
         <span className="inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-danger"><span aria-hidden="true" className="size-1.5 rounded-full bg-danger" />Failed</span>
         <button
           type="button" disabled={isRetryDisabled(item, isBusy, isOversize, optionError)} onClick={onRetry}
-          className="lift inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-sm border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-sm border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Retry
         </button>
@@ -183,7 +183,7 @@ export default function QueueItemRow({
             aria-expanded={isFormatSelectorOpen}
             disabled={isBusy || isOversize}
             onClick={onToggleFormatSelector}
-            className={`lift inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
+            className={`transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
           >
             <span>{hasTarget ? item.targetFormat.toUpperCase() : 'Select format'}</span>
             <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
@@ -207,7 +207,7 @@ export default function QueueItemRow({
           aria-label={`Conversion options for ${item.name}`}
           disabled={!item.targetFormat || isBusy || isOversize}
           onClick={onOpenOptions}
-          className="lift inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-sm border border-rule text-ink-2 hover:border-accent hover:text-ink cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-sm border border-rule text-ink-2 hover:border-accent hover:text-ink cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Sliders className="w-4 h-4" />
         </button>

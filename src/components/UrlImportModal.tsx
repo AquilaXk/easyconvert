@@ -72,7 +72,7 @@ export default function UrlImportModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="url-import-heading"
-      className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 glass text-ink border border-rule shadow-elev-2 overflow-hidden"
+      className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2 overflow-hidden"
     >
       <div className="px-5 py-4 border-b border-rule flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">

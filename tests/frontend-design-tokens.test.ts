@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import tailwindConfig from '../tailwind.config';
+import { GROUND_DRIFT_MAX_PX, GROUND_DRIFT_RATE, groundOffset } from '../src/components/WovenGround';
 
 /**
- * The visual language lives in tokens: colours are CSS variables shared by both themes, the radius scale is a multiple
+ * The visual language lives in tokens: colours are CSS variables each theme defines, the radius scale is a multiple
  * of one unit, and shadows are a short elevation scale. These checks read every page and component source and fail when
  * a class reaches past the tokens (a raw palette colour, an arbitrary radius, an ad-hoc shadow or a per-theme colour
  * override), so the language cannot drift one component at a time.
@@ -38,6 +39,12 @@ function findAll(pattern: RegExp): string[] {
 const COLOR_UTILITY = String.raw`(?:bg|text|border(?:-[trblxy])?|divide|ring(?:-offset)?|outline|placeholder|accent|caret|decoration|fill|stroke|from|via|to)`;
 const LEGACY_PALETTE = String.raw`(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|white|black|brand|primary|dark|status|ink-(?:primary|secondary|muted))`;
 const CLASS_START = String.raw`(?<=^|[\s"'\x60{])(?:[a-z0-9-]+:)*!?`;
+const RAW_HEX = /(?<![&\w])#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})\b/gi;
+/** Third-party marks whose owners fix their colours: the Google sign-in "G". */
+const MARK_COLOURS: Record<string, readonly string[]> = {
+  [path.join('src', 'components', 'auth', 'AuthForms.tsx')]: ['#4285F4', '#34A853', '#FBBC05', '#EA4335'],
+};
+const globalsCss = fs.readFileSync(path.join(rootDir, 'src', 'app', 'globals.css'), 'utf8');
 
 describe('design tokens', () => {
   it('reads a non-empty set of page and component sources', () => {
@@ -71,19 +78,70 @@ describe('design tokens', () => {
     expect(outside).toEqual([]);
   });
 
-  it('maps every radius step to a multiple of the 0.1rem unit, with nothing larger than 6 units', () => {
+  it('maps every radius step to a multiple of the 0.1rem unit, with xl the largest component radius', () => {
     const steps = Object.entries(tailwindConfig.theme?.borderRadius ?? {}) as [string, string][];
     const units = Object.fromEntries(
       steps
         .filter(([name]) => name !== 'none' && name !== 'full')
         .map(([name, value]) => [name, Number(/^calc\(var\(--radius-unit\) \* ([\d.]+)\)$/.exec(value)?.[1])]),
     );
-    expect(units).toEqual({ xs: 0.5, sm: 1, DEFAULT: 1.5, md: 1.5, lg: 2, xl: 3, '2xl': 4, '3xl': 6 });
-    expect(fs.readFileSync(path.join(rootDir, 'src', 'app', 'globals.css'), 'utf8')).toMatch(/--radius-unit:\s*0\.1rem;/);
+    expect(units).toEqual({ xs: 0.5, sm: 1, md: 1.5, xl: 3 });
+    const largest = Object.entries(units).reduce((max, step) => (step[1] > max[1] ? step : max));
+    expect(largest[0]).toBe('xl');
+    expect(globalsCss).toMatch(/--radius-unit:\s*0\.1rem;/);
+  });
+
+  it('rejects the retired radius and shadow steps, a bare rounded class and raw hex colours', () => {
+    // Class names live in string literals; identifiers such as a `rounded` variable are not classes.
+    const retired = /^(?:shadow-(?:sm|md|lg)|rounded(?:-[trblse]{1,2})?(?:-(?:lg|2xl|3xl))?)$/;
+    const retiredClasses = sources.flatMap(({ file, text }) =>
+      [...text.matchAll(/"[^"\n]*"|'[^'\n]*'|\x60[^\x60]*\x60/g)]
+        .flatMap((literal) => literal[0].slice(1, -1).split(/\s+/))
+        .filter((token) => retired.test(token.replace(/^(?:[a-z0-9-]+:)*!?/, '')))
+        .map((token) => `${file}: ${token}`),
+    );
+    expect(retiredClasses).toEqual([]);
+    const hex = sources.flatMap(({ file, text }) =>
+      [...text.matchAll(RAW_HEX)]
+        .map((m) => m[0].toUpperCase())
+        .filter((colour) => !(MARK_COLOURS[file] ?? []).includes(colour))
+        .map((colour) => `${file}: ${colour}`),
+    );
+    expect(hex).toEqual([]);
+  });
+
+  it('gives every hover class a change: no hover that repeats the resting class beside it', () => {
+    // One class list is a quoted string or a static run of a template literal; the arms of a ternary are separate lists.
+    const classLists = (text: string) =>
+      [...text.matchAll(/"[^"\n]*"|'[^'\n]*'|\x60[^\x60]*\x60/g)].flatMap((literal) => literal[0].slice(1, -1).split(/\$\{|\}|'|"/));
+    const noOps = sources.flatMap(({ file, text }) =>
+      classLists(text).flatMap((list) => {
+        const tokens = new Set(list.split(/\s+/));
+        return [...tokens].filter((token) => token.startsWith('hover:') && tokens.has(token.slice('hover:'.length))).map((token) => `${file}: ${token}`);
+      }),
+    );
+    expect(noOps).toEqual([]);
+  });
+
+  it('keeps the signature accent #5C6BC0 in both themes, the colour of the static brand files', () => {
+    const accent = (selector: string) => {
+      const start = globalsCss.indexOf(`${selector} {`);
+      return /--c-accent:\s*([\d ]+);/.exec(globalsCss.slice(start, globalsCss.indexOf('\n}', start)))?.[1];
+    };
+    expect([accent(':root'), accent('.dark')]).toEqual(['92 107 192', '92 107 192']);
+  });
+
+  it('drifts the woven ground no further than the layer extends below the viewport, on both scroll paths', () => {
+    expect([0, 600, 1200, 5000, 40000].map(groundOffset)).toEqual([0, 120, 240, 240, 240]);
+    expect(groundOffset(-80)).toBe(0);
+    const ground = /\.woven-ground \{[^}]*inset: 0 0 -(\d+)px 0;/.exec(globalsCss)?.[1];
+    const drift = /@keyframes ground-drift \{\s*to \{\s*transform: translate3d\(0, -(\d+)px, 0\);/.exec(globalsCss)?.[1];
+    const range = /animation-range: 0 (\d+)px;/.exec(globalsCss)?.[1];
+    expect([Number(ground), Number(drift), Number(range)]).toEqual([GROUND_DRIFT_MAX_PX, GROUND_DRIFT_MAX_PX, GROUND_DRIFT_MAX_PX / GROUND_DRIFT_RATE]);
   });
 
   it('defines every colour token for both themes', () => {
-    const css = fs.readFileSync(path.join(rootDir, 'src', 'app', 'globals.css'), 'utf8');
+    const css = globalsCss;
     const block = (selector: string) => {
       const start = css.indexOf(`${selector} {`);
       return css.slice(start, css.indexOf('\n}', start));

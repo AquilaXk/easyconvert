@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { ChevronDown, Upload, HardDrive, Globe } from 'lucide-react';
-import { PlumeMark } from './FeatherVane';
+import { PlumeMark } from './PlumeMark';
 import { fileLimitCopy } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
@@ -64,14 +64,14 @@ export default function HeroDropzoneCard({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className={`glass sheen-edge relative rounded-md border border-rule p-6 sm:p-8 text-center transition-[transform,box-shadow] duration-500 ease-spring ${
+        className={`glass relative rounded-md border border-rule p-6 sm:p-8 text-center transition-[transform,box-shadow] duration-500 ease-spring ${
           isDragOver ? '-translate-y-[3px] shadow-float' : ''
         }`}
       >
         <span
           aria-hidden="true"
-          className={`pointer-events-none absolute rounded-sm border transition-[inset,border-color] duration-500 ease-spring ${
-            isDragOver ? 'inset-1.5 border-accent' : 'inset-2.5 border-rule'
+          className={`pointer-events-none absolute rounded-sm border border-accent transition-[inset,opacity] duration-500 ease-spring ${
+            isDragOver ? 'inset-1.5 opacity-100' : 'inset-3 opacity-0'
           }`}
         />
         <PlumeMark className={`size-11 mx-auto mb-2 text-accent-ink transition-transform duration-500 ease-spring ${isDragOver ? '-translate-y-1 -rotate-6' : ''}`} />
@@ -111,7 +111,7 @@ export default function HeroDropzoneCard({
               <div
                 role="menu"
                 aria-label="File sources"
-                className="absolute top-full right-0 mt-2 w-52 max-w-[calc(100dvw-2rem)] rounded-md glass border border-rule shadow-elev-1 p-1.5 z-40 text-left"
+                className="absolute top-full right-0 mt-2 w-52 max-w-[calc(100dvw-2rem)] rounded-md bg-surface border border-rule shadow-elev-1 p-1.5 z-40 text-left"
               >
                 <button
                   type="button"
@@ -144,7 +144,7 @@ export default function HeroDropzoneCard({
           <button
             type="button"
             onClick={onOpenUrlModal}
-            className="lift min-h-[44px] sm:min-h-[36px] px-3.5 rounded-sm text-xs font-medium text-ink-2 hover:text-ink border border-rule hover:border-rule-strong inline-flex items-center gap-1.5 cursor-pointer"
+            className="transition-colors min-h-[44px] sm:min-h-[36px] px-3.5 rounded-sm text-xs font-medium text-ink-2 hover:text-ink border border-rule hover:border-rule-strong inline-flex items-center gap-1.5 cursor-pointer"
           >
             <Globe className="w-3.5 h-3.5 shrink-0" />
             <span>Add from URL</span>
@@ -168,7 +168,7 @@ export default function HeroDropzoneCard({
           <Link
             key={pair.href}
             href={pair.href}
-            className="lift min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-sm text-xs font-medium text-ink-2 border border-rule hover:border-accent hover:text-accent-ink inline-flex items-center"
+            className="transition-colors min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-sm text-xs font-medium text-ink-2 border border-rule hover:border-accent hover:text-accent-ink inline-flex items-center"
           >
             {pair.label}
           </Link>

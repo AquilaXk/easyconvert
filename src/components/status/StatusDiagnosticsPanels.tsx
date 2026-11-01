@@ -124,7 +124,7 @@ export function DiagnosticResultsCard({ results }: Readonly<{ results: Diagnosti
                 </h3>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {!diag.supported && (
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-warning/15 text-warning border border-warning-edge/30">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-warning/15 text-warning border border-warning-edge/30">
                       Unavailable
                     </span>
                   )}

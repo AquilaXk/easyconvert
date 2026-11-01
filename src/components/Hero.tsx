@@ -5,7 +5,6 @@ import { getAvailableTargetFormats } from '@/lib/registry';
 import UrlImportModal from './UrlImportModal';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
-import { FeatherVane } from './workbench/FeatherVane';
 import {
   computeHeroSubtitle,
   computeHeroTitle,
@@ -189,11 +188,8 @@ export default function Hero({
         </section>
       ) : (
         <div>
-          <section className="relative pt-12 pb-24 lg:pt-16 lg:pb-28">
-            <div aria-hidden="true" className="absolute inset-0 overflow-hidden pointer-events-none">
-              <FeatherVane className="vane-drift absolute -right-28 -top-6 w-[340px] sm:w-[460px] lg:-right-8 lg:-top-24 lg:w-[620px]" />
-            </div>
-            <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <section className="pt-12 pb-24 lg:pt-16 lg:pb-28">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="lg:grid lg:grid-cols-12 lg:items-center lg:gap-10">
                 <div className="lg:col-span-7 text-center lg:text-left">
                   <h1 className="text-5xl sm:text-6xl lg:text-7xl text-ink leading-[1.02]">

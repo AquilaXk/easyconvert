@@ -152,14 +152,14 @@ print(response.json())`,
         aria-labelledby={activeTabId}
         className="relative mt-4 min-w-0"
       >
-        <pre className="p-4 pr-24 rounded-md text-ink-3 font-mono text-xs overflow-x-auto max-w-full leading-relaxed border border-rule">
+        <pre className="p-4 pr-24 rounded-md bg-sunken text-ink-2 font-mono text-xs overflow-x-auto max-w-full leading-relaxed border border-rule">
           <code>{codeSnippets[codeTab]}</code>
         </pre>
         <button
           type="button"
           onClick={handleCopySnippet}
           aria-label={`Copy ${TAB_LABELS[codeTab]} integration snippet`}
-          className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-sm bg-sunken hover:bg-sunken text-ink text-xs font-semibold transition-colors"
+          className="min-w-[44px] min-h-[44px] absolute top-2 right-2 inline-flex items-center justify-center gap-1.5 px-2.5 rounded-sm bg-surface hover:bg-canvas border border-rule text-ink-2 hover:text-ink text-xs font-semibold transition-colors"
         >
           {copiedSnippet ? (
             <>

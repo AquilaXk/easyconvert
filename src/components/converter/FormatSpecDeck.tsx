@@ -56,7 +56,7 @@ export function ConverterBreadcrumb({
         <li className="inline-flex items-center">
           <Link
             href="/"
-            className="inline-flex items-center gap-1 py-1 rounded hover:text-accent-ink transition-colors"
+            className="inline-flex items-center gap-1 py-1 rounded-md hover:text-accent-ink transition-colors"
           >
             <Home className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Home</span>
@@ -75,7 +75,7 @@ export function ConverterBreadcrumb({
             <li className="inline-flex items-center">
               <Link
                 href={`/${categoryName}-converter`}
-                className="py-1 rounded hover:text-accent-ink transition-colors capitalize"
+                className="py-1 rounded-md hover:text-accent-ink transition-colors capitalize"
               >
                 {categoryLabel}
               </Link>
@@ -86,7 +86,7 @@ export function ConverterBreadcrumb({
                 <li className="inline-flex items-center">
                   <Link
                     href={`/${srcKey}-converter`}
-                    className="py-1 rounded hover:text-accent-ink transition-colors uppercase"
+                    className="py-1 rounded-md hover:text-accent-ink transition-colors uppercase"
                   >
                     {srcKey} Converter
                   </Link>

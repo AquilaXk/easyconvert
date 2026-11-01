@@ -146,7 +146,7 @@ export function CreateApiKeyForm({
                       type="checkbox"
                       checked={selectedScopes.includes(scopeItem.id)}
                       onChange={(e) => onToggleScope(scopeItem.id, e.target.checked)}
-                      className="w-4 h-4 rounded text-base text-accent-ink"
+                      className="w-4 h-4 rounded-md text-base text-accent-ink"
                     />
                     <span className="font-mono">{scopeItem.label}</span>
                   </label>

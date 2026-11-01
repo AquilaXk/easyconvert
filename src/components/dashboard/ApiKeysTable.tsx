@@ -9,7 +9,7 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
   const now = Date.now();
   if (now > expiresAt) {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-danger-soft text-danger border border-danger-edge">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-danger-soft text-danger border border-danger-edge">
         Expired
       </span>
     );
@@ -19,7 +19,7 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
   if (msRemaining <= sevenDaysMs) {
     const daysRemaining = Math.max(1, Math.ceil(msRemaining / (86400 * 1000)));
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-warning-soft text-warning border border-warning-edge">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-warning-soft text-warning border border-warning-edge">
         Expiring in {daysRemaining}d
       </span>
     );
@@ -103,13 +103,13 @@ export function ApiKeysTable({
                       key.scopes.map((scope) => (
                         <span
                           key={scope}
-                          className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-sunken text-ink-2 border border-rule"
+                          className="px-1.5 py-0.5 rounded-md text-[11px] font-mono bg-sunken text-ink-2 border border-rule"
                         >
                           {scope}
                         </span>
                       ))
                     ) : (
-                      <span className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-sunken text-ink-2 border border-rule">
+                      <span className="px-1.5 py-0.5 rounded-md text-[11px] font-mono bg-sunken text-ink-2 border border-rule">
                         all scopes (*)
                       </span>
                     )}
@@ -148,7 +148,7 @@ export function ApiKeysTable({
                         type="button"
                         onClick={() => onConfirmRevoke(key.id)}
                         aria-label={`Confirm revoking API key ${key.name}`}
-                        className="min-h-[44px] px-3 rounded-sm bg-danger hover:bg-danger text-on-accent text-xs font-semibold"
+                        className="min-h-[44px] px-3 rounded-sm bg-danger hover:bg-danger/90 text-canvas text-xs font-semibold transition-colors"
                       >
                         Confirm
                       </button>

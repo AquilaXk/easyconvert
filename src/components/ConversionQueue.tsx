@@ -102,7 +102,7 @@ function QueueBatchHeader({
           <div className="relative">
             <button
               type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="lift inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border border-rule-strong text-xs font-mono font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border border-rule-strong text-xs font-mono font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : 'Choose format'}</span>
               <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
@@ -159,14 +159,14 @@ function QueueFooterBar({
       <div className="flex items-center flex-wrap sm:flex-nowrap gap-2.5 w-full sm:w-auto justify-end">
         <button
           type="button" disabled={effectiveBusy} onClick={onAddMoreFiles}
-          className="lift min-h-[48px] px-4 rounded-sm text-ink border border-rule-strong hover:border-ink-3 text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors min-h-[48px] px-4 rounded-sm text-ink border border-rule-strong hover:border-ink-3 text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span>+ Add more files</span>
         </button>
         {completedCount > 1 && (
           <button
             type="button" onClick={onDownloadAllZip}
-            className="lift min-h-[48px] px-4 rounded-sm bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+            className="transition-colors min-h-[48px] px-4 rounded-sm bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
           >
             <Package className="w-4 h-4" /><span>Download All (.zip)</span>
           </button>

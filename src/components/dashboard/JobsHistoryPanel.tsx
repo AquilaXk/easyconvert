@@ -75,7 +75,7 @@ export function JobsHistoryPanel({
                     {file.fileName}
                   </td>
                   <td className="py-3.5 pr-4 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold px-2 py-0.5 rounded bg-accent-soft text-accent-ink border border-accent-edge">
+                    <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-accent-soft text-accent-ink border border-accent-edge">
                       {file.fromFormat.toUpperCase()} to {file.toFormat.toUpperCase()}
                     </span>
                   </td>

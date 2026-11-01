@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Colour tokens are RGB channels so Tailwind can apply opacity (`bg-surface/60`). Both themes share one palette. */
+/* Colour tokens are RGB channels so Tailwind can apply opacity (`bg-surface/60`); `.dark` redefines each one. */
 :root {
   color-scheme: light;
   --radius-unit: 0.1rem;
@@ -42,7 +42,7 @@
   --sheen-4: 228 185 162;
 
   --texture: 60 66 110 / 0.1;
-  --glass-alpha: 0.62;
+  --glass-alpha: 0.55;
   --glass-blur: 14px;
   --glass-edge: rgb(255 255 255 / 0.9);
   --scrim: rgb(26 29 46 / 0.36);
@@ -93,7 +93,6 @@
   --c-info-edge: 43 68 105;
 
   --texture: 180 188 251 / 0.085;
-  --glass-alpha: 0.58;
   --glass-edge: rgb(226 229 253 / 0.12);
   --scrim: rgb(5 7 14 / 0.66);
 
@@ -108,6 +107,7 @@
   /* In-page anchors land below the sticky header. */
   html {
     scroll-padding-top: 4.5rem;
+    accent-color: rgb(var(--c-accent));
   }
 
   body {
@@ -116,9 +116,9 @@
     overflow-x: hidden;
   }
 
-  /* The woven ground: warp and weft hairlines, masked so one pattern serves both themes. It drifts slower than the page. */
-  body::before {
-    content: "";
+  /* The woven ground: warp and weft hairlines, masked so one pattern serves both themes. It drifts slower than the page
+     (WovenGround.tsx), so it extends below the viewport by the furthest it drifts. */
+  .woven-ground {
     position: fixed;
     inset: 0 0 -240px 0;
     z-index: -1;
@@ -128,7 +128,6 @@
     mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg fill='none' stroke='%23000' stroke-width='.6'%3E%3Cpath d='M1 2h10M1 5h10M1 8h10M13 14h10M13 17h10M13 20h10M14 1v10M17 1v10M20 1v10M2 13v10M5 13v10M8 13v10'/%3E%3C/g%3E%3C/svg%3E");
     -webkit-mask-size: 24px 24px;
     mask-size: 24px 24px;
-    transform: translate3d(0, calc(var(--scroll-y, 0) * -0.2px), 0);
     will-change: transform;
   }
 
@@ -145,7 +144,7 @@
     box-shadow: var(--focus-glow);
   }
 
-  /* Icons are drawn as hairlines, like the barbs of the ground and the hero feather. */
+  /* Icons are drawn as hairlines, like the threads of the ground. */
   svg.lucide {
     stroke-width: 1.5;
   }
@@ -157,19 +156,24 @@
 }
 
 @layer components {
-  /* Translucent surface over the woven ground, like a perforated lace panel: the texture shows through. */
+  /* Translucent surface over the woven ground, like a perforated lace panel: the threads show through unblurred. A
+     blur would only erase the hairlines, so resting panels have none. */
   .glass {
     background-color: rgb(var(--c-surface) / var(--glass-alpha));
     background-image: linear-gradient(var(--glass-edge), var(--glass-edge));
     background-size: 100% 1px;
     background-repeat: no-repeat;
+  }
+
+  /* Frosted: for a surface that page content moves under (the sticky header), where the blur is what shows. */
+  .glass-frost,
+  .glass-raised {
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
     backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
   }
 
-  /* Floating layers sit over busy content, so they keep more of their surface while the texture still reads through. */
-  .glass.shadow-elev-1,
-  .glass.shadow-elev-2 {
+  /* Floating layers sit over busy content, so they keep more of their surface under a stronger blur. */
+  .glass-raised {
     --glass-alpha: 0.86;
     --glass-blur: 18px;
   }
@@ -199,49 +203,115 @@
       box-shadow 0.32s ease;
   }
   .lift:not(:disabled):hover {
-    transform: translateY(-1px);
+    transform: translateY(-2px);
   }
   .lift:not(:disabled):active {
     transform: translateY(0) scale(0.98);
     transition-duration: 0.1s;
   }
 
+  /* Backwards fill only: once settled, the element's own transform (a hover lift) applies again. */
   .settle {
-    animation: settle 0.6s var(--ease-spring) both;
+    animation: settle 0.6s var(--ease-spring) backwards;
   }
 
-  /* The progress thread: a 2px strand whose filled part carries a slowly flowing sheen. */
+  /* The progress thread: a 3px strand whose filled part carries a slowly flowing sheen. Nothing clips it, so the dark
+     theme's halo can spread past the strand. */
   .thread {
     -webkit-appearance: none;
     appearance: none;
     display: block;
     width: 100%;
-    height: 2px;
+    height: 3px;
     border: 0;
     border-radius: 9999px;
-    overflow: hidden;
     background: rgb(var(--c-rule));
     color: rgb(var(--c-accent));
   }
   .thread::-webkit-progress-bar {
     background: rgb(var(--c-rule));
+    border-radius: 9999px;
   }
   .thread::-webkit-progress-value {
+    border-radius: 9999px;
     background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--sheen-2)), rgb(var(--sheen-3)), rgb(var(--c-accent))) 0 0 / 200% 100%;
     animation: thread-flow 1.8s linear infinite;
     transition: width 0.5s var(--ease-spring);
   }
   .thread::-moz-progress-bar {
+    border-radius: 9999px;
     background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--sheen-2)), rgb(var(--sheen-3)), rgb(var(--c-accent))) 0 0 / 200% 100%;
     animation: thread-flow 1.8s linear infinite;
   }
+  /* Vendor pseudo-elements stay in separate rules: a browser drops a whole selector list it cannot parse. */
   .dark .thread::-webkit-progress-value {
-    box-shadow: var(--glow);
+    box-shadow: 0 0 8px rgb(var(--sheen-1) / 0.6);
+  }
+  .dark .thread::-moz-progress-bar {
+    box-shadow: 0 0 8px rgb(var(--sheen-1) / 0.6);
   }
 
-  /* Decorative hero feather; it rises a little slower than the page. */
-  .vane-drift {
-    transform: translate3d(0, calc(var(--scroll-y, 0) * 0.18px), 0);
+  /* Native range: a 3px track filled to the thumb (`--range-ratio` from 0 to 1, set by the field) and a ringed thumb. */
+  .range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    min-height: 44px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .range::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(var(--c-accent)) calc(9px + var(--range-ratio, 0) * (100% - 18px)),
+      rgb(var(--c-rule-strong)) 0
+    );
+  }
+  .range::-moz-range-track {
+    height: 3px;
+    border-radius: 9999px;
+    background: rgb(var(--c-rule-strong));
+  }
+  .range::-moz-range-progress {
+    height: 3px;
+    border-radius: 9999px;
+    background: rgb(var(--c-accent));
+  }
+  .range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -7.5px;
+    border-radius: 9999px;
+    border: 2px solid rgb(var(--c-accent));
+    background: rgb(var(--c-surface));
+    box-shadow: var(--elev-1);
+  }
+  .range::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    box-sizing: border-box;
+    border-radius: 9999px;
+    border: 2px solid rgb(var(--c-accent));
+    background: rgb(var(--c-surface));
+    box-shadow: var(--elev-1);
+  }
+
+  /* Native select without the platform arrow: a hairline chevron in the secondary ink, drawn as two diagonal strokes. */
+  .select-chevron {
+    -webkit-appearance: none;
+    appearance: none;
+    background-image:
+      linear-gradient(45deg, transparent calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% + 0.75px), transparent calc(50% + 0.75px)),
+      linear-gradient(135deg, transparent calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% - 0.75px), rgb(var(--c-ink-2)) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+    background-position:
+      right 1.25rem center,
+      right 0.875rem center;
+    background-size: 6px 6px;
+    background-repeat: no-repeat;
   }
 }
 
@@ -268,28 +338,18 @@
   }
 }
 
-@keyframes vane-rise {
-  to {
-    transform: translate3d(0, 110px, 0);
-  }
-}
-
+/* The same drift as WovenGround.tsx: a fifth of the scroll until 240px, reached at 1200px of scroll. */
 @supports (animation-timeline: scroll()) {
-  body::before {
-    transform: none;
+  .woven-ground {
     animation: ground-drift linear both;
     animation-timeline: scroll(root);
-  }
-  .vane-drift {
-    transform: none;
-    animation: vane-rise linear both;
-    animation-timeline: scroll(root);
-    animation-range: 0 600px;
+    animation-range: 0 1200px;
   }
 }
 
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .glass {
+  .glass-frost,
+  .glass-raised {
     background-color: rgb(var(--c-surface));
   }
 }
@@ -348,10 +408,18 @@ html:has(dialog:modal) {
     scroll-behavior: auto;
   }
 
-  body::before,
-  .vane-drift {
+  .woven-ground {
     animation: none;
     transform: none;
+  }
+
+  /* Pseudo-elements the universal selectors above do not reach, one rule per vendor. */
+  .thread::-webkit-progress-value {
+    animation: none;
+    transition: none;
+  }
+  .thread::-moz-progress-bar {
+    animation: none;
   }
 
   .lift:not(:disabled):hover,

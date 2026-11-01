@@ -358,7 +358,7 @@ export interface ParsedEndpointItem {
 
 export function renderInlineCode(
   text: string,
-  codeClassName = 'px-1.5 py-0.5 rounded bg-sunken font-mono text-xs text-accent-ink'
+  codeClassName = 'px-1.5 py-0.5 rounded-md bg-sunken font-mono text-xs text-accent-ink'
 ): React.ReactNode {
   const parts = text.split(/(`[^`]+`)/g);
   const nodes: React.ReactNode[] = [];

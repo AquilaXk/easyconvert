@@ -84,11 +84,11 @@ export function RestApiWorkflowCard() {
           </h2>
           <p className="mt-1.5 text-sm text-ink-2 leading-relaxed">
             Automate single-file conversions via{' '}
-            <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-sunken">
+            <code className="font-mono text-xs px-1.5 py-0.5 rounded-md bg-sunken">
               POST /api/v1/convert
             </code>{' '}
             or submit multi-step DAG pipelines to{' '}
-            <code className="font-mono text-xs px-1.5 py-0.5 rounded bg-sunken">
+            <code className="font-mono text-xs px-1.5 py-0.5 rounded-md bg-sunken">
               POST /api/v1/jobs
             </code>{' '}
             with signed webhook delivery.
@@ -112,7 +112,7 @@ export function RestApiWorkflowCard() {
               onClick={() => {
                 void handleCopy();
               }}
-              className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-sm text-xs font-medium text-ink hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-sm text-xs font-medium text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
             >
               {copied ? (
                 <>

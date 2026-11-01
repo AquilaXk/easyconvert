@@ -26,13 +26,13 @@ export function ApiDocsMasthead({
               {spec?.info.description ? (
                 renderInlineCode(
                   spec.info.description,
-                  'px-1.5 py-0.5 rounded bg-sunken font-mono text-xs text-accent-ink'
+                  'px-1.5 py-0.5 rounded-md bg-sunken font-mono text-xs text-accent-ink'
                 )
               ) : (
                 <>
                   REST API for asynchronous conversion queues, multipart uploads, and webhook
                   delivery. Operations marked{' '}
-                  <code className="px-1.5 py-0.5 rounded bg-sunken font-mono text-xs text-accent-ink">
+                  <code className="px-1.5 py-0.5 rounded-md bg-sunken font-mono text-xs text-accent-ink">
                     x-internal
                   </code>{' '}
                   serve the web application and are excluded from external client contracts.
@@ -72,7 +72,7 @@ export function ApiDocsMasthead({
             </a>
             <Link
               href="/dashboard"
-              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm bg-sunken hover:bg-sunken border border-rule text-ink font-semibold text-sm transition-colors"
+              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm hover:bg-sunken border border-rule hover:border-rule-strong text-ink font-semibold text-sm transition-colors"
             >
               <Code2 className="w-4 h-4" aria-hidden="true" />
               <span>API Key Dashboard</span>

@@ -3,6 +3,9 @@
 import React from 'react';
 import {
   INPUT_CLASS,
+  SELECT_CLASS,
+  RANGE_CLASS,
+  rangeFill,
   LABEL_CLASS,
   parseOptionalNonNegativeInt,
   SECTION_HEADING_CLASS,
@@ -60,7 +63,7 @@ function OcrOptionsFields({
                 ocrLanguage: e.target.checked ? options.ocrLanguage || 'eng' : undefined,
               })
             }
-            className="w-4 h-4 rounded accent-accent cursor-pointer"
+            className="size-4 cursor-pointer"
           />
           <label htmlFor="opt-doc-ocr" className="text-sm text-ink cursor-pointer select-none">
             Enable OCR text recognition
@@ -74,7 +77,7 @@ function OcrOptionsFields({
           disabled={!ocrAlwaysEnabled && !ocrActive}
           value={options.ocrLanguage || 'eng'}
           onChange={(e) => onChange({ ...options, ocrLanguage: e.target.value })}
-          className={`${INPUT_CLASS} disabled:opacity-50`}
+          className={`${SELECT_CLASS} disabled:opacity-50`}
         >
           {OCR_LANGUAGE_CHOICES.map((lang) => (
             <option key={lang.value} value={lang.value}>{lang.label}</option>
@@ -123,7 +126,7 @@ export function DocumentOptionsSection({
                     orientation: e.target.value ? (e.target.value as 'portrait' | 'landscape') : undefined,
                   })
                 }
-                className={INPUT_CLASS}
+                className={SELECT_CLASS}
               >
                 <option value="">Auto (match source)</option>
                 <option value="portrait">Portrait</option>
@@ -236,7 +239,7 @@ export function DataOptionsSection({
               id="opt-data-delimiter"
               value={options.delimiter ?? ''}
               onChange={(e) => onChange({ ...options, delimiter: e.target.value || undefined })}
-              className={INPUT_CLASS}
+              className={SELECT_CLASS}
             >
               <option value="">Auto (match format)</option>
               {DELIMITER_CHOICES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
@@ -277,7 +280,7 @@ export function ArchiveOptionsSection({ options, onChange }: Readonly<SectionPro
           </label>
           <span className="text-xs font-mono text-accent-ink">Level {level}</span>
         </div>
-        <input id="opt-archive-compression" type="range" min={0} max={9} step={1} value={level} onChange={(e) => onChange({ ...options, compressionLevel: Number(e.target.value) })} className="w-full min-h-[44px] accent-accent cursor-pointer" />
+        <input id="opt-archive-compression" type="range" min={0} max={9} step={1} value={level} onChange={(e) => onChange({ ...options, compressionLevel: Number(e.target.value) })} className={RANGE_CLASS} style={rangeFill(level, 0, 9)} />
       </div>
     </section>
   );
