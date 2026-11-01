@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
@@ -22,26 +22,16 @@ import {
   type UploadBudgetRecord,
 } from '../src/lib/api-keys/anonymous-upload-budget';
 import { MemoryBudgetStore, RECORD_TTL_MS } from '../src/lib/api-keys/upload-budget-store';
+import { UNAVAILABLE_DETAIL, cleanups, from, initiate, multipart, part, stagedUpload, installUploadFlowHooks } from './helpers/anonymous-upload-flow';
 
 const BASE_URL = 'http://localhost:3000';
-const UNAVAILABLE_DETAIL = 'A service this upload needs is temporarily unavailable. Retry the request shortly.';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const HOUR = 60 * 60 * 1000;
 const DAY = '2026-11-01';
 const NOW = Date.UTC(2026, 10, 1, 12);
 
-const cleanups: Array<() => Promise<void> | void> = [];
-
-beforeEach(() => {
-  vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
-});
-
-afterEach(async () => {
-  vi.unstubAllEnvs();
-  vi.restoreAllMocks();
-  for (const cleanup of cleanups.splice(0)) await cleanup();
-});
+installUploadFlowHooks();
 
 describe('the upload budget of an address bucket', () => {
   const policy = { maxOpenUploads: 2, dailyBytes: 2 * GIB, idleMs: HOUR };
@@ -124,45 +114,14 @@ describe('the upload budget of an address bucket', () => {
   });
 });
 
-function from(address: string): Record<string, string> {
-  return { 'x-forwarded-for': address };
-}
-
 async function account(): Promise<Record<string, string>> {
   const email = `budget_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@budget.test`;
   const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'budget', tier: 'free' }));
   return { Cookie: `easyconvert_session=${createSessionToken(user)}` };
 }
 
-function multipart(action: string, body: unknown, headers: Record<string, string>): NextRequest {
-  return new NextRequest(`${BASE_URL}/api/storage/multipart?action=${action}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify(body),
-  });
-}
-
-async function initiate(headers: Record<string, string>, totalSize: number): Promise<Response> {
-  const res = await multipartPost(multipart('initiate', { filename: 'big.csv', totalSize }, headers));
-  if (res.status === 200) {
-    const { uploadId } = await res.clone().json();
-    cleanups.push(async () => {
-      await s3Storage.abortMultipartUpload(uploadId);
-    });
-  }
-  return res;
-}
-
 function csv(length: number): Buffer {
   return Buffer.alloc(length, 'a');
-}
-
-function part(uploadId: string, bytes: Buffer, headers: Record<string, string>): NextRequest {
-  return new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=1`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream', ...headers },
-    body: new Uint8Array(bytes),
-  });
 }
 
 /** A completed one-part upload of a CSV. */
@@ -619,7 +578,7 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
 
   it('keeps the lock of an opening the idempotency store could not record, so a repeat is told to wait and opens no second session', async () => {
     const visitor = { ...from('203.0.113.161'), 'Idempotency-Key': crypto.randomUUID() };
-    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const first = await initiate(visitor, MIB);
@@ -634,7 +593,7 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     const visitor = from('203.0.113.162');
     const key = await completedUpload(visitor);
     const idempotencyKey = crypto.randomUUID();
-    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const send = () =>
       queueJobsPost(
@@ -697,17 +656,9 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
 });
 
 describe('a completion the store took is final', () => {
-  async function stagedUpload(address: string): Promise<{ visitor: Record<string, string>; uploadId: string; etag: string; bytes: Buffer }> {
-    const visitor = from(address);
-    const bytes = Buffer.from('a,b\n1,2\n');
-    const { uploadId } = await (await initiate(visitor, bytes.length)).json();
-    const { etag } = await (await multipartPost(part(uploadId, bytes, visitor))).json();
-    return { visitor, uploadId, etag, bytes };
-  }
-
   it('answers with the stored file when the idempotency store cannot keep the answer, and logs it', async () => {
     const { visitor, uploadId, etag } = await stagedUpload('203.0.113.81');
-    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const res = await multipartPost(
@@ -724,7 +675,7 @@ describe('a completion the store took is final', () => {
 
   it('answers a repeat of a completion the idempotency store could not record with the first answer, not with a missing session', async () => {
     const { visitor, uploadId, etag } = await stagedUpload('203.0.113.85');
-    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValue(new Error('redis: connection reset'));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const complete = () =>
       multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, { ...visitor, 'Idempotency-Key': `unrecorded-${uploadId}` }));
@@ -822,7 +773,7 @@ describe('a completion the store took is final', () => {
 
   it('closes the budget of an upload whose assembled size is not the declared one', async () => {
     const { visitor, uploadId, etag, bytes } = await stagedUpload('203.0.113.83');
-    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => ({
+    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(async () => ({
       location: '/api/storage/file/uploads%2Fmismatch.csv',
       key: 'uploads/mismatch.csv',
       size: bytes.length + 1,
@@ -838,7 +789,7 @@ describe('a completion the store took is final', () => {
 
   it('answers the final 400 and closes the budget when the assembled upload is not the declared size and its removal fails, and logs the key', async () => {
     const { visitor, uploadId, etag, bytes } = await stagedUpload('203.0.113.86');
-    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => ({
+    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(async () => ({
       location: '/api/storage/file/uploads%2Fmismatch-removal.csv',
       key: 'uploads/mismatch-removal.csv',
       size: bytes.length + 1,

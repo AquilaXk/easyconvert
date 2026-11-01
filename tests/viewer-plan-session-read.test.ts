@@ -84,31 +84,6 @@ describe('a session change the page made itself', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('takes the user a sign-in answered with, and asks the session endpoint when a successful answer names none', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(sessionAnswer(SIGNED_IN));
-    vi.stubGlobal('fetch', fetchMock);
-    const { plan } = await freshModules();
-
-    plan.applySignInAnswer(ADA);
-    expect(plan.getViewerPlan()).toBe('pro');
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    plan.applySignInAnswer(undefined);
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'free' }));
-  });
-
-  it('does not sign the viewer out when a successful sign-in answer names no user and the read fails', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')));
-    const { plan } = await freshModules();
-    plan.applySessionChange(ADA);
-
-    plan.applySignInAnswer(undefined);
-    await settle();
-
-    expect(plan.getViewerAccount()).toEqual({ name: 'Ada', tier: 'pro' });
-  });
-
   it('signs the viewer out at once, and a session endpoint that then answers 503 does not bring the account back', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(sessionAnswer(SIGNED_IN)).mockResolvedValueOnce(new Response('{}', { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);

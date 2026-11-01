@@ -26,6 +26,7 @@ import {
   getMaxInMemoryBytes,
 } from './errors';
 import { PART_URL_TTL_SECONDS } from './presign-limits';
+import { stripEtagQuotes } from './etag';
 import { assertRegularFile } from './temp-file';
 import { multipartUploadKey } from './key-namespace';
 import { MAX_UPLOAD_ID_LENGTH } from './upload-id';
@@ -111,10 +112,6 @@ function statusError(message: string, statusCode: number): Error {
 
 function isSafeCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function stripEtagQuotes(etag: string): string {
-  return etag.replace(/"/g, '');
 }
 
 export class RemoteStorageBackend implements IStorageBackend {

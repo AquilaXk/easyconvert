@@ -122,7 +122,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 42
+    "maxValue": 39
   },
   {
     "file": "src/app/api/v1/uploads/direct/complete/route.ts",

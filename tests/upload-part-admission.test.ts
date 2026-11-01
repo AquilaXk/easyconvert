@@ -217,7 +217,7 @@ describe('parts of one upload sent at once are held together to the size it decl
   });
 
   describe('a transient error of the operating system', () => {
-    const TRANSIENT_CODES = ['EIO', 'EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE'] as const;
+    const TRANSIENT_CODES = ['EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE'] as const;
     const UNAVAILABLE_SENTENCE = 'A service this upload needs is temporarily unavailable. Retry the request shortly.';
     const diskError = (code: string) =>
       Object.assign(new Error(`${code}: operation failed, open '/srv/easyconvert/data/part-1.bin'`), { code, syscall: 'open' });
@@ -340,6 +340,179 @@ describe('parts of one upload sent at once are held together to the size it decl
     });
   });
 
+  describe('an error of the operating system that retrying does not change', () => {
+    const diskError = (code: string) =>
+      Object.assign(new Error(`${code}: operation failed, open '/srv/easyconvert/data/part-1.bin'`), { code, syscall: 'open' });
+    const SESSION_NOT_FOUND = 'Upload session not found or has expired.';
+    const STORAGE_ERROR = 'Upload storage error';
+
+    const act = (visitor: Record<string, string>, name: string, body: unknown) =>
+      multipartPost(
+        new NextRequest(`${BASE_URL}/api/storage/multipart?action=${name}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...visitor },
+          body: JSON.stringify(body),
+        })
+      );
+
+    it('is a fixed 500 for EIO, a failing device that a repeat does not mend, on the part action', async () => {
+      const visitor = newVisitor();
+      const { uploadId } = await openSession(visitor, PART_BYTES);
+      vi.spyOn(s3Storage, 'uploadPartStream').mockRejectedValueOnce(diskError('EIO'));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await multipartPost(partRequest(uploadId, 1, Buffer.alloc(MIB, 'x'), visitor));
+
+      expect(res.status).toBe(INTERNAL_SERVER_ERROR);
+      expect(res.headers.get('retry-after')).toBeNull();
+    });
+
+    it('is a missing session on complete and abort of /api/storage/multipart when the files of the session are gone', async () => {
+      const visitor = newVisitor();
+      const { uploadId } = await openSession(visitor, PART_BYTES);
+      const { etag } = await (await multipartPost(partRequest(uploadId, 1, Buffer.alloc(PART_BYTES, 'x'), visitor))).json();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => {
+        throw diskError('ENOENT');
+      });
+      vi.spyOn(s3Storage, 'abortMultipartUpload').mockImplementationOnce(() => {
+        throw diskError('ENOENT');
+      });
+
+      const completed = await act(visitor, 'complete', { uploadId, parts: [{ partNumber: 1, etag }] });
+      const aborted = await act(visitor, 'abort', { uploadId });
+
+      expect(completed.status).toBe(NOT_FOUND);
+      expect((await completed.json()).detail).toBe(SESSION_NOT_FOUND);
+      expect(aborted.status).toBe(NOT_FOUND);
+      expect((await aborted.json()).detail).toBe(SESSION_NOT_FOUND);
+    });
+
+    it('is a fixed 500 on initiate, because no session is involved and a missing directory is the host failing', async () => {
+      const visitor = newVisitor();
+      vi.spyOn(s3Storage, 'initiateMultipartUpload').mockImplementationOnce(() => {
+        throw diskError('ENOENT');
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await act(visitor, 'initiate', { filename: 'a.csv', totalSize: MIB });
+      const body = await res.json();
+
+      expect(res.status).toBe(INTERNAL_SERVER_ERROR);
+      expect(body.detail).toBe(STORAGE_ERROR);
+      expect(JSON.stringify(body)).not.toContain('/srv/easyconvert');
+    });
+
+    it('is a fixed 500 on discard and on presign', async () => {
+      const visitor = newVisitor();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.spyOn(s3Storage, 'stat').mockImplementationOnce(() => {
+        throw diskError('ENOENT');
+      });
+
+      const discarded = await act(visitor, 'discard', { key: 'uploads/1_a.csv' });
+
+      expect(discarded.status).toBe(INTERNAL_SERVER_ERROR);
+      expect((await discarded.json()).detail).toBe(STORAGE_ERROR);
+
+      vi.spyOn(s3Storage, 'getUploadSession').mockImplementationOnce(() => {
+        throw diskError('ENOENT');
+      });
+      const presigned = await act(visitor, 'presign', { type: 'upload', key: 'uploads/1_a.csv', uploadId: 'an-upload-id', partNumber: 1 });
+
+      expect(presigned.status).toBe(INTERNAL_SERVER_ERROR);
+      expect((await presigned.json()).detail).toBe(STORAGE_ERROR);
+    });
+
+    it('is a fixed 500 on initiate of /api/v1/uploads', async () => {
+      const email = `v1init_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@v1init.test`;
+      const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'v1init', tier: 'free' }));
+      vi.spyOn(localFsStorage, 'createMultipart').mockRejectedValueOnce(diskError('ENOENT'));
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await v1UploadsPost(
+        new NextRequest(`${BASE_URL}/api/v1/uploads?action=initiate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Cookie: `easyconvert_session=${createSessionToken(user)}` },
+          body: JSON.stringify({ filename: 'a.csv', totalSize: MIB }),
+        }),
+        { params: Promise.resolve({ id: undefined }) }
+      );
+
+      expect(res.status).toBe(INTERNAL_SERVER_ERROR);
+      expect((await res.json()).detail).toBe(STORAGE_ERROR);
+    });
+  });
+
+  describe('a session that does not exist', () => {
+    const SESSION_NOT_FOUND = 'Upload session not found or has expired.';
+    const UNKNOWN_SESSION = 'no-such-upload-id';
+
+    it('is answered with one sentence by chunk, complete and abort of /api/storage/multipart, and by the part of /api/v1/uploads', async () => {
+      const visitor = newVisitor();
+      const act = (name: string) =>
+        multipartPost(
+          new NextRequest(`${BASE_URL}/api/storage/multipart?action=${name}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...visitor },
+            body: JSON.stringify({ uploadId: UNKNOWN_SESSION, parts: [] }),
+          })
+        );
+      const email = `nosession_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@nosession.test`;
+      const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'nosession', tier: 'free' }));
+      const v1Part = await v1UploadsPost(
+        new NextRequest(`${BASE_URL}/api/v1/uploads?action=part&uploadId=${UNKNOWN_SESSION}&partNumber=1`, {
+          method: 'POST',
+          headers: { Cookie: `easyconvert_session=${createSessionToken(user)}` },
+          body: new Uint8Array(Buffer.alloc(8, 'w')),
+        }),
+        { params: Promise.resolve({ id: undefined }) }
+      );
+
+      const answers = [
+        await multipartPost(partRequest(UNKNOWN_SESSION, 1, Buffer.alloc(8, 'x'), visitor)),
+        await act('complete'),
+        await act('abort'),
+        v1Part,
+      ];
+
+      for (const res of answers) {
+        expect(res.status).toBe(NOT_FOUND);
+        expect((await res.json()).detail).toBe(SESSION_NOT_FOUND);
+      }
+    });
+  });
+
+  describe('a failure of /api/v1/uploads outside the write of a part', () => {
+    it('keeps the answer it gave before parts were counted: 400 with the message, while a part that could not be written is 503', async () => {
+      const email = `v1part_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@v1part.test`;
+      const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'v1part', tier: 'free' }));
+      const session = await localFsStorage.createMultipart(`uploads/v1part-${Date.now()}.csv`, undefined, { ownerUserId: user.id, totalSize: PART_BYTES });
+      cleanups.push(() => {
+        void localFsStorage.abortMultipart(session.key, session.uploadId);
+      });
+      const send = () =>
+        v1UploadsPost(
+          new NextRequest(`${BASE_URL}/api/v1/uploads?action=part&uploadId=${session.uploadId}&partNumber=1`, {
+            method: 'POST',
+            headers: { Cookie: `easyconvert_session=${createSessionToken(user)}` },
+            body: new Uint8Array(Buffer.alloc(8, 'w')),
+          }),
+          { params: Promise.resolve({ id: undefined }) }
+        );
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.spyOn(localFsStorage, 'getMultipartSession').mockRejectedValueOnce(new Error('session table unreadable'));
+
+      const lookupFailed = await send();
+
+      expect(lookupFailed.status).toBe(400);
+      expect((await lookupFailed.json()).detail).toBe('session table unreadable');
+
+      vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValueOnce(new Error('disk went away'));
+      expect((await send()).status).toBe(SERVICE_UNAVAILABLE);
+    });
+  });
+
   it('holds the parts of the signed part route to the declared size the same way', async () => {
     const init = await s3Storage.initiateMultipartUpload('b.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
     cleanups.push(async () => {
@@ -367,9 +540,9 @@ describe('the store sums the stored parts again when it commits one', () => {
     cleanups.push(async () => {
       await s3Storage.abortMultipartUpload(init.uploadId);
     });
-    await s3Storage.uploadPartStream(init.uploadId, 1, Readable.from([Buffer.alloc(PART_BYTES, 'a')]), PART_BYTES, PART_BYTES, 0);
+    await s3Storage.uploadPartStream(init.uploadId, 1, Readable.from([Buffer.alloc(PART_BYTES, 'a')]), PART_BYTES);
 
-    const late = s3Storage.uploadPartStream(init.uploadId, 2, Readable.from([Buffer.alloc(MIB, 'b')]), PART_BYTES, PART_BYTES, 0);
+    const late = s3Storage.uploadPartStream(init.uploadId, 2, Readable.from([Buffer.alloc(MIB, 'b')]), PART_BYTES);
 
     await expect(late).rejects.toMatchObject({ statusCode: PAYLOAD_TOO_LARGE });
     expect(await storedBytes(init.uploadId)).toBe(PART_BYTES);

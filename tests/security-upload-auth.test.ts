@@ -4,7 +4,8 @@ import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { resolveObjectOwnership, mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '../src/lib/api-keys/owner-access';
+import { resolveObjectOwnership, mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { UPLOAD_SESSION_NOT_FOUND } from '../src/lib/api/storage-error-response';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
@@ -98,7 +99,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const bobChunkRes = await multipartPost(bobChunkReq);
     expect(bobChunkRes.status).toBe(404);
     const bobJson = await bobChunkRes.json();
-    expect(bobJson.detail).toBe(STORAGE_OBJECT_NOT_FOUND);
+    expect(bobJson.detail).toBe(UPLOAD_SESSION_NOT_FOUND);
 
     // Bob attempts to complete Alice's upload
     const bobCompleteReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
@@ -108,7 +109,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     });
     const bobCompleteRes = await multipartPost(bobCompleteReq);
     expect(bobCompleteRes.status).toBe(404);
-    expect((await bobCompleteRes.json()).detail).toBe(STORAGE_OBJECT_NOT_FOUND);
+    expect((await bobCompleteRes.json()).detail).toBe(UPLOAD_SESSION_NOT_FOUND);
 
     // Clean up
     await s3Storage.abortMultipartUpload(uploadId);
@@ -267,7 +268,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const largeSession = await largeInitRes.json();
 
     // The session already holds a part that leaves 10 bytes below the declared size; a part of 11 bytes passes it.
-    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e1', size: 90 * 1024 * 1024 - 10 }]);
+    vi.spyOn(s3Storage, 'getUploadedParts').mockResolvedValue([{ partNumber: 1, etag: 'e1', size: 90 * 1024 * 1024 - 10 }]);
     const part2Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
       method: 'POST',
       headers: sessionHeaders(alice, {

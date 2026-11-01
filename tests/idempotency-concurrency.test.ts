@@ -220,9 +220,9 @@ describe.each([
     const idempotencyKey = `retry-5xx-${Date.now()}-${Math.random().toString(36).substring(7)}`;
     const scopedKey = buildScopedKey(testUser.id, '/api/v1/jobs', idempotencyKey);
 
-    // Simulate lock acquired and deleted on 5xx failure
-    await store.acquire(scopedKey, 'fp-temp', 60000);
-    await store.delete(scopedKey);
+    // Simulate lock acquired and released on 5xx failure
+    await store.acquire(scopedKey, 'fp-temp', 60000, 'run-5xx');
+    await store.releaseLock(scopedKey, 'run-5xx');
 
     // Client retries with same key
     const retryReq = createJobRequest(idempotencyKey);
