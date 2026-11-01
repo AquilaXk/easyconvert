@@ -11,6 +11,7 @@ import { POST as directPost } from '../src/app/api/v1/uploads/direct/route';
 import { PUT as directPartPut } from '../src/app/api/v1/uploads/direct/part/route';
 import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
 import { S3ObjectStorageService, s3Storage } from '../src/lib/storage/s3-storage';
+import { LocalFsStorage } from '../src/lib/storage/local-fs-storage';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
@@ -66,8 +67,8 @@ async function storedParts(): Promise<{ uploadId: string; key: string; receipts:
   const sizes = [PART_BYTES, 1024];
   const opened = await multipartPost(multipart('initiate', { filename: 'a.csv', totalSize: sizes[0] + sizes[1], partSize: PART_BYTES }));
   const { uploadId, key } = await opened.json();
-  cleanups.push(() => {
-    s3Storage.abortMultipartUpload(uploadId);
+  cleanups.push(async () => {
+    await s3Storage.abortMultipartUpload(uploadId);
     s3Storage.deleteObject(key);
   });
   const receipts = [];
@@ -90,14 +91,14 @@ describe('complete assembles only parts numbered from 1 without gaps, holding ex
 
     expect(res.status).toBe(400);
     expect((await res.json()).detail).toMatch(/numbered 1, 2, 3|bytes, but the upload declared/);
-    expect(s3Storage.getUploadSession(uploadId)).toBeDefined();
+    expect(await s3Storage.getUploadSession(uploadId)).toBeDefined();
   });
 
   it('refuses parts that hold less than the declared size, listed or not', async () => {
     const opened = await multipartPost(multipart('initiate', { filename: 'a.csv', totalSize: 4096 }));
     const { uploadId } = await opened.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
     const stored = await multipartPost(part(uploadId, 1, bytesOf(1000, 'b')));
     const { etag } = await stored.json();
@@ -112,14 +113,14 @@ describe('complete assembles only parts numbered from 1 without gaps, holding ex
   it('refuses a part that would carry the stored bytes past the declared size', async () => {
     const opened = await multipartPost(multipart('initiate', { filename: 'a.csv', totalSize: 1000 }));
     const { uploadId } = await opened.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
 
     const res = await multipartPost(part(uploadId, 1, bytesOf(1001, 'c')));
 
     expect(res.status).toBe(413);
-    expect(s3Storage.getUploadedParts(uploadId)).toEqual([]);
+    expect(await s3Storage.getUploadedParts(uploadId)).toEqual([]);
   });
 
   it('completes parts 1 and 2 in order at exactly the declared size', async () => {
@@ -148,13 +149,15 @@ describe('two writers of one part never share a temporary file', () => {
   }
 
   it('keeps the stored part equal to the etag it reports and leaves no temporary file', async () => {
-    const baseUploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parts-race-'));
-    const storage = new S3ObjectStorageService({ baseUploadDir, signingSecret: 'race-secret' });
+    const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parts-race-'));
+    const multipartStore = new LocalFsStorage({ storageDir, signingSecret: 'race-secret' });
+    const storage = new S3ObjectStorageService({ multipart: multipartStore, signingSecret: 'race-secret' });
     cleanups.push(() => {
       storage.stopGc();
-      fs.rmSync(baseUploadDir, { recursive: true, force: true });
+      multipartStore.stopGc();
+      fs.rmSync(storageDir, { recursive: true, force: true });
     });
-    const { uploadId } = storage.initiateMultipartUpload('race.bin', 'application/octet-stream', 2 * MIB, 'user_race', PART_BYTES);
+    const { uploadId } = await storage.initiateMultipartUpload('race.bin', 'application/octet-stream', 2 * MIB, 'user_race', PART_BYTES);
 
     const [first, second] = await Promise.allSettled([
       storage.uploadPartStream(uploadId, 1, slowStream('x', 32, 32 * 1024)),
@@ -163,14 +166,14 @@ describe('two writers of one part never share a temporary file', () => {
     expect(first.status).toBe('fulfilled');
     expect(second.status).toBe('fulfilled');
 
-    const [stored] = storage.getUploadedParts(uploadId) ?? [];
-    const sessionDir = path.join(baseUploadDir, uploadId);
+    const [stored] = await storage.getUploadedParts(uploadId) ?? [];
+    const sessionDir = path.join(storageDir, '.parts', uploadId);
     const onDisk = fs.readFileSync(path.join(sessionDir, 'part-1.bin'));
     expect(onDisk.length).toBe(MIB);
     expect(new Set(onDisk).size).toBe(1);
-    expect(stored.etag).toBe(`"${crypto.createHash('sha256').update(onDisk).digest('hex').slice(0, 32)}"`);
+    expect(stored.etag).toBe(`"${crypto.createHash('sha256').update(onDisk).digest('hex')}"`);
     expect(fs.readdirSync(sessionDir).filter((name) => name.includes('.tmp'))).toEqual([]);
-    storage.abortMultipartUpload(uploadId);
+    await storage.abortMultipartUpload(uploadId);
   });
 });
 
@@ -182,8 +185,8 @@ describe('every part route refuses a malformed or oversize Content-Length before
   ])('/api/storage/multipart answers %s', async (_label, length, status) => {
     const opened = await multipartPost(multipart('initiate', { filename: 'a.csv', totalSize: 200 * MIB }));
     const { uploadId } = await opened.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
 
     const res = await multipartPost(part(uploadId, 1, bytesOf(10, 'd'), { 'content-length': length }));

@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { POST as directUploadRoute } from '../src/app/api/v1/uploads/direct/route';
@@ -117,6 +116,18 @@ describe('the disk measurement', () => {
     expect(await diskUsageProbe([storageDir, tempDir])()).toBe(92);
   });
 
+  it('leaves out the bytes of uploads in parts and of running jobs, which deleting results cannot free', async () => {
+    const MIB = 1024 * 1024;
+    const partsDir = path.join(storageDir, '.parts', 'up_1700000000000_0123456789abcdef01234567');
+    fs.mkdirSync(partsDir, { recursive: true });
+    fs.writeFileSync(path.join(partsDir, 'part-1.bin'), Buffer.alloc(40 * MIB, 1));
+    vi.spyOn(fs.promises, 'statfs').mockResolvedValue({ blocks: 100, bfree: 10, bavail: 10, bsize: MIB } as unknown as fs.StatsFs);
+
+    const used = await diskUsageProbe([storageDir], [path.join(storageDir, '.parts'), path.join(storageDir, '.staging')])();
+
+    expect(used).toBeCloseTo((50 * 100) / 60, 0);
+  });
+
   it('measures a disk once when both directories are on it', async () => {
     const statfs = fakeStatfs(() => 70);
     expect(await diskUsageProbe([storageDir, tempDir])()).toBe(70);
@@ -179,6 +190,27 @@ describe('early deletion when the disk runs full', () => {
     expect(disk.deleted).toEqual([earlierDelivery, laterDelivery, oldestUndelivered]);
     expect(disk.used).toBe(78);
     expect(storageProvider.getObject(newestUndelivered)).toBeDefined();
+  });
+
+  it('does not delete results while the use over 85% is uploads in parts, which deleting results cannot free', async () => {
+    const MIB = 1024 * 1024;
+    const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-capacity-storage-'));
+    try {
+      vi.stubEnv('EASYCONVERT_STORAGE_DIR', storageDir);
+      const partsDir = path.join(storageDir, '.parts', 'up_1700000000000_0123456789abcdef01234567');
+      fs.mkdirSync(partsDir, { recursive: true });
+      fs.writeFileSync(path.join(partsDir, 'part-1.bin'), Buffer.alloc(40 * MIB, 1));
+      vi.spyOn(fs.promises, 'statfs').mockResolvedValue({ blocks: 100, bfree: 10, bavail: 10, bsize: MIB } as unknown as fs.StatsFs);
+      const user = await createUser('parts');
+      const now = Date.now();
+      await storeResult(user, 'delivered', now - 30 * MINUTE_MS, now - 20 * MINUTE_MS);
+      const deleteObject = vi.spyOn(storageProvider, 'deleteObject');
+
+      expect(await evictForCapacity(storageProvider, now)).toBe(0);
+      expect(deleteObject).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(storageDir, { recursive: true, force: true });
+    }
   });
 
   it('does nothing at or below 85%', async () => {
@@ -568,7 +600,8 @@ describe('early deletion when the disk runs full', () => {
 
     async function storeInWorker(user: User, label: string, at: number): Promise<string> {
       const key = `conversions/${user.id}/${label}_${crypto.randomBytes(4).toString('hex')}.bin`;
-      await savedByWorker.saveStream(key, Readable.from([BODY]), { filename: `${label}.bin`, mimeType: MIME_TYPE });
+      const now = Date.now();
+      savedByWorker.set(key, { key, filename: `${label}.bin`, mimeType: MIME_TYPE, buffer: BODY, size: BODY.length, etag: '"e"', uploadedAt: now, expiresAt: now + 24 * 60 * MINUTE_MS });
       storedKeys.push(key);
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(at);

@@ -114,7 +114,7 @@ function toRendererError(err: unknown, src: string, tempDir: string): unknown {
 }
 
 function rejected(src: string, stderr: string, tempDir: string): ConversionFailedError {
-  const detail = stderr.trim().slice(0, MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+  const detail = stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
   return new ConversionFailedError(`GhostXPS could not draw the .${src} file${detail ? `: ${detail}` : ''}`);
 }
 
@@ -185,7 +185,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {
       const pdfPath = await writePdf(job, entries, tempDir, { maxBytes: MAX_OUTPUT_BYTES, pageCount });
-      const persistedPath = handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
+      const persistedPath = await handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-xps', Date.now() - startTime);
     });
   }

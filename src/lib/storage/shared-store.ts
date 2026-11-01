@@ -2,53 +2,131 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { StoredObject } from './oci-storage';
+import type { StoredObjectMetadata as ObjectRecord } from './object-storage';
 import {
   ObjectStat,
   PayloadTooLargeForMemoryError,
   StoredObjectMissingError,
   getMaxInMemoryBytes,
 } from './errors';
+import { resolveLocalStorageDir } from './storage-config';
+import {
+  isTempFileName,
+  LEFTOVER_AGE_MS,
+  removeLeftover,
+  stageBeside,
+  syncDirectory,
+  writeFileAtomicSync,
+  writeFlushedTemp,
+} from './temp-file';
 
-/** Ends the name of the file `extendExpiry` writes before it renames it over the expiry file. */
-const META_TEMP_SUFFIX = '.tmp';
-/** Marks in the names of the files that are written beside an object and renamed onto it (`uniqueTempPath` in `temp-file.ts`). */
-const OBJECT_TEMP_MARKS = ['.bin.tmp.', '.bin.comb.'];
-/**
- * How long since its last write a temporary file must be before a sweep removes it: an hour, as `LEFTOVER_AGE_MS` in
- * `retention-ledger.ts` is. A stream save whose source is quiet, or the flush of a large copy, writes nothing for minutes.
- */
-const STALE_TEMP_FILE_MS = 60 * 60 * 1000;
+/** The name of the bytes of a stored object: the SHA-256 of its key, as `objectPathsFor` gives it. */
+const OBJECT_BYTES_NAME = /^([0-9a-f]{64})\.bin$/;
 
-function isTempFileName(name: string): boolean {
-  if (name.includes('.meta.json.') && name.endsWith(META_TEMP_SUFFIX)) return true;
-  return OBJECT_TEMP_MARKS.some((mark) => name.includes(mark));
+/** What tells one save of a key from another: the ETag of its bytes and the time it was stored. */
+export type SavedVersion = Pick<ObjectRecord, 'etag' | 'uploadedAt'>;
+
+/** The two files of a stored object in the storage directory: its record and its bytes. */
+export interface ObjectPaths {
+  metaPath: string;
+  binPath: string;
+}
+
+/** Where the record and the bytes of `key` live in `storageDir`. */
+export function objectPathsFor(storageDir: string, key: string): ObjectPaths {
+  const hash = crypto.createHash('sha256').update(key).digest('hex');
+  return {
+    metaPath: path.join(storageDir, `${hash}.meta.json`),
+    binPath: path.join(storageDir, `${hash}.bin`),
+  };
+}
+
+function recordOf(value: ObjectRecord): ObjectRecord {
+  const { key, filename, mimeType, size, etag, uploadedAt, expiresAt, metadata } = value;
+  return { key, filename, mimeType, size, etag, uploadedAt, expiresAt, metadata };
+}
+
+/** Writes the record of an object whose bytes are in place; when it cannot be written, the bytes are removed and the error is thrown. */
+function writeRecord(paths: ObjectPaths, record: ObjectRecord): void {
+  try {
+    writeFileAtomicSync(paths.metaPath, JSON.stringify(record));
+  } catch (error) {
+    fs.rmSync(paths.binPath, { force: true });
+    throw error;
+  }
+}
+
+/** Removes the record and the bytes a save of the key left before, except the file that is being stored. */
+function dropPreviousSave(paths: ObjectPaths, keep?: string): void {
+  fs.rmSync(paths.metaPath, { force: true });
+  if (keep === undefined || path.resolve(keep) !== paths.binPath) fs.rmSync(paths.binPath, { force: true });
 }
 
 /**
- * Enterprise Shared Object Store with Disk Spool Persistence.
- * Shared across S3, OCI, and unified storage adapters.
- * Guarantees zero split-brain between asynchronous job submission (Web API container)
- * and background container workers (easyconvert-oci-worker) by syncing to a shared disk volume.
+ * Stores the regular file at `sourcePath` as the object `paths` names, in the order an object store server stores a part:
+ * the bytes are brought beside the object and flushed, and the record is written to a flushed temporary file; then, with
+ * no await between them, the earlier record is removed, the bytes are renamed into place and the record onto its name.
+ * At every point a reader finds the earlier object, no object, or this one, and never these bytes under an earlier
+ * record. A `signal` that aborts before the renames stores nothing and leaves an earlier save of the key as it was.
+ */
+export async function commitObjectFile(paths: ObjectPaths, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const inPlace = path.resolve(sourcePath) === paths.binPath;
+  const staged = inPlace ? paths.binPath : await stageBeside(sourcePath, paths.binPath, signal);
+  let recordTemp: string | undefined;
+  // What to remove when the save fails: the staged bytes, then the bytes without a record once they are in place.
+  let strayBytes = inPlace ? undefined : staged;
+  try {
+    recordTemp = await writeFlushedTemp(paths.metaPath, JSON.stringify(recordOf(record)));
+    signal?.throwIfAborted();
+    // No await from here to the record, so another save of the key in this process cannot slip in between.
+    fs.rmSync(paths.metaPath, { force: true });
+    fs.renameSync(staged, paths.binPath);
+    strayBytes = paths.binPath;
+    fs.renameSync(recordTemp, paths.metaPath);
+  } catch (error) {
+    await Promise.all([strayBytes, recordTemp].map((stray) => (stray === undefined ? undefined : fs.promises.rm(stray, { force: true }))));
+    throw error;
+  }
+  await syncDirectory(path.dirname(paths.binPath));
+}
+
+/** The object of `record` whose bytes are the file `binPath`, read into memory only when asked and within the in-memory limit. */
+export function fileBackedObject(record: ObjectRecord, binPath: string): StoredObject {
+  let cachedBuffer: Buffer | null = null;
+  return {
+    ...recordOf(record),
+    filePath: binPath,
+    get buffer(): Buffer {
+      if (record.size > getMaxInMemoryBytes()) {
+        throw new PayloadTooLargeForMemoryError(undefined, { size: record.size, limit: getMaxInMemoryBytes() });
+      }
+      if (cachedBuffer) return cachedBuffer;
+      if (fs.existsSync(binPath)) {
+        cachedBuffer = fs.readFileSync(binPath);
+        return cachedBuffer;
+      }
+      throw new StoredObjectMissingError(undefined, { key: record.key, filePath: binPath });
+    },
+    set buffer(b: Buffer) {
+      cachedBuffer = b;
+    },
+  };
+}
+
+/**
+ * The objects of the local driver, in the storage directory that the web process and the workers share: what one
+ * process stores, every other reads. The map holds the objects this process saw, the disk is what every process
+ * agrees on.
  */
 export class SharedObjectStore extends Map<string, StoredObject> {
   private readonly storageDir: string;
 
   constructor() {
     super();
-    this.storageDir =
-      process.env.EASYCONVERT_STORAGE_DIR || path.resolve(process.cwd(), '.easyconvert/storage');
     // The directory is created by the first write, so importing this module (which happens under
     // an object-store driver too) never touches the disk.
-  }
-
-  private ensureDirectory(): void {
-    try {
-      if (!fs.existsSync(this.storageDir)) {
-        fs.mkdirSync(this.storageDir, { recursive: true });
-      }
-    } catch {
-      // In read-only or restricted environments, gracefully proceed
-    }
+    this.storageDir = resolveLocalStorageDir();
   }
 
   public getStorageDir(): string {
@@ -60,66 +138,51 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     return this.getPathsForKey(key).binPath;
   }
 
-  private getPathsForKey(key: string): { metaPath: string; binPath: string } {
-    const hash = crypto.createHash('sha256').update(key).digest('hex');
-    return {
-      metaPath: path.join(this.storageDir, `${hash}.meta.json`),
-      binPath: path.join(this.storageDir, `${hash}.bin`),
-    };
+  private getPathsForKey(key: string): ObjectPaths {
+    return objectPathsFor(this.storageDir, key);
   }
 
+  /**
+   * Stores `value`: its buffer, or, when it names a file, the file that is already at `objectPath(key)`. A file
+   * anywhere else is out of the other processes' reach, so it is refused. Throws when the bytes or the record cannot be
+   * written; the bytes of a record that could not be written are removed.
+   */
   public override set(key: string, value: StoredObject): this {
-    super.set(key, value);
-    this.ensureDirectory();
-
-    const { metaPath, binPath } = this.getPathsForKey(key);
-    try {
-      const meta = {
-        key: value.key,
-        filename: value.filename,
-        mimeType: value.mimeType,
-        size: value.size,
-        etag: value.etag,
-        uploadedAt: value.uploadedAt,
-        expiresAt: value.expiresAt,
-        filePath: value.filePath,
-        metadata: value.metadata,
-      };
-      fs.writeFileSync(metaPath, JSON.stringify(meta), 'utf-8');
-
-      if (value.filePath && fs.existsSync(value.filePath)) {
-        if (value.filePath !== binPath && value.size <= 64 * 1024 * 1024) {
-          try {
-            fs.copyFileSync(value.filePath, binPath);
-          } catch {}
-        }
-      } else {
-        try {
-          if (value.size <= getMaxInMemoryBytes() && value.buffer && Buffer.isBuffer(value.buffer)) {
-            fs.writeFileSync(binPath, value.buffer);
-          }
-        } catch {
-          // ignore
-        }
-      }
-    } catch {
-      // Disk write failure must not crash in-memory fallback
+    const paths = this.getPathsForKey(key);
+    if (value.filePath !== undefined && path.resolve(value.filePath) !== paths.binPath) {
+      throw new Error(
+        `The bytes of "${key}" are at "${value.filePath}", which only this process reads; store them at objectPath(key) first`
+      );
     }
-
+    fs.mkdirSync(this.storageDir, { recursive: true });
+    if (value.filePath === undefined) {
+      dropPreviousSave(paths);
+      writeFileAtomicSync(paths.binPath, value.buffer);
+    }
+    writeRecord(paths, recordOf(value));
+    super.set(key, value);
     return this;
+  }
+
+  /** Stores the file at `sourcePath` as `key`, moving it into the storage directory (see `commitObjectFile`). */
+  public async storeFile(key: string, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<StoredObject> {
+    const paths = this.getPathsForKey(key);
+    await commitObjectFile(paths, sourcePath, record, signal);
+    const stored = fileBackedObject(record, paths.binPath);
+    super.set(key, stored);
+    return stored;
   }
 
   public override get(key: string): StoredObject | undefined {
     const { metaPath, binPath } = this.getPathsForKey(key);
 
-    // 1. Check in-memory map
     const inMem = super.get(key);
     if (inMem) {
       if (inMem.expiresAt && Date.now() > inMem.expiresAt && this.renewedExpiry(inMem) < Date.now()) {
         this.delete(key);
         return undefined;
       }
-      // Invalidate in-memory cache if file was deleted on disk by another container/worker
+      // Another process may have deleted it.
       if (!fs.existsSync(metaPath)) {
         super.delete(key);
         return undefined;
@@ -127,61 +190,19 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       return inMem;
     }
 
-    // 2. Check shared disk storage (cross-process / multi-container sync)
-    if (!fs.existsSync(metaPath)) {
-      return undefined;
-    }
-
+    let record: ObjectRecord;
     try {
-      const rawMeta = fs.readFileSync(metaPath, 'utf-8');
-      const meta = JSON.parse(rawMeta);
-
-      if (meta.expiresAt && Date.now() > meta.expiresAt) {
-        this.delete(key);
-        return undefined;
-      }
-
-      let resolvedPath: string | undefined;
-      if (fs.existsSync(binPath)) {
-        resolvedPath = binPath;
-      } else if (meta.filePath && fs.existsSync(meta.filePath)) {
-        resolvedPath = meta.filePath;
-      }
-
-      const reconstructed: StoredObject = {
-        key: meta.key,
-        filename: meta.filename,
-        mimeType: meta.mimeType,
-        size: meta.size,
-        etag: meta.etag,
-        uploadedAt: meta.uploadedAt,
-        expiresAt: meta.expiresAt,
-        filePath: resolvedPath,
-        metadata: meta.metadata,
-        get buffer(): Buffer {
-          if (meta.size > getMaxInMemoryBytes()) {
-            throw new PayloadTooLargeForMemoryError(undefined, {
-              size: meta.size,
-              limit: getMaxInMemoryBytes(),
-            });
-          }
-          if (resolvedPath && fs.existsSync(resolvedPath)) {
-            return fs.readFileSync(resolvedPath);
-          }
-          throw new StoredObjectMissingError(undefined, { key: meta.key, filePath: resolvedPath || binPath });
-        },
-        set buffer(b: Buffer) {
-          try {
-            fs.writeFileSync(binPath, b);
-          } catch {}
-        },
-      };
-
-      super.set(key, reconstructed);
-      return reconstructed;
+      record = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as ObjectRecord;
     } catch {
       return undefined;
     }
+    if (record.expiresAt && Date.now() > record.expiresAt) {
+      this.delete(key);
+      return undefined;
+    }
+    const reconstructed = fileBackedObject(record, binPath);
+    super.set(key, reconstructed);
+    return reconstructed;
   }
 
   /** The expiry written next to the object on the shared disk, which is what every process agrees on; undefined without it. */
@@ -207,8 +228,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   /**
    * Raises the expiry of the object under `key` to `expiresAt`, in this process and in the file every process reads;
    * an expiry that is later already stays. Returns false when there is no such object. Throws when the file could not
-   * be written (a full disk, say), after removing its temporary file: then only this process keeps the object longer,
-   * and the caller must be told.
+   * be written (a full disk, say): then only this process keeps the object longer, and the caller must be told.
    */
   public extendExpiry(key: string, expiresAt: number): boolean {
     const cached = super.get(key);
@@ -221,46 +241,56 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       return cached !== undefined;
     }
     if (typeof meta.expiresAt === 'number' && meta.expiresAt >= expiresAt) return true;
-    const tempPath = `${metaPath}.${crypto.randomUUID()}${META_TEMP_SUFFIX}`;
-    try {
-      fs.writeFileSync(tempPath, JSON.stringify({ ...meta, expiresAt }), 'utf-8');
-      fs.renameSync(tempPath, metaPath);
-      return true;
-    } catch (error) {
-      try {
-        fs.rmSync(tempPath, { force: true });
-      } catch {
-        // the sweep of stale temporary files removes it
-      }
-      throw error;
-    }
+    writeFileAtomicSync(metaPath, JSON.stringify({ ...meta, expiresAt }));
+    return true;
   }
 
   /**
-   * Removes the temporary files an interrupted `extendExpiry`, stream save, assembly or copy left next to the objects,
-   * once nothing was written to them for STALE_TEMP_FILE_MS. A stream save or an assembly moves the modification time with
-   * every write, and a copy touches its file just before it flushes it, so a writer that is alive keeps its file younger.
+   * Removes what an interrupted save, assembly, copy or record update left next to the objects once nothing was written
+   * to it for LEFTOVER_AGE_MS: its temporary files, and bytes whose record was never written (a save stopped between its
+   * two renames). A writer that is alive writes or touches its file more often, and bytes are renamed into place with the
+   * time of their save, just before their record.
    */
-  public sweepStaleTempFiles(now: number = Date.now()): number {
-    let removed = 0;
+  public async sweepStaleTempFiles(now: number = Date.now()): Promise<number> {
     let names: string[];
     try {
-      names = fs.readdirSync(this.storageDir);
+      names = await fs.promises.readdir(this.storageDir);
     } catch {
       return 0;
     }
+    const present = new Set(names);
+    let removed = 0;
     for (const name of names) {
-      if (!isTempFileName(name)) continue;
+      const objectBytes = OBJECT_BYTES_NAME.exec(name);
+      const recordless = objectBytes !== null && !present.has(`${objectBytes[1]}.meta.json`);
+      if (!isTempFileName(name) && !recordless) continue;
       const filePath = path.join(this.storageDir, name);
+      let modifiedAt: number;
       try {
-        if (now - fs.statSync(filePath).mtimeMs < STALE_TEMP_FILE_MS) continue;
-        fs.rmSync(filePath, { force: true });
-        removed++;
+        modifiedAt = (await fs.promises.stat(filePath)).mtimeMs;
       } catch {
-        // gone already, or not ours to remove
+        continue;
       }
+      if (now - modifiedAt >= LEFTOVER_AGE_MS && (await removeLeftover(filePath))) removed++;
     }
     return removed;
+  }
+
+  /**
+   * Removes the object under `key` only while the record on disk is the save `written` describes, so a save that learns
+   * afterwards that it was aborted never removes what a later save of the key stored; the copy this process holds of
+   * another save is dropped, so the next read goes to the disk. No await between the read and the removal.
+   */
+  public deleteIfStoredBy(key: string, written: SavedVersion): boolean {
+    let onDisk: ObjectRecord;
+    try {
+      onDisk = JSON.parse(fs.readFileSync(this.getPathsForKey(key).metaPath, 'utf-8')) as ObjectRecord;
+    } catch {
+      return false;
+    }
+    if (onDisk.etag === written.etag && onDisk.uploadedAt === written.uploadedAt) return this.delete(key);
+    super.delete(key);
+    return false;
   }
 
   public stat(key: string): ObjectStat | null {
@@ -279,99 +309,15 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     return this.getStream(key, range);
   }
 
-  public async saveStream(
-    key: string,
-    stream: NodeJS.ReadableStream,
-    meta: { filename: string; mimeType: string; size?: number },
-    ttlMs: number = 24 * 60 * 60 * 1000
-  ): Promise<StoredObject> {
-    this.ensureDirectory();
-    const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempPath = `${binPath}.tmp.${crypto.randomUUID()}`;
-    const outFd = fs.openSync(tempPath, 'w');
-    const hasher = crypto.createHash('sha256');
-    let totalBytes = 0;
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        stream.on('data', (chunk: Buffer | string) => {
-          try {
-            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            fs.writeSync(outFd, buf, 0, buf.length, null);
-            hasher.update(buf);
-            totalBytes += buf.length;
-          } catch (err) {
-            reject(err);
-          }
-        });
-        stream.on('end', () => resolve());
-        stream.on('error', (err) => reject(err));
-      });
-      fs.fsyncSync(outFd);
-    } finally {
-      fs.closeSync(outFd);
-    }
-
-    fs.renameSync(tempPath, binPath);
-
-    const etag = `"${hasher.digest('hex').slice(0, 32)}"`;
-    const now = Date.now();
-    const storedMeta = {
-      key,
-      filename: meta.filename,
-      mimeType: meta.mimeType,
-      size: totalBytes,
-      etag,
-      uploadedAt: now,
-      expiresAt: now + ttlMs,
-    };
-    fs.writeFileSync(metaPath, JSON.stringify(storedMeta), 'utf-8');
-
-    let cachedBuffer: Buffer | null = null;
-    const stored: StoredObject = {
-      ...storedMeta,
-      filePath: binPath,
-      get buffer(): Buffer {
-        if (totalBytes > getMaxInMemoryBytes()) {
-          throw new PayloadTooLargeForMemoryError(undefined, {
-            size: totalBytes,
-            limit: getMaxInMemoryBytes(),
-          });
-        }
-        if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(binPath)) {
-          cachedBuffer = fs.readFileSync(binPath);
-          return cachedBuffer;
-        }
-        throw new StoredObjectMissingError(undefined, { key, filePath: binPath });
-      },
-    };
-
-    super.set(key, stored);
-    return stored;
-  }
-
   public getStream(key: string, range?: { start: number; end: number }): fs.ReadStream | null {
     const { metaPath, binPath } = this.getPathsForKey(key);
-    if (!fs.existsSync(metaPath)) {
-      return null;
-    }
     try {
-      const rawMeta = fs.readFileSync(metaPath, 'utf-8');
-      const meta = JSON.parse(rawMeta);
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as ObjectRecord;
       if (meta.expiresAt && Date.now() > meta.expiresAt) {
         this.delete(key);
         return null;
       }
-      let targetPath: string | undefined;
-      if (fs.existsSync(binPath)) {
-        targetPath = binPath;
-      } else if (meta.filePath && fs.existsSync(meta.filePath)) {
-        targetPath = meta.filePath;
-      }
-
-      if (!targetPath) return null;
-
+      if (!fs.existsSync(binPath)) return null;
       const streamOpts: { start?: number; end?: number; highWaterMark: number } = {
         highWaterMark: 64 * 1024,
       };
@@ -379,7 +325,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
         if (typeof range.start === 'number') streamOpts.start = range.start;
         if (typeof range.end === 'number') streamOpts.end = range.end;
       }
-      return fs.createReadStream(targetPath, streamOpts);
+      return fs.createReadStream(binPath, streamOpts);
     } catch {
       return null;
     }

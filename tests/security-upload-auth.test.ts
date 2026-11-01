@@ -4,7 +4,8 @@ import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { resolveObjectOwnership, mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '../src/lib/api-keys/owner-access';
+import { resolveObjectOwnership, mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { UPLOAD_SESSION_NOT_FOUND } from '../src/lib/api/storage-error-response';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
@@ -47,7 +48,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
       })
     );
     expect(initRes.status).toBe(200);
-    s3Storage.abortMultipartUpload((await initRes.json()).uploadId);
+    await s3Storage.abortMultipartUpload((await initRes.json()).uploadId);
 
     const chunkRes = await multipartPost(
       new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
@@ -98,7 +99,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const bobChunkRes = await multipartPost(bobChunkReq);
     expect(bobChunkRes.status).toBe(404);
     const bobJson = await bobChunkRes.json();
-    expect(bobJson.detail).toBe(STORAGE_OBJECT_NOT_FOUND);
+    expect(bobJson.detail).toBe(UPLOAD_SESSION_NOT_FOUND);
 
     // Bob attempts to complete Alice's upload
     const bobCompleteReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
@@ -108,10 +109,10 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     });
     const bobCompleteRes = await multipartPost(bobCompleteReq);
     expect(bobCompleteRes.status).toBe(404);
-    expect((await bobCompleteRes.json()).detail).toBe(STORAGE_OBJECT_NOT_FOUND);
+    expect((await bobCompleteRes.json()).detail).toBe(UPLOAD_SESSION_NOT_FOUND);
 
     // Clean up
-    s3Storage.abortMultipartUpload(uploadId);
+    await s3Storage.abortMultipartUpload(uploadId);
   });
 
   it('(c) rejects parts exceeding 64 MiB with 413, and rejects totalSize exceeding tier limit with 413', async () => {
@@ -164,7 +165,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(overPartJson.status).toBe(413);
     expect(overPartJson.detail).toContain('over the largest part of 64 MiB');
 
-    s3Storage.abortMultipartUpload(uploadId);
+    await s3Storage.abortMultipartUpload(uploadId);
   });
 
   it('(d) ensures normal multipart flow registers completed object in user namespace owned by user A', async () => {
@@ -199,7 +200,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const chunkRes = await multipartPost(chunkReq);
     expect(chunkRes.status).toBe(200);
     const { etag } = await chunkRes.json();
-    expect(etag).toMatch(/^"[a-f0-9]{32}"$/);
+    expect(etag).toMatch(/^"[a-f0-9]{64}"$/);
 
     // 3. Complete upload as Alice
     const completeReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
@@ -267,7 +268,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const largeSession = await largeInitRes.json();
 
     // The session already holds a part that leaves 10 bytes below the declared size; a part of 11 bytes passes it.
-    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e1', size: 90 * 1024 * 1024 - 10 }]);
+    vi.spyOn(s3Storage, 'getUploadedParts').mockResolvedValue([{ partNumber: 1, etag: 'e1', size: 90 * 1024 * 1024 - 10 }]);
     const part2Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
       method: 'POST',
       headers: sessionHeaders(alice, {
@@ -282,7 +283,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const part2Json = await part2Res.json();
     expect(part2Json.detail).toBe('This part would bring the upload to 94371841 bytes, past the 94371840 bytes it declared.');
 
-    s3Storage.abortMultipartUpload(largeSession.uploadId);
+    await s3Storage.abortMultipartUpload(largeSession.uploadId);
   });
 
   it('(f) validates parts on complete: rejects empty parts, missing parts, and mismatched ETags with 400', async () => {
@@ -348,13 +349,9 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect((await wrongEtagRes.json()).detail).toContain('ETag mismatch');
 
     // 4. Direct low-level s3Storage validation asserts fail-closed
-    expect(() => s3Storage.completeMultipartUpload(uploadId, [])).toThrow(/zero parts/i);
-    expect(() =>
-      s3Storage.completeMultipartUpload(uploadId, [{ partNumber: 99 }])
-    ).toThrow(/Missing part number 99/i);
-    expect(() =>
-      s3Storage.completeMultipartUpload(uploadId, [{ partNumber: 1, etag: '"bad"' }])
-    ).toThrow(/ETag mismatch/i);
+    await expect(s3Storage.completeMultipartUpload(uploadId, [])).rejects.toThrow(/zero parts/i);
+    await expect(s3Storage.completeMultipartUpload(uploadId, [{ partNumber: 99 }])).rejects.toThrow(/Missing part number 99/i);
+    await expect(s3Storage.completeMultipartUpload(uploadId, [{ partNumber: 1, etag: '"bad"' }])).rejects.toThrow(/ETag mismatch/i);
 
     // 5. Valid complete with correct parts succeeds
     const validCompleteReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {

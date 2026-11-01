@@ -236,6 +236,14 @@ describe('jobDeadlineSettings', () => {
     expect(() => jobDeadlineSettings({ JOB_DEADLINE_BASE_MS_FREE: '700000' })).toThrow(/JOB_DEADLINE_BASE_MS_FREE/);
   });
 
+  it.each(['JOB_DEADLINE_MAX_MS_FREE', 'JOB_DEADLINE_MAX_MS_PRO', 'JOB_DEADLINE_MAX_MS_ENTERPRISE', 'JOB_DEADLINE_BASE_MS_ENTERPRISE'])(
+    'refuses %s above one hour, the longest a job directory is kept before the staging sweep takes it',
+    (name) => {
+      expect(() => jobDeadlineSettings({ [name]: '3600001' })).toThrow(new RegExp(name));
+      expect(jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_FREE: '3600000', JOB_DEADLINE_MAX_MS_PRO: '3600000' }).maxMs.free).toBe(3_600_000);
+    }
+  );
+
   it('applies the environment in the deadline', () => {
     const env = { JOB_DEADLINE_BASE_MS_FREE: '1000', JOB_DEADLINE_MAX_MS_FREE: '4000', JOB_DEADLINE_PER_MIB_MS: '500' };
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: 2 * MIB }, jobDeadlineSettings(env))).toBe(2000);
@@ -270,6 +278,11 @@ describe('start-up configuration check of the deadline settings', () => {
       expect(failure?.rule).toBe('must not exceed JOB_DEADLINE_MAX_MS_PRO');
       expect((error as Error).message).not.toContain('3000000');
     }
+  });
+
+  it('stops the process for a maximum above one hour', () => {
+    expect(() => parseConfig({ JOB_DEADLINE_MAX_MS_ENTERPRISE: '3600001' })).toThrow(/JOB_DEADLINE_MAX_MS_ENTERPRISE/);
+    expect(parseConfig({ JOB_DEADLINE_MAX_MS_ENTERPRISE: '3600000' }).JOB_DEADLINE_MAX_MS_ENTERPRISE).toBe(3_600_000);
   });
 
   it('stops the process for a malformed value, with no fallback to the default', () => {

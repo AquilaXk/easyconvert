@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { isProcessRunning } from './helpers/process-state';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -577,6 +577,68 @@ describe('deploy.sh budget', () => {
   it('refuses a budget too small to run a conversion and a value that is not a number', () => {
     expect(run(['budget'], { env: { EASYCONVERT_BUDGET_CPUS: '1', EASYCONVERT_BUDGET_MEMORY_GB: '4' } }).status).not.toBe(0);
     expect(run(['budget'], { env: { EASYCONVERT_BUDGET_CPUS: '3.5; rm -rf /', EASYCONVERT_BUDGET_MEMORY_GB: '20' } }).status).not.toBe(0);
+  });
+});
+
+describe('deploy.sh sweep', () => {
+  it('removes what a stopped worker left in /tmp and in the job staging folder of the storage directory after two hours, and nothing else', () => {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'oci-sweep-'));
+    try {
+      const bin = path.join(sandbox, 'bin');
+      const home = path.join(sandbox, 'home');
+      const scratchTmp = path.join(sandbox, 'tmp-worker');
+      const storage = path.join(sandbox, 'storage');
+      const staging = path.join(storage, '.staging');
+      for (const dir of [bin, path.join(home, 'current'), scratchTmp, staging]) mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(home, 'current', '.env'), 'REDIS_URL=redis://redis:6379\n');
+      // The worker container sees the scratch mounts at /tmp and /shared/storage; the stand-in runs the command on the sandbox.
+      writeFileSync(
+        path.join(bin, 'docker'),
+        `#!/usr/bin/env bash
+cmd="\${@: -1}"
+cmd="\${cmd//find \\/tmp /find $STUB_TMP }"
+cmd="\${cmd//\\/shared\\/storage\\//$STUB_STORAGE/}"
+exec sh -c "$cmd"
+`
+      );
+      chmodSync(path.join(bin, 'docker'), 0o755);
+      const aged = (target: string, minutes: number, isDir = false): string => {
+        if (isDir) {
+          mkdirSync(target);
+          writeFileSync(path.join(target, 'input.pdf'), 'x');
+        } else {
+          writeFileSync(target, 'x');
+        }
+        const at = new Date(Date.now() - minutes * 60_000);
+        if (isDir) utimesSync(path.join(target, 'input.pdf'), at, at);
+        utimesSync(target, at, at);
+        return target;
+      };
+      const oldTmp = aged(path.join(scratchTmp, 'old.bin'), 125);
+      const newTmp = aged(path.join(scratchTmp, 'new.bin'), 60);
+      const oldJob = aged(path.join(staging, 'easyconvert-ffmpeg-1700000000000-abc123'), 125, true);
+      const oldOutput = aged(path.join(staging, 'easyconvert-out-1700000000000-uuid.flac'), 125);
+      const runningJob = aged(path.join(staging, 'easyconvert-ffmpeg-1700000000001-def456'), 110, true);
+      const oldObject = aged(path.join(storage, `${'a'.repeat(64)}.bin`), 48 * 60);
+
+      const result = run(['sweep'], {
+        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, EASYCONVERT_HOME: home, STUB_TMP: scratchTmp, STUB_STORAGE: storage },
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect([oldTmp, oldJob, oldOutput].filter((target) => existsSync(target))).toEqual([]);
+      expect([newTmp, runningJob, oldObject].filter((target) => !existsSync(target))).toEqual([]);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('waits as long as the application sweep: the longest job deadline and the hour after it', async () => {
+    const { JOB_STAGING_MAX_AGE_MS } = await import('../src/lib/storage/temp-file');
+    const script = read('deploy/oci/deploy.sh');
+    const minutes = /find \/shared\/storage\/\.staging [^']*-mmin \+(\d+)/.exec(script)?.[1];
+
+    expect(Number(minutes) * 60_000).toBe(JOB_STAGING_MAX_AGE_MS);
   });
 });
 

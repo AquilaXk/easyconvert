@@ -6,11 +6,15 @@ import { isAnonymousUserId } from '../auth/anonymous-identity';
  *   owner and are reachable by anyone holding the key (capability semantics). A key never names a client address.
  * - `conversions/<userId>/...`: synchronous API outputs owned by that user.
  * - `results/<jobId>/...`: queue job outputs, owned by the job's user when the job has one.
+ * - `intermediate/<graphId>/<nodeId>/...`: outputs of the nodes of a job graph, which a node answers with as its
+ *   `downloadUrl`. They have no owner and are reachable by anyone holding the key (capability semantics).
+ * Any other key is `other`: no writer of the server produces one, so no route serves or resolves it.
  */
 export type StorageKeyNamespace =
   | { namespace: 'upload' }
   | { namespace: 'user-conversion'; userId: string }
   | { namespace: 'job-result'; jobId: string }
+  | { namespace: 'intermediate' }
   | { namespace: 'other' };
 
 const UPLOAD_KEY_PREFIX = 'uploads/';
@@ -18,6 +22,7 @@ const INLINE_INPUT_KEY = 'inline';
 const INLINE_INPUT_KEY_PREFIX = 'inline:';
 const USER_CONVERSION_KEY_PATTERN = /^conversions\/([^/]+)\//;
 const JOB_RESULT_KEY_PATTERN = /^results\/([^/]+)\//;
+const GRAPH_NODE_OUTPUT_KEY_PATTERN = /^intermediate\/[^/]+\/[^/]+\//;
 
 /** Whether a key is in the ownerless multipart upload namespace. */
 export function isUploadKey(key: string): boolean {
@@ -53,6 +58,10 @@ export function classifyStorageKey(key: string): StorageKeyNamespace {
   const jobResult = JOB_RESULT_KEY_PATTERN.exec(key);
   if (jobResult) {
     return { namespace: 'job-result', jobId: jobResult[1] };
+  }
+
+  if (GRAPH_NODE_OUTPUT_KEY_PATTERN.test(key)) {
+    return { namespace: 'intermediate' };
   }
 
   return { namespace: 'other' };

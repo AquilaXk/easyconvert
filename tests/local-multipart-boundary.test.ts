@@ -139,7 +139,7 @@ describe('LocalFsStorage multipart boundary', () => {
       await expect(storage.savePartStream(session.uploadId, 2, Readable.from(Buffer.alloc(6, 0x62)))).rejects.toMatchObject({
         code: 'EntityTooLarge',
       });
-      expect(sessionDirFiles(session.uploadId), 'parts over the total leave nothing behind').toEqual(['part-1.bin', 'session.json']);
+      expect(sessionDirFiles(session.uploadId), 'parts over the total leave nothing behind').toEqual(['part-1.bin', 'part-1.meta', 'session.json']);
     } finally {
       storage.stopGc();
     }
@@ -269,7 +269,7 @@ describe('POST /api/v1/uploads multipart actions on local storage', () => {
     expect(strangerComplete.status, 'stranger complete').toBe(HTTP_NOT_FOUND);
     const strangerAbort = await postJson('abort', stranger.headers, { uploadId, key });
     expect(strangerAbort.status, 'stranger abort').toBe(HTTP_NOT_FOUND);
-    expect(sessionDirFiles(uploadId), 'the session survives the stranger').toEqual(['part-1.bin', 'session.json']);
+    expect(sessionDirFiles(uploadId), 'the session survives the stranger').toEqual(['part-1.bin', 'part-1.meta', 'session.json']);
 
     const ownerComplete = await postJson('complete', owner.headers, { uploadId, key, parts: [part] });
     expect(ownerComplete.status).toBe(HTTP_OK);
@@ -288,7 +288,7 @@ describe('POST /api/v1/uploads multipart actions on local storage', () => {
 
     expect((await postPart(headers, uploadId, 1, Buffer.alloc(6, 0x61))).status).toBe(HTTP_OK);
     expect((await postPart(headers, uploadId, 2, Buffer.alloc(6, 0x62))).status, 'parts adding up past the total').toBe(HTTP_BAD_REQUEST);
-    expect(sessionDirFiles(uploadId)).toEqual(['part-1.bin', 'session.json']);
+    expect(sessionDirFiles(uploadId)).toEqual(['part-1.bin', 'part-1.meta', 'session.json']);
   });
 
   it('refuses part numbers 0 and 10,001', async () => {
@@ -471,6 +471,7 @@ describe('LocalFsStorage multipart assembly', () => {
       const session = await storage.createMultipart(key, { filename: 'sum.txt' }, { ownerUserId: 'u1', totalSize: 10 });
       const part1 = await savedPart(storage, session.uploadId, 1, 6);
       fs.writeFileSync(path.join(storageDir, '.parts', session.uploadId, 'part-2.bin'), Buffer.alloc(8, 0x62));
+      fs.writeFileSync(path.join(storageDir, '.parts', session.uploadId, 'part-2.meta'), JSON.stringify({ size: 8, etag: '"e"' }));
       const part2 = { partNumber: 2, etag: '"e"' };
       const opened = vi.spyOn(fs, 'createWriteStream');
 
@@ -505,7 +506,7 @@ describe('LocalFsStorage multipart assembly', () => {
       slow.push(null);
 
       expect(await slowOutcome).toMatchObject({ code: 'EntityTooLarge' });
-      expect(sessionDirFiles(session.uploadId), 'the part that overflowed the total is deleted').toEqual(['part-1.bin', 'session.json']);
+      expect(sessionDirFiles(session.uploadId), 'the part that overflowed the total is deleted').toEqual(['part-1.bin', 'part-1.meta', 'session.json']);
     } finally {
       storage.stopGc();
     }

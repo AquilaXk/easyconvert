@@ -90,3 +90,21 @@ export class StorageSigningSecretMissingError extends Error {
     this.name = 'StorageSigningSecretMissingError';
   }
 }
+
+/**
+ * A file handed to the store, such as the output an engine left, is a symbolic link, a directory or another entry that is
+ * not a regular file. It is refused before it is moved or copied: a link would be stored and then followed by every read.
+ * The message names the kind only; the path stays in `filePath` for the log.
+ */
+export class NotARegularFileError extends Error {
+  readonly code = 'NOT_A_REGULAR_FILE';
+  readonly filePath: string;
+  readonly kind: string;
+
+  constructor(filePath: string, kind: string) {
+    super(`The file to store is a ${kind}, not a regular file`);
+    this.name = 'NotARegularFileError';
+    this.filePath = filePath;
+    this.kind = kind;
+  }
+}

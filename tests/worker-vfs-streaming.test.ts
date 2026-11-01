@@ -28,13 +28,13 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
   });
 
   describe('1. Storage Backend saveObjectFromFile Zero-Heap Persistence', () => {
-    it('persists object directly from disk filePath without pre-allocating buffer in memory', async () => {
+    it('persists object directly from disk filePath without pre-allocating buffer in memory, in the directory every process reads', async () => {
       const filePath = path.join(tempDir, 'sample_dataset.csv');
       const testContent = 'id,name,value\n1,alpha,100\n2,beta,200\n';
       fs.writeFileSync(filePath, testContent, 'utf-8');
 
       const storageKey = `datasets/sample_${Date.now()}.csv`;
-      const stored = ociStorage.saveObjectFromFile!(
+      const stored = await ociStorage.saveObjectFromFile!(
         storageKey,
         filePath,
         'text/csv',
@@ -44,14 +44,15 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
 
       expect(stored).toBeDefined();
       expect(stored.key).toContain(storageKey);
-      expect(stored.filePath).toBe(filePath);
+      expect(stored.filePath).toBe(globalSharedObjects.objectPath(storageKey));
+      expect(fs.existsSync(filePath), 'the file is moved into the storage directory').toBe(false);
       expect(stored.size).toBe(Buffer.byteLength(testContent, 'utf-8'));
       expect(stored.etag).toMatch(/^"[a-f0-9]+"/);
 
       // Verify cross-backend retrieval via unified storageProvider
       const retrieved = await storageProvider.getObject(storageKey);
       expect(retrieved).toBeDefined();
-      expect(retrieved?.filePath).toBe(filePath);
+      expect(retrieved?.filePath).toBe(globalSharedObjects.objectPath(storageKey));
       expect(retrieved?.size).toBe(Buffer.byteLength(testContent, 'utf-8'));
       // Buffer accessed lazily
       expect(retrieved?.buffer.toString('utf-8')).toBe(testContent);

@@ -73,7 +73,7 @@ describe.skipIf(!REDIS_URL)('first Redis command after construction', () => {
     const store = new RedisIdempotencyStore({ redisUrl: REDIS_URL });
     closers.push(() => store.getClient().quit());
 
-    const result = await store.acquire(uniqueId('idem'), 'fingerprint');
+    const result = await store.acquire(uniqueId('idem'), 'fingerprint', 60_000, uniqueId('token'));
 
     expect(result.status).toBe('acquired');
   });
