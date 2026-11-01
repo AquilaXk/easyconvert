@@ -32,6 +32,7 @@ import {
   type DomElement,
 } from './helpers/rendered-dom';
 import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
+import { englishSlugCopy } from './helpers/intl';
 
 /**
  * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
@@ -228,7 +229,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const status = parseConverterSlug('status');
     expect(status.isInfoPage).toBe(true);
     expect(status.infoType).toBe('status');
-    expect(status.pageTitle).toBe('System Status');
+    expect(englishSlugCopy('status').title).toBe('System Status');
 
     const unitConverter = parseConverterSlug('unit-converter');
     expect(unitConverter.isInfoPage).toBe(true);
@@ -237,7 +238,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const lbsToKg = parseConverterSlug('lbs-to-kg');
     expect(lbsToKg.isInfoPage).toBe(true);
     expect(lbsToKg.infoType).toBe('unit');
-    expect(lbsToKg.pageTitle).toMatch(/LBS to KG/);
+    expect(englishSlugCopy('lbs-to-kg').title).toMatch(/LBS to KG/);
   });
 
   it('verifies category and alias slugs resolve to registered canonical formats', () => {
@@ -260,7 +261,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe(tc.expectedSrc);
       expect(parsed.targetFormat).toBe(tc.expectedTgt);
-      expect(parsed.pageTitle).toBe(tc.expectedTitle);
+      expect(englishSlugCopy(tc.slug).title).toBe(tc.expectedTitle);
 
       const srcDef = FORMAT_REGISTRY[parsed.sourceFormat];
       expect(srcDef, `Format registry must define ${parsed.sourceFormat}`).toBeDefined();
@@ -448,20 +449,20 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
   it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
     // Video to Audio pair must not claim to preserve typography or document formatting
-    expect(parseConverterSlug('mp4-to-mp3').pageDescription).toBe(
+    expect(englishSlugCopy('mp4-to-mp3').description).toBe(
       'Convert MP4 to MP3 online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.'
     );
 
     // Document pair preserves layout and typography
-    expect(parseConverterSlug('pdf-to-docx').pageDescription).toBe(
+    expect(englishSlugCopy('pdf-to-docx').description).toBe(
       'Convert PDF to DOCX online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.'
     );
 
     // Format converters do not falsely claim to be document converters or mention external office software
-    expect(parseConverterSlug('mp4-converter').pageDescription).toBe(
+    expect(englishSlugCopy('mp4-converter').description).toBe(
       'Convert MP4 video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.'
     );
-    expect(parseConverterSlug('svg-converter').pageDescription).toBe(
+    expect(englishSlugCopy('svg-converter').description).toBe(
       'Convert SVG files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.'
     );
   });

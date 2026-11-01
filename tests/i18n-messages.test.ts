@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parse, TYPE, type MessageFormatElement } from '@formatjs/icu-messageformat-parser';
-import { testMessages, testTranslator, type TestLocale } from './helpers/intl';
+import { testMessages, type TestLocale } from './helpers/intl';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { parseConverterSlug } from '../src/lib/slug-parser';
-import { localizeSlugCopy } from '../src/components/converter/slug-copy';
 import { FORMAT_SPECIFICATIONS } from '../src/components/converter/format-specs';
 import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { formatMessageKey } from '../src/i18n/message-keys';
@@ -11,8 +9,10 @@ import { routing } from '../src/i18n/routing';
 
 /**
  * Every offered language carries every message, with the same arguments, and the Korean copy keeps one register (합니다체)
- * and one set of terms. The messages are read as the server assembles them (`src/i18n/messages.ts`), so the English copy
- * the registry and the unit catalog supply is part of the check.
+ * and one set of terms. The messages are read as the server assembles them (`src/i18n/messages.ts`). English keeps its
+ * format descriptions, format categories and unit names in the registry and the unit catalog, where the API reads them
+ * too, so `en.json` has no `formatDescriptions`, `formatCategories`, `unitCategories` or `unitNames`; `ko.json` keeps its
+ * translation of each. The key parity below therefore compares the assembled English with the Korean file.
  */
 
 function leaves(tree: unknown, prefix = ''): Map<string, string> {
@@ -92,25 +92,6 @@ describe('every language carries every message', () => {
     for (const locale of LOCALES) {
       expect([...linkKeys, ...categoryKeys].filter((key) => !MESSAGES.get(locale)!.has(key)), locale).toEqual([]);
     }
-  });
-});
-
-describe('the English copy reads as it did before the move into messages', () => {
-  const slugs = [
-    'pdf-ocr', 'terms', 'privacy', 'contact', 'about', 'security', 'status', 'accessibility', 'unit-converter',
-    'lbs-to-kg', 'feet-to-meters', 'merge-pdf', 'compress-png', 'save-website-as-pdf', 'website-jpg-screenshot',
-    'video-to-gif', 'word-to-pdf', 'image-converter', 'spreadsheets-converter', 'hello-world',
-    ...Object.keys(FORMAT_REGISTRY).flatMap((id) => [`${id}-converter`, `${id}-to-pdf`, `mp4-to-${id}`]),
-  ];
-
-  it('titles and describes every slug page exactly as the slug parser words it', () => {
-    const t = testTranslator('en', 'slugPages');
-    const differing = slugs.filter((slug) => {
-      const parsed = parseConverterSlug(slug);
-      const copy = localizeSlugCopy(t, parsed.copy);
-      return copy.title !== parsed.pageTitle || copy.description !== parsed.pageDescription;
-    });
-    expect(differing).toEqual([]);
   });
 });
 

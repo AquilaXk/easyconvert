@@ -11,11 +11,28 @@ import { parseSource } from './helpers/ts-source';
  */
 
 const ROOT = path.resolve(__dirname, '..');
-const UI_ROOTS = ['src/app', 'src/components'];
+const UI_ROOTS = ['src/app', 'src/components', 'src/hooks'];
+/**
+ * Library files whose text the interface shows: the converter page copy, the viewer's plan, byte sizes, and the failure
+ * the queue words. The conversion path behind the queue (client-converter.ts and the edge pipelines) hands the queue a
+ * `ConversionFailure`, a code and the server's answer, so the type keeps its error messages out of the interface.
+ */
+const UI_LIB_FILES = [
+  'src/lib/conversion-failure.ts',
+  'src/lib/format-bytes.ts',
+  'src/lib/slug-parser.ts',
+  'src/lib/slug-info-pages.ts',
+  'src/lib/viewer-plan.ts',
+];
 const TEXT_ATTRIBUTES = new Set(['aria-label', 'aria-description', 'title', 'placeholder', 'alt', 'label']);
 const HAS_LETTER = /[A-Za-z]/;
 /** Two or more words that start with a capital, or a sentence: how copy reads, unlike class lists, ids and code. */
 const PROSE = /^[A-Z][a-z]+(?:[ -][A-Za-z0-9&'(),.:/%+]+){2,}|^[A-Z][^.]*\s[^.]*\.$/;
+/** Object properties a component shows as a message or a label: there one or two capitalised words (`'Failed'`) are copy. */
+const MESSAGE_PROPERTIES = new Set(['error', 'message', 'label', 'title', 'placeholder', 'detail']);
+const SHORT_COPY = /^[A-Z][a-z]+(?: [A-Za-z]+)?[.!]?$/;
+/** What a template's substitutions read as when its text is tested as prose: a lowercase word, never a capital. */
+const SUBSTITUTION = 'x';
 
 /** Strings that are not copy, with why. Brand and product names read the same in every language. */
 const ALLOWED_TEXT = new Set([
@@ -26,6 +43,14 @@ const ALLOWED_TEXT = new Set([
   '00:00 UTC', // the quota reset time, a clock reading
   'ms', // the unit after a probe's latency
 ]);
+
+/**
+ * An error's message is for logs and API callers: the interface words a failure by its code (src/lib/conversion-failure.ts)
+ * and never shows the message, which tests/i18n-queue-errors.test.ts checks on the rendered queue. `serverRefusal` takes
+ * the message an error has when the server gave no sentence.
+ */
+const ERROR_MESSAGE_CALLS = new Set(['serverRefusal']);
+const ERROR_CLASS = /(?:Error|Exception)$/;
 
 /** Elements whose text is code a visitor copies, not copy. */
 const CODE_ELEMENTS = new Set(['code', 'pre', 'kbd', 'samp']);
@@ -41,6 +66,21 @@ const CODE_SAMPLE_FILES = new Set([
   'src/components/api-docs/curl-builder.ts', // request bodies of the generated cURL commands
 ]);
 
+function isErrorMessage(n: ts.Node): boolean {
+  if (ts.isNewExpression(n)) return ERROR_CLASS.test(n.expression.getText());
+  return ts.isCallExpression(n) && ERROR_MESSAGE_CALLS.has(n.expression.getText());
+}
+
+function isMessageProperty(node: ts.Node): boolean {
+  if (!ts.isPropertyAssignment(node.parent) || node.parent.initializer !== node) return false;
+  const name = node.parent.name.getText().replace(/^['"]|['"]$/g, '');
+  return MESSAGE_PROPERTIES.has(name) || name.startsWith('aria');
+}
+
+function templateText(node: ts.TemplateExpression): string {
+  return [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].join(SUBSTITUTION);
+}
+
 function uiFiles(): string[] {
   const files: string[] = [];
   const visit = (dir: string) => {
@@ -54,7 +94,7 @@ function uiFiles(): string[] {
     }
   };
   for (const root of UI_ROOTS) visit(path.join(ROOT, root));
-  return files;
+  return [...files, ...UI_LIB_FILES.map((file) => path.join(ROOT, file))];
 }
 
 function isInside(node: ts.Node, test: (n: ts.Node) => boolean): boolean {
@@ -101,25 +141,29 @@ function scan(file: string): Finding[] {
       const init = node.initializer;
       if (ts.isStringLiteral(init)) report(init, init.text);
       if (ts.isJsxExpression(init) && init.expression && ts.isTemplateExpression(init.expression)) {
-        report(init, [init.expression.head.text, ...init.expression.templateSpans.map((s) => s.literal.text)].join(' '));
+        report(init, templateText(init.expression));
       }
     }
     if (ts.isJsxExpression(node) && node.parent && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))) {
       const expr = node.expression;
       if (expr && (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr))) report(expr, expr.text);
     }
+    const literal = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+    const attributeTemplate = ts.isTemplateExpression(node) && ts.isJsxExpression(node.parent) && ts.isJsxAttribute(node.parent.parent);
+    const text = literal ?? (ts.isTemplateExpression(node) && !attributeTemplate ? templateText(node) : undefined);
     if (
-      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      text !== undefined &&
       !CODE_SAMPLE_FILES.has(relative) &&
-      PROSE.test(node.text) &&
+      (PROSE.test(text) || (literal !== undefined && SHORT_COPY.test(literal) && isMessageProperty(node))) &&
       !ts.isImportDeclaration(node.parent) &&
       !ts.isExportDeclaration(node.parent) &&
       !(ts.isPropertyAssignment(node.parent) && node.parent.name === node) &&
       !isNonTextAttributeValue(node) &&
       !isNonCopyProperty(node) &&
-      !isInside(node, isConsoleCall)
+      !isInside(node, isConsoleCall) &&
+      !isInside(node, isErrorMessage)
     ) {
-      report(node, node.text);
+      report(node, text);
     }
     ts.forEachChild(node, visit);
   };
@@ -138,11 +182,14 @@ describe('the interface source holds no user-visible English', () => {
     expect(scan(sample).map((f) => f.text)).toEqual([
       'Converting queued files now...',
       'Failed to load the file list.',
+      'Failed',
+      'Upload',
+      'File size exceeds the x limit.',
       'Visible heading',
       'Close dialog',
       'Search formats',
       'Copied',
-      'Remove file',
+      'Remove file x',
     ]);
   });
 });

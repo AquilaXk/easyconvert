@@ -5,6 +5,9 @@ export function Sample({ name }: { name: string }) {
   const status = 'Converting queued files now...';
   const error = { message: 'Failed to load the file list.' };
   console.warn('Developer Facing Warning Message here');
+  const failure = { error: 'Failed', label: 'Upload', id: 'Primary' };
+  const limit = `File size exceeds the ${name} limit.`;
+  const logged = new Error('The conversion did not finish in time. Try again.');
   return (
     <div className="flex items-center gap-2 text-ink" data-testid="sample-root">
       <h2>Visible heading</h2>

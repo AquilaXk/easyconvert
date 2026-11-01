@@ -77,20 +77,6 @@ function pairCopyGroup(src: string, tgt: string): PairCopyGroup {
   return 'document';
 }
 
-const PAIR_DESCRIPTIONS: Readonly<Record<PairCopyGroup, (srcD: string, tgtD: string) => string>> = {
-  videoToAudio: (srcD, tgtD) =>
-    `Convert ${srcD} to ${tgtD} online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.`,
-  media: (srcD, tgtD) =>
-    `Convert ${srcD} to ${tgtD} online and free. Fast, high-fidelity media transcoding directly in your browser with zero server retention.`,
-  image: (srcD, tgtD) =>
-    `Convert ${srcD} to ${tgtD} online and free. High-precision rendering and lossless rasterization straight from your browser.`,
-  archive: (srcD, tgtD) => `Convert and extract ${srcD} to ${tgtD} archives safely in your browser with zero cloud storage.`,
-  data: (srcD, tgtD) =>
-    `Convert ${srcD} to ${tgtD} datasets and tables directly in your browser. Clean data structure preserved with zero retention.`,
-  document: (srcD, tgtD) =>
-    `Convert ${srcD} to ${tgtD} online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.`,
-};
-
 function parsePairSlug(cleanSlug: string): ParsedSlug {
   const parts = cleanSlug.split('-to-');
   const rawSrc = parts[0]?.trim() || 'pdf';
@@ -111,8 +97,6 @@ function parsePairSlug(cleanSlug: string): ParsedSlug {
     isInfoPage: false,
     sourceFormat: src,
     targetFormat: tgt,
-    pageTitle: `${srcDisplay} to ${tgtDisplay} Converter`,
-    pageDescription: PAIR_DESCRIPTIONS[group](srcDisplay, tgtDisplay),
     copy: { kind: 'pair', src: { id: rawSrc, display: srcDisplay }, tgt: { id: rawTgt, display: tgtDisplay }, group },
   };
 }
@@ -137,23 +121,6 @@ function formatCopyGroup(src: string): FormatCopyGroup {
   }
 }
 
-const FORMAT_DESCRIPTIONS: Readonly<Record<FormatCopyGroup, (prefix: string) => string>> = {
-  audio: (prefix) =>
-    `Convert ${prefix} audio files online and free to MP3, WAV, AAC, and more. High-fidelity audio encoding with zero server storage.`,
-  video: (prefix) =>
-    `Convert ${prefix} video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.`,
-  image: (prefix) =>
-    `Convert ${prefix} files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.`,
-  archive: (prefix) => `Convert and extract ${prefix} compressed archives safely in your browser with zero cloud uploads.`,
-  data: (prefix) =>
-    `Convert ${prefix} spreadsheets and datasets to CSV, Excel, JSON, and other structured formats with high precision.`,
-  presentation: (prefix) =>
-    `Convert ${prefix} presentation slides to PDF, PPTX, images, and other formats with preserved layouts.`,
-  ebook: (prefix) => `Convert ${prefix} ebooks to EPUB, PDF, MOBI, and other reader formats directly in your browser.`,
-  document: (prefix) =>
-    `Convert ${prefix} documents online and free to PDF, DOCX, and other formats. Preserves layouts, typography, and tables with zero server storage.`,
-};
-
 function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
   const rawFmt = cleanSlug.replace('-converter', '').trim();
   if (rawFmt === 'unit') {
@@ -168,8 +135,6 @@ function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
     isInfoPage: false,
     sourceFormat: src,
     targetFormat: 'any',
-    pageTitle: `${prefix} Converter`,
-    pageDescription: FORMAT_DESCRIPTIONS[group](prefix),
     copy: { kind: 'format', name: { id: rawFmt, display: prefix }, group },
   };
 }
@@ -182,9 +147,6 @@ export function parseConverterSlug(slug: string): ParsedSlug {
       isInfoPage: false,
       sourceFormat: 'pdf',
       targetFormat: 'pdf',
-      pageTitle: 'PDF OCR Converter',
-      pageDescription:
-        'Optical character recognition utility producing searchable, selectable documents with zero data retention.',
       copy: { kind: 'ocr' },
     };
   }
@@ -215,8 +177,6 @@ export function parseConverterSlug(slug: string): ParsedSlug {
     isInfoPage: false,
     sourceFormat: 'pdf',
     targetFormat: 'docx',
-    pageTitle: `${title} Converter`,
-    pageDescription: `Convert ${title} files instantly in your browser with zero data retention.`,
     copy: { kind: 'generic', name: title },
   };
 }

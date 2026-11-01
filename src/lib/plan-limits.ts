@@ -94,11 +94,6 @@ function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean = PAID_PLANS_ON_SAL
   return PLAN_ORDER.slice(PLAN_ORDER.indexOf(plan) + 1).find((candidate) => PLAN_MAX_FILE_BYTES[candidate] > limit);
 }
 
-/** The line a visitor sees under the drop zone, for example `Up to 1 GiB per file`. */
-export function fileLimitCopy(plan: Plan): string {
-  return `Up to ${formatBytes(PLAN_MAX_FILE_BYTES[plan])} per file`;
-}
-
 /** The facts a message about a file over its plan's limit names, for the copy of any language to word. */
 export interface FileTooLargeFacts {
   plan: Plan;

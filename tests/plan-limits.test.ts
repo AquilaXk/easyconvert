@@ -7,13 +7,24 @@ import {
   URL_IMPORT_MAX_BYTES,
   needsUploadInParts,
   PLAN_MAX_FILE_BYTES,
-  fileLimitCopy,
   fileTooLargeMessage,
   maxFileBytes,
   planOfCaller,
   type Plan,
 } from '../src/lib/plan-limits';
 import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
+import { createElement } from 'react';
+import { useFileLimitCopy } from '../src/components/i18n/format';
+import { renderDom, visibleText } from './helpers/rendered-dom';
+import type { TestLocale } from './helpers/intl';
+
+function FileLimit({ plan }: { plan: Plan }) {
+  return createElement('p', null, useFileLimitCopy()(plan));
+}
+
+function fileLimitLine(plan: Plan, locale: TestLocale): string {
+  return visibleText(renderDom(createElement(FileLimit, { plan }), locale));
+}
 
 const GIB = 1024 * 1024 * 1024;
 const PLANS: readonly Plan[] = ['anonymous', 'free', 'pro', 'enterprise'];
@@ -58,10 +69,11 @@ describe('planOfCaller', () => {
 
 describe('copy', () => {
   it('states the limit of the plan under the drop zone in binary units with their own names', () => {
-    expect(fileLimitCopy('anonymous')).toBe('Up to 1 GiB per file');
-    expect(fileLimitCopy('free')).toBe('Up to 1 GiB per file');
-    expect(fileLimitCopy('pro')).toBe('Up to 5 GiB per file');
-    expect(fileLimitCopy('enterprise')).toBe('Up to 10 GiB per file');
+    expect(fileLimitLine('anonymous', 'en')).toBe('Up to 1 GiB per file');
+    expect(fileLimitLine('free', 'en')).toBe('Up to 1 GiB per file');
+    expect(fileLimitLine('pro', 'en')).toBe('Up to 5 GiB per file');
+    expect(fileLimitLine('enterprise', 'en')).toBe('Up to 10 GiB per file');
+    expect(fileLimitLine('pro', 'ko')).toMatch(/^[^A-Za-z]*5 GiB[^A-Za-z]*$/);
   });
 
   it('names the size and the limit, and offers no plan while none can be bought', () => {
