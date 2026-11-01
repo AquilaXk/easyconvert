@@ -138,10 +138,11 @@
     letter-spacing: -0.01em;
   }
 
-  /* Korean breaks between words, not between syllables; a word wider than its line still wraps. */
-  :lang(ko) :is(h1, h2, h3, .font-display) {
+  /* Korean breaks between words, not between syllables (no syllable left alone on a line); a word wider than its line
+     still wraps. */
+  :lang(ko) body {
     word-break: keep-all;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
   }
 
   :focus-visible {
