@@ -9,7 +9,7 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
   const t = useTranslations('dashboard.keys.table');
   const format = useFormatter();
   if (!expiresAt) {
-    return <span className="text-ink-3">{t('never')}</span>;
+    return <span className="text-ink-3">{t('noExpiry')}</span>;
   }
   const now = Date.now();
   if (now > expiresAt) {
@@ -132,7 +132,7 @@ export function ApiKeysTable({
                   <KeyExpirationBadge expiresAt={key.expiresAt} />
                 </td>
                 <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
-                  {key.lastUsedAt ? format.dateTime(new Date(key.lastUsedAt), DATE_FORMAT) : t('never')}
+                  {key.lastUsedAt ? format.dateTime(new Date(key.lastUsedAt), DATE_FORMAT) : t('neverUsed')}
                 </td>
                 <td className="py-3.5 pr-4 whitespace-nowrap">
                   <span

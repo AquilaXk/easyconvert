@@ -112,8 +112,21 @@ describe('the Korean copy keeps one register and one set of terms', () => {
     expect(koreanEntries.filter(([, text]) => /\((?:이|가|을|를|은|는|과|와)\)/.test(text)).map(([key]) => key)).toEqual([]);
   });
 
-  it('uses the glossary terms (형식, 변환기, 다운로드, 대기열, API 키)', () => {
-    const offTerms = /포맷|컨버터|컨버트|다운받|다운 받|큐에|API키|에이피아이/;
+  it('uses the glossary terms (형식, 변환기, 다운로드, 대기열, API 키, 동영상, 압축 파일)', () => {
+    const offTerms = /포맷|컨버터|컨버트|다운받|다운 받|큐에|API키|에이피아이|비디오/;
     expect(koreanEntries.filter(([, text]) => offTerms.test(text)).map(([key]) => key)).toEqual([]);
+  });
+
+  it('calls an archive 압축 파일, keeping 아카이브 only in the name of a format that says so (tar, JAR, WAR, EAR)', () => {
+    const namedArchive = /(?:tar|테이프|Java|웹 애플리케이션|엔터프라이즈) 아카이브/g;
+    expect(koreanEntries.filter(([, text]) => text.replace(namedArchive, '').includes('아카이브')).map(([key]) => key)).toEqual([]);
+  });
+
+  it('points a conversion from one format to another with an arrow, so its direction reads (PNG → JPG 변환기)', () => {
+    const pairWithoutArrow = /(?:[A-Z0-9][A-Za-z0-9.]*|\{\w+\}|이미지|동영상) (?:[A-Z0-9][A-Za-z0-9.]*|\{\w+\}) (?:단위 )?변환/;
+    const pairs = koreanEntries.filter(([key]) => key !== 'slugPages.ocr.title');
+    expect(pairs.filter(([, text]) => pairWithoutArrow.test(text)).map(([key]) => key)).toEqual([]);
+    expect(korean.get('slugPages.pair.title')).toBe('{src} → {tgt} 변환기');
+    expect(korean.get('hero.title.pair')).toBe('{src} → {tgt} 변환기');
   });
 });

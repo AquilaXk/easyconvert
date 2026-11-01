@@ -302,7 +302,8 @@
         "dismiss": "Dismiss"
       },
       "table": {
-        "never": "Never",
+        "noExpiry": "Never",
+        "neverUsed": "Never",
         "expired": "Expired",
         "expiringIn": "Expiring in {days}d",
         "emptyHeading": "No API keys created yet",
