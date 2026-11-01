@@ -29,10 +29,12 @@ import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-lim
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_NOT_FOUND = 404;
 const HTTP_LENGTH_REQUIRED = 411;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
+const PROBLEM_NOT_FOUND = 'https://api.easyconvert.io/problems/not-found';
 const PROBLEM_PAYLOAD_TOO_LARGE = 'https://api.easyconvert.io/problems/payload-too-large';
 const PROBLEM_LENGTH_REQUIRED = 'https://api.easyconvert.io/problems/length-required';
 const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
@@ -210,9 +212,18 @@ function isApiPath(pathname: string): boolean {
   return pathname === '/api' || pathname.startsWith('/api/');
 }
 
+/** `/ko/api/...`: the API has no language, so a locale prefix in front of it names nothing. */
+function isLocalePrefixedApiPath(pathname: string): boolean {
+  const [, first, ...rest] = pathname.split('/');
+  return (routing.locales as readonly string[]).includes(first) && isApiPath(`/${rest.join('/')}`);
+}
+
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
+  if (isLocalePrefixedApiPath(pathname)) {
+    return problemResponse(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', 'API routes take no language prefix.', pathname);
+  }
   if (!isApiPath(pathname)) {
     return pathname === '/' ? handleRootLocale(request) : handlePageLocale(request);
   }
@@ -360,6 +371,11 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 }
 
 export const config = {
-  // API routes, and every page path that is not a framework internal or a file (a path with a dot).
-  matcher: ['/api/:path*', '/((?!api(?:/|$)|_next|_vercel|.*\\..*).*)'],
+  // API routes, and every page path that is not a framework internal or a static file. A file is told by its extension,
+  // not by any dot, since converter slugs hold format ids such as `tar.gz` (/zip-to-tar.gz). The list covers every
+  // file under public/ and the app's icons, fonts and metadata files; tests/i18n-routing.test.ts checks public/.
+  matcher: [
+    '/api/:path*',
+    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|\\.well-known/|.*\\.(?:ico|svg|png|jpe?g|gif|webp|avif|pdf|txt|xml|json|webmanifest|woff2?|ttf|otf|m?js|css|map)$).*)',
+  ],
 };
