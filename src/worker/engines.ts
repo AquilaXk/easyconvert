@@ -96,6 +96,7 @@ import {
   RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertWithinPixelCap,
   hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
+import { RAW_DECODE_MAX_STDERR_CHARS, rawDecoderWarnings } from './raw-decoder-report';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
@@ -1777,7 +1778,6 @@ export async function convertPdfPagesWithNativeTools(
 const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
 const RAW_DECODE_MAX_TIMEOUT_MS = 600_000;
-const RAW_DECODE_MAX_STDERR_CHARS = 300;
 /** Address-space ceiling for the decoder: room for the largest sensor plus LibRaw's working buffers. */
 const RAW_DECODE_MEMORY_LIMIT_MB = 4096;
 const RAW_DECODE_UNRECOGNIZED_PATTERN = /unsupported file format|not raw file/i;
@@ -1843,12 +1843,8 @@ export async function convertWithNativeRaw(
       throw new RawDecodeError(`Native RAW decoder produced no image for the .${src} file`);
     }
 
-    // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
-    if (decoderStderr) {
-      throw new RawDecodeError(
-        `Native RAW decoder reported a problem with the .${src} file: ${decoderStderr.slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>')}`
-      );
-    }
+    // LibRaw's `data corrupted at` line is a warning that leaves the image whole; any other text on stderr marks damaged input.
+    const warnings = rawDecoderWarnings(decoderStderr, inputPath, tempDir, src);
     const layout = readDecodedTiffLayout(decodedPath);
     assertWithinPixelCap(layout);
     assertCompleteDecodedImage(decodedPath, layout);
@@ -1860,7 +1856,9 @@ export async function convertWithNativeRaw(
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
     fs.writeFileSync(tempOutputPath, converted.buffer);
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
-    return createConversionResult(persistedPath, tgt, baseName, 'native-raw', Date.now() - startTime);
+    const result = createConversionResult(persistedPath, tgt, baseName, 'native-raw', Date.now() - startTime);
+    if (warnings.length > 0) result.metadata = { warnings };
+    return result;
   });
 }
 

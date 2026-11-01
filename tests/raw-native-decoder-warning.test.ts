@@ -26,11 +26,11 @@ vi.setConfig({ testTimeout: TEST_TIMEOUT_MS });
 const S23 = 'raw-samsung-s23.dng';
 const S23_WIDTH = 4000;
 const S23_HEIGHT = 2252;
-const WARNING_PATTERN = /out of range.*byte 4384328/;
+const WARNING_PATTERN = /unexpected sample data near byte 4384328/;
 const PREVIEW_GRID_WIDTH = 64;
 const PREVIEW_GRID_HEIGHT = 36;
 const PREVIEW_BANDS = 4;
-const MIN_BAND_CORRELATION = 0.9;
+const MIN_BAND_CORRELATION = 0.97;
 const MIN_IMAGE_CORRELATION = 0.98;
 const TEMP_PREFIX = 'easyconvert-raw-';
 
@@ -70,7 +70,7 @@ describe('what the decoder prints decides whether its image is developed', () =>
     const stub = decoderStub('good', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
     const result = await convertWith(stub);
     expect(result).not.toBeInstanceOf(Error);
-    expect((result as { metadata?: { warnings?: string[] } }).metadata?.warnings).toEqual([expect.stringMatching(/out of range.*byte 3\b/)]);
+    expect((result as { metadata?: { warnings?: string[] } }).metadata?.warnings).toEqual([expect.stringMatching(/unexpected sample data near byte 3\b/)]);
   });
 
   it('develops a complete image that printed nothing without a warning', async () => {
@@ -197,7 +197,8 @@ function embeddedPreview(dng: Buffer): Buffer {
 
 /** The brightness of a picture on a coarse grid, row by row. */
 async function lumaGrid(image: Buffer): Promise<number[]> {
-  const grid = await sharp(image).removeAlpha().toColourspace('b-w').resize(PREVIEW_GRID_WIDTH, PREVIEW_GRID_HEIGHT, { fit: 'fill', kernel: 'nearest' }).raw().toBuffer();
+  const eightBit = await sharp(image).removeAlpha().toColourspace('srgb').png().toBuffer();
+  const grid = await sharp(eightBit).greyscale().resize(PREVIEW_GRID_WIDTH, PREVIEW_GRID_HEIGHT, { fit: 'fill', kernel: 'nearest' }).raw().toBuffer();
   return [...grid];
 }
 
