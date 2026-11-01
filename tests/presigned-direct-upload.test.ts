@@ -171,6 +171,8 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
 
       // Generate 3 chunks of deterministic data
       const chunk1 = crypto.randomBytes(64 * 1024); // 64 KiB
+      // Random leading bytes now and then spell a known signature (two bytes of JPEG or gzip), which the format check refuses as a spoof.
+      chunk1.fill(0, 0, 512);
       const chunk2 = crypto.randomBytes(64 * 1024); // 64 KiB
       const chunk3 = crypto.randomBytes(32 * 1024); // 32 KiB
       const fullBuffer = Buffer.concat([chunk1, chunk2, chunk3]);
