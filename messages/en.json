@@ -102,7 +102,10 @@
       "failed": "Authentication failed. Check your credentials and try again.",
       "created": "Account created. Redirecting...",
       "signedIn": "Signed in. Redirecting...",
-      "connection": "Connection error while signing in. Try again."
+      "connection": "Connection error while signing in. Try again.",
+      "invalidCredentials": "The email address or password is incorrect.",
+      "invalidRegistration": "Enter a valid email address and a password of 8 to 1024 characters.",
+      "accountExists": "An account with this email address already exists. Sign in instead."
     }
   },
   "converterPage": {
@@ -1566,7 +1569,20 @@
     "submit": "Load File",
     "invalidUrl": "Enter a full link that starts with http:// or https://.",
     "fetchFailed": "Failed to fetch file (HTTP {status})",
-    "networkError": "Invalid URL or network error"
+    "networkError": "Invalid URL or network error",
+    "errors": {
+      "url_required": "Enter the link of a file.",
+      "invalid_url": "This link cannot be read. Enter a full link that starts with http:// or https://.",
+      "unsupported_scheme": "Only links that start with http:// or https:// can be imported.",
+      "address_blocked": "Links to private or local network addresses cannot be imported.",
+      "redirect_without_location": "The link redirected without naming where to. Try the file's direct link.",
+      "too_many_redirects": "The link redirected too many times. Try the file's direct link.",
+      "invalid_redirect": "The link redirected to an address that cannot be read. Try the file's direct link.",
+      "remote_error": "The site of the link did not send the file. Check that the link opens the file in a browser.",
+      "empty_body": "The site of the link sent an empty file.",
+      "file_too_large": "A file imported from a link may be at most {limit}. Download it and add it from your device to convert a file of up to {planLimit}.",
+      "fetch_failed": "The file could not be fetched from the link. Try again."
+    }
   },
   "userNav": {
     "dashboard": "Dashboard",

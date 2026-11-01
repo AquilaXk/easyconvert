@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
-import { useServerErrorMessage } from '../i18n/problems';
+import { useAuthErrorMessage } from './auth-errors';
 import {
   resolveOAuthErrorKey,
   validateRegistrationInput,
@@ -19,7 +19,7 @@ type AuthAnswer = { success: true; user: SessionUser } | { success: false; error
 
 export function useAuthController() {
   const t = useTranslations('auth');
-  const serverErrorMessage = useServerErrorMessage();
+  const authErrorMessage = useAuthErrorMessage();
   const oauthErrorMessage = (urlError: string | null): string | null => {
     const key = resolveOAuthErrorKey(urlError);
     return key ? t(`oauthErrors.${key}`) : null;
@@ -133,7 +133,7 @@ export function useAuthController() {
       const data = (await res.json()) as AuthAnswer;
 
       if (!res.ok || !data.success) {
-        setErrorMessage(serverErrorMessage(data, t('messages.failed')));
+        setErrorMessage(authErrorMessage(activeTab, res.status, data));
         setIsLoading(false);
         return;
       }

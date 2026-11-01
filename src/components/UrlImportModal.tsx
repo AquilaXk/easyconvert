@@ -6,7 +6,7 @@ import { Globe, X, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { URL_IMPORT_MAX_BYTES } from '@/lib/plan-limits';
 import { useFormatBytes } from './i18n/format';
-import { useServerErrorMessage } from './i18n/problems';
+import { useUrlImportErrorMessage } from './i18n/url-import-errors';
 
 export interface UrlImportModalProps {
   isOpen?: boolean;
@@ -21,7 +21,7 @@ export default function UrlImportModal({
 }: Readonly<UrlImportModalProps>) {
   const t = useTranslations('urlImport');
   const formatBytes = useFormatBytes();
-  const serverErrorMessage = useServerErrorMessage();
+  const urlImportErrorMessage = useUrlImportErrorMessage();
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +55,7 @@ export default function UrlImportModal({
 
       if (!response.ok) {
         const payload: unknown = await response.json().catch(() => ({}));
-        setError(serverErrorMessage(payload, t('fetchFailed', { status: response.status })));
+        setError(urlImportErrorMessage(payload, response.status));
         return;
       }
 
