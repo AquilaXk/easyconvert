@@ -24,9 +24,19 @@ function registryCopy() {
   };
 }
 
-/** A locale's messages from its file, completed with the copy English reads from the registry and the unit catalog. */
+const completedEnglish = new WeakMap<object, object>();
+
+/**
+ * A locale's messages from its file, completed with the copy English reads from the registry and the unit catalog. The
+ * English set is assembled once per messages file, since every page render reads it.
+ */
 export function completeMessages<M extends object>(locale: AppLocale, fileMessages: M) {
-  return locale === 'en' ? { ...fileMessages, ...registryCopy() } : fileMessages;
+  if (locale !== 'en') return fileMessages;
+  const cached = completedEnglish.get(fileMessages) as (M & ReturnType<typeof registryCopy>) | undefined;
+  if (cached) return cached;
+  const completed = { ...fileMessages, ...registryCopy() };
+  completedEnglish.set(fileMessages, completed);
+  return completed;
 }
 
 export async function loadMessages(locale: AppLocale) {

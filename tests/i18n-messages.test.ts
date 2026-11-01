@@ -6,6 +6,8 @@ import { FORMAT_SPECIFICATIONS } from '../src/components/converter/format-specs'
 import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { formatMessageKey } from '../src/i18n/message-keys';
 import { routing } from '../src/i18n/routing';
+import { completeMessages } from '../src/i18n/messages';
+import en from '../messages/en.json';
 
 /**
  * Every offered language carries every message, with the same arguments, and the Korean copy keeps one register (합니다체)
@@ -47,6 +49,12 @@ function argumentsOf(message: string): string[] {
   visit(parse(message));
   return [...names].sort();
 }
+
+describe('the assembled messages', () => {
+  it('are assembled once per messages file, not on every request', () => {
+    expect(completeMessages('en', en)).toBe(completeMessages('en', en));
+  });
+});
 
 describe('every language carries every message', () => {
   it('has the same keys in each locale', () => {

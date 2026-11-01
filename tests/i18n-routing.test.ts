@@ -97,7 +97,7 @@ describe('locale routing of pages', () => {
   });
 
   it('answers the root privately and by language and cookie, so no shared cache hands one visitor another language', async () => {
-    for (const headers of [{}, KOREAN_BROWSER, { cookie: 'NEXT_LOCALE=ko' }, { cookie: 'NEXT_LOCALE=en' }]) {
+    for (const headers of [{}, KOREAN_BROWSER, { cookie: 'NEXT_LOCALE=ko' }, { cookie: 'NEXT_LOCALE=en' }] as Array<Record<string, string>>) {
       const root = await answer('/', headers);
       expect(root.vary, JSON.stringify(headers)).toBe('Accept-Language, Cookie');
       expect(root.cacheControl, JSON.stringify(headers)).toBe('private, no-store');
@@ -106,7 +106,7 @@ describe('locale routing of pages', () => {
   });
 
   it('writes the locale cookie only from the language selector, never while negotiating the root', async () => {
-    for (const headers of [{}, KOREAN_BROWSER, { 'accept-language': 'fr-FR' }, { cookie: 'NEXT_LOCALE=ko' }]) {
+    for (const headers of [{}, KOREAN_BROWSER, { 'accept-language': 'fr-FR' }, { cookie: 'NEXT_LOCALE=ko' }] as Array<Record<string, string>>) {
       const res = await middleware(request('/', headers));
       expect(res.headers.get('set-cookie'), JSON.stringify(headers)).toBeNull();
       expect(res.headers.get('x-middleware-set-cookie'), JSON.stringify(headers)).toBeNull();
