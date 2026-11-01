@@ -1,13 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { tryToParsePath } from 'next/dist/lib/try-to-parse-path';
+import { getAccessFallbackHTTPStatus, isHTTPAccessFallbackError } from 'next/dist/client/components/http-access-fallback/http-access-fallback';
+import ConverterPage from '../src/app/[locale]/[slug]/page';
 import { config, middleware } from '../src/middleware';
 import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { canonicalSlugPath, isFileProbeSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
+import { DOTTED_FORMAT_SUFFIXES, canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
 
 /**
  * Locale routing as a visitor meets it: English at the unprefixed paths, Korean under /ko, the visitor's language
@@ -16,6 +18,11 @@ import { canonicalSlugPath, isFileProbeSlug, isIndexableSlug, parseConverterSlug
  */
 
 const ORIGIN = 'http://localhost:3000';
+
+vi.mock('next-intl/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next-intl/server')>()),
+  setRequestLocale: () => undefined,
+}));
 
 function request(pathname: string, headers: Record<string, string> = {}): NextRequest {
   return new NextRequest(`${ORIGIN}${pathname}`, { headers });
@@ -70,12 +77,13 @@ describe('locale routing of pages', () => {
     expect(await answer('/en/status')).toMatchObject({ status: 307, location: `${ORIGIN}/status` });
   });
 
-  it('routes converter slugs whose format holds a dot in every language', async () => {
+  it('routes converter slugs whose format holds a dot in every language, however they are cased', async () => {
     expect(DOTTED_SLUGS).toContain('/zip-to-tar.gz');
-    for (const slug of DOTTED_SLUGS) {
+    for (const slug of DOTTED_SLUGS.flatMap((slug) => [slug, slug.toUpperCase()])) {
       expect(matched(slug), slug).toBe(true);
       expect(matched(`/ko${slug}`), `/ko${slug}`).toBe(true);
     }
+    for (const slug of ['/zip-to-TAR.GZ', '/TAR.GZ-to-zip', '/ko/Zip-To-Tar.GZ', '/ko/Tar.Xz-to-zip']) expect(matched(slug), slug).toBe(true);
     expect((await answer('/zip-to-tar.gz')).rewrite).toBe(`${ORIGIN}/en/zip-to-tar.gz`);
     expect((await answer('/tar.gz-to-zip')).rewrite).toBe(`${ORIGIN}/en/tar.gz-to-zip`);
     expect((await answer('/ko/zip-to-tar.gz')).status).toBe(200);
@@ -159,7 +167,7 @@ describe('API routes are not locale routed', () => {
     const probes = [
       '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz', '/index.html', '/a.JS',
       '/robots.TXT', '/ko/wp-login.php', '/ko/backup.zip', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz',
-      '/ko/.env', '/zip-to-TAR.GZ',
+      '/ko/.env', '/ZIP-to-TAR.GZIP', '/ko/zip-to-TAR.GZ.PHP',
     ];
     for (const pathname of probes) expect(matched(pathname), pathname).toBe(false);
   });
@@ -195,10 +203,39 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     }
   });
 
-  it('answers 404 for a slug that names nothing and holds a dot, which asks for a file', () => {
-    for (const slug of ['backup.zip', 'wp-login.php', 'index.html', 'a.b-c']) expect(isFileProbeSlug(slug), slug).toBe(true);
-    for (const slug of ['zip-to-tar.gz', 'tar.gz-to-zip', 'tar.xz-converter', 'hello-world', 'png-to-jpg', 'foo-to-bar.baz']) {
-      expect(isFileProbeSlug(slug), slug).toBe(false);
+  it('reads a slug with a dot as a file, except the dot of a registered dotted format id', () => {
+    for (const slug of ['backup.zip', 'wp-login.php', 'index.html', 'a.b-c', 'foo-to-bar.php', 'x.php-converter', 'zip-to-tar.gz.php', 'zip-to-x.tar.gz']) {
+      expect(isFileSlug(slug), slug).toBe(true);
     }
+    for (const slug of ['zip-to-tar.gz', 'tar.gz-to-zip', 'tar.xz-converter', 'Zip-To-Tar.GZ', 'TAR.BZ2-to-zip', 'hello-world', 'png-to-jpg']) {
+      expect(isFileSlug(slug), slug).toBe(false);
+    }
+  });
+
+  it('answers 404 from the page for a dotted path that reached it under a locale, and renders a dotted format id', async () => {
+    const statusOf = async (locale: string, slug: string) => {
+      try {
+        await ConverterPage({ params: Promise.resolve({ locale, slug }) });
+        return 200;
+      } catch (error) {
+        if (isHTTPAccessFallbackError(error)) return getAccessFallbackHTTPStatus(error);
+        throw error;
+      }
+    };
+    for (const [locale, slug] of [['ko', 'foo-to-bar.php'], ['ko', 'x.php-converter'], ['en', 'foo-to-bar.php'], ['ko', 'backup.zip']]) {
+      expect(await statusOf(locale, slug), `/${locale}/${slug}`).toBe(404);
+    }
+    for (const slug of ['zip-to-tar.gz', 'Zip-To-Tar.GZ']) expect(await statusOf('ko', slug), `/ko/${slug}`).toBe(200);
+  });
+
+  it('allows in the middleware matcher exactly the dotted ids of the registry, in any case', () => {
+    const dottedIds = Object.keys(FORMAT_REGISTRY).filter((id) => id.includes('.'));
+    expect(dottedIds.map((id) => id.split('.')[0])).toEqual(dottedIds.map(() => 'tar'));
+    expect([...DOTTED_FORMAT_SUFFIXES].sort()).toEqual(dottedIds.map((id) => id.slice('tar.'.length)).sort());
+    const anyCase = (text: string) => text.replace(/[a-z]/g, (letter) => `[${letter}${letter.toUpperCase()}]`);
+    const suffixes = [...DOTTED_FORMAT_SUFFIXES].sort((a, b) => b.length - a.length || a.localeCompare(b)).map(anyCase).join('|');
+    expect(config.matcher[1]).toBe(
+      `/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-]${anyCase('tar')})\\.|\\.(?!(?:${suffixes})(?:-|$)))).*)`
+    );
   });
 });

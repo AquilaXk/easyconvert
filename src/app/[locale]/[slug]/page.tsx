@@ -6,15 +6,15 @@ import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
-import { canonicalSlugPath, isFileProbeSlug, isIndexableSlug, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
+import { canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 
 interface ConverterPageProps {
   params: Promise<{ locale: string; slug: string }>;
 }
 
-/** The parsed slug of a converter page; a slug that asks for a file is answered 404. */
+/** The parsed slug of a converter page; a slug that names a file is answered 404. */
 function pageSlug(slug: string): ParsedSlug {
-  if (isFileProbeSlug(slug)) notFound();
+  if (isFileSlug(slug)) notFound();
   return parseConverterSlug(slug);
 }
 

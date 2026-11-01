@@ -386,12 +386,13 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 
 export const config = {
   // API routes, and every page path that is not a framework internal or a file. A path with a dot names a file, except the
-  // dot of a dotted format id of the registry (`tar.gz`, only ever `tar.<suffix>`) at the start of a slug or after a dash
-  // and before a dash or the end (/zip-to-tar.gz, /tar.gz-to-zip). Every other dotted path (/wp-login.php, /.env,
-  // /backup.zip) never reaches the locale routing. tests/i18n-routing.test.ts derives the dotted ids from the registry and
-  // fails when the registry gains one this list does not allow; the matcher must stay a literal for Next.js to read it.
+  // dot of a dotted format id of the registry (`tar.gz`, only ever `tar.<suffix>`, in any case) at the start of a slug or
+  // after a dash and before a dash or the end (/zip-to-tar.gz, /TAR.GZ-to-zip). Every other dotted path (/wp-login.php,
+  // /.env, /backup.zip) never reaches the locale routing; a path that reaches a page under a locale prefix meets the same
+  // rule there (isFileSlug in src/lib/slug-parser.ts). The matcher must stay a literal for Next.js to read it, so
+  // tests/i18n-routing.test.ts builds it from DOTTED_FORMAT_SUFFIXES and fails when the two differ.
   matcher: [
     '/api/:path*',
-    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-]tar)\\.|\\.(?!(?:zst|bz2|gz|7z|bz|lzo|xz|z)(?:-|$)))).*)',
+    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-][tT][aA][rR])\\.|\\.(?!(?:[bB][zZ]2|[lL][zZ][oO]|[zZ][sS][tT]|7[zZ]|[bB][zZ]|[gG][zZ]|[xX][zZ]|[zZ])(?:-|$)))).*)',
   ],
 };

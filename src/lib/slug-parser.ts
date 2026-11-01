@@ -179,12 +179,25 @@ export function isIndexableSlug(parsed: ParsedSlug): boolean {
   }
 }
 
+const DOTTED_FORMAT_PREFIX = 'tar.';
+
 /**
- * Whether a slug asks for a file rather than a page: it names nothing the parser knows and holds a dot (`backup.zip`,
- * `wp-login.php`). Such a path is answered 404, not with a converter page.
+ * The suffixes of the registry's dotted format ids (`tar.gz`), the only dots a page path holds. The matcher of
+ * src/middleware.ts lists them as a literal, which tests/i18n-routing.test.ts holds to this list.
  */
-export function isFileProbeSlug(slug: string): boolean {
-  return slug.includes('.') && parseConverterSlug(slug).copy.kind === 'generic';
+export const DOTTED_FORMAT_SUFFIXES: readonly string[] = Object.keys(FORMAT_REGISTRY)
+  .filter((id) => id.startsWith(DOTTED_FORMAT_PREFIX))
+  .map((id) => id.slice(DOTTED_FORMAT_PREFIX.length));
+
+/** A dotted format id at the start of a slug or after a dash, and before a dash or the end, as the middleware matcher reads it. */
+const DOTTED_FORMAT_ID = new RegExp(`(?<=^|-)tar\\.(?:${DOTTED_FORMAT_SUFFIXES.join('|')})(?=-|$)`, 'g');
+
+/**
+ * Whether a slug names a file rather than a page: any dot left once the dotted format ids are taken out (`backup.zip`,
+ * `foo-to-bar.php`), the rule by which the middleware matcher leaves a path to the file routes. Such a path is answered 404.
+ */
+export function isFileSlug(slug: string): boolean {
+  return normalizeSlug(slug).replace(DOTTED_FORMAT_ID, '').includes('.');
 }
 
 export function parseConverterSlug(slug: string): ParsedSlug {
