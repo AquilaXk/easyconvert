@@ -1585,7 +1585,9 @@
       "part-in-flight": "A part of this upload is still being received. Try again in a moment.",
       "idempotency-key-reused": "This request repeats an earlier one with different contents. Start again.",
       "idempotency-key-in-flight": "The same request is still being processed. Try again in a moment.",
-      "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly."
+      "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly.",
+      "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
+      "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider."
     },
     "limits": {
       "payload-too-large": "One request can carry at most {limit}.",
@@ -1596,6 +1598,7 @@
     },
     "conversion": {
       "file_required": "Choose a file to convert.",
+      "multipart_required": "The file was not sent in a form the converter can read. Reload the page and try again.",
       "empty_file": "The file is empty.",
       "target_required": "Choose a format to convert to.",
       "unknown_format": "The format of this file could not be told from its name. Check its extension.",
@@ -1628,6 +1631,7 @@
     },
     "urlImport": {
       "url_required": "Enter the link of a file.",
+      "invalid_json": "The link request could not be read. Reload the page and try again.",
       "invalid_url": "This link cannot be read. Enter a full link that starts with http:// or https://.",
       "unsupported_scheme": "Only links that start with http:// or https:// can be imported.",
       "address_blocked": "Links to private or local network addresses cannot be imported.",

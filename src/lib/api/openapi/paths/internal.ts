@@ -32,8 +32,8 @@ import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-co
 
 /**
  * The codes `POST /api/convert` answers with, by status: the request's own, and the `refusalCode` of the error a conversion
- * threw, which the route answers 422 for an intact file it cannot read, 500 for an archive error outside the conversion
- * errors, and 400 for any other conversion error (src/app/api/convert/route.ts).
+ * threw, which the route answers 422 for an intact file it cannot read or an archive it cannot open, and 400 for any other
+ * conversion error (src/app/api/convert/route.ts).
  */
 const CONVERT_CODES = {
   400: [
@@ -43,14 +43,13 @@ const CONVERT_CODES = {
   ],
   422: [
     'invalid_pages', 'encrypted_input', 'password_required', 'invalid_password', 'unsupported_method', 'unsupported_input',
-    'malformed_input', 'empty_file', 'archive_entry_collision',
+    'malformed_input', 'empty_file', 'archive_entry_collision', 'missing_volume',
   ],
-  500: ['missing_volume', 'encrypted_input'],
 } as const satisfies Record<number, readonly ConversionRefusalCode[]>;
 
 /** The codes `POST /api/fetch-url` answers with, by status (src/app/api/fetch-url/route.ts). */
 const URL_IMPORT_CODES = {
-  400: ['url_required', 'invalid_url', 'unsupported_scheme', 'remote_error'],
+  400: ['invalid_json', 'url_required', 'invalid_url', 'unsupported_scheme', 'remote_error'],
   502: ['redirect_without_location', 'too_many_redirects', 'invalid_redirect', 'fetch_failed', 'remote_error', 'empty_body'],
 } as const satisfies Record<number, readonly UrlImportErrorCode[]>;
 
@@ -281,7 +280,7 @@ export const internalPaths = {
         '400': createCodedErrorResponse('Invalid input, unsupported conversion, or spoofed file.', CONVERT_CODES[400]),
         '401': createProblemResponse('Authentication required.'),
         '422': {
-          description: `Page count exceeds the tier limit, the document is encrypted, password protected or DRM protected so its text cannot be read (with a \`code\` such as "password_required" or "encrypted_input"), or: ${PDFA_PROBLEM_DESCRIPTION}`,
+          description: `Page count exceeds the tier limit, the document or the archive header is encrypted, password protected or DRM protected so its text cannot be read (with a \`code\` such as "password_required" or "encrypted_input"), a part of a multi-volume archive is missing ("missing_volume"), or: ${PDFA_PROBLEM_DESCRIPTION}`,
           content: {
             ...createCodedErrorResponse('', CONVERT_CODES[422]).content,
             'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
@@ -290,7 +289,8 @@ export const internalPaths = {
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION} A file over the plan limit names \`plan\`, \`sizeBytes\` and \`limitBytes\`; a decode limit has \`code\` "input_over_limit".`),
         '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
-        '500': createCodedErrorResponse('Conversion failed: an archive error outside the conversion errors (with its `code`), or a failure the server did not classify, answered with the fixed `error` "The conversion failed on the server." and no `code`.', CONVERT_CODES[500]),
+        '415': createCodedErrorResponse('The body is not `multipart/form-data`.', ['multipart_required']),
+        '500': createErrorResponse('Conversion failed for a reason the server did not classify, answered with the fixed `error` "The conversion failed on the server." and no `code`.'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
         '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
@@ -348,7 +348,7 @@ export const internalPaths = {
       },
       responses: {
         '200': binaryResponse('Remote file content; `X-Filename` holds the URI-encoded name.'),
-        '400': createCodedErrorResponse('Missing or invalid URL, or the remote server returned 4xx (its status in `remoteStatus`).', URL_IMPORT_CODES[400]),
+        '400': createCodedErrorResponse('A body that is not a JSON object, a missing or invalid URL, or the remote server returned 4xx (its status in `remoteStatus`).', URL_IMPORT_CODES[400]),
         '401': createProblemResponse('Authentication required.'),
         '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
         '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),

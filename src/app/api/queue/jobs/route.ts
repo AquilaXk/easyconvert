@@ -3,7 +3,6 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
-import { JobDeadlineError } from '@/lib/queue/job-deadline';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
@@ -15,7 +14,7 @@ import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
-import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { respondOnce } from '@/lib/api/with-idempotency';
 import type { User } from '@/lib/auth/types';
@@ -170,12 +169,7 @@ async function queueJob(req: NextRequest, user: User, reservationId: string | un
     if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, instanceUri);
     if (storageProblem) return storageProblem;
-    if (error instanceof JobDeadlineError) {
-      // The detail names a deadline setting, so it stays in the server log.
-      console.error('[queue/jobs] Invalid deadline setting or input:', error);
-      return fail(500, 'Job enqueue error');
-    }
-    return fail(500, error instanceof Error ? error.message : 'Job enqueue error');
+    return serverFault('queue/jobs', error, 'Job enqueue error');
   }
 }
 

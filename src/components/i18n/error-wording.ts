@@ -1,8 +1,8 @@
 import { useCallback } from 'react';
-import { useFormatter, useTranslations, type Messages } from 'next-intl';
+import { useFormatter, useMessages, useTranslations, type Messages } from 'next-intl';
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '@/lib/plan-limits';
-import { PROBLEM_TYPE_BASE, type AuthErrorCode, type ConversionRefusalCode, type UrlImportErrorCode } from '@/lib/refusal-codes';
+import { AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, PROBLEM_TYPE_BASE, URL_IMPORT_ERROR_CODES, isCodeOf } from '@/lib/refusal-codes';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { useFileTooLargeMessage, useFormatBytes } from './format';
 
@@ -48,6 +48,9 @@ function refusalText(answer: Answer, status: number): string | undefined {
 
 const isPlan = (value: unknown): value is Plan => typeof value === 'string' && Object.hasOwn(PLAN_MAX_FILE_BYTES, value);
 
+/** A problem name the messages have a sentence for: an own key of `errors.problems`, never an inherited property. */
+const isProblemName = (problems: Messages['errors']['problems'], name: string): name is ProblemName => Object.hasOwn(problems, name);
+
 interface LimitWords {
   /** The sentence `key` with the number in `field` of the answer, or undefined when the answer does not carry it. */
   limit: (key: LimitKey, answer: Answer, field: string, unit: 'bytes' | 'count') => string | undefined;
@@ -55,7 +58,7 @@ interface LimitWords {
 }
 
 /** The sentences that name the numbers a problem's answer carries, by problem name; without the number, the problem's own. */
-const LIMIT_SENTENCES: Readonly<Record<string, (answer: Answer, words: LimitWords) => string | undefined>> = {
+const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, words: LimitWords) => string | undefined>>> = {
   'payload-too-large': (answer, { limit, fileTooLarge }) => {
     const sizeBytes = numberField(answer, 'sizeBytes');
     if (isPlan(answer.plan) && sizeBytes !== undefined) return fileTooLarge(answer.plan, sizeBytes);
@@ -75,6 +78,7 @@ const LIMIT_SENTENCES: Readonly<Record<string, (answer: Answer, words: LimitWord
  */
 export function useProblemWording(): (payload: unknown, status: number, fallback?: string) => ErrorWording {
   const t = useTranslations('errors');
+  const problems = useMessages().errors.problems;
   const format = useFormatter();
   const formatBytes = useFormatBytes();
   const fileTooLarge = useFileTooLargeMessage();
@@ -83,17 +87,18 @@ export function useProblemWording(): (payload: unknown, status: number, fallback
       const answer = answerOf(payload);
       const technical = refusalText(answer, status);
       const type = textField(answer, 'type');
-      const name = type?.startsWith(PROBLEM_TYPE_BASE) ? (type.slice(PROBLEM_TYPE_BASE.length) as ProblemName) : undefined;
-      if (name && t.has(`problems.${name}`)) {
+      const name = type?.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
+      if (name !== undefined && isProblemName(problems, name)) {
         const limit: LimitWords['limit'] = (key, fields, field, unit) => {
           const value = numberField(fields, field);
           return value === undefined ? undefined : t(`limits.${key}`, { limit: unit === 'bytes' ? formatBytes(value) : format.number(value) });
         };
-        return { message: LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge }) ?? t(`problems.${name}`), technical };
+        const limitSentence = Object.hasOwn(LIMIT_SENTENCES, name) ? LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge }) : undefined;
+        return { message: limitSentence ?? t(`problems.${name}`), technical };
       }
       return { message: fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server')), technical };
     },
-    [t, format, formatBytes, fileTooLarge]
+    [t, problems, format, formatBytes, fileTooLarge]
   );
 }
 
@@ -106,8 +111,8 @@ export function useUrlImportErrorWording(): (payload: unknown, status: number) =
   return useCallback(
     (payload: unknown, status: number) => {
       const answer = answerOf(payload);
-      const code = textField(answer, 'code') as UrlImportErrorCode | undefined;
-      if (!code || !t.has(code)) return problemWording(answer, status);
+      const code = answer.code;
+      if (!isCodeOf(URL_IMPORT_ERROR_CODES, code)) return problemWording(answer, status);
       const technical = refusalText(answer, status);
       if (code === 'file_too_large') {
         return { message: t(code, { limit: formatBytes(URL_IMPORT_MAX_BYTES), planLimit: formatBytes(maxFileBytes(plan)) }), technical };
@@ -127,8 +132,8 @@ export function useAuthErrorWording(): (payload: unknown, status: number) => Err
   return useCallback(
     (payload: unknown, status: number) => {
       const answer = answerOf(payload);
-      const code = textField(answer, 'code') as AuthErrorCode | undefined;
-      if (!code || !t.has(code)) return problemWording(answer, status, t('failed'));
+      const code = answer.code;
+      if (!isCodeOf(AUTH_ERROR_CODES, code)) return problemWording(answer, status, t('failed'));
       const technical = refusalText(answer, status);
       if (code === 'login_locked') return { message: t(code, { seconds: numberField(answer, 'retryAfterSeconds') ?? 0 }), technical };
       return { message: t(code), technical };
@@ -146,12 +151,11 @@ export function useConversionFailureWording(): (failure: ConversionFailure) => E
   const problemWording = useProblemWording();
   return useCallback(
     (failure: ConversionFailure) => {
-      const conversionSentence = (code: string | undefined) =>
-        code && t.has(`conversion.${code as ConversionRefusalCode}`) ? t(`conversion.${code as ConversionRefusalCode}`) : undefined;
+      const conversionSentence = (code: unknown) => (isCodeOf(CONVERSION_REFUSAL_CODES, code) ? t(`conversion.${code}`) : undefined);
       switch (failure.code) {
         case 'server': {
           const status = numberField(failure.problem, 'status') ?? HTTP_SERVER_ERROR_MIN;
-          const message = conversionSentence(textField(failure.problem, 'code'));
+          const message = conversionSentence(failure.problem.code);
           return message ? { message, technical: refusalText(failure.problem, status) } : problemWording(failure.problem, status);
         }
         case 'jobFailed':

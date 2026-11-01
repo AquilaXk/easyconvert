@@ -13,7 +13,9 @@ import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
+  ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
+  MissingVolumeError,
   isUnprocessableInputError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -42,6 +44,10 @@ const UNCLASSIFIED_FAILURE = 'The conversion failed on the server.';
 
 const refusal = codedRefusal<ConversionRefusalCode>;
 
+const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+
+const isMultipartBody = (req: NextRequest): boolean => (req.headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
+
 /** Whether a failed conversion was refused for its input (400) rather than failed on the server (500). */
 function isValidationError(error: unknown, message: string): boolean {
   return (
@@ -67,7 +73,7 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
   if (error instanceof PdfPostprocessError) {
     return createPdfPostprocessResponse(error, instanceUri);
   }
-  if (error instanceof ArchiveEntryCollisionError) {
+  if (error instanceof ArchiveEntryCollisionError || error instanceof MissingVolumeError || error instanceof ArchiveEncryptedHeaderError) {
     return refusal(error.status, error.refusalCode, error.message);
   }
   const limitStatus = payloadLimitStatus(error);
@@ -91,9 +97,8 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
     return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
   }
   const message = error instanceof Error ? error.message : UNCLASSIFIED_FAILURE;
-  const code = refusalCodeOf(error);
-  if (isValidationError(error, message)) return refusal(400, code ?? 'conversion_failed', message);
-  return code ? refusal(500, code, message) : serverFault('convert', error, UNCLASSIFIED_FAILURE);
+  if (isValidationError(error, message)) return refusal(400, refusalCodeOf(error) ?? 'conversion_failed', message);
+  return serverFault('convert', error, UNCLASSIFIED_FAILURE);
 }
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
@@ -126,6 +131,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     return refusal(status, code, error);
   };
+
+  if (!isMultipartBody(req)) {
+    return await failWithRollback(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
+  }
 
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
@@ -197,16 +206,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    if (options) {
-      if (!options.pages && options.page) {
-        options.pages = String(options.page);
-      }
-      if (options.pages) {
-        try {
-          validateTierPageLimit(options.pages, auth.user?.tier || 'free');
-        } catch (err: any) {
-          return await failWithRollback(422, refusalCodeOf(err), err.message);
-        }
+    if (!options.pages && options.page) {
+      options.pages = String(options.page);
+    }
+    if (options.pages) {
+      try {
+        validateTierPageLimit(options.pages, auth.user?.tier || 'free');
+      } catch (err: any) {
+        return await failWithRollback(422, refusalCodeOf(err), err.message);
       }
     }
 

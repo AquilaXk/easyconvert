@@ -6,10 +6,12 @@ import { POST as login } from '../src/app/api/auth/login/route';
 import { POST as register } from '../src/app/api/auth/register/route';
 import {
   useAuthErrorWording,
+  useConversionFailureWording,
   useProblemWording,
   useUrlImportErrorWording,
   type ErrorWording,
 } from '../src/components/i18n/error-wording';
+import type { ConversionFailure } from '../src/lib/conversion-failure';
 import { resetLoginRateLimiterStore } from '../src/lib/auth/login-rate-limiter';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { hashPassword } from '../src/lib/auth/crypto';
@@ -93,7 +95,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   });
 
   it('words an answer it does not know by its status class, keeping the English text of a refusal and never of a server failure', () => {
-    const unknown = { type: `${PROBLEM}byos-invalid-endpoint`, detail: 'The endpoint is not reachable.' };
+    const unknown = { type: `${PROBLEM}retired-problem`, detail: 'The endpoint is not reachable.' };
     const korean = worded(useProblemWording, 'ko', unknown, 400);
     expectKorean(korean, 'unknown type');
     expect(korean.technical).toBe('The endpoint is not reachable.');
@@ -111,6 +113,10 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 });
 
 describe('link import refusals', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   async function urlImportAnswer(url: unknown) {
     return bodyOf(await fetchUrl(jsonRequest('/api/fetch-url', { url })));
   }
@@ -124,6 +130,18 @@ describe('link import refusals', () => {
       [403, 'address_blocked'],
     ]);
     for (const { body } of answers) expect(typeof body.error).toBe('string');
+  });
+
+  it.each([
+    ['malformed JSON', '{"url":'],
+    ['an empty body', ''],
+    ['JSON null', 'null'],
+    ['a JSON array', '["https://example.com/a.png"]'],
+  ])('answers %s 400 with the code invalid_json, and logs nothing', async (_, body) => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { status, body: answer } = await bodyOf(await fetchUrl(jsonRequest('/api/fetch-url', body)));
+    expect({ status, code: answer.code }).toEqual({ status: 400, code: 'invalid_json' });
+    expect(logged).not.toHaveBeenCalled();
   });
 
   it('words every refusal code in Korean, and the remote status as a number', () => {
@@ -213,5 +231,32 @@ describe('sign-in refusals are worded by their code', () => {
     const untyped = worded(useAuthErrorWording, 'ko', { error: 'Email and password are required strings.' }, 400);
     expect(untyped.technical).toBe('Email and password are required strings.');
     expect(untyped.message).not.toBe(worded(useAuthErrorWording, 'ko', { code: 'missing_fields' }, 400).message);
+  });
+});
+
+describe('a name or code outside the closed lists reads as its status class', () => {
+  const NOT_CODES = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'];
+
+  it.each(NOT_CODES)('words the problem type %s as a refusal', (name) => {
+    const wording = worded(useProblemWording, 'en', { type: `${PROBLEM}${name}`, detail: 'x' }, 400);
+    expect(wording.message).toBe(worded(useProblemWording, 'en', {}, 400).message);
+  });
+
+  it.each([...NOT_CODES, 'remoteAnswered'])('words the link import code %s by its status class', (code) => {
+    const wording = worded(useUrlImportErrorWording, 'en', { code, remoteStatus: 404, error: 'x' }, 400);
+    expect(wording.message).toBe(worded(useUrlImportErrorWording, 'en', { error: 'x' }, 400).message);
+  });
+
+  it.each([...NOT_CODES, 'failed'])('words the sign-in code %s as a failed sign-in', (code) => {
+    expect(worded(useAuthErrorWording, 'en', { code, error: 'x' }, 400).message).toBe(worded(useAuthErrorWording, 'en', { error: 'x' }, 400).message);
+  });
+
+  it.each(NOT_CODES)('words the conversion code %s as a failed job or a refusal', (code) => {
+    const jobFailed: ConversionFailure = { code: 'jobFailed', refusalCode: code, reason: 'x' };
+    const refused: ConversionFailure = { code: 'server', problem: { status: 400, code, error: 'x' } };
+    expect(worded(useConversionFailureWording, 'en', jobFailed).message).toBe(
+      worded(useConversionFailureWording, 'en', { code: 'jobFailed', reason: 'x' }).message
+    );
+    expect(worded(useConversionFailureWording, 'en', refused).message).toBe(worded(useProblemWording, 'en', {}, 400).message);
   });
 });

@@ -1994,7 +1994,9 @@
       "part-in-flight": "업로드의 일부를 아직 받는 중입니다. 잠시 후 다시 시도하십시오.",
       "idempotency-key-reused": "이 요청은 내용이 다른 이전 요청과 겹칩니다. 처음부터 다시 시도하십시오.",
       "idempotency-key-in-flight": "같은 요청을 아직 처리하는 중입니다. 잠시 후 다시 시도하십시오.",
-      "client-ip-trust-unconfigured": "서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도하십시오."
+      "client-ip-trust-unconfigured": "서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도하십시오.",
+      "byos-invalid-endpoint": "저장소 엔드포인트를 사용할 수 없습니다. 주소를 확인한 뒤 다시 시도하십시오.",
+      "byos-provider-unavailable": "이 저장소 제공업체는 아직 연결할 수 없습니다. 다른 제공업체를 선택하십시오."
     },
     "limits": {
       "payload-too-large": "한 번의 요청으로 보낼 수 있는 크기는 최대 {limit}입니다.",
@@ -2005,6 +2007,7 @@
     },
     "conversion": {
       "file_required": "변환할 파일을 선택하십시오.",
+      "multipart_required": "변환기가 읽을 수 있는 형태로 파일이 전송되지 않았습니다. 페이지를 새로 고친 뒤 다시 시도하십시오.",
       "empty_file": "파일이 비어 있습니다.",
       "target_required": "변환할 형식을 선택하십시오.",
       "unknown_format": "파일 이름으로 형식을 알 수 없습니다. 확장자를 확인하십시오.",
@@ -2037,6 +2040,7 @@
     },
     "urlImport": {
       "url_required": "파일 링크를 입력하십시오.",
+      "invalid_json": "링크 요청을 읽을 수 없습니다. 페이지를 새로 고친 뒤 다시 시도하십시오.",
       "invalid_url": "링크를 읽을 수 없습니다. http:// 또는 https://로 시작하는 전체 링크를 입력하십시오.",
       "unsupported_scheme": "http:// 또는 https://로 시작하는 링크만 가져올 수 있습니다.",
       "address_blocked": "사설 네트워크나 로컬 주소의 링크는 가져올 수 없습니다.",

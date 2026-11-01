@@ -213,7 +213,7 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
  * The 500 for an error a route did not classify. Its text can name a path or a program's output, which RFC 9457 section 5
  * keeps out of an answer, so the answer is the fixed `sentence` and the error goes to the server log under `context`.
  */
-export function serverFault(context: string, error: unknown, sentence: string, code?: string): NextResponse {
+export function serverFault<Code extends string>(context: string, error: unknown, sentence: string, code?: Code): NextResponse {
   console.error(`[${context}]`, error);
   return codedRefusal(HTTP_INTERNAL_SERVER_ERROR, code, sentence);
 }

@@ -5,6 +5,8 @@ import sharp from 'sharp';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as loginRoute } from '../src/app/api/auth/login/route';
 import { POST as registerRoute } from '../src/app/api/auth/register/route';
+import { POST as queueJobsRoute } from '../src/app/api/queue/jobs/route';
+import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
@@ -17,6 +19,7 @@ import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { buildOpenApiDocument } from '../src/lib/api/openapi';
 import {
+  ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
   DataLimitExceededError,
   EmptyAudioInputError,
@@ -53,6 +56,7 @@ beforeAll(async () => {
 afterEach(() => {
   vi.mocked(dispatchConversion).mockReset();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -124,12 +128,38 @@ describe('a subclass of a coded error answers its parent code', () => {
   });
 });
 
+describe('/api/convert answers a client mistake with a code', () => {
+  it.each([
+    ['a JSON body', { 'content-type': 'application/json' }, JSON.stringify({ targetFormat: 'jpg' })],
+    ['a text body', { 'content-type': 'text/plain' }, 'file'],
+    ['a body without a type', {}, 'file'],
+  ])('answers %s 415 with the code multipart_required, and logs nothing', async (_, headers, body) => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(noop);
+    const res = await convertRoute(new NextRequest('http://localhost:3000/api/convert', { method: 'POST', headers, body }));
+    expect({ status: res.status, code: (await res.json()).code }).toEqual({ status: 415, code: 'multipart_required' });
+    expect(logged).not.toHaveBeenCalled();
+    expect(dispatchConversion).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['MissingVolumeError', new MissingVolumeError('archive.part2.rar'), 'missing_volume'],
+    ['ArchiveEncryptedHeaderError', new ArchiveEncryptedHeaderError(), 'encrypted_input'],
+  ])('answers %s with its declared 422 and its code', async (_, error, code) => {
+    const { status, body } = await convertAnswer(error);
+    expect({ status, code: body.code }).toEqual({ status: 422, code });
+  });
+});
+
 describe('the API document lists, per status, the codes /api/convert answers with', () => {
   const responses = (buildOpenApiDocument().paths['/api/convert'] as { post: { responses: Record<string, unknown> } }).post.responses;
   const documented = (status: number): unknown[] => {
     const response = responses[String(status)] as { content: Record<string, { schema: { allOf: Array<{ properties?: { code?: { enum: unknown[] } } }> } }> };
     return response.content['application/json'].schema.allOf[1].properties?.code?.enum ?? [];
   };
+
+  it('documents the 415 of a body that is not multipart', () => {
+    expect(documented(415)).toEqual(['multipart_required']);
+  });
 
   it.each([
     new InvalidMediaOptionError('Unsupported audio bitrate "x".'),
@@ -142,6 +172,7 @@ describe('the API document lists, per status, the codes /api/convert answers wit
     new EmptyAudioInputError('mp3'),
     new ArchiveEntryCollisionError('a.txt'),
     new MissingVolumeError('archive.part2.rar'),
+    new ArchiveEncryptedHeaderError(),
   ])('documents the answer to %s', async (error) => {
     const { status, body } = await convertAnswer(error);
     expect(documented(status), `${error.name} answered ${status} ${String(body.code)}`).toContain(body.code);
@@ -174,8 +205,22 @@ describe('a failure the server did not classify keeps its text in the server log
     expect(logged.mock.calls.flat().map(String).join(' ')).toContain('/var/run/redis/redis.sock');
   });
 
+  it('answers a job the queue could not take with a fixed sentence, and logs the queue error', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(noop);
+    vi.spyOn(conversionQueue, 'add').mockRejectedValue(new Error(`EACCES: open '${MISSING_BINARY}'`));
+    const res = await queueJobsRoute(new NextRequest('http://localhost:3000/api/queue/jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'pixel.png', targetFormat: 'jpg', inputBufferBase64: Buffer.from(png).toString('base64') }),
+    }));
+    expect({ status: res.status, body: await res.json() }).toEqual({ status: 500, body: { success: false, error: 'Job enqueue error' } });
+    expect(logged.mock.calls.flat().map(String).join(' ')).toContain(MISSING_BINARY);
+  });
+
   it('shows no path on the page for a refused conversion or a failed job', async () => {
     vi.spyOn(console, 'error').mockImplementation(noop);
+    // The worker masks the paths under the directories it runs engines from, the configured tool's among them.
+    vi.stubEnv('MAGICK_PATH', MISSING_BINARY);
     const error = await spawnFailure();
     vi.mocked(dispatchConversion).mockRejectedValueOnce(error);
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => convertRoute(new NextRequest(new URL(url, 'http://localhost:3000'), init as never))));

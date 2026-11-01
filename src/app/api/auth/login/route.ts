@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
           type: RATE_LIMITED_PROBLEM_TYPE,
           title: 'Too Many Requests',
           status: 429,
-          code: 'login_locked',
+          code: 'login_locked' satisfies AuthErrorCode,
           detail: `Too many failed login attempts. Please try again in ${rateLimit.retryAfterSeconds} seconds.`,
           retryAfterSeconds: rateLimit.retryAfterSeconds,
         },

@@ -5,6 +5,7 @@
 
 /** Why `/api/fetch-url` refused to import a file from a link. */
 export const URL_IMPORT_ERROR_CODES = [
+  'invalid_json',
   'url_required',
   'invalid_url',
   'unsupported_scheme',
@@ -40,6 +41,7 @@ export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
  * error a conversion threw declares or inherits (`ConversionFailedError` and the classes under it in src/lib/types.ts).
  */
 export const CONVERSION_REFUSAL_CODES = [
+  'multipart_required',
   'file_required',
   'empty_file',
   'target_required',
@@ -66,10 +68,15 @@ export const CONVERSION_REFUSAL_CODES = [
 
 export type ConversionRefusalCode = (typeof CONVERSION_REFUSAL_CODES)[number];
 
+/** Whether `value` is one of `codes`: a code of one of the closed lists above, and never an inherited property name. */
+export function isCodeOf<const Codes extends readonly string[]>(codes: Codes, value: unknown): value is Codes[number] {
+  return typeof value === 'string' && codes.includes(value);
+}
+
 /** The code an error names through the `refusalCode` of its class; undefined for an error whose class declares none. */
 export function refusalCodeOf(error: unknown): ConversionRefusalCode | undefined {
   const code = error instanceof Error ? (error as Error & { refusalCode?: unknown }).refusalCode : undefined;
-  return typeof code === 'string' ? (code as ConversionRefusalCode) : undefined;
+  return isCodeOf(CONVERSION_REFUSAL_CODES, code) ? code : undefined;
 }
 
 /** The start of every problem `type` URI the API answers with (RFC 9457); the name after it is as stable as a code. */

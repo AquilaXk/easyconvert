@@ -16,6 +16,29 @@ export const dynamic = 'force-dynamic';
 
 const refusal = codedRefusal<UrlImportErrorCode>;
 
+/** The request body as a JSON object; null for a body that is not JSON or is JSON of another kind (`null`, an array). */
+async function readJsonObject(req: NextRequest): Promise<Record<string, unknown> | null> {
+  const body: unknown = await req.json().catch(() => null);
+  return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+}
+
+/** File name extensions for the content types of a link whose name has none. */
+const EXTENSIONS_BY_CONTENT_TYPE: ReadonlyArray<readonly [string, string]> = [
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/webp', '.webp'],
+  ['application/pdf', '.pdf'],
+  ['text/csv', '.csv'],
+  ['application/json', '.json'],
+];
+
+/** `filename`, with the extension of its content type when it has none (`.bin` for any other type). */
+function withExtension(filename: string, contentType: string): string {
+  if (filename.includes('.')) return filename;
+  const known = EXTENSIONS_BY_CONTENT_TYPE.find(([type]) => contentType.includes(type));
+  return filename + (known ? known[1] : '.bin');
+}
+
 /**
  * The 413 for a file past the limit of an import from a link. The limit is its own and smaller than the plan limit,
  * because the server reads the whole file before the browser has it, so the answer names both and the way to use the larger.
@@ -64,7 +87,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
 
   const ssrfAgent = createSsrfSafeAgent();
   try {
-    const body = await req.json();
+    const body = await readJsonObject(req);
+    if (!body) {
+      return await failWithRollback(400, 'invalid_json', 'Invalid JSON request payload.');
+    }
     const { url } = body;
 
     if (!url || typeof url !== 'string') {
@@ -204,17 +230,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     const contentType = res.headers.get('content-type') || 'application/octet-stream';
-
-    // Ensure extension
-    if (!filename.includes('.')) {
-      if (contentType.includes('image/png')) filename += '.png';
-      else if (contentType.includes('image/jpeg')) filename += '.jpg';
-      else if (contentType.includes('image/webp')) filename += '.webp';
-      else if (contentType.includes('application/pdf')) filename += '.pdf';
-      else if (contentType.includes('text/csv')) filename += '.csv';
-      else if (contentType.includes('application/json')) filename += '.json';
-      else filename += '.bin';
-    }
+    filename = withExtension(filename, contentType);
 
     if (reservationId) {
       await commitQuota(reservationId);
@@ -233,7 +249,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    return serverFault('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed' satisfies UrlImportErrorCode);
+    return serverFault<UrlImportErrorCode>('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed');
   } finally {
     ssrfAgent.close().catch(() => {});
   }
