@@ -8,6 +8,7 @@ import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { deliveryTrackedStream } from '@/lib/api/delivery-stream';
 import { deleteResult, recordServed, resultAvailability } from '@/lib/storage/retention-service';
 import { isRetainedKey, type RetentionReason } from '@/lib/storage/result-retention';
+import { classifyStorageKey } from '@/lib/storage/key-namespace';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +37,10 @@ function decodeStorageKey(rawKey: string): string | undefined {
   }
 }
 
+function inKnownNamespace(key: string): boolean {
+  return classifyStorageKey(key).namespace !== 'other';
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ key: string[] }> }
@@ -57,6 +62,9 @@ export async function GET(
     );
 
   const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
+  // The server generates every key in `uploads/`, `conversions/<user>/` or `results/<job>/`; any other key names no file
+  // a client may fetch, so it is answered before storage and the retention ledger are asked about it.
+  if (!inKnownNamespace(fullKey) && !inKnownNamespace(rawKey)) return notFound();
   let resolvedKey = fullKey;
   let stored;
   try {

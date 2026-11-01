@@ -112,7 +112,7 @@ describe('respondOnce', () => {
 
   describe('a store that cannot record the answer', () => {
     it('returns the answer of the handler and releases the key when the action is one whose repeat answers from its state', async () => {
-      vi.spyOn(store, 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+      vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: connection reset'));
       const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const handler = vi.fn(async () => created());
 
@@ -125,8 +125,8 @@ describe('respondOnce', () => {
       expect(warned.mock.calls.some(([message]) => String(message).includes('idempotency'))).toBe(true);
     });
 
-    it('keeps the lock when the action creates something, so a repeat is told 409 and never runs it a second time', async () => {
-      vi.spyOn(store, 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    it('keeps the lock when the action creates something, so a repeat is told 409 and does not run it a second time while the lock lasts', async () => {
+      vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: connection reset'));
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const handler = vi.fn(async () => created());
 
@@ -142,7 +142,7 @@ describe('respondOnce', () => {
     it('lets a lock that was kept end after its minute, as before', async () => {
       let now = 1_000_000;
       store.setClock(() => now);
-      vi.spyOn(store, 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+      vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: connection reset'));
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const handler = vi.fn(async () => created());
 
@@ -156,7 +156,7 @@ describe('respondOnce', () => {
 
     it('leaves a recorded answer in place when only the reply of the store was lost, so the repeat is a replay', async () => {
       const recorded = store.complete.bind(store);
-      vi.spyOn(store, 'complete').mockImplementationOnce(async (...args) => {
+      vi.spyOn(store, 'complete').mockImplementation(async (...args) => {
         await recorded(...args);
         throw new Error('redis: reply lost');
       });
@@ -171,14 +171,91 @@ describe('respondOnce', () => {
     });
 
     it('still returns the answer when the key cannot be released either, and logs both', async () => {
-      vi.spyOn(store, 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
-      vi.spyOn(store, 'delete').mockRejectedValueOnce(new Error('redis: still down'));
+      vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: connection reset'));
+      vi.spyOn(store, 'releaseLock').mockRejectedValueOnce(new Error('redis: still down'));
       const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
       const res = await respondOnce(post('k5'), 'u', ROUTE, async () => created(), RELEASE);
 
       expect(res.status).toBe(200);
       expect(warned.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('sends the record again before it gives up, so a store that failed once keeps the replay', async () => {
+      const recorded = store.complete.bind(store);
+      const complete = vi.spyOn(store, 'complete').mockRejectedValueOnce(new Error('redis: connection reset')).mockImplementation(recorded);
+      const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const handler = vi.fn(async () => created());
+
+      await respondOnce(post('k12'), 'u', ROUTE, handler, KEEP_LOCK);
+      const repeat = await respondOnce(post('k12'), 'u', ROUTE, handler, KEEP_LOCK);
+
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(repeat.headers.get('idempotent-replayed')).toBe('true');
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(warned).not.toHaveBeenCalled();
+    });
+
+    it('tries to record the answer three times and no more', async () => {
+      const complete = vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: down'));
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await respondOnce(post('k13'), 'u', ROUTE, async () => created(), RELEASE);
+
+      expect(complete).toHaveBeenCalledTimes(3);
+    });
+
+    it('tells a repeat that meets the kept lock to wait for what is left of the lock', async () => {
+      let now = 1_000_000;
+      store.setClock(() => now);
+      vi.spyOn(store, 'complete').mockRejectedValue(new Error('redis: connection reset'));
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await respondOnce(post('k14'), 'u', ROUTE, async () => created(), KEEP_LOCK);
+      now += 20_000;
+      const repeat = await respondOnce(post('k14'), 'u', ROUTE, async () => created(), KEEP_LOCK);
+
+      expect(repeat.status).toBe(409);
+      expect(repeat.headers.get('retry-after')).toBe('40');
+    });
+
+    it('tells a repeat that meets a running request to try again in a second, not when the lock would end', async () => {
+      let finish: (res: Response) => void = () => undefined;
+      let started: () => void = () => undefined;
+      const running = new Promise<void>((resolve) => (started = resolve));
+      const first = respondOnce(post('k15'), 'u', ROUTE, () => (started(), new Promise<Response>((resolve) => (finish = resolve))), KEEP_LOCK);
+      await running;
+
+      const repeat = await respondOnce(post('k15'), 'u', ROUTE, async () => created(), KEEP_LOCK);
+
+      expect(repeat.headers.get('retry-after')).toBe('1');
+      finish(created());
+      await first;
+    });
+  });
+
+  describe('a run that outlived its lock', () => {
+    it('does not release the lock of the run that took the key after it', async () => {
+      let now = 1_000_000;
+      store.setClock(() => now);
+      let finishFirst: (res: Response) => void = () => undefined;
+      let started: () => void = () => undefined;
+      const running = new Promise<void>((resolve) => (started = resolve));
+      const first = respondOnce(post('k16'), 'u', ROUTE, () => (started(), new Promise<Response>((resolve) => (finishFirst = resolve))), KEEP_LOCK);
+      await running;
+      now += 61_000;
+      let finishSecond: (res: Response) => void = () => undefined;
+      const secondStarted = new Promise<void>((resolve) => {
+        void respondOnce(post('k16'), 'u', ROUTE, () => (resolve(), new Promise<Response>((done) => (finishSecond = done))), KEEP_LOCK);
+      });
+      await secondStarted;
+
+      finishFirst(NextResponse.json({ error: 'busy' }, { status: 429 }));
+      await first;
+      const third = await respondOnce(post('k16'), 'u', ROUTE, async () => created(), KEEP_LOCK);
+
+      expect(third.status).toBe(409);
+      finishSecond(created());
     });
   });
 
@@ -195,7 +272,7 @@ describe('respondOnce', () => {
 
     it('rethrows the error of the handler, not the one of a release that failed', async () => {
       const failure = new Error('handler failed');
-      vi.spyOn(store, 'delete').mockRejectedValueOnce(new Error('redis: down'));
+      vi.spyOn(store, 'releaseLock').mockRejectedValueOnce(new Error('redis: down'));
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
       await expect(respondOnce(post('k7'), 'u', ROUTE, async () => Promise.reject(failure), KEEP_LOCK)).rejects.toBe(failure);

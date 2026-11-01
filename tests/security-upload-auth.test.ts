@@ -4,7 +4,8 @@ import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { resolveObjectOwnership, mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '../src/lib/api-keys/owner-access';
+import { resolveObjectOwnership, mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { UPLOAD_SESSION_NOT_FOUND } from '../src/lib/api/storage-error-response';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
@@ -98,7 +99,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const bobChunkRes = await multipartPost(bobChunkReq);
     expect(bobChunkRes.status).toBe(404);
     const bobJson = await bobChunkRes.json();
-    expect(bobJson.detail).toBe(STORAGE_OBJECT_NOT_FOUND);
+    expect(bobJson.detail).toBe(UPLOAD_SESSION_NOT_FOUND);
 
     // Bob attempts to complete Alice's upload
     const bobCompleteReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=complete`, {
@@ -108,7 +109,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     });
     const bobCompleteRes = await multipartPost(bobCompleteReq);
     expect(bobCompleteRes.status).toBe(404);
-    expect((await bobCompleteRes.json()).detail).toBe(STORAGE_OBJECT_NOT_FOUND);
+    expect((await bobCompleteRes.json()).detail).toBe(UPLOAD_SESSION_NOT_FOUND);
 
     // Clean up
     s3Storage.abortMultipartUpload(uploadId);

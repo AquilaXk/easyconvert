@@ -4,11 +4,11 @@ import type { MultipartUploadComplete } from '@/lib/types';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { discardUpload, mayPresignDownload, registerCompletedUpload, removeUnregistered } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
-import type { IStorageBackend } from '@/lib/storage/oci-storage';
+import type { IStorageBackend, UploadSessionInfo } from '@/lib/storage/oci-storage';
 import { isUploadKey } from '@/lib/storage/key-namespace';
 import { validateApiAccess, authErrorHeaders, getQuotaUsage } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { STORAGE_RETRY_AFTER_SECONDS, storageErrorResponse } from '@/lib/api/storage-error-response';
+import { isNoSuchUploadError, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { respondOnce } from '@/lib/api/with-idempotency';
@@ -24,9 +24,9 @@ import {
   type BudgetRefusal,
 } from '@/lib/api-keys/anonymous-upload-budget';
 import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
-import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, partFailureResponse, systemErrorResponse } from '@/lib/api/part-response';
+import { declaredPartBytes, partFailureResponse, uploadErrorResponse, uploadUnavailableResponse } from '@/lib/api/part-response';
 import { isUploadIdShape } from '@/lib/storage/upload-id';
-import { recallUploadCompletion, rememberUploadCompletion } from '@/lib/storage/upload-completion';
+import { digestOfPartList, recallUploadCompletion, rememberUploadCompletion } from '@/lib/storage/upload-completion';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { formatBytes } from '@/lib/format-bytes';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
@@ -142,7 +142,7 @@ async function presignUploadPart(
   }
   const session = await storage.getUploadSession(uploadId);
   if (!session || !mayUseUploadSession(session.ownerUserId, userId)) {
-    return notFound(instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   if (isAnonymousUserId(session.ownerUserId)) {
     return createProblemDetailsResponse(HTTP_FORBIDDEN, ANONYMOUS_PRESIGN_REFUSED, instanceUri);
@@ -298,11 +298,14 @@ function initiateUpload(context: ActionContext): Promise<Response> {
   return onceForCaller(context, openSession);
 }
 
+/** A session with the owner it recorded, which every session the caller may use has. */
+type OwnedSession = UploadSessionInfo & { ownerUserId: string };
+
 /** The session `uploadId` names when the caller may use it. */
-async function usableSession(storage: MultipartCapableStorage, uploadId: unknown, userId: string) {
+async function usableSession(storage: MultipartCapableStorage, uploadId: unknown, userId: string): Promise<OwnedSession | undefined> {
   if (typeof uploadId !== 'string' || !uploadId) return undefined;
   const session = await storage.getUploadSession(uploadId);
-  return session && mayUseUploadSession(session.ownerUserId, userId) ? session : undefined;
+  return session?.ownerUserId && mayUseUploadSession(session.ownerUserId, userId) ? { ...session, ownerUserId: session.ownerUserId } : undefined;
 }
 
 function parsePartNumber(raw: string): number | undefined {
@@ -320,9 +323,7 @@ const RETRYABLE_ACTIONS: ReadonlySet<string> = new Set(['chunk', 'complete', 'ab
  */
 function unexpectedFailure(error: unknown, action: string, instanceUri: string): NextResponse {
   console.error(`[multipart] ${action} failed:`, error);
-  return RETRYABLE_ACTIONS.has(action)
-    ? createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, UPLOAD_UNAVAILABLE_DETAIL, instanceUri, undefined, undefined, { 'Retry-After': String(STORAGE_RETRY_AFTER_SECONDS) })
-    : createProblemDetailsResponse(500, FAILURE_DETAIL, instanceUri);
+  return RETRYABLE_ACTIONS.has(action) ? uploadUnavailableResponse(instanceUri) : createProblemDetailsResponse(500, FAILURE_DETAIL, instanceUri);
 }
 
 /**
@@ -349,7 +350,7 @@ async function storePart({ req, storage, user, instanceUri }: ActionContext): Pr
   if (lengthProblem) return lengthProblem;
 
   const session = await usableSession(storage, uploadId, user.id);
-  if (!session) return notFound(instanceUri);
+  if (!session) return uploadSessionNotFoundResponse(instanceUri);
   const partNumber = parsePartNumber(partNumberRaw);
   if (partNumber === undefined) return badRequest(`Invalid part number: ${partNumberRaw}`, instanceUri);
   if (!req.body) return badRequest('Chunk payload is empty (0 bytes).', instanceUri);
@@ -425,26 +426,29 @@ function selectCompletionParts(requested: unknown, stored: readonly StoredPart[]
 
 /**
  * The answer the completion of `uploadId` gave, for a repeat that finds the store has consumed the session: the receipt
- * kept at completion, for the owner the session recorded and while the file it names is stored. It needs no idempotency
- * store, so it answers also when that store could not keep the first answer.
+ * kept at completion, for the owner the session recorded, for a repeat that lists the same parts as the first request
+ * (an object store answers a repeat of a completion the same way), and while the file it names is stored. It needs no
+ * idempotency store, so it answers also when that store could not keep the first answer. A receipt that cannot be read
+ * is not a missing one: the repeat is answered 503 with `Retry-After`, and the session does not look gone.
  */
-async function answerOfCompletedUpload(storage: MultipartCapableStorage, uploadId: string, userId: string): Promise<Response | undefined> {
+async function answerOfCompletedUpload(storage: MultipartCapableStorage, uploadId: string, userId: string, parts: unknown, instanceUri: string): Promise<Response | undefined> {
+  if (!isUploadIdShape(uploadId)) return undefined;
   let completion;
   try {
     completion = await recallUploadCompletion(uploadId);
   } catch (error) {
-    console.warn('[multipart] Could not read the receipt of a completed upload; the repeat is answered as a missing session:', error);
-    return undefined;
+    console.error('[multipart] Could not read the receipt of a completed upload:', error);
+    return uploadUnavailableResponse(instanceUri);
   }
-  if (!completion || !mayUseUploadSession(completion.ownerUserId, userId)) return undefined;
+  if (!completion || !mayUseUploadSession(completion.ownerUserId, userId) || completion.partsDigest !== digestOfPartList(parts)) return undefined;
   if (!(await storage.stat(completion.result.key))) return undefined;
   return NextResponse.json({ success: true, ...completion.result });
 }
 
 /** Keeps the answer of a completion for a repeat. A receipt that cannot be written costs only that repeat, not the completion. */
-async function keepAnswerOfCompletion(uploadId: string, callerUserId: string, result: MultipartUploadComplete): Promise<void> {
+async function keepAnswerOfCompletion(uploadId: string, ownerUserId: string, parts: unknown, result: MultipartUploadComplete): Promise<void> {
   try {
-    await rememberUploadCompletion(uploadId, { ownerUserId: uploadOwnerOf(callerUserId), result });
+    await rememberUploadCompletion(uploadId, { ownerUserId, partsDigest: digestOfPartList(parts), result });
   } catch (error) {
     console.warn('[multipart] Could not keep the receipt of a completed upload; a repeat of its completion finds no session:', error);
   }
@@ -455,12 +459,24 @@ async function keepAnswerOfCompletion(uploadId: string, callerUserId: string, re
  * upload, so that a job reading it holds it, before its budget is closed. The completion is the same action when it is
  * sent again: a session the store already consumed answers with the first completion's answer.
  */
-async function finishSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
+async function finishSession(context: ActionContext): Promise<Response> {
+  const { storage, user, instanceUri, body } = context;
   const { uploadId, parts } = body;
   if (typeof uploadId !== 'string' || !uploadId) return badRequest('Missing required "uploadId" in complete request.', instanceUri);
+  const answerOfEndedSession = async () => (await answerOfCompletedUpload(storage, uploadId, user.id, parts, instanceUri)) ?? uploadSessionNotFoundResponse(instanceUri);
   const session = await usableSession(storage, uploadId, user.id);
-  if (!session) return (await answerOfCompletedUpload(storage, uploadId, user.id)) ?? notFound(instanceUri);
+  if (!session) return answerOfEndedSession();
+  try {
+    return await completeOpenSession(storage, session, parts, instanceUri);
+  } catch (error) {
+    // An object store keeps handing out a session until it expires, so a repeat finds it ended only when the store says so.
+    if (isNoSuchUploadError(error)) return answerOfEndedSession();
+    throw error;
+  }
+}
 
+async function completeOpenSession(storage: MultipartCapableStorage, session: OwnedSession, parts: unknown, instanceUri: string): Promise<Response> {
+  const { uploadId } = session;
   const selection = selectCompletionParts(parts, (await storage.getUploadedParts(uploadId)) ?? [], session.totalSize);
   if ('problem' in selection) return badRequest(selection.problem, instanceUri);
   const completeResult = await storage.completeMultipartUpload(uploadId, selection.parts);
@@ -479,7 +495,7 @@ async function finishSession({ storage, user, instanceUri, body }: ActionContext
     await closeReservation(uploadId, 'aborted');
     return createProblemDetailsResponse(500, UNRECORDED_UPLOAD_DETAIL, instanceUri);
   }
-  await keepAnswerOfCompletion(uploadId, user.id, completeResult);
+  await keepAnswerOfCompletion(uploadId, session.ownerUserId, parts, completeResult);
   await closeReservation(uploadId, 'completed');
   return NextResponse.json({ success: true, ...completeResult });
 }
@@ -516,7 +532,7 @@ async function closeReservation(uploadId: string, outcome: 'completed' | 'aborte
 async function abortUpload({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
   const { uploadId } = body;
   if (typeof uploadId !== 'string' || !uploadId) return badRequest('Missing "uploadId"', instanceUri);
-  if (!mayUseUploadSession(await storage.getUploadOwner(uploadId), user.id)) return notFound(instanceUri);
+  if (!mayUseUploadSession(await storage.getUploadOwner(uploadId), user.id)) return uploadSessionNotFoundResponse(instanceUri);
   let aborted = false;
   try {
     aborted = await storage.abortMultipartUpload(uploadId);
@@ -609,6 +625,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   try {
     return await spec.run({ req, storage: storageProvider, user: auth.user, instanceUri, body: spec.streamsBody ? {} : await readJson(req) });
   } catch (error: unknown) {
-    return storageErrorResponse(error, instanceUri) ?? systemErrorResponse(error, instanceUri) ?? unexpectedFailure(error, action, instanceUri);
+    return uploadErrorResponse(error, instanceUri, action) ?? unexpectedFailure(error, action, instanceUri);
   }
 }, isNewMultipartUpload);

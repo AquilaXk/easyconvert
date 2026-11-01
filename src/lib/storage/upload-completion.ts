@@ -5,8 +5,8 @@ import { newCompletionRecord, type UploadCompletion } from './result-retention';
 /**
  * The receipt of a completed upload, found by the id of its session. The store consumes a session when it completes it,
  * so a client whose answer was lost, and an idempotency store that could not keep it, can only be answered from this: the
- * file the completion stored, for the owner the session recorded. It lives in the retention ledger, which every
- * instance shares, for the time an idempotent answer is kept.
+ * file the completion stored, for the owner the session recorded and a repeat that lists the same parts. It lives in the
+ * retention ledger, which every instance shares, for the time an idempotent answer is kept.
  */
 
 const RECEIPT_KEY_PREFIX = 'upload-completion/';
@@ -14,6 +14,18 @@ const RECEIPT_KEY_PREFIX = 'upload-completion/';
 /** A key for the ledger that names no object and does not depend on what characters or how many an upload id has. */
 function receiptKey(uploadId: string): string {
   return `${RECEIPT_KEY_PREFIX}${crypto.createHash('sha256').update(uploadId).digest('hex')}`;
+}
+
+/**
+ * A digest of the part list a completion was sent with, as the request gave it: the numbers and the ETags without their
+ * quotes, in order. A request that lists no part (the upload is completed from every stored one) has its own digest.
+ * An object store answers a repeat of a completion only when it lists the same parts, and so does the receipt.
+ */
+export function digestOfPartList(parts: unknown): string {
+  const listed = Array.isArray(parts)
+    ? parts.map((part: { partNumber?: unknown; etag?: unknown } | null) => [part?.partNumber ?? null, typeof part?.etag === 'string' ? part.etag.replace(/"/g, '') : null])
+    : null;
+  return crypto.createHash('sha256').update(JSON.stringify(listed)).digest('hex');
 }
 
 /** Keeps the first answer of the completion of `uploadId`; a second completion of the same id changes nothing. */

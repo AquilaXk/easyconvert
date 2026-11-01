@@ -135,9 +135,9 @@ async function refusalOfARepeatedPart(): Promise<Response> {
   }
 }
 
-/** The answer the route gives a part when the disk of the host fails for now (EIO), made by its own code. */
+/** The answer the route gives a part when the host has no free file descriptor for now (EMFILE), made by its own code. */
 function answerOfATransientDiskError(): Response {
-  const error = Object.assign(new Error("EIO: i/o error, write '/srv/easyconvert/data/part-1.bin'"), { code: 'EIO', syscall: 'write' });
+  const error = Object.assign(new Error("EMFILE: too many open files, open '/srv/easyconvert/data/part-1.bin'"), { code: 'EMFILE', syscall: 'open' });
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   return partFailureResponse(error, '/api/storage/multipart');
 }

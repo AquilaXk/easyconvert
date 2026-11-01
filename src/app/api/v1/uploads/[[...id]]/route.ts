@@ -27,10 +27,10 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
-import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { storageErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
-import { declaredPartBytes, partFailureResponse, systemErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/part-response';
+import { declaredPartBytes, partFailureResponse, uploadErrorResponse } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -165,19 +165,24 @@ async function handlePartUpload(
     return uploadSessionNotFoundResponse(instanceUri);
   }
 
-  // Parts sent at once are held together to the declared size, as on the other part routes (entry 137).
-  const part = await receivePart(
-    localPartStore(objectStorage),
-    {
-      uploadId,
-      partNumber,
-      declaredBytes: declaredPartBytes(req.headers),
-      totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
-      maxPartBytes: MULTIPART_MAX_PART_BYTES,
-    },
-    req.body
-  );
-  return NextResponse.json({ success: true, part });
+  // Parts sent at once are held together to the declared size, as on the other part routes (entry 137). Only the write
+  // of the part answers as a part does; the lookups above answer as every other action of this route.
+  try {
+    const part = await receivePart(
+      localPartStore(objectStorage),
+      {
+        uploadId,
+        partNumber,
+        declaredBytes: declaredPartBytes(req.headers),
+        totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
+        maxPartBytes: MULTIPART_MAX_PART_BYTES,
+      },
+      req.body
+    );
+    return NextResponse.json({ success: true, part });
+  } catch (error: unknown) {
+    return partFailureResponse(error, instanceUri);
+  }
 }
 
 /** The part operations of local storage in the shape the part ledger takes. */
@@ -385,13 +390,12 @@ async function handleAbortUpload(
   return NextResponse.json({ success: true, aborted });
 }
 
-/** The one answer to an error of an upload action: a part fails like a part on every route, any other action by its own rules. */
+/** The one answer to an error of an upload action: the shared mapping of the upload routes, else the message of the error as a 400. */
 function uploadActionErrorResponse(err: unknown, instanceUri: string, action: string): Response {
-  if (action === 'part') return partFailureResponse(err, instanceUri);
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }
-  const storageProblem = storageErrorResponse(err, instanceUri) ?? systemErrorResponse(err, instanceUri);
+  const storageProblem = uploadErrorResponse(err, instanceUri, action);
   if (storageProblem) return storageProblem;
   const message = err instanceof Error && err.message ? err.message : 'Error executing upload operation';
   return createProblemDetailsResponse(400, message, instanceUri);

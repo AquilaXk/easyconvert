@@ -86,9 +86,13 @@ export interface RetentionRecord {
   completion?: UploadCompletion;
 }
 
-/** The first answer of the completion of an upload and the owner its session recorded, kept to answer a repeat. */
+/**
+ * The first answer of the completion of an upload, the owner its session recorded and a digest of the part list it was
+ * completed from, kept to answer a repeat: only a repeat that lists the same parts is answered with it.
+ */
 export interface UploadCompletion {
   ownerUserId: string;
+  partsDigest: string;
   result: MultipartUploadComplete;
 }
 

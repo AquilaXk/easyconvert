@@ -120,12 +120,3 @@ export function applySessionChange(user: SessionUser | null): void {
   const viewer = user ? viewerOf(user) : SIGNED_OUT;
   setViewer(viewer.plan, viewer.account);
 }
-
-/**
- * Sets the viewer from the answer of a successful sign-in or registration. An answer that names no user does not say who
- * the viewer is, so the session endpoint is asked, as it is for a page that just mounted; it is never read as a sign-out.
- */
-export function applySignInAnswer(user: SessionUser | undefined): void {
-  if (user) applySessionChange(user);
-  else void refreshViewerPlan();
-}

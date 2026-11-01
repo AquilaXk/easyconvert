@@ -4,6 +4,7 @@ import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
 import { storageProvider } from '../src/lib/storage';
+import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -86,6 +87,21 @@ describe('/api/storage/file owner access (#249)', () => {
     const res = await download(key, sessionHeaders(alice));
     expect(res.status).toBe(200);
     expect((await bodyBytes(res)).toString('hex')).toBe(FIXTURE.toString('hex'));
+  });
+
+  it('answers a key outside the namespaces of stored files with the missing-object 404 before it reads storage or the ledger', async () => {
+    const stat = vi.spyOn(storageProvider, 'stat');
+    const ledger = vi.spyOn(getRetentionLedger(), 'get');
+    const receipt = `upload-completion/${crypto.createHash('sha256').update('some-upload-id').digest('hex')}`;
+
+    for (const key of [receipt, '.retention/record.json', 'conversions/no-file-name', 'tus:session:abc']) {
+      const res = await download(key);
+
+      expect(res.status, key).toBe(404);
+      expect(await res.json(), key).toEqual(notFoundBody(key));
+    }
+    expect(stat).not.toHaveBeenCalled();
+    expect(ledger).not.toHaveBeenCalled();
   });
 
   it('answers other users and anonymous callers with the missing-object 404 body', async () => {

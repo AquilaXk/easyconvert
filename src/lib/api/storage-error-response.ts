@@ -26,13 +26,19 @@ export const STORAGE_RETRY_AFTER_SECONDS = 5;
 const UNAVAILABLE_DETAIL = 'Object storage is temporarily unavailable. Retry the request shortly.';
 const UNAVAILABLE_TITLE = 'Service Unavailable';
 const INVALID_KEY_DETAIL = 'The object key is not valid for object storage.';
-const UPLOAD_GONE_DETAIL = 'The upload session no longer exists or has expired.';
+/** The detail of every 404 for an upload session that does not exist, has expired, has ended or belongs to another caller. */
+export const UPLOAD_SESSION_NOT_FOUND = 'Upload session not found or has expired.';
 const PARTS_REJECTED_DETAIL = 'The uploaded parts were rejected by object storage.';
 const STORAGE_FAILED_DETAIL = 'The object storage request failed.';
 
 /** Store error codes that say the uploaded parts themselves are wrong, not that the store failed. */
 const REJECTED_PARTS_CODES: ReadonlySet<string> = new Set(['EntityTooSmall', 'EntityTooLarge', 'InvalidPart', 'InvalidPartOrder']);
 const NO_SUCH_UPLOAD_CODE = 'NoSuchUpload';
+
+/** Whether `error` is the object store saying the upload session it was asked about does not exist (any longer). */
+export function isNoSuchUploadError(error: unknown): boolean {
+  return error instanceof StorageServiceError && error.code === NO_SUCH_UPLOAD_CODE;
+}
 
 export interface StorageErrorProblem {
   status: number;
@@ -58,8 +64,8 @@ export function describeStorageError(error: unknown): StorageErrorProblem | unde
     return unavailable(error);
   }
   if (error instanceof StorageServiceError) {
-    if (error.code === NO_SUCH_UPLOAD_CODE) {
-      return { status: HTTP_NOT_FOUND, detail: UPLOAD_GONE_DETAIL, title: 'Not Found' };
+    if (isNoSuchUploadError(error)) {
+      return { status: HTTP_NOT_FOUND, detail: UPLOAD_SESSION_NOT_FOUND, title: 'Not Found' };
     }
     if (error.code !== undefined && REJECTED_PARTS_CODES.has(error.code)) {
       return { status: HTTP_BAD_REQUEST, detail: PARTS_REJECTED_DETAIL, title: 'Bad Request' };
@@ -81,6 +87,11 @@ function unavailable(error: StorageAdapterError): StorageErrorProblem {
     title: UNAVAILABLE_TITLE,
     headers: { 'Retry-After': String(STORAGE_RETRY_AFTER_SECONDS) },
   };
+}
+
+/** The 404 for an upload session that does not exist, expired, ended or belongs to another caller: one sentence on every upload route. */
+export function uploadSessionNotFoundResponse(instanceUri: string, extraHeaders: Record<string, string> = {}): NextResponse {
+  return createProblemDetailsResponse(HTTP_NOT_FOUND, UPLOAD_SESSION_NOT_FOUND, instanceUri, undefined, undefined, extraHeaders);
 }
 
 /** The problem+json response for a storage error, or undefined when the error is not a storage error. */
