@@ -61,7 +61,7 @@ function LoginFormContent() {
           onKeyDown={(event) => handleTabKeyDown(event, 'login')}
           className={`flex-1 min-h-[44px] px-3 py-2 text-sm font-semibold rounded-sm transition-colors ${
             activeTab === 'login'
-              ? 'bg-surface text-accent-ink ring-1 ring-inset ring-accent shadow-elev-1'
+              ? 'bg-surface text-accent-ink ring-1 ring-inset ring-accent'
               : 'text-ink-2 hover:text-ink'
           }`}
         >
@@ -81,7 +81,7 @@ function LoginFormContent() {
           onKeyDown={(event) => handleTabKeyDown(event, 'register')}
           className={`flex-1 min-h-[44px] px-3 py-2 text-sm font-semibold rounded-sm transition-colors ${
             activeTab === 'register'
-              ? 'bg-surface text-accent-ink ring-1 ring-inset ring-accent shadow-elev-1'
+              ? 'bg-surface text-accent-ink ring-1 ring-inset ring-accent'
               : 'text-ink-2 hover:text-ink'
           }`}
         >

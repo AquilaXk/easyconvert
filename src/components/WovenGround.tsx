@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 /** The ground drifts up at a fifth of the scroll speed and stops after this many pixels; globals.css overscans it by as much. */
 export const GROUND_DRIFT_RATE = 0.2;
@@ -20,7 +20,7 @@ export default function WovenGround() {
   useEffect(() => {
     const ground = groundRef.current;
     if (!ground || CSS.supports('animation-timeline: scroll()')) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
 
     let frame = 0;
     const write = () => {
@@ -30,11 +30,23 @@ export default function WovenGround() {
     const onScroll = () => {
       if (frame === 0) frame = requestAnimationFrame(write);
     };
-    write();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => {
+    const start = () => {
+      write();
+      window.addEventListener('scroll', onScroll, { passive: true });
+    };
+    const stop = () => {
       window.removeEventListener('scroll', onScroll);
       if (frame !== 0) cancelAnimationFrame(frame);
+      frame = 0;
+      ground.style.transform = '';
+    };
+    const onPreferenceChange = () => (reduced.matches ? stop() : start());
+
+    if (!reduced.matches) start();
+    reduced.addEventListener('change', onPreferenceChange);
+    return () => {
+      reduced.removeEventListener('change', onPreferenceChange);
+      stop();
     };
   }, []);
 
