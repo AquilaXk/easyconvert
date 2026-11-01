@@ -10,10 +10,10 @@ const CHROME = ['header', 'siteLinks', 'theme', 'languageSwitcher', 'userNav', '
 const WORKBENCH = ['hero', 'queue', 'options', 'formatSelector', 'formatCategories', 'urlImport', 'problems'] as const satisfies readonly Namespace[];
 
 /**
- * The message namespaces each page's client components read, so a page carries only its own copy. They follow the
- * imports of each page's view: tests/i18n-client-messages.test.ts fails when a view reads a namespace its row lacks or
- * its row names one no component of the page reads. The layout renders no translated client component, so its
- * provider carries none.
+ * The message namespaces each page's client components read, so a page carries only its own copy; a server component
+ * reads every message on the server and needs none handed down. They follow the imports of each page's view:
+ * tests/i18n-client-messages.test.ts fails when a client component reads a namespace its row lacks or its row names one
+ * no client component of the page reads. The layout renders no translated client component, so its provider carries none.
  */
 export const PAGE_NAMESPACES = {
   layout: [],
@@ -25,8 +25,8 @@ export const PAGE_NAMESPACES = {
   auth: [...CHROME, 'auth', 'problems'],
   dashboard: [...CHROME, 'dashboard', 'problems'],
   apiDocs: [...CHROME, 'apiDocs'],
-  status: [...CHROME, 'statusPage', 'status'],
-  unitConverter: [...CHROME, 'unitConverterPage', 'unitConverter', 'unitCategories', 'unitNames', 'faq', 'ads'],
+  status: [...CHROME, 'status'],
+  unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq', 'ads'],
 } as const satisfies Record<string, readonly Namespace[]>;
 
 export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;

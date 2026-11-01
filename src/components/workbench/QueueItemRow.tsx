@@ -12,7 +12,7 @@ import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
 import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
-import { useConversionFailureMessage } from '../i18n/problems';
+import { useConversionFailureMessage } from '../i18n/conversion-failures';
 import { getPasswordValidationError } from './options/options-capabilities';
 
 export interface QueueItemRowProps {
