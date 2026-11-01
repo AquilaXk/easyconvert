@@ -5,7 +5,7 @@ import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { localizeSlugCopy } from '../src/components/converter/slug-copy';
 import { FORMAT_SPECIFICATIONS } from '../src/components/converter/format-specs';
-import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES } from '../src/components/site-links';
+import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { formatMessageKey } from '../src/i18n/message-keys';
 import { routing } from '../src/i18n/routing';
 
@@ -37,7 +37,7 @@ function argumentsOf(message: string): string[] {
   const names = new Set<string>();
   const visit = (elements: MessageFormatElement[]) => {
     for (const element of elements) {
-      if ('value' in element && element.type !== TYPE.literal && element.type !== TYPE.pound) names.add(String(element.value));
+      if ('value' in element && element.type !== TYPE.literal) names.add(String(element.value));
       if (element.type === TYPE.tag) visit(element.children);
       if (element.type === TYPE.select || element.type === TYPE.plural) {
         for (const option of Object.values(element.options)) visit(option.value);
@@ -84,7 +84,8 @@ describe('every language carries every message', () => {
   });
 
   it('labels every link of the site chrome', () => {
-    const linkKeys = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...SECONDARY_LINKS, ...DIRECTORY_CATEGORIES.flatMap((c) => c.links)].map(
+    const directoryLinks = DIRECTORY_CATEGORIES.flatMap((category): readonly SiteLink[] => category.links);
+    const linkKeys = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...SECONDARY_LINKS, ...directoryLinks].map(
       (link) => `siteLinks.${link.key}`
     );
     const categoryKeys = DIRECTORY_CATEGORIES.map((category) => `footer.categories.${category.key}`);

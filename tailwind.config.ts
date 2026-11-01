@@ -55,7 +55,7 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-ui)", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: ["var(--font-display)", "ui-serif", "Georgia", "serif"],
+        display: ["var(--font-display)", "var(--font-display-hangul)", "ui-serif", "Georgia", "serif"],
       },
       transitionTimingFunction: {
         spring: "var(--ease-spring)",

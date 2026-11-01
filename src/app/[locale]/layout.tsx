@@ -24,6 +24,17 @@ const displayFont = localFont({
   variable: '--font-display',
   adjustFontFallback: 'Times New Roman',
 });
+// Instrument Serif has no Hangul: Korean headings take theirs from an OFL Noto Serif KR subset of the Korean messages
+// (scripts/subset-hangul-display-font.py), which a page downloads only when it shows Hangul in a display face.
+const displayHangulFont = localFont({
+  src: '../fonts/NotoSerifKR-hangul-display.woff2',
+  weight: '400',
+  display: 'swap',
+  variable: '--font-display-hangul',
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [{ prop: 'unicode-range', value: 'U+1100-11FF, U+2192, U+3130-318F, U+AC00-D7A3' }],
+});
 
 interface LocaleLayoutProps {
   children: React.ReactNode;
@@ -57,7 +68,7 @@ export default async function LocaleLayout({ children, params }: Readonly<Locale
   const [t, messages] = await Promise.all([getTranslations('layout'), getMessages()]);
 
   return (
-    <html lang={locale} className={`${uiFont.variable} ${displayFont.variable}`} suppressHydrationWarning>
+    <html lang={locale} className={`${uiFont.variable} ${displayFont.variable} ${displayHangulFont.variable}`} suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="light dark" />
         <script
