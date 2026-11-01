@@ -165,19 +165,27 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-const CLASS_DECLARATION = /^(export )?class (\w+) extends (\w+)[^{]*\{([\s\S]*?)^\}/gm;
+/** A class with a parent, at any indentation, exported or not, `default` or `abstract`; its body ends at the brace of its own indentation. */
+const CLASS_DECLARATION = /^([ \t]*)(export (?:default )?)?(?:abstract )?class (\w+) extends (\w+)[^{]*\{([\s\S]*?)^\1\}/gm;
+/** A `refusalCode` field or getter of a class: a member at the start of a line that is assigned or computed, not an optional type field. */
+const CODE_DECLARATION = /^[ \t]*(?:(?:public|protected|private|override|readonly|static|declare)[ \t]+)*(?:refusalCode\b[^;\n=]*=(?!=)|get[ \t]+refusalCode[ \t]*\()/gm;
 
-function scanClasses(): Map<string, ScannedClass> {
+const sources = sourceFiles(SRC).map((file) => ({ file, text: fs.readFileSync(file, 'utf-8') }));
+
+function scanClasses(): { classes: Map<string, ScannedClass>; declarationsInClasses: number } {
   const classes = new Map<string, ScannedClass>();
-  for (const file of sourceFiles(SRC)) {
-    for (const match of fs.readFileSync(file, 'utf-8').matchAll(CLASS_DECLARATION)) {
-      classes.set(match[2], { file, parent: match[3], exported: match[1] !== undefined, declaresCode: /\brefusalCode\b/.test(match[4]) });
+  let declarationsInClasses = 0;
+  for (const { file, text } of sources) {
+    for (const match of text.matchAll(CLASS_DECLARATION)) {
+      const declarations = match[5].match(CODE_DECLARATION)?.length ?? 0;
+      declarationsInClasses += declarations;
+      classes.set(match[3], { file, parent: match[4], exported: match[2] !== undefined, declaresCode: declarations > 0 });
     }
   }
-  return classes;
+  return { classes, declarationsInClasses };
 }
 
-const classes = scanClasses();
+const { classes, declarationsInClasses } = scanClasses();
 
 function isCoded(name: string): boolean {
   if (name === 'ConversionFailedError') return true;
@@ -203,6 +211,12 @@ async function instanceOf(name: string, scanned: ScannedClass): Promise<Error> {
 }
 
 describe('every coded error class answers the code the table names', () => {
+  it('finds every refusalCode declaration in src inside a scanned class', () => {
+    const declarations = sources.reduce((count, { text }) => count + (text.match(CODE_DECLARATION)?.length ?? 0), 0);
+    expect(declarations).toBeGreaterThan(30);
+    expect(declarationsInClasses).toBe(declarations);
+  });
+
   it('the table lists exactly the coded classes in src', () => {
     expect(CODED).toEqual(Object.keys(EXPECTED_CODES).sort());
   });
@@ -219,12 +233,18 @@ describe('every coded error class answers the code the table names', () => {
 });
 
 describe('every problem type the server sends has a sentence', () => {
-  const PROBLEM_NAME = /(?:problems\/|PROBLEM_TYPE_BASE\})([a-z][a-z0-9-]*)/g;
-  const serverFiles = [...sourceFiles(path.join(SRC, 'app')), ...sourceFiles(path.join(SRC, 'lib')), path.join(SRC, 'middleware.ts')];
-  const sent = [...new Set(serverFiles.flatMap((file) => [...fs.readFileSync(file, 'utf-8').matchAll(PROBLEM_NAME)].map((match) => match[1])))].sort();
+  const PROBLEM_REFERENCE = /problems\/|\$\{PROBLEM_TYPE_BASE\}/g;
+  const PROBLEM_NAME = /(?:problems\/|\$\{PROBLEM_TYPE_BASE\})([a-z][a-z0-9-]*)/g;
+  const lines = sources.flatMap(({ text }) => text.split('\n'));
+  const sent = [...new Set(lines.flatMap((line) => [...line.matchAll(PROBLEM_NAME)].map((match) => match[1])))].sort();
 
   it('finds the problem types of the shared helpers and of the conversion errors', () => {
     expect(sent).toEqual(expect.arrayContaining(['payload-too-large', 'engine-unavailable', 'missing-archive-volume']));
+  });
+
+  it('reads a literal name after every problem reference in src but the base itself', () => {
+    const unnamed = lines.filter((line) => (line.match(PROBLEM_REFERENCE)?.length ?? 0) !== (line.match(PROBLEM_NAME)?.length ?? 0));
+    expect(unnamed).toEqual(["export const PROBLEM_TYPE_BASE = 'https://api.easyconvert.io/problems/';"]);
   });
 
   it.each(sent)('%s', (name) => {
