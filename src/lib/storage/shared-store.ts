@@ -11,8 +11,15 @@ import {
 
 /** Ends the name of the file `extendExpiry` writes before it renames it over the expiry file. */
 const META_TEMP_SUFFIX = '.tmp';
+/** Marks in the names of the files that are written beside an object and renamed onto it (`uniqueTempPath` in `temp-file.ts`). */
+const OBJECT_TEMP_MARKS = ['.bin.tmp.', '.bin.comb.'];
 /** How old such a file must be before a sweep removes it. */
 const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
+
+function isTempFileName(name: string): boolean {
+  if (name.includes('.meta.json.') && name.endsWith(META_TEMP_SUFFIX)) return true;
+  return OBJECT_TEMP_MARKS.some((mark) => name.includes(mark));
+}
 
 /**
  * Enterprise Shared Object Store with Disk Spool Persistence.
@@ -227,8 +234,8 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   }
 
   /**
-   * Removes the temporary files an interrupted `extendExpiry` left next to the objects, once they are older than
-   * STALE_TEMP_FILE_MS: a write that is still running finishes long before.
+   * Removes the temporary files an interrupted `extendExpiry`, stream save, assembly or copy left next to the objects,
+   * once they are older than STALE_TEMP_FILE_MS: a write that is still running touches its file well within that.
    */
   public sweepStaleTempFiles(now: number = Date.now()): number {
     let removed = 0;
@@ -239,7 +246,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       return 0;
     }
     for (const name of names) {
-      if (!name.includes('.meta.json.') || !name.endsWith(META_TEMP_SUFFIX)) continue;
+      if (!isTempFileName(name)) continue;
       const filePath = path.join(this.storageDir, name);
       try {
         if (now - fs.statSync(filePath).mtimeMs < STALE_TEMP_FILE_MS) continue;

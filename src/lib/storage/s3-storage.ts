@@ -54,31 +54,65 @@ import { extendStoredExpiry, globalSharedObjects } from './shared-store';
  * and the workers share only that directory, so an object assembled anywhere else would be out of a worker's reach.
  */
 const MULTIPART_PARTS_DIR = '.multipart';
+/** How long a session stays open from its creation, and so how long its directory may go without a write before it is nobody's. */
+const MULTIPART_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+/** Starts the id of every session of this driver, and so the name of its directory. */
+const MULTIPART_UPLOAD_ID_PREFIX = 'oci_mp_s3_';
 const COPY_CHUNK_BYTES = 64 * 1024;
 
 /**
  * Puts the file at `sourcePath` at `storedPath` in the storage directory, which is what a process that shares only that
  * directory can read, and leaves nothing at `sourcePath`. The file is renamed when both are on one volume, and otherwise
- * (as `handOffOutput` does) copied beside `storedPath` and renamed into place, so a reader never sees half of it.
+ * (as `handOffOutput` does) copied beside `storedPath` and renamed into place, so a reader never sees half of it. The
+ * copy runs in libuv's thread pool: the worker's event loop keeps its heartbeat while a multi-GiB result is copied.
  */
-function moveIntoStorage(sourcePath: string, storedPath: string): void {
+async function moveIntoStorage(sourcePath: string, storedPath: string): Promise<void> {
   if (path.resolve(sourcePath) === storedPath) return;
-  fs.mkdirSync(path.dirname(storedPath), { recursive: true });
+  await fs.promises.mkdir(path.dirname(storedPath), { recursive: true });
   try {
-    fs.renameSync(sourcePath, storedPath);
+    await fs.promises.rename(sourcePath, storedPath);
     return;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
   }
+  await copyIntoPlace(sourcePath, storedPath);
+  try {
+    await fs.promises.rm(sourcePath, { force: true });
+  } catch (err) {
+    console.warn(`Could not remove "${sourcePath}" after storing it at "${storedPath}"`, err);
+  }
+}
+
+/** Copies `sourcePath` to a unique temporary file beside `storedPath`, makes it durable, checks its size and renames it into place. */
+async function copyIntoPlace(sourcePath: string, storedPath: string): Promise<void> {
   const tempPath = uniqueTempPath(storedPath, 'tmp');
   try {
-    fs.copyFileSync(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
-    fs.renameSync(tempPath, storedPath);
+    const expectedSize = (await fs.promises.stat(sourcePath)).size;
+    await fs.promises.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
+    const handle = await fs.promises.open(tempPath, 'r+');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const copiedSize = (await fs.promises.stat(tempPath)).size;
+    if (copiedSize !== expectedSize) {
+      throw new Error(`Copy of "${sourcePath}" holds ${copiedSize} bytes, expected ${expectedSize}`);
+    }
+    await fs.promises.rename(tempPath, storedPath);
   } catch (err) {
-    fs.rmSync(tempPath, { force: true });
+    await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
     throw err;
   }
-  fs.rmSync(sourcePath, { force: true });
+}
+
+/** The latest modification time of the directory `dirPath` and of the files in it. */
+function newestMtimeMs(dirPath: string): number {
+  let newest = fs.statSync(dirPath).mtimeMs;
+  for (const name of fs.readdirSync(dirPath)) {
+    newest = Math.max(newest, fs.statSync(path.join(dirPath, name)).mtimeMs);
+  }
+  return newest;
 }
 
 /** The bytes of the stored parts of `session` other than part `partNumber`. */
@@ -170,7 +204,7 @@ export class S3ObjectStorageService implements IStorageBackend {
   ): MultipartUploadInit {
     const timestamp = Date.now();
     const randomHex = crypto.randomBytes(8).toString('hex');
-    const uploadId = `oci_mp_s3_${timestamp}_${randomHex}`;
+    const uploadId = `${MULTIPART_UPLOAD_ID_PREFIX}${timestamp}_${randomHex}`;
     const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
     const key = multipartUploadKey(ownerUserId, `${timestamp}_${randomHex}_${sanitizedFilename}`);
 
@@ -205,7 +239,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       key,
       partSize: resolvedPartSize,
       totalParts,
-      expiresAt: timestamp + 24 * 60 * 60 * 1000,
+      expiresAt: timestamp + MULTIPART_SESSION_TTL_MS,
     };
   }
 
@@ -499,16 +533,16 @@ export class S3ObjectStorageService implements IStorageBackend {
     return obj;
   }
 
-  saveObjectFromFile(
+  async saveObjectFromFile(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
     ttlMs: number = 24 * 60 * 60 * 1000
-  ): StoredObject {
+  ): Promise<StoredObject> {
     const storedPath = globalSharedObjects.objectPath(key);
-    moveIntoStorage(filePath, storedPath);
-    const stat = fs.statSync(storedPath);
+    await moveIntoStorage(filePath, storedPath);
+    const stat = await fs.promises.stat(storedPath);
     const etag = `"${crypto.createHash('sha256').update(storedPath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
     let cachedBuffer: Buffer | null = null;
     const obj: StoredObject = {
@@ -823,14 +857,43 @@ export class S3ObjectStorageService implements IStorageBackend {
     }
 
     for (const [uploadId, session] of this.sessions.entries()) {
-      if (session.createdAt + 24 * 60 * 60 * 1000 <= now) {
+      if (session.createdAt + MULTIPART_SESSION_TTL_MS <= now) {
         this.abortMultipartUpload(uploadId);
         swept++;
       }
     }
 
+    swept += this.sweepOrphanedSessionDirs(now);
     globalSharedObjects.sweepStaleTempFiles(now);
     return swept;
+  }
+
+  /**
+   * Removes the directories of sessions that no process owns any more. The sessions live in the memory of the process
+   * that opened them, while their directories live on the volume every process shares: a restart of that process leaves
+   * them behind. A directory is orphaned once nothing in it was written for a session's whole lifetime; an open session
+   * is aborted at that age by its owner, and each part it writes touches its directory.
+   */
+  private sweepOrphanedSessionDirs(now: number): number {
+    let removed = 0;
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.baseUploadDir);
+    } catch {
+      return 0;
+    }
+    for (const name of names) {
+      if (!name.startsWith(MULTIPART_UPLOAD_ID_PREFIX) || this.sessions.has(name)) continue;
+      const dirPath = path.join(this.baseUploadDir, name);
+      try {
+        if (now - newestMtimeMs(dirPath) < MULTIPART_SESSION_TTL_MS) continue;
+        fs.rmSync(dirPath, { recursive: true, force: true });
+        removed++;
+      } catch {
+        // gone already, or not ours to remove
+      }
+    }
+    return removed;
   }
 }
 
