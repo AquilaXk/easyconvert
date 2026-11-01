@@ -1,14 +1,21 @@
 import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 import ConverterPageView from '@/components/pages/ConverterPageView';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
-import { canonicalSlugPath, isIndexableSlug, parseConverterSlug } from '@/lib/slug-parser';
+import { canonicalSlugPath, isFileProbeSlug, isIndexableSlug, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 
 interface ConverterPageProps {
   params: Promise<{ locale: string; slug: string }>;
+}
+
+/** The parsed slug of a converter page; a slug that asks for a file is answered 404. */
+function pageSlug(slug: string): ParsedSlug {
+  if (isFileProbeSlug(slug)) notFound();
+  return parseConverterSlug(slug);
 }
 
 export async function generateMetadata({ params }: ConverterPageProps): Promise<Metadata> {
@@ -18,7 +25,7 @@ export async function generateMetadata({ params }: ConverterPageProps): Promise<
     getTranslations({ locale, namespace: 'slugPages' }),
     getTranslations({ locale, namespace: 'meta.converter' }),
   ]);
-  const parsed = parseConverterSlug(slug);
+  const parsed = pageSlug(slug);
   const copy = localizeSlugCopy(tSlug, parsed.copy);
   return {
     title: tMeta('title', { title: copy.title }),
@@ -31,7 +38,7 @@ export async function generateMetadata({ params }: ConverterPageProps): Promise<
 export default async function ConverterPage({ params }: Readonly<ConverterPageProps>) {
   const { slug } = await params;
   await resolvePageLocale(params);
-  const parsed = parseConverterSlug(slug);
+  const parsed = pageSlug(slug);
 
   return (
     <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>

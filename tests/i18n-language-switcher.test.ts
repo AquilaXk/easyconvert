@@ -18,4 +18,11 @@ describe('the language selector', () => {
       { text: '한국어', href: '/ko/png-to-jpg?tab=register&error=oauth_denied' },
     ]);
   });
+
+  it('links English at its unprefixed URL from a Korean page, so the link answers without a redirect', () => {
+    expect(links(renderDom(createElement(LanguageSwitcher), 'ko'))).toEqual([
+      { text: 'English', href: '/png-to-jpg?tab=register&error=oauth_denied' },
+      { text: '한국어', href: '/ko/png-to-jpg?tab=register&error=oauth_denied' },
+    ]);
+  });
 });

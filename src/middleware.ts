@@ -385,11 +385,13 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 }
 
 export const config = {
-  // API routes, and every page path that is not a framework internal or a static file. A file is told by its extension,
-  // not by any dot, since converter slugs hold format ids such as `tar.gz` (/zip-to-tar.gz). The list covers every
-  // file under public/ and the app's icons, fonts and metadata files; tests/i18n-routing.test.ts checks public/.
+  // API routes, and every page path that is not a framework internal or a file. A path with a dot names a file, except the
+  // dot of a dotted format id of the registry (`tar.gz`, only ever `tar.<suffix>`) at the start of a slug or after a dash
+  // and before a dash or the end (/zip-to-tar.gz, /tar.gz-to-zip). Every other dotted path (/wp-login.php, /.env,
+  // /backup.zip) never reaches the locale routing. tests/i18n-routing.test.ts derives the dotted ids from the registry and
+  // fails when the registry gains one this list does not allow; the matcher must stay a literal for Next.js to read it.
   matcher: [
     '/api/:path*',
-    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|\\.well-known/|.*\\.(?:ico|svg|png|jpe?g|gif|webp|avif|pdf|txt|xml|json|webmanifest|woff2?|ttf|otf|m?js|css|map)$).*)',
+    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-]tar)\\.|\\.(?!(?:zst|bz2|gz|7z|bz|lzo|xz|z)(?:-|$)))).*)',
   ],
 };

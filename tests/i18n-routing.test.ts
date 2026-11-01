@@ -7,7 +7,7 @@ import { config, middleware } from '../src/middleware';
 import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { canonicalSlugPath, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
+import { canonicalSlugPath, isFileProbeSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
 
 /**
  * Locale routing as a visitor meets it: English at the unprefixed paths, Korean under /ko, the visitor's language
@@ -113,11 +113,10 @@ describe('locale routing of pages', () => {
     }
   });
 
-  it('names the page in every language in a Link header', async () => {
-    const { link } = await answer('/ko/png-to-jpg');
-    expect(link).toContain(`<${ORIGIN}/png-to-jpg>; rel="alternate"; hreflang="en"`);
-    expect(link).toContain(`<${ORIGIN}/ko/png-to-jpg>; rel="alternate"; hreflang="ko"`);
-    expect(link).toContain(`<${ORIGIN}/png-to-jpg>; rel="alternate"; hreflang="x-default"`);
+  it('sends no Link header, so the alternates are only the absolute ones of the page metadata', async () => {
+    for (const pathname of ['/ko/png-to-jpg', '/png-to-jpg', '/ko/PNG-to-JPG', '/', '/ko']) {
+      expect((await answer(pathname)).link, pathname).toBeNull();
+    }
   });
 });
 
@@ -155,6 +154,15 @@ describe('API routes are not locale routed', () => {
       expect(matched(pathname), pathname).toBe(false);
     }
   });
+
+  it('leaves every other path with a dot to the file routes, so a probe for a file never renders a page', () => {
+    const probes = [
+      '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz', '/index.html', '/a.JS',
+      '/robots.TXT', '/ko/wp-login.php', '/ko/backup.zip', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz',
+      '/ko/.env', '/zip-to-TAR.GZ',
+    ];
+    for (const pathname of probes) expect(matched(pathname), pathname).toBe(false);
+  });
 });
 
 describe('page metadata names every language', () => {
@@ -184,6 +192,13 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     }
     for (const slug of ['hello-world', 'foo-to-bar', 'png-to-xyz', 'xyz-converter', 'merge-xyz']) {
       expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(false);
+    }
+  });
+
+  it('answers 404 for a slug that names nothing and holds a dot, which asks for a file', () => {
+    for (const slug of ['backup.zip', 'wp-login.php', 'index.html', 'a.b-c']) expect(isFileProbeSlug(slug), slug).toBe(true);
+    for (const slug of ['zip-to-tar.gz', 'tar.gz-to-zip', 'tar.xz-converter', 'hello-world', 'png-to-jpg', 'foo-to-bar.baz']) {
+      expect(isFileProbeSlug(slug), slug).toBe(false);
     }
   });
 });

@@ -167,9 +167,24 @@ export function isIndexableSlug(parsed: ParsedSlug): boolean {
     case 'compress':
     case 'websiteScreenshot':
       return isRegistered(copy.format);
-    default:
+    case 'info':
+    case 'ocr':
+    case 'unitPair':
+    case 'saveWebsiteAsPdf':
       return true;
+    default: {
+      const unhandled: never = copy;
+      return unhandled;
+    }
   }
+}
+
+/**
+ * Whether a slug asks for a file rather than a page: it names nothing the parser knows and holds a dot (`backup.zip`,
+ * `wp-login.php`). Such a path is answered 404, not with a converter page.
+ */
+export function isFileProbeSlug(slug: string): boolean {
+  return slug.includes('.') && parseConverterSlug(slug).copy.kind === 'generic';
 }
 
 export function parseConverterSlug(slug: string): ParsedSlug {
