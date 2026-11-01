@@ -1,9 +1,8 @@
 import type { Metadata } from 'next';
-import { NextIntlClientProvider } from 'next-intl';
-import { getMessages, getTranslations } from 'next-intl/server';
+import { getTranslations } from 'next-intl/server';
 import ConverterPageView from '@/components/pages/ConverterPageView';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
-import { clientMessages } from '@/i18n/client-messages';
+import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
 import { parseConverterSlug } from '@/lib/slug-parser';
@@ -31,11 +30,10 @@ export default async function ConverterPage({ params }: Readonly<ConverterPagePr
   const { slug } = await params;
   await resolvePageLocale(params);
   const parsed = parseConverterSlug(slug);
-  const messages = await getMessages();
 
   return (
-    <NextIntlClientProvider messages={clientMessages(messages, [parsed.sourceFormat, parsed.targetFormat])}>
+    <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
       <ConverterPageView slug={slug} />
-    </NextIntlClientProvider>
+    </PageMessages>
   );
 }

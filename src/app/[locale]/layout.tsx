@@ -86,7 +86,7 @@ export default async function LocaleLayout({ children, params }: Readonly<Locale
         />
       </head>
       <body className="min-h-screen flex flex-col antialiased font-sans">
-        <NextIntlClientProvider messages={clientMessages(messages)}>
+        <NextIntlClientProvider messages={clientMessages(messages, 'layout')}>
           <WovenGround />
           <a
             href="#main-content"

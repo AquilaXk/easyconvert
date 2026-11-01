@@ -1,4 +1,5 @@
 import HomePageView from '@/components/pages/HomePageView';
+import PageMessages from '@/i18n/PageMessages';
 import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 
 export function generateMetadata({ params }: { params: LocaleParams }) {
@@ -7,5 +8,9 @@ export function generateMetadata({ params }: { params: LocaleParams }) {
 
 export default async function HomePage({ params }: Readonly<{ params: LocaleParams }>) {
   await resolvePageLocale(params);
-  return <HomePageView />;
+  return (
+    <PageMessages page="home">
+      <HomePageView />
+    </PageMessages>
+  );
 }
