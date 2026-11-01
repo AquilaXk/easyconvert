@@ -1,38 +1,14 @@
+import { TAG as DNG_TAG } from '../../src/worker/raw-dng-image-data';
+
 /**
  * Hand-written classic TIFF directories (TIFF 6.0 section 2) for the check that a DNG holds its raw image. Each directory sits at an
- * offset the test chooses, so loops, overlaps and SubIFD trees are laid out byte by byte. It shares no code with the reader.
+ * offset the test chooses, so loops, overlaps and SubIFD trees are laid out byte by byte. It shares only the tag numbers with the reader.
  */
 
-export const TAG = {
-  newSubfileType: 254,
-  imageWidth: 256,
-  imageLength: 257,
-  compression: 259,
-  photometric: 262,
-  stripOffsets: 273,
-  orientation: 274,
-  stripByteCounts: 279,
-  tileOffsets: 324,
-  tileByteCounts: 325,
-  subIfds: 330,
-  defaultScale: 50718,
-  activeArea: 50829,
-  panasonicFlag: 1,
-  bitsPerSample: 258,
-  make: 271,
-  panasonicCameraIfd: 288,
-  exifIfd: 34665,
-  hasselblad: 50459,
-  dngVersion: 50706,
-  uniqueCameraModel: 50708,
-  dngPrivateData: 50740,
-  fujiTable: 0xf000,
-  fujiWidth: 0xf001,
-  fujiHeight: 0xf002,
-  fujiBitsPerSample: 0xf003,
-} as const;
+/** The tags of the check, which name what it reads, and Compression, which it does not read. */
+export const TAG = { ...DNG_TAG, compression: 259 } as const;
 /** A RATIONAL entry lists its values as numerator and denominator pairs; a BYTE or ASCII entry lists one byte for each value. */
-export const TYPE = { byte: 1, ascii: 2, short: 3, long: 4, rational: 5, ifd: 13 } as const;
+export const TYPE = { byte: 1, ascii: 2, short: 3, long: 4, rational: 5, undefined: 7, ifd: 13 } as const;
 
 const TIFF_MAGIC = 42;
 const ENTRY_BYTES = 12;

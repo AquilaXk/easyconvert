@@ -351,6 +351,7 @@ describe('a directory reached through tag 0xf000, which LibRaw parses from the o
 describe('a Canon DNG with tag 0xf000 in its first directory, as LibRaw chooses the directory it decodes', () => {
   const noSample = skipWithoutRawSamples('dng');
   const DECODED = { width: 960, height: 540 };
+  const SAMPLES_PER_PIXEL = 277;
   const NEXT_AFTER_ENTRIES = (entries: number) => 2 + entries * 12;
 
   function entryAt(file: Buffer, directory: number, tag: number): number {
@@ -407,6 +408,48 @@ describe('a Canon DNG with tag 0xf000 in its first directory, as LibRaw chooses 
   it.skipIf(noSample)('refuses the file when the directory 0xf000 names lists a strip past the end, though the next one is whole', () => {
     expect(check(crafted((file, first) => pastEnd(file, first)), DECODED)).toBe('outside-file');
   });
+
+  /**
+   * IFD0 made a preview whose tag 0xc61a becomes a tag 0x7250 naming an MRM block, whose TTW block holds a TIFF of one 950 x 530 CFA
+   * directory with its strip 100 MB past the end, and the chain going on to a copy of IFD0 as it was. LibRaw develops the nested
+   * directory (950 x 530), which a walk that skips the tag would take for the whole 960 x 540 copy trimmed.
+   */
+  function withMinoltaBlock(original: Buffer): Buffer {
+    const u32 = (value: number) => {
+      const bytes = Buffer.alloc(4);
+      bytes.writeUInt32LE(value);
+      return bytes;
+    };
+    const nested = buildTiff(122, [{
+      at: 8,
+      entries: [
+        longEntry(TAG.newSubfileType, 0), longEntry(TAG.imageWidth, 950), longEntry(TAG.imageLength, 530),
+        { tag: TAG.bitsPerSample, type: TYPE.short, values: [14] }, { tag: TAG.compression, type: TYPE.short, values: [COMPRESSION.losslessJpeg] },
+        { tag: TAG.photometric, type: TYPE.short, values: [PHOTOMETRIC.cfa] }, longEntry(TAG.stripOffsets, 100),
+        { tag: SAMPLES_PER_PIXEL, type: TYPE.short, values: [1] }, longEntry(TAG.stripByteCounts, 100_000_000),
+      ],
+    }]);
+    const ttw = Buffer.concat([Buffer.from('\0TTW', 'latin1'), u32(nested.length), nested]);
+    const block = Buffer.concat([Buffer.from('\0MRI', 'latin1'), u32(ttw.length + 8), ttw]);
+    const count = original.readUInt16LE(8);
+    const ifd0 = original.subarray(8, 8 + NEXT_AFTER_ENTRIES(count) + 4);
+    const blockAt = original.length + (original.length % 2);
+    const copyAt = blockAt + block.length + (block.length % 2);
+    const file = Buffer.concat([original, Buffer.alloc(blockAt - original.length), block, Buffer.alloc(copyAt - blockAt - block.length), ifd0]);
+    file.writeUInt32LE(0, copyAt + NEXT_AFTER_ENTRIES(count));
+    file.writeUInt32LE(1, entryAt(file, 8, TAG.newSubfileType) + 8);
+    const minolta = entryAt(file, 8, 50_714);
+    file.writeUInt16LE(TAG.sonyMinolta, minolta);
+    file.writeUInt16LE(TYPE.undefined, minolta + 2);
+    file.writeUInt32LE(block.length, minolta + 4);
+    file.writeUInt32LE(blockAt, minolta + 8);
+    file.writeUInt32LE(copyAt, 8 + NEXT_AFTER_ENTRIES(count));
+    return file;
+  }
+
+  it.skipIf(noSample)('refuses the file when IFD0 holds tag 0x7250, whose nested TIFF LibRaw develops in place of the chain', () => {
+    expect(check(withMinoltaBlock(readFileSync(rawSamplePath('dng'))), { width: 950, height: 530 })).toBe('unmodelled-layout');
+  });
 });
 
 const dngVersion = (...bytes: number[]): TiffEntrySpec => ({ tag: TAG.dngVersion, type: TYPE.byte, values: bytes });
@@ -414,10 +457,12 @@ const privateData = (): TiffEntrySpec => ({ tag: TAG.dngPrivateData, type: TYPE.
 const panasonicFlag = (value: number, count = 4): TiffEntrySpec => ({
   tag: TAG.panasonicFlag, type: TYPE.long, values: Array.from({ length: count }, (_, index) => (index === 0 ? value : 0)), at: 1200,
 });
-const cameraIfd = (): TiffEntrySpec => ({ tag: TAG.panasonicCameraIfd, type: TYPE.long, values: [200] });
-const exifPointer = (): TiffEntrySpec => ({ tag: TAG.exifIfd, type: TYPE.long, values: [200] });
-const make = (text: string): TiffEntrySpec => asciiEntry(TAG.make, text, 1400);
-const rawBelow = (entries: TiffEntrySpec[]) => buildTiff(SIZE, [preview(8, 0, [...entries, subIfds([200], 150)]), raw(200)]);
+const EXIF_AT = 2000;
+const exifPointer = (): TiffEntrySpec => ({ tag: TAG.exifIfd, type: TYPE.long, values: [EXIF_AT] });
+const make = (text: string, at = 1400): TiffEntrySpec => asciiEntry(TAG.make, text, at);
+const exifDirectory = (tags: number[]): TiffDirectorySpec => ({ at: EXIF_AT, entries: tags.map((tag) => ({ tag, type: TYPE.long, values: [0] })) });
+const rawBelow = (entries: TiffEntrySpec[], exifTags: number[] = [TAG.makerNote]) =>
+  buildTiff(SIZE, [preview(8, 0, [...entries, subIfds([200], 150)]), raw(200), exifDirectory(exifTags)]);
 
 describe('an entry through which LibRaw reads a directory the walk does not follow', () => {
   it('is Hasselblad tag 0xc51b, which restores the directory count, whatever the make says', () => {
@@ -442,12 +487,21 @@ describe('an entry through which LibRaw reads a directory the walk does not foll
     expect(check(wide(3873), { width: 3873, height: RAW_SIZE.height })).toBe('whole');
   });
 
-  it('is the Panasonic CameraIFD tag 0x0120 after a tag 0x0001 of 4 values holding a number, and no other order or count', () => {
-    expect(check(rawBelow([panasonicFlag(1), cameraIfd()]))).toBe('unmodelled-layout');
-    expect(check(rawBelow([cameraIfd(), panasonicFlag(1)]))).toBe('whole');
-    expect(check(rawBelow([panasonicFlag(0), cameraIfd()]))).toBe('whole');
-    expect(check(rawBelow([panasonicFlag(1, 2), cameraIfd()]))).toBe('whole');
-    expect(check(rawBelow([cameraIfd()]))).toBe('whole');
+  it('is a tag 0x0001 of 4 values holding a number, which turns LibRaw to its Panasonic tags, and not one of another count or holding 0', () => {
+    expect(check(rawBelow([panasonicFlag(1)]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([panasonicFlag(0x0100_0000)]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([panasonicFlag(0)]))).toBe('whole');
+    expect(check(rawBelow([panasonicFlag(1, 2)]))).toBe('whole');
+    expect(check(rawBelow([panasonicFlag(1, 5)]))).toBe('whole');
+    const inRaw = buildTiff(SIZE, [preview(8, 0, [subIfds([200], 150)]), raw(200, [panasonicFlag(1)])]);
+    expect(check(inRaw)).toBe('unmodelled-layout');
+  });
+
+  it('is tag 0x7250 in any directory, which LibRaw reads with parse_minolta, whose TTW block parses a TIFF', () => {
+    const minolta = longEntry(TAG.sonyMinolta, 0);
+    expect(check(rawBelow([minolta]))).toBe('unmodelled-layout');
+    expect(check(buildTiff(SIZE, [preview(8, 0, [subIfds([200], 150)]), raw(200, [minolta])]))).toBe('unmodelled-layout');
+    expect(check(buildTiff(SIZE, [preview(8, 0, [fujiTable(300)]), preview(300, 0, [minolta]), raw(500)]))).toBe('unmodelled-layout');
   });
 
   it('is DNGPrivateData when no DNGVersion has been read before it, and not after a DNGVersion that is not zero', () => {
@@ -460,16 +514,42 @@ describe('an entry through which LibRaw reads a directory the walk does not foll
     expect(check(rawBelow([dngVersion(1, 4, 0, 0), dngVersion(0, 0, 0, 0), privateData()]))).toBe('unmodelled-layout');
   });
 
-  it('is the Nikon makernote, reached from the EXIF tag or the DNGPrivateData of a file whose make is NIKON', () => {
+  it('is the Nikon makernote, reached from DNGPrivateData or from an EXIF directory that lists tag 0x927c, while the make is NIKON', () => {
     const nikon = make('NIKON CORPORATION');
     expect(check(rawBelow([nikon, exifPointer()]))).toBe('unmodelled-layout');
-    expect(check(rawBelow([nikon, dngVersion(1, 4, 0, 0), privateData()]))).toBe('unmodelled-layout');
-    expect(check(rawBelow([asciiEntry(TAG.uniqueCameraModel, 'NIKON D80', 1400), exifPointer()]))).toBe('unmodelled-layout');
-    expect(check(rawBelow([nikon, asciiEntry(TAG.uniqueCameraModel, 'Canon EOS', 1400 + 32), exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([nikon, exifPointer()], [0x9000, TAG.makerNote]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([nikon, dngVersion(1, 4, 0, 0), privateData()], []))).toBe('unmodelled-layout');
+    expect(check(rawBelow([nikon, exifPointer()], [0x9000, 0x9003]))).toBe('whole');
+    expect(check(rawBelow([nikon, exifPointer()], []))).toBe('whole');
     expect(check(rawBelow([nikon]))).toBe('whole');
     expect(check(rawBelow([make('Canon'), exifPointer()]))).toBe('whole');
     expect(check(rawBelow([exifPointer()]))).toBe('whole');
     expect(check(rawBelow([exifPointer(), nikon]))).toBe('whole');
+  });
+
+  it('takes the Make read last, which LibRaw writes over the make, and refuses after any UniqueCameraModel of NIKON, which LibRaw copies only while no Model is read', () => {
+    const unique = (text: string) => asciiEntry(TAG.uniqueCameraModel, text, 1600);
+    expect(check(rawBelow([make('NIKON'), make('Canon', 1440), exifPointer()]))).toBe('whole');
+    expect(check(rawBelow([make('Canon'), make('NIKON', 1440), exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([unique('NIKON D80'), make('Canon'), exifPointer()]))).toBe('whole');
+    expect(check(rawBelow([unique('NIKON D80'), exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([make('NIKON'), unique('Canon EOS'), exifPointer()]))).toBe('unmodelled-layout');
+    expect(check(rawBelow([make('Canon'), unique('Canon EOS'), exifPointer()]))).toBe('whole');
+  });
+
+  it('reads at most 65535 EXIF entries in all, refusing a file whose EXIF tags list more, as a NIKON file would', () => {
+    const size = 1_000_000;
+    const exif = (at: number): TiffEntrySpec => ({ tag: TAG.exifIfd, type: TYPE.long, values: [at] });
+    const claims = (at: number, count: number) => (file: Buffer) => file.writeUInt16LE(count, at);
+    const tree = (pointers: number[], edits: Array<(file: Buffer) => void>) => {
+      const file = buildTiff(size, [preview(8, 0, [make('NIKON'), ...pointers.map(exif), subIfds([200], 150)]), raw(200)]);
+      edits.forEach((edit) => edit(file));
+      return file;
+    };
+    expect(check(tree([10_000], [claims(10_000, 65_535)]))).toBe('whole');
+    expect(check(tree([10_000, 10_000], [claims(10_000, 65_535)]))).toBe('unmodelled-layout');
+    expect(check(tree([10_000, 900_000], [claims(10_000, 65_534), claims(900_000, 1)]))).toBe('whole');
+    expect(check(tree([10_000, 900_000], [claims(10_000, 65_534), claims(900_000, 2)]))).toBe('unmodelled-layout');
   });
 
   it.each([[TAG.stripOffsets], [513], [0xf007]])('is the JPEG stream at the offset of tag %i in a directory with no BitsPerSample yet, which LibRaw reads as a TIFF', (tag) => {
@@ -489,20 +569,6 @@ describe('an entry through which LibRaw reads a directory the walk does not foll
     expect(probe([{ ...bitsPerSample, values: [0] }, ...strips, ...extra], true)).toBe('unmodelled-layout');
   });
 
-  it('is the JPEG stream at the offset of the Panasonic strip tag 0x0118 when the Panasonic flag is set, and then not at that of tags 0x0201 and 0xf007', () => {
-    const jpegAt300 = (entries: TiffEntrySpec[]): string => {
-      const file = buildTiff(SIZE, [{ at: 8, entries: [...imageEntries([[400, 100]]), ...entries] }]);
-      file.writeUInt16BE(0xffd8, 300);
-      return check(file);
-    };
-    const strips = (type: number) => ({ tag: 280, type, values: [300] });
-    expect(jpegAt300([panasonicFlag(1), strips(TYPE.long)])).toBe('unmodelled-layout');
-    expect(jpegAt300([panasonicFlag(1), strips(TYPE.short)])).toBe('whole');
-    expect(jpegAt300([strips(TYPE.long)])).toBe('whole');
-    expect(jpegAt300([panasonicFlag(1), longEntry(513, 300)])).toBe('whole');
-    expect(jpegAt300([panasonicFlag(1), longEntry(0xf007, 300)])).toBe('whole');
-  });
-
   it('is a Phase One marker in the first 32 bytes, which runs a second parser before the TIFF one', () => {
     const junk = (value: number) => longEntry(0x8000, value);
     const marked = (...junks: number[]) => buildTiff(SIZE, [{ at: 8, entries: [...junks.map(junk), ...imageEntries([[400, 100]])] }]);
@@ -510,5 +576,17 @@ describe('an entry through which LibRaw reads a directory the walk does not foll
     expect(check(marked(0x4d4d_4d4d))).toBe('unmodelled-layout');
     expect(check(marked(0x4949_494d))).toBe('whole');
     expect(check(marked(0, 0, 0x4949_4949))).toBe('whole');
+  });
+
+  it('is HEAPCCDR at byte 6, where identify parses the file as a CIFF and reads none of its TIFF directories', () => {
+    const at = 0x4845;
+    const file = (signature: string) => {
+      const tiff = buildTiff(at + 200, [{ at, entries: imageEntries([[3000, 100]]) }], { little: false });
+      tiff.write(signature, 8, 'latin1');
+      return tiff;
+    };
+    expect(file('APCCDR').toString('latin1', 6, 14)).toBe('HEAPCCDR');
+    expect(check(file('APCCDR'))).toBe('unmodelled-layout');
+    expect(check(file('APCCDS'))).toBe('whole');
   });
 });

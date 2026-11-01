@@ -21,22 +21,38 @@ import { RawDecodeError } from '../lib/types';
  *   list it is in (lines 46 to 48). An entry of more than 8 values that would end past twice the file size is skipped (lines 54 to 60).
  *   Values are read as `get2`, `getint` and `getreal` read them, with LibRaw's size for each type (src/tables/wblists.cpp lines 20 to 22)
  *   and the bytes past the end of the file as 0xff (src/utils/read_utils.cpp lines 45 to 123).
- * - Entries that make LibRaw read a directory this walk does not follow, which refuse the file (`unmodelled-layout`), found by every call
- *   of `parse_tiff_ifd` and `parse_tiff` that a DNG with a TIFF header can reach (identify.cpp lines 502 to 518):
- *   - Hasselblad tag 0xc51b (tiff.cpp lines 902 to 915), whatever the make; it sets the flag that the Hasselblad branch of the SubIFD tag
- *     (lines 559 to 567) needs, so that branch is refused with it;
- *   - the SubIFD tag in a directory whose width is 3872, where LibRaw tests the model DSLR-A100 as well (lines 550 to 558). The model comes
- *     from three tags and is not followed;
- *   - Panasonic tag 0x0120 (lines 236 to 247) after a tag 0x0001 of 4 values holding a number (lines 73 to 76);
- *   - DNGPrivateData (tag 0xc634) read while no DNGVersion has set a number (lines 1473 to 1479), where LibRaw goes on to parse a
- *     directory, and, for a make or UniqueCameraModel that starts with NIKON read before them, DNGPrivateData and the EXIF tag 0x8769
- *     (lines 778 to 781), through which LibRaw parses a Nikon makernote (exif_gps.cpp lines 219 to 310; makernotes.cpp lines 60 to 69 and
- *     334 to 343), whose tag 0x0011 parses a directory (nikon.cpp lines 318 to 324);
- *   - a strip offset tag (0x0111, 0x0201, 0xf007, and 0x0118 of 4-byte values after a Panasonic flag) read in a directory with no
- *     BitsPerSample yet, when the stream at its offset starts as a JPEG: LibRaw reads it with `ljpeg_start` and parses the TIFF in it
- *     (tiff.cpp lines 91 to 133 and 379 to 415; decoders_dcraw.cpp lines 280 to 290);
- *   - a Phase One marker (MMMM or IIII) in the first 32 bytes, where `identify` runs its Phase One parser first (identify.cpp lines 502 to
- *     508).
+ * - Every route by which LibRaw fills a directory slot (`tiff_ifd[]`, `tiff_nifds`), from a `grep` of 0.21.4 and 0.22.2 for each call of
+ *   `parse_tiff_ifd`, `parse_tiff` and the parsers that reach them (the two releases list the same calls). Only `parse_tiff_ifd` adds a
+ *   slot. A route the walk does not follow refuses the file at its trigger (`unmodelled-layout`). Route, trigger, decision:
+ *   - the chain from the header, `parse_tiff` (tiff.cpp lines 1556 to 1574): followed;
+ *   - SubIFDs, tag 0x014a (lines 549 to 577): followed, except the DSLR-A100 branch (lines 550 to 558), refused at a width of 3872 whatever
+ *     the model, which the walk does not follow (a known over-refusal), and the Hasselblad branch (lines 559 to 567), refused with the
+ *     tag 0xc51b that sets its flag;
+ *   - tag 0xf000 (lines 425 to 428): followed;
+ *   - Hasselblad tag 0xc51b (lines 902 to 915), which also restores the slot count: refused, whatever the make;
+ *   - the JPEG stream at a strip offset, tags 0x0111, 0x0201 and 0xf007 read while the directory has no BitsPerSample, whose TIFF
+ *     `parse_tiff` reads (lines 91 to 133; `ljpeg_start`, decoders_dcraw.cpp lines 280 to 290): refused when the stream starts as a JPEG;
+ *   - the Panasonic tags, CameraIFD 0x0120 and the stream at tag 0x0118 (lines 236 to 247 and 379 to 415), which LibRaw reads in place of
+ *     its first switch once a tag 0x0001 of 4 values holds a number (lines 73 to 76): refused at that tag 0x0001;
+ *   - tag 0x7250 in any directory, `parse_minolta`, whose TTW block calls `parse_tiff` (lines 615 to 618; minolta.cpp lines 101 to 102):
+ *     refused;
+ *   - EXIF tag 0x8769, `parse_exif`, whose tag 0x927c calls `parse_makernote` (lines 778 to 781; exif_gps.cpp lines 219 to 311), which for
+ *     a make that starts with NIKON parses a Nikon makernote whose tag 0x0011 calls `parse_tiff_ifd` (makernotes.cpp lines 334 to 343;
+ *     nikon.cpp lines 318 to 324): refused when the make may start with NIKON and the EXIF directory lists tag 0x927c. The make is the
+ *     Make read last (lines 475 to 477); a UniqueCameraModel is copied over it only while no Model has been read (lines 923 to 934), which
+ *     the walk does not follow, so any UniqueCameraModel of NIKON counts. At most 65535 EXIF entries are scanned in all (our bound,
+ *     failing closed);
+ *   - DNGPrivateData, tag 0xc634 (lines 1352 to 1480): refused while no DNGVersion has set a number, where it calls `parse_minolta` and
+ *     `parse_tiff_ifd` (lines 1473 to 1479), and while the make may start with NIKON, where `parse_makernote_0xc634` parses a Nikon
+ *     makernote (makernotes.cpp lines 60 to 69);
+ *   - a Phase One marker (MMMM or IIII) in the first 32 bytes, where `identify` runs `parse_phase_one` first (identify.cpp lines 502 to
+ *     508), and HEAPCCDR at byte 6, where it parses the file as a CIFF instead (lines 511 to 515): refused;
+ *   - no slot: Kodak tags 0x8290 and 0xfe00 (`parse_kodak_ifd`), Leaf tag 0x8606 (`parse_mos`), GPS tag 0x8825, the Sony SR2 block
+ *     decrypted in memory (lines 1527 to 1535), `parse_exif` itself (it sets only the shutter of the last slot, exif_gps.cpp lines 179 to
+ *     180 and 205 to 206) and the makernotes of other makes: not routes;
+ *   - other containers, which a file that starts with a TIFF header does not reach: the JPEG, Fuji RAF, RIFF, QuickTime, MRM and CR3
+ *     headers of `identify` (identify.cpp lines 520 to 705) and `parse_jpeg` of a file with no make (line 798), which needs a JPEG at
+ *     byte 0.
  * - The raw image: the first directory whose ImageWidth and ImageLength are 1 to 65535, whose NewSubFileType is 0 and whose
  *   PhotometricInterpretation is CFA or Linear Raw (`apply_tiff`, tiff.cpp lines 1622 to 1665, the frame at line 1697). With the engine's
  *   options, LibRaw's defaults (src/utils/init_close_utils.cpp line 90) and no `-s`, no other directory is a frame and the largest frame is
@@ -68,7 +84,8 @@ const ENTRY_BYTES = 12;
 const INLINE_VALUE_BYTES = 4;
 const OFFSET_BYTES = 4;
 
-const TAG = {
+/** The tags the walk reads, and the EXIF makernote tag it looks for. */
+export const TAG = {
   panasonicFlag: 1,
   newSubfileType: 254,
   imageWidth: 256,
@@ -79,13 +96,13 @@ const TAG = {
   stripOffsets: 273,
   orientation: 274,
   stripByteCounts: 279,
-  panasonicStripOffsets: 280,
-  panasonicCameraIfd: 288,
   tileOffsets: 324,
   tileByteCounts: 325,
   subIfds: 330,
   jpegInterchange: 513,
+  sonyMinolta: 0x7250,
   exifIfd: 34_665,
+  makerNote: 37_500,
   hasselblad: 50_459,
   dngVersion: 50_706,
   uniqueCameraModel: 50_708,
@@ -135,7 +152,7 @@ const FLIP_OF_ORIENTATION = [5, 0, 1, 3, 2, 4, 6, 7];
 const FLIP_TURNS = 4;
 /** The width LibRaw tests, with the model name, before it reads the SubIFD tag of a Sony DSLR-A100 as one offset of raw data. */
 const A100_WIDTH = 3872;
-/** `getint` values of the Panasonic flag tag LibRaw reads: it takes the tag with 4 values. */
+/** Values of the tag 0x0001 that LibRaw reads as the Panasonic flag: it takes the tag only with 4. */
 const PANASONIC_FLAG_VALUES = 4;
 /** The start of a make for which LibRaw parses a Nikon makernote. */
 const NIKON_MAKE = 'NIKON';
@@ -144,6 +161,14 @@ const JPEG_START_OF_IMAGE_SECOND_BYTE = 0xd8;
 /** `identify` looks for these in the first 32 bytes of the file before it reads the TIFF header. */
 const PHASE_ONE_MARKERS = ['MMMM', 'IIII'];
 const PHASE_ONE_PROBE_BYTES = 32;
+/** `identify` parses a file with this at byte 6 as a CIFF, not as a TIFF. */
+const CIFF_SIGNATURE = 'HEAPCCDR';
+const CIFF_SIGNATURE_AT = 6;
+/**
+ * EXIF entries the walk scans for tag 0x927c in all, those of one directory of the largest count `get2` reads. LibRaw reads every EXIF
+ * directory an entry names, with no limit on its count (exif_gps.cpp lines 75 to 77); past this budget the walk refuses the file.
+ */
+const MAX_EXIF_ENTRIES = 65_535;
 const MIN_SCALE = Math.fround(0.00001);
 const SQUARE_BELOW = 0.995;
 const SQUARE_ABOVE = 1.005;
@@ -180,21 +205,19 @@ interface Directory {
   bitsPerSample: number;
 }
 
-/** What LibRaw keeps across directories while it reads them, and whether the walk met an entry it does not follow. */
+/** What LibRaw keeps across directories while it reads them. */
 interface Walk {
   reader: TiffReader;
   directories: Directory[];
   /** Directories LibRaw has counted, those it read no entries from included. */
   counted: number;
   pixelAspect: number;
-  /** `is_pana_raw`: set by a Panasonic flag tag holding a number. */
-  panasonic: boolean;
   /** `dng_version`: the four bytes of the last DNGVersion read, as LibRaw shifts four bytes into it. */
   dngVersion: number;
-  /** Whether a Make or UniqueCameraModel read so far starts with NIKON. */
+  /** Whether LibRaw's make may start with NIKON: set by the Make read last, and by any UniqueCameraModel of NIKON. */
   nikon: boolean;
-  /** Set when an entry makes LibRaw read a directory that the walk does not read. */
-  unmodelled: boolean;
+  /** EXIF entries left to scan of MAX_EXIF_ENTRIES. */
+  exifEntriesLeft: number;
 }
 
 const get2 = (reader: TiffReader, at: number): number => readUInt16(reader.readPadded(at, 2), 0, reader.little);
@@ -243,8 +266,12 @@ function pixelAspectOf(reader: TiffReader, entry: Entry): number | null {
 
 type EntryHandler = (walk: Walk, directory: Directory, entry: Entry) => void;
 
-const refuse = (walk: Walk): void => {
-  walk.unmodelled = true;
+/** Thrown by `refuse` and caught once, in `dngRawImageData`. */
+class UnmodelledLayout extends Error {}
+
+/** Ends the walk at an entry through which LibRaw reads a directory the walk does not follow. */
+const refuse = (): never => {
+  throw new UnmodelledLayout();
 };
 const startsWith = (reader: TiffReader, entry: Entry, text: string): boolean =>
   reader.readPadded(entry.at, text.length).toString('latin1') === text;
@@ -257,9 +284,31 @@ const setHeight: EntryHandler = (walk, directory, entry) => {
 const setBitsPerSample: EntryHandler = (walk, directory, entry) => {
   directory.bitsPerSample = firstInt(walk.reader, entry);
 };
-const rememberNikon: EntryHandler = (walk, _directory, entry) => {
-  walk.nikon ||= startsWith(walk.reader, entry, NIKON_MAKE);
+/** `fgets(make, ...)` makes the value the make; a value whose first 5 bytes are not all in the file leaves `nikon` as it was. */
+const setMake: EntryHandler = (walk, _directory, entry) => {
+  if (walk.reader.within(entry.at, NIKON_MAKE.length)) walk.nikon = startsWith(walk.reader, entry, NIKON_MAKE);
 };
+/**
+ * LibRaw copies a UniqueCameraModel over the make only while no Model has been read. The walk does not follow the model, so a
+ * UniqueCameraModel that starts with NIKON, or whose first 5 bytes are not all in the file, sets `nikon`, and none clears it.
+ */
+const raiseNikonFromUniqueCameraModel: EntryHandler = (walk, _directory, entry) => {
+  const known = walk.reader.within(entry.at, NIKON_MAKE.length);
+  if (entry.count > 0 && (!known || startsWith(walk.reader, entry, NIKON_MAKE))) walk.nikon = true;
+};
+
+/** Whether the EXIF directory at `at` lists tag 0x927c, which `parse_exif` reads with `parse_makernote`; refuses past the budget. */
+function listsMakerNote(walk: Walk, at: number): boolean {
+  const { reader } = walk;
+  const count = get2(reader, at);
+  if (count > walk.exifEntriesLeft) refuse();
+  walk.exifEntriesLeft -= count;
+  const entries = reader.readPadded(at + 2, count * ENTRY_BYTES);
+  for (let offset = 0; offset < entries.length; offset += ENTRY_BYTES) {
+    if (readUInt16(entries, offset, reader.little) === TAG.makerNote) return true;
+  }
+  return false;
+}
 
 /**
  * A strip offset tag read while the directory has no BitsPerSample makes LibRaw open the stream at the offset (when it is above 0) as
@@ -268,13 +317,8 @@ const rememberNikon: EntryHandler = (walk, _directory, entry) => {
  */
 function readsJpegStream(walk: Walk, directory: Directory, entry: Entry): void {
   const offset = get4(walk.reader, entry.at);
-  if (directory.bitsPerSample === 0 && walk.reader.readPadded(offset + 1, 1)[0] === JPEG_START_OF_IMAGE_SECOND_BYTE) refuse(walk);
+  if (directory.bitsPerSample === 0 && walk.reader.readPadded(offset + 1, 1)[0] === JPEG_START_OF_IMAGE_SECOND_BYTE) refuse();
 }
-
-/** The tags LibRaw reads in its first switch, which a Panasonic flag leaves to the switch of the Panasonic tags. */
-const unlessPanasonic = (handler: EntryHandler): EntryHandler => (walk, directory, entry) => {
-  if (!walk.panasonic) handler(walk, directory, entry);
-};
 
 const ENTRY_HANDLERS: ReadonlyMap<number, EntryHandler> = new Map<number, EntryHandler>([
   [TAG.imageWidth, setWidth],
@@ -287,35 +331,30 @@ const ENTRY_HANDLERS: ReadonlyMap<number, EntryHandler> = new Map<number, EntryH
     walk.pixelAspect = pixelAspectOf(walk.reader, entry) ?? walk.pixelAspect;
   }],
   [TAG.subIfds, (walk, directory, entry) => {
-    if (directory.width === A100_WIDTH) refuse(walk);
-    else visitSubIfds(walk, entry);
+    if (directory.width === A100_WIDTH) refuse();
+    visitSubIfds(walk, entry);
   }],
   [TAG.fujiTable, (walk, _directory, entry) => {
     visit(walk, get4(walk.reader, entry.at));
   }],
   [TAG.panasonicFlag, (walk, _directory, entry) => {
-    if (!walk.panasonic && entry.count === PANASONIC_FLAG_VALUES) walk.panasonic = get4(walk.reader, entry.at) !== 0;
-  }],
-  [TAG.panasonicCameraIfd, (walk) => {
-    if (walk.panasonic) refuse(walk);
+    if (entry.count === PANASONIC_FLAG_VALUES && get4(walk.reader, entry.at) !== 0) refuse();
   }],
   [TAG.stripOffsets, readsJpegStream],
-  [TAG.panasonicStripOffsets, (walk, directory, entry) => {
-    if (walk.panasonic && entry.type === TYPE.long) readsJpegStream(walk, directory, entry);
-  }],
-  [TAG.jpegInterchange, unlessPanasonic(readsJpegStream)],
-  [TAG.fujiStripOffsets, unlessPanasonic(readsJpegStream)],
-  [TAG.make, rememberNikon],
-  [TAG.uniqueCameraModel, rememberNikon],
-  [TAG.exifIfd, (walk) => {
-    if (walk.nikon) refuse(walk);
+  [TAG.jpegInterchange, readsJpegStream],
+  [TAG.fujiStripOffsets, readsJpegStream],
+  [TAG.sonyMinolta, refuse],
+  [TAG.make, setMake],
+  [TAG.uniqueCameraModel, raiseNikonFromUniqueCameraModel],
+  [TAG.exifIfd, (walk, _directory, entry) => {
+    if (walk.nikon && listsMakerNote(walk, get4(walk.reader, entry.at))) refuse();
   }],
   [TAG.hasselblad, refuse],
   [TAG.dngVersion, (walk, _directory, entry) => {
     walk.dngVersion = walk.reader.readPadded(entry.at, DNG_VERSION_BYTES).readUInt32BE(0);
   }],
   [TAG.dngPrivateData, (walk) => {
-    if (walk.nikon || walk.dngVersion === 0) refuse(walk);
+    if (walk.nikon || walk.dngVersion === 0) refuse();
   }],
 ]);
 
@@ -330,23 +369,22 @@ function visit(walk: Walk, at: number): Directory | null {
   for (const [tag, entry] of read.entries) {
     directory.entries.set(tag, entry);
     ENTRY_HANDLERS.get(tag)?.(walk, directory, entry);
-    if (walk.unmodelled) break;
   }
   return directory;
 }
 
 function visitSubIfds(walk: Walk, list: Entry): void {
   for (let index = 0; index < list.count; index += 1) {
-    if (visit(walk, get4(walk.reader, list.at + index * OFFSET_BYTES)) === null || walk.unmodelled) return;
+    if (visit(walk, get4(walk.reader, list.at + index * OFFSET_BYTES)) === null) return;
   }
 }
 
 /** The directories LibRaw reads, in its order, and what it keeps from reading them. */
 function walkDirectories(reader: TiffReader): Walk {
-  const walk: Walk = { reader, directories: [], counted: 0, pixelAspect: 1, panasonic: false, dngVersion: 0, nikon: false, unmodelled: false };
+  const walk: Walk = { reader, directories: [], counted: 0, pixelAspect: 1, dngVersion: 0, nikon: false, exifEntriesLeft: MAX_EXIF_ENTRIES };
   for (let at = reader.firstDirectory; at !== 0;) {
     const directory = visit(walk, at);
-    if (directory === null || walk.unmodelled) break;
+    if (directory === null) break;
     at = directory.next;
   }
   return walk;
@@ -451,10 +489,11 @@ function openTiff(fd: number): TiffReader | null {
   return { size, little, firstDirectory: readUInt32(header, 4, little), within, read, readPadded };
 }
 
-/** Whether `identify` runs its Phase One parser first: one of the markers lies in the first 32 bytes. */
-function probesPhaseOne(reader: TiffReader): boolean {
+/** Refuses a file whose head makes `identify` run another parser: a Phase One marker in the first 32 bytes, or the CIFF signature. */
+function refuseOtherParsers(reader: TiffReader): void {
   const head = reader.readPadded(0, PHASE_ONE_PROBE_BYTES).toString('latin1');
-  return PHASE_ONE_MARKERS.some((marker) => head.includes(marker));
+  if (PHASE_ONE_MARKERS.some((marker) => head.includes(marker))) refuse();
+  if (head.startsWith(CIFF_SIGNATURE, CIFF_SIGNATURE_AT)) refuse();
 }
 
 /** Whether the DNG at `filePath` holds every strip or tile of the raw image LibRaw develops into `decoded`, the picture its decoder wrote. */
@@ -463,15 +502,17 @@ export function dngRawImageData(filePath: string, decoded: ImageSize): DngRawIma
   try {
     const reader = openTiff(fd);
     if (reader === null) return 'not-classic-tiff';
-    if (probesPhaseOne(reader)) return 'unmodelled-layout';
-    const { directories, pixelAspect, unmodelled } = walkDirectories(reader);
-    if (unmodelled) return 'unmodelled-layout';
+    refuseOtherParsers(reader);
+    const { directories, pixelAspect } = walkDirectories(reader);
     const raw = directories.find((directory) => isRawImage(reader, directory));
     if (raw === undefined) return 'no-raw-image';
     const size = rawSize(reader, raw);
     if (size === null) return 'unreadable-area';
     if (!matchesDecoded(size, pixelAspect, turned(reader, directories), decoded)) return 'dimensions';
     return imageData(reader, raw);
+  } catch (error) {
+    if (error instanceof UnmodelledLayout) return 'unmodelled-layout';
+    throw error;
   } finally {
     fs.closeSync(fd);
   }
