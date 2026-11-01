@@ -87,6 +87,20 @@ describe('the temporary files beside the objects', () => {
     expect(fs.existsSync(stale)).toBe(false);
   });
 
+  it('removes the bytes of an object that has had no record for an hour, as a save that stopped between its two renames leaves them, and keeps the bytes that have a record or are fresh', async () => {
+    const { globalSharedObjects } = await startProcess();
+    const orphan = writeAged(globalSharedObjects.objectPath('results/job-2/out.bin'), HOUR_MS + MINUTE_MS);
+    const fresh = writeAged(globalSharedObjects.objectPath('results/job-3/out.bin'), MINUTE_MS);
+    const stored = writeAged(globalSharedObjects.objectPath(KEY), 48 * HOUR_MS);
+    writeAged(stored.replace(/\.bin$/, '.meta.json'), 48 * HOUR_MS);
+    const foreign = writeAged(path.join(storageDir, 'notes.bin'), 48 * HOUR_MS);
+
+    globalSharedObjects.sweepStaleTempFiles();
+
+    expect(fs.existsSync(orphan), 'bytes without a record for an hour').toBe(false);
+    expect([fresh, stored, foreign].filter((file) => !fs.existsSync(file))).toEqual([]);
+  });
+
   it('says once, not on every sweep, that a temporary file could not be removed', async () => {
     const { globalSharedObjects } = await startProcess();
     const stuck = writeAged(`${globalSharedObjects.objectPath(KEY)}.tmp.1700000000000.abcdef012345`, 2 * HOUR_MS);
@@ -167,7 +181,7 @@ describe('the sessions of uploads in parts in the storage directory', () => {
 });
 
 describe('the directories of jobs in the storage directory', () => {
-  it('removes the directory of a job that started over a day and an hour ago, as a worker that stopped leaves it, and keeps one that started now', async () => {
+  it('removes the directory of a job that started over two hours ago, the longest deadline and an hour, as a worker that stopped leaves it, and keeps one that started within that time', async () => {
     const { s3Storage } = await startProcess();
     const { withSandboxDir } = await import('../src/worker/worker-output');
     let abandonedDir = '';
@@ -175,16 +189,17 @@ describe('the directories of jobs in the storage directory', () => {
     let finishJobs!: () => void;
     const jobsMayFinish = new Promise<void>((resolve) => (finishJobs = resolve));
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(Date.now() - 25 * HOUR_MS - MINUTE_MS);
+    vi.setSystemTime(Date.now() - 2 * HOUR_MS - MINUTE_MS);
     const abandoned = withSandboxDir('easyconvert-ffmpeg-', async (dir) => {
       abandonedDir = dir;
       await jobsMayFinish;
     });
-    vi.useRealTimers();
+    vi.setSystemTime(Date.now() + 2 * MINUTE_MS);
     const recent = withSandboxDir('easyconvert-ffmpeg-', async (dir) => {
       recentDir = dir;
       await jobsMayFinish;
     });
+    vi.useRealTimers();
 
     s3Storage.sweepExpiredObjects();
 
@@ -193,5 +208,19 @@ describe('the directories of jobs in the storage directory', () => {
     expect(fs.existsSync(recentDir)).toBe(true);
     finishJobs();
     await Promise.all([abandoned, recent]);
+  });
+
+  it('refuses a job directory prefix whose name the sweep could not read the time from', async () => {
+    await startProcess();
+    const { makeJobDirectory } = await import('../src/lib/storage/temp-file');
+
+    for (const prefix of ['easyconvert-1700000000000-', '../easyconvert-', 'easyconvert', 'Easyconvert-', 'easy convert-']) {
+      expect(() => makeJobDirectory(prefix), prefix).toThrow(/prefix/);
+    }
+    const entries = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir) : []);
+    expect(entries(path.join(storageDir, '.staging')), 'no job directory was made').toEqual([]);
+    expect(entries(storageDir).filter((name) => !name.startsWith('.')), 'nothing was made beside the objects').toEqual([]);
+    const made = makeJobDirectory('easyconvert-7z-');
+    expect(path.basename(made).startsWith('easyconvert-7z-')).toBe(true);
   });
 });

@@ -311,6 +311,112 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
   });
 });
 
+describe('an attempt that is aborted while it saves its result', () => {
+  const EARLIER = crypto.randomBytes(4096);
+
+  async function storeEarlierAttempt() {
+    const storage = await loadStorage();
+    const earlierSource = path.join(baseDir, 'worker-tmp', 'earlier.bin');
+    fs.writeFileSync(earlierSource, EARLIER);
+    const earlier = await storage.storageProvider.saveObjectFromFile!(KEY, earlierSource, 'application/octet-stream', 'result.bin');
+    return { storage, earlier };
+  }
+
+  async function expectEarlierObjectServed(etag: string) {
+    vi.restoreAllMocks();
+    const reader = await loadStorage();
+    expect(reader.globalSharedObjects.get(KEY)?.etag, 'the record of the earlier save').toBe(etag);
+    expect(fs.readFileSync(reader.globalSharedObjects.objectPath(KEY)).equals(EARLIER), 'the bytes of the earlier save').toBe(true);
+    expect(leftTemporaryFiles(), 'no temporary file is left').toEqual([]);
+  }
+
+  it('stores nothing and keeps the object another attempt stored when it is aborted during its copy', async () => {
+    const { storage, earlier } = await storeEarlierAttempt();
+    renameFailsAcrossVolumes();
+    const attempt = new AbortController();
+    const copy = fs.promises.copyFile;
+    vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (from, to, mode) => {
+      await copy(from, to, mode);
+      attempt.abort(new Error('the attempt lost its lock'));
+    });
+
+    await expect(
+      storage.storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin', 60_000, attempt.signal)
+    ).rejects.toThrow(/lost its lock/);
+
+    await expectEarlierObjectServed(earlier.etag);
+  });
+
+  it('stores nothing and keeps the object another attempt stored when it was aborted before the save', async () => {
+    const { storage, earlier } = await storeEarlierAttempt();
+
+    await expect(
+      storage.storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin', 60_000, AbortSignal.abort(new Error('aborted before the save')))
+    ).rejects.toThrow(/aborted before the save/);
+
+    await expectEarlierObjectServed(earlier.etag);
+  });
+});
+
+describe('a file to store that is not a regular file', () => {
+  it('refuses a symbolic link with a typed error and stores nothing, leaving the file it points to alone', async () => {
+    const { storageProvider, globalSharedObjects } = await loadStorage();
+    const { NotARegularFileError } = await import('../src/lib/storage/errors');
+    const elsewhere = path.join(baseDir, 'elsewhere.txt');
+    fs.writeFileSync(elsewhere, 'not the output');
+    const link = path.join(baseDir, 'worker-tmp', 'link.bin');
+    fs.symlinkSync(elsewhere, link);
+
+    const saving = storageProvider.saveObjectFromFile!(KEY, link, 'application/octet-stream', 'result.bin');
+
+    await expect(saving).rejects.toBeInstanceOf(NotARegularFileError);
+    expect(globalSharedObjects.get(KEY)).toBeUndefined();
+    expect(fs.existsSync(globalSharedObjects.objectPath(KEY))).toBe(false);
+    expect(fs.readFileSync(elsewhere, 'utf-8')).toBe('not the output');
+  });
+
+  it('refuses a directory with a typed error and stores nothing', async () => {
+    const { storageProvider, globalSharedObjects } = await loadStorage();
+    const { NotARegularFileError } = await import('../src/lib/storage/errors');
+    const dir = path.join(baseDir, 'worker-tmp', 'out-dir');
+    fs.mkdirSync(dir);
+
+    await expect(storageProvider.saveObjectFromFile!(KEY, dir, 'application/octet-stream', 'result.bin')).rejects.toBeInstanceOf(NotARegularFileError);
+    expect(fs.existsSync(globalSharedObjects.objectPath(KEY))).toBe(false);
+  });
+
+  it('refuses an engine output that is a symbolic link before it is handed off or copied to a named destination', async () => {
+    await loadStorage();
+    const { NotARegularFileError } = await import('../src/lib/storage/errors');
+    const { withSandboxDir, handOffOutput, preserveOutput } = await import('../src/worker/worker-output');
+    const elsewhere = path.join(baseDir, 'elsewhere.txt');
+    fs.writeFileSync(elsewhere, 'not the output');
+    const named = path.join(baseDir, 'named-destination.pdf');
+
+    await withSandboxDir('easyconvert-office-', async (jobDir) => {
+      const output = path.join(jobDir, 'output.pdf');
+      fs.symlinkSync(elsewhere, output);
+      await expect(handOffOutput(output, 'pdf')).rejects.toBeInstanceOf(NotARegularFileError);
+      expect(() => preserveOutput(output, 'pdf', { outputPath: named } as never)).toThrow(NotARegularFileError);
+    });
+
+    expect(fs.existsSync(named), 'nothing was copied to the named destination').toBe(false);
+    expect(fs.readdirSync(path.join(storageDir, '.staging')), 'nothing was handed off').toEqual([]);
+  });
+
+  it('keeps a file an engine writes one level above its job directory out of the directory of the objects', async () => {
+    await loadStorage();
+    const { withSandboxDir } = await import('../src/worker/worker-output');
+
+    await withSandboxDir('easyconvert-office-', async (jobDir) => {
+      fs.writeFileSync(path.join(jobDir, '..', 'x'), 'escaped');
+    });
+
+    expect(fs.existsSync(path.join(storageDir, 'x'))).toBe(false);
+    expect(fs.readdirSync(storageDir).filter((name) => !name.startsWith('.'))).toEqual([]);
+  });
+});
+
 describe('the record of an object the local driver stores', () => {
   function failRecordWrites() {
     const enospc = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
