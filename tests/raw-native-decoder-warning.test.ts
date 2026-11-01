@@ -1,32 +1,36 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
-import { requireBenchSample } from './helpers/bench-sample';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { minimalDng } from './helpers/dng-builder';
 import { withBinaryAt } from './helpers/native-tools';
-import { skipWithoutTools } from './helpers/strict-skip';
+import { rawSamplePath, skipWithoutRawSamples, skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * LibRaw prints `<file>: data corrupted at <offset>` when a decoded sample lies outside the bit depth the file states (derror() in
- * src/utils/utils_libraw.cpp, called from ljpeg_row in src/decoders/decoders_dcraw.cpp) and goes on decoding, so the image it writes is
- * whole. A Samsung Galaxy S23 DNG states 12 bits and stores 7,489 green samples up to 4183 in a bright patch, which prints the line and
- * develops completely: the lossless JPEG of its strip decodes sample for sample the same in libjpeg-turbo, which does not warn. The
- * real file is converted here, and a stand-in decoder that prints chosen lines runs the engine's own checks (sandbox, completeness,
- * repeated tail) over images it writes, so that every other kind of report keeps refusing the file.
+ * src/utils/utils_libraw.cpp, called from ljpeg_row in src/decoders/decoders_dcraw.cpp) and goes on decoding. A Samsung Galaxy S23 DNG
+ * states 12 bits and stores 7,489 green samples up to 4183 in a bright patch, which prints the line and develops completely: the
+ * lossless JPEG of its strip decodes sample for sample the same in libjpeg-turbo, which does not warn. After that first report derror()
+ * no longer checks for the end of the stream, so the same file cut short also decodes to a full-size image with only that line; the
+ * engine accepts the line for a DNG that holds every strip of its raw image and whose decoded image does not end in repeated rows. The
+ * real file and cut copies of it are converted here, and a stand-in decoder that prints chosen lines runs the engine's own checks
+ * (sandbox, completeness, repeated tail) over images it writes, so that every other kind of report keeps refusing the file.
  */
 
 const TEST_TIMEOUT_MS = 180_000;
 vi.setConfig({ testTimeout: TEST_TIMEOUT_MS });
 
-const S23 = 'raw-samsung-s23.dng';
+const S23 = 'dng-s23';
 const S23_WIDTH = 4000;
 const S23_HEIGHT = 2252;
-const WARNING_PATTERN = /unexpected sample data near byte 4384328/;
+const WARNING_PATTERN = /corrupted data at byte 4384328 of the file; some samples of the picture may be wrong/;
+/** Cut points of the S23 file (25,412,616 bytes): far inside its one strip, and where only about 10 % of its rows are left to fill. */
+const S23_CUTS = [5_000_000, 23_000_000];
 const PREVIEW_GRID_WIDTH = 64;
 const PREVIEW_GRID_HEIGHT = 36;
 const PREVIEW_BANDS = 4;
@@ -38,12 +42,13 @@ const stubDirectory = mkdtempSync(path.join(os.tmpdir(), 'raw-warning-stub-'));
 afterAll(() => rmSync(stubDirectory, { recursive: true, force: true }));
 
 describe('a camera file whose decoder warns about samples outside the stated bit depth', () => {
-  const noTool = skipWithoutTools('dcraw_emu', 'exiftool');
+  const noTool = skipWithoutTools('dcraw_emu', 'exiftool') || skipWithoutRawSamples(S23);
+  const s23 = () => readFileSync(rawSamplePath(S23));
 
   for (const target of ['jpg', 'png']) {
-    it.skipIf(noTool)(`the Samsung Galaxy S23 DNG is developed to ${target} in full and the result carries the warning`, async (ctx) => {
-      const bytes = await requireBenchSample(ctx, S23);
-      const result = await dispatchConversion(bytes, 'dng', target, {}, S23);
+    it.skipIf(noTool)(`the Samsung Galaxy S23 DNG is developed to ${target} in full and the result carries the warning`, async () => {
+      const bytes = s23();
+      const result = await dispatchConversion(bytes, 'dng', target, {}, 'samsung-s23.dng');
       expect(result.engineUsed).toBe('native-raw');
       expect(result.metadata?.warnings).toEqual([expect.stringMatching(WARNING_PATTERN)]);
       const meta = await sharp(result.buffer).metadata();
@@ -60,6 +65,12 @@ describe('a camera file whose decoder warns about samples outside the stated bit
       }
     });
   }
+
+  it.skipIf(noTool).each(S23_CUTS)('the same file cut to %i bytes is refused as truncated, though the decoder prints only the warning', async (cut) => {
+    const error = await dispatchConversion(s23().subarray(0, cut), 'dng', 'jpg', {}, 'samsung-s23.dng').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated/);
+  });
 });
 
 describe('what the decoder prints decides whether its image is developed', () => {
@@ -70,7 +81,30 @@ describe('what the decoder prints decides whether its image is developed', () =>
     const stub = decoderStub('good', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
     const result = await convertWith(stub);
     expect(result).not.toBeInstanceOf(Error);
-    expect((result as { metadata?: { warnings?: string[] } }).metadata?.warnings).toEqual([expect.stringMatching(/unexpected sample data near byte 3\b/)]);
+    expect((result as { metadata?: { warnings?: string[] } }).metadata?.warnings).toEqual([expect.stringMatching(/corrupted data at byte 3 of the file/)]);
+  });
+
+  it('refuses the line for a DNG whose raw strip runs past the end of the file, though the image is complete', async () => {
+    const stub = decoderStub('cut-dng', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
+    const error = await convertWith(stub, minimalDng(DNG_STRIP_BYTES, DNG_BYTES.length - 1));
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated: its raw image data runs past the end of the file/);
+  });
+
+  it('refuses the line for a camera format other than DNG, whose directory does not show a cut', async () => {
+    const stub = decoderStub('nef', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
+    const error = await withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(DNG_BYTES, 'nef', 'png', {}, 'stub.nef').catch((caught: unknown) => caught));
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/reported a problem with the \.nef file: .*data corrupted at 3/);
+  });
+
+  it('refuses the line over an image whose last 9 rows each repeat the row two above, and accepts 8, or 9 when the decoder printed nothing', async () => {
+    const line = '"$input: data corrupted at 3"';
+    const nine = await convertWith(decoderStub('nine', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS - 10), line));
+    expect(nine).toBeInstanceOf(RawDecodeError);
+    expect((nine as RawDecodeError).message).toMatch(/truncated: the decoded image ends in repeated filler rows/);
+    expect(await convertWith(decoderStub('eight', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS - 9), line))).not.toBeInstanceOf(Error);
+    expect(await convertWith(decoderStub('nine-silent', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS - 10), ''))).not.toBeInstanceOf(Error);
   });
 
   it('develops a complete image that printed nothing without a warning', async () => {
@@ -97,7 +131,6 @@ describe('what the decoder prints decides whether its image is developed', () =>
     ['an unexpected end of file', '"$input: Unexpected end of file"'],
     ['a data-corrupted line of another file', '"other.dng: data corrupted at 3"'],
     ['an offset that is not a number', '"$input: data corrupted at three"'],
-    ['an offset beyond the end of the file', '"$input: data corrupted at 99999999"'],
     ['a data-corrupted line followed by another report', '"$input: data corrupted at 3" "Cannot do postprocessing on $input: Bad crop"'],
     ['text of any other kind', '"something went wrong"'],
   ])('still refuses %s even though the image is complete', async (_name, stderrLines) => {
@@ -123,10 +156,11 @@ describe('what the decoder prints decides whether its image is developed', () =>
   });
 });
 
-const DNG_BYTES = Buffer.concat([Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]), Buffer.alloc(200)]);
+const DNG_STRIP_BYTES = 200;
+const DNG_BYTES = minimalDng(DNG_STRIP_BYTES);
 
-function convertWith(stub: string): Promise<unknown> {
-  return withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(DNG_BYTES, 'dng', 'png', {}, 'stub.dng').catch((error: unknown) => error));
+function convertWith(stub: string, input = DNG_BYTES): Promise<unknown> {
+  return withBinaryAt('DCRAW_EMU_PATH', stub, () => dispatchConversion(input, 'dng', 'png', {}, 'stub.dng').catch((error: unknown) => error));
 }
 
 /**

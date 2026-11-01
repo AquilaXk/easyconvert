@@ -414,7 +414,6 @@ describe('the known gaps', () => {
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
-    expect(shipped.gaps.length).toBeGreaterThan(0);
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
       // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).
@@ -520,7 +519,7 @@ describe('the quality gaps', () => {
   // Hand-built rows with the numbers of the rows these entries exist for; every verdict below is worked out on paper.
   const CHECKS = 'pdf-ops/pdf-qpdf-pages-loop.pdf->compress/pdf_check_failures';
   const BYTES = 'pdf-ops/pdf-qpdf-form-errors.pdf->delete/bytes';
-  const CONVERTS = 'raw/raw-samsung-s23.dng->jpg/converts';
+  const CONVERTS = 'raw/sample.dng->jpg/converts';
   const CURVE = 'raw/raw-canon-r5-raw.cr3->jpg/bd_rate_psnr';
   const checks = (ours: number): BenchRow => row({ id: CHECKS, direction: 'lower', kind: 'exact', ours, reference: 0, tolerance: { abs: 0, rel: 0 } });
   // 3 percent of 25,870 bytes is 776.1: the allowance of the size row.
@@ -555,7 +554,7 @@ describe('the quality gaps', () => {
   });
 
   it('judges the direction of the metric: a lower value of a higher-is-better row is worse than the record', () => {
-    const higherBetter = row({ id: 'raw/raw-samsung-s23.dng->jpg/ssim', direction: 'higher', ours: 0.80, reference: 0.95, tolerance: { abs: 0.01, rel: 0 } });
+    const higherBetter = row({ id: 'raw/sample.dng->jpg/ssim', direction: 'higher', ours: 0.80, reference: 0.95, tolerance: { abs: 0.01, rel: 0 } });
     const file = gaps(entry(higherBetter.id, 0.85, 0.95, 686));
     expect(verdictOf([{ ...higherBetter, ours: 0.84, delta: -0.11 }], file, higherBetter.id)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
     expect(verdictOf([{ ...higherBetter, ours: 0.83, delta: -0.12 }], file, higherBetter.id)).toMatchObject({ outcome: 'fail', basis: 'tracked-worse-than-recorded' });

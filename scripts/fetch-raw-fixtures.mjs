@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Downloads the camera-RAW sample files listed in tests/fixtures/raw/manifest.json (one per format) and
-// tests/fixtures/raw/variants.json (further sensor-data variants of a format) into tests/fixtures/raw/.cache/,
+// Downloads the camera-RAW sample files listed in tests/fixtures/raw/manifest.json (one per format),
+// tests/fixtures/raw/variants.json (further sensor-data variants of a format) and tests/fixtures/raw/cases.json
+// (real files that single tests read for a case of their own) into tests/fixtures/raw/.cache/,
 // verifying byte size and SHA-256. A manifest file is <format>.<format>, a variant file is
 // <format>-<variant>.<format>. Optional arguments restrict the download to those cache names
 // (for example `x3f raw x3f-sd14`).
@@ -11,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'fixtures', 'raw');
-const MANIFEST_PATHS = [path.join(ROOT, 'manifest.json'), path.join(ROOT, 'variants.json')];
+const MANIFEST_PATHS = ['manifest.json', 'variants.json', 'cases.json'].map((name) => path.join(ROOT, name));
 const CACHE_DIR = path.join(ROOT, '.cache');
 const MAX_ATTEMPTS = 4;
 const RETRY_BASE_DELAY_MS = 1_000;

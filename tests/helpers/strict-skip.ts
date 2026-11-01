@@ -32,8 +32,11 @@ export function skipWithoutTools(...tools: ExternalOracleTool[]): boolean {
 
 const RAW_SAMPLE_CACHE = path.join(__dirname, '..', 'fixtures', 'raw', '.cache');
 
-/** `skipUnless` for the camera RAW samples `npm run fixtures:raw` fetches into the cache, named by format. */
-export function skipWithoutRawSamples(...formats: string[]): boolean {
-  const missing = formats.filter((format) => !existsSync(path.join(RAW_SAMPLE_CACHE, `${format}.${format}`)));
+/** The cached file of a RAW sample named `<format>` or `<format>-<variant>`, as `npm run fixtures:raw` stores it. */
+export const rawSamplePath = (name: string): string => path.join(RAW_SAMPLE_CACHE, `${name}.${name.split('-')[0]}`);
+
+/** `skipUnless` for the camera RAW samples `npm run fixtures:raw` fetches into the cache, named by format or `<format>-<variant>`. */
+export function skipWithoutRawSamples(...names: string[]): boolean {
+  const missing = names.filter((name) => !existsSync(rawSamplePath(name)));
   return skipUnless(`the RAW sample(s) ${missing.join(', ')} (npm run fixtures:raw)`, missing.length === 0);
 }
