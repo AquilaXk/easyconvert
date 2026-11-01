@@ -47,10 +47,10 @@ export function GoogleOAuthButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="w-full min-h-[44px] flex items-center justify-center gap-3 px-4 py-2.5 rounded-md border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-elevated hover:bg-neutral-subtle dark:hover:bg-dark-border text-brand-950 dark:text-white font-medium text-sm transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 disabled:opacity-60"
+      className="w-full min-h-[44px] flex items-center justify-center gap-3 px-4 py-2.5 rounded-sm border border-rule bg-surface hover:bg-sunken text-ink font-medium text-sm transition-colors disabled:opacity-60"
     >
       {isGoogleLoading ? (
-        <Loader2 className="w-4 h-4 animate-spin text-brand-700 dark:text-brand-400" />
+        <Loader2 className="w-4 h-4 animate-spin text-accent-ink" />
       ) : (
         <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
           <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -98,7 +98,7 @@ export function AuthCredentialsForm({
   onSubmit,
 }: Readonly<AuthCredentialsFormProps>) {
   const inputBaseClass =
-    'w-full min-h-[44px] pl-10 pr-4 py-2.5 rounded-md border border-neutral-border dark:border-dark-border bg-neutral-scaffold/60 dark:bg-dark-elevated text-brand-950 dark:text-white text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 dark:focus-visible:ring-brand-400 transition-colors';
+    'w-full min-h-[44px] pl-10 pr-4 py-2.5 rounded-sm border border-rule-strong bg-surface/80 text-ink text-base transition-colors';
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
@@ -106,12 +106,12 @@ export function AuthCredentialsForm({
         <div>
           <label
             htmlFor="auth-full-name"
-            className="block text-xs font-semibold text-brand-950 dark:text-dark-text mb-1.5"
+            className="block text-xs font-semibold text-ink mb-1.5"
           >
             Full Name
           </label>
           <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-muted dark:text-dark-muted">
+            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
               <User className="w-4 h-4" />
             </div>
             <input
@@ -131,12 +131,12 @@ export function AuthCredentialsForm({
       <div>
         <label
           htmlFor="auth-email"
-          className="block text-xs font-semibold text-brand-950 dark:text-dark-text mb-1.5"
+          className="block text-xs font-semibold text-ink mb-1.5"
         >
           Email Address
         </label>
         <div className="relative">
-          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-muted dark:text-dark-muted">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
             <Mail className="w-4 h-4" />
           </div>
           <input
@@ -155,12 +155,12 @@ export function AuthCredentialsForm({
       <div>
         <label
           htmlFor="auth-password"
-          className="block text-xs font-semibold text-brand-950 dark:text-dark-text mb-1.5"
+          className="block text-xs font-semibold text-ink mb-1.5"
         >
           Password
         </label>
         <div className="relative">
-          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-muted dark:text-dark-muted">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
             <Lock className="w-4 h-4" />
           </div>
           <input
@@ -171,13 +171,13 @@ export function AuthCredentialsForm({
             value={password}
             onChange={(e) => onPasswordChange(e.target.value)}
             placeholder="••••••••"
-            className="w-full min-h-[44px] pl-10 pr-12 py-2.5 rounded-md border border-neutral-border dark:border-dark-border bg-neutral-scaffold/60 dark:bg-dark-elevated text-brand-950 dark:text-white text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 dark:focus-visible:ring-brand-400 transition-colors"
+            className="w-full min-h-[44px] pl-10 pr-12 py-2.5 rounded-sm border border-rule-strong bg-surface/80 text-ink text-base transition-colors"
           />
           <button
             type="button"
             onClick={onTogglePassword}
             aria-label={showPassword ? 'Hide password' : 'Show password'}
-            className="min-w-[44px] min-h-[44px] absolute inset-y-0 right-0 flex items-center justify-center rounded-md text-ink-muted dark:text-dark-muted hover:text-brand-950 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
+            className="min-w-[44px] min-h-[44px] absolute inset-y-0 right-0 flex items-center justify-center rounded-sm text-ink-3 hover:text-ink transition-colors"
           >
             {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
           </button>
@@ -188,12 +188,12 @@ export function AuthCredentialsForm({
         <div>
           <label
             htmlFor="auth-confirm-password"
-            className="block text-xs font-semibold text-brand-950 dark:text-dark-text mb-1.5"
+            className="block text-xs font-semibold text-ink mb-1.5"
           >
             Confirm Password
           </label>
           <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-muted dark:text-dark-muted">
+            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
               <Lock className="w-4 h-4" />
             </div>
             <input
@@ -213,7 +213,7 @@ export function AuthCredentialsForm({
       <button
         type="submit"
         disabled={isBusy}
-        className="w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white font-semibold text-base shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2 transition-colors disabled:opacity-60"
+        className="lift w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent font-semibold text-base disabled:opacity-60"
       >
         {isSubmitting ? (
           <Loader2 className="w-4 h-4 animate-spin" />

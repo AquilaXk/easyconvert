@@ -68,9 +68,9 @@ export function DashboardHeader({
 
   return (
     <>
-      <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
+      <div className="border-t border-rule-strong pt-6 mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
         <div className="flex items-center gap-4 min-w-0">
-          <div className="w-14 h-14 rounded-lg bg-brand-700 text-white flex items-center justify-center text-xl font-bold shrink-0 overflow-hidden">
+          <div className="w-14 h-14 rounded-md bg-accent text-on-accent flex items-center justify-center text-xl font-bold shrink-0 overflow-hidden">
             {user.avatarUrl ? (
               <Image
                 src={user.avatarUrl}
@@ -87,18 +87,18 @@ export function DashboardHeader({
 
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-brand-950 dark:text-white">
+              <h1 className="text-2xl sm:text-3xl text-ink">
                 Developer Dashboard
               </h1>
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-bold uppercase tracking-wider bg-brand-50 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-white/15">
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-sm text-xs font-bold uppercase tracking-wider bg-accent-soft text-accent-ink border border-accent-edge">
                 <Shield className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>{user.tier.toUpperCase()} TIER</span>
               </span>
             </div>
-            <p className="text-sm text-ink-secondary dark:text-dark-muted mt-1 break-all">
+            <p className="text-sm text-ink-2 mt-1 break-all">
               {user.name} ({user.email})
             </p>
-            <div className="flex flex-wrap items-center gap-2.5 text-xs text-ink-muted dark:text-dark-muted mt-1.5">
+            <div className="flex flex-wrap items-center gap-2.5 text-xs text-ink-3 mt-1.5">
               <span>
                 Auth provider <strong className="capitalize">{user.provider}</strong>
               </span>
@@ -111,7 +111,7 @@ export function DashboardHeader({
         <button
           type="button"
           onClick={onLogout}
-          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-dark-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 text-sm font-semibold transition-colors"
+          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm border border-rule text-ink-2 hover:text-ink hover:bg-sunken text-sm font-semibold transition-colors"
         >
           <LogOut className="w-4 h-4" />
           <span>Sign Out</span>
@@ -121,7 +121,7 @@ export function DashboardHeader({
       <div
         role="tablist"
         aria-label="Dashboard sections"
-        className="flex border-b border-neutral-border dark:border-dark-border mb-8 overflow-x-auto gap-1"
+        className="flex border-b border-rule mb-8 overflow-x-auto gap-1"
       >
         {tabs.map((tab) => {
           const Icon = tab.icon;
@@ -140,10 +140,10 @@ export function DashboardHeader({
               type="button"
               onClick={() => onSelectTab(tab.id)}
               onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
-              className={`min-h-[44px] flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-700 ${
+              className={`min-h-[44px] flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${
                 isSelected
-                  ? 'border-brand-700 text-brand-700 dark:text-brand-400 dark:border-brand-400'
-                  : 'border-transparent text-ink-secondary dark:text-dark-muted hover:text-brand-950 dark:hover:text-white'
+                  ? 'border-accent text-accent-ink'
+                  : 'border-transparent text-ink-2 hover:text-ink'
               }`}
             >
               <Icon className="w-4 h-4" />
@@ -152,8 +152,8 @@ export function DashboardHeader({
                 <span
                   className={
                     tab.badgeDanger
-                      ? 'ml-1 px-2 py-0.5 text-xs rounded-md bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 font-bold border border-rose-300 dark:border-rose-800'
-                      : 'ml-1 px-2 py-0.5 text-xs rounded-md bg-brand-100 dark:bg-white/10 text-brand-700 dark:text-brand-300 font-semibold'
+                      ? 'ml-1 px-2 py-0.5 text-xs rounded-sm bg-danger-soft text-danger font-bold border border-danger-edge'
+                      : 'ml-1 px-2 py-0.5 text-xs rounded-sm bg-accent-soft text-accent-ink font-semibold'
                   }
                 >
                   {tab.badge}

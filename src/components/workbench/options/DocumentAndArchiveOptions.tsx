@@ -44,7 +44,7 @@ function OcrOptionsFields({
   return (
     <div className="space-y-3">
       {ocrAlwaysEnabled ? (
-        <p className="text-xs text-ink-secondary dark:text-neutral-300">
+        <p className="text-xs text-ink-2">
           OCR runs automatically for searchable structured XML output.
         </p>
       ) : (
@@ -60,9 +60,9 @@ function OcrOptionsFields({
                 ocrLanguage: e.target.checked ? options.ocrLanguage || 'eng' : undefined,
               })
             }
-            className="w-4 h-4 rounded accent-[#5C6BC0] cursor-pointer"
+            className="w-4 h-4 rounded accent-accent cursor-pointer"
           />
-          <label htmlFor="opt-doc-ocr" className="text-sm text-brand-950 dark:text-neutral-200 cursor-pointer select-none">
+          <label htmlFor="opt-doc-ocr" className="text-sm text-ink cursor-pointer select-none">
             Enable OCR text recognition
           </label>
         </div>
@@ -207,11 +207,11 @@ export function PasswordOptionsSection({
           className={INPUT_CLASS}
         />
         {passwordError && (
-          <p id="opt-doc-password-error" role="alert" className="mt-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+          <p id="opt-doc-password-error" role="alert" className="mt-1.5 text-xs font-medium text-danger">
             {passwordError}
           </p>
         )}
-        <p id="opt-doc-password-help" className="mt-1.5 text-xs text-ink-muted dark:text-neutral-400">{copy.helper}</p>
+        <p id="opt-doc-password-help" className="mt-1.5 text-xs text-ink-3">{copy.helper}</p>
       </div>
     </section>
   );
@@ -272,12 +272,12 @@ export function ArchiveOptionsSection({ options, onChange }: Readonly<SectionPro
       <h3 className={SECTION_HEADING_CLASS}>Archive Compression</h3>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-archive-compression" className="text-xs font-semibold text-brand-950 dark:text-neutral-200">
+          <label htmlFor="opt-archive-compression" className="text-xs font-semibold text-ink">
             Compression Level
           </label>
-          <span className="text-xs font-mono text-brand-700 dark:text-brand-300">Level {level}</span>
+          <span className="text-xs font-mono text-accent-ink">Level {level}</span>
         </div>
-        <input id="opt-archive-compression" type="range" min={0} max={9} step={1} value={level} onChange={(e) => onChange({ ...options, compressionLevel: Number(e.target.value) })} className="w-full min-h-[44px] accent-[#5C6BC0] cursor-pointer" />
+        <input id="opt-archive-compression" type="range" min={0} max={9} step={1} value={level} onChange={(e) => onChange({ ...options, compressionLevel: Number(e.target.value) })} className="w-full min-h-[44px] accent-accent cursor-pointer" />
       </div>
     </section>
   );

@@ -24,22 +24,22 @@ export function StatusOverviewCard({
   onRunDiagnostics: () => void;
 }>) {
   return (
-    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm">
+    <section className="border-t border-rule-strong pt-6 sm:pt-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="flex items-start sm:items-center gap-4">
-          <div className="flex items-center justify-center size-12 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shrink-0">
+          <div className="flex items-center justify-center size-12 text-success shrink-0">
             <CheckCircle2 className="w-6 h-6" aria-hidden="true" />
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <h2 className="text-xl sm:text-2xl font-bold text-brand-950 dark:text-white tracking-tight">
+              <h2 className="text-2xl sm:text-3xl text-ink">
                 All Client-Side Conversion Engines Operational
               </h2>
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-semibold bg-success/10 text-success border border-success-edge/30">
                 Ready
               </span>
             </div>
-            <p className="mt-1 text-sm text-ink-secondary dark:text-neutral-400">
+            <p className="mt-1 text-sm text-ink-2">
               Verified directly within your browser execution sandbox.
             </p>
           </div>
@@ -50,7 +50,7 @@ export function StatusOverviewCard({
             type="button"
             onClick={onRunDiagnostics}
             disabled={isRunning}
-            className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-md font-semibold text-sm bg-brand-700 hover:bg-brand-800 text-white active:bg-brand-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus-visible:ring-offset-2 transition-colors disabled:opacity-50 cursor-pointer"
+            className="lift inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-sm font-semibold text-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent active:bg-accent-press disabled:opacity-50 cursor-pointer"
           >
             <Zap className="w-4 h-4" aria-hidden="true" />
             <span>{isRunning ? 'Testing Edge Engines...' : 'Run Edge Diagnostics'}</span>
@@ -58,14 +58,14 @@ export function StatusOverviewCard({
         </div>
       </div>
 
-      <div className="mt-6 pt-4 border-t border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between text-xs text-ink-secondary dark:text-neutral-400 gap-4">
+      <div className="mt-6 pt-4 border-t border-rule flex flex-wrap items-center justify-between text-xs text-ink-2 gap-4">
         <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+          <Activity className="w-4 h-4 text-success" aria-hidden="true" />
           <span>{checkedLabel}</span>
         </div>
 
-        <span className="text-emerald-700 dark:text-emerald-300 font-semibold flex items-center gap-1.5">
-          <span className="size-2 rounded-full bg-emerald-500" aria-hidden="true" />
+        <span className="text-success font-semibold flex items-center gap-1.5">
+          <span className="size-2 rounded-full bg-success" aria-hidden="true" />
           <span>100% In-Browser Execution</span>
         </span>
       </div>
@@ -78,16 +78,16 @@ export function DiagnosticResultsCard({ results }: Readonly<{ results: Diagnosti
   const allSupported = verifiedCount === results.length;
 
   return (
-    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 shadow-sm">
+    <section className="border-t border-rule-strong pt-6">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
+        <h2 className="text-lg sm:text-xl text-ink">
           Live Browser Edge Diagnostic Results
         </h2>
         <span
-          className={`text-xs font-semibold px-2.5 py-1 rounded-md border ${
+          className={`text-xs font-semibold px-2.5 py-1 rounded-sm border ${
             allSupported
-              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20'
-              : 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/30'
+              ? 'bg-success/10 text-success border-success-edge/20'
+              : 'bg-warning/10 text-warning border-warning-edge/30'
           }`}
         >
           {verifiedCount}/{results.length} Active
@@ -98,17 +98,17 @@ export function DiagnosticResultsCard({ results }: Readonly<{ results: Diagnosti
         {results.map((diag) => (
           <div
             key={diag.id}
-            className={`p-3.5 rounded-lg border flex items-start gap-3 ${
+            className={`p-3.5 rounded-md border flex items-start gap-3 ${
               diag.supported
-                ? 'bg-neutral-scaffold dark:bg-dark-elevated border-neutral-border dark:border-dark-border'
-                : 'bg-amber-50/70 dark:bg-amber-950/25 border-amber-300 dark:border-amber-700/60'
+                ? 'border-rule'
+                : 'bg-warning-soft/70 border-warning-edge'
             }`}
           >
             <div
-              className={`size-6 rounded-md flex items-center justify-center shrink-0 mt-0.5 ${
+              className={`size-6 rounded-sm flex items-center justify-center shrink-0 mt-0.5 ${
                 diag.supported
-                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                  : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                  ? 'text-success'
+                  : 'text-warning'
               }`}
             >
               {diag.supported ? (
@@ -119,21 +119,21 @@ export function DiagnosticResultsCard({ results }: Readonly<{ results: Diagnosti
             </div>
             <div className="space-y-0.5 flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-bold text-brand-950 dark:text-white truncate">
+                <h3 className="text-xs font-bold text-ink truncate">
                   {diag.name}
                 </h3>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {!diag.supported && (
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-warning/15 text-warning border border-warning-edge/30">
                       Unavailable
                     </span>
                   )}
-                  <span className="text-[11px] font-mono text-brand-700 dark:text-brand-400">
+                  <span className="text-[11px] font-mono text-accent-ink">
                     {diag.latencyMs}ms
                   </span>
                 </div>
               </div>
-              <p className="text-xs text-ink-secondary dark:text-neutral-400 leading-snug">
+              <p className="text-xs text-ink-2 leading-snug">
                 {diag.details}
               </p>
             </div>
@@ -179,14 +179,14 @@ export function EnvironmentMetricsGrid({ detectedCores }: Readonly<{ detectedCor
         return (
           <div
             key={card.label}
-            className="p-5 rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm space-y-1"
+            className="border-t border-rule-strong pt-5 space-y-1"
           >
-            <div className="flex items-center justify-between text-xs text-ink-muted dark:text-neutral-400">
+            <div className="flex items-center justify-between text-xs text-ink-3">
               <span>{card.label}</span>
-              <Icon className="w-4 h-4 text-brand-700 dark:text-brand-400" aria-hidden="true" />
+              <Icon className="w-4 h-4 text-accent-ink" aria-hidden="true" />
             </div>
-            <div className="text-xl font-bold text-brand-950 dark:text-white">{card.value}</div>
-            <div className="text-xs text-ink-secondary dark:text-neutral-400">{card.caption}</div>
+            <div className="text-xl font-bold text-ink">{card.value}</div>
+            <div className="text-xs text-ink-2">{card.caption}</div>
           </div>
         );
       })}

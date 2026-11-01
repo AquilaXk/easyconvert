@@ -42,14 +42,14 @@ function renderFormatList(
 ): React.ReactNode {
   if (hasNoSupportedFormats) {
     return (
-      <div className="flex items-center justify-center h-full text-ink-muted dark:text-dark-muted text-xs text-center py-6">
+      <div className="flex items-center justify-center h-full text-ink-3 text-xs text-center py-6">
         No supported output formats for this file.
       </div>
     );
   }
   if (displayedFormats.length === 0 && !showAnyOption) {
     return (
-      <div className="flex items-center justify-center h-full text-ink-muted dark:text-dark-muted text-xs text-center py-6">
+      <div className="flex items-center justify-center h-full text-ink-3 text-xs text-center py-6">
         No formats matching &quot;{search}&quot;
       </div>
     );
@@ -63,10 +63,10 @@ function renderFormatList(
             key={fmt.id}
             type="button"
             onClick={() => onChoose(fmt.id)}
-            className={`min-h-[44px] sm:min-h-[40px] px-2 rounded-md text-xs font-mono font-semibold uppercase text-center border transition-colors cursor-pointer truncate ${
+            className={`min-h-[44px] sm:min-h-[40px] px-2 rounded-sm text-xs font-mono font-semibold uppercase text-center border transition-colors cursor-pointer truncate ${
               isSelected
-                ? 'bg-brand-700 border-brand-700 text-white'
-                : 'bg-neutral-scaffold dark:bg-dark-elevated hover:bg-brand-50 dark:hover:bg-white/10 text-brand-950 dark:text-slate-200 border-neutral-border dark:border-dark-border hover:border-brand-600'
+                ? 'bg-accent border-accent text-on-accent'
+                : 'hover:bg-accent-soft text-ink border-rule hover:border-accent'
             }`}
           >
             {fmt.extension.toUpperCase()}
@@ -82,15 +82,15 @@ export function MobileFormatDialogHeader({
   onClose,
 }: Readonly<MobileFormatDialogHeaderProps>) {
   return (
-    <div className="flex items-center justify-between px-4 py-2.5 border-b border-neutral-border dark:border-dark-border">
-      <span className="text-sm font-semibold text-brand-950 dark:text-white">
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule">
+      <span className="text-sm font-semibold text-ink">
         {title || 'Select Format'}
       </span>
       <button
         type="button"
         onClick={onClose}
         aria-label="Close format selector"
-        className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-md text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 transition-colors cursor-pointer"
+        className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
       >
         <X className="w-4 h-4" />
       </button>
@@ -117,8 +117,8 @@ export function FormatSelectorBody({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-neutral-border dark:border-dark-border bg-neutral-subtle/60 dark:bg-dark-elevated/60 shrink-0">
-        <Search className="w-4 h-4 text-ink-muted dark:text-dark-muted shrink-0" />
+      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-rule bg-sunken/60 shrink-0">
+        <Search className="w-4 h-4 text-ink-3 shrink-0" />
         <label htmlFor={inputId} className="sr-only">
           Search format
         </label>
@@ -138,13 +138,13 @@ export function FormatSelectorBody({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          className="w-full bg-transparent text-base text-brand-950 dark:text-white placeholder-ink-muted dark:placeholder-dark-muted rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
+          className="w-full bg-transparent text-base text-ink placeholder-ink-3 rounded-xs"
         />
         {search && (
           <button
             type="button"
             onClick={() => onSearchChange('')}
-            className="min-h-[44px] min-w-[44px] sm:min-h-[32px] sm:min-w-0 px-2 inline-flex items-center justify-center text-xs font-medium text-ink-muted hover:text-brand-950 dark:text-dark-muted dark:hover:text-white rounded-md cursor-pointer"
+            className="min-h-[44px] min-w-[44px] sm:min-h-[32px] sm:min-w-0 px-2 inline-flex items-center justify-center text-xs font-medium text-ink-3 hover:text-ink rounded-sm cursor-pointer"
           >
             Clear
           </button>
@@ -153,7 +153,7 @@ export function FormatSelectorBody({
 
       <div className="flex h-60 min-h-0 flex-1 min-w-0">
         {!search.trim() && categories.length > 0 && (
-          <div className="w-36 sm:w-40 border-r border-neutral-border dark:border-dark-border overflow-y-auto shrink-0 p-1.5 space-y-0.5 bg-neutral-scaffold/70 dark:bg-[#141827]">
+          <div className="w-36 sm:w-40 border-r border-rule overflow-y-auto shrink-0 p-1.5 space-y-0.5 bg-sunken/40">
             {categories.map((cat) => {
               const isActive = cat.toLowerCase() === activeCategory.toLowerCase();
               return (
@@ -161,10 +161,10 @@ export function FormatSelectorBody({
                   key={cat}
                   type="button"
                   onClick={() => onSelectCategory(cat)}
-                  className={`min-h-[44px] sm:min-h-[40px] w-full px-2.5 py-1.5 rounded-md text-xs text-left flex items-center justify-between transition-colors cursor-pointer ${
+                  className={`min-h-[44px] sm:min-h-[40px] w-full px-2.5 py-1.5 rounded-sm text-xs text-left flex items-center justify-between transition-colors cursor-pointer ${
                     isActive
-                      ? 'bg-brand-50 text-brand-900 font-semibold dark:bg-white/10 dark:text-white'
-                      : 'text-ink-secondary hover:bg-neutral-subtle hover:text-brand-950 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white'
+                      ? 'bg-accent-soft text-accent-ink font-semibold'
+                      : 'text-ink-2 hover:bg-sunken hover:text-ink'
                   }`}
                 >
                   <span className="truncate">{formatCategoryLabel(cat)}</span>
@@ -174,15 +174,15 @@ export function FormatSelectorBody({
           </div>
         )}
 
-        <div className="flex-1 flex flex-col h-60 min-h-0 p-3 min-w-0 bg-white dark:bg-dark-surface">
+        <div className="flex-1 flex flex-col h-60 min-h-0 p-3 min-w-0">
           {showAnyOption && (
             <button
               type="button"
               onClick={() => onChoose('any')}
-              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-md text-xs font-mono font-semibold uppercase border transition-colors cursor-pointer ${
+              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-sm text-xs font-mono font-semibold uppercase border transition-colors cursor-pointer ${
                 normalizedSelected === 'any' || !normalizedSelected
-                  ? 'bg-brand-700 border-brand-700 text-white'
-                  : 'bg-neutral-subtle/70 dark:bg-dark-elevated border-neutral-border dark:border-dark-border text-brand-950 dark:text-white hover:border-brand-600'
+                  ? 'bg-accent border-accent text-on-accent'
+                  : 'bg-sunken/70 border-rule text-ink hover:border-accent'
               }`}
             >
               ANY FORMAT

@@ -72,21 +72,21 @@ export default function UrlImportModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="url-import-heading"
-      className="w-[calc(100dvw-1.5rem)] max-w-md rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl overflow-hidden"
+      className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 glass text-ink border border-rule shadow-elev-2 overflow-hidden"
     >
-      <div className="px-5 py-4 border-b border-neutral-border dark:border-dark-border flex items-center justify-between gap-3">
+      <div className="px-5 py-4 border-b border-rule flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="size-9 rounded-lg bg-brand-50 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-white/10 inline-flex items-center justify-center shrink-0">
-            <Globe className="w-4 h-4" />
+          <div className="size-9 text-accent-ink inline-flex items-center justify-center shrink-0">
+            <Globe className="w-5 h-5" />
           </div>
           <div className="min-w-0">
             <h2
               id="url-import-heading"
-              className="text-base font-semibold text-brand-950 dark:text-white"
+              className="text-lg text-ink"
             >
               Add File from URL
             </h2>
-            <p className="text-xs text-ink-muted dark:text-dark-muted">
+            <p className="text-xs text-ink-3">
               Enter a direct HTTP or HTTPS link to a file of up to {formatBytes(URL_IMPORT_MAX_BYTES)}
             </p>
           </div>
@@ -95,7 +95,7 @@ export default function UrlImportModal({
           type="button"
           onClick={onClose}
           aria-label="Close dialog"
-          className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-md text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 transition-colors cursor-pointer"
+          className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
         >
           <X className="w-4 h-4" />
         </button>
@@ -110,7 +110,7 @@ export default function UrlImportModal({
         <div>
           <label
             htmlFor="url-input"
-            className="block text-xs font-semibold text-brand-950 dark:text-slate-200 mb-1.5"
+            className="block text-xs font-semibold text-ink mb-1.5"
           >
             File URL
           </label>
@@ -121,14 +121,14 @@ export default function UrlImportModal({
             placeholder="https://example.com/document.pdf"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            className="w-full min-h-[44px] px-3.5 text-base bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border rounded-md text-brand-950 dark:text-white placeholder-ink-muted dark:placeholder-dark-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus:border-brand-700"
+            className="w-full min-h-[44px] px-3.5 text-base bg-surface/80 border border-rule-strong rounded-sm text-ink placeholder-ink-3 focus:border-accent"
           />
         </div>
 
         {error && (
           <div
             role="alert"
-            className="flex items-start gap-2 p-3 rounded-md bg-status-dangerSoft dark:bg-red-950/40 border border-red-300 dark:border-red-500/40 text-status-danger dark:text-red-300 text-xs"
+            className="flex items-start gap-2 p-3 rounded-sm bg-danger-soft border border-danger-edge text-danger text-xs"
           >
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>{error}</span>
@@ -139,14 +139,14 @@ export default function UrlImportModal({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[44px] px-4 text-sm font-medium text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 rounded-md transition-colors cursor-pointer"
+            className="min-h-[44px] px-4 text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken rounded-sm transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={loading || !url.trim()}
-            className="min-h-[44px] px-5 inline-flex items-center gap-2 text-sm font-semibold text-white bg-brand-700 hover:bg-brand-800 active:bg-brand-900 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors cursor-pointer"
+            className="lift min-h-[44px] px-5 inline-flex items-center gap-2 text-sm font-semibold text-on-accent bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press disabled:opacity-50 disabled:cursor-not-allowed rounded-sm cursor-pointer"
           >
             {loading ? (
               <>

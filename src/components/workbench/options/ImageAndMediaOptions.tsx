@@ -186,14 +186,14 @@ export function ImageOptionsSection({ options, onChange, targetFormat }: Readonl
       </div>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-image-quality" className="text-xs font-semibold text-brand-950 dark:text-neutral-200">Compression Quality</label>
-          <span className="text-xs font-mono text-brand-700 dark:text-brand-300">{effectiveQuality}%</span>
+          <label htmlFor="opt-image-quality" className="text-xs font-semibold text-ink">Compression Quality</label>
+          <span className="text-xs font-mono text-accent-ink">{effectiveQuality}%</span>
         </div>
-        <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className="w-full min-h-[44px] accent-[#5C6BC0] cursor-pointer" />
+        <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className="w-full min-h-[44px] accent-accent cursor-pointer" />
       </div>
       <div className="flex items-center gap-3 min-h-[44px]">
-        <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="w-4 h-4 rounded accent-[#5C6BC0] cursor-pointer" />
-        <label htmlFor="opt-strip-metadata" className="text-sm text-brand-950 dark:text-neutral-200 cursor-pointer select-none">Strip EXIF, GPS, and camera metadata</label>
+        <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked ? true : undefined })} className="w-4 h-4 rounded accent-accent cursor-pointer" />
+        <label htmlFor="opt-strip-metadata" className="text-sm text-ink cursor-pointer select-none">Strip EXIF, GPS, and camera metadata</label>
       </div>
     </section>
   );
@@ -381,8 +381,8 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
       </div>
       <div>
         <div className="flex items-center justify-between mb-1.5">
-          <label htmlFor="opt-audio-volume" className="text-xs font-semibold text-brand-950 dark:text-neutral-200">Output Gain</label>
-          <span className="text-xs font-mono text-brand-700 dark:text-brand-300">{volumeValue}%</span>
+          <label htmlFor="opt-audio-volume" className="text-xs font-semibold text-ink">Output Gain</label>
+          <span className="text-xs font-mono text-accent-ink">{volumeValue}%</span>
         </div>
         <input
           id="opt-audio-volume"
@@ -395,7 +395,7 @@ export function AudioOptionsSection({ options, onChange, includeTrim, targetForm
             const nextVol = Number(e.target.value);
             onChange({ ...options, audioVolume: nextVol === 100 ? undefined : nextVol });
           }}
-          className="w-full min-h-[44px] accent-[#5C6BC0] cursor-pointer"
+          className="w-full min-h-[44px] accent-accent cursor-pointer"
         />
       </div>
       {includeTrim && <TrimRangeFields options={options} onChange={onChange} prefix="opt-audio" />}

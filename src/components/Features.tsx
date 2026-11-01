@@ -90,12 +90,12 @@ function FormatDirectoryCard({
   const popularPairs = POPULAR_PAIRS_BY_CATEGORY[activeCategory.id];
 
   return (
-    <div className="lg:col-span-8 min-w-0 rounded-xl border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-surface p-6 sm:p-7">
-      <div className="border-b border-neutral-border dark:border-dark-border pb-5">
-        <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-brand-950 dark:text-white">
+    <div className="border-t border-rule-strong lg:col-span-8 min-w-0 pt-6 sm:pt-7">
+      <div className="border-b border-rule pb-5">
+        <h2 className="text-2xl sm:text-3xl text-ink">
           Supported Format Directory
         </h2>
-        <p className="mt-1.5 text-sm text-ink-secondary dark:text-neutral-300">
+        <p className="mt-1.5 text-sm text-ink-2">
           Browse {REGISTRY_STATS.formatCount} formats across {REGISTRY_STATS.categoryCount} categories
           covering {REGISTRY_STATS.pairCount.toLocaleString('en-US')} registered conversion pairs.
         </p>
@@ -104,11 +104,11 @@ function FormatDirectoryCard({
           {REGISTRY_STATS.categories.map((cat) => {
             const isSelected = cat.id === activeCategory.id;
             const buttonStyle = isSelected
-              ? 'bg-brand-700 text-white border-brand-700 font-semibold'
-              : 'bg-neutral-scaffold dark:bg-dark-scaffold text-ink-secondary dark:text-neutral-300 border-neutral-border dark:border-dark-border hover:border-brand-700 hover:text-brand-950 dark:hover:text-white';
+              ? 'bg-accent text-on-accent border-accent font-semibold'
+              : 'text-ink-2 border-rule hover:border-accent hover:text-ink';
             const badgeStyle = isSelected
-              ? 'bg-white/20 text-white'
-              : 'bg-white dark:bg-dark-surface text-ink-muted dark:text-neutral-400';
+              ? 'bg-sunken text-ink'
+              : 'bg-sunken text-ink-3';
 
             return (
               <button
@@ -116,7 +116,7 @@ function FormatDirectoryCard({
                 type="button"
                 aria-pressed={isSelected}
                 onClick={() => onSelectCategory(cat.id)}
-                className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-md border text-xs transition-colors cursor-pointer ${buttonStyle}`}
+                className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs transition-colors cursor-pointer ${buttonStyle}`}
               >
                 <span>{cat.label}</span>
                 <span className={`px-1.5 py-0.5 rounded font-mono text-[11px] ${badgeStyle}`}>
@@ -131,10 +131,10 @@ function FormatDirectoryCard({
       <div className="pt-5 space-y-6">
         <div>
           <div className="flex items-center justify-between gap-2 mb-3">
-            <h3 className="text-sm font-bold text-brand-950 dark:text-white">
+            <h3 className="text-sm font-bold text-ink">
               {activeCategory.label} Extensions ({activeCategory.count})
             </h3>
-            <span className="text-xs text-ink-muted dark:text-neutral-400">
+            <span className="text-xs text-ink-3">
               Select an extension to open its converter
             </span>
           </div>
@@ -143,7 +143,7 @@ function FormatDirectoryCard({
               <Link
                 key={fmt.id}
                 href={`/${fmt.id}-converter`}
-                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-md bg-neutral-scaffold dark:bg-dark-scaffold hover:bg-brand-50 dark:hover:bg-dark-elevated border border-neutral-border dark:border-dark-border hover:border-brand-700 dark:hover:border-brand-400 font-mono text-xs font-semibold uppercase text-brand-950 dark:text-neutral-200 transition-colors"
+                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-sm hover:bg-accent-soft border border-rule hover:border-accent font-mono text-xs font-semibold uppercase text-ink transition-colors"
               >
                 {fmt.extension}
               </Link>
@@ -151,8 +151,8 @@ function FormatDirectoryCard({
           </div>
         </div>
 
-        <div className="pt-5 border-t border-neutral-border dark:border-dark-border">
-          <h3 className="text-sm font-bold text-brand-950 dark:text-white mb-3">
+        <div className="pt-5 border-t border-rule">
+          <h3 className="text-sm font-bold text-ink mb-3">
             Common {activeCategory.label} Pairs
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -160,16 +160,16 @@ function FormatDirectoryCard({
               <Link
                 key={`${pair.from}-${pair.to}`}
                 href={`/${pair.from}-to-${pair.to}`}
-                className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-lg bg-neutral-scaffold dark:bg-dark-scaffold border border-neutral-border dark:border-dark-border hover:border-brand-700 dark:hover:border-brand-400 transition-colors"
+                className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-md border border-rule hover:border-accent transition-colors"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-brand-950 dark:text-white group-hover:text-brand-700 dark:group-hover:text-brand-300">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
                     <span>{pair.from}</span>
-                    <ArrowRight className="w-3.5 h-3.5 text-ink-muted" />
+                    <ArrowRight className="w-3.5 h-3.5 text-ink-3" />
                     <span>{pair.to}</span>
                   </span>
                 </div>
-                <span className="mt-1.5 text-xs text-ink-secondary dark:text-neutral-400 leading-snug">
+                <span className="mt-1.5 text-xs text-ink-2 leading-snug">
                   {pair.summary}
                 </span>
               </Link>

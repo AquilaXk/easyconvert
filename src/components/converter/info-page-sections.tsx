@@ -114,7 +114,7 @@ export function getPolicySections(
             <div>
               <a
                 href="mailto:support@easyconvert.com?subject=Accessibility%20Feedback"
-                className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-brand-700 dark:text-brand-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 rounded"
+                className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-accent-ink hover:underline rounded"
               >
                 support@easyconvert.com (Accessibility Feedback)
               </a>
@@ -131,7 +131,7 @@ export function ContactContent() {
   return (
     <div className="space-y-5">
       <div className="space-y-2">
-        <h2 className="text-lg font-bold text-brand-950 dark:text-white">Get in Touch</h2>
+        <h2 className="text-xl text-ink">Get in Touch</h2>
         <p>
           Send questions about format support, conversion fidelity, or API integration directly to
           our engineering team.
@@ -139,31 +139,31 @@ export function ContactContent() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-        <div className="p-5 rounded-lg bg-neutral-scaffold dark:bg-white/5 border border-neutral-border dark:border-dark-border space-y-2">
-          <h3 className="font-bold text-brand-950 dark:text-white text-sm">Direct Support Email</h3>
-          <p className="text-xs text-ink-secondary dark:text-neutral-400">
+        <div className="p-5 rounded-md border border-rule space-y-2">
+          <h3 className="font-bold text-ink text-sm">Direct Support Email</h3>
+          <p className="text-xs text-ink-2">
             Contact our engineering team for technical questions, API inquiries, or general
             feedback.
           </p>
           <a
             href="mailto:support@easyconvert.com"
-            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 rounded"
+            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded"
           >
             support@easyconvert.com
           </a>
         </div>
 
-        <div className="p-5 rounded-lg bg-neutral-scaffold dark:bg-white/5 border border-neutral-border dark:border-dark-border space-y-2">
-          <h3 className="font-bold text-brand-950 dark:text-white text-sm">
+        <div className="p-5 rounded-md border border-rule space-y-2">
+          <h3 className="font-bold text-ink text-sm">
             Bug Reports &amp; Issues
           </h3>
-          <p className="text-xs text-ink-secondary dark:text-neutral-400">
+          <p className="text-xs text-ink-2">
             Found an edge case or rendering discrepancy? Email reproduction steps and a
             non-sensitive sample file.
           </p>
           <a
             href="mailto:support@easyconvert.com?subject=Bug%20Report"
-            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-brand-700 dark:text-brand-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 rounded"
+            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded"
           >
             Report an Issue
           </a>

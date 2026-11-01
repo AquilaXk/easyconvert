@@ -14,15 +14,15 @@ export const metadata: Metadata = {
 
 export default function UnitConverterPage() {
   return (
-    <div className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors">
+    <div className="flex flex-col min-h-screen">
       <Header />
 
       <main id="main-content" className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-12">
         <div className="mb-8">
-          <h1 className="text-2xl sm:text-4xl font-bold tracking-tight text-brand-950 dark:text-white">
+          <h1 className="text-3xl sm:text-5xl text-ink">
             Universal Unit Converter
           </h1>
-          <p className="mt-2 text-sm sm:text-base text-ink-secondary dark:text-neutral-400 max-w-3xl">
+          <p className="mt-2 text-sm sm:text-base text-ink-2 max-w-3xl">
             Convert measurements across 10 physical and digital categories with bidirectional calculations and multi-unit reference tables.
           </p>
         </div>

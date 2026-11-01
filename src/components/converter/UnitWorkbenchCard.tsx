@@ -24,13 +24,13 @@ export function CategorySelectorBar({
               type="button"
               aria-pressed={isActive}
               onClick={() => onSelectCategory(key)}
-              className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 py-2 rounded-md text-xs sm:text-sm font-semibold border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 ${
+              className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 py-2 rounded-sm text-xs sm:text-sm font-semibold border transition-colors cursor-pointer ${
                 isActive
-                  ? 'bg-brand-700 text-white border-brand-700'
-                  : 'bg-white dark:bg-dark-surface border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:border-brand-400'
+                  ? 'bg-accent text-on-accent border-accent'
+                  : 'bg-surface border-rule text-ink-2 hover:text-ink hover:border-accent'
               }`}
             >
-              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-brand-700 dark:text-brand-400'}`} aria-hidden="true" />
+              <Icon className={`w-4 h-4 ${isActive ? 'text-ink' : 'text-accent-ink'}`} aria-hidden="true" />
               <span>{cat.name}</span>
             </button>
           );
@@ -98,26 +98,26 @@ export function UnitWorkbenchCard({
   const unitEntries = Object.entries(currentCategory.units);
 
   return (
-    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 sm:p-8 shadow-sm space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-border dark:border-dark-border pb-5">
+    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-rule pb-5">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-brand-950 dark:text-white">
+          <h2 className="text-2xl sm:text-3xl text-ink">
             {fromDef.name} to {toDef.name} Converter
           </h2>
-          <p className="text-xs sm:text-sm text-ink-secondary dark:text-neutral-400 mt-1">
+          <p className="text-xs sm:text-sm text-ink-2 mt-1">
             High-precision client calculation with zero network round-trips.
           </p>
         </div>
 
         <div className="flex items-center gap-2.5 self-start sm:self-auto">
-          <label htmlFor="unit-precision-select" className="text-xs font-semibold text-ink-secondary dark:text-neutral-300">
+          <label htmlFor="unit-precision-select" className="text-xs font-semibold text-ink-2">
             Decimals
           </label>
           <select
             id="unit-precision-select"
             value={precision}
             onChange={(e) => onChangePrecision(Number.parseInt(e.target.value, 10))}
-            className="min-h-[44px] px-3 py-2 rounded-md bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border text-base text-brand-950 dark:text-white font-medium focus:border-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 cursor-pointer"
+            className="bg-surface/80 min-h-[44px] px-3 py-2 rounded-sm border border-rule-strong text-base text-ink font-medium focus:border-accent cursor-pointer"
           >
             <option value={2}>2 decimals</option>
             <option value={4}>4 decimals</option>
@@ -128,8 +128,8 @@ export function UnitWorkbenchCard({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-5">
-        <div className="space-y-3 p-5 rounded-lg bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border">
-          <label htmlFor="unit-from-value" className="block text-xs font-semibold uppercase tracking-wider text-ink-secondary dark:text-neutral-300">
+        <div className="space-y-3 p-5 rounded-md border border-rule">
+          <label htmlFor="unit-from-value" className="block text-xs font-semibold uppercase tracking-wider text-ink-2">
             From Value
           </label>
           <input
@@ -142,17 +142,17 @@ export function UnitWorkbenchCard({
               if (isEditableNumericDraft(val)) onChangeInput(val);
             }}
             placeholder="0"
-            className="w-full min-h-[48px] px-4 py-2.5 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-950 dark:text-white font-mono text-lg sm:text-xl font-bold focus:border-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
+            className="w-full min-h-[48px] px-4 py-2.5 rounded-sm bg-surface/80 border border-rule-strong text-ink font-mono text-lg sm:text-xl font-bold focus:border-accent transition-colors"
           />
 
-          <label htmlFor="unit-from-select" className="block text-xs font-semibold text-ink-secondary dark:text-neutral-300 pt-1">
+          <label htmlFor="unit-from-select" className="block text-xs font-semibold text-ink-2 pt-1">
             Source Unit
           </label>
           <select
             id="unit-from-select"
             value={fromUnitKey}
             onChange={(e) => onChangeFromUnit(e.target.value)}
-            className="w-full min-h-[44px] px-3.5 py-2 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-base font-medium text-brand-950 dark:text-white focus:border-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 cursor-pointer"
+            className="w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-surface/80 border border-rule-strong text-base font-medium text-ink focus:border-accent cursor-pointer"
           >
             {unitEntries.map(([key, def]) => (
               <option key={key} value={key}>{def.name} ({def.symbol})</option>
@@ -165,24 +165,24 @@ export function UnitWorkbenchCard({
             type="button"
             onClick={onSwap}
             aria-label="Swap source and target units"
-            className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2.5 rounded-md bg-neutral-scaffold hover:bg-brand-50 dark:bg-dark-elevated dark:hover:bg-dark-border text-brand-700 dark:text-brand-300 border border-neutral-border dark:border-dark-border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
+            className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2.5 rounded-sm hover:bg-accent-soft text-accent-ink border border-rule transition-colors cursor-pointer"
           >
             <ArrowRightLeft className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
-        <div className="space-y-3 p-5 rounded-lg bg-brand-50/50 dark:bg-dark-elevated border border-brand-200 dark:border-dark-border">
+        <div className="space-y-3 p-5 rounded-md bg-accent-soft/50 border border-accent-edge">
           <div className="flex items-center justify-between gap-2">
-            <label htmlFor="unit-to-value" className="block text-xs font-semibold uppercase tracking-wider text-brand-700 dark:text-brand-400">
+            <label htmlFor="unit-to-value" className="block text-xs font-semibold uppercase tracking-wider text-accent-ink">
               Converted Result ({toDef.symbol})
             </label>
             <button
               type="button"
               onClick={() => onCopyResult(rawCopyValue)}
               aria-label="Copy converted result"
-              className="inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-md text-xs font-semibold bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-700 dark:text-brand-300 hover:border-brand-400 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
+              className="inline-flex items-center gap-1.5 min-h-[44px] px-3 py-1.5 rounded-sm text-xs font-semibold bg-surface border border-rule text-accent-ink hover:border-accent transition-colors cursor-pointer"
             >
-              {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
+              {isCopied ? <Check className="w-3.5 h-3.5 text-success" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
               <span>{isCopied ? 'Copied' : 'Copy'}</span>
             </button>
             <output aria-live="polite" className="sr-only">
@@ -195,17 +195,17 @@ export function UnitWorkbenchCard({
             type="text"
             readOnly
             value={`${formattedResult} ${toDef.symbol}`}
-            className="w-full min-h-[48px] px-4 py-2.5 rounded-md bg-white dark:bg-dark-surface border border-brand-300 dark:border-dark-border text-brand-700 dark:text-brand-300 font-mono text-lg sm:text-xl font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
+            className="w-full min-h-[48px] px-4 py-2.5 rounded-sm bg-surface border border-accent-edge text-accent-ink font-mono text-lg sm:text-xl font-bold"
           />
 
-          <label htmlFor="unit-to-select" className="block text-xs font-semibold text-ink-secondary dark:text-neutral-300 pt-1">
+          <label htmlFor="unit-to-select" className="block text-xs font-semibold text-ink-2 pt-1">
             Target Unit
           </label>
           <select
             id="unit-to-select"
             value={toUnitKey}
             onChange={(e) => onChangeToUnit(e.target.value)}
-            className="w-full min-h-[44px] px-3.5 py-2 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-base font-medium text-brand-950 dark:text-white focus:border-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 cursor-pointer"
+            className="w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-surface/80 border border-rule-strong text-base font-medium text-ink focus:border-accent cursor-pointer"
           >
             {unitEntries.map(([key, def]) => (
               <option key={key} value={key}>{def.name} ({def.symbol})</option>
@@ -214,15 +214,15 @@ export function UnitWorkbenchCard({
         </div>
       </div>
 
-      <div className="p-4 rounded-lg bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-        <div className="flex flex-wrap items-center gap-2 text-ink-secondary dark:text-neutral-300">
-          <HelpCircle className="w-4 h-4 text-brand-700 dark:text-brand-400 shrink-0" aria-hidden="true" />
-          <span className="px-2 py-0.5 rounded bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border font-semibold text-brand-950 dark:text-white">
+      <div className="p-4 rounded-md border border-rule flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-ink-2">
+          <HelpCircle className="w-4 h-4 text-accent-ink shrink-0" aria-hidden="true" />
+          <span className="px-2 py-0.5 rounded bg-surface border border-rule font-semibold text-ink">
             Formula
           </span>
-          <code className="font-mono text-brand-700 dark:text-brand-300 font-semibold">{formulaText}</code>
+          <code className="font-mono text-accent-ink font-semibold">{formulaText}</code>
         </div>
-        <span className="text-emerald-700 dark:text-emerald-400 font-semibold self-start sm:self-auto">
+        <span className="text-success font-semibold self-start sm:self-auto">
           100% In-Browser &amp; Private
         </span>
       </div>

@@ -12,7 +12,6 @@ interface BrandLogoProps {
   size?: LogoSizePreset | number;
   showText?: boolean;
   className?: string;
-  textClassName?: string;
   iconClassName?: string;
 }
 
@@ -67,7 +66,6 @@ export default function BrandLogo({
   size = 'md',
   showText = true,
   className = '',
-  textClassName = '',
   iconClassName = '',
 }: Readonly<BrandLogoProps>) {
   const resolved =
@@ -75,14 +73,12 @@ export default function BrandLogo({
       ? { pixelSize: size, textClass: resolveNumericTextClass(size) }
       : SIZE_MAP[size];
 
-  const effectiveTextClass = textClassName || 'text-[#1F2340] dark:text-white';
-
   return (
     <div className={`inline-flex items-center gap-2.5 select-none ${className}`}>
       <BrandIcon size={resolved.pixelSize} className={iconClassName} decorative={showText} />
       {showText && (
         <span
-          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} ${effectiveTextClass}`}
+          className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} text-ink`}
         >
           EasyConvert
         </span>
