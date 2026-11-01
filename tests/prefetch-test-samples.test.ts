@@ -1,8 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { findTestSampleIds } from '../scripts/prefetch-test-samples';
+import type { CorpusFile } from '../bench/realworld/manifest';
+import { findTestSampleIds, testSampleListing } from '../scripts/prefetch-test-samples';
 
 const root = mkdtempSync(path.join(tmpdir(), 'prefetch-ids-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -21,6 +23,36 @@ describe('finding the corpus samples the tests name', () => {
     writeFileSync(path.join(directory, 'c.test.ts'), "const name = 'prefix-delta.pdf'; // delta.pdf\n");
     expect(findTestSampleIds(['delta.pdf'], directory)).toEqual([]);
   });
+});
+
+describe('the listing CI keys the corpus cache on', () => {
+  const file = (id: string, sha256: string) => ({ id, sha256 }) as CorpusFile;
+
+  it('changes when a test names another sample or a named sample gets new bytes, and not otherwise', () => {
+    const files = [file('alpha.aac', 'a1'), file('beta.avi', 'b1'), file('gamma.xcf', 'c1')];
+    const listing = testSampleListing(files.slice(0, 2));
+    expect(listing).toBe('alpha.aac a1\nbeta.avi b1\n');
+    expect(testSampleListing(files.slice(0, 2))).toBe(listing);
+    expect(testSampleListing(files)).not.toBe(listing);
+    expect(testSampleListing([file('alpha.aac', 'a2'), files[1]])).not.toBe(listing);
+  });
+
+  it('prints one "<id> <sha256>" line per named sample, the same on every run, without creating the cache directory', () => {
+    const cacheDirectory = path.join(root, 'no-cache-here');
+    const run = () =>
+      spawnSync(process.execPath, ['--import', 'tsx', 'scripts/prefetch-test-samples.ts', '--list'], {
+        cwd: path.resolve(__dirname, '..'),
+        encoding: 'utf8',
+        env: { ...process.env, REALWORLD_CACHE: cacheDirectory },
+      });
+    const first = run();
+    expect(first.status, first.stderr).toBe(0);
+    const lines = first.stdout.split('\n').slice(0, -1);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) expect(line).toMatch(/^\S+ [0-9a-f]{64}$/);
+    expect(run().stdout).toBe(first.stdout);
+    expect(existsSync(cacheDirectory)).toBe(false);
+  }, 60_000);
 });
 
 describe('a strict run with a sample the prefetch did not leave in the cache', () => {
