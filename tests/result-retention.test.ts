@@ -843,7 +843,7 @@ describe('the file ledger shared by the web server and the workers', () => {
       const fresh = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
       fs.writeFileSync(stale, '{}');
       fs.writeFileSync(fresh, '{}');
-      const old = new Date(Date.now() - 11 * MINUTE_MS);
+      const old = new Date(Date.now() - 61 * MINUTE_MS);
       fs.utimesSync(stale, old, old);
 
       storageProvider.sweepExpiredObjects?.();
