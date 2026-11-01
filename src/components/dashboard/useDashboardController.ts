@@ -113,11 +113,12 @@ function useApiKeysController(
     }
   }, [onReportError, problemWording, t]);
 
+  // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
+  const fetchKeysAndQuotaRef = useRef(fetchKeysAndQuota);
+  fetchKeysAndQuotaRef.current = fetchKeysAndQuota;
   useEffect(() => {
-    if (enabled) {
-      void fetchKeysAndQuota();
-    }
-  }, [enabled, fetchKeysAndQuota]);
+    if (enabled) void fetchKeysAndQuotaRef.current();
+  }, [enabled]);
 
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();

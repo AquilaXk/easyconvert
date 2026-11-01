@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import type { FileWithRemaining } from './dashboard-types';
@@ -56,12 +56,14 @@ export function useFilesAndDlqController(
     }
   }, [onReportError, problemWording, t]);
 
+  // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
+  const readersRef = useRef({ fetchUserFiles, fetchDlqEntries });
+  readersRef.current = { fetchUserFiles, fetchDlqEntries };
   useEffect(() => {
-    if (enabled) {
-      void fetchUserFiles();
-      void fetchDlqEntries();
-    }
-  }, [enabled, fetchUserFiles, fetchDlqEntries]);
+    if (!enabled) return;
+    void readersRef.current.fetchUserFiles();
+    void readersRef.current.fetchDlqEntries();
+  }, [enabled]);
 
   const hasActiveFiles = userFiles.length > 0;
 
