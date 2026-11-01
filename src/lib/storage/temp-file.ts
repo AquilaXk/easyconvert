@@ -43,7 +43,7 @@ const STAGED_OUTPUT_PREFIX = 'easyconvert-out-';
 /** The time a staged name was given at: `<prefix><epoch ms>-<random>`. */
 const STAGED_NAME_TIME = /-(\d{13,})-/;
 /** Words of lowercase letters and digits, each with a letter, each ended by a dash: no part of it reads as STAGED_NAME_TIME. */
-const JOB_DIRECTORY_PREFIX = /^(?:[a-z0-9]*[a-z][a-z0-9]*-)+$/;
+const JOB_DIRECTORY_PREFIX = /^(?:[0-9]*[a-z][a-z0-9]*-)+$/;
 
 /**
  * A temporary path beside `finalPath` that no other writer picks: two requests that write the same part at once must
