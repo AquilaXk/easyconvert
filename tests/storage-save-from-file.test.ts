@@ -146,6 +146,42 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     expect(events).toEqual(['fsync', 'rename into place']);
   });
 
+  it('copies a read-only source, whose mode the copy keeps', async () => {
+    renameFailsAcrossVolumes();
+    fs.chmodSync(sourcePath, 0o444);
+    const { storageProvider, globalSharedObjects } = await loadStorage();
+
+    await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
+
+    expect(fs.readFileSync(globalSharedObjects.objectPath(KEY)).equals(CONTENT)).toBe(true);
+    expect(leftTemporaryFiles()).toEqual([]);
+  });
+
+  it('touches the temporary copy before it flushes it, so a long flush does not leave it looking abandoned', async () => {
+    renameFailsAcrossVolumes();
+    const events: string[] = [];
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...(args as Parameters<typeof open>));
+      const utimes = handle.utimes.bind(handle);
+      const sync = handle.sync.bind(handle);
+      handle.utimes = async (...times: Parameters<typeof utimes>) => {
+        events.push('touch');
+        return utimes(...times);
+      };
+      handle.sync = async () => {
+        events.push('fsync');
+        return sync();
+      };
+      return handle;
+    });
+    const { storageProvider } = await loadStorage();
+
+    await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
+
+    expect(events).toEqual(['touch', 'fsync']);
+  });
+
   it('removes the temporary copy and keeps the source when the copy fails', async () => {
     renameFailsAcrossVolumes();
     const { storageProvider, globalSharedObjects } = await loadStorage();

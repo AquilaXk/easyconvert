@@ -13,8 +13,11 @@ import {
 const META_TEMP_SUFFIX = '.tmp';
 /** Marks in the names of the files that are written beside an object and renamed onto it (`uniqueTempPath` in `temp-file.ts`). */
 const OBJECT_TEMP_MARKS = ['.bin.tmp.', '.bin.comb.'];
-/** How old such a file must be before a sweep removes it. */
-const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
+/**
+ * How long since its last write a temporary file must be before a sweep removes it: an hour, as `LEFTOVER_AGE_MS` in
+ * `retention-ledger.ts` is. A stream save whose source is quiet, or the flush of a large copy, writes nothing for minutes.
+ */
+const STALE_TEMP_FILE_MS = 60 * 60 * 1000;
 
 function isTempFileName(name: string): boolean {
   if (name.includes('.meta.json.') && name.endsWith(META_TEMP_SUFFIX)) return true;
@@ -235,7 +238,8 @@ export class SharedObjectStore extends Map<string, StoredObject> {
 
   /**
    * Removes the temporary files an interrupted `extendExpiry`, stream save, assembly or copy left next to the objects,
-   * once they are older than STALE_TEMP_FILE_MS: a write that is still running touches its file well within that.
+   * once nothing was written to them for STALE_TEMP_FILE_MS. A stream save or an assembly moves the modification time with
+   * every write, and a copy touches its file just before it flushes it, so a writer that is alive keeps its file younger.
    */
   public sweepStaleTempFiles(now: number = Date.now()): number {
     let removed = 0;

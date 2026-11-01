@@ -48,9 +48,9 @@ describe('the temporary files beside the objects', () => {
   it('removes a stale assembly, copy and stream save and keeps a fresh one, an object and its record', async () => {
     const { globalSharedObjects } = await startProcess();
     const final = globalSharedObjects.objectPath(KEY);
-    const staleComb = writeAged(`${final}.comb.1700000000000.abcdef012345`, 11 * MINUTE_MS);
-    const staleTmp = writeAged(`${final}.tmp.1700000000000.abcdef012345`, 11 * MINUTE_MS);
-    const staleStream = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ab`, 11 * MINUTE_MS);
+    const staleComb = writeAged(`${final}.comb.1700000000000.abcdef012345`, 61 * MINUTE_MS);
+    const staleTmp = writeAged(`${final}.tmp.1700000000000.abcdef012345`, 61 * MINUTE_MS);
+    const staleStream = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ab`, 61 * MINUTE_MS);
     const freshComb = writeAged(`${final}.comb.1700000000001.abcdef012345`, MINUTE_MS);
     const freshTmp = writeAged(`${final}.tmp.1700000000001.abcdef012345`, MINUTE_MS);
     const oldObject = writeAged(final, 48 * HOUR_MS);
@@ -60,6 +60,18 @@ describe('the temporary files beside the objects', () => {
 
     expect([staleComb, staleTmp, staleStream].filter((file) => fs.existsSync(file))).toEqual([]);
     expect([freshComb, freshTmp, oldObject, oldRecord].filter((file) => !fs.existsSync(file))).toEqual([]);
+  });
+
+  it('keeps a temporary file that was written 15 minutes ago, as a writer that has been quiet that long still owns it, and removes one 61 minutes old', async () => {
+    const { globalSharedObjects } = await startProcess();
+    const final = globalSharedObjects.objectPath(KEY);
+    const quiet = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ab`, 15 * MINUTE_MS);
+    const abandoned = writeAged(`${final}.tmp.6f1c3a52-aaaa-4bbb-8ccc-0123456789ac`, 61 * MINUTE_MS);
+
+    globalSharedObjects.sweepStaleTempFiles();
+
+    expect(fs.existsSync(quiet)).toBe(true);
+    expect(fs.existsSync(abandoned)).toBe(false);
   });
 
   it('is part of the periodic sweep of the local driver', async () => {

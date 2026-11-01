@@ -89,13 +89,16 @@ async function copyIntoPlace(sourcePath: string, storedPath: string): Promise<vo
   try {
     const expectedSize = (await fs.promises.stat(sourcePath)).size;
     await fs.promises.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
-    const handle = await fs.promises.open(tempPath, 'r+');
+    const handle = await fs.promises.open(tempPath, 'r');
+    let copiedSize: number;
     try {
+      const now = new Date();
+      await handle.utimes(now, now);
       await handle.sync();
+      copiedSize = (await handle.stat()).size;
     } finally {
       await handle.close();
     }
-    const copiedSize = (await fs.promises.stat(tempPath)).size;
     if (copiedSize !== expectedSize) {
       throw new Error(`Copy of "${sourcePath}" holds ${copiedSize} bytes, expected ${expectedSize}`);
     }
@@ -106,13 +109,20 @@ async function copyIntoPlace(sourcePath: string, storedPath: string): Promise<vo
   }
 }
 
-/** The latest modification time of the directory `dirPath` and of the files in it. */
-function newestMtimeMs(dirPath: string): number {
-  let newest = fs.statSync(dirPath).mtimeMs;
+/**
+ * Whether nothing in the directory `dirPath` was written for `maxAgeMs`. The directory's own time moves with every file
+ * created or removed in it, so a young directory is answered by one stat; its files are looked at only when it is old.
+ */
+function untouchedFor(dirPath: string, maxAgeMs: number, now: number): boolean {
+  if (now - fs.statSync(dirPath).mtimeMs < maxAgeMs) return false;
   for (const name of fs.readdirSync(dirPath)) {
-    newest = Math.max(newest, fs.statSync(path.join(dirPath, name)).mtimeMs);
+    try {
+      if (now - fs.statSync(path.join(dirPath, name)).mtimeMs < maxAgeMs) return false;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
   }
-  return newest;
+  return true;
 }
 
 /** The bytes of the stored parts of `session` other than part `partNumber`. */
@@ -886,7 +896,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       if (!name.startsWith(MULTIPART_UPLOAD_ID_PREFIX) || this.sessions.has(name)) continue;
       const dirPath = path.join(this.baseUploadDir, name);
       try {
-        if (now - newestMtimeMs(dirPath) < MULTIPART_SESSION_TTL_MS) continue;
+        if (!untouchedFor(dirPath, MULTIPART_SESSION_TTL_MS, now)) continue;
         fs.rmSync(dirPath, { recursive: true, force: true });
         removed++;
       } catch {
