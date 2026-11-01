@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
-import { findTestSampleIds } from '../scripts/prefetch-test-samples';
+import type { CorpusFile } from '../bench/realworld/manifest';
+import { findTestSampleIds, testSampleListing } from '../scripts/prefetch-test-samples';
 
 const root = mkdtempSync(path.join(tmpdir(), 'prefetch-ids-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -20,6 +21,19 @@ describe('finding the corpus samples the tests name', () => {
     const directory = mkdtempSync(path.join(root, 'partial-'));
     writeFileSync(path.join(directory, 'c.test.ts'), "const name = 'prefix-delta.pdf'; // delta.pdf\n");
     expect(findTestSampleIds(['delta.pdf'], directory)).toEqual([]);
+  });
+});
+
+describe('the listing CI keys the corpus cache on', () => {
+  const file = (id: string, sha256: string) => ({ id, sha256 }) as CorpusFile;
+
+  it('changes when a test names another sample or a named sample gets new bytes, and not otherwise', () => {
+    const files = [file('alpha.aac', 'a1'), file('beta.avi', 'b1'), file('gamma.xcf', 'c1')];
+    const listing = testSampleListing(files, ['alpha.aac', 'beta.avi']);
+    expect(listing).toBe('alpha.aac a1\nbeta.avi b1\n');
+    expect(testSampleListing(files, ['alpha.aac', 'beta.avi'])).toBe(listing);
+    expect(testSampleListing(files, ['alpha.aac', 'beta.avi', 'gamma.xcf'])).not.toBe(listing);
+    expect(testSampleListing([file('alpha.aac', 'a2'), files[1]], ['alpha.aac', 'beta.avi'])).not.toBe(listing);
   });
 });
 

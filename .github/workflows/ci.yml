@@ -243,11 +243,15 @@ jobs:
         uses: ./.github/actions/ci-setup
 
       # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      # The cache key is the list of samples the tests name with their digests, so a new sample is saved the next time.
+      - name: List the corpus files the tests read
+        run: npx tsx scripts/prefetch-test-samples.ts --list > .test-sample-list
+
       - name: Restore the corpus cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/easyconvert-realworld
-          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          key: test-samples-${{ hashFiles('.test-sample-list') }}
           restore-keys: test-samples-
 
       - name: Prefetch the corpus files the tests read
@@ -323,11 +327,15 @@ jobs:
         uses: ./.github/actions/ci-setup
 
       # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      # The cache key is the list of samples the tests name with their digests, so a new sample is saved the next time.
+      - name: List the corpus files the tests read
+        run: npx tsx scripts/prefetch-test-samples.ts --list > .test-sample-list
+
       - name: Restore the corpus cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/easyconvert-realworld
-          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          key: test-samples-${{ hashFiles('.test-sample-list') }}
           restore-keys: test-samples-
 
       - name: Prefetch the corpus files the tests read
@@ -402,11 +410,15 @@ jobs:
           s3-test-server: 'true'
 
       # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      # The cache key is the list of samples the tests name with their digests, so a new sample is saved the next time.
+      - name: List the corpus files the tests read
+        run: npx tsx scripts/prefetch-test-samples.ts --list > .test-sample-list
+
       - name: Restore the corpus cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/easyconvert-realworld
-          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          key: test-samples-${{ hashFiles('.test-sample-list') }}
           restore-keys: test-samples-
 
       - name: Prefetch the corpus files the tests read

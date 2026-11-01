@@ -33,10 +33,20 @@ export function findTestSampleIds(manifestIds: readonly string[], testsDirectory
   return manifestIds.filter((id) => named.has(id));
 }
 
+/** One line per sample the tests name, with its pinned digest: CI keys the corpus cache on the hash of this text. */
+export function testSampleListing(files: readonly CorpusFile[], ids: readonly string[]): string {
+  const byId = new Map(files.map((file) => [file.id, file]));
+  return ids.map((id) => `${id} ${(byId.get(id) as CorpusFile).sha256}\n`).join('');
+}
+
 async function main(): Promise<number> {
   const files = readTestSampleFiles();
   const byId = new Map(files.map((file) => [file.id, file]));
   const ids = findTestSampleIds(files.map((file) => file.id), TESTS_DIRECTORY);
+  if (process.argv.includes('--list')) {
+    process.stdout.write(testSampleListing(files, ids));
+    return 0;
+  }
   const cacheDirectory = testSampleCacheDirectory();
   const failures: string[] = [];
   let alreadyCached = 0;
