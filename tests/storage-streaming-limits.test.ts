@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { Readable } from 'node:stream';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { s3Storage } from '@/lib/storage/s3-storage';
@@ -29,15 +28,20 @@ const MAX_STREAM_HEAP_GROWTH_MIB = 64;
 
 describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
   let tempDir: string;
+  const savedKeys: string[] = [];
   const sparseSize = Math.floor(2.1 * 1024 * 1024 * 1024); // 2,254,857,830 bytes (2.1 GiB)
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-streaming-test-'));
+    // On the volume of the storage directory, as in production, so that storing a file moves it instead of writing 2.1 GiB again.
+    const storageParent = path.dirname(globalSharedObjects.getStorageDir());
+    fs.mkdirSync(storageParent, { recursive: true });
+    tempDir = fs.mkdtempSync(path.join(storageParent, 'streaming-test-'));
     redisKeyStore.resetStore();
     redisUserStore.resetStore();
   });
 
   afterEach(() => {
+    for (const key of savedKeys.splice(0)) s3Storage.deleteObject(key);
     try {
       if (fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true, force: true });
@@ -45,6 +49,12 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
     } catch {}
     vi.restoreAllMocks();
   });
+
+  /** Stores the file, which the storage moves into its directory, and removes the object after the test. */
+  async function saveFromFile(key: string, filePath: string, mimeType: string, filename: string) {
+    savedKeys.push(key);
+    return s3Storage.saveObjectFromFile(key, filePath, mimeType, filename);
+  }
 
   /**
    * Helper to create an authentic 2.1 GiB sparse file on disk.
@@ -61,14 +71,14 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
   }
 
   describe('1. StoredObject.buffer 2GB Memory Ceiling Guard', () => {
-    it('throws PayloadTooLargeForMemoryError instead of RangeError when accessing .buffer of 2.1 GiB object', () => {
+    it('throws PayloadTooLargeForMemoryError instead of RangeError when accessing .buffer of 2.1 GiB object', async () => {
       const filePath = createSparseFile('huge-2.1gb.bin');
       const key = `uploads/test-sparse-${Date.now()}.bin`;
 
-      const stored = s3Storage.saveObjectFromFile(key, filePath, 'application/octet-stream', 'huge-2.1gb.bin');
+      const stored = await saveFromFile(key, filePath, 'application/octet-stream', 'huge-2.1gb.bin');
 
       expect(stored.size).toBe(sparseSize);
-      expect(stored.filePath).toBe(filePath);
+      expect(stored.filePath).toBe(globalSharedObjects.objectPath(key));
 
       // Must throw PayloadTooLargeForMemoryError, NEVER RangeError
       expect(() => stored.buffer).toThrow(PayloadTooLargeForMemoryError);
@@ -83,15 +93,15 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       }
     });
 
-    it('throws StoredObjectMissingError when backing file is deleted on disk (no silent Buffer.alloc(0))', () => {
+    it('throws StoredObjectMissingError when backing file is deleted on disk (no silent Buffer.alloc(0))', async () => {
       const filePath = path.join(tempDir, 'temp-to-delete.txt');
       fs.writeFileSync(filePath, 'some small content');
       const key = `uploads/missing-file-${Date.now()}.txt`;
 
-      const stored = s3Storage.saveObjectFromFile(key, filePath, 'text/plain', 'temp-to-delete.txt');
+      const stored = await saveFromFile(key, filePath, 'text/plain', 'temp-to-delete.txt');
 
       // Delete the backing file
-      fs.unlinkSync(filePath);
+      fs.unlinkSync(stored.filePath!);
 
       // Accessing buffer must throw StoredObjectMissingError, NOT return Buffer.alloc(0)
       expect(() => stored.buffer).toThrow(StoredObjectMissingError);
@@ -108,13 +118,13 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       const filePath = createSparseFile('sparse-stream.bin');
       const key = `uploads/sparse-stream-${Date.now()}.bin`;
 
-      s3Storage.saveObjectFromFile(key, filePath, 'application/octet-stream', 'sparse-stream.bin');
+      await saveFromFile(key, filePath, 'application/octet-stream', 'sparse-stream.bin');
 
       // Stat must accurately report size without buffering
       const stat = s3Storage.stat(key);
       expect(stat).not.toBeNull();
       expect(stat?.size).toBe(sparseSize);
-      expect(stat?.filePath).toBe(filePath);
+      expect(stat?.filePath).toBe(globalSharedObjects.objectPath(key));
 
       if (global.gc) {
         global.gc();
@@ -211,7 +221,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       // Create 2.1 GiB sparse JSON file (json -> yaml is a pure TS conversion format)
       const sparseJsonPath = createSparseFile('huge-config.json', '{"test":123}');
       const storageKey = `uploads/huge-config-${Date.now()}.json`;
-      s3Storage.saveObjectFromFile(storageKey, sparseJsonPath, 'application/json', 'huge-config.json');
+      await saveFromFile(storageKey, sparseJsonPath, 'application/json', 'huge-config.json');
 
       const queue = new Queue<ConversionJobData, ConversionJobResult>('test-streaming-queue');
       const job = await queue.add('convert', {
@@ -256,7 +266,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
       // 2.1 GiB sparse file exceeds free tier limit (1 GiB)
       const sparsePath = createSparseFile('free-tier-exceed.bin', 'test');
       const storageKey = `uploads/free-exceed-${Date.now()}.bin`;
-      s3Storage.saveObjectFromFile(storageKey, sparsePath, 'application/octet-stream', 'free-tier-exceed.bin');
+      await saveFromFile(storageKey, sparsePath, 'application/octet-stream', 'free-tier-exceed.bin');
 
       const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
         method: 'POST',

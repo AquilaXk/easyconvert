@@ -57,20 +57,21 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
       expect(retrieved?.buffer.toString('utf-8')).toBe(testContent);
     });
 
-    it('works identically in S3ObjectStorageService saveObjectFromFile', () => {
+    it('works identically in S3ObjectStorageService saveObjectFromFile', async () => {
       const filePath = path.join(tempDir, 's3_payload.json');
       const jsonContent = JSON.stringify({ status: 'ok', items: [1, 2, 3] });
       fs.writeFileSync(filePath, jsonContent, 'utf-8');
 
       const key = `json_files/payload_${Date.now()}.json`;
-      const s3Stored = s3Storage.saveObjectFromFile!(
+      const s3Stored = await s3Storage.saveObjectFromFile!(
         key,
         filePath,
         'application/json',
         's3_payload.json'
       );
 
-      expect(s3Stored.filePath).toBe(filePath);
+      expect(s3Stored.filePath).toBe(globalSharedObjects.objectPath(key));
+      expect(fs.existsSync(filePath), 'the file is moved into the storage directory').toBe(false);
       expect(s3Stored.size).toBe(Buffer.byteLength(jsonContent, 'utf-8'));
       expect(s3Stored.buffer.toString('utf-8')).toBe(jsonContent);
     });

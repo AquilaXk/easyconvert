@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Readable, PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -50,11 +49,115 @@ interface S3MultipartSession {
 
 import { extendStoredExpiry, globalSharedObjects } from './shared-store';
 
+/**
+ * The parts of open sessions live in the storage directory, next to the objects they are assembled into: the web process
+ * and the workers share only that directory, so an object assembled anywhere else would be out of a worker's reach.
+ */
+const MULTIPART_PARTS_DIR = '.multipart';
+/** How long a session stays open from its creation, and so how long its directory may go without a write before it is nobody's. */
+const MULTIPART_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+/** Starts the id of every session of this driver, and so the name of its directory. */
+const MULTIPART_UPLOAD_ID_PREFIX = 'oci_mp_s3_';
+const COPY_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Puts the file at `sourcePath` at `storedPath` in the storage directory, which is what a process that shares only that
+ * directory can read, and leaves nothing at `sourcePath`. The file is renamed when both are on one volume, and otherwise
+ * (as `handOffOutput` does) copied beside `storedPath` and renamed into place, so a reader never sees half of it. The
+ * copy runs in libuv's thread pool: the worker's event loop keeps its heartbeat while a multi-GiB result is copied.
+ */
+async function moveIntoStorage(sourcePath: string, storedPath: string): Promise<void> {
+  if (path.resolve(sourcePath) === storedPath) return;
+  await fs.promises.mkdir(path.dirname(storedPath), { recursive: true });
+  try {
+    await fs.promises.rename(sourcePath, storedPath);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+  }
+  await copyIntoPlace(sourcePath, storedPath);
+  try {
+    await fs.promises.rm(sourcePath, { force: true });
+  } catch (err) {
+    console.warn(`Could not remove "${sourcePath}" after storing it at "${storedPath}"`, err);
+  }
+}
+
+/** Copies `sourcePath` to a unique temporary file beside `storedPath`, makes it durable, checks its size and renames it into place. */
+async function copyIntoPlace(sourcePath: string, storedPath: string): Promise<void> {
+  const tempPath = uniqueTempPath(storedPath, 'tmp');
+  try {
+    const expectedSize = (await fs.promises.stat(sourcePath)).size;
+    await fs.promises.copyFile(sourcePath, tempPath, fs.constants.COPYFILE_EXCL);
+    const handle = await fs.promises.open(tempPath, 'r');
+    let copiedSize: number;
+    try {
+      const now = new Date();
+      await handle.utimes(now, now);
+      await handle.sync();
+      copiedSize = (await handle.stat()).size;
+    } finally {
+      await handle.close();
+    }
+    if (copiedSize !== expectedSize) {
+      throw new Error(`Copy of "${sourcePath}" holds ${copiedSize} bytes, expected ${expectedSize}`);
+    }
+    await fs.promises.rename(tempPath, storedPath);
+  } catch (err) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
+    throw err;
+  }
+}
+
+/**
+ * Whether nothing in the directory `dirPath` was written for `maxAgeMs`. The directory's own time moves with every file
+ * created or removed in it, so a young directory is answered by one stat; its files are looked at only when it is old.
+ */
+function untouchedFor(dirPath: string, maxAgeMs: number, now: number): boolean {
+  if (now - fs.statSync(dirPath).mtimeMs < maxAgeMs) return false;
+  for (const name of fs.readdirSync(dirPath)) {
+    try {
+      if (now - fs.statSync(path.join(dirPath, name)).mtimeMs < maxAgeMs) return false;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+  return true;
+}
+
 /** The bytes of the stored parts of `session` other than part `partNumber`. */
 function storedBytesBesides(session: S3MultipartSession, partNumber: number): number {
   let bytes = 0;
   for (const [number, part] of session.parts) if (number !== partNumber) bytes += part.size;
   return bytes;
+}
+
+/** Copies the parts `partNumbers` of `session` in order to `outFd`, through one fixed buffer; returns each part's hash and the bytes written. */
+function writeParts(outFd: number, session: S3MultipartSession, partNumbers: number[]): { partHashes: Buffer[]; totalSize: number } {
+  const partHashes: Buffer[] = [];
+  let totalSize = 0;
+  const chunkBuf = Buffer.alloc(COPY_CHUNK_BYTES);
+  for (const partNum of partNumbers) {
+    const partInfo = session.parts.get(partNum)!;
+    if (!fs.existsSync(partInfo.filePath)) {
+      console.error(`Part file missing on disk: "${partInfo.filePath}"`);
+      throw new Error(`Part file missing on disk for part ${partNum}`);
+    }
+    const inFd = fs.openSync(partInfo.filePath, 'r');
+    const partHasher = crypto.createHash('sha256');
+    let bytesRead = 0;
+    try {
+      while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
+        fs.writeSync(outFd, chunkBuf, 0, bytesRead);
+        partHasher.update(chunkBuf.subarray(0, bytesRead));
+      }
+    } finally {
+      fs.closeSync(inFd);
+    }
+    partHashes.push(partHasher.digest());
+    totalSize += partInfo.size;
+  }
+  return { partHashes, totalSize };
 }
 
 /**
@@ -80,7 +183,7 @@ export class S3ObjectStorageService implements IStorageBackend {
     }
     this.configuredSigningSecret = secret;
 
-    this.baseUploadDir = options?.baseUploadDir || path.join(os.tmpdir(), 'easyconvert_s3_uploads');
+    this.baseUploadDir = options?.baseUploadDir || path.join(globalSharedObjects.getStorageDir(), MULTIPART_PARTS_DIR);
     try {
       if (!fs.existsSync(this.baseUploadDir)) {
         fs.mkdirSync(this.baseUploadDir, { recursive: true });
@@ -111,7 +214,7 @@ export class S3ObjectStorageService implements IStorageBackend {
   ): MultipartUploadInit {
     const timestamp = Date.now();
     const randomHex = crypto.randomBytes(8).toString('hex');
-    const uploadId = `oci_mp_s3_${timestamp}_${randomHex}`;
+    const uploadId = `${MULTIPART_UPLOAD_ID_PREFIX}${timestamp}_${randomHex}`;
     const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
     const key = multipartUploadKey(ownerUserId, `${timestamp}_${randomHex}_${sanitizedFilename}`);
 
@@ -146,7 +249,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       key,
       partSize: resolvedPartSize,
       totalParts,
-      expiresAt: timestamp + 24 * 60 * 60 * 1000,
+      expiresAt: timestamp + MULTIPART_SESSION_TTL_MS,
     };
   }
 
@@ -333,44 +436,21 @@ export class S3ObjectStorageService implements IStorageBackend {
     const sortedPartNumbers = expectedParts
       ? expectedParts.map((p) => p.partNumber).sort((a, b) => a - b)
       : Array.from(session.parts.keys()).sort((a, b) => a - b);
-    const objectsDir = path.join(this.baseUploadDir, 'objects');
+    const finalFilePath = globalSharedObjects.objectPath(session.key);
+    const tempFilePath = uniqueTempPath(finalFilePath, 'comb');
+    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
+    const outFd = fs.openSync(tempFilePath, EXCLUSIVE_CREATE);
+    let assembled: { partHashes: Buffer[]; totalSize: number };
     try {
-      if (!fs.existsSync(objectsDir)) {
-        fs.mkdirSync(objectsDir, { recursive: true });
-      }
-    } catch {}
-
-    const finalFilePath = path.join(objectsDir, `${session.uploadId}.bin`);
-    const outFd = fs.openSync(finalFilePath, 'w');
-
-    const partHashes: Buffer[] = [];
-    let totalSize = 0;
-    const chunkBuf = Buffer.alloc(64 * 1024);
-
-    try {
-      for (const partNum of sortedPartNumbers) {
-        const partInfo = session.parts.get(partNum)!;
-        if (!fs.existsSync(partInfo.filePath)) {
-          console.error(`Part file missing on disk: "${partInfo.filePath}"`);
-          throw new Error(`Part file missing on disk for part ${partNum}`);
-        }
-        const inFd = fs.openSync(partInfo.filePath, 'r');
-        const partHasher = crypto.createHash('sha256');
-        let bytesRead = 0;
-        try {
-          while ((bytesRead = fs.readSync(inFd, chunkBuf, 0, chunkBuf.length, null)) > 0) {
-            fs.writeSync(outFd, chunkBuf, 0, bytesRead);
-            partHasher.update(chunkBuf.subarray(0, bytesRead));
-          }
-        } finally {
-          fs.closeSync(inFd);
-        }
-        partHashes.push(partHasher.digest());
-        totalSize += partInfo.size;
-      }
-    } finally {
+      assembled = writeParts(outFd, session, sortedPartNumbers);
+    } catch (err) {
       fs.closeSync(outFd);
+      fs.rmSync(tempFilePath, { force: true });
+      throw err;
     }
+    fs.closeSync(outFd);
+    fs.renameSync(tempFilePath, finalFilePath);
+    const { partHashes, totalSize } = assembled;
 
     // S3 composite multipart ETag format: "${HASH_OF_CONCATENATED_PART_HASHES}-${PART_COUNT}"
     const compositeHash = crypto
@@ -463,15 +543,17 @@ export class S3ObjectStorageService implements IStorageBackend {
     return obj;
   }
 
-  saveObjectFromFile(
+  async saveObjectFromFile(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
     ttlMs: number = 24 * 60 * 60 * 1000
-  ): StoredObject {
-    const stat = fs.statSync(filePath);
-    const etag = `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
+  ): Promise<StoredObject> {
+    const storedPath = globalSharedObjects.objectPath(key);
+    await moveIntoStorage(filePath, storedPath);
+    const stat = await fs.promises.stat(storedPath);
+    const etag = `"${crypto.createHash('sha256').update(storedPath + stat.mtimeMs).digest('hex').slice(0, 32)}"`;
     let cachedBuffer: Buffer | null = null;
     const obj: StoredObject = {
       key,
@@ -481,7 +563,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       etag,
       uploadedAt: Date.now(),
       expiresAt: Date.now() + ttlMs,
-      filePath,
+      filePath: storedPath,
       get buffer(): Buffer {
         if (stat.size > getMaxInMemoryBytes()) {
           throw new PayloadTooLargeForMemoryError(undefined, {
@@ -490,11 +572,11 @@ export class S3ObjectStorageService implements IStorageBackend {
           });
         }
         if (cachedBuffer) return cachedBuffer;
-        if (fs.existsSync(filePath)) {
-          cachedBuffer = fs.readFileSync(filePath);
+        if (fs.existsSync(storedPath)) {
+          cachedBuffer = fs.readFileSync(storedPath);
           return cachedBuffer;
         }
-        throw new StoredObjectMissingError(undefined, { key, filePath });
+        throw new StoredObjectMissingError(undefined, { key, filePath: storedPath });
       },
       set buffer(b: Buffer) {
         cachedBuffer = b;
@@ -578,16 +660,11 @@ export class S3ObjectStorageService implements IStorageBackend {
     meta: { filename: string; mimeType: string; size?: number },
     ttlMs: number = 24 * 60 * 60 * 1000
   ): Promise<StoredObject> {
-    const objectsDir = path.join(this.baseUploadDir, 'objects');
-    if (!fs.existsSync(objectsDir)) {
-      try {
-        fs.mkdirSync(objectsDir, { recursive: true });
-      } catch {}
-    }
-    const tempFilePath = path.join(objectsDir, `stream-${crypto.randomUUID()}.tmp`);
-    const finalFilePath = path.join(objectsDir, `s3-${crypto.randomUUID()}-${path.basename(meta.filename)}`);
+    const finalFilePath = globalSharedObjects.objectPath(key);
+    const tempFilePath = uniqueTempPath(finalFilePath, 'tmp');
+    fs.mkdirSync(path.dirname(finalFilePath), { recursive: true });
 
-    const outFd = fs.openSync(tempFilePath, 'w');
+    const outFd = fs.openSync(tempFilePath, EXCLUSIVE_CREATE);
     const hasher = crypto.createHash('sha256');
     let totalBytes = 0;
 
@@ -607,6 +684,9 @@ export class S3ObjectStorageService implements IStorageBackend {
         stream.on('error', (err) => reject(err));
       });
       fs.fsyncSync(outFd);
+    } catch (err) {
+      fs.rmSync(tempFilePath, { force: true });
+      throw err;
     } finally {
       fs.closeSync(outFd);
     }
@@ -787,14 +867,43 @@ export class S3ObjectStorageService implements IStorageBackend {
     }
 
     for (const [uploadId, session] of this.sessions.entries()) {
-      if (session.createdAt + 24 * 60 * 60 * 1000 <= now) {
+      if (session.createdAt + MULTIPART_SESSION_TTL_MS <= now) {
         this.abortMultipartUpload(uploadId);
         swept++;
       }
     }
 
+    swept += this.sweepOrphanedSessionDirs(now);
     globalSharedObjects.sweepStaleTempFiles(now);
     return swept;
+  }
+
+  /**
+   * Removes the directories of sessions that no process owns any more. The sessions live in the memory of the process
+   * that opened them, while their directories live on the volume every process shares: a restart of that process leaves
+   * them behind. A directory is orphaned once nothing in it was written for a session's whole lifetime; an open session
+   * is aborted at that age by its owner, and each part it writes touches its directory.
+   */
+  private sweepOrphanedSessionDirs(now: number): number {
+    let removed = 0;
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.baseUploadDir);
+    } catch {
+      return 0;
+    }
+    for (const name of names) {
+      if (!name.startsWith(MULTIPART_UPLOAD_ID_PREFIX) || this.sessions.has(name)) continue;
+      const dirPath = path.join(this.baseUploadDir, name);
+      try {
+        if (!untouchedFor(dirPath, MULTIPART_SESSION_TTL_MS, now)) continue;
+        fs.rmSync(dirPath, { recursive: true, force: true });
+        removed++;
+      } catch {
+        // gone already, or not ours to remove
+      }
+    }
+    return removed;
   }
 }
 
