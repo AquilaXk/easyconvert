@@ -70,7 +70,7 @@ function toInterpreterError(err: unknown, src: string, tempDir: string): unknown
     return new ConversionFailedError(`The PostScript interpreter exceeded its output or memory limit on the .${src} file.`);
   }
   if (err instanceof SandboxedProcessError) {
-    const detail = err.stderr.trim().slice(0, MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+    const detail = err.stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
     return new ConversionFailedError(`The PostScript interpreter rejected the .${src} file${detail ? `: ${detail}` : ''}`);
   }
   return err;

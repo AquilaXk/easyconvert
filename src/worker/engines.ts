@@ -1831,7 +1831,7 @@ export async function convertWithNativeRaw(
         throw new RawDecodeError(`Native RAW decoder exceeded its output limit or memory limit on the .${src} file`);
       }
       if (err instanceof SandboxedProcessError) {
-        const detail = err.stderr.trim().slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+        const detail = err.stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, RAW_DECODE_MAX_STDERR_CHARS);
         throw new RawDecodeError(
           `Native RAW decoder rejected the .${src} file${detail ? `: ${detail}` : ''}`,
           RAW_DECODE_UNRECOGNIZED_PATTERN.test(err.stderr)
@@ -1846,7 +1846,7 @@ export async function convertWithNativeRaw(
     // LibRaw reports damaged input on stderr and may still exit 0 with a partly filled image.
     if (decoderStderr) {
       throw new RawDecodeError(
-        `Native RAW decoder reported a problem with the .${src} file: ${decoderStderr.slice(0, RAW_DECODE_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>')}`
+        `Native RAW decoder reported a problem with the .${src} file: ${decoderStderr.replaceAll(tempDir, '<tmp>').slice(0, RAW_DECODE_MAX_STDERR_CHARS)}`
       );
     }
     const layout = readDecodedTiffLayout(decodedPath);

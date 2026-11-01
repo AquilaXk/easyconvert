@@ -215,7 +215,7 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
 
 /** The start of what a program printed about the file, with the job directory hidden. */
 function stderrDetail(stderr: string, tempDir: string): string {
-  return stderr.trim().slice(0, MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+  return stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
 }
 
 function rejected(program: string, src: string, stderr: string, tempDir: string): ConversionFailedError {

@@ -114,7 +114,7 @@ function toRendererError(err: unknown, src: string, tempDir: string): unknown {
 }
 
 function rejected(src: string, stderr: string, tempDir: string): ConversionFailedError {
-  const detail = stderr.trim().slice(0, MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+  const detail = stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
   return new ConversionFailedError(`GhostXPS could not draw the .${src} file${detail ? `: ${detail}` : ''}`);
 }
 
