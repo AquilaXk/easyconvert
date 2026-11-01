@@ -60,7 +60,7 @@ describe('the temporary files beside the objects', () => {
     const oldRecord = writeAged(record, 48 * HOUR_MS);
     const lookalike = writeAged(path.join(storageDir, 'notes.tmp.txt'), 48 * HOUR_MS);
 
-    globalSharedObjects.sweepStaleTempFiles();
+    await globalSharedObjects.sweepStaleTempFiles();
 
     expect([staleComb, staleTmp, staleRecord].filter((file) => fs.existsSync(file))).toEqual([]);
     expect([freshComb, freshTmp, oldObject, oldRecord, lookalike].filter((file) => !fs.existsSync(file))).toEqual([]);
@@ -72,17 +72,17 @@ describe('the temporary files beside the objects', () => {
     const quiet = writeAged(`${final}.tmp.1700000000000.abcdef012345`, 15 * MINUTE_MS);
     const abandoned = writeAged(`${final}.tmp.1700000000001.abcdef012345`, 61 * MINUTE_MS);
 
-    globalSharedObjects.sweepStaleTempFiles();
+    await globalSharedObjects.sweepStaleTempFiles();
 
     expect(fs.existsSync(quiet)).toBe(true);
     expect(fs.existsSync(abandoned)).toBe(false);
   });
 
-  it('is part of the periodic sweep of the local driver', async () => {
+  it('is part of the sweep of leftovers of the local driver', async () => {
     const { s3Storage, globalSharedObjects } = await startProcess();
     const stale = writeAged(`${globalSharedObjects.objectPath(KEY)}.comb.1700000000000.abcdef012345`, HOUR_MS + MINUTE_MS);
 
-    s3Storage.sweepExpiredObjects();
+    await s3Storage.sweepLeftovers();
 
     expect(fs.existsSync(stale)).toBe(false);
   });
@@ -95,7 +95,7 @@ describe('the temporary files beside the objects', () => {
     writeAged(stored.replace(/\.bin$/, '.meta.json'), 48 * HOUR_MS);
     const foreign = writeAged(path.join(storageDir, 'notes.bin'), 48 * HOUR_MS);
 
-    globalSharedObjects.sweepStaleTempFiles();
+    await globalSharedObjects.sweepStaleTempFiles();
 
     expect(fs.existsSync(orphan), 'bytes without a record for an hour').toBe(false);
     expect([fresh, stored, foreign].filter((file) => !fs.existsSync(file))).toEqual([]);
@@ -104,15 +104,15 @@ describe('the temporary files beside the objects', () => {
   it('says once, not on every sweep, that a temporary file could not be removed', async () => {
     const { globalSharedObjects } = await startProcess();
     const stuck = writeAged(`${globalSharedObjects.objectPath(KEY)}.tmp.1700000000000.abcdef012345`, 2 * HOUR_MS);
-    const rmSync = fs.rmSync;
-    vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+    const rm = fs.promises.rm;
+    vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
       if (String(target) === stuck) throw Object.assign(new Error('EACCES: permission denied, unlink'), { code: 'EACCES' });
-      return rmSync(target, options);
+      return rm(target, options);
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    globalSharedObjects.sweepStaleTempFiles();
-    globalSharedObjects.sweepStaleTempFiles();
+    await globalSharedObjects.sweepStaleTempFiles();
+    await globalSharedObjects.sweepStaleTempFiles();
 
     expect(warn.mock.calls.filter(([message]) => String(message).includes(stuck))).toHaveLength(1);
   });
@@ -137,7 +137,7 @@ describe('the sessions of uploads in parts in the storage directory', () => {
     const recent = await openSession(storage, 23 * HOUR_MS);
 
     const restarted = await startProcess();
-    restarted.localFsStorage.sweepExpiredObjects();
+    await restarted.localFsStorage.sweepExpiredObjects();
 
     expect(fs.existsSync(abandoned.dir)).toBe(false);
     expect(fs.existsSync(recent.dir)).toBe(true);
@@ -148,7 +148,7 @@ describe('the sessions of uploads in parts in the storage directory', () => {
     const expired = await openSession(storage, 24 * HOUR_MS + 30 * MINUTE_MS);
 
     expect(await storage.s3Storage.getUploadSession(expired.uploadId)).toBeUndefined();
-    storage.localFsStorage.sweepExpiredObjects();
+    await storage.localFsStorage.sweepExpiredObjects();
     expect(fs.existsSync(expired.dir)).toBe(true);
   });
 
@@ -158,7 +158,7 @@ describe('the sessions of uploads in parts in the storage directory', () => {
     fs.mkdirSync(foreign, { recursive: true });
     age(foreign, 48 * HOUR_MS);
 
-    localFsStorage.sweepExpiredObjects();
+    await localFsStorage.sweepExpiredObjects();
 
     expect(fs.existsSync(foreign)).toBe(true);
   });
@@ -166,15 +166,15 @@ describe('the sessions of uploads in parts in the storage directory', () => {
   it('says once, not on every sweep, that a session could not be removed', async () => {
     const storage = await startProcess();
     const stuck = await openSession(storage, 26 * HOUR_MS);
-    const rmSync = fs.rmSync;
-    vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+    const rm = fs.promises.rm;
+    vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
       if (String(target) === stuck.dir) throw Object.assign(new Error('EACCES: permission denied, rmdir'), { code: 'EACCES' });
-      return rmSync(target, options);
+      return rm(target, options);
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    storage.localFsStorage.sweepExpiredObjects();
-    storage.localFsStorage.sweepExpiredObjects();
+    await storage.localFsStorage.sweepExpiredObjects();
+    await storage.localFsStorage.sweepExpiredObjects();
 
     expect(warn.mock.calls.filter(([message]) => String(message).includes(stuck.dir))).toHaveLength(1);
   });
@@ -201,7 +201,7 @@ describe('the directories of jobs in the storage directory', () => {
     });
     vi.useRealTimers();
 
-    s3Storage.sweepExpiredObjects();
+    await s3Storage.sweepLeftovers();
 
     expect(path.relative(storageDir, abandonedDir).startsWith('..'), 'the job directory is in the storage directory').toBe(false);
     expect(fs.existsSync(abandonedDir)).toBe(false);

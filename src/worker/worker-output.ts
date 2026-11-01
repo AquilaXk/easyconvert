@@ -4,7 +4,7 @@ import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safe
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { getFormatByExtension } from '../lib/registry';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
-import { makeJobDirectory, moveIntoPlace, stagedOutputPath } from '../lib/storage/temp-file';
+import { assertRegularFileSync, makeJobDirectory, moveIntoPlace, stagedOutputPath } from '../lib/storage/temp-file';
 import { readPersistedOutput } from './persisted-output';
 import { PayloadLimitError, type ConversionResult } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
@@ -134,12 +134,14 @@ export function internalFallbackResult(
   };
 }
 
+/** Copies the engine's output, which must be a regular file and not a link to another file, to its destination. */
 export function preserveOutput(
   tempOutputPath: string,
   targetFormat: string,
   options?: WorkerEngineOptions,
   vfsPayload?: WorkerVfsPayload
 ): string {
+  assertRegularFileSync(tempOutputPath);
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   fs.copyFileSync(tempOutputPath, finalPath);
   return finalPath;
@@ -149,7 +151,7 @@ export function preserveOutput(
  * Hands the finished output of a job to its destination and leaves nothing of it in the job directory. An output
  * nobody named a place for goes to a file of the worker's own naming beside the job directory, so it is renamed and its
  * bytes are not written a second time (`moveIntoPlace` copies across volumes); when the caller named the destination
- * (which may be a link or a mount of its own), it is copied.
+ * (which may be a link or a mount of its own), it is copied. An output that is not a regular file is refused.
  */
 export async function handOffOutput(
   tempOutputPath: string,
@@ -160,7 +162,7 @@ export async function handOffOutput(
   const named = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
   if (named) return preserveOutput(tempOutputPath, targetFormat, options, vfsPayload);
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
-  await moveIntoPlace(tempOutputPath, finalPath);
+  await moveIntoPlace(tempOutputPath, finalPath, options?.signal);
   return finalPath;
 }
 

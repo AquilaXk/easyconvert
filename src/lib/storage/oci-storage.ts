@@ -128,12 +128,14 @@ export interface IStorageBackend {
     uploadId: string
   ): MaybePromise<Array<{ partNumber: number; etag: string; size: number }> | undefined>;
   saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): MaybePromise<StoredObject>;
+  /** Stores the regular file at `filePath`; a `signal` that aborts before the object is in place stores nothing. */
   saveObjectFromFile?(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs?: number
+    ttlMs?: number,
+    signal?: AbortSignal
   ): MaybePromise<StoredObject>;
   saveObjectFromStream(
     key: string,
@@ -147,6 +149,8 @@ export interface IStorageBackend {
   openReadStream(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
   getObjectStream?(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
   deleteObject(key: string): MaybePromise<boolean>;
+  /** Deletes the object under `key` only while it is still the save `written` describes, by its ETag and the time it was stored. */
+  deleteObjectIfUnchanged?(key: string, written: Pick<StoredObject, 'etag' | 'uploadedAt'>): MaybePromise<boolean>;
   deleteByPrefix?(prefix: string): MaybePromise<number>;
   /** Open upload sessions, or null when the backend cannot count them (sessions live on the object store). */
   getActiveSessionsCount(): MaybePromise<number | null>;
@@ -517,9 +521,10 @@ export class OciObjectStorageService implements IStorageBackend {
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs: number = 60 * 60 * 1000
+    ttlMs: number = 60 * 60 * 1000,
+    signal?: AbortSignal
   ): Promise<OciStoredObject> {
-    const stat = fs.statSync(filePath);
+    const stat = fs.lstatSync(filePath);
     const ociKey = key.startsWith('n/') ? key : `n/${this.config.namespace}/b/${this.config.bucketName}/o/${key}`;
     const now = Date.now();
     const shared = await globalSharedObjects.storeFile(key, filePath, {
@@ -530,7 +535,7 @@ export class OciObjectStorageService implements IStorageBackend {
       etag: `"${crypto.createHash('sha256').update(filePath + stat.mtimeMs).digest('hex').slice(0, 32)}"`,
       uploadedAt: now,
       expiresAt: now + ttlMs,
-    });
+    }, signal);
     const stored: OciStoredObject = Object.assign(shared, { namespace: this.config.namespace, bucket: this.config.bucketName });
     this.objects.set(ociKey, stored);
     if (key !== ociKey) this.objects.set(key, stored);

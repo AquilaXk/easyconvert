@@ -10,7 +10,21 @@ import {
   getMaxInMemoryBytes,
 } from './errors';
 import { resolveLocalStorageDir } from './storage-config';
-import { isTempFileName, LEFTOVER_AGE_MS, moveIntoPlace, removeLeftover, writeFileAtomicSync } from './temp-file';
+import {
+  isTempFileName,
+  LEFTOVER_AGE_MS,
+  removeLeftover,
+  stageBeside,
+  syncDirectory,
+  writeFileAtomicSync,
+  writeFlushedTemp,
+} from './temp-file';
+
+/** The name of the bytes of a stored object: the SHA-256 of its key, as `objectPathsFor` gives it. */
+const OBJECT_BYTES_NAME = /^([0-9a-f]{64})\.bin$/;
+
+/** What tells one save of a key from another: the ETag of its bytes and the time it was stored. */
+export type SavedVersion = Pick<ObjectRecord, 'etag' | 'uploadedAt'>;
 
 /** The two files of a stored object in the storage directory: its record and its bytes. */
 export interface ObjectPaths {
@@ -49,14 +63,32 @@ function dropPreviousSave(paths: ObjectPaths, keep?: string): void {
 }
 
 /**
- * Stores the file at `sourcePath` as the object `paths` names, in the order an object store server stores a part
- * (the files of an earlier save are removed, the bytes are renamed into place, then the record is written): at every
- * point a reader finds the earlier object, no object, or this one, and never these bytes under an earlier record.
+ * Stores the regular file at `sourcePath` as the object `paths` names, in the order an object store server stores a part:
+ * the bytes are brought beside the object and flushed, and the record is written to a flushed temporary file; then, with
+ * no await between them, the earlier record is removed, the bytes are renamed into place and the record onto its name.
+ * At every point a reader finds the earlier object, no object, or this one, and never these bytes under an earlier
+ * record. A `signal` that aborts before the renames stores nothing and leaves an earlier save of the key as it was.
  */
-export async function commitObjectFile(paths: ObjectPaths, sourcePath: string, record: ObjectRecord): Promise<void> {
-  dropPreviousSave(paths, sourcePath);
-  await moveIntoPlace(sourcePath, paths.binPath);
-  writeRecord(paths, recordOf(record));
+export async function commitObjectFile(paths: ObjectPaths, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const inPlace = path.resolve(sourcePath) === paths.binPath;
+  const staged = inPlace ? paths.binPath : await stageBeside(sourcePath, paths.binPath, signal);
+  let recordTemp: string | undefined;
+  // What to remove when the save fails: the staged bytes, then the bytes without a record once they are in place.
+  let strayBytes = inPlace ? undefined : staged;
+  try {
+    recordTemp = await writeFlushedTemp(paths.metaPath, JSON.stringify(recordOf(record)));
+    signal?.throwIfAborted();
+    // No await from here to the record, so another save of the key in this process cannot slip in between.
+    fs.rmSync(paths.metaPath, { force: true });
+    fs.renameSync(staged, paths.binPath);
+    strayBytes = paths.binPath;
+    fs.renameSync(recordTemp, paths.metaPath);
+  } catch (error) {
+    await Promise.all([strayBytes, recordTemp].map((stray) => (stray === undefined ? undefined : fs.promises.rm(stray, { force: true }))));
+    throw error;
+  }
+  await syncDirectory(path.dirname(paths.binPath));
 }
 
 /** The object of `record` whose bytes are the file `binPath`, read into memory only when asked and within the in-memory limit. */
@@ -133,9 +165,9 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   }
 
   /** Stores the file at `sourcePath` as `key`, moving it into the storage directory (see `commitObjectFile`). */
-  public async storeFile(key: string, sourcePath: string, record: ObjectRecord): Promise<StoredObject> {
+  public async storeFile(key: string, sourcePath: string, record: ObjectRecord, signal?: AbortSignal): Promise<StoredObject> {
     const paths = this.getPathsForKey(key);
-    await commitObjectFile(paths, sourcePath, record);
+    await commitObjectFile(paths, sourcePath, record, signal);
     const stored = fileBackedObject(record, paths.binPath);
     super.set(key, stored);
     return stored;
@@ -214,29 +246,51 @@ export class SharedObjectStore extends Map<string, StoredObject> {
   }
 
   /**
-   * Removes the temporary files an interrupted save, assembly, copy or record update left next to the objects, once
-   * nothing was written to them for LEFTOVER_AGE_MS. A writer that is alive writes or touches its file more often.
+   * Removes what an interrupted save, assembly, copy or record update left next to the objects once nothing was written
+   * to it for LEFTOVER_AGE_MS: its temporary files, and bytes whose record was never written (a save stopped between its
+   * two renames). A writer that is alive writes or touches its file more often, and bytes are renamed into place with the
+   * time of their save, just before their record.
    */
-  public sweepStaleTempFiles(now: number = Date.now()): number {
+  public async sweepStaleTempFiles(now: number = Date.now()): Promise<number> {
     let names: string[];
     try {
-      names = fs.readdirSync(this.storageDir);
+      names = await fs.promises.readdir(this.storageDir);
     } catch {
       return 0;
     }
+    const present = new Set(names);
     let removed = 0;
     for (const name of names) {
-      if (!isTempFileName(name)) continue;
+      const objectBytes = OBJECT_BYTES_NAME.exec(name);
+      const recordless = objectBytes !== null && !present.has(`${objectBytes[1]}.meta.json`);
+      if (!isTempFileName(name) && !recordless) continue;
       const filePath = path.join(this.storageDir, name);
       let modifiedAt: number;
       try {
-        modifiedAt = fs.statSync(filePath).mtimeMs;
+        modifiedAt = (await fs.promises.stat(filePath)).mtimeMs;
       } catch {
         continue;
       }
-      if (now - modifiedAt >= LEFTOVER_AGE_MS && removeLeftover(filePath)) removed++;
+      if (now - modifiedAt >= LEFTOVER_AGE_MS && (await removeLeftover(filePath))) removed++;
     }
     return removed;
+  }
+
+  /**
+   * Removes the object under `key` only while the record on disk is the save `written` describes, so a save that learns
+   * afterwards that it was aborted never removes what a later save of the key stored; the copy this process holds of
+   * another save is dropped, so the next read goes to the disk. No await between the read and the removal.
+   */
+  public deleteIfStoredBy(key: string, written: SavedVersion): boolean {
+    let onDisk: ObjectRecord;
+    try {
+      onDisk = JSON.parse(fs.readFileSync(this.getPathsForKey(key).metaPath, 'utf-8')) as ObjectRecord;
+    } catch {
+      return false;
+    }
+    if (onDisk.etag === written.etag && onDisk.uploadedAt === written.uploadedAt) return this.delete(key);
+    super.delete(key);
+    return false;
   }
 
   public stat(key: string): ObjectStat | null {

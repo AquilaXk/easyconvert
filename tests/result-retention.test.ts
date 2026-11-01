@@ -834,7 +834,7 @@ describe('the file ledger shared by the web server and the workers', () => {
       await releaseResultHold(key, 'job-full');
     });
 
-    it('removes the temporary files an interrupted extension left, once they are stale, and no others', () => {
+    it('removes the temporary files an interrupted extension left, once they are stale, and no others', async () => {
       const storageDir = globalSharedObjects.getStorageDir();
       fs.mkdirSync(storageDir, { recursive: true });
       const stale = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.tmp.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`);
@@ -844,7 +844,7 @@ describe('the file ledger shared by the web server and the workers', () => {
       const old = new Date(Date.now() - 61 * MINUTE_MS);
       fs.utimesSync(stale, old, old);
 
-      storageProvider.sweepExpiredObjects?.();
+      await globalSharedObjects.sweepStaleTempFiles();
 
       expect(fs.existsSync(stale)).toBe(false);
       expect(fs.existsSync(fresh)).toBe(true);

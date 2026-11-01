@@ -71,7 +71,8 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
   });
 
   it('copies the file beside its final name and renames it into place when the volumes differ, then removes the source', async () => {
-    const rename = renameFailsAcrossVolumes();
+    renameFailsAcrossVolumes();
+    const renameSync = vi.spyOn(fs, 'renameSync');
     const { storageProvider, globalSharedObjects } = await loadStorage();
 
     const stored = await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
@@ -80,7 +81,7 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     expect(stored.filePath).toBe(finalPath);
     expect(fs.readFileSync(finalPath).equals(CONTENT)).toBe(true);
     expect(fs.existsSync(sourcePath)).toBe(false);
-    const renamedIntoPlace = rename.mock.calls.filter(([from, to]) => to === finalPath && from !== sourcePath);
+    const renamedIntoPlace = renameSync.mock.calls.filter(([, to]) => to === finalPath);
     expect(renamedIntoPlace.map(([from]) => path.dirname(String(from)))).toEqual([path.dirname(finalPath)]);
     expect(leftTemporaryFiles(), 'no temporary copy is left').toEqual([]);
   });
@@ -124,29 +125,33 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
   });
 
   it('flushes the temporary copy to disk before it renames it into place', async () => {
-    const rename = renameFailsAcrossVolumes();
+    renameFailsAcrossVolumes();
     const events: string[] = [];
     const open = fs.promises.open;
     vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
       const handle = await open(...(args as Parameters<typeof open>));
       const sync = handle.sync.bind(handle);
       handle.sync = async () => {
-        events.push('fsync');
+        events.push(`fsync ${String(args[0])}`);
         return sync();
       };
       return handle;
     });
     const { storageProvider, globalSharedObjects } = await loadStorage();
     const finalPath = globalSharedObjects.objectPath(KEY);
-    const passThrough = rename.getMockImplementation()!;
-    rename.mockImplementation(async (from, to) => {
-      if (to === finalPath && from !== sourcePath) events.push('rename into place');
-      return passThrough(from, to);
+    const renameSync = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (to === finalPath) events.push(`rename ${String(from)} into place`);
+      return renameSync(from, to);
     });
 
     await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
 
-    expect(events).toEqual(['fsync', 'rename into place']);
+    const intoPlace = events.findIndex((event) => event.endsWith(' into place'));
+    const copy = /^rename (.*) into place$/.exec(events[intoPlace] ?? '')?.[1];
+    expect(copy, 'the copy is renamed into place').toBeDefined();
+    expect(events.indexOf(`fsync ${copy}`), 'the copy is flushed before').toBeGreaterThanOrEqual(0);
+    expect(events.indexOf(`fsync ${copy}`)).toBeLessThan(intoPlace);
   });
 
   // skip-ok: root reads a file whatever its mode, so a read-only source cannot be set up.
@@ -172,7 +177,7 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
       const handle = await open(...(args as Parameters<typeof open>));
       const sync = handle.sync.bind(handle);
       handle.sync = async () => {
-        mtimeAtFlush.push(fs.statSync(String(args[0])).mtimeMs);
+        if (/\.bin\.tmp\./.test(String(args[0]))) mtimeAtFlush.push(fs.statSync(String(args[0])).mtimeMs);
         return sync();
       };
       return handle;
@@ -418,33 +423,24 @@ describe('a file to store that is not a regular file', () => {
 });
 
 describe('the record of an object the local driver stores', () => {
-  function failRecordWrites() {
-    const enospc = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
-    const openSync = fs.openSync;
-    vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
-      if (String(target).includes('.meta.json')) throw enospc();
-      return (openSync as (...args: unknown[]) => number)(target, ...rest);
-    }) as typeof fs.openSync);
-    const writeFileSync = fs.writeFileSync;
-    vi.spyOn(fs, 'writeFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
-      if (String(target).includes('.meta.json')) throw enospc();
-      return (writeFileSync as (...args: unknown[]) => void)(target, ...rest);
-    }) as typeof fs.writeFileSync);
-  }
-
-  it('fails the save when the record cannot be written, and never leaves the new bytes paired with the record of an earlier save of the key', async () => {
+  it('fails the save when the record cannot be written, and leaves the object an earlier save of the key stored', async () => {
     const { storageProvider } = await loadStorage();
-    await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
+    const earlier = await storageProvider.saveObjectFromFile!(KEY, sourcePath, 'application/octet-stream', 'result.bin');
     const retrySource = path.join(baseDir, 'worker-tmp', 'retry.bin');
     fs.writeFileSync(retrySource, crypto.randomBytes(CONTENT.length + 4096));
-    failRecordWrites();
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      if (String(args[0]).includes('.meta.json')) throw Object.assign(new Error('ENOSPC: no space left on device, open'), { code: 'ENOSPC' });
+      return open(...(args as Parameters<typeof open>));
+    });
 
     await expect(storageProvider.saveObjectFromFile!(KEY, retrySource, 'application/octet-stream', 'result.bin')).rejects.toThrow(/ENOSPC/);
 
     vi.restoreAllMocks();
     const reader = await loadStorage();
-    expect(reader.globalSharedObjects.get(KEY), 'no record describes bytes it was not written for').toBeUndefined();
-    expect(fs.existsSync(reader.globalSharedObjects.objectPath(KEY)), 'the bytes without a record are removed').toBe(false);
+    expect(reader.globalSharedObjects.get(KEY)?.etag, 'the record of the earlier save').toBe(earlier.etag);
+    expect(fs.readFileSync(reader.globalSharedObjects.objectPath(KEY)).equals(CONTENT), 'the bytes of the earlier save').toBe(true);
+    expect(leftTemporaryFiles(), 'the staged bytes are removed').toEqual([]);
   });
 
   it('refuses an object whose bytes stay at a path only this process reads, whatever its size', async () => {
@@ -491,7 +487,7 @@ describe('a stream the local driver stores', () => {
     for (let turn = 0; turn < 200 && fs.statSync(tempPath).mtimeMs < lastWrite.getTime() + 1000; turn++) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    globalSharedObjects.sweepStaleTempFiles(Date.now() + 20 * MINUTE_MS);
+    await globalSharedObjects.sweepStaleTempFiles(Date.now() + 20 * MINUTE_MS);
 
     expect(fs.existsSync(tempPath), 'the quiet writer keeps its file').toBe(true);
     source.end(Buffer.alloc(1024, 8));

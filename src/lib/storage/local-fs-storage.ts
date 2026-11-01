@@ -25,11 +25,12 @@ import {
   EXCLUSIVE_CREATE,
   keepTouched,
   LEFTOVER_AGE_MS,
-  OPEN_WORK_TTL_MS,
   sweepByNameTime,
+  syncDirectory,
   syncFile,
   uniqueTempPath,
-  writeFileAtomicSync,
+  writeFileAtomic,
+  writeFlushedTemp,
 } from './temp-file';
 import { commitObjectFile, objectPathsFor, type ObjectPaths } from './shared-store';
 
@@ -51,8 +52,11 @@ const UPLOAD_ID_PATTERN = /^up_(\d{1,15})_[0-9a-f]{24}$/;
 const PART_RECORD_PATTERN = /^part-(\d+)\.meta$/;
 const SESSION_FILE = 'session.json';
 const DEFAULT_PART_BYTES = 5 * 1024 * 1024;
-/** How long a session takes parts, from its creation (its id holds the time). */
-export const MULTIPART_SESSION_TTL_MS = OPEN_WORK_TTL_MS;
+/**
+ * How long a session takes parts, from its creation (its id holds the time): a day, as the stale uploads expiry of an
+ * object store server (24 h by default). Past it and LEFTOVER_AGE_MS, the sweep removes what is left.
+ */
+export const MULTIPART_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -160,7 +164,7 @@ export class LocalFsStorage implements IObjectStorage {
     this.ensureDirectories();
 
     this.gcTimer = setInterval(() => {
-      this.sweepExpiredObjects();
+      void this.sweepExpiredObjects();
     }, 60000);
     if (this.gcTimer && typeof this.gcTimer.unref === 'function') {
       this.gcTimer.unref();
@@ -265,7 +269,7 @@ export class LocalFsStorage implements IObjectStorage {
     return stream as NodeJS.ReadableStream;
   }
 
-  /** Streams `stream` into a temporary file beside the object, flushes it and stores it (see `commitObjectFile`); a failed stream stores nothing. */
+  /** Streams `stream` into a temporary file beside the object and stores it (see `commitObjectFile`, which flushes it); a failed stream stores nothing. */
   async putStream(
     key: string,
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
@@ -289,7 +293,6 @@ export class LocalFsStorage implements IObjectStorage {
     const stopTouching = await keepTouched(tempPath);
     try {
       await pipeline(this.toNodeReadable(stream), counter, writeStream);
-      await syncFile(tempPath);
     } catch (error) {
       await fs.promises.rm(tempPath, { force: true });
       throw error;
@@ -417,15 +420,16 @@ export class LocalFsStorage implements IObjectStorage {
       expiresAt: createdAt + MULTIPART_SESSION_TTL_MS,
       metadata,
     };
-    writeFileAtomicSync(path.join(sessionDir, SESSION_FILE), JSON.stringify(session));
+    await writeFileAtomic(path.join(sessionDir, SESSION_FILE), JSON.stringify(session));
     return session;
   }
 
   /**
    * Stores part `partNumber` of the session `uploadId`, at most `maxPartBytes` and what the declared total leaves after
    * the other parts. The part is stored as an object store server stores one (erasure-multipart.go renamePart,
-   * xl-storage.go RenamePart): the record of an earlier attempt is removed, the bytes are renamed into place and the
-   * record is written last, so a record never describes other bytes than its own.
+   * xl-storage.go RenamePart): the bytes and the record are flushed to temporary files first, then the record of an
+   * earlier attempt is removed, the bytes are renamed into place and the record is renamed last, so a record never
+   * describes other bytes than its own.
    */
   async savePartStream(
     uploadId: string,
@@ -457,14 +461,19 @@ export class LocalFsStorage implements IObjectStorage {
       },
     });
 
+    let tempRecordPath: string | undefined;
     try {
       await pipeline(this.toNodeReadable(stream), limiter, fs.createWriteStream(tempPartPath, { flags: EXCLUSIVE_CREATE }));
       if (partSize === 0) throw new StorageInputError(EMPTY_PART_DETAIL, PROVIDER_NAME);
       const etag = `"${hasher.digest('hex')}"`;
+      await syncFile(tempPartPath);
+      tempRecordPath = await writeFlushedTemp(recordPath, JSON.stringify({ size: partSize, etag }));
       // No await from here to the record, so another attempt of the part in this process cannot slip in between.
       fs.rmSync(recordPath, { force: true });
       fs.renameSync(tempPartPath, partPath);
-      writeFileAtomicSync(recordPath, JSON.stringify({ size: partSize, etag }));
+      fs.renameSync(tempRecordPath, recordPath);
+      tempRecordPath = undefined;
+      await syncDirectory(sessionDir);
       // Parts that landed while this one streamed were not counted in `limit`, so check the sum again.
       const remaining = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
       if (partSize > remaining) {
@@ -474,7 +483,7 @@ export class LocalFsStorage implements IObjectStorage {
       }
       return { partNumber, etag, size: partSize };
     } catch (err) {
-      await fs.promises.rm(tempPartPath, { force: true });
+      await Promise.all([tempPartPath, tempRecordPath].map((stray) => (stray === undefined ? undefined : fs.promises.rm(stray, { force: true }))));
       throw err;
     }
   }
@@ -732,8 +741,8 @@ export class LocalFsStorage implements IObjectStorage {
    * Removes the expired objects, and the sessions an hour after their time is over, by the time in their ids: a part
    * that was already on the way when the session expired has that hour to finish.
    */
-  public sweepExpiredObjects(now: number = Date.now()): number {
-    const sessions = sweepByNameTime(this.partsDir, sessionCreatedAt, MULTIPART_SESSION_TTL_MS + LEFTOVER_AGE_MS, now);
+  public async sweepExpiredObjects(now: number = Date.now()): Promise<number> {
+    const sessions = await sweepByNameTime(this.partsDir, sessionCreatedAt, MULTIPART_SESSION_TTL_MS + LEFTOVER_AGE_MS, now);
     try {
       if (!fs.existsSync(this.storageDir)) return sessions;
       const files = fs.readdirSync(this.storageDir);

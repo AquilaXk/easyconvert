@@ -36,6 +36,12 @@ const MAX_INTEGER_DIGITS = 16;
 
 export const MIN_PRODUCTION_SECRET_BYTES = 32;
 const INT32_MAX = 2_147_483_647;
+/**
+ * The longest any job deadline may be set to, the default maximum of the enterprise tier. A job directory of the local
+ * driver is removed this long and an hour after it was made (`JOB_STAGING_MAX_AGE_MS`, `deploy.sh sweep`), so no setting
+ * may let a job outlive its directory.
+ */
+export const JOB_DEADLINE_CEILING_MS = 3_600_000;
 const TCP_PORT_MAX = 65_535;
 const IPV4_BITS = 32;
 const IPV6_BITS = 128;
@@ -1146,7 +1152,7 @@ const SCHEMA_ENTRIES = [
     area: 'limits',
     description:
       'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 60_000,
     requiredInProduction: false,
     secret: false,
@@ -1157,7 +1163,7 @@ const SCHEMA_ENTRIES = [
     area: 'limits',
     description:
       'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 120_000,
     requiredInProduction: false,
     secret: false,
@@ -1168,7 +1174,7 @@ const SCHEMA_ENTRIES = [
     area: 'limits',
     description:
       'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 180_000,
     requiredInProduction: false,
     secret: false,
@@ -1178,8 +1184,8 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_MAX_MS_FREE',
     area: 'limits',
     description:
-      'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
+      'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 300_000,
     requiredInProduction: false,
     secret: false,
@@ -1189,8 +1195,8 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_MAX_MS_PRO',
     area: 'limits',
     description:
-      'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
+      'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 1_800_000,
     requiredInProduction: false,
     secret: false,
@@ -1200,9 +1206,9 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_MAX_MS_ENTERPRISE',
     area: 'limits',
     description:
-      'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 3_600_000,
+      'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
+    default: JOB_DEADLINE_CEILING_MS,
     requiredInProduction: false,
     secret: false,
     roles: BOTH,

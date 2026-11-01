@@ -26,6 +26,7 @@ import {
   getMaxInMemoryBytes,
 } from './errors';
 import { PART_URL_TTL_SECONDS } from './presign-limits';
+import { assertRegularFile } from './temp-file';
 import { multipartUploadKey } from './key-namespace';
 import { MAX_UPLOAD_ID_LENGTH } from './upload-id';
 import { buildPutOptions, isObjectExpired, isValidContentType, limitFilename, toStoredObjectMetadata } from './object-attributes';
@@ -476,13 +477,17 @@ export class RemoteStorageBackend implements IStorageBackend {
     );
   }
 
+  /** Uploads the regular file at `filePath`; an attempt aborted before the upload starts uploads nothing. */
   async saveObjectFromFile(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs: number = REMOTE_DEFAULT_OBJECT_TTL_MS
+    ttlMs: number = REMOTE_DEFAULT_OBJECT_TTL_MS,
+    signal?: AbortSignal
   ): Promise<StoredObject> {
+    await assertRegularFile(filePath);
+    signal?.throwIfAborted();
     const { size } = await fs.promises.stat(filePath);
     return this.saveObjectFromStream(key, fs.createReadStream(filePath), { filename, mimeType, size }, ttlMs);
   }

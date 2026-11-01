@@ -28,7 +28,7 @@ import {
 import { presignSigV4QueryUrl, verifySigV4QueryUrl } from './sigv4-presigner';
 import { multipartUploadKey } from './key-namespace';
 import { LocalFsStorage, localFsStorage, type LocalMultipartSession, type StoredPart } from './local-fs-storage';
-import { extendStoredExpiry, fileBackedObject, globalSharedObjects } from './shared-store';
+import { extendStoredExpiry, fileBackedObject, globalSharedObjects, type SavedVersion } from './shared-store';
 import { sweepStaleJobDirectories } from './temp-file';
 
 export * from './oci-storage';
@@ -103,6 +103,7 @@ export class S3ObjectStorageService implements IStorageBackend {
 
     this.gcTimer = setInterval(() => {
       this.sweepExpiredObjects();
+      void this.sweepLeftovers();
     }, 60000);
     if (this.gcTimer && typeof this.gcTimer.unref === 'function') {
       this.gcTimer.unref();
@@ -220,15 +221,19 @@ export class S3ObjectStorageService implements IStorageBackend {
     return obj;
   }
 
-  /** Moves the file into the storage directory (a rename, or a copy across volumes) and stores it there for every process. */
+  /**
+   * Moves the regular file into the storage directory (a rename, or a copy across volumes) and stores it there for every
+   * process. A `signal` that aborts before the file is renamed into place stores nothing (see `commitObjectFile`).
+   */
   async saveObjectFromFile(
     key: string,
     filePath: string,
     mimeType: string,
     filename: string,
-    ttlMs: number = DEFAULT_OBJECT_TTL_MS
+    ttlMs: number = DEFAULT_OBJECT_TTL_MS,
+    signal?: AbortSignal
   ): Promise<StoredObject> {
-    const stat = await fs.promises.stat(filePath);
+    const stat = await fs.promises.lstat(filePath);
     const now = Date.now();
     const obj = await globalSharedObjects.storeFile(key, filePath, {
       key,
@@ -238,9 +243,16 @@ export class S3ObjectStorageService implements IStorageBackend {
       etag: `"${crypto.createHash('sha256').update(`${globalSharedObjects.objectPath(key)}${stat.mtimeMs}${stat.size}`).digest('hex').slice(0, 32)}"`,
       uploadedAt: now,
       expiresAt: now + ttlMs,
-    });
+    }, signal);
     this.objects.set(key, obj);
     return obj;
+  }
+
+  /** Removes the object under `key` while it is still the save `written` describes (see `SharedObjectStore.deleteIfStoredBy`). */
+  deleteObjectIfUnchanged(key: string, written: SavedVersion): boolean {
+    const own = this.objects.get(key);
+    if (own?.etag === written.etag && own.uploadedAt === written.uploadedAt) this.objects.delete(key);
+    return globalSharedObjects.deleteIfStoredBy(key, written);
   }
 
   stat(key: string): ObjectStat | null {
@@ -461,9 +473,13 @@ export class S3ObjectStorageService implements IStorageBackend {
       }
     }
 
-    globalSharedObjects.sweepStaleTempFiles(now);
-    sweepStaleJobDirectories(now);
     return swept;
+  }
+
+  /** Removes what stopped processes left in the storage directory: temporary files, bytes without a record and job directories. */
+  async sweepLeftovers(now: number = Date.now()): Promise<number> {
+    const [tempFiles, jobDirectories] = await Promise.all([globalSharedObjects.sweepStaleTempFiles(now), sweepStaleJobDirectories(now)]);
+    return tempFiles + jobDirectories;
   }
 }
 

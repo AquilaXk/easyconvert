@@ -7,7 +7,8 @@
 #   deploy.sh filter-env  < raw-env            keep only the keys of deploy/oci/env-allowlist.txt (dropped lines are named by number on stderr)
 #   deploy.sh budget                           print the per-service limits derived from the two budget knobs
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
-#   deploy.sh sweep                            delete scratch temp files older than two hours, from inside the worker image
+#   deploy.sh sweep                            delete scratch temp files and job staging entries older than two hours, from inside
+#                                              the worker image
 #   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health and one conversion, roll back on failure,
 #                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
@@ -38,6 +39,10 @@ HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWLIST="${ENV_ALLOWLIST:-$SCRIPT_DIR/env-allowlist.txt}"
 KEEP_RELEASES=2
+# What a stopped worker leaves, removed from inside the worker image: files in its /tmp, and the job directories and outputs in the
+# staging folder of the storage directory. No job outlives two hours there: the longest deadline the settings accept is one hour,
+# and the application sweep waits an hour more for the save (JOB_STAGING_MAX_AGE_MS in src/lib/storage/temp-file.ts).
+SCRATCH_SWEEP='find /tmp -mindepth 1 -mmin +120 -delete; [ ! -d /shared/storage/.staging ] || find /shared/storage/.staging -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} +'
 IMAGE_REF_PATTERN='^(main|sha-[0-9a-f]{40})$'
 ENV_KEY_PATTERN='^[A-Z_][A-Z0-9_]*$'
 APPARMOR_PROFILE='easyconvert'
@@ -323,7 +328,7 @@ deploy() {
   chmod 600 "$release/.env"
 
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
-  child compose "$release" run --rm --no-deps --entrypoint sh worker -c 'find /tmp -mindepth 1 -mmin +120 -delete' || log "scratch sweep skipped"
+  child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
 
   if start_release "$release"; then
     trap '' INT TERM
@@ -393,7 +398,7 @@ release_hold() {
 }
 
 sweep() {
-  compose "$HOME_DIR/current" run --rm --no-deps --entrypoint sh worker -c 'find /tmp -mindepth 1 -mmin +120 -delete'
+  compose "$HOME_DIR/current" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP"
 }
 
 case "${1:-}" in

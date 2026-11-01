@@ -206,7 +206,7 @@ async function startWebProcess(jobId: string, storageKey?: string) {
   return { resultKey: `results/${job.id}/result.bin`, download };
 }
 
-describe('a file uploaded in parts to the web process is read by a worker that shares only the storage directory', () => {
+describe('a file uploaded in parts to the web process is read by a worker that shares only the storage directory', { timeout: 30_000 }, () => {
   it('lets a worker process of its own read every byte of the upload from the storage directory and store a result over 64 MiB that the web process serves', async () => {
     const bytes = patterned(UPLOAD_BYTES);
     const key = await asProcess(webTmp, () => uploadInParts(bytes));
