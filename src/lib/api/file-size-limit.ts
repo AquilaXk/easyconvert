@@ -3,7 +3,10 @@ import { SINGLE_REQUEST_BODY_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planO
 import { createProblemDetailsResponse } from './problem-details';
 import { partBodyVerdict, singleRequestVerdict, type BodyLengthVerdict } from './request-body-limit';
 
-/** The 413 for a file of `sizeBytes` over the plan limit of `caller`, or null when the file fits (or has no known size). */
+/**
+ * The 413 for a file of `sizeBytes` over the plan limit of `caller`, or null when the file fits (or has no known size). The
+ * answer names the plan, the size and the limit as fields, so the interface words them in its own language.
+ */
 export function fileSizeLimitProblem(
   caller: PlanCaller,
   sizeBytes: number | undefined,
@@ -13,7 +16,11 @@ export function fileSizeLimitProblem(
   if (sizeBytes === undefined) return null;
   const plan = planOfCaller(caller);
   if (sizeBytes <= maxFileBytes(plan)) return null;
-  return createProblemDetailsResponse(413, fileTooLargeMessage(plan, sizeBytes), instanceUri, undefined, undefined, extraHeaders);
+  return createProblemDetailsResponse(413, fileTooLargeMessage(plan, sizeBytes), instanceUri, undefined, undefined, extraHeaders, undefined, {
+    plan,
+    sizeBytes,
+    limitBytes: maxFileBytes(plan),
+  });
 }
 
 function verdictProblem(verdict: BodyLengthVerdict, instanceUri: string, extra?: Record<string, unknown>): NextResponse | null {

@@ -10,13 +10,13 @@ import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from 
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { formatBytes } from '@/lib/format-bytes';
 import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
-import type { UrlImportErrorCode } from '@/lib/url-import-errors';
+import type { UrlImportErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
-/** An error answer: the English `error` for API callers, and the stable `code` the interface words. */
-function urlImportError(status: number, code: UrlImportErrorCode, error: string): NextResponse {
-  return NextResponse.json({ success: false, code, error }, { status });
+/** An error answer: the English `error` for API callers, and the stable `code` (with any number it names) the interface words. */
+function urlImportError(status: number, code: UrlImportErrorCode, error: string, facts: Record<string, number> = {}): NextResponse {
+  return NextResponse.json({ success: false, code, error, ...facts }, { status });
 }
 
 /**
@@ -148,7 +148,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       return urlImportError(
         res.status >= 400 && res.status < 500 ? 400 : 502,
         'remote_error',
-        `Remote server returned HTTP ${res.status}: ${res.statusText}`
+        `Remote server returned HTTP ${res.status}: ${res.statusText}`,
+        { remoteStatus: res.status }
       );
     }
 

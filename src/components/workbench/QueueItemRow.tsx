@@ -12,7 +12,8 @@ import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
 import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
-import { useConversionFailureMessage } from '../i18n/conversion-failures';
+import { useConversionFailureWording, type ErrorWording } from '../i18n/error-wording';
+import TechnicalDetails from '../i18n/TechnicalDetails';
 import { getPasswordValidationError } from './options/options-capabilities';
 
 export interface QueueItemRowProps {
@@ -61,15 +62,15 @@ function resolveOptionError(tPassword: PasswordErrorTranslator, item: Conversion
 }
 
 function resolveRowError(
-  failureMessage: ReturnType<typeof useConversionFailureMessage>,
+  failureWording: ReturnType<typeof useConversionFailureWording>,
   item: ConversionQueueItem,
   optionError: string | null,
   oversizeError: string | null
-): string | null {
-  if (oversizeError) return oversizeError;
-  if (optionError) return optionError;
+): ErrorWording | null {
+  if (oversizeError) return { message: oversizeError };
+  if (optionError) return { message: optionError };
   if (item.status !== 'error') return null;
-  return failureMessage(item.error ?? { code: 'conversionFailed' });
+  return failureWording(item.error ?? { code: 'conversionFailed' });
 }
 
 function isRetryDisabled(
@@ -152,7 +153,7 @@ export default function QueueItemRow({
   const tPassword = useTranslations('options.password.errors');
   const formatBytes = useFormatBytes();
   const fileTooLargeMessage = useFileTooLargeMessage();
-  const failureMessage = useConversionFailureMessage();
+  const failureWording = useConversionFailureWording();
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const plan = useViewerPlan();
   const isIdle = !isBusy && item.status !== 'completed';
@@ -161,7 +162,7 @@ export default function QueueItemRow({
   const hasTarget = Boolean(item.targetFormat);
   const optionError = isIdle ? resolveOptionError(tPassword, item) : null;
   const rowError = isIdle
-    ? resolveRowError(failureMessage, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
+    ? resolveRowError(failureWording, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
     : null;
 
   const targetButtonClass = hasTarget
@@ -184,9 +185,12 @@ export default function QueueItemRow({
             <span>{getFormatLabel(t, item.sourceFormat)}</span>
           </p>
           {rowError && (
-            <p role="alert" className="text-xs text-danger mt-1">
-              {rowError}
-            </p>
+            <>
+              <p role="alert" className="text-xs text-danger mt-1">
+                {rowError.message}
+              </p>
+              <TechnicalDetails text={rowError.technical} />
+            </>
           )}
         </div>
       </div>

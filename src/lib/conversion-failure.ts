@@ -1,15 +1,16 @@
 /**
  * Why a conversion in the queue failed, in a form the interface words in the page's language: a code for a failure the
- * client decided, or the server's refusing answer (problem details, RFC 9457), which the interface words by its problem
- * type or shows as the server wrote it.
+ * client decided, the server's refusing answer (its `code` or problem type, RFC 9457, with the HTTP status), or a queued
+ * job that failed on a worker (the reason and the `failedCode` the job recorded; a job's failure has no HTTP status).
  */
 export type ConversionFailure =
   | { readonly code: 'conversionFailed' | 'jobTimedOut' }
   | { readonly code: 'clientEdgeFailed'; readonly reason?: string }
   | { readonly code: 'clientOnlyBlocked'; readonly source: string; readonly target: string; readonly edgeFailure?: EdgeFailure }
-  | { readonly code: 'server'; readonly problem: Readonly<Record<string, unknown>> };
+  | { readonly code: 'server'; readonly problem: Readonly<Record<string, unknown>> }
+  | { readonly code: 'jobFailed'; readonly reason?: string; readonly failedCode?: string };
 
-/** The browser tier that failed before a client-only conversion was refused, and its error, shown after the sentence. */
+/** The browser tier that failed before a client-only conversion was refused (named in the sentence), and its error. */
 export interface EdgeFailure {
   readonly tier: string;
   readonly reason: string;
@@ -38,4 +39,12 @@ export function serverRefusal(body: unknown, status: number, fallbackMessage: st
   const problem: Record<string, unknown> = body && typeof body === 'object' ? { ...body, status } : { status };
   const sentence = [problem.detail, problem.error].find((text): text is string => typeof text === 'string' && text !== '');
   return new ConversionFailureError(sentence ?? fallbackMessage, { code: 'server', problem });
+}
+
+const nonEmpty = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
+
+/** The error for a job that ended failed: its message is the worker's reason, and its failure carries the job's record. */
+export function jobFailure(job: { readonly failedReason?: unknown; readonly failedCode?: unknown }): ConversionFailureError {
+  const reason = nonEmpty(job.failedReason);
+  return new ConversionFailureError(reason ?? 'The conversion failed.', { code: 'jobFailed', reason, failedCode: nonEmpty(job.failedCode) });
 }

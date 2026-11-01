@@ -99,13 +99,9 @@
       "missingFields": "Fill in all required fields.",
       "passwordTooShort": "Password must be at least 8 characters long.",
       "passwordMismatch": "Passwords do not match.",
-      "failed": "Authentication failed. Check your credentials and try again.",
       "created": "Account created. Redirecting...",
       "signedIn": "Signed in. Redirecting...",
-      "connection": "Connection error while signing in. Try again.",
-      "invalidCredentials": "The email address or password is incorrect.",
-      "invalidRegistration": "Enter a valid email address and a password of 8 to 1024 characters.",
-      "accountExists": "An account with this email address already exists. Sign in instead."
+      "connection": "Connection error while signing in. Try again."
     }
   },
   "converterPage": {
@@ -408,9 +404,8 @@
       "deleteFile": "Failed to delete file (HTTP {status}).",
       "deleteFileNetwork": "Network error while deleting file.",
       "replaySucceeded": "Webhook replay succeeded (HTTP {status}).",
-      "replayFailed": "Webhook replay failed ({reason}).",
-      "networkFailure": "Network failure",
-      "replayRequestFailed": "Replay request failed ({reason}).",
+      "replayFailed": "Webhook replay failed.",
+      "replayRequestFailed": "The replay request failed.",
       "deleteDlq": "Failed to delete webhook entry (HTTP {status}).",
       "deleteDlqNetwork": "Network error while deleting webhook entry.",
       "clearDlq": "Failed to clear dead letter queue (HTTP {status}).",
@@ -1134,21 +1129,6 @@
       "enterprise": "Enterprise"
     }
   },
-  "problems": {
-    "badRequest": "The request could not be read. Check the values and try again.",
-    "unauthorized": "Sign in to continue.",
-    "forbidden": "This action is not allowed for your account.",
-    "payloadTooLarge": "The file is larger than this request can take.",
-    "lengthRequired": "The upload did not state its size. Try again.",
-    "unsupportedMediaType": "This file type cannot be sent here.",
-    "rateLimited": "Too many requests in a short time. Wait a moment and try again.",
-    "concurrencyLimit": "Too many conversions are running at once. Try again when one finishes.",
-    "quotaExceeded": "You have used today's conversion limit. Try again tomorrow.",
-    "uploadBudgetExceeded": "You have used today's upload limit. Try again tomorrow.",
-    "storageFull": "Storage is full right now. Try again later.",
-    "serviceUnavailable": "The service is temporarily unavailable. Try again shortly.",
-    "internalError": "Something went wrong on our side. Try again."
-  },
   "queue": {
     "status": {
       "converting": "Converting queued files...",
@@ -1165,8 +1145,6 @@
     "convertAllTitle": "Convert all compatible files to",
     "filesInQueue": "{count} files in queue",
     "clearAll": "Clear all",
-    "zipFailed": "Could not build ZIP archive. Unknown error",
-    "zipFailedWithDetail": "Could not build ZIP archive. {detail}",
     "dismissZipError": "Dismiss archive error",
     "addMore": "+ Add more files",
     "downloadAll": "Download All (.zip)",
@@ -1188,13 +1166,6 @@
       "optionsLabel": "Conversion options for {name}",
       "cancelLabel": "Cancel {name}",
       "removeLabel": "Remove {name}"
-    },
-    "failures": {
-      "conversionFailed": "Conversion failed. Try another format or try again.",
-      "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
-      "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
-      "edgeTierFailed": "Edge tier {tier} failed: {reason}",
-      "jobTimedOut": "The conversion did not finish in time. Try again."
     }
   },
   "siteLinks": {
@@ -1570,9 +1541,83 @@
     "fetching": "Fetching...",
     "submit": "Load File",
     "invalidUrl": "Enter a full link that starts with http:// or https://.",
-    "fetchFailed": "Failed to fetch file (HTTP {status})",
-    "networkError": "Invalid URL or network error",
-    "errors": {
+    "networkError": "Invalid URL or network error"
+  },
+  "userNav": {
+    "dashboard": "Dashboard",
+    "logIn": "Log In",
+    "signUp": "Sign Up"
+  },
+  "errors": {
+    "technicalDetails": "Technical details",
+    "generic": {
+      "client": "The request was refused. Check the file and its settings, then try again.",
+      "server": "Something went wrong on our side. Try again."
+    },
+    "problems": {
+      "badRequest": "The request could not be read. Check the values and try again.",
+      "unauthorized": "Sign in to continue.",
+      "forbidden": "This action is not allowed for your account.",
+      "notFound": "What this request names no longer exists.",
+      "methodNotAllowed": "This request cannot be sent this way.",
+      "payloadTooLarge": "{limit, select, none {The file is larger than this request can take.} other {One request can carry at most {limit}.}}",
+      "lengthRequired": "The upload did not state its size. Try again.",
+      "unsupportedMediaType": "This file type cannot be sent here.",
+      "rateLimited": "Too many requests in a short time. Wait a moment and try again.",
+      "concurrencyLimit": "{limit, select, none {Too many conversions are running at once.} other {{limit} conversions are already running, the most at once.}} Try again when one finishes.",
+      "quotaExceeded": "{limit, select, none {You have used today's conversion limit.} other {You have used today's limit of {limit} conversions.}} Try again tomorrow.",
+      "uploadBudgetExceeded": "{refusal, select, openUploads {Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.} dailyBytes {Without an account, uploads may total {limit} a day. Try again tomorrow.} other {You have used today's upload limit. Try again tomorrow.}}",
+      "storageFull": "Storage is full right now. Try again later.",
+      "serviceUnavailable": "The service is temporarily unavailable. Try again shortly.",
+      "internalError": "Something went wrong on our side. Try again.",
+      "unprocessable": "This file cannot be converted with these settings.",
+      "engineUnavailable": "The program this conversion needs is not available right now. Try again later.",
+      "jobTimeout": "The conversion did not finish in time. Try again.",
+      "clientClosed": "The conversion stopped because the connection closed. Try again.",
+      "pdfPostprocessFailed": "The document converted, but the PDF step you chose could not be applied to it.",
+      "pdfaValidationFailed": "The PDF could not be made to meet the PDF/A profile you chose.",
+      "optionNotSupported": "One of the chosen settings does not apply to this conversion.",
+      "unknownFormat": "The format of this file could not be recognized.",
+      "invalidArchive": "The archive is damaged or in a form that cannot be read.",
+      "missingArchiveVolume": "A part of this multi-part archive is missing. Add every part.",
+      "archiveEncryptedHeader": "The archive is protected with a password, so its contents cannot be listed.",
+      "jobStateCorrupt": "The conversion record could not be read. Start the conversion again.",
+      "partInFlight": "A part of this upload is still being received. Try again in a moment.",
+      "idempotencyKeyReused": "This request repeats an earlier one with different contents. Start again.",
+      "idempotencyKeyInFlight": "The same request is still being processed. Try again in a moment."
+    },
+    "conversion": {
+      "file_required": "Choose a file to convert.",
+      "empty_file": "The file is empty.",
+      "target_required": "Choose a format to convert to.",
+      "unknown_format": "The format of this file could not be told from its name. Check its extension.",
+      "invalid_options": "The conversion settings could not be read. Reset them and try again.",
+      "spoofed_file": "The file's content does not match its extension. Check that the file is what its name says.",
+      "unsupported_pair": "This file cannot be converted to the chosen format. Choose another format.",
+      "option_not_supported": "One of the chosen settings does not apply to this conversion.",
+      "invalid_pages": "The page range cannot be used. Check the pages and your plan limit.",
+      "password_required": "The file is protected with a password. Enter its password in the settings.",
+      "invalid_password": "The password does not open this file.",
+      "unsupported_method": "The archive is compressed with a method that cannot be read.",
+      "encrypted_input": "The file is encrypted or protected, so its content cannot be read.",
+      "missing_volume": "A part of this multi-part archive is missing. Add every part.",
+      "archive_entry_collision": "The archive holds two entries with the same name.",
+      "unsafe_archive": "The archive holds entries that cannot be extracted safely.",
+      "malformed_input": "The file is damaged or incomplete, so it cannot be read.",
+      "unsupported_input": "This kind of file cannot be converted, although it appears intact.",
+      "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
+      "timeout": "The conversion did not finish in time. Try again.",
+      "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
+      "conversion_failed": "Conversion failed. Try another format or try again."
+    },
+    "queue": {
+      "conversionFailed": "Conversion failed. Try another format or try again.",
+      "jobFailed": "The conversion failed on the server. Try again, or try another format.",
+      "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
+      "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.{tier, select, none {} other { The browser step {tier} failed first.}}",
+      "zipFailed": "Could not build the ZIP archive."
+    },
+    "urlImport": {
       "url_required": "Enter the link of a file.",
       "invalid_url": "This link cannot be read. Enter a full link that starts with http:// or https://.",
       "unsupported_scheme": "Only links that start with http:// or https:// can be imported.",
@@ -1580,15 +1625,22 @@
       "redirect_without_location": "The link redirected without naming where to. Try the file's direct link.",
       "too_many_redirects": "The link redirected too many times. Try the file's direct link.",
       "invalid_redirect": "The link redirected to an address that cannot be read. Try the file's direct link.",
-      "remote_error": "The site of the link did not send the file. Check that the link opens the file in a browser.",
+      "remote_error": "{status, select, none {The site of the link did not send the file.} other {The site of the link answered HTTP {status} instead of the file.}} Check that the link opens the file in a browser.",
       "empty_body": "The site of the link sent an empty file.",
       "file_too_large": "A file imported from a link may be at most {limit}. Download it and add it from your device to convert a file of up to {planLimit}.",
       "fetch_failed": "The file could not be fetched from the link. Try again."
+    },
+    "auth": {
+      "failed": "Authentication failed. Try again.",
+      "invalid_json": "The sign-in request could not be read. Reload the page and try again.",
+      "missing_fields": "Enter your email address and password.",
+      "invalid_credentials": "The email address or password is incorrect.",
+      "login_locked": "Too many failed sign-in attempts. Try again in {seconds, plural, one {# second} other {# seconds}}.",
+      "client_address_unknown": "Your connection could not be identified. Try again from another network.",
+      "client_ip_unconfigured": "Sign-in is unavailable while the server is being configured. Try again later.",
+      "invalid_email": "Enter a valid email address.",
+      "password_length": "The password must be 8 to 1024 characters long.",
+      "account_exists": "An account with this email address already exists. Sign in instead."
     }
-  },
-  "userNav": {
-    "dashboard": "Dashboard",
-    "logIn": "Log In",
-    "signUp": "Sign Up"
   }
 }

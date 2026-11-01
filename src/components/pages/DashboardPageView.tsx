@@ -11,6 +11,7 @@ import { JobsHistoryPanel } from '@/components/dashboard/JobsHistoryPanel';
 import { WebhooksPanel } from '@/components/dashboard/WebhooksPanel';
 import { AccountQuotaPanel } from '@/components/dashboard/AccountQuotaPanel';
 import { useDashboardController } from '@/components/dashboard/useDashboardController';
+import TechnicalDetails from '@/components/i18n/TechnicalDetails';
 
 export default function DashboardPageView() {
   const t = useTranslations('dashboard');
@@ -76,7 +77,10 @@ export default function DashboardPageView() {
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
-                  <span className="break-words">{actionError}</span>
+                  <div className="min-w-0 break-words">
+                    {actionError.message}
+                    <TechnicalDetails text={actionError.technical} />
+                  </div>
                 </div>
                 <button
                   type="button"

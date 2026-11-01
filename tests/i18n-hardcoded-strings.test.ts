@@ -46,10 +46,11 @@ const ALLOWED_TEXT = new Set([
 
 /**
  * An error's message is for logs and API callers: the interface words a failure by its code (src/lib/conversion-failure.ts)
- * and never shows the message, which tests/i18n-queue-errors.test.ts checks on the rendered queue. `serverRefusal` takes
- * the message an error has when the server gave no sentence.
+ * and never shows the message, which tests/i18n-queue-errors.test.ts checks on the rendered queue. Only that argument is
+ * exempt: the message of an error constructor, and the third argument of `serverRefusal`, the message an error has when the
+ * server gave no sentence. Any other argument (a failure the interface shows) is scanned.
  */
-const ERROR_MESSAGE_CALLS = new Set(['serverRefusal']);
+const ERROR_MESSAGE_ARGUMENT: Readonly<Record<string, number>> = { serverRefusal: 2 };
 const ERROR_CLASS = /(?:Error|Exception)$/;
 
 /** Elements whose text is code a visitor copies, not copy. */
@@ -66,9 +67,20 @@ const CODE_SAMPLE_FILES = new Set([
   'src/components/api-docs/curl-builder.ts', // request bodies of the generated cURL commands
 ]);
 
-function isErrorMessage(n: ts.Node): boolean {
-  if (ts.isNewExpression(n)) return ERROR_CLASS.test(n.expression.getText());
-  return ts.isCallExpression(n) && ERROR_MESSAGE_CALLS.has(n.expression.getText());
+/** The index of the message argument of `n` when it makes an error (an error constructor or `serverRefusal`), else undefined. */
+function errorMessageIndex(n: ts.Node): number | undefined {
+  if (ts.isNewExpression(n)) return ERROR_CLASS.test(n.expression.getText()) ? 0 : undefined;
+  const callee = ts.isCallExpression(n) ? n.expression.getText() : '';
+  return Object.hasOwn(ERROR_MESSAGE_ARGUMENT, callee) ? ERROR_MESSAGE_ARGUMENT[callee] : undefined;
+}
+
+/** Whether `node` lies in the message argument of the nearest call around it that makes an error. */
+function isErrorMessage(node: ts.Node): boolean {
+  for (let child = node, current = node.parent; current; child = current, current = current.parent) {
+    const index = errorMessageIndex(current);
+    if (index !== undefined) return (current as ts.CallExpression | ts.NewExpression).arguments?.[index] === child;
+  }
+  return false;
 }
 
 function isMessageProperty(node: ts.Node): boolean {
@@ -161,7 +173,7 @@ function scan(file: string): Finding[] {
       !isNonTextAttributeValue(node) &&
       !isNonCopyProperty(node) &&
       !isInside(node, isConsoleCall) &&
-      !isInside(node, isErrorMessage)
+      !isErrorMessage(node)
     ) {
       report(node, text);
     }
@@ -185,6 +197,7 @@ describe('the interface source holds no user-visible English', () => {
       'Failed',
       'Upload',
       'File size exceeds the x limit.',
+      'Shown Failure Label Text',
       'Visible heading',
       'Close dialog',
       'Search formats',

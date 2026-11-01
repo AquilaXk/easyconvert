@@ -6,7 +6,7 @@
  */
 
 import { ConversionOptions } from '../../types';
-import { ConversionFailureError, serverRefusal } from '../../conversion-failure';
+import { ConversionFailureError, jobFailure, serverRefusal } from '../../conversion-failure';
 import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../part-in-flight';
 import { UPLOAD_PART_MAX_BYTES } from '../../plan-limits';
 
@@ -367,7 +367,7 @@ async function waitForResult(jobId: string, call: CallState, hooks: ResumableHoo
       return { url: readString(result, 'downloadUrl', 'The conversion'), size: typeof result.size === 'number' ? result.size : 0 };
     }
     if (call.stage.kind === 'finished') {
-      throw serverRefusal({ detail: job.failedReason }, res.status, 'The conversion failed.');
+      throw jobFailure(job);
     }
     const jobProgress = typeof job.progress === 'number' ? Math.min(Math.max(job.progress, 0), FULL_PROGRESS) : 0;
     hooks.onProgress(Math.round(UPLOAD_PROGRESS_END + (jobProgress / FULL_PROGRESS) * (FULL_PROGRESS - UPLOAD_PROGRESS_END)));

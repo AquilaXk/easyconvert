@@ -2,18 +2,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
+import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
+
+/** A refusal for API callers (the English `error`) and for the sign-up page, which words its `code` in the page's language. */
+function refusal(status: number, code: AuthErrorCode, error: string): NextResponse {
+  return NextResponse.json({ success: false, code, error }, { status });
+}
 
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      { success: false, error: 'Invalid JSON request payload.' },
-      { status: 400 }
-    );
+    return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
   }
 
   try {
@@ -22,27 +25,18 @@ export async function POST(req: NextRequest) {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
 
     if (!email?.includes('@')) {
-      return NextResponse.json(
-        { success: false, error: 'A valid email address is required.' },
-        { status: 400 }
-      );
+      return refusal(400, 'invalid_email', 'A valid email address is required.');
     }
 
     if (!password || password.length < 8 || password.length > 1024) {
-      return NextResponse.json(
-        { success: false, error: 'Password must be between 8 and 1024 characters in length.' },
-        { status: 400 }
-      );
+      return refusal(400, 'password_length', 'Password must be between 8 and 1024 characters in length.');
     }
 
     const displayName = name || email.split('@')[0];
 
     const existingUser = await redisUserStore.findByEmail(email);
     if (existingUser) {
-      return NextResponse.json(
-        { success: false, error: 'An account with this email address already exists.' },
-        { status: 409 }
-      );
+      return refusal(409, 'account_exists', 'An account with this email address already exists.');
     }
 
     const { hash, salt } = await hashPassword(password);

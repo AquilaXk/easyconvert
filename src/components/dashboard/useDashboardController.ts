@@ -11,7 +11,7 @@ import {
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
 import { applySessionChange } from '@/lib/viewer-plan';
-import { useServerErrorMessage } from '../i18n/problems';
+import { useProblemWording, type ErrorWording } from '../i18n/error-wording';
 
 /** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
 export function buildKeyCreationRequest(
@@ -71,11 +71,11 @@ function useClipboardCopyStatus() {
 
 function useApiKeysController(
   enabled: boolean,
-  onReportError: (message: string | null) => void
+  onReportError: (error: ErrorWording | null) => void
 ) {
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
-  const extractApiError = useServerErrorMessage();
+  const problemWording = useProblemWording();
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [quota, setQuota] = useState<QuotaUsage | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -102,16 +102,16 @@ function useApiKeysController(
         if (keysData.success) setApiKeys(keysData.keys);
       } else {
         const errBody: unknown = await keysRes.json().catch(() => null);
-        onReportError(extractApiError(errBody, t('loadKeys', { status: keysRes.status })));
+        onReportError(problemWording(errBody, keysRes.status, t('loadKeys', { status: keysRes.status })));
       }
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
         if (quotaData.success) setQuota(quotaData.usage);
       }
     } catch {
-      onReportError(t('loadKeysNetwork'));
+      onReportError({ message: t('loadKeysNetwork') });
     }
-  }, [onReportError, extractApiError, t]);
+  }, [onReportError, problemWording, t]);
 
   useEffect(() => {
     if (enabled) {
@@ -123,7 +123,7 @@ function useApiKeysController(
     e.preventDefault();
     const request = buildKeyCreationRequest(newKeyName, selectedScopes, keyExpiry, Date.now(), tKeys('defaultName'));
     if (!request.ok) {
-      onReportError(t(request.error));
+      onReportError({ message: t(request.error) });
       return;
     }
     setIsGeneratingKey(true);
@@ -150,9 +150,9 @@ function useApiKeysController(
         await fetchKeysAndQuota();
         return;
       }
-      onReportError(extractApiError(data, t('createKey', { status: res.status })));
+      onReportError(problemWording(data, res.status, t('createKey', { status: res.status })));
     } catch {
-      onReportError(t('createKeyNetwork'));
+      onReportError({ message: t('createKeyNetwork') });
     } finally {
       setIsGeneratingKey(false);
     }
@@ -164,13 +164,13 @@ function useApiKeysController(
       const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(extractApiError(data, t('revokeKey', { status: res.status })));
+        onReportError(problemWording(data, res.status, t('revokeKey', { status: res.status })));
         return;
       }
       setRevokingKeyId(null);
       await fetchKeysAndQuota();
     } catch {
-      onReportError(t('revokeKeyNetwork'));
+      onReportError({ message: t('revokeKeyNetwork') });
     }
   };
 
@@ -208,9 +208,9 @@ export function useDashboardController() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardTab>('api');
   const [loading, setLoading] = useState(true);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ErrorWording | null>(null);
 
-  const reportError = useCallback((message: string | null) => setActionError(message), []);
+  const reportError = useCallback((error: ErrorWording | null) => setActionError(error), []);
   const clearActionError = useCallback(() => setActionError(null), []);
 
   const fetchProfile = useCallback(async () => {
@@ -240,7 +240,7 @@ export function useDashboardController() {
       // A sign-out the server refused leaves the session, so the header keeps the account until the page is read again.
       if (res.ok) applySessionChange(null);
     } catch {
-      setActionError(t('signOutNetwork'));
+      setActionError({ message: t('signOutNetwork') });
     }
     router.push('/auth');
     router.refresh();

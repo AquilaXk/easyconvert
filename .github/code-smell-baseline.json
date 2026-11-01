@@ -17,7 +17,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 52
+    "maxValue": 35
   },
   {
     "file": "src/app/api/fetch-url/route.ts",

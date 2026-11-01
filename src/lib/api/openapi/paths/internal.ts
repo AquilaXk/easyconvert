@@ -7,6 +7,7 @@ import {
   INPUT_PIXEL_LIMIT_DESCRIPTION,
   PUBLIC_ACCESS,
   SESSION_ONLY,
+  createCodedErrorResponse,
   createErrorResponse,
   createJsonResponse,
   createPathParameter,
@@ -27,6 +28,7 @@ import {
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import { formatBytes } from '@/lib/format-bytes';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
+import { CONVERSION_REFUSAL_CODES, URL_IMPORT_ERROR_CODES } from '@/lib/refusal-codes';
 
 /**
  * Routes that serve the web application. They are documented for completeness and
@@ -186,13 +188,14 @@ export const internalPaths = {
       requestBody: credentialsBody(),
       responses: {
         '200': sessionUserResponse('Signed in.'),
-        '400': createErrorResponse('Invalid JSON or missing credentials.'),
-        '401': createErrorResponse('Invalid email address or password.'),
+        '400': createCodedErrorResponse('Invalid JSON, missing credentials, or a client address the forwarding headers do not name.', ['invalid_json', 'missing_fields', 'client_address_unknown']),
+        '401': createCodedErrorResponse('Invalid email address or password.', ['invalid_credentials']),
         '429': {
-          description: 'Too many failed attempts; see `Retry-After`.',
+          ...createProblemResponse('Too many failed attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),
           headers: { 'Retry-After': { schema: { type: 'integer' } } },
         },
         '500': createErrorResponse('Sign-in failed.'),
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
       },
     },
   },
@@ -232,8 +235,8 @@ export const internalPaths = {
       requestBody: credentialsBody({ name: { type: 'string' } }),
       responses: {
         '200': sessionUserResponse('Account created and signed in.'),
-        '400': createErrorResponse('Invalid JSON, email, or password.'),
-        '409': createErrorResponse('Email address already registered.'),
+        '400': createCodedErrorResponse('Invalid JSON, email, or password length.', ['invalid_json', 'invalid_email', 'password_length']),
+        '409': createCodedErrorResponse('Email address already registered.', ['account_exists']),
         '500': createErrorResponse('Registration failed.'),
       },
     },
@@ -251,19 +254,19 @@ export const internalPaths = {
           ...binaryResponse('Converted file.'),
           headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS, ...CONVERSION_WARNINGS_RESPONSE_HEADERS },
         },
-        '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
+        '400': createCodedErrorResponse('Invalid input, unsupported conversion, or spoofed file.', CONVERSION_REFUSAL_CODES),
         '401': createProblemResponse('Authentication required.'),
         '422': {
-          description: `Page count exceeds the tier limit, the document is encrypted, password protected or DRM protected so its text cannot be read, or: ${PDFA_PROBLEM_DESCRIPTION}`,
+          description: `Page count exceeds the tier limit, the document is encrypted, password protected or DRM protected so its text cannot be read (with a \`code\` such as "password_required" or "encrypted_input"), or: ${PDFA_PROBLEM_DESCRIPTION}`,
           content: {
             ...createErrorResponse('').content,
             'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
           },
         },
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
-        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION} A file over the plan limit names \`plan\`, \`sizeBytes\` and \`limitBytes\`; a decode limit has \`code\` "input_over_limit".`),
         '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
-        '500': createErrorResponse('Conversion failed.'),
+        '500': createCodedErrorResponse('Conversion failed.', CONVERSION_REFUSAL_CODES),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
         '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
@@ -321,11 +324,11 @@ export const internalPaths = {
       },
       responses: {
         '200': binaryResponse('Remote file content; `X-Filename` holds the URI-encoded name.'),
-        '400': createErrorResponse('Missing or invalid URL, or the remote server returned 4xx.'),
+        '400': createCodedErrorResponse('Missing or invalid URL, or the remote server returned 4xx (its status in `remoteStatus`).', URL_IMPORT_ERROR_CODES),
         '401': createProblemResponse('Authentication required.'),
-        '403': createErrorResponse('URL resolves to a private address.'),
-        '413': createErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.'),
-        '502': createErrorResponse('Redirect failure, remote 5xx, or empty body.'),
+        '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
+        '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),
+        '502': createCodedErrorResponse('Redirect failure, remote 5xx (its status in `remoteStatus`), or empty body.', URL_IMPORT_ERROR_CODES),
       },
     },
   },

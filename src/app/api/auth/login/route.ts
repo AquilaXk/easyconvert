@@ -3,6 +3,7 @@ import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
+import { RATE_LIMITED_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import {
   CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
   ClientIpError,
@@ -14,12 +15,18 @@ import {
   recordFailedLogin,
   resetLoginAttempts,
 } from '@/lib/auth/login-rate-limiter';
+import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const CLIENT_IP_MALFORMED_MESSAGE = 'Client address could not be determined from the request headers.';
 const CLIENT_IP_CONFIG_MESSAGE = "Server misconfiguration: the server's client-IP trust configuration is missing or invalid.";
+
+/** A refusal for API callers (the English `error`) and for the sign-in page, which words its `code` in the page's language. */
+function refusal(status: number, code: AuthErrorCode, error: string, headers?: Record<string, string>): NextResponse {
+  return NextResponse.json({ success: false, code, error }, { status, headers });
+}
 
 // Static dummy hash/salt to prevent email enumeration timing attacks
 const DUMMY_HASH = '0'.repeat(128);
@@ -30,10 +37,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      { success: false, error: 'Invalid JSON request payload.' },
-      { status: 400 }
-    );
+    return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
   }
 
   // null = unattributed client: no shared per-IP login counter (per-email lockout still applies).
@@ -44,12 +48,11 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (!(error instanceof ClientIpError)) throw error;
     if (error.status === HTTP_SERVICE_UNAVAILABLE) {
-      return NextResponse.json(
-        { success: false, error: CLIENT_IP_CONFIG_MESSAGE },
-        { status: error.status, headers: { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) } }
-      );
+      return refusal(error.status, 'client_ip_unconfigured', CLIENT_IP_CONFIG_MESSAGE, {
+        'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS),
+      });
     }
-    return NextResponse.json({ success: false, error: CLIENT_IP_MALFORMED_MESSAGE }, { status: error.status });
+    return refusal(error.status, 'client_address_unknown', CLIENT_IP_MALFORMED_MESSAGE);
   }
 
   try {
@@ -57,10 +60,7 @@ export async function POST(req: NextRequest) {
     const password = typeof body.password === 'string' ? body.password : '';
 
     if (!email || !password) {
-      return NextResponse.json(
-        { success: false, error: 'Email and password are required strings.' },
-        { status: 400 }
-      );
+      return refusal(400, 'missing_fields', 'Email and password are required strings.');
     }
 
     // 1. Enforce brute-force rate limit per IP and email identifier
@@ -68,9 +68,10 @@ export async function POST(req: NextRequest) {
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
-          type: 'https://easyconvert.app/errors/rate-limited',
+          type: RATE_LIMITED_PROBLEM_TYPE,
           title: 'Too Many Requests',
           status: 429,
+          code: 'login_locked' satisfies AuthErrorCode,
           detail: `Too many failed login attempts. Please try again in ${rateLimit.retryAfterSeconds} seconds.`,
           retryAfterSeconds: rateLimit.retryAfterSeconds,
         },
@@ -90,10 +91,7 @@ export async function POST(req: NextRequest) {
     const isValid = await verifyPassword(password, hashToVerify, saltToVerify);
     if (!userRecord?.passwordHash || !userRecord?.salt || !isValid) {
       await recordFailedLogin(clientIp, email);
-      return NextResponse.json(
-        { success: false, error: 'Invalid email address or password.' },
-        { status: 401 }
-      );
+      return refusal(401, 'invalid_credentials', 'Invalid email address or password.');
     }
 
     // Reset attempt counters on successful login

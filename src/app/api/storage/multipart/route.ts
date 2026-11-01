@@ -214,7 +214,10 @@ async function jobStartRefusal(user: User, instanceUri: string): Promise<NextRes
       `The daily limit of ${quota.dailyLimit} conversions is used up. It resets at midnight UTC.`,
       instanceUri,
       'Too Many Requests',
-      QUOTA_EXCEEDED_PROBLEM_TYPE
+      QUOTA_EXCEEDED_PROBLEM_TYPE,
+      undefined,
+      undefined,
+      { dailyLimit: quota.dailyLimit }
     );
   }
   const room = await mayEnqueue(user.id, user.tier);
@@ -226,8 +229,23 @@ const BUDGET_REFUSAL_DETAIL: Readonly<Record<BudgetRefusal, string>> = {
   'daily-bytes': `Without an account, uploads may total ${formatBytes(ANONYMOUS_DAILY_UPLOAD_BYTES)} a day. The limit resets at midnight UTC.`,
 };
 
+/** The limit each budget refusal names, as a field beside the English detail. */
+const BUDGET_REFUSAL_FACTS: Readonly<Record<BudgetRefusal, Record<string, number>>> = {
+  'open-uploads': { limit: ANONYMOUS_OPEN_UPLOADS_MAX },
+  'daily-bytes': { limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES },
+};
+
 function budgetRefusalResponse(refusal: BudgetRefusal, instanceUri: string): NextResponse {
-  return createProblemDetailsResponse(HTTP_TOO_MANY_REQUESTS, BUDGET_REFUSAL_DETAIL[refusal], instanceUri, 'Too Many Requests', UPLOAD_BUDGET_PROBLEM_TYPE);
+  return createProblemDetailsResponse(
+    HTTP_TOO_MANY_REQUESTS,
+    BUDGET_REFUSAL_DETAIL[refusal],
+    instanceUri,
+    'Too Many Requests',
+    UPLOAD_BUDGET_PROBLEM_TYPE,
+    undefined,
+    undefined,
+    { refusal, ...BUDGET_REFUSAL_FACTS[refusal] }
+  );
 }
 
 /**

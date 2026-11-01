@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
-import { useAuthErrorMessage } from './auth-errors';
+import { useAuthErrorWording, type ErrorWording } from '../i18n/error-wording';
 import {
   resolveOAuthErrorKey,
   validateRegistrationInput,
@@ -14,16 +14,16 @@ import {
 
 export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 
-/** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else an error. */
-type AuthAnswer = { success: true; user: SessionUser } | { success: false; error?: string };
+/** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else a refusal with its `code`. */
+type AuthAnswer = { success: true; user: SessionUser } | { success: false; code?: string; error?: string };
 
 export function useAuthController() {
   const t = useTranslations('auth');
   const locale = useLocale();
-  const authErrorMessage = useAuthErrorMessage();
-  const oauthErrorMessage = (urlError: string | null): string | null => {
+  const authErrorWording = useAuthErrorWording();
+  const oauthErrorMessage = (urlError: string | null): ErrorWording | null => {
     const key = resolveOAuthErrorKey(urlError);
-    return key ? t(`oauthErrors.${key}`) : null;
+    return key ? { message: t(`oauthErrors.${key}`) } : null;
   };
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -40,7 +40,8 @@ export function useAuthController() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(() => oauthErrorMessage(urlError));
+  const [error, setError] = useState<ErrorWording | null>(() => oauthErrorMessage(urlError));
+  const setErrorMessage = (message: string | null) => setError(message === null ? null : { message });
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const tabRefs = useRef<Record<AuthTab, HTMLButtonElement | null>>({
     login: null,
@@ -53,7 +54,7 @@ export function useAuthController() {
 
   useEffect(() => {
     const key = resolveOAuthErrorKey(urlError);
-    setErrorMessage(key ? t(`oauthErrors.${key}`) : null);
+    setError(key ? { message: t(`oauthErrors.${key}`) } : null);
   }, [urlError, t]);
 
   const handleTabSwitch = (tab: AuthTab) => {
@@ -134,7 +135,7 @@ export function useAuthController() {
       const data = (await res.json()) as AuthAnswer;
 
       if (!res.ok || !data.success) {
-        setErrorMessage(authErrorMessage(activeTab, res.status, data));
+        setError(authErrorWording(data, res.status));
         setIsLoading(false);
         return;
       }
@@ -161,7 +162,7 @@ export function useAuthController() {
     showPassword,
     isLoading,
     isGoogleLoading,
-    errorMessage,
+    error,
     successMessage,
     tabRefs,
     setEmail,

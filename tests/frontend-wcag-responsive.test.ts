@@ -371,7 +371,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(attrOf(progressBars[0], 'value')).toBe('64');
 
     const errorQueue = render(ConversionQueue, {
-      items: [makeQueueItem({ status: 'error', error: { code: 'server', problem: { detail: 'Corrupt PNG header signature' } } })],
+      items: [makeQueueItem({ status: 'error', error: { code: 'server', problem: { detail: 'Corrupt PNG header signature', status: 400 } } })],
       onRemoveItem: noop,
       onClearAll: noop,
       onUpdateTargetFormat: noop,
@@ -383,7 +383,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       isConverting: false,
     });
     const alerts = allElements(errorQueue).filter((el) => attrOf(el, 'role') === 'alert');
-    expect(alerts.map((a) => visibleText(a))).toEqual(['Corrupt PNG header signature']);
+    expect(alerts.map((a) => visibleText(a))).toEqual(['The request was refused. Check the file and its settings, then try again.']);
+    expect(select(errorQueue, 'details').map((d) => visibleText(d))).toEqual(['Technical details Corrupt PNG header signature']);
   });
 
   it('handles FormatSelector empty capability arrays, OAuth error allowlists, and unsupported diagnostics', () => {

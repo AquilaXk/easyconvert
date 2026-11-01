@@ -11,6 +11,8 @@ import type { ZipFailure } from '@/hooks/useClientQueue';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
+import { useZipFailureWording } from './i18n/error-wording';
+import TechnicalDetails from './i18n/TechnicalDetails';
 import QueueItemRow from './workbench/QueueItemRow';
 import { getPasswordValidationError } from './workbench/options/options-capabilities';
 
@@ -133,13 +135,17 @@ function QueueFooterBar({
   allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
 }: Readonly<QueueFooterBarProps>) {
   const t = useTranslations('queue');
+  const zipWording = useZipFailureWording()(zipError?.detail ?? '');
   return (
     <div className="bg-sunken/50 border-t border-rule rounded-b-md px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
       <div className="min-w-0">
         <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
         {zipError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <span>{zipError.detail ? t('zipFailedWithDetail', { detail: zipError.detail }) : t('zipFailed')}</span>
+          <div className="mt-1 flex items-center gap-2 text-xs text-danger">
+            <div className="min-w-0">
+              <p role="alert">{zipWording.message}</p>
+              <TechnicalDetails text={zipWording.technical} />
+            </div>
             {onDismissZipError && (
               <button
                 type="button" aria-label={t('dismissZipError')} onClick={onDismissZipError}

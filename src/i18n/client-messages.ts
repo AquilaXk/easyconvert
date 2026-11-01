@@ -7,7 +7,7 @@ type Namespace = keyof Messages;
 const CHROME = ['header', 'siteLinks', 'theme', 'languageSwitcher', 'userNav', 'plans', 'footer'] as const satisfies readonly Namespace[];
 
 /** What the conversion workbench (drop zone, queue, options, format picker) reads. */
-const WORKBENCH = ['hero', 'queue', 'options', 'formatSelector', 'formatCategories', 'urlImport', 'problems'] as const satisfies readonly Namespace[];
+const WORKBENCH = ['hero', 'queue', 'options', 'formatSelector', 'formatCategories', 'urlImport', 'errors'] as const satisfies readonly Namespace[];
 
 /**
  * The message namespaces each page's client components read, so a page carries only its own copy; a server component
@@ -22,8 +22,8 @@ export const PAGE_NAMESPACES = {
     ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',
     'faq', 'ads', 'status', 'unitConverter', 'unitCategories', 'unitNames',
   ],
-  auth: [...CHROME, 'auth', 'problems'],
-  dashboard: [...CHROME, 'dashboard', 'problems'],
+  auth: [...CHROME, 'auth', 'errors'],
+  dashboard: [...CHROME, 'dashboard', 'errors'],
   apiDocs: [...CHROME, 'apiDocs'],
   status: [...CHROME, 'status'],
   unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq', 'ads'],

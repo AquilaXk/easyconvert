@@ -123,6 +123,24 @@ export const createErrorResponse = (description: string) => ({
   content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
 });
 
+/**
+ * A `{ success: false, code, error }` response of a route of the web application: the English `error` for API callers and one
+ * stable `code` per cause (src/lib/refusal-codes.ts), which the interface words in the page's language.
+ */
+export const createCodedErrorResponse = (description: string, codes: readonly string[]) => ({
+  description,
+  content: {
+    'application/json': {
+      schema: {
+        allOf: [
+          { $ref: '#/components/schemas/ErrorResponse' },
+          { type: 'object', properties: { code: { type: 'string', enum: [...codes], description: 'The cause of the refusal, stable across releases.' } } },
+        ],
+      },
+    },
+  },
+});
+
 /** JSON response with an inline object schema. */
 export const createJsonResponse = (description: string, properties: Record<string, unknown>) => ({
   description,

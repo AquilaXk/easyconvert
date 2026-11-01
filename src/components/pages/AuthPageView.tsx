@@ -7,6 +7,7 @@ import Footer from '@/components/Footer';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { AuthCredentialsForm, GoogleOAuthButton } from '@/components/auth/AuthForms';
 import { useAuthController } from '@/components/auth/useAuthController';
+import TechnicalDetails from '@/components/i18n/TechnicalDetails';
 
 function LoginFormContent() {
   const t = useTranslations('auth');
@@ -19,7 +20,7 @@ function LoginFormContent() {
     showPassword,
     isLoading,
     isGoogleLoading,
-    errorMessage,
+    error,
     successMessage,
     tabRefs,
     setEmail,
@@ -96,13 +97,13 @@ function LoginFormContent() {
         role="tabpanel"
         aria-labelledby={activeTab === 'login' ? 'auth-tab-login' : 'auth-tab-register'}
       >
-        {errorMessage && (
-          <div
-            role="alert"
-            className="mb-5 flex items-start gap-3 p-3.5 rounded-md bg-danger-soft border border-danger-edge/25 text-danger text-sm"
-          >
+        {error && (
+          <div className="mb-5 flex items-start gap-3 p-3.5 rounded-md bg-danger-soft border border-danger-edge/25 text-danger text-sm">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-            <span>{errorMessage}</span>
+            <div className="min-w-0">
+              <p role="alert">{error.message}</p>
+              <TechnicalDetails text={error.technical} />
+            </div>
           </div>
         )}
 

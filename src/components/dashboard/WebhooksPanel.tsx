@@ -3,12 +3,14 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Eye, Inbox, Loader2, Play, RefreshCw, Trash2, X } from 'lucide-react';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import { DlqPayloadDialog } from './DlqPayloadDialog';
+import type { ErrorWording } from '../i18n/error-wording';
+import TechnicalDetails from '../i18n/TechnicalDetails';
 
 interface WebhooksPanelProps {
   entries: WebhookDlqEntry[];
   loading: boolean;
   replayingId: string | null;
-  feedback: string | null;
+  feedback: ErrorWording | null;
   inspectingEntry: WebhookDlqEntry | null;
   onRefresh: () => void;
   onClearAll: () => void;
@@ -86,7 +88,10 @@ export function WebhooksPanel({
             aria-live="polite"
             className="mb-4 pl-4 pr-2 py-2 rounded-md bg-accent-soft border border-accent-edge text-xs text-accent-ink flex items-center justify-between gap-2"
           >
-            <span>{feedback}</span>
+            <span className="min-w-0">
+              {feedback.message}
+              <TechnicalDetails text={feedback.technical} />
+            </span>
             <button
               type="button"
               onClick={onDismissFeedback}
