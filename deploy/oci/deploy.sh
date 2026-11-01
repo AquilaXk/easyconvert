@@ -54,15 +54,17 @@ PNG_SIGNATURE='89504e470d0a1a0a'
 
 CHILD=""
 SMOKE_DIR=""
+PAGE_FILE=""
 PENDING_RELEASE=""
 
 log() { printf '[deploy] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# Leaves nothing of an attempt behind however the script ends: the smoke test's directory, and a release directory (with its .env)
-# that never became the current release, also when the rollback after it failed too.
+# Leaves nothing of an attempt behind however the script ends: the smoke test's directory, the home page the canonical check read,
+# and a release directory (with its .env) that never became the current release, also when the rollback after it failed too.
 cleanup_exit() {
   [ -z "$SMOKE_DIR" ] || rm -rf -- "$SMOKE_DIR"
+  [ -z "$PAGE_FILE" ] || rm -f -- "$PAGE_FILE"
   [ -z "$PENDING_RELEASE" ] || rm -rf -- "$PENDING_RELEASE"
 }
 trap cleanup_exit EXIT
@@ -229,18 +231,48 @@ host_of() { # host_of <absolute URL>: its host, lowercased, without user, port o
   printf '%s' "${rest%:*}" | tr '[:upper:]' '[:lower:]'
 }
 
-# The prerendered pages name the public origin the image was built with (APP_ORIGIN, a build argument of the workflow) in
-# their canonical links, and the running server answers for APP_URL of the env secret. A release whose two hosts differ would
-# point every page at another site, so a new release is refused (a rollback or a reconcile starts a release that passed it, or one
-# older than the check). Only the two hosts are logged, never the page or the env file.
-canonical_host_matches() { # canonical_host_matches <release-dir>
-  local expected served html pattern='<link rel="canonical" href="([^"]+)"'
-  expected="$(host_of "$(env_value "$1/.env" APP_URL)")"
-  html="$(child curl --fail --silent --max-time 15 "$PAGE_URL")" || { log "the home page ($PAGE_URL) did not answer"; return 1; }
-  [[ "$html" =~ $pattern ]] && served="$(host_of "${BASH_REMATCH[1]}")" || served=""
-  [ -n "$expected" ] && [ "$served" = "$expected" ] && return 0
-  log "the pages name the canonical host '${served:-none}', but APP_URL names '${expected:-none}': rebuild the image with the APP_ORIGIN of APP_URL"
+# The public origin the web server of a release runs with, as Compose resolves `APP_ORIGIN: ${APP_ORIGIN:-${APP_URL}}` from the
+# env file (quotes and comments as Compose reads them); empty when Compose names none.
+release_origin() { # release_origin <release-dir>
+  local config pattern='"APP_ORIGIN": *"([^"]*)"'
+  config="$(compose "$1" config --format json web)" || return 0
+  [[ "$config" =~ $pattern ]] && printf '%s' "${BASH_REMATCH[1]}"
+  return 0
+}
+
+# The home page, saved to PAGE_FILE: tried as often as the health check, since the web may still be warming its pages. curl runs
+# through child() without a subshell, so a cancelled job stops it.
+fetch_home_page() {
+  local remaining="$HEALTH_ATTEMPTS"
+  while [ "$remaining" -gt 0 ]; do
+    if child curl --fail --silent --max-time 15 -o "$PAGE_FILE" "$PAGE_URL"; then return 0; fi
+    remaining=$((remaining - 1))
+    [ "$remaining" -eq 0 ] || child sleep "$HEALTH_INTERVAL"
+  done
   return 1
+}
+
+# The prerendered pages name the public origin the image was built with (APP_ORIGIN, a build argument of the workflow) in their
+# canonical links, and the running server answers for the origin Compose gives it. A release whose two hosts differ would point
+# every page at another site, so a new release is refused (a rollback or a reconcile starts a release that passed it, or one older
+# than the check). Only the two hosts are logged, never the page or the env file.
+canonical_host_matches() { # canonical_host_matches <release-dir>
+  local expected served="" ok=1 pattern='<link rel="canonical" href="([^"]+)"'
+  expected="$(host_of "$(release_origin "$1")")"
+  PAGE_FILE="$(mktemp)"
+  if ! fetch_home_page; then
+    log "the home page ($PAGE_URL) did not answer"
+  else
+    [[ "$(cat "$PAGE_FILE")" =~ $pattern ]] && served="$(host_of "${BASH_REMATCH[1]}")"
+    if [ -n "$expected" ] && [ "$served" = "$expected" ]; then
+      ok=0
+    else
+      log "the pages name the canonical host '${served:-none}', but the release runs with the origin '${expected:-none}' (APP_ORIGIN, else APP_URL): rebuild the image with that APP_ORIGIN"
+    fi
+  fi
+  rm -f -- "$PAGE_FILE"
+  PAGE_FILE=""
+  return "$ok"
 }
 
 # Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile

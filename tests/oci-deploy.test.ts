@@ -712,6 +712,11 @@ case "$1" in
     dir=""; prev=""
     for arg in "$@"; do [ "$prev" = "--project-directory" ] && dir="$arg"; prev="$arg"; done
     case " $* " in
+      *" config --format json "*)
+        origin="$(grep -E '^APP_ORIGIN=' "$dir/.env" | tail -n 1 | cut -d= -f2-)"
+        [ -n "$origin" ] || origin="$(grep -E '^APP_URL=' "$dir/.env" | tail -n 1 | cut -d= -f2-)"
+        origin="\${origin%\\"}"; origin="\${origin#\\"}"
+        printf '{\\n  "services": {\\n    "web": {\\n      "environment": {\\n        "APP_ORIGIN": "%s"\\n      }\\n    }\\n  }\\n}\\n' "\${STUB_RESOLVED_ORIGIN-$origin}" ;;
       *" ps "*)
         service="\${@: -1}"; count=1
         [ "$service" = web ] && count="\${STUB_WEB_REPLICAS:-1}"
@@ -746,7 +751,15 @@ case "$*" in
 esac
 case "$last_up" in *"$STUB_FAIL_HEALTH"*) [ -n "$STUB_FAIL_HEALTH" ] && exit 22 ;; esac
 case "$*" in
-  *8090/) printf '<html><head><link rel="canonical" href="https://%s/"/></head></html>' "\${STUB_CANONICAL_HOST:-convert.example.test}" ;;
+  *8090/)
+    out=""; prev=""
+    for arg in "$@"; do [ "$prev" = "-o" ] && out="$arg"; prev="$arg"; done
+    if [ -n "$STUB_PAGE_FAILURES" ]; then
+      failed="$(cat "$STUB_PAGE_COUNT" 2>/dev/null || echo 0)"
+      [ "$failed" -lt "$STUB_PAGE_FAILURES" ] && { echo $((failed + 1)) > "$STUB_PAGE_COUNT"; exit 7; }
+    fi
+    if [ -n "$STUB_NO_CANONICAL" ]; then echo '<html><head></head></html>' > "$out"; exit 0; fi
+    printf '<html><head><link rel="canonical" href="https://%s/"/></head></html>' "\${STUB_CANONICAL_HOST:-convert.example.test}" > "$out" ;;
 esac
 exit 0`
     );
@@ -769,6 +782,7 @@ exit 0`
     STUB_UPLOAD: path.join(sandbox, 'upload.ppm'),
     STUB_PULLED: path.join(bin, '.pulled'),
     STUB_HANG_MARK: path.join(sandbox, 'hang.pid'),
+    STUB_PAGE_COUNT: path.join(sandbox, 'page-failures'),
     APPARMOR_INSTALLED: path.join(ROOT, 'deploy', 'oci', 'apparmor-easyconvert'),
     HEALTH_ATTEMPTS: '2',
     HEALTH_INTERVAL: '0',
@@ -898,15 +912,37 @@ exit 0`
     expect(calls().filter((call) => call.startsWith('curl') && call.endsWith('http://127.0.0.1:8090/'))).toHaveLength(1);
   });
 
-  it('rolls back a release whose pages name another canonical host than APP_URL, and logs the two hosts only', () => {
+  it('rolls back a release whose pages name another canonical host than its origin, and logs the two hosts only', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     const good = currentRelease();
     const result = run(['deploy', ref('e')], { env: hostEnv({ STUB_CANONICAL_HOST: 'Other.Example.Test:443' }) });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("the pages name the canonical host 'other.example.test', but APP_URL names 'convert.example.test'");
+    expect(result.stderr).toContain("the pages name the canonical host 'other.example.test', but the release runs with the origin 'convert.example.test'");
     expect(result.stderr).not.toContain('redis-password-value');
     expect(result.stderr).not.toContain('<link');
     expect(currentRelease()).toBe(good);
+  });
+
+  it('asks the home page again while it does not answer, as the health check does', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv({ STUB_PAGE_FAILURES: '1' }) }).status).toBe(0);
+    expect(calls().filter((call) => call.startsWith('curl') && call.endsWith('http://127.0.0.1:8090/'))).toHaveLength(2);
+  });
+
+  it.each([
+    ['the home page never answers', { STUB_PAGE_FAILURES: '99' }, 'the home page (http://127.0.0.1:8090/) did not answer'],
+    ['the pages name no canonical host', { STUB_NO_CANONICAL: '1' }, "the canonical host 'none'"],
+    ['Compose resolves no origin', { STUB_RESOLVED_ORIGIN: '' }, "runs with the origin 'none'"],
+  ])('refuses a first release when %s', (_, extra, message) => {
+    const result = run(['deploy', ref('a')], { env: hostEnv(extra) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(message);
+    expect(existsSync(path.join(home, 'current'))).toBe(false);
+  });
+
+  it('expects the origin Compose resolves, with the quotes of the env file taken off and an empty APP_ORIGIN unset', () => {
+    const quoted = path.join(sandbox, 'quoted.env');
+    writeFileSync(quoted, `${ENV_BODY.replace('APP_URL=https://convert.example.test', 'APP_URL="https://convert.example.test"')}\nAPP_ORIGIN=\n`);
+    expect(run(['deploy', ref('a')], { env: hostEnv({ ENV_FILE: quoted }) }).status).toBe(0);
   });
 
   it.each([
