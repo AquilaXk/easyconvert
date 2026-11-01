@@ -3,15 +3,24 @@ import { useTranslations } from 'next-intl';
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { useServerErrorMessage } from './problems';
 
-/** The sentence for a conversion that failed in the queue. */
+/** The sentence for a conversion that failed in the queue; a browser tier's own error follows it as the tier gave it. */
 export function useConversionFailureMessage(): (failure: ConversionFailure) => string {
   const t = useTranslations('queue.failures');
   const serverErrorMessage = useServerErrorMessage();
   return useCallback(
     (failure: ConversionFailure) => {
-      if (failure.code === 'server') return serverErrorMessage(failure.problem, t('conversionFailed'));
-      if (failure.code === 'clientOnlyBlocked') return t('clientOnlyBlocked', { source: failure.source, target: failure.target });
-      return t(failure.code);
+      switch (failure.code) {
+        case 'server':
+          return serverErrorMessage(failure.problem, t('conversionFailed'));
+        case 'clientOnlyBlocked': {
+          const blocked = t('clientOnlyBlocked', { source: failure.source, target: failure.target });
+          return failure.edgeFailure ? `${blocked} ${t('edgeTierFailed', { ...failure.edgeFailure })}` : blocked;
+        }
+        case 'clientEdgeFailed':
+          return failure.reason ? `${t('clientEdgeFailed')} ${failure.reason}` : t('clientEdgeFailed');
+        default:
+          return t(failure.code);
+      }
     },
     [t, serverErrorMessage]
   );

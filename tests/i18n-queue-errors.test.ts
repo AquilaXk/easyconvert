@@ -73,6 +73,11 @@ describe('a failed conversion in the queue reads in the page language', () => {
     expect(rowAlert(failures[0], 'ko')).toContain('HWP → PDF');
   });
 
+  it('names the browser tier that failed before a client-only refusal, with its error as the tier gave it', () => {
+    const failure: ConversionFailure = { code: 'clientOnlyBlocked', source: 'MP4', target: 'FLV', edgeFailure: { tier: 'L1', reason: 'MP4: box overruns its parent' } };
+    expect(rowAlert(failure, 'ko')).toMatch(/^MP4 → FLV .*L1 실패: MP4: box overruns its parent$/);
+  });
+
   it('shows an untyped server sentence as the server wrote it', async () => {
     answer({ error: 'Unsupported target format "xyz".' }, 400);
     expect(rowAlert(await failureOf(hwpItem()), 'ko')).toBe('Unsupported target format "xyz".');

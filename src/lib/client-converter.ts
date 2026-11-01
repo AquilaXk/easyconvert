@@ -596,7 +596,7 @@ export async function executeItemConversion(
       escalation = { fallbackFrom: err.fallbackFrom, escalationReason: err.message };
     } else if (item.options.clientEdgeMode === true) {
       // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
-      callbacks.onError({ code: 'clientEdgeFailed' });
+      callbacks.onError(err?.message ? { code: 'clientEdgeFailed', reason: err.message } : { code: 'clientEdgeFailed' });
       return;
     }
     // Otherwise cascade to cloud fallback
@@ -604,7 +604,10 @@ export async function executeItemConversion(
 
   // 2. Fail-closed check: if user strictly mandated client-only execution, block cloud upload
   if (item.options.clientEdgeMode === true) {
-    callbacks.onError({ code: 'clientOnlyBlocked', source: item.sourceFormat.toUpperCase(), target: item.targetFormat.toUpperCase() });
+    const blocked = { code: 'clientOnlyBlocked', source: item.sourceFormat.toUpperCase(), target: item.targetFormat.toUpperCase() } as const;
+    callbacks.onError(
+      escalation ? { ...blocked, edgeFailure: { tier: escalation.fallbackFrom, reason: escalation.escalationReason } } : blocked
+    );
     return;
   }
 

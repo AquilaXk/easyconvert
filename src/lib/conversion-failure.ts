@@ -4,9 +4,16 @@
  * type or shows as the server wrote it.
  */
 export type ConversionFailure =
-  | { readonly code: 'conversionFailed' | 'clientEdgeFailed' | 'jobTimedOut' }
-  | { readonly code: 'clientOnlyBlocked'; readonly source: string; readonly target: string }
+  | { readonly code: 'conversionFailed' | 'jobTimedOut' }
+  | { readonly code: 'clientEdgeFailed'; readonly reason?: string }
+  | { readonly code: 'clientOnlyBlocked'; readonly source: string; readonly target: string; readonly edgeFailure?: EdgeFailure }
   | { readonly code: 'server'; readonly problem: Readonly<Record<string, unknown>> };
+
+/** The browser tier that failed before a client-only conversion was refused, and its error, shown after the sentence. */
+export interface EdgeFailure {
+  readonly tier: string;
+  readonly reason: string;
+}
 
 /** An error that names its failure; its message is the English sentence for logs and API callers, never shown as is. */
 export class ConversionFailureError extends Error {

@@ -239,9 +239,12 @@ describe('Client edge tier attribution and escalation reasons', () => {
 
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(onSuccess).not.toHaveBeenCalled();
-      expect(onError).toHaveBeenCalledWith(
-        'Conversion from CSV to TSV requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent. Edge tier L3 failed: OPFS quota exceeded'
-      );
+      expect(onError).toHaveBeenCalledWith({
+        code: 'clientOnlyBlocked',
+        source: 'CSV',
+        target: 'TSV',
+        edgeFailure: { tier: 'L3', reason: 'OPFS quota exceeded' },
+      });
     });
   });
 });

@@ -1193,6 +1193,7 @@
       "conversionFailed": "Conversion failed. Try another format or try again.",
       "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
       "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
+      "edgeTierFailed": "Edge tier {tier} failed: {reason}",
       "jobTimedOut": "The conversion did not finish in time. Try again."
     }
   },
