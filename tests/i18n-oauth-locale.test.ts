@@ -52,4 +52,11 @@ describe('the Google sign-in keeps the language it started in', () => {
     );
     expect(new URL(back.headers.get('location')!).pathname + new URL(back.headers.get('location')!).search).toBe('/ko/auth?error=oauth_code_missing');
   });
+
+  it('answers a callback with neither state nor code on the English sign-in page, since no language is known yet', async () => {
+    const back = await googleCallback(new NextRequest(`${ORIGIN}/api/auth/google/callback`));
+    expect(back.status).toBe(307);
+    const location = new URL(back.headers.get('location')!);
+    expect(`${location.pathname}${location.search}`).toBe('/auth?error=invalid_oauth_state');
+  });
 });

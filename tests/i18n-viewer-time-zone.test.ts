@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { NextIntlClientProvider, useFormatter } from 'next-intl';
-import { ViewerTimeZoneProvider, browserTimeZone } from '../src/i18n/ViewerTimeZone';
+import ViewerTimeZone, { ViewerTimeZoneProvider, browserTimeZone } from '../src/i18n/ViewerTimeZone';
 
 /**
  * Dates the interface formats in the browser read in the viewer's time zone, not the zone of the server that prerendered
@@ -42,5 +42,13 @@ describe('client-formatted dates use the viewer time zone', () => {
 
   it('keeps the server zone until the browser zone is known, so the first client render matches the server HTML', () => {
     expect(rendered(undefined)).toBe('<span>00:30</span>');
+  });
+
+  it('renders the server snapshot in the server zone, even on a host whose own zone is another', () => {
+    process.env.TZ = 'Asia/Seoul';
+    const page = createElement(ViewerTimeZone, { children: createElement(CheckedAt) });
+    expect(renderToStaticMarkup(createElement(NextIntlClientProvider, { locale: 'en', timeZone: 'UTC', messages: {}, children: page }))).toBe(
+      '<span>00:30</span>'
+    );
   });
 });
