@@ -1,4 +1,5 @@
 import os from 'node:os';
+import path from 'node:path';
 import { StorageNotFoundError } from './adapters/adapter-interface';
 import { classifyStorageKey, isUploadKey } from './key-namespace';
 import type { IStorageBackend } from './oci-storage';
@@ -32,7 +33,7 @@ import {
   type RetentionReason,
   type RetentionRecord,
 } from './result-retention';
-import { resolveLocalStorageDir } from './storage-config';
+import { LOCAL_PARTS_SUBDIR, LOCAL_STAGING_SUBDIR, resolveLocalStorageDir } from './storage-config';
 
 /** The part of a storage backend the retention rule needs. */
 export interface DeletableStorage {
@@ -487,7 +488,8 @@ export function setDiskProbe(probe: DiskProbe | undefined, admissionProbe: DiskP
 function diskProbesFor(storage: SweptStorage): DiskProbes | undefined {
   if (storage.kind !== 'local') return undefined;
   const storageDir = resolveLocalStorageDir();
-  return diskProbeOverride ?? { storage: diskUsageProbe([storageDir]), admission: diskUsageProbe([storageDir, os.tmpdir()]) };
+  const inFlight = [path.join(storageDir, LOCAL_PARTS_SUBDIR), path.join(storageDir, LOCAL_STAGING_SUBDIR)];
+  return diskProbeOverride ?? { storage: diskUsageProbe([storageDir], inFlight), admission: diskUsageProbe([storageDir, os.tmpdir()]) };
 }
 
 /**

@@ -62,12 +62,16 @@ function bigFile(name: string, size: number): { file: File; slices: Array<[numbe
 let calls: Call[];
 
 /** Moves the faked clock a second at a time, between the real file operations of the routes, until `settled` ends. */
+/** The timer of the host, kept before a test fakes the global one, so the routes' real file system work can finish. */
+const realSetTimeout = globalThis.setTimeout;
+
 async function runClockUntilSettled(settled: Promise<unknown>): Promise<void> {
   let done = false;
   void settled.then(() => (done = true));
   for (let second = 0; second < 1_000 && !done; second++) {
     await vi.advanceTimersByTimeAsync(1_000);
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    // A route's flushed writes take several thread-pool round trips; each fake second waits for them in real time.
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 5));
   }
 }
 

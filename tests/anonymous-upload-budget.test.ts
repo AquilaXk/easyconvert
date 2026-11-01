@@ -262,7 +262,7 @@ describe('a budget store that cannot be reached', () => {
     const res = await multipartPost(part(uploadId, Buffer.from('a,b\n1,2\n'), visitor));
 
     expect(res.status).toBe(200);
-    expect(s3Storage.getUploadedParts(uploadId)).toHaveLength(1);
+    expect(await s3Storage.getUploadedParts(uploadId)).toHaveLength(1);
   });
 
   it('answers an abort the store took, and the bytes come back when the reservation expires', async () => {
@@ -274,7 +274,7 @@ describe('a budget store that cannot be reached', () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).success).toBe(true);
-    expect(s3Storage.getUploadSession(uploadId)).toBeUndefined();
+    expect(await s3Storage.getUploadSession(uploadId)).toBeUndefined();
   });
 
   it('answers a part, a completion and an abort that failed without an HTTP status with 503, worth sending again', async () => {
@@ -773,7 +773,7 @@ describe('a completion the store took is final', () => {
 
   it('closes the budget of an upload whose assembled size is not the declared one', async () => {
     const { visitor, uploadId, etag, bytes } = await stagedUpload('203.0.113.83');
-    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => ({
+    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(async () => ({
       location: '/api/storage/file/uploads%2Fmismatch.csv',
       key: 'uploads/mismatch.csv',
       size: bytes.length + 1,
@@ -789,7 +789,7 @@ describe('a completion the store took is final', () => {
 
   it('answers the final 400 and closes the budget when the assembled upload is not the declared size and its removal fails, and logs the key', async () => {
     const { visitor, uploadId, etag, bytes } = await stagedUpload('203.0.113.86');
-    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => ({
+    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(async () => ({
       location: '/api/storage/file/uploads%2Fmismatch-removal.csv',
       key: 'uploads/mismatch-removal.csv',
       size: bytes.length + 1,

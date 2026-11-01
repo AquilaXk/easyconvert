@@ -7,6 +7,7 @@ import { compareAndSetWithRetry } from '../redis/compare-and-set';
 import { readyGatedRedis } from '../redis/when-ready';
 import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
+import { LEFTOVER_AGE_MS } from './temp-file';
 
 /**
  * Where the retention records of results live, shared by every web instance and worker of a deployment:
@@ -45,8 +46,6 @@ const TEMP_RANDOM_BYTES = 6;
 const LEDGER_DIRECTORY = '.retention';
 /** Record files read at once by a scan of the file ledger. */
 const SCAN_CONCURRENCY = 32;
-/** A temporary file or lock older than this was left by a process that stopped mid-write. */
-const LEFTOVER_AGE_MS = 60 * 60 * 1000;
 /** A lock held longer than this belongs to a process that stopped; an update takes milliseconds. */
 const LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 10;

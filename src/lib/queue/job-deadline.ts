@@ -3,6 +3,7 @@ import { bindJobLimits } from '../conversions/job-time';
 import { getFormatByExtension } from '../registry';
 import type { ConversionOptions } from '../types';
 import type { ConversionEnginePort } from './engine-port';
+import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
 
 /**
  * The wall-clock limit of a conversion job. One pure function, `jobDeadlineMs`, is the single source of every
@@ -66,7 +67,7 @@ export const JOB_DEADLINE_DEFAULTS: Record<keyof typeof JOB_DEADLINE_ENV, number
   BASE_ENTERPRISE: 180_000,
   MAX_FREE: 300_000,
   MAX_PRO: 1_800_000,
-  MAX_ENTERPRISE: 3_600_000,
+  MAX_ENTERPRISE: JOB_DEADLINE_CEILING_MS,
   PER_PAGE: 10_000,
   PER_MIB: 2_000,
   PER_MEDIA_SECOND: 3_000,
@@ -93,20 +94,22 @@ export class JobDeadlineError extends RangeError {
   }
 }
 
-/** A positive-integer setting of `env` (a blank value is unset); a set value that is not one is a JobDeadlineError. */
-export function readIntegerSetting(env: Env, name: string, defaultValue: number): number {
+/** A positive-integer setting of `env` up to `max` (a blank value is unset); a set value that is not one is a JobDeadlineError. */
+export function readIntegerSetting(env: Env, name: string, defaultValue: number, max: number = INT32_MAX): number {
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return defaultValue;
   const text = raw.trim();
   const value = SETTING_PATTERN.test(text) ? Number(text) : Number.NaN;
-  if (!Number.isSafeInteger(value) || value < 1 || value > INT32_MAX) {
-    throw new JobDeadlineError(`${name} must be an integer from 1 to ${INT32_MAX}`);
+  if (!Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new JobDeadlineError(`${name} must be an integer from 1 to ${max}`);
   }
   return value;
 }
 
+/** The base and maximum of a tier stay within JOB_DEADLINE_CEILING_MS; the allowances are bounded by the maximum they add up to. */
 function readSetting(env: Env, key: keyof typeof JOB_DEADLINE_ENV): number {
-  return readIntegerSetting(env, JOB_DEADLINE_ENV[key], JOB_DEADLINE_DEFAULTS[key]);
+  const max = key.startsWith('BASE_') || key.startsWith('MAX_') ? JOB_DEADLINE_CEILING_MS : INT32_MAX;
+  return readIntegerSetting(env, JOB_DEADLINE_ENV[key], JOB_DEADLINE_DEFAULTS[key], max);
 }
 
 /**

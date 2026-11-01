@@ -133,8 +133,8 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
     const accepted = await initiate(planCase.limit);
     expect(accepted.status).toBe(200);
     const { uploadId } = await accepted.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
   });
 
@@ -148,8 +148,8 @@ describe('/api/storage/multipart sizes an upload by the plan limit', () => {
       })
     );
     const { uploadId } = await init.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
     vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e', size: 1014 }]);
 

@@ -278,7 +278,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
         email: `presign_${Date.now()}@test.com`,
         tier: 'pro',
       });
-      const init = s3Storage.initiateMultipartUpload(
+      const init = await s3Storage.initiateMultipartUpload(
         'chunk_001.bin',
         'application/octet-stream',
         1024 * 1024,

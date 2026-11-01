@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -7,6 +8,7 @@ import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { POST as v1UploadsPost } from '../src/app/api/v1/uploads/[[...id]]/route';
 import { PUT as directPartPut } from '../src/app/api/v1/uploads/direct/part/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { globalSharedObjects } from '../src/lib/storage/shared-store';
 import { localFsStorage } from '../src/lib/storage/local-fs-storage';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -21,16 +23,16 @@ const SERVICE_UNAVAILABLE = 503;
 const NOT_FOUND = 404;
 const INTERNAL_SERVER_ERROR = 500;
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void> | void> = [];
 
 beforeEach(() => {
   vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
-  for (const cleanup of cleanups.splice(0)) cleanup();
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 let visitorCount = 0;
@@ -50,8 +52,8 @@ async function openSession(headers: Record<string, string>, totalSize: number): 
   );
   const body = await res.json();
   expect(res.status, JSON.stringify(body)).toBe(OK);
-  cleanups.push(() => {
-    s3Storage.abortMultipartUpload(body.uploadId);
+  cleanups.push(async () => {
+    await s3Storage.abortMultipartUpload(body.uploadId);
     s3Storage.deleteObject(body.key);
   });
   return body;
@@ -64,14 +66,14 @@ function partRequest(uploadId: string, partNumber: number, bytes: Buffer, header
   );
 }
 
-function storedBytes(uploadId: string): number {
-  return (s3Storage.getUploadedParts(uploadId) ?? []).reduce((sum, part) => sum + part.size, 0);
+async function storedBytes(uploadId: string): Promise<number> {
+  return ((await s3Storage.getUploadedParts(uploadId)) ?? []).reduce((sum, part) => sum + part.size, 0);
 }
 
-/** The files in the session's directory: the stored parts, and any temporary file a refused part left. */
+/** The bytes files in the session's directory: the stored parts, and any temporary file a refused part left. */
 function sessionFiles(uploadId: string): string[] {
-  const session = s3Storage.getUploadSession(uploadId);
-  return session ? fs.readdirSync(session.diskDir).sort() : [];
+  const dir = path.join(globalSharedObjects.getStorageDir(), '.parts', uploadId);
+  return fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.startsWith('part-') && !name.endsWith('.meta')).sort() : [];
 }
 
 function countOf(statuses: number[], status: number): number {
@@ -90,7 +92,7 @@ describe('parts of one upload sent at once are held together to the size it decl
     const statuses = results.map((res) => res.status);
     expect(countOf(statuses, OK), String(statuses)).toBe(1);
     expect(countOf(statuses, PAYLOAD_TOO_LARGE), String(statuses)).toBe(5);
-    expect(storedBytes(uploadId)).toBe(PART_BYTES);
+    expect(await storedBytes(uploadId)).toBe(PART_BYTES);
     expect(sessionFiles(uploadId)).toHaveLength(1);
   });
 
@@ -107,7 +109,7 @@ describe('parts of one upload sent at once are held together to the size it decl
     expect(countOf(statuses, OK), String(statuses)).toBe(1);
     const refusal = await results[statuses.indexOf(PAYLOAD_TOO_LARGE)].json();
     expect(refusal.detail).toBe(`This part would bring the upload to ${2 * PART_BYTES} bytes, past the ${PART_BYTES} bytes it declared.`);
-    expect(storedBytes(uploadId)).toBe(PART_BYTES);
+    expect(await storedBytes(uploadId)).toBe(PART_BYTES);
   });
 
   it('answers a repeat of a part still on the way with 503 and Retry-After, and keeps the first attempt', async () => {
@@ -120,7 +122,7 @@ describe('parts of one upload sent at once are held together to the size it decl
     const repeat = results.find((res) => res.status === SERVICE_UNAVAILABLE)!;
     expect(repeat.headers.get('retry-after')).toBe('5');
     expect((await repeat.json()).type).toBe('https://api.easyconvert.io/problems/part-in-flight');
-    expect(storedBytes(uploadId)).toBe(PART_BYTES);
+    expect(await storedBytes(uploadId)).toBe(PART_BYTES);
   });
 
   /** A session of an account on local disk, and a sender of its parts through the public upload route. */
@@ -268,9 +270,9 @@ describe('parts of one upload sent at once are held together to the size it decl
     });
 
     it('is 503 with Retry-After on the signed part route', async () => {
-      const init = s3Storage.initiateMultipartUpload('d.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
-      cleanups.push(() => {
-        s3Storage.abortMultipartUpload(init.uploadId);
+      const init = await s3Storage.initiateMultipartUpload('d.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
+      cleanups.push(async () => {
+        await s3Storage.abortMultipartUpload(init.uploadId);
       });
       vi.spyOn(console, 'error').mockImplementation(() => undefined);
       for (const code of TRANSIENT_CODES) {
@@ -512,9 +514,9 @@ describe('parts of one upload sent at once are held together to the size it decl
   });
 
   it('holds the parts of the signed part route to the declared size the same way', async () => {
-    const init = s3Storage.initiateMultipartUpload('b.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(init.uploadId);
+    const init = await s3Storage.initiateMultipartUpload('b.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(init.uploadId);
     });
     const send = (n: number) =>
       directPartPut(
@@ -528,22 +530,22 @@ describe('parts of one upload sent at once are held together to the size it decl
 
     expect(countOf(statuses, OK), String(statuses)).toBe(1);
     expect(countOf(statuses, PAYLOAD_TOO_LARGE), String(statuses)).toBe(3);
-    expect(storedBytes(init.uploadId)).toBe(PART_BYTES);
+    expect(await storedBytes(init.uploadId)).toBe(PART_BYTES);
   });
 });
 
 describe('the store sums the stored parts again when it commits one', () => {
   it('removes a part that would pass the declared size although it was admitted against an older sum', async () => {
-    const init = s3Storage.initiateMultipartUpload('c.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(init.uploadId);
+    const init = await s3Storage.initiateMultipartUpload('c.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(init.uploadId);
     });
-    await s3Storage.uploadPartStream(init.uploadId, 1, Readable.from([Buffer.alloc(PART_BYTES, 'a')]), PART_BYTES, PART_BYTES, 0);
+    await s3Storage.uploadPartStream(init.uploadId, 1, Readable.from([Buffer.alloc(PART_BYTES, 'a')]), PART_BYTES);
 
-    const late = s3Storage.uploadPartStream(init.uploadId, 2, Readable.from([Buffer.alloc(MIB, 'b')]), PART_BYTES, PART_BYTES, 0);
+    const late = s3Storage.uploadPartStream(init.uploadId, 2, Readable.from([Buffer.alloc(MIB, 'b')]), PART_BYTES);
 
     await expect(late).rejects.toMatchObject({ statusCode: PAYLOAD_TOO_LARGE });
-    expect(storedBytes(init.uploadId)).toBe(PART_BYTES);
+    expect(await storedBytes(init.uploadId)).toBe(PART_BYTES);
     expect(sessionFiles(init.uploadId)).toEqual(['part-1.bin']);
   });
 });

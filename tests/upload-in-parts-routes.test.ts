@@ -129,8 +129,8 @@ describe('a file over a single request goes up in parts and is converted by a jo
     expect(opened.status).toBe(200);
     const { uploadId, key, partSize } = await opened.json();
     expect(partSize).toBe(PART_BYTES);
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
       s3Storage.deleteObject(key);
     });
 
@@ -206,8 +206,8 @@ describe('a file over a single request goes up in parts and is converted by a jo
     const own = await sessionHeaders();
     const opened = await multipartPost(multipart('initiate', { filename: 'mine.csv', totalSize: 100 }, own));
     const { uploadId } = await opened.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
 
     const visitorPart = await multipartPost(part(uploadId, 1, csvBytes(100)));
@@ -244,8 +244,8 @@ describe('a file over a single request goes up in parts and is converted by a jo
   it('refuses a part over the largest part before it reads the body', async () => {
     const opened = await multipartPost(multipart('initiate', { filename: 'a.csv', totalSize: 200 * MIB }));
     const { uploadId } = await opened.json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
 
     const res = await multipartPost(part(uploadId, 1, csvBytes(10), { 'content-length': String(UPLOAD_PART_MAX_BYTES + 1) }));

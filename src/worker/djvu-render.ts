@@ -215,7 +215,7 @@ function runTimeoutMs(options: WorkerEngineOptions): number {
 
 /** The start of what a program printed about the file, with the job directory hidden. */
 function stderrDetail(stderr: string, tempDir: string): string {
-  return stderr.trim().slice(0, MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+  return stderr.trim().replaceAll(tempDir, '<tmp>').slice(0, MAX_STDERR_CHARS);
 }
 
 function rejected(program: string, src: string, stderr: string, tempDir: string): ConversionFailedError {
@@ -533,7 +533,7 @@ export async function convertDjvu(job: DjvuJob): Promise<WorkerConversionResult 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {
       const pdfPath = await draw(tempDir);
-      const persistedPath = handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
+      const persistedPath = await handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-djvu', Date.now() - startTime);
     });
   }

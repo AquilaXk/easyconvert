@@ -2427,12 +2427,6 @@
     "count": 3
   },
   {
-    "file": "src/lib/storage/s3-storage.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "uploadPartStream",
-    "count": 6
-  },
-  {
     "file": "src/lib/storage/sigv4-presigner.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "verifySigV4QueryUrl",

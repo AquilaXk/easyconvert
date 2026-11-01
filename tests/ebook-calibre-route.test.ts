@@ -23,6 +23,7 @@ import {
 } from '../src/lib/types';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
 import { withMissingBinary } from './helpers/native-tools';
+import { resolveLocalStagingDir } from '../src/lib/storage/storage-config';
 
 /**
  * The route of the calibre targets (MOBI, AZW3, PDB, LRF, OEB) without calibre: the typed answer of a worker that lacks
@@ -243,7 +244,7 @@ describe('the calibre route against a stand-in program', () => {
       for (const run of [a, b]) {
         const jobDir = path.dirname(run.args[0]);
         expect(path.basename(jobDir)).toMatch(/^easyconvert-calibre-/);
-        expect(jobDir.startsWith(os.tmpdir())).toBe(true);
+        expect(jobDir.startsWith(resolveLocalStagingDir() + path.sep), 'the job runs in the staging folder of the storage directory').toBe(true);
         for (const name of ['HOME', 'TMPDIR', 'CALIBRE_CONFIG_DIRECTORY', 'CALIBRE_CACHE_DIRECTORY', 'CALIBRE_TEMP_DIR'] as const) {
           expect(run.env[name]?.startsWith(jobDir + path.sep), name).toBe(true);
         }

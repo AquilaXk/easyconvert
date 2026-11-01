@@ -40,8 +40,8 @@ export async function initiate(headers: Record<string, string>, totalSize: numbe
   const res = await multipartPost(multipart('initiate', { filename: 'big.csv', totalSize }, headers));
   if (res.status === 200) {
     const { uploadId } = await res.clone().json();
-    cleanups.push(() => {
-      s3Storage.abortMultipartUpload(uploadId);
+    cleanups.push(async () => {
+      await s3Storage.abortMultipartUpload(uploadId);
     });
   }
   return res;

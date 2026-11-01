@@ -233,6 +233,84 @@ describe('WP-32: Unified Shared Node Processor', () => {
   });
 
   describe('3. Abort Handling & Temporary File Discarding', () => {
+    it('deletes the stored result and fails the attempt when the job is aborted while its result is saved', async () => {
+      const engine: ConversionEnginePort = {
+        name: 'mock-result-engine',
+        async convert() {
+          return { buffer: Buffer.from('result'), size: 6, mimeType: 'text/plain', filename: 'out.txt' };
+        },
+      };
+      const job = await queue.add('convert', {
+        jobId: 'job_abort_during_save',
+        sourceFormat: 'txt',
+        targetFormat: 'txt',
+        originalFilename: 'input.txt',
+        fileSize: 5,
+        options: {},
+        inputBufferBase64: Buffer.from('hello').toString('base64'),
+      });
+      const save = s3Storage.saveObject.bind(s3Storage);
+      vi.spyOn(s3Storage, 'saveObject').mockImplementation((...args: Parameters<typeof save>) => {
+        const stored = save(...args);
+        (job as any)._abortAttempt(new JobCancelledError('Job cancelled while its result was saved'));
+        return stored;
+      });
+
+      await expect(processNodeJob(job, engine, s3Storage)).rejects.toThrow(/cancelled while its result was saved/);
+
+      expect(await s3Storage.getObject(`results/${job.id}/out.txt`)).toBeUndefined();
+    });
+
+    it('leaves the result a later attempt stored when an earlier attempt learns it was aborted after its own save', async () => {
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-zombie-attempt-'));
+      createdTempFiles.push(outDir);
+      const output = path.join(outDir, 'out.txt');
+      const engine: ConversionEnginePort = {
+        name: 'mock-file-engine',
+        async convert() {
+          fs.writeFileSync(output, 'result of attempt A');
+          return { buffer: Buffer.alloc(0), size: 19, mimeType: 'text/plain', filename: 'out.txt', filePath: output };
+        },
+      };
+      const job = await queue.add('convert', {
+        jobId: 'job_zombie_attempt',
+        sourceFormat: 'txt',
+        targetFormat: 'txt',
+        originalFilename: 'input.txt',
+        fileSize: 5,
+        options: {},
+        inputBufferBase64: Buffer.from('hello').toString('base64'),
+      });
+      const resultKey = `results/${job.id}/out.txt`;
+      vi.resetModules();
+      const otherWorker = await import('../src/lib/storage/shared-store');
+      const save = s3Storage.saveObjectFromFile.bind(s3Storage);
+      vi.spyOn(s3Storage, 'saveObjectFromFile').mockImplementation(async (...args: Parameters<typeof save>) => {
+        const stored = await save(...args);
+        const now = Date.now() + 1;
+        otherWorker.globalSharedObjects.set(resultKey, {
+          key: resultKey,
+          filename: 'out.txt',
+          mimeType: 'text/plain',
+          buffer: Buffer.from('result of attempt B'),
+          size: 19,
+          etag: '"attempt-b"',
+          uploadedAt: now,
+          expiresAt: now + 60_000,
+        });
+        (job as any)._abortAttempt(new JobCancelledError('Attempt A lost its lock after its save'));
+        return stored;
+      });
+
+      await expect(processNodeJob(job, engine, s3Storage)).rejects.toThrow(/lost its lock/);
+
+      vi.resetModules();
+      const reader = await import('../src/lib/storage/shared-store');
+      const survivor = reader.globalSharedObjects.get(resultKey);
+      expect(survivor?.etag, 'the record of attempt B').toBe('"attempt-b"');
+      expect(fs.readFileSync(reader.globalSharedObjects.objectPath(resultKey), 'utf-8')).toBe('result of attempt B');
+    });
+
     it('aborts immediately when signal is cancelled and cleans up temporary disk files', async () => {
       const tempOutDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-abort-test-'));
       const tempOutputFile = path.join(tempOutDir, 'test-produced-output.bin');

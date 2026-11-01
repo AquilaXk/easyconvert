@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { POST as jobsRoute } from '../src/app/api/v1/jobs/route';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { globalSharedObjects } from '../src/lib/storage/shared-store';
+
+const PDF_PAYLOAD = Buffer.from('%PDF-1.4 test content payload');
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -38,14 +42,14 @@ describe('Security: Error Path Disclosure Prevention', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // 1. Create a multipart upload belonging to testUser
-    const init = s3Storage.initiateMultipartUpload(
+    const init = await s3Storage.initiateMultipartUpload(
       'document.pdf',
       'application/pdf',
-      1024,
+      PDF_PAYLOAD.length,
       testUser.id
     );
-    s3Storage.uploadPart(init.uploadId, 1, Buffer.from('%PDF-1.4 test content payload'));
-    const complete = s3Storage.completeMultipartUpload(init.uploadId);
+    await s3Storage.uploadPart(init.uploadId, 1, PDF_PAYLOAD);
+    const complete = await s3Storage.completeMultipartUpload(init.uploadId);
     createdKeys.push(complete.key);
 
     const stored = s3Storage.getObject(complete.key);
@@ -95,14 +99,14 @@ describe('Security: Error Path Disclosure Prevention', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Create a stored object whose filePath points to a directory
-    const init = s3Storage.initiateMultipartUpload(
+    const init = await s3Storage.initiateMultipartUpload(
       'directory_spoof.pdf',
       'application/pdf',
-      1024,
+      PDF_PAYLOAD.length,
       testUser.id
     );
-    s3Storage.uploadPart(init.uploadId, 1, Buffer.from('%PDF-1.4 test content payload'));
-    const complete = s3Storage.completeMultipartUpload(init.uploadId);
+    await s3Storage.uploadPart(init.uploadId, 1, PDF_PAYLOAD);
+    const complete = await s3Storage.completeMultipartUpload(init.uploadId);
     createdKeys.push(complete.key);
 
     const stored = s3Storage.getObject(complete.key)!;
@@ -145,7 +149,7 @@ describe('Security: Error Path Disclosure Prevention', () => {
   });
 
   it('does not leak disk path in multipart complete error when part file is missing on disk', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const sessionToken = createSessionToken(testUser);
 
     // 1. Initiate multipart upload
@@ -175,8 +179,7 @@ describe('Security: Error Path Disclosure Prevention', () => {
     expect(chunkRes.status).toBe(200);
 
     // 3. Delete part file from disk
-    const session = s3Storage.getUploadSession(uploadId)!;
-    const part1Info = session.parts.get(1)!;
+    const part1Info = { filePath: path.join(globalSharedObjects.getStorageDir(), '.parts', uploadId, 'part-1.bin') };
     fs.unlinkSync(part1Info.filePath);
 
     // 4. Complete multipart upload
@@ -189,17 +192,15 @@ describe('Security: Error Path Disclosure Prevention', () => {
       body: JSON.stringify({ uploadId }),
     });
     const completeRes = await multipartPost(completeReq);
-    expect(completeRes.status).toBe(503);
+    // The files of the session are gone, which the route answers as a session that no longer exists.
+    expect(completeRes.status).toBe(404);
 
     const rawBody = await completeRes.text();
     expect(rawBody).not.toContain(part1Info.filePath);
     expect(rawBody).not.toContain(os.tmpdir());
     expect(rawBody).not.toMatch(/\/Volumes|\/Users|\/tmp\/|\/var\//);
 
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`Part file missing on disk: "${part1Info.filePath}"`)
-    );
 
-    s3Storage.abortMultipartUpload(uploadId);
+    await s3Storage.abortMultipartUpload(uploadId);
   });
 });

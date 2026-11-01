@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { isHeld, isResultRecord, readIntegerSetting, type RetentionPolicy, type RetentionRecord } from './result-retention';
 
 /**
@@ -43,21 +44,27 @@ export function resolveCapacityPolicy(env: Env = process.env): CapacityPolicy {
   return policy;
 }
 
-/** The block counts of `statfs` that the use is computed from. */
+/** The block counts of `statfs` that the use is computed from, and the size of a block. */
 export interface DiskBlocks {
   readonly blocks: number;
   readonly bfree: number;
   readonly bavail: number;
+  readonly bsize?: number;
 }
+
+/** The size `statfs` and `stat` count blocks of allocation in (`st_blocks` is in 512-byte units). */
+const STAT_BLOCK_BYTES = 512;
 
 /**
  * The use of a file system in percent, as `df` reports it: used blocks over the blocks an unprivileged process can
- * fill (used plus available), so the blocks reserved for root count as full.
+ * fill (used plus available), so the blocks reserved for root count as full. `excludedBytes` are left out of both, as
+ * if they were on another disk.
  */
-export function usedPercent({ blocks, bfree, bavail }: DiskBlocks): number {
-  const used = blocks - bfree;
-  const usable = used + bavail;
-  return usable === 0 ? 0 : (used * PERCENT) / usable;
+export function usedPercent({ blocks, bfree, bavail, bsize }: DiskBlocks, excludedBytes = 0): number {
+  const excluded = bsize ? excludedBytes / bsize : 0;
+  const used = blocks - bfree - excluded;
+  const usable = blocks - bfree + bavail - excluded;
+  return usable <= 0 ? 0 : (Math.max(0, used) * PERCENT) / usable;
 }
 
 /** Measures the use of the fullest file system among some directories, in percent; undefined while none of them exists yet. */
@@ -73,12 +80,31 @@ async function deviceOf(directory: string): Promise<number | undefined> {
   }
 }
 
+/** The bytes the files under `directory` take on disk; 0 while it does not exist. Files removed during the walk count as none. */
+async function allocatedBytesUnder(directory: string): Promise<number> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(directory, { recursive: true, withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+  let bytes = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const stat = await fs.promises.lstat(path.join(entry.parentPath, entry.name)).catch(() => undefined);
+    if (stat) bytes += stat.blocks * STAT_BLOCK_BYTES;
+  }
+  return bytes;
+}
+
 /**
  * Measures the file systems that hold `directories` (the storage directory, where results live, and the temporary
  * directory, where uploads and conversions spool) and reports the fuller one. A file system that holds several of
- * them is measured once.
+ * them is measured once. The bytes under `excludedDirectories` (the parts of open uploads and the directories of
+ * running jobs, which deleting results cannot free) are left out of the file system that holds them.
  */
-export function diskUsageProbe(directories: readonly string[]): DiskProbe {
+export function diskUsageProbe(directories: readonly string[], excludedDirectories: readonly string[] = []): DiskProbe {
   return async () => {
     const byDevice = new Map<number, string>();
     for (const directory of directories) {
@@ -86,7 +112,14 @@ export function diskUsageProbe(directories: readonly string[]): DiskProbe {
       if (device !== undefined && !byDevice.has(device)) byDevice.set(device, directory);
     }
     if (byDevice.size === 0) return undefined;
-    const uses = await Promise.all([...byDevice.values()].map(async (directory) => usedPercent(await fs.promises.statfs(directory))));
+    const excludedByDevice = new Map<number, number>();
+    for (const directory of excludedDirectories) {
+      const device = await deviceOf(directory);
+      if (device !== undefined) excludedByDevice.set(device, (excludedByDevice.get(device) ?? 0) + (await allocatedBytesUnder(directory)));
+    }
+    const uses = await Promise.all(
+      [...byDevice].map(async ([device, directory]) => usedPercent(await fs.promises.statfs(directory), excludedByDevice.get(device)))
+    );
     return Math.max(...uses);
   };
 }
