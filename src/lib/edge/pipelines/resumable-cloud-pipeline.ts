@@ -6,7 +6,7 @@
  */
 
 import { ConversionOptions } from '../../types';
-import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../api/part-in-flight';
+import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../part-in-flight';
 import { UPLOAD_PART_MAX_BYTES } from '../../plan-limits';
 
 const MULTIPART_URL = '/api/storage/multipart';

@@ -12,8 +12,12 @@ import {
   type ResumableStage,
   type ResumableTiming,
 } from '../src/lib/edge/pipelines/resumable-cloud-pipeline';
-import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../src/lib/api/part-in-flight';
+import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../src/lib/part-in-flight';
+import { NextRequest } from 'next/server';
 import { partFailureResponse } from '../src/lib/api/part-response';
+import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
+import { getIdempotencyStore } from '../src/lib/api/idempotency';
+import { s3Storage } from '../src/lib/storage/s3-storage';
 import { forgetUploadParts, receivePart, type PartStore } from '../src/lib/storage/part-admission';
 import { DEFAULT_MAX_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT_MS } from '../src/lib/storage/adapters/s3';
 import { executeServerlessCloudFallback } from '../src/lib/edge/pipelines/fallback-pipeline';
@@ -131,12 +135,57 @@ async function refusalOfARepeatedPart(): Promise<Response> {
   }
 }
 
+/** The answer the route gives a part when the disk of the host fails for now (EIO), made by its own code. */
+function answerOfATransientDiskError(): Response {
+  const error = Object.assign(new Error("EIO: i/o error, write '/srv/easyconvert/data/part-1.bin'"), { code: 'EIO', syscall: 'write' });
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  return partFailureResponse(error, '/api/storage/multipart');
+}
+
+/**
+ * The answer the route gives a repeat of a completion whose first answer the idempotency store could not keep, made by
+ * the route itself on a real one-part upload.
+ */
+async function repeatedCompletionByTheRoute(): Promise<{ status: number; body: string; key: string }> {
+  vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const visitor = { 'x-forwarded-for': '203.0.113.201' };
+  const bytes = Buffer.from('a,b\n1,2\n');
+  const post = (action: string, body: unknown, headers: Record<string, string>) =>
+    multipartPost(
+      new NextRequest(`http://localhost:3000/api/storage/multipart?action=${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      })
+    );
+  const { uploadId } = await (await post('initiate', { filename: 'a.csv', totalSize: bytes.length }, visitor)).json();
+  const { etag } = await (
+    await multipartPost(
+      new NextRequest(`http://localhost:3000/api/storage/multipart?action=chunk&uploadId=${encodeURIComponent(uploadId)}&partNumber=1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream', ...visitor },
+        body: new Uint8Array(bytes),
+      })
+    )
+  ).json();
+  const completion = { uploadId, parts: [{ partNumber: 1, etag }] };
+  const headers = { ...visitor, 'Idempotency-Key': `completion-${uploadId}` };
+  vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+  const { key } = await (await post('complete', completion, headers)).json();
+  const repeat = await post('complete', completion, headers);
+  await s3Storage.deleteObject(key);
+  return { status: repeat.status, body: await repeat.text(), key };
+}
+
 beforeEach(() => {
   vi.mocked(executeServerlessCloudFallback).mockReset();
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe('a file over a single request is converted through parts and a job', () => {
@@ -270,6 +319,44 @@ describe('a file over a single request is converted through parts and a job', ()
     expect(asked[0].headers['Idempotency-Key']).toMatch(UUID);
     expect(new Set(asked.map((c) => c.headers['Idempotency-Key'])).size).toBe(1);
     expect(calls.some((c) => c.url.includes('action=abort'))).toBe(false);
+  });
+
+  it('sends a part again after the answer the route gives a transient error of the disk, and finishes the upload', async () => {
+    const transient = answerOfATransientDiskError();
+    expect(transient.status).toBe(503);
+    expect(Number(transient.headers.get('retry-after'))).toBeGreaterThan(0);
+    const body = await transient.text();
+    let refused = 2;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=chunk') || refused-- <= 0) return undefined;
+      return new Response(body, { status: transient.status, headers: { 'Content-Type': 'application/problem+json', 'Retry-After': '0' } });
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).resolves.toEqual({ url: RESULT_URL, size: 4321 });
+
+    expect(calls.filter((c) => c.url.includes('action=chunk') && c.url.includes('partNumber=1'))).toHaveLength(3);
+    expect(calls.filter((c) => c.url.includes('action=complete'))).toHaveLength(1);
+  });
+
+  it('finishes the upload from the answer the route gives the repeat of a completion whose first answer was lost', async () => {
+    const repeat = await repeatedCompletionByTheRoute();
+    expect(repeat.status).toBe(200);
+    let completions = 0;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=complete')) return undefined;
+      completions += 1;
+      return completions === 1 ? Promise.reject(new TypeError('network down')) : new Response(repeat.body, { status: repeat.status, headers: { 'Content-Type': 'application/json' } });
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).resolves.toEqual({ url: RESULT_URL, size: 4321 });
+
+    const asked = calls.filter((c) => c.url.includes('action=complete'));
+    expect(asked).toHaveLength(2);
+    expect(new Set(asked.map((c) => c.headers['Idempotency-Key'])).size).toBe(1);
+    expect(calls.find(isJobStart)?.json).toMatchObject({ storageKey: repeat.key });
+    expect(calls.some((c) => c.url.includes('action=abort') || c.url.includes('action=discard'))).toBe(false);
   });
 
   it('aborts the upload when the completion whose answer was lost stored nothing', async () => {

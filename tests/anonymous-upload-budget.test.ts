@@ -617,6 +617,48 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     expect((await repeat.json()).jobId).toBe(firstBody.jobId);
   });
 
+  it('keeps the lock of an opening the idempotency store could not record, so a repeat is told to wait and opens no second session', async () => {
+    const visitor = { ...from('203.0.113.161'), 'Idempotency-Key': crypto.randomUUID() };
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const first = await initiate(visitor, MIB);
+    const repeat = await initiate(visitor, MIB);
+
+    expect(first.status).toBe(200);
+    expect(repeat.status).toBe(409);
+    expect((await repeat.json()).type).toBe('https://api.easyconvert.io/problems/idempotency-key-in-flight');
+  });
+
+  it('keeps the lock of a job start the idempotency store could not record, so a repeat queues no second job and reserves no second unit', async () => {
+    const visitor = from('203.0.113.162');
+    const key = await completedUpload(visitor);
+    const idempotencyKey = crypto.randomUUID();
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const send = () =>
+      queueJobsPost(
+        new NextRequest(`${BASE_URL}/api/queue/jobs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey, ...visitor },
+          body: JSON.stringify({ filename: 'a.csv', targetFormat: 'json', storageKey: key }),
+        })
+      );
+
+    const first = await send();
+    const firstBody = await first.json();
+    expect(first.status, JSON.stringify(firstBody)).toBe(200);
+    cleanups.push(async () => {
+      await queueJobDelete(new NextRequest(`${BASE_URL}/api/queue/jobs/${firstBody.jobId}`, { method: 'DELETE' }), {
+        params: Promise.resolve({ id: firstBody.jobId }),
+      });
+    });
+    const repeat = await send();
+
+    expect(repeat.status).toBe(409);
+    expect(repeat.headers.get('retry-after')).not.toBeNull();
+  });
+
   it('answers a repeat of the completion with the file the first one stored', async () => {
     const visitor = from('203.0.113.68');
     const bytes = Buffer.from('a,b\n1,2\n');
@@ -680,7 +722,7 @@ describe('a completion the store took is final', () => {
     expect(warned.mock.calls.some(([message]) => String(message).includes('idempotency'))).toBe(true);
   });
 
-  it('leaves no lock on the key of a completion the idempotency store could not record, so a repeat is not told to wait', async () => {
+  it('answers a repeat of a completion the idempotency store could not record with the first answer, not with a missing session', async () => {
     const { visitor, uploadId, etag } = await stagedUpload('203.0.113.85');
     vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -688,14 +730,76 @@ describe('a completion the store took is final', () => {
       multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, { ...visitor, 'Idempotency-Key': `unrecorded-${uploadId}` }));
 
     const first = await complete();
-    const { key } = await first.json();
+    const firstBody = await first.json();
     cleanups.push(() => {
-      s3Storage.deleteObject(key);
+      s3Storage.deleteObject(firstBody.key);
     });
     const repeat = await complete();
 
     expect(first.status).toBe(200);
-    expect(repeat.status).not.toBe(409);
+    expect(repeat.status).toBe(200);
+    expect(await repeat.json()).toEqual(firstBody);
+  });
+
+  it('answers a repeat of a completion with the first answer without an idempotency key, from the receipt of the completion', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.87');
+    const complete = () => multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+
+    const first = await complete();
+    const firstBody = await first.json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(firstBody.key);
+    });
+    const repeat = await complete();
+
+    expect(repeat.status).toBe(200);
+    expect(repeat.headers.get('idempotent-replayed')).toBeNull();
+    expect(await repeat.json()).toEqual(firstBody);
+  });
+
+  it('answers that repeat for an anonymous visitor at another address, and with a missing session for an account', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.88');
+    const complete = (headers: Record<string, string>) => multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, headers));
+    const firstBody = await (await complete(visitor)).json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(firstBody.key);
+    });
+
+    const moved = await complete(from('198.51.100.88'));
+    const signedIn = await complete(await account());
+
+    expect(moved.status).toBe(200);
+    expect((await moved.json()).key).toBe(firstBody.key);
+    expect(signedIn.status).toBe(404);
+  });
+
+  it('answers a repeat with a missing session once the stored file is gone', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.89');
+    const complete = () => multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+    const { key } = await (await complete()).json();
+    expect((await multipartPost(multipart('discard', { key }, visitor))).status).toBe(200);
+
+    expect((await complete()).status).toBe(404);
+  });
+
+  it('answers the completion when the receipt cannot be kept, and logs it', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.90');
+    const ledger = getRetentionLedger();
+    const update = ledger.update.bind(ledger);
+    vi.spyOn(ledger, 'update').mockImplementation(async (key, change) => {
+      if (key.startsWith('upload-completion/')) throw new Error('ledger down');
+      return update(key, change);
+    });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+    const { key } = await res.json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(key);
+    });
+
+    expect(res.status).toBe(200);
+    expect(warned.mock.calls.some(([message]) => String(message).includes('receipt'))).toBe(true);
   });
 
   it('answers a completion whose record and whose cleanup both failed with the refusal, and logs the key it could not remove', async () => {

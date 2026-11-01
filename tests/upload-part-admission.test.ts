@@ -214,6 +214,130 @@ describe('parts of one upload sent at once are held together to the size it decl
     });
   });
 
+  describe('a transient error of the operating system', () => {
+    const TRANSIENT_CODES = ['EIO', 'EAGAIN', 'EBUSY', 'EINTR', 'EMFILE', 'ENFILE'] as const;
+    const UNAVAILABLE_SENTENCE = 'A service this upload needs is temporarily unavailable. Retry the request shortly.';
+    const diskError = (code: string) =>
+      Object.assign(new Error(`${code}: operation failed, open '/srv/easyconvert/data/part-1.bin'`), { code, syscall: 'open' });
+
+    async function expectRetryable(res: Response): Promise<void> {
+      const body = await res.json();
+      expect(res.status, JSON.stringify(body)).toBe(SERVICE_UNAVAILABLE);
+      expect(res.headers.get('retry-after')).toBe('5');
+      expect(body.detail).toBe(UNAVAILABLE_SENTENCE);
+      expect(JSON.stringify(body)).not.toContain('/srv/easyconvert');
+    }
+
+    /** An open session of a visitor holding all its bytes in one part, and the request that completes it. */
+    async function sessionToComplete(): Promise<{ complete: () => Promise<Response>; abort: () => Promise<Response> }> {
+      const visitor = newVisitor();
+      const bytes = Buffer.from('a,b\n1,2\n');
+      const { uploadId } = await openSession(visitor, bytes.length);
+      const { etag } = await (await multipartPost(partRequest(uploadId, 1, bytes, visitor))).json();
+      const action = (name: string, body: unknown) =>
+        multipartPost(
+          new NextRequest(`${BASE_URL}/api/storage/multipart?action=${name}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...visitor },
+            body: JSON.stringify(body),
+          })
+        );
+      return {
+        complete: () => action('complete', { uploadId, parts: [{ partNumber: 1, etag }] }),
+        abort: () => action('abort', { uploadId }),
+      };
+    }
+
+    it('is 503 with Retry-After on the part action of /api/storage/multipart, so the browser sends the part again', async () => {
+      const visitor = newVisitor();
+      const { uploadId } = await openSession(visitor, PART_BYTES);
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      for (const code of TRANSIENT_CODES) {
+        vi.spyOn(s3Storage, 'uploadPartStream').mockRejectedValueOnce(diskError(code));
+        await expectRetryable(await multipartPost(partRequest(uploadId, 1, Buffer.alloc(MIB, 'x'), visitor)));
+      }
+    });
+
+    it('is 503 with Retry-After on the public upload route', async () => {
+      const send = await publicUploadSession();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      for (const code of TRANSIENT_CODES) {
+        vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValueOnce(diskError(code));
+        await expectRetryable(await send(1));
+      }
+    });
+
+    it('is 503 with Retry-After on the signed part route', async () => {
+      const init = s3Storage.initiateMultipartUpload('d.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
+      cleanups.push(() => {
+        s3Storage.abortMultipartUpload(init.uploadId);
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      for (const code of TRANSIENT_CODES) {
+        vi.spyOn(s3Storage, 'uploadPartStream').mockRejectedValueOnce(diskError(code));
+        const res = await directPartPut(
+          new NextRequest(s3Storage.generatePresignedUploadUrl(init.key, 1, init.uploadId).url, { method: 'PUT', body: new Uint8Array(Buffer.alloc(MIB, 'z')) })
+        );
+        await expectRetryable(res);
+      }
+    });
+
+    it('is 503 with Retry-After on the complete action, and the session stays open for the repeat', async () => {
+      const { complete } = await sessionToComplete();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      for (const code of TRANSIENT_CODES) {
+        vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => {
+          throw diskError(code);
+        });
+        await expectRetryable(await complete());
+      }
+      expect((await complete()).status).toBe(OK);
+    });
+
+    it('is 503 with Retry-After on the abort action', async () => {
+      const { abort } = await sessionToComplete();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      for (const code of TRANSIENT_CODES) {
+        vi.spyOn(s3Storage, 'abortMultipartUpload').mockImplementationOnce(() => {
+          throw diskError(code);
+        });
+        await expectRetryable(await abort());
+      }
+    });
+
+    it('is answered on complete and abort of /api/v1/uploads as on a part: 503 when it may pass, 404 for gone files, a fixed 500 otherwise', async () => {
+      const email = `ledger_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@ledger.test`;
+      const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'ledger', tier: 'free' }));
+      const session = await localFsStorage.createMultipart(`uploads/ledger-${Date.now()}.csv`, undefined, { ownerUserId: user.id, totalSize: PART_BYTES });
+      cleanups.push(() => {
+        void localFsStorage.abortMultipart(session.key, session.uploadId);
+      });
+      const act = (name: string, body: unknown) =>
+        v1UploadsPost(
+          new NextRequest(`${BASE_URL}/api/v1/uploads?action=${name}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Cookie: `easyconvert_session=${createSessionToken(user)}` },
+            body: JSON.stringify(body),
+          }),
+          { params: Promise.resolve({ id: undefined }) }
+        );
+      const complete = () => act('complete', { uploadId: session.uploadId, parts: [{ partNumber: 1, etag: 'e' }] });
+      const abort = () => act('abort', { uploadId: session.uploadId });
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      for (const code of TRANSIENT_CODES) {
+        vi.spyOn(localFsStorage, 'completeMultipart').mockRejectedValueOnce(diskError(code));
+        await expectRetryable(await complete());
+        vi.spyOn(localFsStorage, 'abortMultipart').mockRejectedValueOnce(diskError(code));
+        await expectRetryable(await abort());
+      }
+      vi.spyOn(localFsStorage, 'completeMultipart').mockRejectedValueOnce(diskError('ENOENT'));
+      expect((await complete()).status).toBe(NOT_FOUND);
+      vi.spyOn(localFsStorage, 'abortMultipart').mockRejectedValueOnce(diskError('EACCES'));
+      expect((await abort()).status).toBe(INTERNAL_SERVER_ERROR);
+    });
+  });
+
   it('holds the parts of the signed part route to the declared size the same way', async () => {
     const init = s3Storage.initiateMultipartUpload('b.csv', 'text/csv', PART_BYTES, 'user_parts', PART_BYTES);
     cleanups.push(() => {

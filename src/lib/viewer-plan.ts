@@ -111,11 +111,21 @@ export function refreshViewerPlan(): Promise<void> {
 /**
  * Sets the viewer from a session change the page itself made: the user a sign-in or a registration answered with, or
  * null once a sign-out was answered ok. That answer is the session, so no second read is needed; a read that began
- * before the change is dropped when it ends, and the next read starts anew.
+ * before the change is dropped when it ends, and the next read starts anew. A sign-out that failed changes nothing:
+ * the session, and so the account, still exists, and the page keeps showing it.
  */
 export function applySessionChange(user: SessionUser | null): void {
   latestRead++;
   reading = undefined;
   const viewer = user ? viewerOf(user) : SIGNED_OUT;
   setViewer(viewer.plan, viewer.account);
+}
+
+/**
+ * Sets the viewer from the answer of a successful sign-in or registration. An answer that names no user does not say who
+ * the viewer is, so the session endpoint is asked, as it is for a page that just mounted; it is never read as a sign-out.
+ */
+export function applySignInAnswer(user: SessionUser | undefined): void {
+  if (user) applySessionChange(user);
+  else void refreshViewerPlan();
 }

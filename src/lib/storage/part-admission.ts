@@ -1,5 +1,5 @@
 import type { UploadedPart } from '../types';
-import { PART_IN_FLIGHT_STATUS } from '../api/part-in-flight';
+import { PART_IN_FLIGHT_STATUS } from '../part-in-flight';
 import type { MaybePromise } from './oci-storage';
 
 /**

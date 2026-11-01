@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { User } from '@/lib/auth/types';
+import type { MultipartUploadComplete } from '@/lib/types';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { discardUpload, mayPresignDownload, registerCompletedUpload, removeUnregistered } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
@@ -23,8 +24,9 @@ import {
   type BudgetRefusal,
 } from '@/lib/api-keys/anonymous-upload-budget';
 import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
-import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
+import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, partFailureResponse, systemErrorResponse } from '@/lib/api/part-response';
 import { isUploadIdShape } from '@/lib/storage/upload-id';
+import { recallUploadCompletion, rememberUploadCompletion } from '@/lib/storage/upload-completion';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { formatBytes } from '@/lib/format-bytes';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
@@ -76,7 +78,10 @@ interface ActionContext {
 
 type Body = Record<string, unknown>;
 
-/** The JSON body of `req` as an object, or an empty one: a body that is not an object names no field any action reads. */
+/**
+ * The JSON body of `req` as an object, or an empty one: a body that is not an object names no field any action reads.
+ * All such bodies then share one idempotency fingerprint, which no answer is stored under, since every action refuses them.
+ */
 function readJson(req: Request): Promise<Body> {
   return req.json().then(
     (body: unknown) => (body && typeof body === 'object' ? (body as Body) : {}),
@@ -286,7 +291,7 @@ async function openSession({ storage, user, instanceUri, body }: ActionContext):
  * another visitor chose never answers with this visitor's upload.
  */
 function onceForCaller(context: ActionContext, handler: (context: ActionContext) => Promise<Response>): Promise<Response> {
-  return respondOnce(context.req, context.user.id, context.instanceUri, () => handler(context), context.body);
+  return respondOnce(context.req, context.user.id, context.instanceUri, () => handler(context), { parsedBody: context.body, afterFailedRecord: 'keep-lock' });
 }
 
 function initiateUpload(context: ActionContext): Promise<Response> {
@@ -419,14 +424,42 @@ function selectCompletionParts(requested: unknown, stored: readonly StoredPart[]
 }
 
 /**
+ * The answer the completion of `uploadId` gave, for a repeat that finds the store has consumed the session: the receipt
+ * kept at completion, for the owner the session recorded and while the file it names is stored. It needs no idempotency
+ * store, so it answers also when that store could not keep the first answer.
+ */
+async function answerOfCompletedUpload(storage: MultipartCapableStorage, uploadId: string, userId: string): Promise<Response | undefined> {
+  let completion;
+  try {
+    completion = await recallUploadCompletion(uploadId);
+  } catch (error) {
+    console.warn('[multipart] Could not read the receipt of a completed upload; the repeat is answered as a missing session:', error);
+    return undefined;
+  }
+  if (!completion || !mayUseUploadSession(completion.ownerUserId, userId)) return undefined;
+  if (!(await storage.stat(completion.result.key))) return undefined;
+  return NextResponse.json({ success: true, ...completion.result });
+}
+
+/** Keeps the answer of a completion for a repeat. A receipt that cannot be written costs only that repeat, not the completion. */
+async function keepAnswerOfCompletion(uploadId: string, callerUserId: string, result: MultipartUploadComplete): Promise<void> {
+  try {
+    await rememberUploadCompletion(uploadId, { ownerUserId: uploadOwnerOf(callerUserId), result });
+  } catch (error) {
+    console.warn('[multipart] Could not keep the receipt of a completed upload; a repeat of its completion finds no session:', error);
+  }
+}
+
+/**
  * Completes a session whose parts hold exactly its declared size, from exactly the parts it checked, and records the
- * upload, so that a job reading it holds it, before its budget is closed.
+ * upload, so that a job reading it holds it, before its budget is closed. The completion is the same action when it is
+ * sent again: a session the store already consumed answers with the first completion's answer.
  */
 async function finishSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
   const { uploadId, parts } = body;
   if (typeof uploadId !== 'string' || !uploadId) return badRequest('Missing required "uploadId" in complete request.', instanceUri);
   const session = await usableSession(storage, uploadId, user.id);
-  if (!session) return notFound(instanceUri);
+  if (!session) return (await answerOfCompletedUpload(storage, uploadId, user.id)) ?? notFound(instanceUri);
 
   const selection = selectCompletionParts(parts, (await storage.getUploadedParts(uploadId)) ?? [], session.totalSize);
   if ('problem' in selection) return badRequest(selection.problem, instanceUri);
@@ -446,6 +479,7 @@ async function finishSession({ storage, user, instanceUri, body }: ActionContext
     await closeReservation(uploadId, 'aborted');
     return createProblemDetailsResponse(500, UNRECORDED_UPLOAD_DETAIL, instanceUri);
   }
+  await keepAnswerOfCompletion(uploadId, user.id, completeResult);
   await closeReservation(uploadId, 'completed');
   return NextResponse.json({ success: true, ...completeResult });
 }
@@ -459,7 +493,10 @@ async function finishSession({ storage, user, instanceUri, body }: ActionContext
 async function completeUpload(context: ActionContext): Promise<Response> {
   const { uploadId } = context.body;
   if (!isUploadIdShape(uploadId)) return finishSession(context);
-  return respondOnce(context.req, `${uploadOwnerOf(context.user.id)}:${uploadId}`, context.instanceUri, () => finishSession(context), context.body);
+  return respondOnce(context.req, `${uploadOwnerOf(context.user.id)}:${uploadId}`, context.instanceUri, () => finishSession(context), {
+    parsedBody: context.body,
+    afterFailedRecord: 'release',
+  });
 }
 
 /**
@@ -572,6 +609,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   try {
     return await spec.run({ req, storage: storageProvider, user: auth.user, instanceUri, body: spec.streamsBody ? {} : await readJson(req) });
   } catch (error: unknown) {
-    return storageErrorResponse(error, instanceUri) ?? unexpectedFailure(error, action, instanceUri);
+    return storageErrorResponse(error, instanceUri) ?? systemErrorResponse(error, instanceUri) ?? unexpectedFailure(error, action, instanceUri);
   }
 }, isNewMultipartUpload);

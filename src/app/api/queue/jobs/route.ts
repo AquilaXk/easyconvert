@@ -77,8 +77,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const user = auth.user;
 
   // An Idempotency-Key makes the request safe to send again: a repeat answers with the job the first one queued. Keys
-  // are scoped to the caller, an account or the address bucket of an anonymous caller.
-  return respondOnce(req, user.id, instanceUri, () => startJob(req, user, instanceUri));
+  // are scoped to the caller, an account or the address bucket of an anonymous caller. When the answer cannot be recorded
+  // the lock stays: a repeat gets 409 until it ends, since running the request again would queue a second job.
+  return respondOnce(req, user.id, instanceUri, () => startJob(req, user, instanceUri), { afterFailedRecord: 'keep-lock' });
 }));
 
 /** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */

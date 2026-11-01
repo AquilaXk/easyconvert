@@ -394,10 +394,10 @@ describe('POST /api/v1/uploads multipart errors on local storage', () => {
     expect(text).not.toMatch(/ENOENT|\.parts|part-1/);
   });
 
-  it('answers 500 with a generic message, and logs the detail, for any other system error', async () => {
+  it('answers 500 with a generic message, and logs the detail, for a system error a repeat does not change', async () => {
     const { localFsStorage, postPart, uploadId } = await loadRoute();
-    const detail = `EIO: i/o error, write '${path.join(storageDir, '.parts', uploadId, 'part-1.bin.tmp.1')}'`;
-    vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValue(Object.assign(new Error(detail), { code: 'EIO', syscall: 'write' }));
+    const detail = `EACCES: permission denied, open '${path.join(storageDir, '.parts', uploadId, 'part-1.bin.tmp.1')}'`;
+    vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValue(Object.assign(new Error(detail), { code: 'EACCES', syscall: 'open' }));
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await postPart(uploadId, new ReadableStream({ start: (controller) => controller.close() }));

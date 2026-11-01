@@ -96,31 +96,3 @@ export function storageErrorResponse(
     ...extraHeaders,
   });
 }
-
-/** The detail of a session whose files are gone: a session removed under a running request is a missing session, not a server fault. */
-export const UPLOAD_SESSION_NOT_FOUND = 'Upload session not found or has expired.';
-const UPLOAD_STORAGE_ERROR_DETAIL = 'Upload storage error';
-const MISSING_FILE_CODE = 'ENOENT';
-
-/** An error from the operating system (it carries an errno code and syscall); its message names server paths. */
-function isSystemError(error: unknown): error is NodeJS.ErrnoException & { code: string; syscall: string } {
-  const { code, syscall } = (error ?? {}) as NodeJS.ErrnoException;
-  return error instanceof Error && typeof code === 'string' && typeof syscall === 'string';
-}
-
-/**
- * The problem an error of the local disk maps to, or undefined when the error is not one: 404 when the files of the
- * upload session are gone, else a fixed 500 whose sentence names no path; the error itself goes to the server log.
- */
-export function systemErrorResponse(
-  error: unknown,
-  instance: string,
-  extraHeaders: Record<string, string> = {}
-): NextResponse | undefined {
-  if (!isSystemError(error)) return undefined;
-  if (error.code === MISSING_FILE_CODE) {
-    return createProblemDetailsResponse(HTTP_NOT_FOUND, UPLOAD_SESSION_NOT_FOUND, instance, undefined, undefined, extraHeaders);
-  }
-  console.error(`[uploads] ${error.code} ${error.syscall}: ${error.message}`);
-  return createProblemDetailsResponse(HTTP_INTERNAL_SERVER_ERROR, UPLOAD_STORAGE_ERROR_DETAIL, instance, 'Internal Server Error', undefined, extraHeaders);
-}

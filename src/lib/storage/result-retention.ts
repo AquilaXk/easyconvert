@@ -1,4 +1,5 @@
 import { CONFIG_SCHEMA, ConfigRuleError, parseKind } from '../config/schema';
+import type { MultipartUploadComplete } from '../types';
 import { classifyStorageKey, isUploadKey } from './key-namespace';
 
 /**
@@ -81,14 +82,23 @@ export interface RetentionRecord {
   retryAt?: number;
   /** What the record is of, set when it is created; a record written before the field existed is read by its key (`recordKind`). */
   kind?: RecordKind;
+  /** What the completion of an upload answered; only on a record of kind `completion`. */
+  completion?: UploadCompletion;
+}
+
+/** The first answer of the completion of an upload and the owner its session recorded, kept to answer a repeat. */
+export interface UploadCompletion {
+  ownerUserId: string;
+  result: MultipartUploadComplete;
 }
 
 /**
  * What a record is of. A result follows the retention rule. An upload (ownerless, in `uploads/`) is kept for the jobs that
  * read it. An account's upload, under the account's own key, is kept for its jobs too, and is not a result: its owner may
- * still get a signed link to it, a download does not deliver it, and it is not deleted for space.
+ * still get a signed link to it, a download does not deliver it, and it is not deleted for space. A completion is the
+ * receipt of a completed upload, not a file (`newCompletionRecord`).
  */
-export type RecordKind = 'result' | 'upload' | 'account-upload';
+export type RecordKind = 'result' | 'upload' | 'account-upload' | 'completion';
 
 export type RetentionReason = 'delivered' | 'expired' | 'capacity';
 
@@ -249,6 +259,15 @@ export function newAccountUploadRecord(key: string, now: number): RetentionRecor
  */
 export function newUnclaimedUploadRecord(key: string, now: number, policy: RetentionPolicy): RetentionRecord {
   return { key, createdAt: now, deleteAt: now + policy.undeliveredTtlMs, received: [], kind: 'upload' };
+}
+
+/**
+ * The receipt of an upload completion, under `key`, which names no object. No sweep deletes anything for it: it is
+ * created already ended (`goneAt`), so it is never due and the ledger forgets it after GONE_RECORD_MS, the time an
+ * idempotent answer is kept.
+ */
+export function newCompletionRecord(key: string, now: number, completion: UploadCompletion): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now, goneAt: now, received: [], kind: 'completion', completion };
 }
 
 /**

@@ -7,7 +7,7 @@ import {
   validateRegistrationInput,
   type AuthTab,
 } from './AuthForms';
-import { applySessionChange } from '@/lib/viewer-plan';
+import { applySignInAnswer } from '@/lib/viewer-plan';
 
 export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 
@@ -130,7 +130,7 @@ export function useAuthController() {
       }
 
       // The header and the queue keep their plan across the client-side navigation; the answer names the new session.
-      applySessionChange(data.user);
+      applySignInAnswer(data.user);
       setSuccessMessage(
         activeTab === 'register' ? 'Account created. Redirecting...' : 'Signed in. Redirecting...'
       );

@@ -498,7 +498,8 @@ describe.each([
         }),
         testUser.id,
         '/api/v1/test-endpoint',
-        async () => new NextResponse(null, { status: 204 })
+        async () => new NextResponse(null, { status: 204 }),
+        { afterFailedRecord: 'keep-lock' }
       );
 
     const res1 = await send();

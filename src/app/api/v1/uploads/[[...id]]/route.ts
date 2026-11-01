@@ -27,10 +27,10 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
-import { UPLOAD_SESSION_NOT_FOUND, storageErrorResponse, systemErrorResponse } from '@/lib/api/storage-error-response';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
-import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
+import { declaredPartBytes, partFailureResponse, systemErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -162,26 +162,22 @@ async function handlePartUpload(
   }
   const session = await findOwnLocalSession(uploadId, userId);
   if (!session) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
 
   // Parts sent at once are held together to the declared size, as on the other part routes (entry 137).
-  try {
-    const part = await receivePart(
-      localPartStore(objectStorage),
-      {
-        uploadId,
-        partNumber,
-        declaredBytes: declaredPartBytes(req.headers),
-        totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
-        maxPartBytes: MULTIPART_MAX_PART_BYTES,
-      },
-      req.body
-    );
-    return NextResponse.json({ success: true, part });
-  } catch (error: unknown) {
-    return partFailureResponse(error, instanceUri);
-  }
+  const part = await receivePart(
+    localPartStore(objectStorage),
+    {
+      uploadId,
+      partNumber,
+      declaredBytes: declaredPartBytes(req.headers),
+      totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
+      maxPartBytes: MULTIPART_MAX_PART_BYTES,
+    },
+    req.body
+  );
+  return NextResponse.json({ success: true, part });
 }
 
 /** The part operations of local storage in the shape the part ledger takes. */
@@ -287,7 +283,7 @@ async function completeRemoteUpload(
   }
   const session = await storageProvider.getUploadSession?.(uploadId);
   if (session?.ownerUserId !== userId) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   if (key !== undefined && key !== session.key) {
     return createProblemDetailsResponse(400, '"key" does not belong to this upload session.', instanceUri);
@@ -330,7 +326,7 @@ async function completeLocalUpload(
   }
   const session = await findOwnLocalSession(uploadId, userId);
   if (!session) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   if (expectedSize !== undefined && expectedSize !== session.totalSize) {
     return createProblemDetailsResponse(400, '"expectedSize" does not match the size declared at initiation.', instanceUri);
@@ -374,7 +370,7 @@ async function handleAbortUpload(
   if (storageProvider.kind === 'remote') {
     const owner = await storageProvider.getUploadOwner?.(uploadId);
     if (!owner || owner !== userId) {
-      return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+      return uploadSessionNotFoundResponse(instanceUri);
     }
     const abortedRemote = (await storageProvider.abortMultipartUpload?.(uploadId)) ?? false;
     return NextResponse.json({ success: true, aborted: abortedRemote });
@@ -382,14 +378,16 @@ async function handleAbortUpload(
 
   const session = await findOwnLocalSession(uploadId, userId);
   if (!session) {
-    return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    return uploadSessionNotFoundResponse(instanceUri);
   }
   const aborted = await objectStorage.abortMultipart(session.key, session.uploadId);
   forgetUploadParts(session.uploadId);
   return NextResponse.json({ success: true, aborted });
 }
 
-function uploadActionErrorResponse(err: unknown, instanceUri: string): Response {
+/** The one answer to an error of an upload action: a part fails like a part on every route, any other action by its own rules. */
+function uploadActionErrorResponse(err: unknown, instanceUri: string, action: string): Response {
+  if (action === 'part') return partFailureResponse(err, instanceUri);
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }
@@ -477,7 +475,7 @@ export const POST = admittingNewFiles(async function POST(
           return createProblemDetailsResponse(400, `Unsupported action "${action}".`, instanceUri);
       }
     } catch (err: unknown) {
-      return uploadActionErrorResponse(err, instanceUri);
+      return uploadActionErrorResponse(err, instanceUri, action);
     }
   }
 
