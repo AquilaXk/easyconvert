@@ -2,14 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
+import { codedRefusal, serverFault } from '@/lib/api/problem-details';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
-/** A refusal for API callers (the English `error`) and for the sign-up page, which words its `code` in the page's language. */
-function refusal(status: number, code: AuthErrorCode, error: string): NextResponse {
-  return NextResponse.json({ success: false, code, error }, { status });
-}
+const refusal = codedRefusal<AuthErrorCode>;
 
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
@@ -62,10 +60,6 @@ export async function POST(req: NextRequest) {
     response.headers.set('Set-Cookie', cookieHeader);
     return response;
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Registration failed';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
+    return serverFault('auth/register', err, 'Registration failed on the server.');
   }
 }

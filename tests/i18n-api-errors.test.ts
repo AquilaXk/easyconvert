@@ -92,13 +92,21 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     }
   });
 
-  it('words an answer it does not know by its status class, with the English text kept as technical details', () => {
+  it('words an answer it does not know by its status class, keeping the English text of a refusal and never of a server failure', () => {
     const unknown = { type: `${PROBLEM}byos-invalid-endpoint`, detail: 'The endpoint is not reachable.' };
     const korean = worded(useProblemWording, 'ko', unknown, 400);
     expectKorean(korean, 'unknown type');
     expect(korean.technical).toBe('The endpoint is not reachable.');
-    expect(worded(useProblemWording, 'ko', { error: 'Database offline.' }, 500).technical).toBe('Database offline.');
+    expect(worded(useProblemWording, 'ko', { error: 'spawn /usr/bin/magick ENOENT' }, 500).technical).toBeUndefined();
     expect(worded(useProblemWording, 'ko', { error: 'Database offline.' }, 500).message).not.toBe(korean.message);
+  });
+
+  it('keeps the English text of a refusal of a known type under technical details', () => {
+    const quota = { type: `${PROBLEM}quota-exceeded`, detail: 'The daily limit of 50 conversions is used up.', dailyLimit: 50 };
+    expect(worded(useProblemWording, 'ko', quota, 429).technical).toBe(quota.detail);
+    const plan = { type: `${PROBLEM}payload-too-large`, detail: 'File size 3 GiB exceeds the 1 GiB limit.', plan: 'free', sizeBytes: 3 * 1024 ** 3 };
+    expect(worded(useProblemWording, 'ko', plan, 413).technical).toBe(plan.detail);
+    expect(worded(useProblemWording, 'ko', { type: `${PROBLEM}service-unavailable`, detail: 'Redis at /var/run/redis.sock is down.' }, 503).technical).toBeUndefined();
   });
 });
 
@@ -127,10 +135,11 @@ describe('link import refusals', () => {
     );
   });
 
-  it('words an answer without a known code by its status class, keeping the server text', () => {
-    const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502);
+  it('words an answer without a known code by its status class, keeping the text of a refusal only', () => {
+    const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 400);
     expectKorean(korean, 'unknown');
     expect(korean.technical).toBe('Upstream said no.');
+    expect(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502).technical).toBeUndefined();
   });
 });
 

@@ -1,5 +1,6 @@
 import sharp, { type Metadata, type Sharp, type SharpOptions } from 'sharp';
 import { ConversionFailedError } from '../types';
+import type { ConversionRefusalCode } from '../refusal-codes';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   INPUT_PIXEL_LIMIT_HTTP_STATUS,
@@ -23,6 +24,7 @@ const NATIVE_PIXEL_LIMIT_MESSAGE = 'Input image exceeds pixel limit';
  * needs (`scope` names that path); the API answers HTTP 413 and states the limit.
  */
 export class InputPixelLimitError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
   readonly status = INPUT_PIXEL_LIMIT_HTTP_STATUS;
   readonly limit: number;
   readonly width?: number;

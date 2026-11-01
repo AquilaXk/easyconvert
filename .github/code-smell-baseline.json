@@ -30,7 +30,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 54
+    "maxValue": 53
   },
   {
     "file": "src/app/api/keys/[id]/route.ts",
@@ -2267,7 +2267,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2768
+    "maxValue": 2377
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

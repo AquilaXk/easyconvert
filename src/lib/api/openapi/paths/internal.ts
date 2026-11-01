@@ -28,7 +28,31 @@ import {
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import { formatBytes } from '@/lib/format-bytes';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
-import { CONVERSION_REFUSAL_CODES, URL_IMPORT_ERROR_CODES } from '@/lib/refusal-codes';
+import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-codes';
+
+/**
+ * The codes `POST /api/convert` answers with, by status: the request's own, and the `refusalCode` of the error a conversion
+ * threw, which the route answers 422 for an intact file it cannot read, 500 for an archive error outside the conversion
+ * errors, and 400 for any other conversion error (src/app/api/convert/route.ts).
+ */
+const CONVERT_CODES = {
+  400: [
+    'file_required', 'empty_file', 'target_required', 'unknown_format', 'invalid_options', 'unsupported_pair', 'spoofed_file',
+    'option_not_supported', 'invalid_pages', 'malformed_input', 'unsafe_archive', 'unsupported_input', 'input_over_limit', 'timeout',
+    'engine_unavailable', 'conversion_failed',
+  ],
+  422: [
+    'invalid_pages', 'encrypted_input', 'password_required', 'invalid_password', 'unsupported_method', 'unsupported_input',
+    'malformed_input', 'empty_file', 'archive_entry_collision',
+  ],
+  500: ['missing_volume', 'encrypted_input'],
+} as const satisfies Record<number, readonly ConversionRefusalCode[]>;
+
+/** The codes `POST /api/fetch-url` answers with, by status (src/app/api/fetch-url/route.ts). */
+const URL_IMPORT_CODES = {
+  400: ['url_required', 'invalid_url', 'unsupported_scheme', 'remote_error'],
+  502: ['redirect_without_location', 'too_many_redirects', 'invalid_redirect', 'fetch_failed', 'remote_error', 'empty_body'],
+} as const satisfies Record<number, readonly UrlImportErrorCode[]>;
 
 /**
  * Routes that serve the web application. They are documented for completeness and
@@ -194,7 +218,7 @@ export const internalPaths = {
           ...createProblemResponse('Too many failed attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),
           headers: { 'Retry-After': { schema: { type: 'integer' } } },
         },
-        '500': createErrorResponse('Sign-in failed.'),
+        '500': createErrorResponse('Sign-in failed on the server (fixed `error`, no `code`).'),
         '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
       },
     },
@@ -237,7 +261,7 @@ export const internalPaths = {
         '200': sessionUserResponse('Account created and signed in.'),
         '400': createCodedErrorResponse('Invalid JSON, email, or password length.', ['invalid_json', 'invalid_email', 'password_length']),
         '409': createCodedErrorResponse('Email address already registered.', ['account_exists']),
-        '500': createErrorResponse('Registration failed.'),
+        '500': createErrorResponse('Registration failed on the server (fixed `error`, no `code`).'),
       },
     },
   },
@@ -254,19 +278,19 @@ export const internalPaths = {
           ...binaryResponse('Converted file.'),
           headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS, ...CONVERSION_WARNINGS_RESPONSE_HEADERS },
         },
-        '400': createCodedErrorResponse('Invalid input, unsupported conversion, or spoofed file.', CONVERSION_REFUSAL_CODES),
+        '400': createCodedErrorResponse('Invalid input, unsupported conversion, or spoofed file.', CONVERT_CODES[400]),
         '401': createProblemResponse('Authentication required.'),
         '422': {
           description: `Page count exceeds the tier limit, the document is encrypted, password protected or DRM protected so its text cannot be read (with a \`code\` such as "password_required" or "encrypted_input"), or: ${PDFA_PROBLEM_DESCRIPTION}`,
           content: {
-            ...createErrorResponse('').content,
+            ...createCodedErrorResponse('', CONVERT_CODES[422]).content,
             'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
           },
         },
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION} A file over the plan limit names \`plan\`, \`sizeBytes\` and \`limitBytes\`; a decode limit has \`code\` "input_over_limit".`),
         '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
-        '500': createCodedErrorResponse('Conversion failed.', CONVERSION_REFUSAL_CODES),
+        '500': createCodedErrorResponse('Conversion failed: an archive error outside the conversion errors (with its `code`), or a failure the server did not classify, answered with the fixed `error` "The conversion failed on the server." and no `code`.', CONVERT_CODES[500]),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
         '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
@@ -324,11 +348,12 @@ export const internalPaths = {
       },
       responses: {
         '200': binaryResponse('Remote file content; `X-Filename` holds the URI-encoded name.'),
-        '400': createCodedErrorResponse('Missing or invalid URL, or the remote server returned 4xx (its status in `remoteStatus`).', URL_IMPORT_ERROR_CODES),
+        '400': createCodedErrorResponse('Missing or invalid URL, or the remote server returned 4xx (its status in `remoteStatus`).', URL_IMPORT_CODES[400]),
         '401': createProblemResponse('Authentication required.'),
         '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
         '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),
-        '502': createCodedErrorResponse('Redirect failure, remote 5xx (its status in `remoteStatus`), or empty body.', URL_IMPORT_ERROR_CODES),
+        '502': createCodedErrorResponse('Redirect failure, remote 5xx (its status in `remoteStatus`), or empty body.', URL_IMPORT_CODES[502]),
+        '500': createCodedErrorResponse('The file could not be fetched for a reason the server did not classify (fixed `error`).', ['fetch_failed']),
       },
     },
   },
@@ -442,7 +467,7 @@ export const internalPaths = {
       ],
       responses: {
         '200': {
-          description: 'Job state, or an event stream that closes on a terminal state.',
+          description: 'Job state, or an event stream that closes on a terminal state. A failed job names its cause in `failedRefusalCode` (one of the `code` values of `POST /api/convert`) next to `failedCode`, `failedStatus` and `failedReason`.',
           content: {
             'application/json': { schema: { type: 'object' } },
             'text/event-stream': { schema: { type: 'string' } },

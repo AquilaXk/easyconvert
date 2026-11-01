@@ -23,28 +23,24 @@ import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from 
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
+  codedRefusal,
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
   createPdfPostprocessResponse,
+  serverFault,
 } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
-import { conversionRefusalCodeOf, type ConversionRefusalCode } from '@/lib/refusal-codes';
+import { refusalCodeOf, type ConversionRefusalCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
-/** A refusal for API callers (the English `error`) and for the interface, which words its `code` in the page's language. */
-function refusal(status: number, code: ConversionRefusalCode | undefined, error: string): NextResponse {
-  return NextResponse.json({ success: false, ...(code ? { code } : {}), error }, { status });
-}
+const UNCLASSIFIED_FAILURE = 'The conversion failed on the server.';
 
-/** The code of the error a conversion threw, by its name (src/lib/refusal-codes.ts); undefined for an error it does not list. */
-function refusalCodeOf(error: unknown): ConversionRefusalCode | undefined {
-  return error instanceof Error ? conversionRefusalCodeOf(error.name) : undefined;
-}
+const refusal = codedRefusal<ConversionRefusalCode>;
 
 /** Whether a failed conversion was refused for its input (400) rather than failed on the server (500). */
 function isValidationError(error: unknown, message: string): boolean {
@@ -72,13 +68,13 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
     return createPdfPostprocessResponse(error, instanceUri);
   }
   if (error instanceof ArchiveEntryCollisionError) {
-    return refusal(error.status, 'archive_entry_collision', error.message);
+    return refusal(error.status, error.refusalCode, error.message);
   }
   const limitStatus = payloadLimitStatus(error);
   if (limitStatus !== null) {
     // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
     return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
-      code: refusalCodeOf(error) ?? 'input_over_limit',
+      code: refusalCodeOf(error),
     });
   }
   if (isUnprocessableInputError(error)) {
@@ -86,7 +82,7 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
     // decode (an archive's password and method errors included), a DWG release or drawing the DWG reader refuses, or a font FontForge
     // cannot read in full: 422, not the 400 of a malformed input.
     return createProblemDetailsResponse(error.status, error.message, instanceUri, undefined, undefined, undefined, undefined, {
-      code: refusalCodeOf(error) ?? 'unsupported_input',
+      code: error.refusalCode,
     });
   }
   if (error instanceof WorkerOutputMissingError) {
@@ -94,9 +90,10 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
     console.error('[convert] Worker output vanished before it was read:', error);
     return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
   }
-  const message = error instanceof Error ? error.message : 'Internal server error during conversion';
-  if (!isValidationError(error, message)) return refusal(500, refusalCodeOf(error), message);
-  return refusal(400, refusalCodeOf(error) ?? 'conversion_failed', message);
+  const message = error instanceof Error ? error.message : UNCLASSIFIED_FAILURE;
+  const code = refusalCodeOf(error);
+  if (isValidationError(error, message)) return refusal(400, code ?? 'conversion_failed', message);
+  return code ? refusal(500, code, message) : serverFault('convert', error, UNCLASSIFIED_FAILURE);
 }
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {

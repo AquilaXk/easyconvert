@@ -1,14 +1,14 @@
 /**
  * Why a conversion in the queue failed, in a form the interface words in the page's language: a code for a failure the
  * client decided, the server's refusing answer (its `code` or problem type, RFC 9457, with the HTTP status), or a queued
- * job that failed on a worker (the reason and the `failedCode` the job recorded; a job's failure has no HTTP status).
+ * job that failed on a worker (the reason and the refusal code the job recorded; a job's failure has no HTTP status).
  */
 export type ConversionFailure =
   | { readonly code: 'conversionFailed' | 'jobTimedOut' }
   | { readonly code: 'clientEdgeFailed'; readonly reason?: string }
   | { readonly code: 'clientOnlyBlocked'; readonly source: string; readonly target: string; readonly edgeFailure?: EdgeFailure }
   | { readonly code: 'server'; readonly problem: Readonly<Record<string, unknown>> }
-  | { readonly code: 'jobFailed'; readonly reason?: string; readonly failedCode?: string };
+  | { readonly code: 'jobFailed'; readonly reason?: string; readonly refusalCode?: string };
 
 /** The browser tier that failed before a client-only conversion was refused (named in the sentence), and its error. */
 export interface EdgeFailure {
@@ -44,7 +44,7 @@ export function serverRefusal(body: unknown, status: number, fallbackMessage: st
 const nonEmpty = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
 
 /** The error for a job that ended failed: its message is the worker's reason, and its failure carries the job's record. */
-export function jobFailure(job: { readonly failedReason?: unknown; readonly failedCode?: unknown }): ConversionFailureError {
+export function jobFailure(job: { readonly failedReason?: unknown; readonly failedRefusalCode?: unknown }): ConversionFailureError {
   const reason = nonEmpty(job.failedReason);
-  return new ConversionFailureError(reason ?? 'The conversion failed.', { code: 'jobFailed', reason, failedCode: nonEmpty(job.failedCode) });
+  return new ConversionFailureError(reason ?? 'The conversion failed.', { code: 'jobFailed', reason, refusalCode: nonEmpty(job.failedRefusalCode) });
 }

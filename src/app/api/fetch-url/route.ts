@@ -7,17 +7,14 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
-import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { formatBytes } from '@/lib/format-bytes';
 import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
 import type { UrlImportErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
-/** An error answer: the English `error` for API callers, and the stable `code` (with any number it names) the interface words. */
-function urlImportError(status: number, code: UrlImportErrorCode, error: string, facts: Record<string, number> = {}): NextResponse {
-  return NextResponse.json({ success: false, code, error, ...facts }, { status });
-}
+const refusal = codedRefusal<UrlImportErrorCode>;
 
 /**
  * The 413 for a file past the limit of an import from a link. The limit is its own and smaller than the plan limit,
@@ -27,7 +24,7 @@ function linkImportTooLarge(caller: PlanCaller | undefined): NextResponse {
   const error =
     `A file imported from a link may be at most ${formatBytes(URL_IMPORT_MAX_BYTES)}. ` +
     `Download it and add it from your device to convert a file of up to ${formatBytes(maxFileBytes(planOfCaller(caller)))}.`;
-  return urlImportError(413, 'file_too_large', error);
+  return refusal(413, 'file_too_large', error);
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -57,7 +54,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    return urlImportError(status, code, error);
+    return refusal(status, code, error);
   };
 
   const refuseTooLarge = async () => {
@@ -91,7 +88,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
       const isValid = await validateUrlForSsrf(currentUrl);
       if (!isValid) {
-        return urlImportError(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
+        return refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
       }
 
       const controller = new AbortController();
@@ -109,7 +106,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       } catch (fetchErr: unknown) {
         const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
         if (msg.includes('SSRF blocked') || msg.includes('restricted')) {
-          return urlImportError(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
+          return refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
         }
         throw fetchErr;
       } finally {
@@ -120,20 +117,20 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location');
         if (!location) {
-          return urlImportError(502, 'redirect_without_location', `Redirect status ${res.status} missing Location header`);
+          return refusal(502, 'redirect_without_location', `Redirect status ${res.status} missing Location header`);
         }
         if (redirectCount === MAX_REDIRECTS) {
-          return urlImportError(502, 'too_many_redirects', 'Too many redirects encountered.');
+          return refusal(502, 'too_many_redirects', 'Too many redirects encountered.');
         }
         try {
           const nextUrl = new URL(location, currentUrl);
           if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
-            return urlImportError(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
+            return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
           }
           currentUrl = nextUrl;
           continue;
         } catch {
-          return urlImportError(502, 'invalid_redirect', 'Invalid redirect location URL.');
+          return refusal(502, 'invalid_redirect', 'Invalid redirect location URL.');
         }
       }
 
@@ -141,11 +138,11 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     if (!res) {
-      return urlImportError(502, 'fetch_failed', 'Failed to fetch remote URL');
+      return refusal(502, 'fetch_failed', 'Failed to fetch remote URL');
     }
 
     if (!res.ok) {
-      return urlImportError(
+      return refusal(
         res.status >= 400 && res.status < 500 ? 400 : 502,
         'remote_error',
         `Remote server returned HTTP ${res.status}: ${res.statusText}`,
@@ -163,7 +160,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     if (!res.body) {
-      return urlImportError(502, 'empty_body', 'Empty response body from remote server');
+      return refusal(502, 'empty_body', 'Empty response body from remote server');
     }
 
     // Stream chunks with a strict byte counter
@@ -236,8 +233,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    const msg = err instanceof Error ? err.message : 'Failed to fetch remote URL';
-    return urlImportError(500, 'fetch_failed', msg);
+    return serverFault('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed' satisfies UrlImportErrorCode);
   } finally {
     ssrfAgent.close().catch(() => {});
   }

@@ -1,4 +1,5 @@
 import { ConversionFailedError } from '../types';
+import type { ConversionRefusalCode } from '../refusal-codes';
 
 /**
  * Building blocks of the WOFF2 codec, authored from the W3C WOFF2 Recommendation
@@ -16,6 +17,7 @@ export class Woff2FormatError extends ConversionFailedError {
 
 /** A size or count in a WOFF2 file, or in a font to encode, exceeds the limits of this engine. */
 export class Woff2LimitError extends Woff2FormatError {
+  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
   constructor(message: string) {
     super(message);
     this.name = 'Woff2LimitError';

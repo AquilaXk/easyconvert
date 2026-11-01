@@ -8,7 +8,8 @@ import type { ConversionFailure } from '../src/lib/conversion-failure';
 import { CONVERSION_REFUSAL_CODES } from '../src/lib/refusal-codes';
 import type { ConversionQueueItem } from '../src/lib/types';
 import type { TestLocale } from './helpers/intl';
-import { renderDom, select, visibleText } from './helpers/rendered-dom';
+import { WebhooksPanel } from '../src/components/dashboard/WebhooksPanel';
+import { allElements, attrOf, renderComponent, renderDom, select, visibleText, type DomElement } from './helpers/rendered-dom';
 
 /**
  * A conversion that fails in the queue is worded in the page's language, and the server's English text stays one click
@@ -101,9 +102,9 @@ describe('a refusal of /api/convert reads in the page language, with the English
     }
   });
 
-  it('words an answer with no code it knows by its status class, keeping the English text', () => {
+  it('words an answer with no code it knows by its status class, keeping the English text of a refusal only', () => {
     expectKoreanWithDetails({ code: 'server', problem: { error: 'Unsupported target format "xyz".', status: 400 } }, 'Unsupported target format "xyz".');
-    expectKoreanWithDetails({ code: 'server', problem: { error: 'Worker pool exploded.', status: 500 } }, 'Worker pool exploded.');
+    expect(renderedFailure({ code: 'server', problem: { error: 'Worker pool exploded.', status: 500 } }, 'ko')).toMatchObject({ details: null });
     expect(renderedFailure({ code: 'server', problem: { status: 400 } }, 'ko')).toMatchObject({ details: null });
   });
 });
@@ -145,13 +146,42 @@ describe('the failures the client decides read in the page language', () => {
 
 describe('a job that failed on the worker reads as one sentence, with the worker reason under technical details', () => {
   it('shows the generic job sentence and no HTTP status', () => {
-    const failure: ConversionFailure = { code: 'jobFailed', reason: 'Worker process exited with code 137.', failedCode: 'Error' };
+    const failure: ConversionFailure = { code: 'jobFailed', reason: 'Worker process exited with code 137.' };
     expectKoreanWithDetails(failure, 'Worker process exited with code 137.');
     expect(renderedFailure(failure, 'ko').alert).not.toMatch(/\d{3}/);
   });
 
   it('words a job that hit its time limit by the code the worker recorded', () => {
-    const korean = renderedFailure({ code: 'jobFailed', reason: 'The conversion exceeded its 600 s limit.', failedCode: 'JobTimeoutError' }, 'ko');
+    const korean = renderedFailure({ code: 'jobFailed', reason: 'The conversion exceeded its 600 s limit.', refusalCode: 'timeout' }, 'ko');
     expect(korean.alert).toBe(renderedFailure({ code: 'jobTimedOut' }, 'ko').alert);
+  });
+});
+
+describe('technical details sit beside the message that is announced, never inside it', () => {
+  const liveRegions = (dom: DomElement) => allElements(dom).filter((element) => attrOf(element, 'role') === 'alert' || attrOf(element, 'aria-live') !== null);
+
+  function expectDisclosureOutsideLiveRegions(dom: DomElement): void {
+    const [details] = select(dom, 'details');
+    expect(details).toBeDefined();
+    expect(liveRegions(dom).length).toBeGreaterThan(0);
+    for (const region of liveRegions(dom)) expect(select(region, 'details')).toEqual([]);
+    const [summary] = select(details, 'summary');
+    expect(attrOf(summary, 'class')?.split(' ')).toContain('min-h-[44px]');
+  }
+
+  it('keeps the disclosure of a failed queue row out of its alert', () => {
+    const item: ConversionQueueItem = { ...hwpItem(), status: 'error', error: { code: 'clientEdgeFailed', reason: 'WASM module failed to load' } };
+    expectDisclosureOutsideLiveRegions(renderDom(createElement(QueueItemRow, {
+      item, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
+      onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
+    })));
+  });
+
+  it('keeps the disclosure of a webhook replay out of its status message', () => {
+    expectDisclosureOutsideLiveRegions(renderComponent(WebhooksPanel, {
+      entries: [], loading: false, replayingId: null, inspectingEntry: null,
+      feedback: { message: 'The replay failed.', technical: 'Endpoint answered HTTP 500.' },
+      onRefresh: noop, onClearAll: noop, onDismissFeedback: noop, onInspect: noop, onReplay: noop, onDelete: noop,
+    }));
   });
 });

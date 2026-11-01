@@ -49,14 +49,15 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
     popped!.failedReason = error.message;
     popped!.failedCode = error.name;
     popped!.failedStatus = error.status;
+    popped!.failedRefusalCode = error.refusalCode;
 
     expect(await workerSide._onJobFailed(popped!, error)).toBe(true);
 
     const hash = await admin.hgetall(`${keyPrefix}{typed-failure}:job:${job.id}`);
-    expect(hash).toMatchObject({ state: 'failed', failedCode: 'InputPixelLimitError', failedStatus: String(HTTP_PAYLOAD_TOO_LARGE) });
+    expect(hash).toMatchObject({ state: 'failed', failedCode: 'InputPixelLimitError', failedStatus: String(HTTP_PAYLOAD_TOO_LARGE), failedRefusalCode: 'input_over_limit' });
 
     const stored = await api.getJob(job.id);
-    expect(stored).toMatchObject({ state: 'failed', failedCode: 'InputPixelLimitError', failedStatus: HTTP_PAYLOAD_TOO_LARGE });
+    expect(stored).toMatchObject({ state: 'failed', failedCode: 'InputPixelLimitError', failedStatus: HTTP_PAYLOAD_TOO_LARGE, failedRefusalCode: 'input_over_limit' });
     expect(stored?.failedReason).toContain(`over the input limit of ${INPUT_LIMIT} pixels`);
   });
 
@@ -93,5 +94,6 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
     expect(stored?.state).toBe('failed');
     expect(stored?.failedCode).toBeUndefined();
     expect(stored?.failedStatus).toBeUndefined();
+    expect(stored?.failedRefusalCode).toBeUndefined();
   });
 });

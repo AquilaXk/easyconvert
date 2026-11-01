@@ -121,6 +121,7 @@ async function readJob(
     failedReason: job.failedReason === undefined ? undefined : redactText(job.failedReason),
     failedCode: job.failedCode,
     failedStatus: job.failedStatus,
+    failedRefusalCode: job.failedRefusalCode,
     logs: job.logs.map(redactText),
   });
 }

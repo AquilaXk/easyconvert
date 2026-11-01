@@ -10,6 +10,7 @@ import {
   UnsupportedArchiveMethodError,
   type ArchiveCollisionPolicy,
 } from '../types';
+import type { ConversionRefusalCode } from '../refusal-codes';
 import {
   executeSandboxedBinary,
   getSanitizedEnvironment,
@@ -63,6 +64,7 @@ export type UnsafeArchiveReason =
 
 /** An archive or filename that violates the extraction policy. Surfaces as HTTP 400 at the API. */
 export class UnsafeArchiveError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'unsafe_archive';
   readonly reason: UnsafeArchiveReason;
 
   constructor(reason: UnsafeArchiveReason, message: string) {
@@ -124,6 +126,7 @@ export interface ContainedTree {
 
 /** The archive is damaged or in a format 7-Zip cannot read (as opposed to a policy violation). */
 export class UnreadableArchiveError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
   constructor(message: string) {
     super(message);
     this.name = 'UnreadableArchiveError';

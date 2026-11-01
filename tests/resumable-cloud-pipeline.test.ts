@@ -497,7 +497,7 @@ describe('a refusal or a failure is shown as the server worded it and leaves not
 
     const conversion = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
     await expect(conversion).rejects.toThrow('The file is encrypted.');
-    await expect(conversion).rejects.toHaveProperty('failure', { code: 'jobFailed', reason: 'The file is encrypted.', failedCode: undefined });
+    await expect(conversion).rejects.toHaveProperty('failure', { code: 'jobFailed', reason: 'The file is encrypted.', refusalCode: undefined });
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
     expect(calls.some((c) => c.url.includes('action=abort'))).toBe(false);
   });

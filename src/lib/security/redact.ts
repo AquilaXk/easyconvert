@@ -372,6 +372,14 @@ export function redactText(text: string): string {
   return redactKeyValuePairs(withoutBearer);
 }
 
+/** An absolute path that starts a word (`/usr/bin/magick`), not the path of a URL or the slash of `I/O`; the servers run Linux. */
+const ABSOLUTE_PATH = /(?<![\w.:/-])\/[\w.@+-]+(?:\/[\w.@+-]+)*/g;
+
+/** Masks the absolute file system paths in free text, such as the program a failed conversion could not start. */
+export function redactPaths(text: string): string {
+  return text.replaceAll(ABSOLUTE_PATH, REDACTION_MASK);
+}
+
 /**
  * Keys that hold a link the service itself minted for the job owner, such as a presigned result
  * URL. Its recipient is the owner, so the query string is the point of the link and stays as it is.

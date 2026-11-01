@@ -84,14 +84,11 @@ export function WebhooksPanel({
         </div>
 
         {feedback && (
-          <output
-            aria-live="polite"
-            className="mb-4 pl-4 pr-2 py-2 rounded-md bg-accent-soft border border-accent-edge text-xs text-accent-ink flex items-center justify-between gap-2"
-          >
-            <span className="min-w-0">
-              {feedback.message}
+          <div className="mb-4 pl-4 pr-2 py-2 rounded-md bg-accent-soft border border-accent-edge text-xs text-accent-ink flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <output aria-live="polite" className="block">{feedback.message}</output>
               <TechnicalDetails text={feedback.technical} />
-            </span>
+            </div>
             <button
               type="button"
               onClick={onDismissFeedback}
@@ -100,7 +97,7 @@ export function WebhooksPanel({
             >
               <X className="w-4 h-4" />
             </button>
-          </output>
+          </div>
         )}
 
         {entries.length === 0 ? (

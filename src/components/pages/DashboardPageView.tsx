@@ -71,14 +71,11 @@ export default function DashboardPageView() {
             />
 
             {actionError && (
-              <div
-                role="alert"
-                className="mb-6 pl-4 pr-2 py-2.5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger text-sm flex items-center justify-between gap-3"
-              >
+              <div className="mb-6 pl-4 pr-2 py-2.5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger text-sm flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
                   <div className="min-w-0 break-words">
-                    {actionError.message}
+                    <p role="alert">{actionError.message}</p>
                     <TechnicalDetails text={actionError.technical} />
                   </div>
                 </div>
