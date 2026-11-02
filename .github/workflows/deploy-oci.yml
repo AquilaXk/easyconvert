@@ -4,8 +4,8 @@ name: Deploy to the OCI host
 # request (docs/deploy-oci.md). Nothing here runs on a schedule and nothing deploys by itself.
 #
 #   build   push to main: the worker image (Dockerfile.worker), then the web image (Dockerfile.web) on top of that exact worker digest,
-#           both for linux/arm64, pushed to GHCR as sha-<commit> and main; the web image only once it started with the production
-#           container flags (scripts/boot-web-image.sh).
+#           both for linux/arm64, pushed to GHCR as sha-<commit> and main; the web image, and the main tag of the worker, only once
+#           the web image started with the production container flags (scripts/boot-web-image.sh).
 #   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner whose only label is
 #           easyconvert-production: pins the chosen build by digest, starts it, checks health and one conversion, and rolls back to the
 #           previous release when either fails. The runner is separate from the one of the other service on this host and the job
@@ -70,6 +70,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The sharplibvips stage compiles libvips; the layer cache keeps it, so only the first build and a change to that stage pay for it.
+      # The web build reads this image by digest, so it is pushed under its commit tag here; main names it only after the web check.
       - name: Build and push the worker image
         id: worker
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -81,7 +82,6 @@ jobs:
           provenance: false
           tags: |
             ${{ env.WORKER_REPO }}:sha-${{ github.sha }}
-            ${{ env.WORKER_REPO }}:main
           cache-from: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64
           cache-to: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64,mode=max
 
@@ -122,6 +122,11 @@ jobs:
           docker push --quiet "$WEB_REPO:main"
           digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$WEB_REPO:sha-$GITHUB_SHA")"
           echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the worker image main
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: docker buildx imagetools create --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"
 
       - name: Record the digests
         env:

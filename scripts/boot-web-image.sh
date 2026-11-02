@@ -9,13 +9,18 @@
 # the worker seccomp profile, and noexec tmpfs where production mounts its scratch (/tmp and /home/easyconvert) and the build cache.
 # The AppArmor profile is left out: it is loaded on the production host only. The secrets are random values made for this run, the
 # storage is local, and there is no Redis, so the check proves that the server starts and serves a page, not that it converts.
+# Docker picks a free port on the loopback address, so the check never collides with another server on the runner.
 set -euo pipefail
 
 IMAGE="${1:?usage: boot-web-image.sh <image>}"
 NAME="easyconvert-boot-check-$$"
-PORT="${BOOT_CHECK_PORT:-39$((RANDOM % 900 + 100))}"
 ATTEMPTS="${BOOT_CHECK_ATTEMPTS:-60}"
 SECCOMP="$(cd "$(dirname "$0")/.." && pwd)/docker/seccomp-worker.json"
+
+if ! [[ "$ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "boot check: BOOT_CHECK_ATTEMPTS must be a whole number of at least 1, not '$ATTEMPTS'" >&2
+  exit 2
+fi
 
 secret() { openssl rand -hex 32; }
 
@@ -32,7 +37,7 @@ docker run --detach --name "$NAME" \
   --tmpfs /home/easyconvert:size=512m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750 \
   --tmpfs /app/.next/cache:size=128m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750 \
   --tmpfs /shared/storage:size=64m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750 \
-  --publish "127.0.0.1:$PORT:3000" \
+  --publish 127.0.0.1::3000 \
   --env NODE_ENV=production \
   --env APP_URL=http://127.0.0.1:3000 \
   --env STORAGE_DRIVER=local \
@@ -44,6 +49,8 @@ docker run --detach --name "$NAME" \
   --env "STORAGE_SIGNING_SECRET=$(secret)" \
   --env "JOB_SECRET_KEK=$(secret)" \
   "$IMAGE" > /dev/null
+published="$(docker port "$NAME" 3000/tcp | head -n 1)"
+PORT="${published##*:}"
 
 for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
   if [ "$(docker inspect --format '{{.State.Running}}' "$NAME")" != true ]; then

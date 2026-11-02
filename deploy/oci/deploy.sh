@@ -190,7 +190,8 @@ check_pair() { # check_pair <web repo@digest> <worker repo@digest>
 # with another value would state a number the servers do not enforce, so the release is refused before anything starts.
 check_allowance() { # check_allowance <web repo@digest> <allowance the release runs with>
   local built
-  built="$(docker image inspect --format "{{ index .Config.Labels \"$ALLOWANCE_LABEL\" }}" "$1" 2> /dev/null || true)"
+  built="$(docker image inspect --format "{{ index .Config.Labels \"$ALLOWANCE_LABEL\" }}" "$1" 2> /dev/null)" \
+    || die "the anonymous allowance the web image $1 was built with could not be read"
   [ "$built" = "$2" ] || die "the web image $1 was built with ANONYMOUS_DAILY_LIMIT '${built}', but the release runs with '$2': rebuild it, or set the repository variable back"
 }
 
@@ -360,6 +361,7 @@ deploy() {
   local ref="${1:-}" source_dir="${SOURCE_DIR:?SOURCE_DIR (the checkout)}" raw_env="${ENV_FILE:?ENV_FILE (the filtered env)}"
   local release worker web previous budget_env origin
   [[ "$ref" =~ $IMAGE_REF_PATTERN ]] || die "the image ref must be main or sha-<40 hex characters>"
+  [[ "${ANONYMOUS_DAILY_LIMIT:-}" =~ ^[0-9]*$ ]] || die "ANONYMOUS_DAILY_LIMIT must be digits only (or empty for the default), as it is written into the env file"
   guard "$raw_env"
   check_profile
   budget_env="$(budget "$(env_value "$raw_env" EASYCONVERT_BUDGET_CPUS)" "$(env_value "$raw_env" EASYCONVERT_BUDGET_MEMORY_GB)")" \
