@@ -110,8 +110,9 @@ export class SandboxedBufferLimitError extends Error {
 export class SandboxedMemoryLimitError extends Error {
   public limitMb: number;
   /**
-   * The signal that ended the program: SIGSEGV for a fault under the address-space limit (a failed allocation it did not
-   * check, or a stack overflow), SIGKILL for the kernel's out-of-memory killer. Unset when the resident-size watch stopped it.
+   * The signal that ended the program: SIGSEGV for a fault under the address-space limit, which in a C program is a failed
+   * allocation it did not check or a stack overflow, SIGKILL for the kernel's out-of-memory killer. Unset when the resident-size
+   * watch stopped it. A caller whose program ends those two otherwise (a Rust program aborts) reads SIGSEGV as a crash.
    */
   public signal?: NodeJS.Signals;
 
