@@ -1,29 +1,15 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import {
-  Archive, BookOpen, CheckCircle2, ChevronRight, Database, FileImage,
-  FileText, Home, Layers, Music, Presentation, Type, Video,
-} from 'lucide-react';
+import { CheckCircle2, ChevronRight, Home } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
+import { categoryIcon } from '../workbench/FormatIcon';
 import type { FormatSpecification } from './format-specs';
 
 export { ConverterWorkflowSteps } from './FormatFaqAndSteps';
 
-const CATEGORY_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-  audio: Music,
-  video: Video,
-  image: FileImage,
-  vector: Layers,
-  spreadsheet: Database,
-  presentation: Presentation,
-  archive: Archive,
-  ebook: BookOpen,
-  font: Type,
-};
-
 function CategoryIcon({ category }: Readonly<{ category: string }>) {
-  const Icon = CATEGORY_ICON_MAP[category.toLowerCase()] ?? FileText;
-  return <Icon className="w-5 h-5 text-accent-ink" />;
+  const Icon = categoryIcon(category.toLowerCase());
+  return <Icon aria-hidden="true" className="w-5 h-5 text-accent-ink" />;
 }
 
 interface ConverterBreadcrumbProps {

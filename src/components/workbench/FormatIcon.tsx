@@ -5,7 +5,8 @@ import {
 import type { FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 
-const CATEGORY_ICONS: Partial<Record<FormatCategory, LucideIcon>> = {
+/** The glyph of each format category, the one map every format icon of the interface reads. */
+const CATEGORY_ICONS: Readonly<Record<FormatCategory, LucideIcon>> = {
   audio: Music,
   video: Video,
   image: FileImage,
@@ -17,11 +18,16 @@ const CATEGORY_ICONS: Partial<Record<FormatCategory, LucideIcon>> = {
   data: Database,
   archive: Archive,
   font: Type,
+  document: FileText,
 };
+
+/** The glyph of a category the registry names; a category it does not know reads as a document. */
+export function categoryIcon(category: string): LucideIcon {
+  return Object.hasOwn(CATEGORY_ICONS, category) ? CATEGORY_ICONS[category as FormatCategory] : CATEGORY_ICONS.document;
+}
 
 /** The glyph of a format's category: the file-type icon of a file row, a format tile and a popular-conversion card. */
 export function FormatIcon({ format, className }: Readonly<{ format: string; className: string }>) {
-  const category = FORMAT_REGISTRY[format.toLowerCase()]?.category ?? 'document';
-  const Icon = CATEGORY_ICONS[category] ?? FileText;
+  const Icon = categoryIcon(FORMAT_REGISTRY[format.toLowerCase()]?.category ?? 'document');
   return <Icon aria-hidden="true" className={className} />;
 }

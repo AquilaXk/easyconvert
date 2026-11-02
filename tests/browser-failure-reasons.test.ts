@@ -144,6 +144,8 @@ describe('the API documentation retry', () => {
     await vi.waitFor(() => expect(document.activeElement).not.toBe(document.body));
     expect(document.activeElement?.closest('main')).not.toBeNull();
     expect(document.activeElement?.textContent).toContain('No matching API endpoints found.');
+    const named = document.getElementById(document.activeElement!.getAttribute('aria-labelledby') ?? '');
+    expect([document.activeElement?.tagName, named?.textContent?.trim()]).toEqual(['SECTION', 'Endpoints Reference']);
   });
 });
 

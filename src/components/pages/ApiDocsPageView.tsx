@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { AlertCircle, FileCode } from 'lucide-react';
-import { ApiDocsFilterToolbar, ApiDocsMasthead } from '@/components/api-docs/ApiDocsToolbar';
+import { ApiDocsFilterToolbar, ApiDocsMasthead, ENDPOINTS_HEADING_ID } from '@/components/api-docs/ApiDocsToolbar';
 import { EndpointCard } from '@/components/api-docs/EndpointCard';
 import {
   HTTP_METHODS,
@@ -28,7 +28,7 @@ export default function ApiDocsPageView() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const loadingRef = useRef<HTMLOutputElement>(null);
   const retryRef = useRef<HTMLButtonElement>(null);
-  const endpointsRef = useRef<HTMLDivElement>(null);
+  const endpointsRef = useRef<HTMLElement>(null);
 
   // A retry unmounts the button that had focus, and the loading notice unmounts in turn, so focus follows the page's
   // state (the notice, then the button again or the endpoints) only while it rests on the notice or fell to the body; focus
@@ -189,7 +189,7 @@ export default function ApiDocsPageView() {
           )}
 
           {!loading && !failed && (
-            <div ref={endpointsRef} tabIndex={-1} className="border-t border-rule">
+            <section ref={endpointsRef} tabIndex={-1} aria-labelledby={ENDPOINTS_HEADING_ID} className="border-t border-rule">
               {filteredEndpoints.length === 0 ? (
                 <div className="py-14 text-center">
                   <FileCode className="w-8 h-8 text-ink-3 mx-auto mb-2.5" />
@@ -213,7 +213,7 @@ export default function ApiDocsPageView() {
                   />
                 ))
               )}
-            </div>
+            </section>
           )}
         </section>
       </main>
