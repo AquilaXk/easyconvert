@@ -20,7 +20,7 @@ import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
 } from '../../worker/sandbox';
-import { isSvg, sanitizeSvgDocument } from '../security/svg-sanitizer';
+import { isSvg, MAX_GENERATED_SVG_CHARS, sanitizeGeneratedSvg } from '../security/svg-sanitizer';
 import { decodeBmp } from './bmp';
 import { pipelineFromBitmap } from './bitmap-pipeline';
 import {
@@ -30,7 +30,7 @@ import {
   openLimitedSharp,
   type PixelBudget,
 } from './image-input-limits';
-import { stageTimeoutMs } from './job-time';
+import { remainingJobMs, stageTimeoutMs } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { vectorizeOptionsProblem, type VectorizeOptions } from './raster-vectorize-options';
 
@@ -55,8 +55,8 @@ const ENGINE_CANDIDATES = ['/usr/local/bin/vtracer', '/usr/bin/vtracer', '/opt/h
 const VECTORIZE_PIXEL_BUDGET: PixelBudget = { maxPixels: 16_000_000, scope: 'tracing a picture to SVG' };
 const ENGINE_DEFAULT_TIMEOUT_MS = 120_000;
 const ENGINE_MEMORY_LIMIT_MB = 2048;
-/** The largest SVG written: three times the measured 16 MP poster trace, and what the sanitizer is allowed to read for this path. */
-export const VECTORIZE_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+/** The largest SVG written: the bound the sanitizer reads generated SVG up to, three times the measured 16 MP poster trace. */
+export const VECTORIZE_MAX_OUTPUT_BYTES = MAX_GENERATED_SVG_CHARS;
 /** The program prints one line, or a panic message; anything longer is not a diagnostic. */
 const ENGINE_MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 const MAX_DETAIL_CHARS = 160;
@@ -65,6 +65,8 @@ const OUTPUT_NAME = 'output.svg';
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
 const SIGSEGV = 'SIGSEGV';
+const TRACE_TASK = 'SVG tracing';
+const OUT_OF_TIME = 'The conversion ran out of time before the SVG tracer could start.';
 /** What Rust's default allocation-error handler prints before it aborts, which is how the address-space limit ends the program. */
 const ALLOCATION_FAILURE = /memory allocation of \d+ bytes failed/;
 const UNPRINTABLE = /[^\x20-\x7e]/g;
@@ -152,12 +154,12 @@ function traceFailure(how: string, detail = ''): ConversionFailedError {
 
 function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
-  if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError('SVG tracing', timeoutMs);
+  if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError(TRACE_TASK, timeoutMs);
   // The sandbox reports SIGSEGV under a memory limit as a memory refusal, but a fault in the program is not one: Rust ends a failed
   // allocation with the abort that ALLOCATION_FAILURE matches.
   if (error instanceof SandboxedMemoryLimitError) return error.signal === SIGSEGV ? traceFailure(`was stopped by ${SIGSEGV}`) : memoryRefusal();
   if (error instanceof SandboxedBufferLimitError) {
-    return error.limitBytes === VECTORIZE_MAX_OUTPUT_BYTES ? outputRefusal() : new ConversionFailedError('The SVG tracer printed more diagnostics than the limit allows.');
+    return error.kind === 'file-size' ? outputRefusal() : new ConversionFailedError('The SVG tracer printed more diagnostics than the limit allows.');
   }
   if (error instanceof SandboxedProcessError) {
     if (error.exitCode === SHELL_NOT_FOUND || error.exitCode === SHELL_NOT_EXECUTABLE) {
@@ -170,8 +172,7 @@ function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): u
   return error;
 }
 
-async function trace(picture: Buffer, args: string[], options: ConversionOptions): Promise<string> {
-  const binary = engineBinary();
+async function trace(binary: string, picture: Buffer, args: string[], options: ConversionOptions): Promise<string> {
   const timeoutMs = stageTimeoutMs(options, ENGINE_DEFAULT_TIMEOUT_MS);
   const sandboxDir = createWorkerSandboxDir();
   try {
@@ -200,16 +201,27 @@ async function trace(picture: Buffer, args: string[], options: ConversionOptions
   }
 }
 
+/** Stops between stages when the conversion was cancelled, or its job deadline passed while the picture was decoded. */
+function assertTimeLeft(options: ConversionOptions): void {
+  options.signal?.throwIfAborted();
+  const remaining = remainingJobMs(options);
+  if (remaining !== undefined && remaining <= 0) throw new CpuTaskTimeoutError(TRACE_TASK, ENGINE_DEFAULT_TIMEOUT_MS, OUT_OF_TIME);
+}
+
 /**
- * Traces a PNG, JPEG, WebP, GIF, BMP or TIFF picture to SVG. Refuses a picture over the pixel budget (413) before it is decoded,
- * bytes that do not decode (400), invalid options (400), a trace past the memory or output limit (413) or the time limit (422),
- * and answers engine-unavailable (503, retried on another worker) when the program is missing. Never returns a partial SVG.
+ * Traces a PNG, JPEG, WebP, GIF, BMP or TIFF picture to SVG. Answers engine-unavailable (503, retried on another worker) when the
+ * program is missing, before any decoding; refuses a picture over the pixel budget (413) before it is decoded, bytes that do not
+ * decode (400), invalid options (400), a trace past the memory or output limit (413) or the time limit (422). Never returns a
+ * partial SVG.
  */
 export async function vectorizeRaster(input: Buffer, sourceFormat: string, options: ConversionOptions, originalFilename: string): Promise<ConversionResult> {
   const baseName = (originalFilename || 'image').replace(/\.[^/.]+$/, '');
   const args = vectorizeArgs(parseOptions(options.vectorize));
+  const binary = engineBinary();
+  assertTimeLeft(options);
   const picture = await stagePicture(input, sourceFormat);
-  const svg = sanitizeSvgDocument(await trace(picture, args, options), VECTORIZE_MAX_OUTPUT_BYTES);
+  assertTimeLeft(options);
+  const svg = sanitizeGeneratedSvg(await trace(binary, picture, args, options));
   if (!isSvg(svg)) throw new ConversionFailedError('The SVG tracer wrote something that is not an SVG document.');
   const buffer = Buffer.from(svg, 'utf8');
   return { buffer, mimeType: SVG_MIME_TYPE, filename: `${baseName}.svg`, size: buffer.length };

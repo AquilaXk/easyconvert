@@ -92,13 +92,18 @@ export class SandboxedTimeoutError extends Error {
   }
 }
 
+/** What a byte limit bounded: what the program printed (`stdio`), or a file it wrote (`file-size`). */
+export type BufferLimitKind = 'stdio' | 'file-size';
+
 export class SandboxedBufferLimitError extends Error {
   public limitBytes: number;
+  public kind: BufferLimitKind;
 
-  constructor(limitBytes: number) {
+  constructor(limitBytes: number, kind: BufferLimitKind = 'stdio') {
     super(`Process output exceeded maximum buffer limit of ${limitBytes} bytes`);
     this.name = 'SandboxedBufferLimitError';
     this.limitBytes = limitBytes;
+    this.kind = kind;
   }
 }
 
@@ -870,7 +875,7 @@ export async function executeSandboxedBinary(
           }
           if (signal === 'SIGXFSZ') {
             const limit = options.maxFileSize || options.rlimits?.fsizeBytes || maxBuffer;
-            reject(new SandboxedBufferLimitError(limit));
+            reject(new SandboxedBufferLimitError(limit, 'file-size'));
             return;
           }
           const stderrText = stderr.toString('utf-8').trim();

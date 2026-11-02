@@ -1,4 +1,4 @@
-import type { SandboxedRlimitsOptions, UnshareIsolationOptions } from './process-sandbox';
+import type { BufferLimitKind, SandboxedRlimitsOptions, UnshareIsolationOptions } from './process-sandbox';
 
 /**
  * What the worker and its launcher helper (sandbox-launcher.ts, sandbox-launcher-child.ts) say to each other.
@@ -47,6 +47,7 @@ export interface LauncherErrorDetail {
   stdoutBytes?: number;
   timeoutMs?: number;
   limitBytes?: number;
+  limitKind?: BufferLimitKind;
   limitMb?: number;
 }
 
