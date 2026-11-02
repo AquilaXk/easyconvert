@@ -1,5 +1,5 @@
 import { ConversionFailedError } from '../types';
-import { assertInputPixels } from './image-input-limits';
+import { assertInputPixels, assertPixelBudget, type PixelBudget } from './image-input-limits';
 
 /**
  * Windows and OS/2 bitmap decoder, after the Microsoft BMP file format (BITMAPCOREHEADER, BITMAPINFOHEADER,
@@ -449,12 +449,13 @@ function readEmbeddedProfile(buf: Buffer, base: number, header: BmpHeader): Buff
   return Buffer.from(buf.subarray(at, at + header.iccSize));
 }
 
-function decodeBitmap(buf: Buffer, base: number, pixelOffset: number | null, options: DibOptions): DecodedBmp {
+function decodeBitmap(buf: Buffer, base: number, pixelOffset: number | null, options: DibOptions, budget?: PixelBudget): DecodedBmp {
   const header = readHeader(buf, base, options);
   const palette = readPalette(buf, base, header);
   const { width, rows, bitCount } = header;
-  // Dimensions come from the header alone, so the pixel limit is answered (413) before the file is judged.
+  // Dimensions come from the header alone, so the pixel limit and the caller's budget are answered (413) before the file is judged.
   assertInputPixels(width, rows);
+  if (budget) assertPixelBudget(width, rows, budget);
 
   const paletteEntryBytes = header.isCore ? CORE_PALETTE_ENTRY_BYTES : PALETTE_ENTRY_BYTES;
   const paletteBytes = palette ? palette.length * paletteEntryBytes : 0;
@@ -509,13 +510,16 @@ function decodeBitmap(buf: Buffer, base: number, pixelOffset: number | null, opt
   return { raw, width, height: rows, channels: RGBA_CHANNELS, hasAlpha, icc };
 }
 
-/** Decodes a BMP file (`BM` file header, then the DIB header, colour table and pixels) to 8-bit RGBA. */
-export function decodeBmp(buf: Buffer): DecodedBmp {
+/**
+ * Decodes a BMP file (`BM` file header, then the DIB header, colour table and pixels) to 8-bit RGBA. A `budget` lower than the input
+ * limit is checked from the header too, before anything is allocated.
+ */
+export function decodeBmp(buf: Buffer, budget?: PixelBudget): DecodedBmp {
   if (buf.length < FILE_HEADER_BYTES + 4 || buf.toString('ascii', 0, 2) !== FILE_SIGNATURE) {
     throw new BmpDecodeError('Invalid BMP file: missing BM header signature.');
   }
   const pixelOffset = buf.readUInt32LE(PIXEL_OFFSET_FIELD);
-  return decodeBitmap(buf, FILE_HEADER_BYTES, pixelOffset, {});
+  return decodeBitmap(buf, FILE_HEADER_BYTES, pixelOffset, {}, budget);
 }
 
 /** Decodes a headerless DIB (the form inside ICO and CUR files) to 8-bit RGBA. */

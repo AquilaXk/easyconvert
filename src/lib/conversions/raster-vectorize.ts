@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import sharp, { type Sharp } from 'sharp';
+import type { Sharp } from 'sharp';
 import {
   ConversionFailedError,
   CpuTaskTimeoutError,
@@ -22,10 +22,10 @@ import {
 } from '../../worker/sandbox';
 import { isSvg, sanitizeSvgDocument } from '../security/svg-sanitizer';
 import { decodeBmp } from './bmp';
+import { pipelineFromBitmap } from './bitmap-pipeline';
 import {
   asInputPixelLimitError,
   assertEncodedImageWithinLimit,
-  assertPixelBudget,
   InputPixelLimitError,
   openLimitedSharp,
   type PixelBudget,
@@ -103,16 +103,15 @@ const BMP_SOURCE = 'bmp';
 
 /**
  * The picture as the image library reads it, after its size is checked against the budget. A BMP is read by the project's own
- * decoder (the image library has no BMP loader), which checks the input pixel limit before it allocates the canvas.
+ * decoder (the image library has no BMP loader), which checks the budget from the header before it allocates the canvas, and is
+ * handed on with its embedded profile as every other BMP conversion does.
  */
 async function openPicture(input: Buffer, sourceFormat: string): Promise<Sharp> {
   if (sourceFormat !== BMP_SOURCE) {
     await assertEncodedImageWithinLimit(input, VECTORIZE_PIXEL_BUDGET);
     return openLimitedSharp(input);
   }
-  const bitmap = decodeBmp(input);
-  assertPixelBudget(bitmap.width, bitmap.height, VECTORIZE_PIXEL_BUDGET);
-  return sharp(bitmap.raw, { raw: { width: bitmap.width, height: bitmap.height, channels: bitmap.channels } });
+  return pipelineFromBitmap(decodeBmp(input, VECTORIZE_PIXEL_BUDGET));
 }
 
 /** The first frame or page, upright, as an 8-bit sRGB PNG with alpha: what the program reads. */
