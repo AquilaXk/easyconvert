@@ -23,7 +23,7 @@ const LICENCE = {
 };
 /**
  * The two files the interface ships, cut from one source by scripts/subset-web-font.py. Each has a fixed budget: Latin is the
- * only file an English page loads (42,604 bytes on 2026-11-02), Hangul is loaded by a page that draws a syllable (71,872).
+ * only file an English page loads (42,604 bytes on 2026-11-02), Hangul is loaded by a page that draws a syllable (71,992).
  */
 const FONT_FILES = {
   latin: { file: 'EasyConvertSans-latin.woff2', budgetBytes: 48 * 1024 },

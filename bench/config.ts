@@ -86,6 +86,7 @@ export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = 
   cad: null,
   raw: null,
   vector: null,
+  vectorize: null,
 };
 
 /**

@@ -160,7 +160,7 @@ async function runQpdfWithPassword(
   const overrun = new AbortController();
   const watch = setInterval(() => {
     try {
-      if (fs.statSync(output.path).size > output.maxBytes) overrun.abort(new SandboxedBufferLimitError(output.maxBytes));
+      if (fs.statSync(output.path).size > output.maxBytes) overrun.abort(new SandboxedBufferLimitError(output.maxBytes, 'file-size'));
     } catch {
       // The copy is not there yet, or already removed: nothing to measure.
     }

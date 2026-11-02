@@ -23,6 +23,8 @@ import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
 import { normalizeSvgBufferForRendering } from './svg-render-normalize';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { convertDwgToDxf } from './cad-dwg';
+import { vectorizeRaster } from './raster-vectorize';
+import { isVectorizePair } from './raster-vectorize-options';
 import { encodeSvgPageToDxf } from './vector-dxf';
 import { isSvg, sanitizeSvgDocument } from '../security/svg-sanitizer';
 import { assertReadableInProcess } from './office/office-suite-sources';
@@ -221,6 +223,11 @@ export async function convertVectorCad(
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Vector/CAD conversion payload is empty (0 bytes).');
+  }
+
+  // 0. Raster pictures traced to SVG, ahead of the routes below, which draw every other SVG target.
+  if (isVectorizePair(src, tgt)) {
+    return vectorizeRaster(inputBuffer, src, options, originalFilename);
   }
 
   // 1. 3D CAD Domain (STEP, STP, IGES, IGS, STL, OBJ)

@@ -150,7 +150,7 @@ function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
     case 'timeout':
       return new SandboxedTimeoutError(detail.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
     case 'buffer':
-      return new SandboxedBufferLimitError(detail.limitBytes ?? 0);
+      return new SandboxedBufferLimitError(detail.limitBytes ?? 0, detail.limitKind);
     case 'memory':
       return new SandboxedMemoryLimitError(detail.limitMb ?? 0, detail.signal ?? undefined);
     case 'unavailable':

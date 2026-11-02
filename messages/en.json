@@ -1124,6 +1124,45 @@
       "heading": "Archive Compression",
       "level": "Compression Level",
       "levelValue": "Level {level}"
+    },
+    "vectorize": {
+      "heading": "Vector Tracing",
+      "preset": "Preset",
+      "presetChoices": {
+        "none": "none",
+        "bw": "bw",
+        "poster": "poster",
+        "photo": "photo"
+      },
+      "presetDescriptions": {
+        "bw": "Black & white line art.",
+        "poster": "Flat graphics with few colors.",
+        "photo": "Photographs."
+      },
+      "mode": "Mode",
+      "modeChoices": {
+        "spline": "spline",
+        "polygon": "polygon",
+        "pixel": "pixel"
+      },
+      "modeDescriptions": {
+        "spline": "Smooth curves.",
+        "polygon": "Straight edges.",
+        "pixel": "Preserve pixel edges, for pixel art."
+      },
+      "advanced": "Advanced",
+      "fieldWithUnit": "{field} ({unit})",
+      "unitPixels": "px",
+      "unitBits": "bit",
+      "filterSpeckle": "Filter Speckle",
+      "filterSpeckleHint": "Discards patches smaller than this size in pixels ({min} to {max}). Raise it to remove noise from scans and JPEG artifacts.",
+      "colorPrecision": "Color Precision",
+      "colorPrecisionHint": "Significant bits per RGB channel ({min} to {max}). Lower values give fewer colors and flatter shapes.",
+      "colorPrecisionNotApplied": "The black and white preset traces two colors, so this does not apply.",
+      "simplify": "Simplify",
+      "simplifyOff": "Off",
+      "simplifyHint": "Fits curves within this distance in pixels with as few nodes as possible. Try 1 to 2.5 for a smaller file.",
+      "simplifyNotApplied": "Applies only to the spline mode."
     }
   },
   "plans": {

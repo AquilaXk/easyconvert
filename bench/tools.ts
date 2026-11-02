@@ -44,6 +44,7 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   'rsvg-convert': ['rsvg-convert'],
   gs: ['gs'],
   dwg2dxf: ['dwg2dxf'],
+  vtracer: ['vtracer'],
 };
 
 /** Arguments that make each tool print its version, and the first line of output is kept. */
@@ -74,6 +75,7 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   'rsvg-convert': ['--version'],
   gs: ['--version'],
   dwg2dxf: ['--version'],
+  vtracer: ['--version'],
   pdftoppm: ['-v'],
   qpdf: ['--version'],
 };

@@ -93,6 +93,22 @@ COPY scripts/install-ghostxps.sh /tmp/install-ghostxps.sh
 RUN /tmp/install-ghostxps.sh /opt/ghostxps
 
 # ==============================================================================
+# Stage 3b': Pinned vtracer (raster to SVG tracer)
+# ==============================================================================
+# PNG, JPEG, WebP, GIF, BMP and TIFF to SVG. vtracer is MIT OR Apache-2.0; the project's own statically linked musl build for this
+# architecture is fetched from its release page, pinned by SHA-256 in scripts/install-vtracer.sh with its licence text and the
+# notices of the crates linked into it, and the worker runs it unmodified as a separate sandboxed process; nothing links it into the
+# application. Debian ships no package of it.
+FROM ${NODE_IMAGE} AS vtracer
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-vtracer.sh /tmp/install-vtracer.sh
+COPY scripts/vtracer-notices/THIRD-PARTY-NOTICES /tmp/vtracer-notices/THIRD-PARTY-NOTICES
+RUN /tmp/install-vtracer.sh /opt/vtracer
+
+# ==============================================================================
 # Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
 # ==============================================================================
 # Every audio and video conversion. FFmpeg is built here from its release archive and one patch (scripts/ffmpeg-patches), both
@@ -364,6 +380,18 @@ COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
 COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
 RUN gxps -v
 
+# Raster to SVG tracer (pinned release program from the vtracer stage). Its licence text goes to /usr/share/doc/vtracer/copyright, which
+# the notices step below collects into /licenses with the system packages; THIRD-PARTY-NOTICES beside it holds the licences of the crates
+# linked into it, and the SOURCE file names the archive and its digest. The build
+# fails unless the program traces an 8 x 8 PNG with a black square, written here as bytes, into an SVG with a path.
+COPY --from=vtracer /opt/vtracer/bin/vtracer /usr/local/bin/vtracer
+COPY --from=vtracer /opt/vtracer/share/doc/vtracer /usr/share/doc/vtracer
+RUN dir="$(mktemp -d)" \
+    && printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\010\000\000\000\010\001\003\000\000\000\376\301,\310\000\000\000\006PLTE\377\377\377\000\000\000U\302\323~\000\000\000\021IDAT\010\327c\140\000\002\033(d\140\140\000\000\007\220\000\361\354\255\014\032\000\000\000\000IEND\256B\140\202' > "$dir/in.png" \
+    && vtracer --input "$dir/in.png" --output "$dir/out.svg" \
+    && grep -q '<path d="M' "$dir/out.svg" \
+    && rm -rf "$dir"
+
 # DjVu renderer (the patched djvulibre built in the djvulibre stage, GPL-2.0-or-later, started as a separate program like the other GPL
 # tools above). The worker finds it as /usr/local/bin/ddjvu with djvused beside it; the distribution's package is not installed, so no
 # /usr/bin/ddjvu comes first. Its licence text goes to /usr/share/doc/djvulibre/copyright, which the notices step below collects into
@@ -484,6 +512,8 @@ RUN mkdir -p /licenses \
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
 RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
+RUN cp /usr/share/doc/vtracer/SOURCE /licenses/vtracer.SOURCE
+RUN cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.

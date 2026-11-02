@@ -315,6 +315,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       expect(caughtError).toBeInstanceOf(SandboxedBufferLimitError);
       const bufError = caughtError as SandboxedBufferLimitError;
       expect(bufError.limitBytes).toBe(2048);
+      expect(bufError.kind).toBe('file-size');
       expect(bufError.message).toContain('2048 bytes');
     });
 

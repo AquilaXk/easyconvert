@@ -1216,15 +1216,30 @@ export function sanitizeSvgString(svg: string): string {
   return sanitizeSvgStringAtDepth(svg, 0, budget);
 }
 
+function sanitizeWithin(svg: string, maxChars: number): string {
+  if (typeof svg === 'string' && svg.length > maxChars) {
+    throw new SvgSanitizationError(`SVG input exceeds the ${maxChars}-character limit.`);
+  }
+  return sanitizeSvgString(svg);
+}
+
 /**
  * Sanitizes an SVG document after enforcing the SVG input size cap. SVG entry points use this; callers that
  * run the sanitizer over arbitrary XML use {@link sanitizeSvgString}, which has no size cap.
  */
 export function sanitizeSvgDocument(svg: string): string {
-  if (typeof svg === 'string' && svg.length > MAX_SVG_INPUT_CHARS) {
-    throw new SvgSanitizationError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
-  }
-  return sanitizeSvgString(svg);
+  return sanitizeWithin(svg, MAX_SVG_INPUT_CHARS);
+}
+
+/**
+ * The largest SVG a program of this service writes: the output bound of the raster tracer, three times its measured 16 MP
+ * poster trace (docs/policy-decisions.md, entry 142).
+ */
+export const MAX_GENERATED_SVG_CHARS = 32 * 1024 * 1024;
+
+/** Sanitizes an SVG that a program run by this service wrote, after enforcing {@link MAX_GENERATED_SVG_CHARS}. */
+export function sanitizeGeneratedSvg(svg: string): string {
+  return sanitizeWithin(svg, MAX_GENERATED_SVG_CHARS);
 }
 
 /**
