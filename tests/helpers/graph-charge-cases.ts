@@ -22,6 +22,7 @@ import { storageProvider } from '../../src/lib/storage';
 import { s3Storage } from '../../src/lib/storage/s3-storage';
 import { StorageServiceError } from '../../src/lib/storage/adapters/adapter-interface';
 import { ConversionFailedError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
+import { SecretSealError, unsealJobSecret } from '../../src/lib/security/job-secret-seal';
 import { gzipRemote } from './gzip-remote';
 
 /**
@@ -36,6 +37,8 @@ import { gzipRemote } from './gzip-remote';
 
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
+/** A sealed password that fails the format check of a sealed blob (no `sealed:v1:` prefix), so it never opens under any key. */
+const MALFORMED_SEALED_BLOB = 'not-a-sealed-blob';
 const GRAPH_TIMEOUT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const HTTP_CONFLICT = 409;
@@ -94,6 +97,17 @@ async function csvArchiveUpload(count: number) {
   const zip = new JSZip();
   for (let i = 1; i <= count; i++) zip.file(`part-${i}.csv`, CSV);
   return { op: 'import.upload', storageKey: saveUpload('parts.zip', await zip.generateAsync({ type: 'nodebuffer' }), 'application/zip') } as const;
+}
+
+/** The seal error `open` throws; fails when it throws none or another error. */
+function sealFailureOf(open: () => unknown): SecretSealError {
+  try {
+    open();
+  } catch (error) {
+    if (error instanceof SecretSealError) return error;
+    throw error;
+  }
+  throw new Error('the sealed value opened');
 }
 
 function anonymousOwner(): string {
@@ -283,17 +297,18 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     await runGraph(importAndConvert(), 'failed', 0);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
-  const UNSEALABLE_BLOB = ['not', 'a', 'sealed', 'blob'].join('-');
-
-  it('gives the units back when the password of a convert node cannot be opened, before the node starts its work', async () => {
-    await runGraph(
+  it('gives the units back when the password of a convert node is malformed, before the node starts its work', async () => {
+    const formatCheck = sealFailureOf(() => unsealJobSecret(MALFORMED_SEALED_BLOB, 'any-job'));
+    expect(formatCheck.code).toBe('MALFORMED_BLOB');
+    const queued = await queueGraph(
       {
         failurePolicy: 'fail_fast',
-        nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { sealedPassword: UNSEALABLE_BLOB } } },
+        nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { sealedPassword: MALFORMED_SEALED_BLOB } } },
       },
-      'failed',
       0
     );
+    await queued.ended('failed');
+    expect((await graphScheduler.getGraphState(queued.graphId))?.nodes.conv.error).toBe(formatCheck.message);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('gives the units back when the worker fails a node job without running the node', async () => {
