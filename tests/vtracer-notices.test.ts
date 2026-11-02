@@ -80,10 +80,18 @@ describe('the third-party notices of the tracer program', () => {
     expect(noticesText).toMatch(/Apache License\s+Version 2\.0, January 2004/);
   });
 
-  it('are pinned by digest in the install script and installed beside the licence text of the program', () => {
+  it('are pinned by digest in the install script, checked before any download, and installed beside the licence text of the program', () => {
     expect(pin('VTRACER_NOTICES_SHA256')).toBe(sha256(notices));
     expect(INSTALL).toMatch(/install -m 0644 "\$notices" "\$INSTALL_DIR\/share\/doc\/vtracer\/THIRD-PARTY-NOTICES"/);
-    expect(INSTALL.indexOf('VTRACER_NOTICES_SHA256}  $notices"')).toBeLessThan(INSTALL.indexOf('install -m 0644 "$notices"'));
+    const check = INSTALL.indexOf('VTRACER_NOTICES_SHA256}  $notices"');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(INSTALL.indexOf('\nfetch '));
+  });
+
+  it('keep their CRLF lines in any checkout, so the pinned digest holds', () => {
+    const attribute = execFileSync('git', ['check-attr', 'text', '--', path.relative(ROOT, NOTICES_FILE)], { cwd: ROOT, encoding: 'utf8' });
+    expect(attribute.trim().endsWith(': text: unset')).toBe(true);
+    expect(noticesText).toContain('\r\n');
   });
 
   it('reach the worker image and its licence directory', () => {

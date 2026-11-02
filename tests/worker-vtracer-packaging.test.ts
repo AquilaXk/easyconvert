@@ -89,7 +89,7 @@ describe('the install script of the tracer', () => {
     }
   });
 
-  it('downloads over HTTPS only, redirects included, and refuses a download past its size bound', () => {
+  it('downloads over HTTPS only, redirects included, and asks curl to refuse a download announced past its size bound', () => {
     expect(INSTALL).toMatch(/curl --proto '=https' --proto-redir '=https' --tlsv1\.2 --max-filesize "\$MAX_DOWNLOAD_BYTES"/);
   });
 
