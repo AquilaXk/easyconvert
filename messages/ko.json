@@ -1275,21 +1275,49 @@
     "pair": {
       "title": "{src} → {tgt} 변환기",
       "lead": {
-        "extractAudio": "{src} 동영상의 소리를 {tgt} 파일로 온라인에서 추출해요.",
-        "convert": "{src} 파일을 {tgt} 형식으로 온라인에서 변환해요."
+        "extractAudio": "{src} 파일의 소리를 {tgtFiles} 파일로 온라인에서 추출해요.",
+        "convert": "{src} 파일을 {tgtKind, select, category {{tgtFiles}} other {{tgt}}} 형식으로 온라인에서 변환해요."
       }
     },
     "format": {
       "title": "{name} 변환기",
-      "lead": {
-        "audio": "{name} 오디오 파일을 온라인에서 변환해요.",
-        "video": "{name} 동영상을 온라인에서 변환해요.",
-        "image": "{name} 이미지를 온라인에서 변환해요.",
-        "archive": "{name} 압축 파일을 온라인에서 변환해요.",
-        "data": "{name} 스프레드시트와 데이터 파일을 온라인에서 변환해요.",
-        "presentation": "{name} 프레젠테이션을 온라인에서 변환해요.",
-        "ebook": "{name} 전자책을 온라인에서 변환해요.",
-        "document": "{name} 문서를 온라인에서 변환해요."
+      "lead": "{files} 파일을 온라인에서 변환해요."
+    },
+    "files": {
+      "format": "{name}",
+      "category": {
+        "video": "동영상",
+        "audio": "오디오",
+        "image": "이미지",
+        "document": "문서",
+        "ebook": "전자책",
+        "archive": "압축",
+        "vector": "벡터 이미지",
+        "font": "글꼴",
+        "cad": "CAD 도면",
+        "spreadsheet": "스프레드시트",
+        "presentation": "프레젠테이션",
+        "data": "데이터",
+        "word": "Word",
+        "excel": "Excel",
+        "powerpoint": "PowerPoint",
+        "photo": "사진",
+        "picture": "그림",
+        "music": "음악"
+      },
+      "kind": {
+        "audio": "{name} 오디오",
+        "video": "{name} 동영상",
+        "image": "{name} 이미지",
+        "vector": "{name} 벡터 이미지",
+        "document": "{name} 문서",
+        "spreadsheet": "{name} 스프레드시트",
+        "presentation": "{name} 프레젠테이션",
+        "data": "{name} 데이터",
+        "ebook": "{name} 전자책",
+        "archive": "{name} 압축",
+        "font": "{name} 글꼴",
+        "cad": "{name} 도면"
       }
     },
     "merge": {
@@ -1330,25 +1358,17 @@
       "Photo": "사진",
       "Picture": "그림",
       "Music": "음악",
-      "Images": "이미지",
-      "Videos": "동영상",
-      "Documents": "문서",
-      "Archives": "압축 파일",
-      "Spreadsheets": "스프레드시트",
-      "Presentations": "프레젠테이션",
-      "Ebooks": "전자책",
-      "Fonts": "글꼴",
-      "Vectors": "벡터"
+      "CAD": "CAD"
     },
     "related": {
-      "pair": "{src} 파일은 {tgt} 말고도 {formats} 형식으로 바꿀 수 있어요.",
-      "format": "{name} 파일은 {formats} 등으로 바꿀 수 있어요."
+      "pair": "{formats} 형식으로도 바꿀 수 있어요.",
+      "format": "{formats} 등으로 바꿀 수 있어요."
     },
-    "options": "옵션으로 {subjects} 같은 설정을 바꿀 수 있어요.",
+    "options": "옵션에서 {subjects} 등을 정할 수 있어요.",
     "subjects": {
       "imageSize": "이미지 크기",
       "quality": "품질",
-      "metadata": "메타데이터",
+      "metadata": "메타데이터 제거",
       "videoCodec": "동영상 코덱",
       "frameRate": "프레임 속도",
       "resolution": "해상도",
@@ -1360,7 +1380,7 @@
       "ocr": "문자 인식",
       "password": "비밀번호",
       "delimiter": "구분 기호",
-      "sheet": "시트",
+      "sheet": "시트 선택",
       "compression": "압축 수준"
     }
   },

@@ -1275,21 +1275,49 @@
     "pair": {
       "title": "{src} to {tgt} Converter",
       "lead": {
-        "extractAudio": "Extract the audio of {src} videos as {tgt} files online.",
-        "convert": "Convert {src} files to {tgt} online."
+        "extractAudio": "Extract the sound of {src} as {tgtFiles} online.",
+        "convert": "Convert {src} to {tgtKind, select, category {{tgtFiles}} other {{tgt}}} online."
       }
     },
     "format": {
       "title": "{name} Converter",
-      "lead": {
-        "audio": "Convert {name} audio files online.",
-        "video": "Convert {name} videos online.",
-        "image": "Convert {name} images online.",
-        "archive": "Convert {name} archives online.",
-        "data": "Convert {name} spreadsheets and data files online.",
-        "presentation": "Convert {name} presentations online.",
-        "ebook": "Convert {name} ebooks online.",
-        "document": "Convert {name} documents online."
+      "lead": "Convert {files} online."
+    },
+    "files": {
+      "format": "{name} files",
+      "category": {
+        "video": "videos",
+        "audio": "audio files",
+        "image": "images",
+        "document": "documents",
+        "ebook": "e-books",
+        "archive": "archives",
+        "vector": "vector images",
+        "font": "fonts",
+        "cad": "CAD drawings",
+        "spreadsheet": "spreadsheets",
+        "presentation": "presentations",
+        "data": "data files",
+        "word": "Word documents",
+        "excel": "Excel spreadsheets",
+        "powerpoint": "PowerPoint presentations",
+        "photo": "photos",
+        "picture": "pictures",
+        "music": "music files"
+      },
+      "kind": {
+        "audio": "{name} audio files",
+        "video": "{name} videos",
+        "image": "{name} images",
+        "vector": "{name} vector images",
+        "document": "{name} documents",
+        "spreadsheet": "{name} spreadsheets",
+        "presentation": "{name} presentations",
+        "data": "{name} data files",
+        "ebook": "{name} e-books",
+        "archive": "{name} archives",
+        "font": "{name} fonts",
+        "cad": "{name} drawings"
       }
     },
     "merge": {
@@ -1330,25 +1358,17 @@
       "Photo": "Photo",
       "Picture": "Picture",
       "Music": "Music",
-      "Images": "Images",
-      "Videos": "Videos",
-      "Documents": "Documents",
-      "Archives": "Archives",
-      "Spreadsheets": "Spreadsheets",
-      "Presentations": "Presentations",
-      "Ebooks": "Ebooks",
-      "Fonts": "Fonts",
-      "Vectors": "Vectors"
+      "CAD": "CAD"
     },
     "related": {
-      "pair": "Besides {tgt}, {src} files also convert to {formats}.",
-      "format": "Among others, {name} files convert to {formats}."
+      "pair": "Other targets include {formats}.",
+      "format": "Targets include {formats}."
     },
-    "options": "You can use the options to set the {subjects}.",
+    "options": "Options include {subjects}.",
     "subjects": {
       "imageSize": "image size",
       "quality": "quality",
-      "metadata": "metadata",
+      "metadata": "metadata removal",
       "videoCodec": "video codec",
       "frameRate": "frame rate",
       "resolution": "resolution",
@@ -1360,7 +1380,7 @@
       "ocr": "text recognition",
       "password": "password",
       "delimiter": "delimiter",
-      "sheet": "sheet",
+      "sheet": "sheet choice",
       "compression": "compression level"
     }
   },

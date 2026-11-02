@@ -32,9 +32,9 @@ const categoryPairs = ['video-to-gif', 'video-to-mp3', 'video-to-audio', 'image-
 
 describe('the intro of a converter page', () => {
   it.each([
-    ['png-to-jpg', 'en', 'Convert PNG files to JPG online. Other targets include WEBP, AVIF, TIFF, GIF, and BMP. The options set the image size, quality, and metadata.'],
-    ['png-to-jpg', 'ko', 'PNG 파일을 JPG 형식으로 온라인에서 변환해요. JPG 말고도 WEBP, AVIF, TIFF, GIF, BMP 형식으로 바꿀 수 있어요. 옵션에서 이미지 크기, 품질, 메타데이터 등을 바꿀 수 있어요.'],
-    ['mp4-to-mp3', 'en', 'Extract the sound of MP4 files as MP3 files online. Other targets include WEBM, MKV, AVI, and MOV. The options set the bitrate, sample rate, and audio channels.'],
+    ['png-to-jpg', 'en', 'Convert PNG files to JPG online. Other targets include WEBP, AVIF, TIFF, GIF, and BMP. Options include image size, quality, and metadata removal.'],
+    ['png-to-jpg', 'ko', 'PNG 파일을 JPG 형식으로 온라인에서 변환해요. WEBP, AVIF, TIFF, GIF, BMP 형식으로도 바꿀 수 있어요. 옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
+    ['mp4-to-mp3', 'en', 'Extract the sound of MP4 files as MP3 files online. Other targets include WEBM, MKV, AVI, and MOV. Options include bitrate, sample rate, and audio channels.'],
     ['docx-to-pdf', 'en', 'Convert DOCX files to PDF online. Other targets include HTML, TXT, MD, EPUB, and ODT.'],
     ['video-converter', 'en', 'Convert videos online. Targets include WEBM, MKV, AVI, MOV, and MP3.'],
     ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있어요.'],
@@ -69,7 +69,7 @@ describe('the intro of a converter page', () => {
   });
 
   it('names each format in capitals and never calls a font or a drawing a document', () => {
-    const misnamed = formatPages.filter((slug) => {
+    const misnamed = formatPages.filter((slug) => !categoryPages.includes(slug)).filter((slug) => {
       const id = slug.replace(/-converter$/, '');
       const lead = firstSentence(slugPageCopy(slug, 'en').description);
       const ownNoun = ['font', 'cad'].includes(FORMAT_REGISTRY[id].category);
@@ -89,7 +89,7 @@ describe('the intro of a converter page', () => {
 const CONTROL_SUBJECTS: ReadonlyArray<[controlId: string, subject: string]> = [
   ['opt-image-width', 'image size'],
   ['opt-image-quality', 'quality'],
-  ['opt-strip-metadata', 'metadata'],
+  ['opt-strip-metadata', 'metadata removal'],
   ['opt-doc-pages', 'page range'],
   ['opt-doc-orientation', 'page orientation'],
   ['opt-doc-ocr-lang', 'text recognition'],
@@ -101,7 +101,7 @@ const CONTROL_SUBJECTS: ReadonlyArray<[controlId: string, subject: string]> = [
   ['opt-audio-sample-rate', 'sample rate'],
   ['opt-audio-channels', 'audio channels'],
   ['opt-data-delimiter', 'delimiter'],
-  ['opt-data-sheet-index', 'sheet'],
+  ['opt-data-sheet-index', 'sheet choice'],
   ['opt-archive-compression', 'compression level'],
 ];
 
@@ -131,6 +131,6 @@ describe('the options a pair page names', () => {
       return;
     }
     const named = new Intl.ListFormat('en', { type: 'conjunction' }).format(rendered.slice(0, 3));
-    expect(description.endsWith(`The options set the ${named}.`), description).toBe(true);
+    expect(description.endsWith(`Options include ${named}.`), description).toBe(true);
   });
 });
