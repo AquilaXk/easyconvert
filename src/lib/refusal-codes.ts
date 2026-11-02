@@ -38,6 +38,26 @@ export const AUTH_ERROR_CODES = [
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 /**
+ * Why a route of the dashboard (`/api/account/files/**`, `/api/keys/**`, `/api/webhooks/dlq/**`) refused: the access check
+ * (no session or key, a key or address not allowed, the burst limit, an offline store), a key without the `*` scope these
+ * routes require, a missing or unknown id, key settings or a grace period out of range, or a key that could not be made.
+ */
+export const DASHBOARD_REFUSAL_CODES = [
+  'sign_in_required',
+  'forbidden',
+  'rate_limited',
+  'service_unavailable',
+  'admin_scope_required',
+  'id_required',
+  'not_found',
+  'invalid_key_settings',
+  'invalid_grace_period',
+  'key_create_failed',
+] as const;
+
+export type DashboardRefusalCode = (typeof DASHBOARD_REFUSAL_CODES)[number];
+
+/**
  * Why `/api/convert` refused a file or a queued conversion failed: the request itself, or the `refusalCode` the class of the
  * error a conversion threw declares or inherits (`ConversionFailedError` and the classes under it in src/lib/types.ts).
  */

@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { accessRefusal } from '@/lib/api/dashboard-refusal';
+import { codedRefusal } from '@/lib/api/problem-details';
+import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { validateApiAccess } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 
 export const dynamic = 'force-dynamic';
+
+const refusal = codedRefusal<DashboardRefusalCode>;
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -17,16 +22,10 @@ export async function POST(req: NextRequest, context: RouteContext) {
   if (!user) {
     const auth = await validateApiAccess(req, 0);
     if (!auth.authorized || !auth.user) {
-      return NextResponse.json(
-        { success: false, error: auth.error ?? 'Unauthorized: Sign in or valid API key required.' },
-        { status: auth.status ?? 401, headers: authErrorHeaders(auth) }
-      );
+      return accessRefusal(auth, 'Unauthorized: Sign in or valid API key required.');
     }
     if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
-      return NextResponse.json(
-        { success: false, error: 'Forbidden: API key lacks admin wildcard (*) scope to rotate API keys.' },
-        { status: 403 }
-      );
+      return refusal(403, 'admin_scope_required', 'Forbidden: API key lacks admin wildcard (*) scope to rotate API keys.');
     }
     user = auth.user;
   }
@@ -34,10 +33,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
   const resolvedParams = await Promise.resolve(context.params);
   const keyId = resolvedParams.id;
   if (!keyId) {
-    return NextResponse.json(
-      { success: false, error: 'Key ID parameter missing.' },
-      { status: 400 }
-    );
+    return refusal(400, 'id_required', 'Key ID parameter missing.');
   }
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -50,23 +46,14 @@ export async function POST(req: NextRequest, context: RouteContext) {
       body.gracePeriodSeconds < 0 ||
       body.gracePeriodSeconds > MAX_GRACE_PERIOD_SECONDS
     ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `gracePeriodSeconds must be a finite number between 0 and ${MAX_GRACE_PERIOD_SECONDS} seconds (7 days).`,
-        },
-        { status: 400 }
-      );
+      return refusal(400, 'invalid_grace_period', `gracePeriodSeconds must be a finite number between 0 and ${MAX_GRACE_PERIOD_SECONDS} seconds (7 days).`);
     }
     gracePeriodSeconds = Math.floor(body.gracePeriodSeconds);
   }
 
   const result = await redisKeyStore.rotateApiKey(user.id, keyId, { gracePeriodSeconds });
   if (!result) {
-    return NextResponse.json(
-      { success: false, error: 'API key not found, inactive, or not owned by the current user.' },
-      { status: 404 }
-    );
+    return refusal(404, 'not_found', 'API key not found, inactive, or not owned by the current user.');
   }
 
   return NextResponse.json({

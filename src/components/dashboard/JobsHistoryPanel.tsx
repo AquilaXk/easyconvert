@@ -9,7 +9,7 @@ import { useRetentionLabel } from './useRetentionLabel';
 interface JobsHistoryPanelProps {
   files: FileWithRemaining[];
   /** The files whose delete request is still running; their button is off so a second click sends no second request. */
-  deletingFileIds?: readonly string[];
+  deletingFileIds: readonly string[];
   loading: boolean;
   onRefresh: () => void;
   onDeleteFile: (id: string) => void;
@@ -17,7 +17,7 @@ interface JobsHistoryPanelProps {
 
 export function JobsHistoryPanel({
   files,
-  deletingFileIds = [],
+  deletingFileIds,
   loading,
   onRefresh,
   onDeleteFile,

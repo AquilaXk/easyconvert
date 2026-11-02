@@ -7,13 +7,6 @@
     "maxValue": 31
   },
   {
-    "file": "src/app/api/keys/[id]/route.ts",
-    "rule": "complexity",
-    "function": "PATCH",
-    "count": 1,
-    "maxValue": 32
-  },
-  {
     "file": "src/app/api/storage/file/[...key]/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "GET",

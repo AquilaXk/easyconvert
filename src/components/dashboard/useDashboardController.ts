@@ -12,8 +12,8 @@ import {
 import { useFilesAndDlqController } from './useDashboardResources';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { applySessionChange } from '@/lib/viewer-plan';
-import { SINGLE_CAUSE_STATUS_PROBLEMS, useProblemWording } from '../i18n/error-wording';
-import { settleAlreadyGone } from './already-gone';
+import { useDashboardErrorWording } from '../i18n/error-wording';
+import { useRecordDelete } from './useRecordDelete';
 
 /** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
 export function buildKeyCreationRequest(
@@ -77,7 +77,7 @@ export function useApiKeysController(
 ) {
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
-  const problemWording = useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
+  const problemWording = useDashboardErrorWording();
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [quota, setQuota] = useState<QuotaUsage | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -163,27 +163,21 @@ export function useApiKeysController(
     }
   };
 
-  const handleRevokeKey = async (id: string) => {
-    onReportError(null);
-    try {
-      const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
-      const dropRow = () => {
-        setApiKeys((prev) => prev.filter((key) => key.id !== id));
-        setRevokingKeyId(null);
-      };
-      if (settleAlreadyGone(res.status, t('revokeKeyGone'), onReportError, dropRow)) return;
-      if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        onReportError(problemWording(data, res.status, t('revokeKey')));
-        return;
-      }
-      setRevokingKeyId(null);
-      await fetchKeysAndQuota();
-    } catch (error) {
-      warnBrowserFailure('Revoking an API key failed', error);
-      onReportError(t('revokeKeyNetwork'));
-    }
-  };
+  // A revoked key stays in the list as revoked; one the server no longer knows leaves it. Either way only its own
+  // confirmation closes, so the confirmation of another key opened meanwhile stays open.
+  const keyRevoke = useRecordDelete({
+    url: (id) => `/api/keys/${id}`,
+    goneSentence: t('revokeKeyGone'),
+    failedSentence: t('revokeKey'),
+    networkSentence: t('revokeKeyNetwork'),
+    warnNetworkFailure: (error) => warnBrowserFailure('Revoking an API key failed', error),
+    onReportError,
+    onRemoved: (id, wasGone) => {
+      if (wasGone) setApiKeys((prev) => prev.filter((key) => key.id !== id));
+      setRevokingKeyId((current) => (current === id ? null : current));
+    },
+    refetch: fetchKeysAndQuota,
+  });
 
   const handleToggleScope = (scope: ApiKeyScope, checked: boolean) => {
     setSelectedScopes((prev) => {
@@ -206,7 +200,7 @@ export function useApiKeysController(
     onExpiryChange: setKeyExpiry,
     onGenerateKey: (event) => { void handleGenerateKey(event); },
     onRequestRevoke: setRevokingKeyId,
-    onConfirmRevoke: (id) => { void handleRevokeKey(id); },
+    onConfirmRevoke: (id) => { void keyRevoke.remove(id); },
     onCopy: copyToClipboard,
   };
 
