@@ -569,15 +569,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
     }
 
-    // Persist multipart upload into S3 staging storage only after magic byte validation passes. A graph reads every input
-    // from storage, so an inline base64 input of a graph is stored too, and its import nodes name the stored file.
-    if (uploadedBuffer && fileMeta && !storageKey) {
-      storageKey = await storeRequestInput(uploadedBuffer, fileMeta);
-    } else if (graph && inputBufferBase64 && !storageKey) {
-      const decoded = Buffer.from(inputBufferBase64, 'base64');
-      storageKey = await storeRequestInput(decoded, { name: originalFilename || 'input', type: sourceDef.mimeType, size: decoded.length });
-      inputBufferBase64 = undefined;
-    }
+    // Persist the request's own input only after magic byte validation passes; a graph's import nodes then name it.
+    ({ storageKey, inputBufferBase64 } = await storedRequestInput({ storageKey, uploadedBuffer, fileMeta, inputBufferBase64, graph, filename: originalFilename, mimeType: sourceDef.mimeType }));
     if (graph && storageKey) graph.nodes = withInlineInputStored(normalizeGraphNodes(graph), storageKey);
 
     // Resolve target format definition
@@ -667,6 +660,28 @@ async function storeRequestInput(buffer: Buffer, file: { name: string; type: str
   const init = await s3Storage.initiateMultipartUpload(file.name, file.type, file.size);
   await s3Storage.uploadPart(init.uploadId, 1, buffer);
   return (await s3Storage.completeMultipartUpload(init.uploadId)).key;
+}
+
+/**
+ * The input a job or graph reads: a key it named, or the input sent in the request body, stored. A multipart file is always
+ * stored; an inline base64 input is stored only for a graph, which reads every input from storage, and a single job keeps it
+ * in its data.
+ */
+async function storedRequestInput(input: {
+  storageKey: string | undefined;
+  uploadedBuffer: Buffer | null;
+  fileMeta: { name: string; type: string; size: number } | null;
+  inputBufferBase64: string | undefined;
+  graph: JobGraph | undefined;
+  filename: string;
+  mimeType: string;
+}): Promise<{ storageKey?: string; inputBufferBase64?: string }> {
+  const { storageKey, uploadedBuffer, fileMeta, inputBufferBase64, graph } = input;
+  if (storageKey) return { storageKey, inputBufferBase64 };
+  if (uploadedBuffer && fileMeta) return { storageKey: await storeRequestInput(uploadedBuffer, fileMeta), inputBufferBase64 };
+  if (!graph || !inputBufferBase64) return { inputBufferBase64 };
+  const decoded = Buffer.from(inputBufferBase64, 'base64');
+  return { storageKey: await storeRequestInput(decoded, { name: input.filename || 'input', type: input.mimeType, size: decoded.length }) };
 }
 
 /** The nodes of a graph with each import.upload node that names the request's own input (`inline`) reading `storageKey`. */

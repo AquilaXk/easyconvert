@@ -50,7 +50,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 178
+    "maxValue": 177
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -64,7 +64,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 509
+    "maxValue": 505
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
