@@ -169,6 +169,44 @@ describe('the hold of a link import', () => {
     expect(reserveUpload(second.record, { id: 'c', bytes: MIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy)).toEqual({ refusal: 'open-uploads' });
   });
 
+  const freshCaller = () => anonymousUserId(`198.51.100.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
+
+  async function heldImport(caller: string, limitBytes: number, holdId?: string) {
+    const hold = await reserveLinkImport(caller, 'anonymous', IMPORT_DEADLINE_MS, limitBytes, holdId);
+    if ('refusal' in hold) throw new Error(`refused: ${hold.refusal}`);
+    return hold.reservation;
+  }
+
+  it('holds one file at the limit it is given, and the rest of the day when less is left', async () => {
+    const caller = freshCaller();
+    const first = await heldImport(caller, GIB);
+    expect(first.heldBytes).toBe(GIB);
+    await first.settle(1.5 * GIB);
+
+    expect((await heldImport(caller, GIB)).heldBytes).toBe(0.5 * GIB);
+  });
+
+  it('refuses an import while other imports hold the rest of the day as held, and once the day is received as daily-bytes', async () => {
+    const caller = freshCaller();
+    const first = await heldImport(caller, GIB);
+    const second = await heldImport(caller, GIB);
+
+    expect(await reserveLinkImport(caller, 'anonymous', IMPORT_DEADLINE_MS, GIB)).toEqual({ refusal: 'held' });
+    await first.settle(GIB);
+    await second.settle(GIB);
+    expect(await reserveLinkImport(caller, 'anonymous', IMPORT_DEADLINE_MS, GIB)).toEqual({ refusal: 'daily-bytes' });
+  });
+
+  it('replaces the hold an import of the same id left, so a retried import holds its bytes once', async () => {
+    const caller = freshCaller();
+    await heldImport(caller, GIB, 'graph_1:link');
+    const retried = await heldImport(caller, GIB, 'graph_1:link');
+
+    expect(await bytesBroughtInToday(caller)).toBe(GIB);
+    await retried.settle(7 * MIB);
+    expect(await bytesBroughtInToday(caller)).toBe(7 * MIB);
+  });
+
   it('is settled once: a second settle of the same import charges nothing more', async () => {
     const caller = anonymousUserId(`198.51.100.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
     const hold = await reserveLinkImport(caller, 'anonymous', IMPORT_DEADLINE_MS);

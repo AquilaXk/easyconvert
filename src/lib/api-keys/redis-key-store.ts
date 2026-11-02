@@ -18,6 +18,15 @@ import { decryptSecret } from './secret-encryption';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
+import {
+  COMMIT_QUOTA_LUA_SCRIPT,
+  DEDUCT_QUOTA_LUA_SCRIPT,
+  EXTEND_QUOTA_LUA_SCRIPT,
+  RESERVE_QUOTA_LUA_SCRIPT,
+  ROLLBACK_QUOTA_LUA_SCRIPT,
+  SETTLE_QUOTA_LUA_SCRIPT,
+  TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
+} from './quota-lua-scripts';
 
 export { isIpInCidr, isIpAllowed };
 
@@ -29,6 +38,8 @@ export interface QuotaReservation {
   createdAt: number;
   expiresAt: number;
   status: 'reserved' | 'committed' | 'rolled_back';
+  /** The units each extension added to the reservation, by extension id (`extendQuota`). */
+  extensions?: Record<string, number>;
 }
 
 export interface RedisKeyStoreOptions {
@@ -39,149 +50,6 @@ export interface RedisKeyStoreOptions {
   redisUrl?: string;
   redisClient?: Redis;
 }
-
-/**
- * Enterprise Distributed Atomic Lua Scripts for Quota Transactions.
- * Used when connecting to Redis clusters to avoid TOCTOU concurrency race conditions.
- */
-export const RESERVE_QUOTA_LUA_SCRIPT = `
--- KEYS[1]: usage key (e.g. easyconvert:usage:{userId}:YYYY-MM-DD)
--- KEYS[2]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
--- ARGV[1]: units requested
--- ARGV[2]: max daily limit
--- ARGV[3]: seconds until the day of the usage key ends (midnight UTC); the reservation lives as long, so it can be
---          given back for as long as the count it was charged to exists
-local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-local units = tonumber(ARGV[1])
-local limit = tonumber(ARGV[2])
-
-if current + units <= limit then
-  redis.call('INCRBY', KEYS[1], units)
-  if current == 0 then
-    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
-  end
-  redis.call('SET', KEYS[2], units, 'EX', tonumber(ARGV[3]))
-  return {1, limit - (current + units)}
-else
-  return {0, limit - current}
-end
-`;
-
-/**
- * Gives the reserved units back once. A reservation that is gone (committed, settled, rolled back, or its day over)
- * changes nothing, and a count that is gone (its day over) is not made again.
- */
-export const ROLLBACK_QUOTA_LUA_SCRIPT = `
--- KEYS[1]: usage key
--- KEYS[2]: reservation key
-local units = tonumber(redis.call('GET', KEYS[2]) or '0')
-if units <= 0 then
-  return 0
-end
-redis.call('DEL', KEYS[2])
-if redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('DECRBY', KEYS[1], units)
-end
-return 1
-`;
-
-export const COMMIT_QUOTA_LUA_SCRIPT = `
--- KEYS[1]: reservation key
-return redis.call('DEL', KEYS[1])
-`;
-
-/** Charges the units a request used in place of those it reserved, once, under the same rules as the rollback. */
-export const SETTLE_QUOTA_LUA_SCRIPT = `
--- KEYS[1]: usage key (e.g. easyconvert:usage:{userId}:YYYY-MM-DD)
--- KEYS[2]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
--- ARGV[1]: actual units consumed
-local reserved = redis.call('GET', KEYS[2])
-if not reserved then
-  return {0, 0}
-end
-local diff = tonumber(ARGV[1]) - tonumber(reserved)
-redis.call('DEL', KEYS[2])
-if diff ~= 0 and redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('INCRBY', KEYS[1], diff)
-end
-return {1, diff}
-`;
-
-export const DEDUCT_QUOTA_LUA_SCRIPT = `
--- KEYS[1]: usage key (e.g. easyconvert:usage:userId:YYYY-MM-DD)
--- ARGV[1]: units requested
--- ARGV[2]: max daily limit
--- ARGV[3]: usage key TTL in seconds (until midnight UTC)
-local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-local units = tonumber(ARGV[1])
-local limit = tonumber(ARGV[2])
-
-if current + units <= limit then
-  redis.call('INCRBY', KEYS[1], units)
-  if current == 0 then
-    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
-  end
-  return {1, limit - (current + units)}
-else
-  return {0, limit - current}
-end
-`;
-
-export const TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT = `
--- KEYS[1]: rate limit key (e.g. easyconvert:rate:keyId)
--- ARGV[1]: bucket capacity (max burst tokens)
--- ARGV[2]: refill rate (tokens added per second)
--- ARGV[3]: cost (tokens required for this request)
--- ARGV[4]: key TTL in seconds
--- ARGV[5]: fallback timestamp in milliseconds (if TIME fails in mock environments)
-local now = nil
-local ok, rtime = pcall(redis.call, 'TIME')
-if ok and rtime and type(rtime) == 'table' then
-  now = (tonumber(rtime[1]) * 1000) + math.floor(tonumber(rtime[2]) / 1000)
-else
-  now = tonumber(ARGV[5] or '0')
-end
-
-local capacity = tonumber(ARGV[1])
-local refillRate = tonumber(ARGV[2])
-local cost = tonumber(ARGV[3] or '1')
-local ttl = tonumber(ARGV[4] or '3600')
-
-local data = redis.call('HMGET', KEYS[1], 'tokens', 'lastRefill')
-local currentTokens = tonumber(data[1])
-local lastRefill = tonumber(data[2])
-
-if not currentTokens or not lastRefill then
-  currentTokens = capacity
-  lastRefill = now
-else
-  local elapsed = math.max(0, now - lastRefill)
-  local replenished = 0
-  if refillRate > 0 then
-    replenished = (elapsed / 1000.0) * refillRate
-  end
-  currentTokens = math.min(capacity, currentTokens + replenished)
-  lastRefill = now
-end
-
-if currentTokens >= cost then
-  currentTokens = currentTokens - cost
-  redis.call('HMSET', KEYS[1], 'tokens', tostring(currentTokens), 'lastRefill', tostring(lastRefill))
-  redis.call('EXPIRE', KEYS[1], ttl)
-  return {1, math.floor(currentTokens), 0}
-else
-  local needed = cost - currentTokens
-  local retryAfterMs = 0
-  if refillRate > 0 then
-    retryAfterMs = math.ceil((needed / refillRate) * 1000.0)
-  else
-    retryAfterMs = ttl * 1000
-  end
-  redis.call('HMSET', KEYS[1], 'tokens', tostring(currentTokens), 'lastRefill', tostring(lastRefill))
-  redis.call('EXPIRE', KEYS[1], ttl)
-  return {0, math.floor(currentTokens), retryAfterMs}
-end
-`;
 
 export interface TokenBucketOptions {
   capacity?: number;
@@ -438,10 +306,7 @@ export class RedisKeyStore extends KeyStore {
     this.cleanExpiredReservations();
     this.ensureInitialized();
 
-    const isAnonymous = isAnonymousUserId(userId);
-    const user = isAnonymous ? null : await redisUserStore.findById(userId);
-    const tier: UserTier = user?.tier ?? 'free';
-    const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
+    const dailyLimit = await this.dailyLimitOf(userId);
     // One day for the whole reservation: its count, its id and its record never straddle midnight.
     const day = getUtcDateKey();
     const dateKey = `${userId}:${day}`;
@@ -507,6 +372,52 @@ export class RedisKeyStore extends KeyStore {
       reservationId,
       remaining: Math.max(0, dailyLimit - (currentUsed + units)),
     };
+  }
+
+  /** The conversions `userId` may have each day: the anonymous allowance, or the limit of the account's tier. */
+  private async dailyLimitOf(userId: string): Promise<number> {
+    if (isAnonymousUserId(userId)) return getAnonymousDailyLimit();
+    const tier: UserTier = (await redisUserStore.findById(userId))?.tier ?? 'free';
+    return TIER_LIMITS[tier];
+  }
+
+  /**
+   * Holds `units` more in the live reservation `reservationId` for the extension `extensionId`, when they fit under the
+   * owner's daily limit: what the extension holds in all, so a repeated call adds only the difference. Answers whether
+   * the reservation holds them now, and the conversions left today; a reservation that ended holds nothing more.
+   */
+  public async extendQuota(reservationId: string, extensionId: string, units: number): Promise<{ extended: boolean; remaining: number }> {
+    const named = parseReservationId(reservationId);
+    if (!named?.userId) return { extended: false, remaining: 0 };
+    const dailyLimit = await this.dailyLimitOf(named.userId);
+    const keys = this.resolveReservation(reservationId);
+    if (this.redisClient && keys) {
+      const [status, remaining] = (await this.redisClient.eval(
+        EXTEND_QUOTA_LUA_SCRIPT,
+        3,
+        keys.usageKey,
+        keys.reservationKey,
+        `${keys.reservationKey}:ext:${extensionId}`,
+        units,
+        dailyLimit
+      )) as [number, number];
+      return { extended: Number(status) === 1, remaining: Math.max(0, Number(remaining)) };
+    }
+    return this.extendReservationInMemory(reservationId, extensionId, units, dailyLimit);
+  }
+
+  private extendReservationInMemory(reservationId: string, extensionId: string, units: number, dailyLimit: number): { extended: boolean; remaining: number } {
+    const reservation = this.reservations.get(reservationId);
+    if (!reservation || reservation.status !== 'reserved') return { extended: false, remaining: 0 };
+    const used = this.dailyUsage.get(reservation.dateKey) ?? 0;
+    const added = units - (reservation.extensions?.[extensionId] ?? 0);
+    if (added <= 0) return { extended: true, remaining: Math.max(0, dailyLimit - used) };
+    if (used + added > dailyLimit) return { extended: false, remaining: Math.max(0, dailyLimit - used) };
+    this.dailyUsage.set(reservation.dateKey, used + added);
+    reservation.units += added;
+    reservation.extensions = { ...reservation.extensions, [extensionId]: units };
+    this.persist();
+    return { extended: true, remaining: dailyLimit - used - added };
   }
 
   /** The keys of a reservation in Redis, from the owner and day its id names; undefined for an id of another form. */

@@ -7,7 +7,7 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { reserveLinkImport, type LinkImportReservation } from '@/lib/api-keys/anonymous-upload-budget';
+import { withLinkImportHold, type LinkImportHold } from '@/lib/api-keys/anonymous-upload-budget';
 import { isUnattributedAnonymous } from '@/lib/auth/anonymous-identity';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
@@ -16,9 +16,9 @@ import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { currentJobDeadlineSettings } from '@/lib/queue/job-deadline';
 import { formatBytes } from '@/lib/format-bytes';
-import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
+import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import type { UrlImportErrorCode } from '@/lib/refusal-codes';
-import { JobTimeoutError, RequestAbortedError } from '@/lib/types';
+import { JobTimeoutError } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -117,18 +117,28 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
   return { refusal: refusal(502, 'fetch_failed', 'Failed to fetch remote URL') };
 }
 
-/** The bytes of a link import received so far, counted as they arrive, so an import that fails still charges what it read. */
-interface Received {
-  bytes: number;
+/** Who imports, and under what hold: what the refusal of a body larger than the hold names. */
+interface ImportCaller {
+  caller: PlanCaller;
+  plan: Plan;
+  instanceUri: string;
 }
 
-/** The body of `res`, read up to the import limit with every chunk counted in `received`, or the refusal. */
-async function readBody(res: Response, received: Received, caller: PlanCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
+/**
+ * The refusal of a body larger than `hold`: past the import limit (413), or past the rest of the day when that was less
+ * than one file at the limit (429, the day's budget).
+ */
+function bodyTooLarge(hold: LinkImportHold, importer: ImportCaller): NextResponse {
+  return hold.cappedByDay ? uploadBudgetRefusalResponse('daily-bytes', importer.instanceUri, importer.plan) : linkImportTooLarge(importer.caller);
+}
+
+/** The body of `res`, read up to the bytes `hold` holds with every chunk counted in it, or the refusal. */
+async function readBody(res: Response, hold: LinkImportHold, importer: ImportCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
   // Check Content-Length upfront if provided
   const contentLength = parseInt(res.headers.get('content-length') ?? '', 10);
-  if (!isNaN(contentLength) && contentLength > URL_IMPORT_MAX_BYTES) {
+  if (!isNaN(contentLength) && contentLength > hold.maxBytes) {
     discardBody(res);
-    return { refusal: linkImportTooLarge(caller) };
+    return { refusal: bodyTooLarge(hold, importer) };
   }
 
   if (!res.body) {
@@ -143,11 +153,11 @@ async function readBody(res: Response, received: Received, caller: PlanCaller): 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      received.bytes += value.length;
+      hold.receivedBytes += value.length;
       totalBytes += value.length;
-      if (totalBytes > URL_IMPORT_MAX_BYTES) {
+      if (totalBytes > hold.maxBytes) {
         await reader.cancel();
-        return { refusal: linkImportTooLarge(caller) };
+        return { refusal: bodyTooLarge(hold, importer) };
       }
       chunks.push(value);
     }
@@ -194,8 +204,8 @@ async function importFrom(
   url: URL,
   ssrfAgent: ReturnType<typeof createSsrfSafeAgent>,
   signal: AbortSignal,
-  received: Received,
-  caller: PlanCaller
+  hold: LinkImportHold,
+  importer: ImportCaller
 ): Promise<NextResponse> {
   const answer = await fetchFollowingRedirects(url, ssrfAgent, signal);
   if ('refusal' in answer) return answer.refusal;
@@ -209,7 +219,7 @@ async function importFrom(
       { remoteStatus: res.status }
     );
   }
-  const body = await readBody(res, received, caller);
+  const body = await readBody(res, hold, importer);
   return 'refusal' in body ? body.refusal : importedFile(res, finalUrl, body.buffer);
 }
 
@@ -235,19 +245,6 @@ async function importTarget(req: NextRequest): Promise<URL | NextResponse> {
     return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
   }
   return parsedUrl;
-}
-
-/**
- * Charges `budget` the bytes the import received once `stopped` settles, so bytes read after a deadline count too. A
- * charge that fails is logged and never replaces the answer.
- */
-async function chargeOnceStopped(budget: LinkImportReservation, stopped: Promise<unknown>, received: Received): Promise<void> {
-  await stopped;
-  try {
-    await budget.settle(received.bytes);
-  } catch (err) {
-    console.error('[fetch-url] The bytes of a link import could not be charged to the daily budget:', err);
-  }
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -281,37 +278,24 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const slot = await acquireSyncSlot(caller.id, caller.tier);
   if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
 
-  const received: Received = { bytes: 0 };
   const ssrfAgent = createSsrfSafeAgent();
-  let budget: LinkImportReservation | undefined;
-  let stopped: Promise<unknown> = Promise.resolve();
-  let cutOff = false;
   try {
     const target = await importTarget(req);
     if (!(target instanceof URL)) return target;
-    const plan = planOfCaller(caller);
-    // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS), and holds its bytes as long.
+    const importer: ImportCaller = { caller, plan: planOfCaller(caller), instanceUri };
+    // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS), and holds its bytes
+    // as long. An import that ended is charged before the answer; one cut off is charged once it has stopped reading,
+    // without holding the answer.
     const { syncMaxMs } = currentJobDeadlineSettings();
-    const held = await reserveLinkImport(caller.id, plan, syncMaxMs);
-    if ('refusal' in held) return uploadBudgetRefusalResponse(held.refusal, instanceUri, plan);
-    budget = held.reservation;
-
-    return await runUnderDeadline(req, syncMaxMs, (limits) => {
-      const work = importFrom(target, ssrfAgent, limits.signal, received, caller);
-      stopped = work.catch(() => undefined);
-      return work;
-    });
+    const imported = await runUnderDeadline(req, syncMaxMs, (limits) =>
+      withLinkImportHold(caller.id, importer.plan, syncMaxMs, URL_IMPORT_MAX_BYTES, undefined, (hold) => importFrom(target, ssrfAgent, limits.signal, hold, importer))
+    );
+    return 'refusal' in imported ? uploadBudgetRefusalResponse(imported.refusal, instanceUri, importer.plan) : imported.result;
   } catch (err: unknown) {
-    cutOff = err instanceof JobTimeoutError || err instanceof RequestAbortedError;
     if (err instanceof JobTimeoutError) return importTimedOut(err.timeoutMs);
     return deadlineErrorResponse(err, instanceUri) ?? serverFault<UrlImportErrorCode>('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed');
   } finally {
     ssrfAgent.close().catch(() => {});
     slot.release();
-    // An import that ended is charged before the answer; one cut off is charged once it has stopped, without holding it.
-    if (budget) {
-      const charged = chargeOnceStopped(budget, stopped, received);
-      if (!cutOff) await charged;
-    }
   }
 });

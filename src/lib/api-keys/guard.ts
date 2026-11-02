@@ -9,6 +9,12 @@ import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
 import { CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS, ClientIpConfigError, ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
+import {
+  HTTP_SERVICE_UNAVAILABLE,
+  HTTP_TOO_MANY_REQUESTS,
+  QUOTA_EXCEEDED_PROBLEM_TYPE,
+  SERVICE_UNAVAILABLE_PROBLEM_TYPE,
+} from '../api/conversion-refusal-response';
 
 export { extractClientIp };
 
@@ -49,10 +55,6 @@ type QuotaNeed = number | typeof ONE_UNIT_LEFT;
 
 const WILDCARD_SCOPE = '*';
 const HTTP_BAD_REQUEST = 400;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-const QUOTA_EXCEEDED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
-const SERVICE_UNAVAILABLE_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/service-unavailable';
 const QUOTA_ENGINE_OFFLINE = 'Service Unavailable: distributed quota engine is temporarily offline';
 
 /** The refusal text of an anonymous caller, naming the allowance the key store enforces (`ANONYMOUS_DAILY_LIMIT`). */
@@ -328,7 +330,7 @@ async function verifyKeyAccess(
         error: burst.error || 'Service Unavailable: distributed rate limit engine is temporarily offline',
         status: 503,
         retryAfterSeconds: 5,
-        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+        problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE,
       };
     }
     return {
@@ -422,7 +424,7 @@ async function verifyAnonymousAccess(clientIp: string, need: QuotaNeed): Promise
         authorized: false,
         error: 'Service Unavailable: distributed rate limit engine is temporarily offline',
         status: 503,
-        problemType: 'https://api.easyconvert.io/problems/service-unavailable',
+        problemType: SERVICE_UNAVAILABLE_PROBLEM_TYPE,
       };
     }
     return {
@@ -553,8 +555,11 @@ export async function reserveConversionUnit(user: User, units: number = 1): Prom
   if (isUnattributedAnonymous(user.id)) return { reserved: true };
   const quota = await checkQuotaAndReserve(user.id, user.tier, units);
   if (quota.allowed) return { reserved: true, reservationId: quota.reservationId };
-  if (quota.serviceUnavailable) return { reserved: false, refusal: { reason: 'offline', error: quotaRefusal(quota, user.id).error } };
-  const usage = await redisKeyStore.getQuotaUsage(user.id);
+  const offline = (): ConversionUnit => ({ reserved: false, refusal: { reason: 'offline', error: quotaRefusal({ allowed: false, serviceUnavailable: true }, user.id).error } });
+  if (quota.serviceUnavailable) return offline();
+  // The store that just refused can fail before it says how many are left: the refusal is then the offline one.
+  const usage = await redisKeyStore.getQuotaUsage(user.id).catch(() => undefined);
+  if (!usage) return offline();
   return { reserved: false, refusal: conversionsUsedUp(user, { ...usage, remaining: quota.remaining ?? 0 }, units) };
 }
 

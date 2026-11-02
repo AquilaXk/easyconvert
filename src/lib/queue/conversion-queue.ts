@@ -207,7 +207,8 @@ export function attachInputCleanupOnCompletion(
 
 /**
  * Owns the quota refund and the release of the input for cancelled jobs. The engine emits `cancelled` once per cancelled
- * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once.
+ * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once. Attach it to one
+ * queue only: the resource queues pass their `cancelled` events on to the default queue, which holds it.
  */
 export function attachJobCancellationListeners(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>
@@ -233,9 +234,6 @@ export function attachJobCancellationListeners(
 }
 
 attachJobCancellationListeners(conversionQueue);
-for (const q of Object.values(resourceQueues)) {
-  attachJobCancellationListeners(q);
-}
 
 /**
  * Returns queue engine designated for the given resource class.

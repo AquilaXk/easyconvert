@@ -15,13 +15,13 @@ import {
   UPDATE_USER_LUA_SCRIPT,
   RECORD_CONVERSION_LUA_SCRIPT,
 } from '../src/lib/auth/redis-user-store';
+import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import {
-  RedisKeyStore,
   DEDUCT_QUOTA_LUA_SCRIPT,
   RESERVE_QUOTA_LUA_SCRIPT,
   COMMIT_QUOTA_LUA_SCRIPT,
   ROLLBACK_QUOTA_LUA_SCRIPT,
-} from '../src/lib/api-keys/redis-key-store';
+} from '../src/lib/api-keys/quota-lua-scripts';
 import { userStore } from '../src/lib/auth/user-store';
 
 describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { Readable, Transform, pipeline } from 'node:stream';
+import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
@@ -12,7 +12,6 @@ import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
-import { redactUrl } from '../../security/redact';
 import { maskFailure } from '../../security/server-paths';
 import { graphNodeJobId } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
@@ -43,7 +42,6 @@ import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
   ConversionFailedError,
   GraphExportError,
-  ImportBudgetExceededError,
   InvalidPageRangeError,
   JobTimeoutError,
   MediaPackagingOptions,
@@ -62,10 +60,10 @@ import {
   graphNodeCharge,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
-import { pageCappedEngine, pageLimitForOwner, tierForOwner } from '../page-cap';
-import { dailyBudgetBytes, reserveLinkImport } from '../../api-keys/anonymous-upload-budget';
-import { planOfCaller } from '../../plan-limits';
-import { formatBytes } from '../../format-bytes';
+import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
+import { importUrlWithinBudget } from './node-url-import';
+import { holdUnitsForInputs } from './node-reservation';
+import type { GraphNode } from './types';
 import { saveRetainedResult } from '../../storage/retention-service';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
@@ -264,10 +262,9 @@ function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean }
  * The node a job carries, ready to run. Its options come from the request body, so they cannot carry the signal, a
  * timeout or a deadline into an engine; passwords sealed for the queue are opened here, in memory, and never stored back.
  */
-function openedNode(submitted: unknown, jobId: string): unknown {
-  const options = (submitted as { options?: unknown } | undefined)?.options;
-  if (!options || typeof options !== 'object') return submitted;
-  return { ...(submitted as object), options: openPasswordOption(stripEngineControls(options), jobId) };
+function openedNode(submitted: GraphNode, jobId: string): GraphNode {
+  if (!('options' in submitted) || !submitted.options) return submitted;
+  return { ...submitted, options: openPasswordOption(stripEngineControls(submitted.options), jobId) } as GraphNode;
 }
 
 export async function processGraphNodeJob(
@@ -287,7 +284,7 @@ export async function processGraphNodeJob(
   try {
     // Scratch files a remote backend stages for this node's inputs are removed when the node ends.
     scope = scopeStorageObjects(storage || storageProvider);
-    const node: any = openedNode(job.data.graphNode, graphNodeJobId(graphId, nodeId));
+    const node = openedNode(job.data.graphNode as GraphNode, graphNodeJobId(graphId, nodeId));
     const effectiveStorage: IStorageBackend = scope.storage;
     let outputKeys: string[] = [];
     const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
@@ -299,6 +296,7 @@ export async function processGraphNodeJob(
     await job.updateProgress(10);
     await graphScheduler.onNodeStarted(graphId, nodeId);
     attemptSignal.throwIfAborted();
+    await holdUnitsForInputs(graphId, nodeId, node, async () => (await resolveInputArtifacts(graphId, 'input' in node ? node.input : undefined, job.data.inputArtifacts)).length);
 
     switch (node.op) {
       case 'import.upload': {
@@ -329,14 +327,7 @@ export async function processGraphNodeJob(
           }
 
           const srcExt = artifactExtension(stored.filename, inputKey);
-          const convRes = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            node.targetFormat,
-            node.options || {},
-            stored.filename
-          );
-
+          const convRes = await effectiveEngine.convert(stored.buffer, srcExt, node.targetFormat, node.options || {}, stored.filename);
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
@@ -426,7 +417,7 @@ export async function processGraphNodeJob(
             srcExt,
             targetFormat,
             {
-              ...((node as any).options || {}),
+              ...(node.options || {}),
               thumbnail: undefined,
               width,
               height,
@@ -789,7 +780,7 @@ export async function processGraphNodeJob(
       }
 
       default: {
-        throw new Error(`Unsupported graph node operation: ${(node as any).op}`);
+        throw new Error(`Unsupported graph node operation: ${(node as { op: string }).op}`);
       }
     }
 
@@ -819,9 +810,8 @@ export async function processGraphNodeJob(
       ...(optimizations.length > 0 ? { optimizations } : {}),
     };
   } catch (err: any) {
-    // A retry may still succeed, and a cancelled attempt is not a failure: only the last
-    // failed attempt fails the node (and, under fail_fast, the graph). A failure that cannot be
-    // retried is the last one.
+    // A retry may still succeed, and a cancelled attempt is not a failure: only the last failed attempt fails the node
+    // (and, under fail_fast, the graph). A failure that cannot be retried is the last one.
     // A deadline aborts the signal too, but it is a failure of the node: the graph must settle (fail_fast fails it,
     // continue skips what depends on the node). Only a cancel or a takeover leaves the node to its own path.
     const pastDeadline = attemptSignal.reason instanceof JobTimeoutError;
@@ -848,96 +838,6 @@ function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     signal.addEventListener('abort', onAbort, { once: true });
     work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
   });
-}
-
-/** Largest body an import.url node accepts; override with GRAPH_URL_IMPORT_MAX_BYTES. */
-const DEFAULT_URL_IMPORT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
-
-function urlImportMaxBytes(): number {
-  const configured = Number(process.env.GRAPH_URL_IMPORT_MAX_BYTES);
-  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_URL_IMPORT_MAX_BYTES;
-}
-
-/**
- * Imports the link of an import.url node under the daily byte budget of the graph's owner, as `/api/fetch-url` imports one
- * (docs/policy-decisions.md, entry 15): it holds the bytes it may still read until the node's deadline, is refused once
- * the day has none left, and is charged the bytes it received however it ends.
- */
-async function importUrlWithinBudget(
-  job: Job<ConversionJobData, ConversionJobResult>,
-  storage: IStorageBackend,
-  url: string,
-  headers: Record<string, string> | undefined
-): Promise<string> {
-  const { graphId, graphNodeId: nodeId, userId: owner } = job.data;
-  const deadlineAt = jobDeadlineAt(job);
-  if (!graphId || !nodeId || !owner || deadlineAt === undefined) {
-    throw new ConversionFailedError(`Import node "${nodeId}" has no owner and deadline, so its bytes cannot be held against a daily budget.`);
-  }
-  const plan = planOfCaller({ id: owner, tier: await tierForOwner(owner) });
-  const maxBytes = urlImportMaxBytes();
-  const held = await reserveLinkImport(owner, plan, deadlineAt - Date.now(), maxBytes);
-  if ('refusal' in held) {
-    throw new ImportBudgetExceededError(
-      `The link imports of this account may total ${formatBytes(dailyBudgetBytes(plan))} a day, and today's are used up. The limit resets at midnight UTC.`
-    );
-  }
-  const received = { bytes: 0 };
-  try {
-    return await importUrlArtifact({ storage, graphId, nodeId, url, headers, signal: job.signal, maxBytes, received });
-  } finally {
-    // A charge that fails is logged and never replaces the outcome of the import.
-    await held.reservation.settle(received.bytes).catch((err: unknown) => {
-      console.error(`[GraphNode] The bytes of import node "${nodeId}" could not be charged to the daily budget:`, err);
-    });
-  }
-}
-
-/** Streams a public URL into intermediate storage, refusing internal targets and bodies over `maxBytes`, counting what it read. */
-async function importUrlArtifact(request: {
-  storage: IStorageBackend;
-  graphId: string;
-  nodeId: string;
-  url: string;
-  headers: Record<string, string> | undefined;
-  signal: AbortSignal;
-  maxBytes: number;
-  received: { bytes: number };
-}): Promise<string> {
-  const { storage, graphId, nodeId, url, headers, signal, maxBytes, received } = request;
-  const response = await safeFetch(url, { headers, signal });
-  if (!response.ok || !response.body) {
-    await response.body?.cancel();
-    throw new ConversionFailedError(`Failed to fetch URL ${redactUrl(url)}: HTTP ${response.status}`);
-  }
-  const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await response.body.cancel();
-    throw new ConversionFailedError(`Remote file at ${redactUrl(url)} is ${declared} bytes, above the ${maxBytes}-byte import limit`);
-  }
-
-  const source = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream);
-  const limiter = new Transform({
-    transform(chunk: Buffer, _enc, done) {
-      received.bytes += chunk.length;
-      if (received.bytes > maxBytes) {
-        done(new ConversionFailedError(`Remote file at ${redactUrl(url)} exceeds the ${maxBytes}-byte import limit`));
-        return;
-      }
-      done(null, chunk);
-    },
-  });
-  // pipeline forwards a source error (remote reset, abort) to the limiter that storage consumes,
-  // and destroys the source, cancelling the download, when the limiter fails. Storage observes
-  // every failure through the limiter's 'error' event, so the callback has nothing left to do.
-  const limited = pipeline(source, limiter, () => undefined);
-
-  const urlName = path.basename(new URL(url).pathname);
-  const filename = urlName && urlName !== '/' ? urlName : `${nodeId}.bin`;
-  const key = `intermediate/${graphId}/${nodeId}/${filename}`;
-  const mimeType = response.headers.get('content-type') || 'application/octet-stream';
-  await storage.saveObjectFromStream(key, limited, { filename, mimeType }, INTERMEDIATE_TTL_MS);
-  return key;
 }
 
 /** Headers the worker sets itself from the stored artifact; a customer-supplied copy would misdescribe the body. */

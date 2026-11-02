@@ -19,6 +19,7 @@ import { hashPassword } from '../src/lib/auth/crypto';
 import { concurrencyLimitResponse } from '../src/lib/queue/concurrency-limit';
 import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
 import { uploadBudgetRefusalResponse } from '../src/lib/api/upload-budget-response';
+import { conversionRefusalResponse } from '../src/lib/api/conversion-refusal-response';
 import { AUTH_ERROR_CODES, URL_IMPORT_ERROR_CODES } from '../src/lib/refusal-codes';
 import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import type { TestLocale } from './helpers/intl';
@@ -105,6 +106,37 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(korean).toContain('10 GiB');
     expect(korean).toContain('링크 가져오기');
     expect(korean).not.toContain('계정 없이');
+  });
+
+  /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of the day's 25 are left. */
+  async function conversionsShort(requiredUnits: number, remaining: number) {
+    const usage = { tier: 'free' as const, dailyLimit: 25, usedToday: 25 - remaining, remaining, resetAt: Date.now() };
+    const refusal = { reason: 'used-up' as const, error: 'Daily conversion quota exceeded.', usage, requiredUnits };
+    return bodyOf(conversionRefusalResponse(refusal, '/api/v1/jobs'));
+  }
+
+  it('words a job that needs more conversions than are left by both numbers, in both locales', async () => {
+    const { status, body } = await conversionsShort(3, 2);
+    expect(worded(useProblemWording, 'en', body, status)).toBe('This job needs 3 conversions, and 2 are left today.');
+    const korean = worded(useProblemWording, 'ko', body, status);
+    expect(korean).toBe('이 작업에는 변환이 3회 필요한데 오늘 남은 횟수는 2회예요.');
+    expectKorean(korean, 'conversions short');
+    expect(worded(useProblemWording, 'en', (await conversionsShort(5, 1)).body, status)).toBe('This job needs 5 conversions, and 1 is left today.');
+  });
+
+  it('words a job refused once the day has no conversion left by the daily limit', async () => {
+    const { status, body } = await conversionsShort(1, 0);
+    expect(worded(useProblemWording, 'ko', body, status)).toBe('오늘 변환 한도 25회를 모두 썼어요. 내일 다시 시도해 주세요.');
+  });
+
+  it('words a link import refused while other imports hold the rest of the day, without saying the day is spent', async () => {
+    const { status, body } = await bodyOf(uploadBudgetRefusalResponse('held', '/api/fetch-url', 'free'));
+    expect(body).toMatchObject({ refusal: 'held', limitBytes: 2 * 1024 ** 3 });
+    const korean = worded(useProblemWording, 'ko', body, status);
+    expectKorean(korean, 'imports held');
+    expect(korean).toContain('2 GiB');
+    expect(korean).toContain('진행 중인 링크 가져오기');
+    expect(korean).not.toContain('모두 썼어요');
   });
 
   it('words an answer it does not know by its status class, and never shows the server text of either', () => {

@@ -6,14 +6,33 @@ import { graphNodeCharge, graphReservationUnits } from '../src/lib/jobs/graph-op
 const NOTHING_OPTIMIZED: never[] = [];
 
 describe('what a graph node charges once it ended', () => {
-  it('charges a convert or ocr node one unit for each output it produced', () => {
-    expect(graphNodeCharge('convert', { outputs: 3, optimizations: NOTHING_OPTIMIZED })).toBe(3);
-    expect(graphNodeCharge('ocr', { outputs: 2, optimizations: NOTHING_OPTIMIZED })).toBe(2);
+  const PER_INPUT_OPERATIONS = [
+    'convert',
+    'ocr',
+    'thumbnail',
+    'media.package',
+    'watermark',
+    'pdf.watermark',
+    'pdf.protect',
+    'pdf.unlock',
+    'pdf.split-pages',
+    'pdf.extract-pages',
+    'pdf.delete-pages',
+    'pdf.reorder-pages',
+    'pdf.rotate-pages',
+  ];
+
+  it.each(PER_INPUT_OPERATIONS)('charges a %s node, which makes one output of each input, one unit for each output', (op) => {
+    expect(graphNodeCharge(op, { outputs: 3, optimizations: NOTHING_OPTIMIZED })).toBe(3);
   });
 
-  it('charges any other conversion one unit when it produced an output', () => {
-    expect(graphNodeCharge('thumbnail', { outputs: 4, optimizations: NOTHING_OPTIMIZED })).toBe(1);
-    expect(graphNodeCharge('optimize', { outputs: 2, optimizations: [{ optimized: true }, { optimized: false }] })).toBe(1);
+  it('charges an optimize node one unit for each output it made smaller', () => {
+    const optimizations = [{ optimized: true }, { optimized: false }, { optimized: true }];
+    expect(graphNodeCharge('optimize', { outputs: 3, optimizations })).toBe(2);
+  });
+
+  it.each(['merge', 'metadata', 'archive.create', 'archive.extract'])('charges a %s node, one job over all its inputs, one unit', (op) => {
+    expect(graphNodeCharge(op, { outputs: 4, optimizations: NOTHING_OPTIMIZED })).toBe(1);
   });
 
   it('charges nothing for a node that produced nothing, an optimize node that gained nothing, an import or an export', () => {
@@ -30,7 +49,7 @@ describe('what a graph node charges once it ended', () => {
 });
 
 describe('what a graph reserves when it is submitted', () => {
-  it('reserves a convert or ocr node one unit for each input it declares, any other conversion one unit, and a move nothing', () => {
+  it('reserves a node charged per output one unit for each input it declares, a one-job node one unit, and a move nothing', () => {
     expect(
       graphReservationUnits({
         a: { op: 'import.upload' },
@@ -38,9 +57,11 @@ describe('what a graph reserves when it is submitted', () => {
         conv: { op: 'convert', input: ['a', 'b'] },
         text: { op: 'ocr', input: 'a' },
         thumb: { op: 'thumbnail', input: ['a', 'b'] },
-        out: { op: 'export.internal', input: ['conv', 'text', 'thumb'] },
+        opt: { op: 'optimize', input: ['a', 'b'] },
+        both: { op: 'merge', input: ['conv', 'text'] },
+        out: { op: 'export.internal', input: ['both', 'thumb', 'opt'] },
       })
-    ).toBe(4);
+    ).toBe(8);
   });
 
   it('reserves nothing for a graph that only moves files', () => {

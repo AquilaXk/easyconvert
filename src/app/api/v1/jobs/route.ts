@@ -55,6 +55,7 @@ export const dynamic = 'force-dynamic';
 
 /** The problem of a graph whose nodes only import and export files (`graph-without-conversion`). */
 const GRAPH_WITHOUT_CONVERSION_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}graph-without-conversion`;
+const GRAPH_WITHOUT_CONVERSION_DETAIL = 'The graph has no conversion: a job needs at least one node that converts, between its imports and its exports.';
 
 /** The refusal of a job whose stored files the caller may not use, or that a graph reads over the limit of the caller's plan; undefined when every stored file passes. */
 async function storedInputRefusal(
@@ -435,18 +436,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    // A graph is charged only for its conversions (docs/policy-decisions.md, entry 15), so one that only moves files would
-    // cost nothing while it fetched and stored them; it is refused before anything is reserved or fetched.
-    if (graph && unitsToReserve(graph) === 0) {
-      return reply(
-        createProblemDetailsResponse(
-          422,
-          'The graph has no conversion: a job needs at least one node that converts, between its imports and its exports.',
-          instanceUri,
-          'Unprocessable Entity',
-          GRAPH_WITHOUT_CONVERSION_PROBLEM_TYPE
-        )
-      );
+    // A graph that only moves files would cost nothing (policy entry 15), so it is refused before anything is reserved.
+    const reservedUnits = unitsToReserve(graph);
+    if (graph && reservedUnits === 0) {
+      return reply(createProblemDetailsResponse(422, GRAPH_WITHOUT_CONVERSION_DETAIL, instanceUri, 'Unprocessable Entity', GRAPH_WITHOUT_CONVERSION_PROBLEM_TYPE));
     }
 
     if (tasks && tasks.length > 0 && !targetFormat) {
@@ -614,7 +607,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // Phase 1: Atomically reserve quota BEFORE enqueueing to BullMQ
-    const unit = await reserveConversionUnit(auth.user, unitsToReserve(graph));
+    const unit = await reserveConversionUnit(auth.user, reservedUnits);
     if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
     const submission: ReservedSubmission = {

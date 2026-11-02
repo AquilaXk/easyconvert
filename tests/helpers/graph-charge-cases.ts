@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import JSZip from 'jszip';
 import { NextRequest } from 'next/server';
 import { fetch as undiciFetch } from 'undici';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -9,6 +10,7 @@ import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { bytesBroughtInToday, dailyBudgetBytes, reserveLinkImport } from '../../src/lib/api-keys/anonymous-upload-budget';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
 import { anonymousUserId } from '../../src/lib/auth/anonymous-identity';
+import { getAnonymousDailyLimit } from '../../src/lib/plan-limits';
 import { Worker } from '../../src/lib/queue/bullmq-engine';
 import { allConversionQueues, attachJobLifecycleListeners, cancelJobAcrossQueues, getJobAcrossQueues, processConversionJob } from '../../src/lib/queue/conversion-queue';
 import { graphScheduler, type GraphMetadata, type JobGraph } from '../../src/lib/queue/graph';
@@ -72,6 +74,17 @@ interface SubmittedGraph {
   nodes: Record<string, Record<string, unknown> & { op: string }>;
 }
 
+function newGraphId(): string {
+  return `graph_charge_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/** A ZIP of `count` CSV files, as an upload an archive.extract node unpacks. */
+async function csvArchiveUpload(count: number) {
+  const zip = new JSZip();
+  for (let i = 1; i <= count; i++) zip.file(`part-${i}.csv`, CSV);
+  return { op: 'import.upload', storageKey: saveUpload('parts.zip', await zip.generateAsync({ type: 'nodebuffer' }), 'application/zip') } as const;
+}
+
 function anonymousOwner(): string {
   return anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
 }
@@ -100,20 +113,26 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   }
 
   /**
-   * Queues `graph` for `owner` with one unit more reserved than `expectedUnits`, and answers how to wait for its end.
-   * `startWorkers` is false for a case that acts on the queued node jobs before any worker takes them.
+   * Queues `graph` for `owner` with one unit more reserved than `expectedUnits` (or `reservedUnits`, as a route reserves
+   * them), and answers how to wait for its end, with `expectedUnits` used that day. `startWorkers` is false for a case
+   * that acts on the queued node jobs before any worker takes them.
    */
-  async function queueGraph(graph: SubmittedGraph, expectedUnits: number, options: { owner?: string; meta?: GraphMetadata; startWorkers?: boolean } = {}) {
+  async function queueGraph(
+    graph: SubmittedGraph,
+    expectedUnits: number,
+    options: { owner?: string; meta?: GraphMetadata; startWorkers?: boolean; graphId?: string; reservedUnits?: number } = {}
+  ) {
     const owner = options.owner ?? anonymousOwner();
     track(owner);
     const usedToday = async () => (await redisKeyStore.getQuotaUsage(owner)).usedToday;
-    const reservedUnits = expectedUnits + 1;
+    const usedBefore = await usedToday();
+    const reservedUnits = options.reservedUnits ?? expectedUnits + 1;
     const unit = await redisKeyStore.reserveQuota(owner, reservedUnits);
     expect(unit.allowed).toBe(true);
-    expect(await usedToday()).toBe(reservedUnits);
+    expect(await usedToday()).toBe(usedBefore + reservedUnits);
 
     if (options.startWorkers !== false) startWorker();
-    const graphId = `graph_charge_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const graphId = options.graphId ?? newGraphId();
     await graphScheduler.initGraph(graphId, graph as unknown as JobGraph, { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
 
     /** Waits for the graph to end with `expectedStatus` and its owner to be charged `expectedUnits`. */
@@ -286,6 +305,84 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(await bytesBroughtInToday(owner)).toBe(dailyBudgetBytes('anonymous'));
     expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('completes two import.url nodes and a convert node over both for a free account, each import holding one file', async () => {
+    remoteCsv();
+    const account = await apiAccount();
+    const queued = await queueGraph(
+      {
+        failurePolicy: 'fail_fast',
+        nodes: {
+          first: { op: 'import.url', url: 'https://files.example.com/first.csv' },
+          second: { op: 'import.url', url: 'https://files.example.com/second.csv' },
+          conv: { op: 'convert', input: ['first', 'second'], targetFormat: 'json' },
+        },
+      },
+      2,
+      { owner: account.userId }
+    );
+    await queued.ended('completed');
+    expect(await bytesBroughtInToday(account.userId)).toBe(2 * Buffer.byteLength(CSV));
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('completes the retry of an import.url node whose crashed attempt left its hold, and charges its bytes once', async () => {
+    remoteCsv();
+    const owner = anonymousOwner();
+    const graphId = newGraphId();
+    const leftBehind = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS, dailyBudgetBytes('anonymous'), `${graphId}:link`);
+    if ('refusal' in leftBehind) throw new Error('a fresh owner has its whole day');
+
+    const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 1, {
+      owner,
+      graphId,
+    });
+    await queued.ended('completed');
+    expect(await bytesBroughtInToday(owner)).toBe(Buffer.byteLength(CSV));
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('stops an import.url node at the bytes it holds when the day has less than one file left', async () => {
+    remoteCsv();
+    const owner = anonymousOwner();
+    const spent = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
+    if ('refusal' in spent) throw new Error('a fresh owner has its whole day');
+    const bytesLeft = Buffer.byteLength(CSV) - 1;
+    await spent.reservation.settle(dailyBudgetBytes('anonymous') - bytesLeft);
+
+    const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
+    await queued.ended('failed');
+    expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  /** An owner with `left` conversions left today, the rest of the day used by a conversion that was committed. */
+  async function ownerWithUnitsLeft(left: number) {
+    const owner = anonymousOwner();
+    const used = getAnonymousDailyLimit() - left;
+    const spent = await redisKeyStore.reserveQuota(owner, used);
+    expect(spent.allowed).toBe(true);
+    await redisKeyStore.commitQuota(spent.reservationId!);
+    return { owner, used };
+  }
+
+  /** An archive of five files unpacked into a convert node: it reserves 2 units, one for the unpacking and one for the declared input. */
+  async function fiveFilesIntoConvert(): Promise<SubmittedGraph> {
+    return {
+      failurePolicy: 'fail_fast',
+      nodes: { zip: await csvArchiveUpload(5), unzip: { op: 'archive.extract', input: 'zip' }, conv: { op: 'convert', input: 'unzip', targetFormat: 'json' } },
+    };
+  }
+
+  it('fails a convert node that receives five files with three conversions left, before any work, and charges nothing', async () => {
+    const { owner, used } = await ownerWithUnitsLeft(3);
+    const queued = await queueGraph(await fiveFilesIntoConvert(), used, { owner, reservedUnits: 2 });
+    await queued.ended('failed');
+    expect((await getJobAcrossQueues(`${queued.graphId}:conv`))?.failedRefusalCode).toBe('quota_exceeded');
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('charges a convert node that receives five files five units, beside the unpacking, with ten conversions left', async () => {
+    const { owner, used } = await ownerWithUnitsLeft(10);
+    const queued = await queueGraph(await fiveFilesIntoConvert(), used + 1 + 5, { owner, reservedUnits: 2 });
+    await queued.ended('completed');
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('charges nothing under continue when no node produces a result', async () => {

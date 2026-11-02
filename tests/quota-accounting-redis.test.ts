@@ -18,6 +18,7 @@ import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as fetchUrlRoute } from '../src/app/api/fetch-url/route';
 import { DistributedBullMQAdapter, STALLED_SWEEP_INTERVAL_MS, Worker } from '../src/lib/queue/bullmq-engine';
 import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
+import { RedisGraphScheduler } from '../src/lib/queue/graph/redis-scheduler';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
@@ -280,7 +281,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   describe('a link import', () => {
     it('counts the bytes it brings in against the daily byte budget, is refused once that is spent, and leaves the conversion count alone', async () => {
-      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - Buffer.byteLength(CSV));
       remoteFile(CSV);
 
       expect((await fetchUrlRoute(importRequest())).status).toBe(200);
@@ -296,16 +297,27 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const user = userStore.sanitizeUser(await userStore.createUser({ email: `import-${crypto.randomBytes(6).toString('hex')}@quota.test`, name: 'Import', tier: 'free' }));
       otherUsers.push(user.id);
       const session = { cookie: `easyconvert_session=${createSessionToken(user)}` };
-      await spendImportBytes(user.id, 'free', FREE_DAILY_IMPORT_BYTES - 1);
+      await spendImportBytes(user.id, 'free', FREE_DAILY_IMPORT_BYTES - Buffer.byteLength(CSV));
       remoteFile(CSV);
 
       expect((await fetchUrlRoute(importRequest(session))).status).toBe(200);
-      expect(await bytesBroughtInToday(user.id)).toBe(FREE_DAILY_IMPORT_BYTES - 1 + Buffer.byteLength(CSV));
+      expect(await bytesBroughtInToday(user.id)).toBe(FREE_DAILY_IMPORT_BYTES);
       const refused = await fetchUrlRoute(importRequest(session));
 
       expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
       expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: FREE_DAILY_IMPORT_BYTES, plan: 'free' });
       expect(await admin.keys(`*upload-budget*${user.id}*`)).toHaveLength(1);
+    });
+
+    it('reads no more than the rest of the day when that is less than the file, and is refused with the daily budget', async () => {
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
+      remoteFile(CSV);
+
+      const refused = await fetchUrlRoute(importRequest());
+
+      expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
+      expect(await remaining()).toBe(DAY_ALLOWANCE);
     });
 
     it('stops at the synchronous deadline when the remote sends the body too slowly, and frees its slot', async () => {
@@ -450,5 +462,43 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   describe('a queued graph', () => {
     itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId));
+  });
+
+  describe('the end of a graph', () => {
+    it('settles the reservation to the charge when draining the outbox fails after the completion was recorded', async () => {
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      let failNextListRead = false;
+      const flaky = new Proxy(connection, {
+        get(target, prop) {
+          if (prop === 'lrange') {
+            return async (...args: Parameters<Redis['lrange']>) => {
+              if (failNextListRead) {
+                failNextListRead = false;
+                throw new Error('the connection dropped');
+              }
+              return target.lrange(...args);
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      try {
+        const scheduler = new RedisGraphScheduler({ redisClient: flaky, keyPrefix, enqueueNode: async () => undefined });
+        const unit = await redisKeyStore.reserveQuota(client.userId, 2);
+        const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+        const graph = { failurePolicy: 'fail_fast' as const, nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' } } };
+        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId });
+        expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
+
+        failNextListRead = true;
+        await expect(scheduler.onNodeCompleted(graphId, 'up', ['uploads/graph-end/a.csv'], 1)).rejects.toThrow();
+
+        expect((await scheduler.getGraphState(graphId))?.status).toBe('completed');
+        expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+      } finally {
+        await connection.quit();
+      }
+    });
   });
 });

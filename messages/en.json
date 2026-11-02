@@ -1600,9 +1600,11 @@
       "payload-too-large": "One request can carry at most {limit}.",
       "concurrency-limit": "{limit} conversions are already running, the most at once. Try again when one finishes.",
       "quota-exceeded": "You have used today's limit of {limit} conversions. Try again tomorrow.",
+      "quota-short": "This job needs {required, plural, one {# conversion} other {# conversions}}, and {left, plural, one {# is} other {# are}} left today.",
       "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
       "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow.",
-      "daily-import-bytes": "On your plan, link imports may total {limit} a day. Try again tomorrow."
+      "daily-import-bytes": "On your plan, link imports may total {limit} a day. Try again tomorrow.",
+      "imports-held": "Link imports that are still running hold the rest of today's {limit}. Try again when they finish."
     },
     "conversion": {
       "file_required": "Choose a file to convert.",
@@ -1626,6 +1628,7 @@
       "unsupported_input": "This kind of file cannot be converted, although it appears intact.",
       "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
       "import_budget_exceeded": "You have used today's limit for link imports. Try again tomorrow.",
+      "quota_exceeded": "This job needs more conversions than are left today. Try again tomorrow.",
       "timeout": "The conversion did not finish in time. Try again.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
       "conversion_failed": "Conversion failed. Try another format or try again."

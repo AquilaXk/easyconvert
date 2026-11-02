@@ -53,29 +53,31 @@ export function isGraphOperation(value: string): value is GraphOperation {
 }
 
 /**
- * How a node of each operation is charged (docs/policy-decisions.md, entry 15): `per-output` charges one unit for each
- * output, as a batch charges each file; `once` charges one unit; `free` never charges, since the node only moves files in
- * or out. A node that produced nothing charges nothing.
+ * How a node of each operation is charged (docs/policy-decisions.md, entry 15). An operation that runs once for each input
+ * and makes one output of it charges `per-output`, as a batch charges each file; an optimize node charges only the outputs
+ * it made smaller (`per-gained-output`). An operation that does one job over all its inputs (a merge, the metadata of its
+ * first input, an archive made or unpacked) charges `once`. `free` never charges, since the node only moves files in or
+ * out. A node that produced nothing charges nothing.
  */
-type ChargeRule = 'per-output' | 'once' | 'free';
+type ChargeRule = 'per-output' | 'per-gained-output' | 'once' | 'free';
 
 const CHARGE_RULES: Readonly<Record<GraphOperation, ChargeRule>> = {
   'import.upload': 'free',
   'import.url': 'free',
   convert: 'per-output',
   ocr: 'per-output',
-  optimize: 'once',
-  thumbnail: 'once',
-  'media.package': 'once',
-  watermark: 'once',
-  'pdf.watermark': 'once',
-  'pdf.protect': 'once',
-  'pdf.unlock': 'once',
-  'pdf.split-pages': 'once',
-  'pdf.extract-pages': 'once',
-  'pdf.delete-pages': 'once',
-  'pdf.reorder-pages': 'once',
-  'pdf.rotate-pages': 'once',
+  optimize: 'per-gained-output',
+  thumbnail: 'per-output',
+  'media.package': 'per-output',
+  watermark: 'per-output',
+  'pdf.watermark': 'per-output',
+  'pdf.protect': 'per-output',
+  'pdf.unlock': 'per-output',
+  'pdf.split-pages': 'per-output',
+  'pdf.extract-pages': 'per-output',
+  'pdf.delete-pages': 'per-output',
+  'pdf.reorder-pages': 'per-output',
+  'pdf.rotate-pages': 'per-output',
   merge: 'once',
   metadata: 'once',
   'archive.create': 'once',
@@ -97,32 +99,53 @@ export interface GraphNodeProduct {
   optimizations: ReadonlyArray<{ optimized: boolean }>;
 }
 
-/** The units a node of `op` charges once it completed with `product`; an optimize node that made nothing smaller is free. */
+/** The units a node of `op` charges once it completed with `product`. */
 export function graphNodeCharge(op: string | undefined, product: GraphNodeProduct): number {
-  const rule = chargeRuleOf(op);
-  const gainedNothing = product.optimizations.length > 0 && product.optimizations.every((o) => !o.optimized);
-  if (rule === 'free' || product.outputs === 0 || gainedNothing) return 0;
-  return rule === 'per-output' ? product.outputs : 1;
+  switch (chargeRuleOf(op)) {
+    case 'per-output':
+      return product.outputs;
+    case 'per-gained-output':
+      return product.optimizations.filter((o) => o.optimized).length;
+    case 'once':
+      return product.outputs > 0 ? 1 : 0;
+    case 'free':
+      return 0;
+  }
 }
 
-/** The inputs a node names; a `per-output` node produces one output for each input it reads. */
+/** The inputs a node names. */
 function declaredInputCount(input: string | string[] | undefined): number {
   if (input === undefined) return 0;
   return Array.isArray(input) ? input.length : 1;
 }
 
 /**
- * The units a graph of `nodes` reserves when it is submitted, by the rule it is charged by: a `per-output` node one for
- * each input it declares, a `once` node one, a `free` node none. An input that holds several files (an extracted archive)
- * is charged by what was produced when the graph settles.
+ * The units a node of `op` that names `input` reserves when its graph is submitted, by the rule it is charged by: a node
+ * charged per output one for each input it declares (the most it charges when each input holds one file), a `once` node
+ * one, a `free` node none.
+ */
+export function graphNodeReservedUnits(node: { op?: string; input?: string | string[] }): number {
+  const rule = chargeRuleOf(node.op);
+  if (rule === 'per-output' || rule === 'per-gained-output') return declaredInputCount(node.input);
+  return rule === 'once' ? 1 : 0;
+}
+
+/**
+ * Whether a node of `op` is charged for each output, so that an input holding several files (an unpacked archive) makes
+ * it charge more than it reserved.
+ */
+export function isChargedPerOutput(op: string | undefined): boolean {
+  const rule = chargeRuleOf(op);
+  return rule === 'per-output' || rule === 'per-gained-output';
+}
+
+/**
+ * The units a graph of `nodes` reserves when it is submitted (`graphNodeReservedUnits`). A node whose inputs hold more
+ * files than it declares adds the rest to the reservation when it starts.
  */
 export function graphReservationUnits(nodes: Readonly<Record<string, { op?: string; input?: string | string[] }>>): number {
   let units = 0;
-  for (const node of Object.values(nodes)) {
-    const rule = chargeRuleOf(node.op);
-    if (rule === 'per-output') units += declaredInputCount(node.input);
-    else if (rule === 'once') units += 1;
-  }
+  for (const node of Object.values(nodes)) units += graphNodeReservedUnits(node);
   return units;
 }
 

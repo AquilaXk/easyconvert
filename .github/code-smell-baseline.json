@@ -64,7 +64,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 516
+    "maxValue": 509
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -2252,7 +2252,7 @@
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "processGraphNodeJob",
-    "count": 6
+    "count": 3
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
@@ -2272,7 +2272,7 @@
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 511
+    "maxValue": 506
   },
   {
     "file": "src/lib/queue/node-processor.ts",

@@ -14,7 +14,7 @@ import type {
 import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
-import { finishGraph } from './graph-end';
+import { announceGraphEnd, endGraphReservation } from './graph-end';
 
 /** Node states from which a node can still complete or fail. */
 const RUNNABLE_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>(['waiting', 'active']);
@@ -165,7 +165,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
     const graphCompleted = allNodesEnded(data.state) && recordEnd(data.state, 'completed');
     if (graphCompleted) {
-      await finishGraph(data.state, { status: 'completed', units: data.accumulatedUnits });
+      await endGraphReservation(graphId, data.state.reservationId, data.accumulatedUnits);
+      await announceGraphEnd(data.state, { status: 'completed' });
     }
 
     return {
@@ -200,6 +201,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
     if (data.state.policy === 'fail_fast') {
       recordEnd(data.state, 'failed', error);
+      await endGraphReservation(graphId, data.state.reservationId, undefined);
       const cancelledJobIds: string[] = [];
       for (const [nid, ns] of Object.entries(data.state.nodes)) {
         if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
@@ -210,7 +212,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
         }
       }
 
-      await finishGraph(data.state, { status: 'failed', error });
+      await announceGraphEnd(data.state, { status: 'failed', error });
 
       return {
         graphFailed: true,
@@ -254,7 +256,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
       // The cancels above awaited, so another node may have ended the graph meanwhile: recordEnd acts only on a running graph.
       if (allNodesEnded(data.state) && recordEnd(data.state, 'completed')) {
-        await finishGraph(data.state, { status: 'completed', units: data.accumulatedUnits });
+        await endGraphReservation(graphId, data.state.reservationId, data.accumulatedUnits);
+        await announceGraphEnd(data.state, { status: 'completed' });
       }
 
       return {
@@ -275,6 +278,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const data = this.graphs.get(graphId);
     if (!data || !recordEnd(data.state, 'cancelled', reason)) return false;
+    await endGraphReservation(graphId, data.state.reservationId, undefined);
 
     for (const [nid, ns] of Object.entries(data.state.nodes)) {
       if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
@@ -283,7 +287,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
       }
     }
 
-    await finishGraph(data.state, { status: 'cancelled' });
+    await announceGraphEnd(data.state, { status: 'cancelled' });
     return true;
   }
 

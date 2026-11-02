@@ -4,7 +4,6 @@ import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
   GraphMetadata,
-  GraphStatus,
   IGraphScheduler,
   NodeCompletionResult,
   NodeFailureResult,
@@ -21,7 +20,7 @@ import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
-import { finishGraph, type GraphOutcome } from './graph-end';
+import { announceGraphEnd, endGraphReservation, type GraphOutcome } from './graph-end';
 import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredCount, parseStoredList } from './redis-state-parsers';
 
 export interface RedisGraphSchedulerOptions {
@@ -194,22 +193,24 @@ export class RedisGraphScheduler implements IGraphScheduler {
       JSON.stringify(outputs),
       String(Date.now()),
       String(actualUnits)
-    )) as [number, string, string, string];
+    )) as [number, string, string, string, string?];
 
-    const applied = Number(raw[0]) === 1;
+    // Only the call whose script recorded the completion ends the graph, and it settles the reservation before anything
+    // else, so no later step that fails (reading the ready nodes, draining the outbox) leaves the reservation open.
+    const graphCompleted = Number(raw[0]) === 1 && raw[1] === 'completed';
+    if (graphCompleted) await endGraphReservation(graphId, raw[4] || undefined, storedUnits(graphId, raw[3]));
     const graphStatus = parseGraphStatus(graphId, raw[1]);
     const readyNodeIds = parseStoredList<NodeId>(graphId, 'the ready node list', raw[2]);
     await this.drainOutbox(graphId);
-
-    // Only the call whose script recorded the completion gets here, so the graph is finished once.
-    const graphCompleted = applied && graphStatus === 'completed';
-    if (graphCompleted) {
-      const units = parseStoredCount(graphId, 'the charged units', raw[3]);
-      const state = await this.getGraphState(graphId);
-      if (state) await finishGraph(state, { status: 'completed', units });
-    }
+    if (graphCompleted) await this.announceEnd(graphId, { status: 'completed' });
 
     return { graphCompleted, graphStatus, readyNodeIds };
+  }
+
+  /** The webhook and the cleanup of a graph whose end this process recorded and whose reservation it already ended. */
+  private async announceEnd(graphId: string, outcome: GraphOutcome): Promise<void> {
+    const state = await this.getGraphState(graphId);
+    if (state) await announceGraphEnd(state, outcome);
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
@@ -226,22 +227,26 @@ export class RedisGraphScheduler implements IGraphScheduler {
       nodeId,
       error,
       String(Date.now())
-    )) as [number, string, string, string, string?];
+    )) as [number, string, string, string, string?, string?];
 
-    const applied = Number(raw[0]) === 1;
+    // The reservation of a graph this failure ended is ended first, as on a completion.
+    const end = recordedFailureEnd(graphId, raw, error);
+    if (end) await endGraphReservation(graphId, raw[5] || undefined, end.units);
     const graphStatus = parseGraphStatus(graphId, raw[1]);
     const cancelledNodeIds = parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2]);
     const skippedNodeIds = parseStoredList<NodeId>(graphId, 'the skipped node list', raw[3]);
-    const outcome = failureOutcome(graphId, applied, graphStatus, error, raw[4]);
-    const state = await this.getGraphState(graphId);
-    const reason = `Graph failed due to node ${nodeId}`;
-    for (const nid of [...cancelledNodeIds, ...skippedNodeIds]) {
-      await this.cancelNode(graphId, nid, state?.graph.nodes[nid], reason).catch(() => false);
+    const stopped = [...cancelledNodeIds, ...skippedNodeIds];
+    if (end || stopped.length > 0) {
+      const state = await this.getGraphState(graphId);
+      const reason = `Graph failed due to node ${nodeId}`;
+      for (const nid of stopped) {
+        await this.cancelNode(graphId, nid, state?.graph.nodes[nid], reason).catch(() => false);
+      }
+      if (state && end) await announceGraphEnd(state, end.outcome);
     }
-    if (state && outcome) await finishGraph(state, outcome);
 
     return {
-      graphFailed: outcome?.status === 'failed',
+      graphFailed: end?.outcome.status === 'failed',
       graphStatus,
       cancelledJobIds: cancelledNodeIds.map((nid) => `${graphId}:${nid}`),
       skippedNodeIds,
@@ -270,16 +275,17 @@ export class RedisGraphScheduler implements IGraphScheduler {
       k.outbox,
       reason,
       String(Date.now())
-    )) as [number, string, string];
+    )) as [number, string, string, string?];
 
     if (Number(raw[0]) !== 1) {
       return false;
     }
+    await endGraphReservation(graphId, raw[3] || undefined, undefined);
     const state = await this.getGraphState(graphId);
     for (const nid of parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2])) {
       await this.cancelNode(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason).catch(() => false);
     }
-    if (state) await finishGraph(state, { status: 'cancelled' });
+    if (state) await announceGraphEnd(state, { status: 'cancelled' });
     return true;
   }
 
@@ -293,12 +299,30 @@ export class RedisGraphScheduler implements IGraphScheduler {
 }
 
 /**
- * How the graph ended when the failure script of a call recorded its end: failed (fail_fast), or completed (continue, its
- * last node failing) with the units its nodes charged. Undefined when the script recorded no end.
+ * The units a script reports a completed graph charged, or undefined when the stored count cannot be read: the graph's
+ * reservation is then given back, and the corrupt count logged, since charging a guessed count would be worse.
  */
-function failureOutcome(graphId: string, applied: boolean, graphStatus: GraphStatus, error: string, units: unknown): GraphOutcome | undefined {
-  if (!applied) return undefined;
-  if (graphStatus === 'failed') return { status: 'failed', error };
-  if (graphStatus === 'completed') return { status: 'completed', units: parseStoredCount(graphId, 'the charged units', units) };
+function storedUnits(graphId: string, raw: unknown): number | undefined {
+  try {
+    return parseStoredCount(graphId, 'the charged units', raw);
+  } catch (err) {
+    console.error(`[GraphScheduler] Graph ${graphId} ended with a corrupt count of charged units, so its reservation is given back:`, err);
+    return undefined;
+  }
+}
+
+/**
+ * How the graph ended when the failure script of a call recorded its end, and the units its reservation is settled to:
+ * failed (fail_fast), which charges nothing, or completed (continue, its last node failing) with the units its nodes
+ * charged. Undefined when the script recorded no end.
+ */
+function recordedFailureEnd(
+  graphId: string,
+  raw: readonly unknown[],
+  error: string
+): { outcome: GraphOutcome; units: number | undefined } | undefined {
+  if (Number(raw[0]) !== 1) return undefined;
+  if (raw[1] === 'failed') return { outcome: { status: 'failed', error }, units: undefined };
+  if (raw[1] === 'completed') return { outcome: { status: 'completed' }, units: storedUnits(graphId, raw[4]) };
   return undefined;
 }

@@ -30,26 +30,29 @@ describe('what a queued graph is charged, with the in-memory scheduler and store
 describe('the in-memory graph scheduler', () => {
   it('completes a graph once when two of its nodes fail at the same time under continue', async () => {
     const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(undefined as never);
-    const scheduler = new InMemoryGraphScheduler();
-    const graphId = `graph_twice_${Date.now()}`;
-    await scheduler.initGraph(
-      graphId,
-      {
-        failurePolicy: 'continue',
-        nodes: {
-          left: { op: 'import.upload', storageKey: 'uploads/graph-twice/left.csv' },
-          right: { op: 'import.upload', storageKey: 'uploads/graph-twice/right.csv' },
-          leftJson: { op: 'convert', input: 'left', targetFormat: 'json' },
-          rightJson: { op: 'convert', input: 'right', targetFormat: 'json' },
+    try {
+      const scheduler = new InMemoryGraphScheduler();
+      const graphId = `graph_twice_${Date.now()}`;
+      await scheduler.initGraph(
+        graphId,
+        {
+          failurePolicy: 'continue',
+          nodes: {
+            left: { op: 'import.upload', storageKey: 'uploads/graph-twice/left.csv' },
+            right: { op: 'import.upload', storageKey: 'uploads/graph-twice/right.csv' },
+            leftJson: { op: 'convert', input: 'left', targetFormat: 'json' },
+            rightJson: { op: 'convert', input: 'right', targetFormat: 'json' },
+          },
         },
-      },
-      { webhookUrl: 'https://hooks.example.com/graph', webhookSecret: 'whsec_twice' }
-    );
+        { webhookUrl: 'https://hooks.example.com/graph', webhookSecret: 'whsec_twice' }
+      );
 
-    await Promise.all([scheduler.onNodeFailed(graphId, 'left', 'left failed'), scheduler.onNodeFailed(graphId, 'right', 'right failed')]);
+      await Promise.all([scheduler.onNodeFailed(graphId, 'left', 'left failed'), scheduler.onNodeFailed(graphId, 'right', 'right failed')]);
 
-    expect((await scheduler.getGraphState(graphId))?.status).toBe('completed');
-    expect(dispatched.mock.calls.map((call) => call[1])).toEqual(['graph.completed']);
-    dispatched.mockRestore();
+      expect((await scheduler.getGraphState(graphId))?.status).toBe('completed');
+      expect(dispatched.mock.calls.map((call) => call[1])).toEqual(['graph.completed']);
+    } finally {
+      dispatched.mockRestore();
+    }
   });
 });

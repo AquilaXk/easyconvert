@@ -20,6 +20,9 @@ function refusalDetail(refusal: BudgetRefusal, plan: Plan): string {
     return `Up to ${ANONYMOUS_OPEN_UPLOADS_MAX} uploads may be open at once without an account. Finish or cancel one, then try again.`;
   }
   const limit = formatBytes(dailyBudgetBytes(plan));
+  if (refusal === 'held') {
+    return `Link imports that are still running hold the rest of today's ${limit}. Try again when they finish; what they do not read is given back.`;
+  }
   const allowance =
     plan === 'anonymous'
       ? `Without an account, uploads and link imports may total ${limit} a day.`

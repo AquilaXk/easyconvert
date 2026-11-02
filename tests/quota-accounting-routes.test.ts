@@ -260,7 +260,7 @@ describe('what a request is charged', () => {
     it('counts the bytes it brings in against the daily byte budget and is refused once that is spent', async () => {
       const client = visitor();
       const before = await client.remaining();
-      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - Buffer.byteLength(CSV));
       remoteFile(CSV);
 
       expect((await fetchUrlRoute(importRequest(client))).status).toBe(200);
@@ -277,7 +277,7 @@ describe('what a request is charged', () => {
       ['pro', 10 * GIB],
     ] as const)('by a %s account is refused once the plan allowance of %d bytes is spent', async (tier, allowance) => {
       const caller = await account(tier);
-      await spendImportBytes(caller.userId, tier, allowance - 1);
+      await spendImportBytes(caller.userId, tier, allowance - Buffer.byteLength(CSV));
       remoteFile(CSV);
 
       expect((await fetchUrlRoute(importRequest(caller))).status).toBe(200);
@@ -299,9 +299,9 @@ describe('what a request is charged', () => {
       expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
     });
 
-    it('holds the bytes it may still read while it runs, so a second import cannot pass the budget beside it', async () => {
+    it('holds the bytes it may still read while it runs, so a second import beside it is refused as held, not as spent', async () => {
       const client = visitor();
-      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 10);
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - Buffer.byteLength(CSV));
       let send: () => void = () => undefined;
       remoteFile(CSV);
       vi.mocked(undiciFetch).mockImplementationOnce(async () => {
@@ -315,7 +315,7 @@ describe('what a request is charged', () => {
       send();
 
       expect(second.status).toBe(HTTP_TOO_MANY_REQUESTS);
-      expect((await second.json()).refusal).toBe('daily-bytes');
+      expect((await second.json()).refusal).toBe('held');
       expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
       expect((await first).status).toBe(200);
     });
