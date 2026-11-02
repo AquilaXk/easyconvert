@@ -538,13 +538,10 @@
   },
   "formatSelector": {
     "defaultTitle": "Select Format",
-    "close": "Close format selector",
     "noTargets": "No supported output formats for this file.",
     "noMatches": "No formats matching \"{search}\"",
-    "anyFormat": "ANY FORMAT",
     "searchLabel": "Search format",
-    "searchPlaceholder": "Search format...",
-    "clear": "Clear"
+    "searchPlaceholder": "Search format..."
   },
   "formatSpecs": {
     "pdf": {
@@ -1141,7 +1138,7 @@
       "chooseFormat": "Please select an output format to continue",
       "fixOptions": "Update password options or output format to continue.",
       "complete": "Conversion complete for {count, plural, one {# file} other {# files}}",
-      "failed": "{count, plural, one {# file} other {# files}} failed conversion. Retry or remove to continue.",
+      "failed": "{count, plural, one {# file} other {# files}} failed conversion. Convert again or remove to continue.",
       "ready": "{count, plural, one {# file} other {# files}} ready to convert"
     },
     "convertAllTo": "Convert all to",
@@ -1160,8 +1157,7 @@
       "done": "Done",
       "download": "Download",
       "failed": "Failed",
-      "retry": "Retry",
-      "targetLabel": "{name}: convert {src} to {tgt}, {state, select, uploading {uploading} converting {converting} completed {done} failed {failed} other {ready}}",
+      "targetLabel": "{name}: convert {src} to {tgt}, {state, select, uploading {uploading} converting {converting} completed {done} failed {failed} blocked {can't convert} other {ready}}",
       "chooseTargetLabel": "{name}: select format for {src}",
       "selectFormat": "Select format",
       "selectorTitle": "Convert {format} to",

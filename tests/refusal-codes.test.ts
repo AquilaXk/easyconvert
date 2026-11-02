@@ -101,7 +101,7 @@ function renderedRow(failure: ConversionFailure) {
   };
   const dom = renderDom(createElement(QueueItemRow, {
     item, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-    onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
+    onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
   }));
   return visibleText(dom) + select(dom, 'details').map(visibleText).join(' ');
 }

@@ -21,7 +21,6 @@ export interface ConversionQueueProps {
   onUpdateAllTargets?: (targetFormat: string) => void;
   onUpdateOptions: (id: string, options: ConversionOptions) => void;
   onConvertAll: () => void;
-  onConvertSingle: (id: string) => void;
   onAddMoreFiles: () => void;
   /** Receives a file the file bar imported from a link. */
   onImportFile: (file: File) => void;
@@ -237,7 +236,7 @@ function deriveQueueViewState(
  */
 export default function ConversionQueue({
   items, onRemoveItem, onClearAll, onUpdateTargetFormat, onUpdateAllTargets,
-  onUpdateOptions, onConvertAll, onConvertSingle, onAddMoreFiles, onImportFile, onDownloadAllZip,
+  onUpdateOptions, onConvertAll, onAddMoreFiles, onImportFile, onDownloadAllZip,
   isConverting, zipError, onDismissZipError,
 }: Readonly<ConversionQueueProps>) {
   const t = useTranslations('queue');
@@ -284,7 +283,7 @@ export default function ConversionQueue({
                 onCloseFormatSelector={() => setActiveFormatSelectorId(null)}
                 onSelectTargetFormat={(fmt) => { onUpdateTargetFormat(item.id, fmt); setActiveFormatSelectorId(null); }}
                 onOpenOptions={() => setActiveOptionsModalId(item.id)}
-                onRetry={() => onConvertSingle(item.id)} onRemove={() => onRemoveItem(item.id)}
+                onRemove={() => onRemoveItem(item.id)}
               />
             </li>
           ))}

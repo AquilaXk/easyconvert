@@ -538,13 +538,10 @@
   },
   "formatSelector": {
     "defaultTitle": "형식 선택",
-    "close": "형식 선택 닫기",
     "noTargets": "이 파일을 변환할 수 있는 출력 형식이 없어요.",
     "noMatches": "‘{search}’ 검색 결과가 없어요",
-    "anyFormat": "모든 형식",
     "searchLabel": "형식 검색",
-    "searchPlaceholder": "형식 검색...",
-    "clear": "지우기"
+    "searchPlaceholder": "형식 검색..."
   },
   "formatSpecs": {
     "pdf": {
@@ -1141,7 +1138,7 @@
       "chooseFormat": "계속하려면 출력 형식을 선택해 주세요",
       "fixOptions": "계속하려면 비밀번호 옵션이나 출력 형식을 확인해 주세요.",
       "complete": "파일 {count, number}개 변환을 마쳤어요",
-      "failed": "파일 {count, number}개를 변환하지 못했어요. 계속하려면 다시 시도하거나 제거해 주세요.",
+      "failed": "파일 {count, number}개를 변환하지 못했어요. 계속하려면 다시 변환하거나 제거해 주세요.",
       "ready": "{count, number}개 파일을 변환할 준비가 됐어요"
     },
     "convertAllTo": "모두 변환할 형식",
@@ -1160,8 +1157,7 @@
       "done": "완료",
       "download": "다운로드",
       "failed": "실패",
-      "retry": "다시 시도",
-      "targetLabel": "{name}: {src} 파일을 {tgt} 형식으로 변환, {state, select, uploading {업로드 중} converting {변환 중} completed {완료} failed {실패} other {준비됨}}",
+      "targetLabel": "{name}: {src} 파일을 {tgt} 형식으로 변환, {state, select, uploading {업로드 중} converting {변환 중} completed {완료} failed {실패} blocked {변환할 수 없음} other {준비됨}}",
       "chooseTargetLabel": "{name}: {src} 파일의 변환 형식 선택",
       "selectFormat": "형식 선택",
       "selectorTitle": "{format} 변환 대상 형식",

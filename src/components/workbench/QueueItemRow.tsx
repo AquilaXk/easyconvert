@@ -20,7 +20,6 @@ export interface QueueItemRowProps {
   onCloseFormatSelector: () => void;
   onSelectTargetFormat: (targetFormat: string) => void;
   onOpenOptions: () => void;
-  onRetry: () => void;
   onRemove: () => void;
 }
 
@@ -44,34 +43,35 @@ function resolveRowError(
   return failureWording(item.error ?? { code: 'conversionFailed' });
 }
 
-function isRetryDisabled(
-  item: ConversionQueueItem,
-  isBusy: boolean,
-  isOversize: boolean,
-  optionError: string | null
-): boolean {
-  return isBusy || !item.targetFormat || isOversize || optionError !== null;
-}
-
 /**
- * Where a row's conversion stands, as the accessible name of its target select states it. Only a conversion that ran and
- * failed reads as failed; a file over the limit or with an option the target cannot take has not run, and its error text
- * names what blocks it.
+ * Where a row's conversion stands, as the accessible name of its target select states it. A conversion that ran and failed
+ * reads as failed; a file over the limit or with an option the target cannot take reads as one that cannot convert, which
+ * its error text explains; neither offers a retry, as the reference row does not.
  */
-function rowState(item: ConversionQueueItem, isBusy: boolean): string {
+function rowState(item: ConversionQueueItem, isBusy: boolean, isBlocked: boolean): string {
   if (isBusy || item.status === 'completed') return item.status;
+  if (isBlocked) return 'blocked';
   return item.status === 'error' ? 'failed' : 'ready';
 }
 
-function RowStatusDisplay({
-  item, isBusy, isOversize, optionError, onRetry,
-}: Readonly<{
-  item: ConversionQueueItem;
-  isBusy: boolean;
-  isOversize: boolean;
-  optionError: string | null;
-  onRetry: () => void;
-}>) {
+/** The error line under a row, as the reference draws it: a failure badge when the conversion ran, then the reason. */
+function RowError({ message, ranAndFailed }: Readonly<{ message: string; ranAndFailed: boolean }>) {
+  const t = useTranslations('queue.row');
+  return (
+    <div className="col-span-full border-t border-rule pt-3 flex items-center gap-2.5 min-w-0">
+      {ranAndFailed && (
+        <span className="shrink-0 inline-flex items-center px-2 py-1 rounded-xs bg-danger-soft text-danger border border-danger-edge text-xs font-medium uppercase tracking-wider">
+          {t('failed')}
+        </span>
+      )}
+      <p role="alert" className="min-w-0 text-sm text-ink">
+        {message}
+      </p>
+    </div>
+  );
+}
+
+function RowStatusDisplay({ item, isBusy }: Readonly<{ item: ConversionQueueItem; isBusy: boolean }>) {
   const t = useTranslations('queue.row');
   const formatBytes = useFormatBytes();
   if (isBusy) {
@@ -103,19 +103,6 @@ function RowStatusDisplay({
       </div>
     );
   }
-  if (item.status === 'error' || isOversize || optionError !== null) {
-    return (
-      <div className="flex items-center gap-2.5">
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-danger"><span aria-hidden="true" className="size-1.5 rounded-full bg-danger" />{t('failed')}</span>
-        <button
-          type="button" disabled={isRetryDisabled(item, isBusy, isOversize, optionError)} onClick={onRetry}
-          className="transition-colors inline-flex items-center justify-center min-h-[44px] md:min-h-9 px-3.5 rounded-xs border border-danger-edge text-sm font-medium text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {t('retry')}
-        </button>
-      </div>
-    );
-  }
   return null;
 }
 
@@ -130,7 +117,6 @@ export default function QueueItemRow({
   onCloseFormatSelector,
   onSelectTargetFormat,
   onOpenOptions,
-  onRetry,
   onRemove,
 }: Readonly<QueueItemRowProps>) {
   const t = useTranslations('queue.row');
@@ -148,6 +134,7 @@ export default function QueueItemRow({
   const rowError = isIdle
     ? resolveRowError(failureWording, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
     : null;
+  const isBlocked = isOversize || optionError !== null;
   const sourceLabel = item.sourceFormat.toUpperCase();
   const category = FORMAT_REGISTRY[item.sourceFormat.toLowerCase()]?.category ?? 'other';
 
@@ -165,11 +152,6 @@ export default function QueueItemRow({
           <span aria-hidden="true">{' · '}</span>
           <span>{t('formatName', { format: sourceLabel, category })}</span>
         </p>
-        {rowError && (
-          <p role="alert" className="text-xs text-danger mt-1">
-            {rowError}
-          </p>
-        )}
       </div>
 
       <div className="col-span-3 row-start-2 border-t border-rule pt-3 lg:col-span-1 lg:col-start-3 lg:row-start-1 lg:border-0 lg:pt-0 flex items-center flex-wrap gap-2 lg:gap-2.5">
@@ -185,7 +167,7 @@ export default function QueueItemRow({
             data-testid="queue-target-format-btn"
             aria-label={
               hasTarget
-                ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy) })
+                ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
                 : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
             }
             aria-haspopup="dialog"
@@ -222,13 +204,7 @@ export default function QueueItemRow({
           <span className="hidden sm:inline">{t('options')}</span>
         </button>
 
-        <RowStatusDisplay
-          item={item}
-          isBusy={isBusy}
-          isOversize={isOversize}
-          optionError={optionError}
-          onRetry={onRetry}
-        />
+        <RowStatusDisplay item={item} isBusy={isBusy} />
       </div>
 
       <button
@@ -239,6 +215,8 @@ export default function QueueItemRow({
       >
         <X aria-hidden="true" className="size-4" />
       </button>
+
+      {rowError && <RowError message={rowError} ranAndFailed={!isBlocked} />}
     </div>
   );
 }

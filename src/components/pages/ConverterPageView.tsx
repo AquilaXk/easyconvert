@@ -52,7 +52,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
     handleUpdateTargetFormat,
     handleUpdateAllTargets,
     handleUpdateOptions,
-    convertSingleItem,
     handleConvertAll,
     handleDownloadAllZip,
   } = useClientQueue({
@@ -142,12 +141,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
             onUpdateOptions={handleUpdateOptions}
             onConvertAll={() => {
               void handleConvertAll();
-            }}
-            onConvertSingle={(id) => {
-              const target = queue.find((item) => item.id === id);
-              if (target) {
-                void convertSingleItem(target);
-              }
             }}
             onAddMoreFiles={() => {
               const input = document.getElementById(MAIN_FILE_INPUT_ID) as HTMLInputElement | null;

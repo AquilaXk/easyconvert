@@ -23,7 +23,6 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
     handleUpdateTargetFormat,
     handleUpdateAllTargets,
     handleUpdateOptions,
-    convertSingleItem,
     handleConvertAll,
     handleDownloadAllZip,
   } = useClientQueue({ bundlePrefix: 'easyconvert_bundle' });
@@ -56,12 +55,6 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
             onUpdateOptions={handleUpdateOptions}
             onConvertAll={() => {
               void handleConvertAll();
-            }}
-            onConvertSingle={(id) => {
-              const target = queue.find((item) => item.id === id);
-              if (target) {
-                void convertSingleItem(target);
-              }
             }}
             onAddMoreFiles={handleOpenFilePicker}
             onImportFile={(file) => handleFilesSelected([file], queue[0]?.targetFormat || undefined)}

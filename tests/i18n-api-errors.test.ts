@@ -198,7 +198,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
       const noop = () => undefined;
       const queue = renderDom(createElement(ConversionQueue, {
         items: [], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop,
-        onConvertSingle: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false, zipError: true,
+        onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false, zipError: true,
       }), locale);
       return select(queue, 'p', 'role', 'alert').map(visibleText);
     };

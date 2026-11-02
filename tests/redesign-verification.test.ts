@@ -531,7 +531,7 @@ function renderQueue(status: 'ready' | 'completed' = 'ready'): DomElement {
     onUpdateTargetFormat: noop,
     onUpdateOptions: noop,
     onConvertAll: noop,
-    onConvertSingle: noop,
+   
     onAddMoreFiles: noop,
     onImportFile: noop,
     onDownloadAllZip: noop,

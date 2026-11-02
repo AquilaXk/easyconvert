@@ -36,7 +36,7 @@ import {
 } from '../src/components/workbench/options/options-capabilities';
 import UrlImportModal from '../src/components/UrlImportModal';
 import ConversionQueue from '../src/components/ConversionQueue';
-import FormatSelector, { computeDesktopPortalPosition } from '../src/components/FormatSelector';
+import FormatSelector, { computePopoverPosition } from '../src/components/FormatSelector';
 import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import { CreateApiKeyForm } from '../src/components/dashboard/ApiKeyCreateCard';
 import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
@@ -257,15 +257,15 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(select(hocrModal, 'input', 'id', 'opt-doc-ocr')).toHaveLength(0);
     expect(attrOf(select(hocrModal, 'select', 'id', 'opt-doc-ocr-lang')[0], 'disabled')).toBeNull();
 
-    const flipped = computeDesktopPortalPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, 1440, 820);
-    expect(flipped).toMatchObject({ top: 'auto', bottom: 68 });
+    const flipped = computePopoverPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, 1440, 820);
+    expect(flipped).toMatchObject({ top: 'auto', bottom: 62 });
 
     const maxBytes = getViewerMaxFileBytes();
     const oversizeItem = { id: 'over', file: new File(['x'], 'big.mp4'), name: 'big.mp4', size: maxBytes + 1, sourceFormat: 'mp4', targetFormat: '', status: 'error' as const, progress: 0, options: {} };
     const validItem = { id: 'ok', file: new File(['x'], 'ok.png'), name: 'ok.png', size: 128, sourceFormat: 'png', targetFormat: 'webp', status: 'ready' as const, progress: 0, options: {} };
-    const mixedQueue = render(ConversionQueue, { items: [oversizeItem, validItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false });
+    const mixedQueue = render(ConversionQueue, { items: [oversizeItem, validItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false });
     expect(attrOf(select(mixedQueue, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')).toBeNull();
-    const onlyOversize = render(ConversionQueue, { items: [oversizeItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false });
+    const onlyOversize = render(ConversionQueue, { items: [oversizeItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false });
     expect(attrOf(select(onlyOversize, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')).toBe('');
 
     const labelTargets = new Set(
@@ -334,7 +334,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onUpdateTargetFormat: noop,
       onUpdateOptions: noop,
       onConvertAll: noop,
-      onConvertSingle: noop,
+     
       onAddMoreFiles: noop,
       onImportFile: noop,
       onDownloadAllZip: noop,
@@ -363,7 +363,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onUpdateTargetFormat: noop,
       onUpdateOptions: noop,
       onConvertAll: noop,
-      onConvertSingle: noop,
+     
       onAddMoreFiles: noop,
       onImportFile: noop,
       onDownloadAllZip: noop,
@@ -380,7 +380,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onUpdateTargetFormat: noop,
       onUpdateOptions: noop,
       onConvertAll: noop,
-      onConvertSingle: noop,
+     
       onAddMoreFiles: noop,
       onImportFile: noop,
       onDownloadAllZip: noop,

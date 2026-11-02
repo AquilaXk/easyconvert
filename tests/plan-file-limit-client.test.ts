@@ -208,7 +208,7 @@ describe('a file over the limit', () => {
         onCloseFormatSelector: noop,
         onSelectTargetFormat: noop,
         onOpenOptions: noop,
-        onRetry: noop,
+       
         onRemove: noop,
       })
     );
@@ -278,7 +278,7 @@ describe('a file over the limit', () => {
       onCloseFormatSelector: noop,
       onSelectTargetFormat: noop,
       onOpenOptions: noop,
-      onRetry: noop,
+     
       onRemove: removed,
     };
 
