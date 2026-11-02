@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React from 'react';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
@@ -9,7 +9,6 @@ import FaqSection from '@/components/FaqSection';
 import AdBanner from '@/components/AdBanner';
 import Footer from '@/components/Footer';
 import { useClientQueue } from '@/hooks/useClientQueue';
-import type { QueueSummary } from '@/components/workbench/hero-copy';
 
 /** The home page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: number }>) {
@@ -29,15 +28,6 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
     handleDownloadAllZip,
   } = useClientQueue({ bundlePrefix: 'easyconvert_bundle' });
 
-  const activeQueueSummary = useMemo<QueueSummary | undefined>(() => {
-    if (queue.length === 0) return undefined;
-    return {
-      count: queue.length,
-      sourceFormats: Array.from(new Set(queue.map((item) => item.sourceFormat))),
-      targetFormats: Array.from(new Set(queue.map((item) => item.targetFormat.trim()).filter(Boolean))),
-    };
-  }, [queue]);
-
   const handleOpenFilePicker = () => {
     const input = document.getElementById('main-file-input');
     if (input instanceof HTMLInputElement) {
@@ -56,7 +46,6 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
           dailyLimit={dailyLimit}
           activeSourceFormat={queue.length > 0 ? queue[0].sourceFormat : undefined}
           activeTargetFormat={queue.length > 0 ? queue[0].targetFormat || 'any' : undefined}
-          activeQueueSummary={activeQueueSummary}
         />
 
         {queue.length > 0 && (

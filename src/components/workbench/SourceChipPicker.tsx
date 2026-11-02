@@ -5,7 +5,10 @@ import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { getAvailableTargetFormats } from '@/lib/registry';
 
-/** The source formats the card offers first, in the order of the reference layout; a format without targets is left out. */
+/**
+ * The source formats the card offers first, in the order of the reference layout; a format without targets is left out. The
+ * 20 fill a grid of five columns (four on a phone) without a short last row.
+ */
 const CHIP_SOURCES = [
   'pdf', 'docx', 'doc', 'jpg', 'png', 'webp', 'heic', 'mp4', 'mov', 'mp3',
   'wav', 'xlsx', 'csv', 'pptx', 'epub', 'svg', 'gif', 'flac', 'mkv', 'avi',
@@ -19,7 +22,7 @@ function chipTargets(source: string): string[] {
 const SOURCES = CHIP_SOURCES.filter((source) => chipTargets(source).length > 0);
 
 const CHIP_BASE =
-  'min-h-[44px] px-4 inline-flex items-center justify-center rounded-sm border text-[13px] font-extrabold uppercase tracking-[0.02em] transition-colors';
+  'min-h-[44px] inline-flex items-center justify-center rounded-sm border text-[13px] font-extrabold uppercase tracking-[0.02em] transition-colors';
 
 /**
  * The format chips of the upload card: pick a source, and the chips swap in place to the targets of that source, each a link
@@ -65,7 +68,7 @@ export default function SourceChipPicker() {
             type="button"
             aria-pressed="true"
             onClick={goBack}
-            className={`${CHIP_BASE} border-accent bg-accent text-on-accent cursor-pointer`}
+            className={`${CHIP_BASE} px-4 border-accent bg-accent text-on-accent cursor-pointer`}
           >
             {label}
           </button>
@@ -78,7 +81,7 @@ export default function SourceChipPicker() {
             <Link
               key={target}
               href={`/${chosen}-to-${target}`}
-              className={`${CHIP_BASE} border-accent-edge bg-accent-soft text-accent-ink hover:border-accent`}
+              className={`${CHIP_BASE} px-4 border-accent-edge bg-accent-soft text-accent-ink hover:border-accent`}
             >
               {target.toUpperCase()}
             </Link>
@@ -93,7 +96,7 @@ export default function SourceChipPicker() {
       <p id={headingId} className="text-sm font-semibold text-ink-2">
         {t('heading')}
       </p>
-      <div role="group" aria-labelledby={headingId} className="mt-3 flex flex-wrap justify-center gap-2">
+      <div role="group" aria-labelledby={headingId} className="mt-3 mx-auto max-w-md grid grid-cols-4 sm:grid-cols-5 gap-2">
         {SOURCES.map((source) => (
           <button
             key={source}
@@ -106,7 +109,7 @@ export default function SourceChipPicker() {
             data-testid="source-chip"
             data-format={source}
             onClick={() => setChosen(source)}
-            className={`${CHIP_BASE} border-rule bg-surface text-ink hover:border-accent cursor-pointer`}
+            className={`${CHIP_BASE} px-1 border-rule bg-surface text-ink hover:border-accent cursor-pointer`}
           >
             {source.toUpperCase()}
           </button>

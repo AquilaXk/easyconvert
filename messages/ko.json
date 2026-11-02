@@ -1,11 +1,6 @@
 {
   "ads": {
-    "label": "광고",
-    "leaderboard": "728 × 90 리더보드",
-    "responsive": "728 × 90 / 970 × 90 반응형 배너",
-    "inFeed": "728 × 90 피드 내 광고",
-    "display": "728 × 90 디스플레이 광고",
-    "rectangle": "300 × 250 중간 직사각형"
+    "label": "광고"
   },
   "apiDocs": {
     "masthead": {
@@ -124,12 +119,6 @@
       "pairHeading": "{src} · {tgt} 사양 비교",
       "heading": "{format} 형식 사양",
       "intro": "컨테이너 표준, MIME 유형, 사양 관리 주체, 형식별 특징을 정리한 기술 사양이에요."
-    },
-    "guarantee": {
-      "pipeline": "브라우저와 격리된 작업 환경에서 처리",
-      "free": "무료 · 서버 변환 하루 {dailyLimit}회",
-      "ephemeral": "암호화 전송 · 처리 후 자동 삭제",
-      "private": "안전한 개인 파일 처리"
     },
     "steps": {
       "heading": {
@@ -767,8 +756,6 @@
   },
   "hero": {
     "fileInputLabel": "변환할 파일 선택",
-    "queueSummary": "파일 {count, number}개 ({sources})",
-    "queueSummaryWithTargets": "파일 {count, number}개 ({sources} → {targets})",
     "title": {
       "pair": "{src} → {tgt} 변환기",
       "source": "{src} 변환기",

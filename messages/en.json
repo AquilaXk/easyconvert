@@ -1,11 +1,6 @@
 {
   "ads": {
-    "label": "Advertisement",
-    "leaderboard": "728 × 90 Leaderboard",
-    "responsive": "728 × 90 / 970 × 90 Responsive Banner",
-    "inFeed": "728 × 90 In-Feed Placement",
-    "display": "728 × 90 Display Placement",
-    "rectangle": "300 × 250 Medium Rectangle"
+    "label": "Advertisement"
   },
   "apiDocs": {
     "masthead": {
@@ -124,12 +119,6 @@
       "pairHeading": "{src} vs {tgt} Specifications",
       "heading": "{format} Format Specification",
       "intro": "Technical Specifications covering container standards, MIME types, specification maintainers, and format capabilities."
-    },
-    "guarantee": {
-      "pipeline": "Browser Edge & Isolated Worker Pipeline",
-      "free": "Free, {dailyLimit} server conversions a day",
-      "ephemeral": "Encrypted Ephemeral Processing",
-      "private": "Private & Secure"
     },
     "steps": {
       "heading": {
@@ -767,8 +756,6 @@
   },
   "hero": {
     "fileInputLabel": "Select files to convert",
-    "queueSummary": "{count, plural, one {# file} other {# files}} ({sources})",
-    "queueSummaryWithTargets": "{count, plural, one {# file} other {# files}} ({sources} to {targets})",
     "title": {
       "pair": "{src} to {tgt} Converter",
       "source": "{src} Converter",

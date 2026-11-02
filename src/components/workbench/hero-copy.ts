@@ -2,22 +2,6 @@ import type { useTranslations } from 'next-intl';
 
 export type HeroTranslator = ReturnType<typeof useTranslations<'hero'>>;
 
-/** What the queue holds, for the badge beside the title of a page with more than one file queued. */
-export interface QueueSummary {
-  count: number;
-  sourceFormats: string[];
-  targetFormats: string[];
-}
-
-export function describeQueueSummary(t: HeroTranslator, summary?: QueueSummary): string | undefined {
-  if (!summary || summary.count < 2 || summary.sourceFormats.length === 0) return undefined;
-  const sources = summary.sourceFormats.map((s) => s.toUpperCase()).join(', ');
-  const targets = summary.targetFormats.filter(Boolean).map((s) => s.toUpperCase()).join(', ');
-  return targets
-    ? t('queueSummaryWithTargets', { count: summary.count, sources, targets })
-    : t('queueSummary', { count: summary.count, sources });
-}
-
 export interface HeroTitleState {
   categoryTitle?: string;
   hasActiveQueue: boolean;

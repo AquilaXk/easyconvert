@@ -7,7 +7,7 @@ import {
 import { Link } from '@/i18n/navigation';
 import type { FormatSpecification } from './format-specs';
 
-export { ConverterGuaranteeBar, ConverterWorkflowSteps } from './FormatFaqAndSteps';
+export { ConverterWorkflowSteps } from './FormatFaqAndSteps';
 
 const CATEGORY_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   audio: Music,

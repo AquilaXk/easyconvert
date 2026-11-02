@@ -26,9 +26,7 @@ export default function UnitConverterPageView({ dailyLimit }: Readonly<{ dailyLi
 
         <UnitConverter />
 
-        <div className="mt-12 min-h-[50px] sm:min-h-[64px] flex items-center justify-center">
-          <AdBanner slot="mid-content" />
-        </div>
+        <AdBanner slot="mid-content" className="mt-12" />
 
         <div className="mt-12">
           <FaqSection dailyLimit={dailyLimit} />

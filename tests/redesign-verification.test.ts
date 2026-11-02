@@ -290,6 +290,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The home page offers source chips as toggle buttons, not the source and target tiles of a converter page.
     const chips = select(hero, 'button', 'data-testid', 'source-chip');
     expect(chips.map((chip) => visibleText(chip)).slice(0, 5)).toEqual(['PDF', 'DOCX', 'DOC', 'JPG', 'PNG']);
+    // Twenty chips fill the five-column grid (four columns on a phone) with no short last row.
+    expect(chips).toHaveLength(20);
     expect(new Set(chips.map((chip) => attrOf(chip, 'aria-pressed')))).toEqual(new Set(['false']));
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
 
@@ -364,17 +366,12 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(phrasesMissing(text, ['Portable Document Format', 'application/pdf', 'Adobe Systems / ISO 32000'])).toEqual([]);
   });
 
-  it('verifies top leaderboard ad unit has CLS protection container', () => {
-    const page = renderSlug('pdf-to-docx');
-    const leaderboard = select(page, 'aside', 'aria-label', 'Advertisement').find((aside) => /728 × 90 Leaderboard/.test(visibleText(aside)));
-    expect(leaderboard).toBeDefined();
-
-    // The reserved height lives on the wrapper element around the unit, so the layout does not shift when the ad loads.
-    const wrapper = allElements(page).find(
-      (e) => (attrOf(e, 'class') ?? '').includes('min-h-[50px] sm:min-h-[64px]') && allElements(e).includes(leaderboard as DomElement)
-    );
-    expect(wrapper).toBeDefined();
-    expect(classAttr(wrapper)).toBe('w-full min-h-[50px] sm:min-h-[64px] flex items-center justify-center my-2');
+  it('verifies a page with no ad network configured shows no ad frame and reserves no space for one', () => {
+    for (const page of [renderSlug('pdf-to-docx'), renderSlug('lbs-to-kg'), renderQueue('completed')]) {
+      expect(select(page, 'aside', 'aria-label', 'Advertisement')).toHaveLength(0);
+      expect(visibleText(page)).not.toMatch(/Advertisement|728 × 90|Leaderboard|Placement/);
+      expect(allElements(page).filter((e) => /min-h-\[50px\]/.test(attrOf(e, 'class') ?? ''))).toEqual([]);
+    }
   });
 
   it('verifies fake rating pills are purged and replaced with genuine client-side zero-retention guarantee', () => {
@@ -385,26 +382,26 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(phrasesPresent(text, ['4.8 / 5.0', '14,200+ user ratings'])).toEqual([]);
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
-    // Genuine verifiable architecture guarantees must be present
-    expect(phrasesMissing(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Private & Secure', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
+    // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
+    expect(phrasesMissing(text, ['Up to 1 GiB per file', '25 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesPresent(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
-  it('verifies AdBanner implements industry-standard publisher units and eliminates wireframe slop', () => {
-    const slots = [
-      ['top-leaderboard', '728 × 90 Leaderboard'],
-      ['mid-content', '728 × 90 / 970 × 90 Responsive Banner'],
-      ['in-feed', '728 × 90 In-Feed Placement'],
-      ['post-conversion', '728 × 90 Display Placement'],
-      ['sidebar', '300 × 250 Medium Rectangle'],
-    ] as const;
+  it('verifies AdBanner shows a configured ad unit in a box of fixed height, and nothing without one', () => {
+    const slots = ['top-leaderboard', 'mid-content', 'in-feed', 'post-conversion', 'sidebar'] as const;
+    for (const slot of slots) {
+      for (const unconfigured of [render(AdBanner, { slot }), render(AdBanner, { slot, adClient: 'ca-pub-1' })]) {
+        expect(select(unconfigured, 'aside'), slot).toHaveLength(0);
+        expect(visibleText(unconfigured), slot).toBe('');
+      }
 
-    for (const [slot, dimensionLabel] of slots) {
-      const banner = render(AdBanner, { slot });
-      // Each unit is one labelled <aside> holding the standard "Advertisement" header and its IAB dimension label,
-      // and nothing else: no fake feature or sponsor cards pretending to be ads.
-      expect(select(banner, 'aside', 'aria-label', 'Advertisement')).toHaveLength(1);
-      expect(visibleText(banner)).toBe(`Advertisement ${dimensionLabel}`);
-      // Solid borders: no dashed wireframe box.
+      const banner = render(AdBanner, { slot, adClient: 'ca-pub-1', adSlotId: '42' });
+      expect(select(banner, 'aside', 'aria-label', 'Advertisement'), slot).toHaveLength(1);
+      expect(visibleText(banner)).toBe('Advertisement');
+      const unit = select(banner, 'ins');
+      expect(unit.map((u) => [attrOf(u, 'data-ad-client'), attrOf(u, 'data-ad-slot')])).toEqual([['ca-pub-1', '42']]);
+      // The box around the unit keeps a fixed height, so the page does not shift when the ad loads.
+      expect([...classTokens(banner)].some((token) => /^(?:sm:)?h-\[\d+px\]$/.test(token)), slot).toBe(true);
       expect(presentIn(classTokens(banner), ['border-dashed'])).toEqual([]);
       expect(select(banner, 'a')).toHaveLength(0);
     }
@@ -567,8 +564,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 });
 
-/** One PDF, ready to be converted to DOCX. */
-function renderQueue(): DomElement {
+/** One PDF, ready to be converted to DOCX, or already converted. */
+function renderQueue(status: 'ready' | 'completed' = 'ready'): DomElement {
   const item: ConversionQueueItem = {
     id: 'item-1',
     file: new File(['%PDF-1.4'], 'report.pdf', { type: 'application/pdf' }),
@@ -576,7 +573,7 @@ function renderQueue(): DomElement {
     size: 2048,
     sourceFormat: 'pdf',
     targetFormat: 'docx',
-    status: 'ready',
+    status,
     progress: 0,
     options: {},
   };

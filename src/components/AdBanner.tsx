@@ -17,92 +17,44 @@ export interface AdBannerProps {
   adSlotId?: string;
 }
 
+/** The size of each slot (IAB display units); the box keeps its height once an ad is configured, so the ad loads without a shift. */
+const SLOT_LAYOUT: Readonly<Record<AdSlotType, { wrapper: string; container: string }>> = {
+  'top-leaderboard': { wrapper: 'max-w-[728px] my-3 px-4', container: 'h-[50px] sm:h-[90px]' },
+  'mid-content': { wrapper: 'max-w-[728px] lg:max-w-[970px] my-8 px-4', container: 'h-[90px]' },
+  'in-feed': { wrapper: 'max-w-[728px] my-8 px-4', container: 'h-[90px]' },
+  'post-conversion': { wrapper: 'max-w-[728px] my-6 px-4', container: 'h-[90px]' },
+  sidebar: { wrapper: 'max-w-[300px] my-4', container: 'h-[250px]' },
+};
+
+/**
+ * One ad unit, shown only when an ad network client and slot are configured. Without them it renders nothing, not a
+ * placeholder box: a person who sees an empty "advertisement" frame after converting a file sees a broken page.
+ */
 export default function AdBanner({
   slot,
   className = '',
   adClient,
   adSlotId,
-}: AdBannerProps) {
+}: Readonly<AdBannerProps>) {
   const t = useTranslations('ads');
-  // Standard IAB display advertising dimensions and CLS prevention configuration
-  const getSlotConfig = () => {
-    switch (slot) {
-      case 'top-leaderboard':
-        return {
-          wrapper: 'w-full max-w-[728px] mx-auto my-3 px-4',
-          container: 'min-h-[50px] sm:min-h-[90px] h-[50px] sm:h-[90px]',
-          dimensionLabel: t('leaderboard'),
-          maxWidth: 'max-w-[728px]',
-        };
-      case 'mid-content':
-        return {
-          wrapper: 'w-full max-w-[728px] lg:max-w-[970px] mx-auto my-8 px-4',
-          container: 'min-h-[90px] h-[90px]',
-          dimensionLabel: t('responsive'),
-          maxWidth: 'max-w-[728px] lg:max-w-[970px]',
-        };
-      case 'in-feed':
-        return {
-          wrapper: 'w-full max-w-[728px] mx-auto my-8 px-4',
-          container: 'min-h-[90px] h-[90px]',
-          dimensionLabel: t('inFeed'),
-          maxWidth: 'max-w-[728px]',
-        };
-      case 'post-conversion':
-        return {
-          wrapper: 'w-full max-w-[728px] mx-auto my-6 px-4',
-          container: 'min-h-[90px] h-[90px]',
-          dimensionLabel: t('display'),
-          maxWidth: 'max-w-[728px]',
-        };
-      case 'sidebar':
-      default:
-        return {
-          wrapper: 'w-[300px] mx-auto my-4',
-          container: 'min-h-[250px] h-[250px]',
-          dimensionLabel: t('rectangle'),
-          maxWidth: 'max-w-[300px]',
-        };
-    }
-  };
-
-  const config = getSlotConfig();
   const effectiveClient = adClient || process.env.NEXT_PUBLIC_ADSENSE_CLIENT;
   const effectiveSlot = adSlotId || process.env.NEXT_PUBLIC_ADSENSE_SLOT;
+  if (!effectiveClient || !effectiveSlot) return null;
+  const layout = SLOT_LAYOUT[slot];
 
   return (
-    <aside
-      aria-label={t('label')}
-      className={`relative z-10 flex flex-col items-center justify-center transition-all ${config.wrapper} ${className}`}
-    >
-      {/* Standardized Minimal Advertisement Header */}
-      <div className={`flex items-center justify-center w-full mb-1 px-1 ${config.maxWidth}`}>
-        <span className="text-[10px] font-mono tracking-widest uppercase text-ink-3 font-medium select-none">
-          {t('label')}
-        </span>
-      </div>
-
-      {/* CLS-Stabilized Display Ad Container */}
-      <div
-        className={`w-full rounded-sm border border-rule overflow-hidden flex items-center justify-center p-2 relative transition-all ${config.container} ${config.maxWidth}`}
-      >
-        {effectiveClient && effectiveSlot ? (
-          /* Production Script Placement (Google AdSense / Network Target) */
-          <ins
-            className="adsbygoogle block w-full text-center"
-            data-ad-client={effectiveClient}
-            data-ad-slot={effectiveSlot}
-            data-ad-format="auto"
-            data-full-width-responsive="true"
-          />
-        ) : (
-          /* Realistic Industry-Standard Publisher Ad Unit */
-          <div className="flex flex-col items-center justify-center gap-0.5 text-center select-none py-1 text-ink-3">
-            <span className="text-xs font-mono font-medium tracking-wide">
-              {config.dimensionLabel}
-            </span>
-          </div>
-        )}
+    <aside aria-label={t('label')} className={`w-full mx-auto flex flex-col items-center ${layout.wrapper} ${className}`}>
+      <span className="mb-1 text-[10px] font-mono tracking-widest uppercase text-ink-3 font-medium select-none">
+        {t('label')}
+      </span>
+      <div className={`w-full overflow-hidden ${layout.container}`}>
+        <ins
+          className="adsbygoogle block w-full text-center"
+          data-ad-client={effectiveClient}
+          data-ad-slot={effectiveSlot}
+          data-ad-format="auto"
+          data-full-width-responsive="true"
+        />
       </div>
     </aside>
   );

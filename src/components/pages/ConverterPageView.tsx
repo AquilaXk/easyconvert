@@ -17,7 +17,6 @@ import { buildContextualFaqs } from '@/components/converter/FormatFaqAndSteps';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import {
   ConverterBreadcrumb,
-  ConverterGuaranteeBar,
   ConverterWorkflowSteps,
   FormatSpecDeck,
 } from '@/components/converter/FormatSpecDeck';
@@ -153,11 +152,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           />
         ) : (
           <>
-            <div className="w-full min-h-[50px] sm:min-h-[64px] flex items-center justify-center my-2">
-              <AdBanner slot="top-leaderboard" className="py-0" />
-            </div>
-
-            <ConverterGuaranteeBar dailyLimit={dailyLimit} />
+            <AdBanner slot="top-leaderboard" />
 
             <ConverterWorkflowSteps
               srcMeta={srcMeta}

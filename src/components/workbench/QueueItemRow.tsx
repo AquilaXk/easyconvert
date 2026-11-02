@@ -141,10 +141,6 @@ export default function QueueItemRow({
   const sourceLabel = item.sourceFormat.toUpperCase();
   const category = FORMAT_REGISTRY[item.sourceFormat.toLowerCase()]?.category ?? 'other';
 
-  const targetButtonClass = hasTarget
-    ? 'border-rule bg-canvas text-ink hover:border-accent'
-    : 'border-warning-edge bg-warning-soft text-warning hover:border-accent';
-
   return (
     <div className="rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 grid grid-cols-[2.75rem_minmax(0,1fr)_auto] lg:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-3 min-w-0">
       <div className="size-11 flex items-center justify-center rounded-xs bg-sunken">
@@ -182,7 +178,7 @@ export default function QueueItemRow({
             aria-expanded={isFormatSelectorOpen}
             disabled={isBusy || isOversize}
             onClick={onToggleFormatSelector}
-            className={`transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
+            className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-canvas text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
             <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />

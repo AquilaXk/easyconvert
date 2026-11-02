@@ -12,8 +12,6 @@ import PopularConversions from './workbench/PopularConversions';
 import {
   computeHeroSubtitle,
   computeHeroTitle,
-  describeQueueSummary,
-  type QueueSummary,
 } from './workbench/hero-copy';
 
 /** The copy of a converter page, whose hero shows its pair as two tiles; the home page has none. */
@@ -30,7 +28,6 @@ export interface HeroProps {
   activeSourceFormat?: string;
   activeTargetFormat?: string;
   pair?: ConverterPair;
-  activeQueueSummary?: QueueSummary;
 }
 
 function getEffectiveTargetFormat(chosen?: string, fallback?: string): string | undefined {
@@ -65,7 +62,6 @@ export default function Hero({
   activeSourceFormat,
   activeTargetFormat,
   pair,
-  activeQueueSummary,
 }: Readonly<HeroProps>) {
   const t = useTranslations('hero');
   const [sourceFormat, setSourceFormat] = useState(activeSourceFormat ? activeSourceFormat.toLowerCase() : 'any');
@@ -173,7 +169,6 @@ export default function Hero({
     userChangedTiles,
   });
   const subtitle = computeHeroSubtitle(t, pair?.description, hasActiveQueue, sourceFormat, targetFormat, userChangedTiles);
-  const queueSummaryText = describeQueueSummary(t, activeQueueSummary);
 
   const dropzone = (chips?: React.ReactNode) => (
     <HeroDropzoneCard
@@ -200,14 +195,7 @@ export default function Hero({
     body = (
       <section className="py-6 sm:py-8 border-b border-rule">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{title}</h1>
-            {queueSummaryText && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-medium tabular-nums text-ink-2 border border-rule">
-                {queueSummaryText}
-              </span>
-            )}
-          </div>
+          <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{title}</h1>
           <p className="mt-1.5 text-sm text-ink-2 max-w-2xl">{subtitle}</p>
         </div>
       </section>
@@ -238,8 +226,8 @@ export default function Hero({
     body = (
       <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="lg:grid lg:grid-cols-2 lg:items-start lg:gap-14">
-            <div className="text-center lg:text-left min-w-0 lg:pt-16">
+          <div className="lg:grid lg:grid-cols-2 lg:items-center lg:gap-14">
+            <div className="text-center lg:text-left min-w-0">
               <h1 className="text-5xl sm:text-6xl lg:text-[78px] font-normal leading-[0.95] tracking-[-0.06em] text-ink">
                 {title}
               </h1>
