@@ -1,35 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { accessRefusal } from '@/lib/api/dashboard-refusal';
-import { codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
+import { serverFault } from '@/lib/api/problem-details';
 import type { DashboardRefusalCode } from '@/lib/refusal-codes';
-import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
-import type { User } from '@/lib/auth/types';
 
 export const dynamic = 'force-dynamic';
 
-const refusal = codedRefusal<DashboardRefusalCode>;
-
-/** The signed-in person, or a key holder whose key has the `*` scope that managing keys requires; else the refusal. */
-async function resolveKeyManager(req: NextRequest): Promise<{ user: User } | { refused: NextResponse }> {
-  const sessionUser = await getSessionFromRequest(req);
-  if (sessionUser) return { user: sessionUser };
-
-  const auth = await validateApiAccess(req, 0);
-  if (!auth.authorized || !auth.user) {
-    return { refused: accessRefusal(auth, 'Unauthorized: Sign in or valid API key required.') };
-  }
-  if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
-    return { refused: refusal(403, 'admin_scope_required', 'Forbidden: API key lacks admin wildcard (*) scope to manage API keys.') };
-  }
-  return { user: auth.user };
-}
+const MANAGE_KEYS = { action: 'manage API keys', adminKey: true };
 
 export async function GET(req: NextRequest) {
-  const auth = await resolveKeyManager(req);
+  const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
   if ('refused' in auth) return auth.refused;
 
   const keys = await redisKeyStore.listApiKeys(auth.user.id);
@@ -104,7 +86,7 @@ function parseKeyCreationPayload(body: Record<string, unknown> | null | undefine
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await resolveKeyManager(req);
+  const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
   if ('refused' in auth) return auth.refused;
 
   try {

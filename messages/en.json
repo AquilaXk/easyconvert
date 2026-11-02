@@ -1709,13 +1709,7 @@
       "account_exists": "An account with this email address already exists. Sign in instead."
     },
     "dashboard": {
-      "sign_in_required": "Sign in to continue.",
-      "forbidden": "This action is not allowed for your account.",
-      "rate_limited": "Too many requests in a short time. Wait a moment and try again.",
-      "service_unavailable": "The service is temporarily unavailable. Try again shortly.",
       "admin_scope_required": "This needs an API key with the full (*) scope.",
-      "id_required": "The page did not say which item to change. Reload it and try again.",
-      "not_found": "That item no longer exists.",
       "invalid_key_settings": "Check the key's settings: a name, scope, address list or expiry date is not valid.",
       "invalid_grace_period": "Choose a grace period between 0 seconds and 7 days.",
       "key_create_failed": "Could not create the API key. Try again in a moment."

@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { accessRefusal } from '@/lib/api/dashboard-refusal';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { resultAvailability } from '@/lib/storage/retention-service';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const auth = await validateApiAccess(req, 0, 'storage:download');
-  if (!auth.authorized || !auth.user) {
-    return accessRefusal(auth, 'Unauthorized: Sign in or valid API key required.');
-  }
+  const caller = await resolveDashboardCaller(req, { action: 'list converted files', scope: 'storage:download' });
+  if ('refused' in caller) return caller.refused;
 
-  const files = await redisKeyStore.listUserFiles(auth.user.id);
+  const files = await redisKeyStore.listUserFiles(caller.user.id);
   const now = Date.now();
 
   // A file the retention rule already deleted is not listed, and one that is about to go counts down to that time.

@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { accessRefusal } from '@/lib/api/dashboard-refusal';
-import { codedRefusal } from '@/lib/api/problem-details';
-import type { DashboardRefusalCode } from '@/lib/refusal-codes';
-import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess } from '@/lib/api-keys/guard';
+import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 
 export const dynamic = 'force-dynamic';
 
-const refusal = codedRefusal<DashboardRefusalCode>;
+const HTTP_NOT_FOUND = 404;
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -18,23 +14,10 @@ interface RouteContext {
 const MAX_GRACE_PERIOD_SECONDS = 7 * 24 * 3600; // 7 days
 
 export async function POST(req: NextRequest, context: RouteContext) {
-  let user = await getSessionFromRequest(req);
-  if (!user) {
-    const auth = await validateApiAccess(req, 0);
-    if (!auth.authorized || !auth.user) {
-      return accessRefusal(auth, 'Unauthorized: Sign in or valid API key required.');
-    }
-    if (auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
-      return refusal(403, 'admin_scope_required', 'Forbidden: API key lacks admin wildcard (*) scope to rotate API keys.');
-    }
-    user = auth.user;
-  }
-
-  const resolvedParams = await Promise.resolve(context.params);
-  const keyId = resolvedParams.id;
-  if (!keyId) {
-    return refusal(400, 'id_required', 'Key ID parameter missing.');
-  }
+  const caller = await resolveDashboardCaller(req, { action: 'rotate API keys', adminKey: true });
+  if ('refused' in caller) return caller.refused;
+  const { user } = caller;
+  const { id: keyId } = await context.params;
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   let gracePeriodSeconds = 3600; // 1 hour default
@@ -53,7 +36,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
 
   const result = await redisKeyStore.rotateApiKey(user.id, keyId, { gracePeriodSeconds });
   if (!result) {
-    return refusal(404, 'not_found', 'API key not found, inactive, or not owned by the current user.');
+    return refusal(HTTP_NOT_FOUND, undefined, 'API key not found, inactive, or not owned by the current user.');
   }
 
   return NextResponse.json({

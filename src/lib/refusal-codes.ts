@@ -38,18 +38,12 @@ export const AUTH_ERROR_CODES = [
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 /**
- * Why a route of the dashboard (`/api/account/files/**`, `/api/keys/**`, `/api/webhooks/dlq/**`) refused: the access check
- * (no session or key, a key or address not allowed, the burst limit, an offline store), a key without the `*` scope these
- * routes require, a missing or unknown id, key settings or a grace period out of range, or a key that could not be made.
+ * Why a route of the dashboard (`/api/account/files/**`, `/api/keys/**`, `/api/webhooks/dlq/**`) refused, where its status
+ * cannot say it: a key without the `*` scope a route requires, key settings or a grace period out of range, or a key that
+ * could not be made. The access check (401, 403, 429, 503) and an unknown id (404) are worded by their status.
  */
 export const DASHBOARD_REFUSAL_CODES = [
-  'sign_in_required',
-  'forbidden',
-  'rate_limited',
-  'service_unavailable',
   'admin_scope_required',
-  'id_required',
-  'not_found',
   'invalid_key_settings',
   'invalid_grace_period',
   'key_create_failed',

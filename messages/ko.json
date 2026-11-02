@@ -2014,7 +2014,7 @@
       "unauthorized": "계속하려면 로그인해 주세요.",
       "forbidden": "이 계정으로는 할 수 없는 작업이에요.",
       "not-found": "찾는 항목이 더 이상 없어요.",
-      "method-not-allowed": "요청을 보내는 방식이 맞지 않아요. 다시 시도해 주세요.",
+      "method-not-allowed": "요청을 보내는 방식이 맞지 않아요.",
       "payload-too-large": "파일이 한 번에 보낼 수 있는 크기보다 커요.",
       "length-required": "업로드 크기를 확인하지 못했어요. 다시 시도해 주세요.",
       "unsupported-media-type": "이 종류의 파일은 여기에 올릴 수 없어요.",
@@ -2118,13 +2118,7 @@
       "account_exists": "이 이메일 주소로 만든 계정이 이미 있어요. 로그인해 주세요."
     },
     "dashboard": {
-      "sign_in_required": "계속하려면 로그인해 주세요.",
-      "forbidden": "이 계정으로는 할 수 없는 작업이에요.",
-      "rate_limited": "짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.",
-      "service_unavailable": "서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.",
       "admin_scope_required": "이 작업에는 전체 권한(*)이 있는 API 키가 필요해요.",
-      "id_required": "어떤 항목인지 알 수 없어요. 페이지를 새로 고친 뒤 다시 시도해 주세요.",
-      "not_found": "찾는 항목이 더 이상 없어요.",
       "invalid_key_settings": "API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.",
       "invalid_grace_period": "유예 시간은 0초에서 7일 사이로 정해 주세요.",
       "key_create_failed": "API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요."

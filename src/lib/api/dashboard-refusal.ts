@@ -1,23 +1,45 @@
-import type { NextResponse } from 'next/server';
-import { authErrorHeaders, type ApiAuthResult } from '@/lib/api-keys/guard';
+import type { NextRequest, NextResponse } from 'next/server';
+import { authErrorHeaders, validateApiAccess } from '@/lib/api-keys/guard';
+import type { ApiKeyScope } from '@/lib/api-keys/types';
+import { getSessionFromRequest } from '@/lib/auth/session';
+import type { User } from '@/lib/auth/types';
 import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { codedRefusal } from './problem-details';
 
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
 
-/** What each status of the access check (`validateApiAccess`) stands for; its other answers (a 400 for an unreadable client address) carry no code. */
-const ACCESS_REFUSAL_CODES: Readonly<Partial<Record<number, DashboardRefusalCode>>> = {
-  401: 'sign_in_required',
-  403: 'forbidden',
-  429: 'rate_limited',
-  503: 'service_unavailable',
-};
+/** A refusal of a dashboard route, with a code of its closed list where the status cannot say the cause. */
+export const dashboardRefusal = codedRefusal<DashboardRefusalCode>;
 
-/** The answer to a caller the access check turned away: its status, the code that status stands for there, and `Retry-After`. */
-export function accessRefusal(
-  auth: Pick<ApiAuthResult, 'error' | 'status' | 'retryAfterSeconds'>,
-  defaultError: string
-): NextResponse {
-  const status = auth.status ?? HTTP_UNAUTHORIZED;
-  return codedRefusal<DashboardRefusalCode>(status, ACCESS_REFUSAL_CODES[status], auth.error ?? defaultError, {}, authErrorHeaders(auth));
+export interface DashboardAccess {
+  /** What the caller does, as the English refusals of the route name it ("revoke API keys"). */
+  action: string;
+  /** Whether a key needs the `*` scope, as for changing keys and failed webhooks; a signed-in person always may. */
+  adminKey?: boolean;
+  /** The scope a key needs to read with this route. */
+  scope?: ApiKeyScope;
+}
+
+/**
+ * The person a dashboard route acts for: the signed-in person, else the owner of the key the request carries, or the
+ * refusal. A refusal of the access check carries its status and `Retry-After` and no code, since the status names its
+ * cause; a key without a scope the route needs answers `admin_scope_required`.
+ */
+export async function resolveDashboardCaller(
+  req: NextRequest,
+  { action, adminKey = false, scope }: DashboardAccess
+): Promise<{ user: User } | { refused: NextResponse }> {
+  const sessionUser = await getSessionFromRequest(req);
+  if (sessionUser) return { user: sessionUser };
+
+  const auth = await validateApiAccess(req, 0, scope);
+  if (!auth.authorized || !auth.user) {
+    const error = auth.error ?? `Unauthorized: sign in or use a valid API key to ${action}.`;
+    return { refused: codedRefusal(auth.status ?? HTTP_UNAUTHORIZED, undefined, error, {}, authErrorHeaders(auth)) };
+  }
+  if (adminKey && auth.apiKey && !auth.apiKey.scopes?.includes('*')) {
+    return { refused: dashboardRefusal(HTTP_FORBIDDEN, 'admin_scope_required', `Forbidden: API key lacks admin wildcard (*) scope to ${action}.`) };
+  }
+  return { user: auth.user };
 }
