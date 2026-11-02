@@ -805,7 +805,10 @@
     "chips": {
       "heading": "What do you want to convert?",
       "back": "Back",
-      "targets": "Convert <format>{src}</format> to:"
+      "targets": "Convert <format>{src}</format> to:",
+      "pick": "{format}, choose a target",
+      "change": "{format}, change format",
+      "allFormats": "See all formats"
     },
     "trust": {
       "formats": "{count, number} formats",

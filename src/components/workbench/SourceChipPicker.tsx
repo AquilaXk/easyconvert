@@ -3,30 +3,44 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
-import { getAvailableTargetFormats } from '@/lib/registry';
 
 /**
- * The source formats the card offers first, in the order of the reference layout; a format without targets is left out. The
- * 20 fill a grid of five columns (four on a phone) without a short last row.
+ * The source formats the card offers, in the order of the reference layout, each with the targets people convert it to
+ * most, as that layout lists them: at most ten, each format once by its own name, and only targets the registry has
+ * (tests/home-source-chips.test.ts holds both). "See all formats" leads to the format page for the rest.
  */
-const CHIP_SOURCES = [
-  'pdf', 'docx', 'doc', 'jpg', 'png', 'webp', 'heic', 'mp4', 'mov', 'mp3',
-  'wav', 'xlsx', 'csv', 'pptx', 'epub', 'svg', 'gif', 'flac', 'mkv', 'avi',
-] as const;
+const COMMON_TARGETS: Readonly<Record<string, readonly string[]>> = {
+  pdf: ['docx', 'txt', 'html', 'jpg', 'png', 'rtf', 'epub', 'pptx', 'xlsx'],
+  docx: ['pdf', 'doc', 'odt', 'rtf', 'txt', 'html', 'epub'],
+  doc: ['pdf', 'docx', 'odt', 'rtf', 'txt', 'html'],
+  jpg: ['png', 'webp', 'gif', 'bmp', 'tiff', 'avif', 'ico', 'pdf'],
+  png: ['jpg', 'webp', 'gif', 'bmp', 'tiff', 'avif', 'ico', 'pdf'],
+  webp: ['jpg', 'png', 'gif', 'bmp', 'tiff', 'avif'],
+  heic: ['jpg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'pdf'],
+  mp4: ['avi', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'gif', 'mp3', 'wav'],
+  mov: ['mp4', 'avi', 'mkv', 'webm', 'wmv', 'gif'],
+  mp3: ['wav', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'aiff'],
+  wav: ['mp3', 'flac', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'aiff'],
+  xlsx: ['pdf', 'xls', 'ods', 'csv'],
+  csv: ['xlsx', 'xls', 'ods', 'pdf'],
+  pptx: ['pdf', 'ppt', 'odp', 'png', 'jpg'],
+  epub: ['pdf', 'txt', 'html', 'docx'],
+  svg: ['png', 'jpg', 'pdf'],
+  gif: ['jpg', 'png', 'webp', 'bmp', 'mp4'],
+  flac: ['mp3', 'wav', 'aac', 'ogg', 'wma', 'm4a', 'opus', 'aiff'],
+  mkv: ['mp4', 'avi', 'mov', 'webm', 'wmv', 'flv'],
+  avi: ['mp4', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'gif'],
+};
 
-/** The formats a source converts to, as the pair pages name them: every registered target but the source itself. */
-function chipTargets(source: string): string[] {
-  return getAvailableTargetFormats(source).map((format) => format.id).filter((id) => id !== source);
-}
-
-const SOURCES = CHIP_SOURCES.filter((source) => chipTargets(source).length > 0);
+const SOURCES = Object.keys(COMMON_TARGETS);
 
 const CHIP_BASE =
   'min-h-[44px] inline-flex items-center justify-center rounded-sm border text-[13px] font-extrabold uppercase tracking-[0.02em] transition-colors';
 
 /**
- * The format chips of the upload card: pick a source, and the chips swap in place to the targets of that source, each a link
- * to its pair page. The swap moves focus to "back", and "back" returns it to the chip it came from.
+ * The format chips of the upload card: pick a source, and the chips swap in place to the common targets of that source, each
+ * a link to its pair page, then a link to its format page. The swap moves focus to "back", and "back" returns it to the chip
+ * it came from.
  */
 export default function SourceChipPicker() {
   const t = useTranslations('hero.chips');
@@ -66,7 +80,7 @@ export default function SourceChipPicker() {
         <div className="mt-1">
           <button
             type="button"
-            aria-pressed="true"
+            aria-label={t('change', { format: label })}
             onClick={goBack}
             className={`${CHIP_BASE} px-4 border-accent bg-accent text-on-accent cursor-pointer`}
           >
@@ -77,7 +91,7 @@ export default function SourceChipPicker() {
           {t.rich('targets', { src: label, format: (chunks) => <span className="text-accent-ink">{chunks}</span> })}
         </p>
         <div role="group" aria-labelledby={headingId} className="mt-3 flex flex-wrap justify-center gap-2">
-          {chipTargets(chosen).map((target) => (
+          {COMMON_TARGETS[chosen].map((target) => (
             <Link
               key={target}
               href={`/${chosen}-to-${target}`}
@@ -86,6 +100,12 @@ export default function SourceChipPicker() {
               {target.toUpperCase()}
             </Link>
           ))}
+          <Link
+            href={`/${chosen}-converter`}
+            className="min-h-[44px] inline-flex items-center px-2 text-[13px] font-extrabold text-accent-ink hover:underline"
+          >
+            {t('allFormats')}
+          </Link>
         </div>
       </div>
     );
@@ -105,9 +125,7 @@ export default function SourceChipPicker() {
               else chipRefs.current.delete(source);
             }}
             type="button"
-            aria-pressed="false"
-            data-testid="source-chip"
-            data-format={source}
+            aria-label={t('pick', { format: source.toUpperCase() })}
             onClick={() => setChosen(source)}
             className={`${CHIP_BASE} px-1 border-rule bg-surface text-ink hover:border-accent cursor-pointer`}
           >

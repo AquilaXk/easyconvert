@@ -805,7 +805,10 @@
     "chips": {
       "heading": "어떤 형식을 변환할까요?",
       "back": "뒤로",
-      "targets": "<format>{src}</format> 파일을 다음 형식으로 변환:"
+      "targets": "<format>{src}</format> 파일을 다음 형식으로 변환:",
+      "pick": "{format}, 변환할 형식 고르기",
+      "change": "{format}, 형식 바꾸기",
+      "allFormats": "모든 형식 보기"
     },
     "trust": {
       "formats": "{count, number}개 형식 지원",

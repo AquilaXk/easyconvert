@@ -288,18 +288,18 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(select(hero, 'button', 'aria-haspopup', 'menu').map((b) => attrOf(b, 'aria-label'))).toEqual(['More file sources']);
     expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here', `${REGISTRY_STATS.formatCount} formats`, 'What do you want to convert?'])).toEqual([]);
 
-    // The home page offers source chips as toggle buttons, not the source and target tiles of a converter page.
-    const chips = select(hero, 'button', 'data-testid', 'source-chip');
+    // The home page offers source chips, each a button named by what it does, not the source and target tiles of a converter page.
+    const isChip = (b: DomElement) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false;
+    const chips = select(hero, 'button').filter(isChip);
     expect(chips.map((chip) => visibleText(chip)).slice(0, 5)).toEqual(['PDF', 'DOCX', 'DOC', 'JPG', 'PNG']);
     // Twenty chips fill the five-column grid (four columns on a phone) with no short last row.
     expect(chips).toHaveLength(20);
-    expect(new Set(chips.map((chip) => attrOf(chip, 'aria-pressed')))).toEqual(new Set(['false']));
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
 
     const pairPage = renderSlug('png-to-jpg');
     expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
     expect(select(pairPage, 'button', 'data-testid', 'hero-target-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Target format JPG']);
-    expect(select(pairPage, 'button', 'data-testid', 'source-chip')).toHaveLength(0);
+    expect(select(pairPage, 'button').filter(isChip)).toHaveLength(0);
 
     expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
     expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
