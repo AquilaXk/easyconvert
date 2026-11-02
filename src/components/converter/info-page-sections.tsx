@@ -1,6 +1,5 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '@/lib/plan-limits';
 
 /** The sections of each policy page, in order; each one's heading and body are `infoPages.<page>.<section>`. */
 const POLICY_SECTIONS = {
@@ -22,10 +21,14 @@ function isPolicyPage(infoType: string | undefined): infoType is PolicyPage {
   return infoType !== undefined && infoType in POLICY_SECTIONS;
 }
 
+/** The section whose body states the anonymous daily allowance. */
+const DAILY_LIMIT_SECTION: PolicySectionKey = 'terms.availability';
+
 export function PolicySections({
   infoType,
   totalFormatCount,
-}: Readonly<{ infoType: string | undefined; totalFormatCount: number }>) {
+  dailyLimit,
+}: Readonly<{ infoType: string | undefined; totalFormatCount: number; dailyLimit: number }>) {
   const t = useTranslations('infoPages');
   if (!isPolicyPage(infoType)) return null;
   const keys = POLICY_SECTIONS[infoType].map((section: string) => `${infoType}.${section}` as PolicySectionKey);
@@ -36,7 +39,7 @@ export function PolicySections({
         return (
           <section key={key} className="space-y-2">
             <h2 className="text-xl text-ink">{t(`${key}.heading`)}</h2>
-            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, limit: ANONYMOUS_DAILY_CONVERSIONS })}</p>
+            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, ...(key === DAILY_LIMIT_SECTION ? { dailyLimit } : {}) })}</p>
             {key === 'accessibility.feedback' && (
               <div>
                 <a

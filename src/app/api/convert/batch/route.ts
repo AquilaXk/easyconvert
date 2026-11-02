@@ -20,7 +20,8 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, settleQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import type { User } from '@/lib/auth/types';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
@@ -52,8 +53,6 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
-  let reservationId: string | undefined;
-  let settled = false;
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
 
@@ -70,9 +69,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
-    // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+    // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit. The units are reserved once
+    // the files to convert are known, one for each.
     const auth = await validateApiAccess(req, {
-      requiredUnits: files.length,
+      requiredUnits: 0,
       requiredScope: 'convert:write',
       allowAnonymous: true,
     });
@@ -87,8 +87,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         authErrorHeaders(auth)
       );
     }
-
-    reservationId = auth.reservationId;
 
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
@@ -123,7 +121,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     const defaultOptions = parsedOptions.options;
 
-    const planned: Array<{ file: File; extension: string; targetFormat: string }> = [];
+    const planned: PlannedFile[] = [];
     for (const file of files) {
       const detected = detectFormatFromFilename(file.name);
       if (!detected) continue;
@@ -132,82 +130,12 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       planned.push({ file, extension: detected.extension, targetFormat });
     }
 
-    // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
-    const batchDeadlineMs = syncDeadlineMs(Math.min(
-      planned.reduce(
-        (total, item) =>
-          total +
-          conversionDeadlineMs({
-            tier: auth.user?.tier,
-            sourceFormat: item.extension,
-            targetFormat: item.targetFormat,
-            inputBytes: item.file.size,
-          }),
-        0
-      ),
-      tierMaxDeadlineMs(auth.user.tier)
-    ));
-
-    const convertedFiles: { filename: string; buffer: Buffer }[] = [];
-    const usedNames = new Set<string>();
-
-    // Nothing to convert needs no deadline, and the route answers it below.
-    await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
-      for (const { file, extension, targetFormat } of planned) {
-        limits.signal.throwIfAborted();
-        const arrayBuffer = await file.arrayBuffer();
-        const inputBuffer = Buffer.from(arrayBuffer);
-
-        const result = await dispatchConversion(
-          inputBuffer,
-          extension,
-          targetFormat,
-          bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)), limits),
-          file.name
-        );
-
-        let finalName = result.filename;
-        let counter = 1;
-        while (usedNames.has(finalName)) {
-          const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
-          const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
-          finalName = `${nameWithoutExt} (${counter})${ext}`;
-          counter++;
-        }
-        usedNames.add(finalName);
-
-        convertedFiles.push({
-          filename: finalName,
-          buffer: result.buffer,
-        });
-      }
-    });
-
-    if (convertedFiles.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'No files were successfully converted in batch.' },
-        { status: 400 }
-      );
+    const unit = await reserveConversionUnit(auth.user, planned.length);
+    if (!unit.reserved) {
+      return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
     }
-
-    const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
-
-    // One conversion for each file in the archive: a file of an unknown format was skipped and is not charged.
-    if (reservationId) {
-      await settleQuota(reservationId, convertedFiles.length);
-      settled = true;
-    }
-
-    return new NextResponse(new Uint8Array(zipResult.buffer), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
-        'Content-Length': zipResult.size.toString(),
-        'X-Zero-Data-Retention': 'true',
-        'X-Storage-Footprint': '0-bytes',
-      },
-    });
+    const caller = auth.user;
+    return await withReservedUnit(unit.reservationId, (reserved) => convertPlanned(req, caller, planned, defaultOptions, reserved));
   } catch (error: unknown) {
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;
@@ -244,8 +172,96 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   } finally {
     releaseSlot?.();
-    // Only a successful conversion is charged: every other end, a refusal, a deadline or a departed client included,
-    // gives the reservation back here.
-    if (reservationId && !settled) await rollbackQuota(reservationId);
   }
 }));
+
+interface PlannedFile {
+  file: File;
+  extension: string;
+  targetFormat: string;
+}
+
+/**
+ * Converts the planned files under one deadline and answers the archive of the converted ones. The batch is charged one
+ * conversion for each file in the archive; a file of an unknown format was never planned, so it reserved nothing.
+ */
+async function convertPlanned(
+  req: NextRequest,
+  caller: User,
+  planned: PlannedFile[],
+  defaultOptions: ConversionOptions,
+  unit: ReservedUnit
+): Promise<NextResponse> {
+  // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
+  const batchDeadlineMs = syncDeadlineMs(Math.min(
+    planned.reduce(
+      (total, item) =>
+        total +
+        conversionDeadlineMs({
+          tier: caller.tier,
+          sourceFormat: item.extension,
+          targetFormat: item.targetFormat,
+          inputBytes: item.file.size,
+        }),
+      0
+    ),
+    tierMaxDeadlineMs(caller.tier)
+  ));
+
+  const convertedFiles: { filename: string; buffer: Buffer }[] = [];
+  const usedNames = new Set<string>();
+
+  // Nothing to convert needs no deadline, and the route answers it below.
+  await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
+    for (const { file, extension, targetFormat } of planned) {
+      limits.signal.throwIfAborted();
+      const arrayBuffer = await file.arrayBuffer();
+      const inputBuffer = Buffer.from(arrayBuffer);
+
+      const result = await dispatchConversion(
+        inputBuffer,
+        extension,
+        targetFormat,
+        bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(caller.tier)), limits),
+        file.name
+      );
+
+      let finalName = result.filename;
+      let counter = 1;
+      while (usedNames.has(finalName)) {
+        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+        finalName = `${nameWithoutExt} (${counter})${ext}`;
+        counter++;
+      }
+      usedNames.add(finalName);
+
+      convertedFiles.push({
+        filename: finalName,
+        buffer: result.buffer,
+      });
+    }
+  });
+
+  if (convertedFiles.length === 0) {
+    return NextResponse.json(
+      { success: false, error: 'No files were successfully converted in batch.' },
+      { status: 400 }
+    );
+  }
+
+  const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
+
+  await unit.settle(convertedFiles.length);
+
+  return new NextResponse(new Uint8Array(zipResult.buffer), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
+      'Content-Length': zipResult.size.toString(),
+      'X-Zero-Data-Retention': 'true',
+      'X-Storage-Footprint': '0-bytes',
+    },
+  });
+}

@@ -18,7 +18,8 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import type { User } from '@/lib/auth/types';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
@@ -125,9 +126,12 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     );
   }
 
-  const reservationId = auth.reservationId;
-  let charged = false;
+  const caller = auth.user;
+  return withReservedUnit(auth.reservationId, (unit) => convertFile(req, caller, unit, instanceUri, startTime));
+}));
 
+/** Converts the file of an authenticated request whose unit is reserved; the unit is charged only once the conversion succeeded. */
+async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, instanceUri: string, startTime: number): Promise<NextResponse> {
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
   try {
@@ -135,7 +139,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return refusal(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
     }
 
-    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    const slot = await acquireSyncSlot(caller.id, caller.tier);
     if (!slot.granted) {
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
@@ -203,9 +207,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     if (options.pages) {
       try {
-        validateTierPageLimit(options.pages, auth.user?.tier || 'free');
-      } catch (err: any) {
-        return refusal(422, refusalCodeOf(err), err.message);
+        validateTierPageLimit(options.pages, caller.tier);
+      } catch (err: unknown) {
+        return refusal(422, refusalCodeOf(err), err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -215,14 +219,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     // Validate file integrity against spoofed extensions fail-closed
     try {
       assertNotSpoofedFile(inputBuffer, detectedDef.extension, file.name);
-    } catch (err: any) {
-      return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', err.message || 'File spoofing detected.');
+    } catch (err: unknown) {
+      return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', (err instanceof Error && err.message) || 'File spoofing detected.');
     }
 
     // Perform conversion via the shared dispatcher (native engines first, in-process where valid)
     const deadlineMs = syncDeadlineMs(
       conversionDeadlineMs({
-        tier: auth.user?.tier,
+        tier: caller.tier,
         sourceFormat: detectedDef.extension,
         targetFormat: tgt,
         inputBytes: inputBuffer.length,
@@ -233,17 +237,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         inputBuffer,
         detectedDef.extension,
         tgt,
-        bindJobLimits(withTierPageCap(options, tierMaxPages(auth.user?.tier)), limits),
+        bindJobLimits(withTierPageCap(options, tierMaxPages(caller.tier)), limits),
         file.name
       )
     );
 
     const duration = Date.now() - startTime;
 
-    if (reservationId) {
-      await commitQuota(reservationId);
-      charged = true;
-    }
+    await unit.commit();
 
     return new NextResponse(new Uint8Array(result.buffer), {
       status: 200,
@@ -264,8 +265,5 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     return conversionErrorResponse(error, instanceUri);
   } finally {
     releaseSlot?.();
-    // Only a successful conversion is charged: every other end, a refusal, a deadline or a departed client included,
-    // gives the unit back here, so no return above has to remember to.
-    if (reservationId && !charged) await rollbackQuota(reservationId);
   }
-}));
+}

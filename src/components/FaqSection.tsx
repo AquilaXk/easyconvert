@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { ANONYMOUS_DAILY_CONVERSIONS, PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
+import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
 import { useFormatBytes } from './i18n/format';
 
 export interface FaqItem {
@@ -12,6 +12,8 @@ export interface FaqItem {
 }
 
 export interface FaqSectionProps {
+  /** The anonymous daily allowance the server enforces, read on the server (`getAnonymousDailyLimit`). */
+  dailyLimit: number;
   customFaqs?: FaqItem[];
   title?: string;
   subtitle?: string;
@@ -20,23 +22,23 @@ export interface FaqSectionProps {
 const DEFAULT_FAQ_KEYS = ['free', 'handling', 'maxSize', 'batch', 'install'] as const;
 
 /** The default questions, in the page's language. The paid plans are named only once they can be bought (`PAID_PLANS_ON_SALE`). */
-function useDefaultFaqs(): FaqItem[] {
+function useDefaultFaqs(dailyLimit: number): FaqItem[] {
   const t = useTranslations('faq');
   const formatBytes = useFormatBytes();
-  const limit = formatBytes(PLAN_MAX_FILE_BYTES.free);
+  const maxSize = formatBytes(PLAN_MAX_FILE_BYTES.free);
   const paidLimits = PAID_PLANS_ON_SALE
     ? ` ${t('paidLimits', { pro: formatBytes(PLAN_MAX_FILE_BYTES.pro), enterprise: formatBytes(PLAN_MAX_FILE_BYTES.enterprise) })}`
     : '';
   return DEFAULT_FAQ_KEYS.map((key) => ({
     q: t(`items.${key}.q`),
-    a: t(`items.${key}.a`, { limit, paidLimits, count: ANONYMOUS_DAILY_CONVERSIONS }),
+    a: t(`items.${key}.a`, { maxSize, paidLimits, dailyLimit }),
   }));
 }
 
-export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionProps = {}) {
+export default function FaqSection({ dailyLimit, customFaqs, title, subtitle }: Readonly<FaqSectionProps>) {
   const t = useTranslations('faq');
   const [openIndex, setOpenIndex] = useState<number | null>(0);
-  const defaultFaqs = useDefaultFaqs();
+  const defaultFaqs = useDefaultFaqs(dailyLimit);
   const faqs = customFaqs && customFaqs.length > 0 ? customFaqs : defaultFaqs;
 
   return (

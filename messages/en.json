@@ -127,7 +127,7 @@
     },
     "guarantee": {
       "pipeline": "Browser Edge & Isolated Worker Pipeline",
-      "free": "Free, {count} server conversions a day",
+      "free": "Free, {dailyLimit} server conversions a day",
       "ephemeral": "Encrypted Ephemeral Processing",
       "private": "Private & Secure"
     },
@@ -436,7 +436,7 @@
     "items": {
       "free": {
         "q": "Is EasyConvert free to use?",
-        "a": "Yes. Without an account you can run up to {count} conversions a day on our servers, each file up to {limit}. Conversions that run in your browser have no daily limit.{paidLimits}"
+        "a": "Yes. Without an account you can run up to {dailyLimit} conversions a day on our servers, each file up to {maxSize}. Conversions that run in your browser have no daily limit.{paidLimits}"
       },
       "handling": {
         "q": "How are my files handled during conversion?",
@@ -444,7 +444,7 @@
       },
       "maxSize": {
         "q": "What is the maximum file size limit?",
-        "a": "EasyConvert takes files of up to {limit} each, with or without an account.{paidLimits} Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled."
+        "a": "EasyConvert takes files of up to {maxSize} each, with or without an account.{paidLimits} Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled."
       },
       "batch": {
         "q": "Can I convert multiple files in one batch?",
@@ -885,7 +885,7 @@
       },
       "availability": {
         "heading": "3. Service Availability & Free Use",
-        "body": "EasyConvert is free to use in the web application. Conversions that run in your browser have no daily limit, and conversions that run on our servers are free for up to {limit} a day without an account. No subscription, credit pack, or paid account is required."
+        "body": "EasyConvert is free to use in the web application. Conversions that run in your browser have no daily limit, and conversions that run on our servers are free for up to {dailyLimit} a day without an account. No subscription, credit pack, or paid account is required."
       }
     },
     "about": {
@@ -1420,7 +1420,7 @@
       "body": "Supported client-side codecs compile to WebAssembly and run inside an isolated browser worker sandbox. Local execution avoids upload wait times, keeps memory buffers ephemeral, and releases temporary storage handles as soon as conversion finishes.",
       "zeroRetention": "Zero-Retention Sandboxing",
       "simd": "Hardware SIMD & WebCodecs Support",
-      "unlimited": "No daily limit in the browser"
+      "noBrowserLimit": "No daily limit in the browser"
     },
     "announcements": {
       "running": "Running browser edge diagnostics...",
@@ -1572,7 +1572,7 @@
       "rate-limited": "Too many requests in a short time. Wait a moment and try again.",
       "concurrency-limit": "Too many conversions are running at once. Try again when one finishes.",
       "quota-exceeded": "You have used today's conversion limit. Try again tomorrow.",
-      "upload-budget-exceeded": "You have used today's upload limit. Try again tomorrow.",
+      "upload-budget-exceeded": "You have used today's limit for uploads and link imports. Try again tomorrow.",
       "storage-full": "Storage is full right now. Try again later.",
       "service-unavailable": "The service is temporarily unavailable. Try again shortly.",
       "internal-server-error": "Something went wrong on our side. Try again.",
@@ -1600,7 +1600,7 @@
       "concurrency-limit": "{limit} conversions are already running, the most at once. Try again when one finishes.",
       "quota-exceeded": "You have used today's limit of {limit} conversions. Try again tomorrow.",
       "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
-      "daily-bytes": "Without an account, uploads may total {limit} a day. Try again tomorrow."
+      "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow."
     },
     "conversion": {
       "file_required": "Choose a file to convert.",
@@ -1647,7 +1647,8 @@
       "remote_error": "The site of the link did not send the file. Check that the link opens the file in a browser.",
       "empty_body": "The site of the link sent an empty file.",
       "file_too_large": "A file imported from a link may be at most {limit}. Download it and add it from your device to convert a file of up to {planLimit}.",
-      "fetch_failed": "The file could not be fetched from the link. Try again."
+      "fetch_failed": "The file could not be fetched from the link. Try again.",
+      "fetch_timeout": "The site of the link did not send the whole file in time. Try again, or download the file and add it from your device."
     },
     "auth": {
       "failed": "Authentication failed. Try again.",

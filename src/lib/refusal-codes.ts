@@ -17,6 +17,7 @@ export const URL_IMPORT_ERROR_CODES = [
   'empty_body',
   'file_too_large',
   'fetch_failed',
+  'fetch_timeout',
 ] as const;
 
 export type UrlImportErrorCode = (typeof URL_IMPORT_ERROR_CODES)[number];

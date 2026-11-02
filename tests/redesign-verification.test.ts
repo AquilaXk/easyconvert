@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
@@ -33,6 +33,7 @@ import {
 } from './helpers/rendered-dom';
 import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
 import { englishSlugCopy } from './helpers/intl';
+import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
 /**
  * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
@@ -44,7 +45,7 @@ import { englishSlugCopy } from './helpers/intl';
 const rootDir = path.resolve(__dirname, '..');
 const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
-const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug }));
+const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -469,7 +470,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
-    const faq = render(FaqSection, {} as never);
+    const faq = render(FaqSection, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
     const triggers = select(faq, 'button').filter((b) => attrOf(b, 'aria-controls') !== null);
 
     // Five questions, each a button that controls its own answer region; only the open one is in the markup.
@@ -479,6 +480,16 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
     expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 25 conversions a day on our servers, each file up to 1 GiB\./);
     expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
+  });
+
+  it('states the allowance the server reads, so an operator override reads the same on the page as in the refusal', () => {
+    vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '7');
+    try {
+      const faq = render(FaqSection, { dailyLimit: getAnonymousDailyLimit() });
+      expect(visibleText(select(faq, 'div', 'role', 'region')[0])).toMatch(/run up to 7 conversions a day/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
@@ -55,6 +56,18 @@ interface ValidatedConvertInput {
   sourceDef: FormatDefinition;
   targetDef: FormatDefinition;
   options: ConversionOptions;
+}
+
+/** A validated request whose conversion unit is reserved, with what its answer needs. */
+interface ReservedConversion extends ValidatedConvertInput {
+  req: NextRequest;
+  user: User;
+  webhookUrl?: string;
+  webhookSecret?: string;
+  rateLimitHeaders: Record<string, string>;
+  instanceUri: string;
+  startTime: number;
+  reply: (res: NextResponse | Response) => Promise<NextResponse | Response>;
 }
 
 type ParsedConvertForm = { problem: NextResponse; data?: undefined } | { data: ValidatedConvertInput; problem?: undefined };
@@ -159,13 +172,18 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     idempotencyCtx = precheck.context;
   }
 
+  // The answer stands whatever the idempotency store does: a store failure after a conversion was charged must not turn
+  // its success into an error the client would retry, and pay for again.
   const reply = async (res: NextResponse | Response) => {
-    if (idempotencyCtx) {
+    if (!idempotencyCtx) return res;
+    try {
       if (res.status >= 500) {
         await idempotencyCtx.abort();
       } else {
         await idempotencyCtx.complete(res);
       }
+    } catch (storeError) {
+      console.error('[v1/convert] The idempotency store could not record the answer; it is answered without a replay:', storeError);
     }
     return res;
   };
@@ -174,19 +192,17 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   const rateLimitHeaders = buildRateLimitHeaders(quota);
 
-  if (quota.remaining <= 0) {
-    const exhaustedQuota = { ...quota, remaining: 0 };
-    return reply(createProblemDetailsResponse(
+  const quotaExceededDetail = tierQuotaExceeded(auth.user.tier);
+  const quotaExhausted = () =>
+    reply(createProblemDetailsResponse(
       429,
-      `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+      quotaExceededDetail,
       instanceUri,
       'Too Many Requests',
       undefined,
-      buildRateLimitHeaders(exhaustedQuota)
+      buildRateLimitHeaders({ ...quota, remaining: 0 })
     ));
-  }
-
-  let reservation: { allowed: boolean; reservationId?: string } | null = null;
+  if (quota.remaining <= 0) return quotaExhausted();
 
   // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
   // the request ends; an asynchronous handoff stays counted through the job it queues.
@@ -241,240 +257,27 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
-    reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
-    if (!reservation.allowed) {
-      const exhaustedQuota = { ...quota, remaining: 0 };
-      return reply(createProblemDetailsResponse(
-        429,
-        `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
-        instanceUri,
-        'Too Many Requests',
-        undefined,
-        buildRateLimitHeaders(exhaustedQuota)
-      ));
-    }
+    const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
+    if (!reservation.allowed) return quotaExhausted();
 
-    // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
-    const preferHeader = req.headers.get('prefer') || '';
-    const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
-    const isOverSizeThreshold = file.size > ASYNC_THRESHOLD_BYTES;
-
-    if (isPreferAsync || isOverSizeThreshold) {
-      // Asynchronous zero-heap streaming handoff: pipe stream directly to storage multipart upload
-      let uploadedStorageKey: string;
-      try {
-        const stream = typeof (file as any).stream === 'function'
-          ? (file as any).stream()
-          : file;
-        const streamResult = await pipeStreamToStorageMultipart(stream, {
-          filename: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          expectedTotalSize: file.size,
-          sourceExtension: sourceDef.extension,
-          storage: storageProvider,
-        });
-        uploadedStorageKey = streamResult.storageKey;
-      } catch (err: any) {
-        if (reservation?.reservationId) {
-          await redisKeyStore.rollbackQuota(reservation.reservationId);
-        }
-        const storageProblem = describeStorageError(err);
-        if (storageProblem) {
-          return reply(createProblemDetailsResponse(
-            storageProblem.status,
-            storageProblem.detail,
-            instanceUri,
-            storageProblem.title,
-            undefined,
-            { ...rateLimitHeaders, ...storageProblem.headers }
-          ));
-        }
-        return reply(createProblemDetailsResponse(
-          400,
-          err.message || 'File upload or validation failed.',
-          instanceUri,
-          'Bad Request',
-          undefined,
-          rateLimitHeaders
-        ));
-      }
-
-      const job = await enqueueConversionJob(
-        conversionQueue,
-        'convert',
-        {
-          jobId: '',
-          originalFilename: file.name,
-          sourceFormat: sourceDef.id,
-          targetFormat: targetDef.id,
-          fileSize: file.size,
-          storageKey: uploadedStorageKey,
-          options: stripEngineControls(options),
-          webhookUrl: effectiveWebhookUrl,
-          webhookSecret: effectiveWebhookSecret,
-          userId: auth.user.id,
-          reservationId: reservation.reservationId,
-        },
-        {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1000 },
-        },
-        { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider) }
-      );
-
-      return reply(NextResponse.json(
-        {
-          success: true,
-          status: 'accepted',
-          jobId: job.id,
-          statusUrl: `/api/v1/jobs/${job.id}`,
-          location: `/api/v1/jobs/${job.id}`,
-          message: 'Conversion job accepted for asynchronous processing.',
-          sourceFormat: sourceDef.id,
-          targetFormat: targetDef.id,
-          originalFilename: file.name,
-          fileSize: file.size,
-          createdAt: job.timestamp,
-        },
-        {
-          status: 202,
-          headers: {
-            Location: `/api/v1/jobs/${job.id}`,
-            'Preference-Applied': 'respond-async',
-            ...rateLimitHeaders,
-          },
-        }
-      ));
-    }
-
-    // Synchronous execution path for payloads <= 10MB without respond-async preference
-    const arrayBuffer = await file.arrayBuffer();
-    const inputBuffer = Buffer.from(arrayBuffer);
-
-    // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
-    try {
-      assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
-    } catch (err: any) {
-      if (reservation?.reservationId) {
-        await redisKeyStore.rollbackQuota(reservation.reservationId);
-      }
-      return reply(createProblemDetailsResponse(
-        spoofCheckStatus(err),
-        err.message || 'File spoofing detected.',
-        instanceUri,
-        undefined,
-        undefined,
-        rateLimitHeaders
-      ));
-    }
-
-    // Convert through the shared dispatcher (native engines first, in-process where valid)
-    const ownerTier = auth.user.tier;
-    const deadlineMs = syncDeadlineMs(
-      conversionDeadlineMs({
-        tier: ownerTier,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        inputBytes: inputBuffer.length,
-      })
-    );
-    const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
-      dispatchConversion(
-        inputBuffer,
-        sourceDef.id,
-        targetDef.id,
-        bindJobLimits(withTierPageCap(options, tierMaxPages(ownerTier)), limits),
-        file.name
-      )
-    );
-
-    const durationMs = Date.now() - startTime;
-    const outputBuffer = conversionResult.buffer;
-
-    // Store the result before the quota unit is committed: a storage outage fails the request and
-    // rolls the reservation back, so the user is not charged for a result they cannot download.
-    const baseName = file.name.replace(/\.[^/.]+$/, '');
-    // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
-    const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
-    const outFileName = `${baseName}.${outExtension}`;
-    const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
-    await saveRetainedResult(storageProvider, storageKey, outputBuffer, conversionResult.mimeType, outFileName);
-
-    // Record in user's file conversion history
-    const stored = { storageKey, downloadUrl: `/api/storage/file/${encodeURIComponent(storageKey)}` };
-
-    const userFile = await redisKeyStore.recordUserFile({
-      userId: auth.user.id,
-      fileName: outFileName,
-      fromFormat: sourceDef.id,
-      toFormat: targetDef.id,
-      size: outputBuffer.length,
-      ...stored,
-    });
-
-    // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion, once the request has nothing left to fail at:
-    // a failure after the commit would answer an error for a unit already charged.
-    if (reservation?.reservationId) {
-      await redisKeyStore.commitQuota(reservation.reservationId);
-    }
-
-    // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
-    const wantsRaw = req.headers.get('accept') === 'application/octet-stream' || req.nextUrl.searchParams.get('raw') === 'true';
-    if (wantsRaw) {
-      return reply(new NextResponse(new Uint8Array(outputBuffer), {
-        status: 200,
-        headers: {
-          'Content-Type': conversionResult.mimeType,
-          'Content-Disposition': `attachment; filename="${outFileName}"`,
-          'X-Conversion-Time-Ms': durationMs.toString(),
-          'X-File-Id': userFile.id,
-          ...frameMetadataHeaders(conversionResult),
-          ...engineTraceHeaders(conversionResult),
-          ...droppedStreamsHeaders(conversionResult),
-          ...conversionWarningsHeaders(conversionResult),
-          ...rateLimitHeaders,
-        },
-      }));
-    }
-
-    // Zero-Heap optimization: only generate Base64 data URI if output payload <= 5MB
-    const MAX_DATA_URI_PAYLOAD_BYTES = 5 * 1024 * 1024;
-    let dataUri: string | undefined;
-    if (outputBuffer.length <= MAX_DATA_URI_PAYLOAD_BYTES) {
-      const base64Data = outputBuffer.toString('base64');
-      dataUri = `data:${conversionResult.mimeType};base64,${base64Data}`;
-    }
-
-    return reply(NextResponse.json(
-      {
-        success: true,
-        fileId: userFile.id,
-        fileName: outFileName,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        mimeType: conversionResult.mimeType,
-        size: outputBuffer.length,
-        durationMs,
-        dataUri,
-        downloadUrl: stored.downloadUrl,
-        expiresAt: userFile.expiresAt,
-        ...frameMetadataFields(conversionResult),
-        ...engineTraceFields(conversionResult),
-        ...droppedStreamsFields(conversionResult),
-        ...conversionWarningsFields(conversionResult),
-      },
-      {
-        status: 200,
-        headers: rateLimitHeaders,
-      }
-    ));
+    const conversion: ReservedConversion = {
+      req,
+      user: auth.user,
+      file,
+      sourceDef,
+      targetDef,
+      options,
+      webhookUrl: effectiveWebhookUrl,
+      webhookSecret: effectiveWebhookSecret,
+      rateLimitHeaders,
+      instanceUri,
+      startTime,
+      reply,
+    };
+    return await withReservedUnit(reservation.reservationId, (unit) => convertReserved(conversion, unit));
   } catch (err: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
-    }
-    if (reservation?.reservationId) {
-      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
-      await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
     if (deadlineProblem) return deadlineProblem;
@@ -537,3 +340,244 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     releaseSlot?.();
   }
 }));
+
+/** Hands a large or `respond-async` conversion to the queue: its job owns the unit once queued, and commits it or gives it back. */
+async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
+  const { file, sourceDef, targetDef, options, user, rateLimitHeaders, instanceUri, reply } = c;
+  // Asynchronous zero-heap streaming handoff: pipe stream directly to storage multipart upload
+  let uploadedStorageKey: string;
+  try {
+    const streamResult = await pipeStreamToStorageMultipart(file.stream(), {
+      filename: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      expectedTotalSize: file.size,
+      sourceExtension: sourceDef.extension,
+      storage: storageProvider,
+    });
+    uploadedStorageKey = streamResult.storageKey;
+  } catch (err: unknown) {
+    const storageProblem = describeStorageError(err);
+    if (storageProblem) {
+      return reply(createProblemDetailsResponse(
+        storageProblem.status,
+        storageProblem.detail,
+        instanceUri,
+        storageProblem.title,
+        undefined,
+        { ...rateLimitHeaders, ...storageProblem.headers }
+      ));
+    }
+    return reply(createProblemDetailsResponse(
+      400,
+      (err instanceof Error && err.message) || 'File upload or validation failed.',
+      instanceUri,
+      'Bad Request',
+      undefined,
+      rateLimitHeaders
+    ));
+  }
+
+  const inputBytes = await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider);
+  const job = await unit.handOff((reservationId) =>
+    enqueueConversionJob(
+      conversionQueue,
+      'convert',
+      {
+        jobId: '',
+        originalFilename: file.name,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        fileSize: file.size,
+        storageKey: uploadedStorageKey,
+        options: stripEngineControls(options),
+        webhookUrl: c.webhookUrl,
+        webhookSecret: c.webhookSecret,
+        userId: user.id,
+        reservationId,
+      },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
+      },
+      { tier: user.tier, inputBytes }
+    )
+  );
+
+  return reply(NextResponse.json(
+    {
+      success: true,
+      status: 'accepted',
+      jobId: job.id,
+      statusUrl: `/api/v1/jobs/${job.id}`,
+      location: `/api/v1/jobs/${job.id}`,
+      message: 'Conversion job accepted for asynchronous processing.',
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      originalFilename: file.name,
+      fileSize: file.size,
+      createdAt: job.timestamp,
+    },
+    {
+      status: 202,
+      headers: {
+        Location: `/api/v1/jobs/${job.id}`,
+        'Preference-Applied': 'respond-async',
+        ...rateLimitHeaders,
+      },
+    }
+  ));
+}
+
+/**
+ * Converts a request whose unit is reserved. A synchronous conversion is charged once its result is stored, recorded and
+ * its answer built, the last step that can fail, so no error answers a charged conversion.
+ */
+async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
+  const { req, user, file, sourceDef, targetDef, options, rateLimitHeaders, instanceUri, startTime, reply } = c;
+
+  // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
+  const preferHeader = req.headers.get('prefer') || '';
+  const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
+  if (isPreferAsync || file.size > ASYNC_THRESHOLD_BYTES) return queueReserved(c, unit);
+
+  // Synchronous execution path for payloads <= 10MB without respond-async preference
+  const inputBuffer = Buffer.from(await file.arrayBuffer());
+
+  // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
+  try {
+    assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
+  } catch (err: unknown) {
+    return reply(createProblemDetailsResponse(
+      spoofCheckStatus(err),
+      (err instanceof Error && err.message) || 'File spoofing detected.',
+      instanceUri,
+      undefined,
+      undefined,
+      rateLimitHeaders
+    ));
+  }
+
+  // Convert through the shared dispatcher (native engines first, in-process where valid)
+  const deadlineMs = syncDeadlineMs(
+    conversionDeadlineMs({
+      tier: user.tier,
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      inputBytes: inputBuffer.length,
+    })
+  );
+  const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
+    dispatchConversion(
+      inputBuffer,
+      sourceDef.id,
+      targetDef.id,
+      bindJobLimits(withTierPageCap(options, tierMaxPages(user.tier)), limits),
+      file.name
+    )
+  );
+
+  const durationMs = Date.now() - startTime;
+  const outputBuffer = conversionResult.buffer;
+
+  // Store the result before the quota unit is committed: a storage outage fails the request and
+  // rolls the reservation back, so the user is not charged for a result they cannot download.
+  const baseName = file.name.replace(/\.[^/.]+$/, '');
+  // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
+  const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
+  const outFileName = `${baseName}.${outExtension}`;
+  const storageKey = `conversions/${user.id}/${Date.now()}_${outFileName}`;
+  await saveRetainedResult(storageProvider, storageKey, outputBuffer, conversionResult.mimeType, outFileName);
+
+  // Record in user's file conversion history
+  const stored = { storageKey, downloadUrl: `/api/storage/file/${encodeURIComponent(storageKey)}` };
+
+  const userFile = await redisKeyStore.recordUserFile({
+    userId: user.id,
+    fileName: outFileName,
+    fromFormat: sourceDef.id,
+    toFormat: targetDef.id,
+    size: outputBuffer.length,
+    ...stored,
+  });
+
+  const answer = answerOfConversion(req, {
+    conversionResult,
+    outFileName,
+    durationMs,
+    fileId: userFile.id,
+    expiresAt: userFile.expiresAt,
+    downloadUrl: stored.downloadUrl,
+    sourceFormat: sourceDef.id,
+    targetFormat: targetDef.id,
+    rateLimitHeaders,
+  });
+  // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion; `reply` answers whatever the idempotency store does.
+  await unit.commit();
+  return reply(answer);
+}
+
+interface ConversionAnswer {
+  conversionResult: Awaited<ReturnType<typeof dispatchConversion>>;
+  outFileName: string;
+  durationMs: number;
+  fileId: string;
+  expiresAt?: number;
+  downloadUrl: string;
+  sourceFormat: string;
+  targetFormat: string;
+  rateLimitHeaders: Record<string, string>;
+}
+
+/** Zero-Heap optimization: only generate Base64 data URI if output payload <= 5MB */
+const MAX_DATA_URI_PAYLOAD_BYTES = 5 * 1024 * 1024;
+
+/** The answer of a finished synchronous conversion: the raw bytes when asked for, else JSON with a data URI for a small result. */
+function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse {
+  const { conversionResult, rateLimitHeaders } = a;
+  const outputBuffer = conversionResult.buffer;
+  // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
+  const wantsRaw = req.headers.get('accept') === 'application/octet-stream' || req.nextUrl.searchParams.get('raw') === 'true';
+  if (wantsRaw) {
+    return new NextResponse(new Uint8Array(outputBuffer), {
+      status: 200,
+      headers: {
+        'Content-Type': conversionResult.mimeType,
+        'Content-Disposition': `attachment; filename="${a.outFileName}"`,
+        'X-Conversion-Time-Ms': a.durationMs.toString(),
+        'X-File-Id': a.fileId,
+        ...frameMetadataHeaders(conversionResult),
+        ...engineTraceHeaders(conversionResult),
+        ...droppedStreamsHeaders(conversionResult),
+        ...conversionWarningsHeaders(conversionResult),
+        ...rateLimitHeaders,
+      },
+    });
+  }
+
+  const dataUri =
+    outputBuffer.length <= MAX_DATA_URI_PAYLOAD_BYTES ? `data:${conversionResult.mimeType};base64,${outputBuffer.toString('base64')}` : undefined;
+
+  return NextResponse.json(
+    {
+      success: true,
+      fileId: a.fileId,
+      fileName: a.outFileName,
+      sourceFormat: a.sourceFormat,
+      targetFormat: a.targetFormat,
+      mimeType: conversionResult.mimeType,
+      size: outputBuffer.length,
+      durationMs: a.durationMs,
+      dataUri,
+      downloadUrl: a.downloadUrl,
+      expiresAt: a.expiresAt,
+      ...frameMetadataFields(conversionResult),
+      ...engineTraceFields(conversionResult),
+      ...droppedStreamsFields(conversionResult),
+      ...conversionWarningsFields(conversionResult),
+    },
+    {
+      status: 200,
+      headers: rateLimitHeaders,
+    }
+  );
+}

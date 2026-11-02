@@ -145,7 +145,7 @@ function SandboxArchitectureCard() {
           </span>
           <span className="flex items-center gap-1.5">
             <Check className="w-4 h-4 text-success" aria-hidden="true" />
-            <span>{t('unlimited')}</span>
+            <span>{t('noBrowserLimit')}</span>
           </span>
         </div>
       </div>

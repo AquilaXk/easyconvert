@@ -1,10 +1,10 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Download, Settings2, UploadCloud } from 'lucide-react';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '@/lib/plan-limits';
 import type { FormatSpecification } from './format-specs';
 
-export function ConverterGuaranteeBar() {
+/** The guarantees of the converter pages; `dailyLimit` is the anonymous daily allowance the server enforces. */
+export function ConverterGuaranteeBar({ dailyLimit }: Readonly<{ dailyLimit: number }>) {
   const t = useTranslations('converterPage.guarantee');
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 mt-2 mb-10">
@@ -17,7 +17,7 @@ export function ConverterGuaranteeBar() {
         </div>
         <div className="flex items-center flex-wrap gap-3 font-medium">
           <span className="text-success font-semibold">
-            {t('free', { count: ANONYMOUS_DAILY_CONVERSIONS })}
+            {t('free', { dailyLimit })}
           </span>
           <span className="text-ink-2" aria-hidden="true">
             &bull;

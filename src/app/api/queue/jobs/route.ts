@@ -7,7 +7,7 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
-import { validateApiAccess, authErrorHeaders, reserveConversionUnit, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -85,18 +85,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 async function startJob(req: NextRequest, user: User, instanceUri: string): Promise<Response> {
   const unit = await reserveConversionUnit(user);
   if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
-  let res: Response | undefined;
-  try {
-    res = await queueJob(req, user, unit.reservationId, instanceUri);
-    return res;
-  } finally {
-    // queueJob answers ok only once the queue took the job, which then owns the unit (the worker commits it or gives it
-    // back when the job ends); any other answer, and a throw, comes from a step before that, so the unit goes back here.
-    if (!res?.ok && unit.reservationId) await rollbackQuota(unit.reservationId);
-  }
+  return withReservedUnit(unit.reservationId, (reserved) => queueJob(req, user, reserved, instanceUri));
 }
 
-async function queueJob(req: NextRequest, user: User, reservationId: string | undefined, instanceUri: string): Promise<Response> {
+/** Queues the job, which then owns the unit: the worker commits it or gives it back when the job ends. */
+async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instanceUri: string): Promise<Response> {
   const fail = (status: number, error: string) => NextResponse.json({ success: false, error }, { status });
 
   try {
@@ -134,26 +127,28 @@ async function queueJob(req: NextRequest, user: User, reservationId: string | un
     if (oversize) return oversize;
 
     // Add conversion task to BullMQ Distributed Queue
-    const job = await enqueueConversionJob(
-      conversionQueue,
-      'convert',
-      {
-        jobId: '',
-        originalFilename,
-        sourceFormat,
-        targetFormat,
-        fileSize,
-        storageKey,
-        inputBufferBase64,
-        options: stripEngineControls(options),
-        userId: user.id,
-        reservationId,
-      },
-      {
-        attempts: 2,
-        backoff: { type: 'fixed', delay: 1500 },
-      },
-      { tier: user.tier, inputBytes }
+    const job = await unit.handOff((reservationId) =>
+      enqueueConversionJob(
+        conversionQueue,
+        'convert',
+        {
+          jobId: '',
+          originalFilename,
+          sourceFormat,
+          targetFormat,
+          fileSize,
+          storageKey,
+          inputBufferBase64,
+          options: stripEngineControls(options),
+          userId: user.id,
+          reservationId,
+        },
+        {
+          attempts: 2,
+          backoff: { type: 'fixed', delay: 1500 },
+        },
+        { tier: user.tier, inputBytes }
+      )
     );
 
     return NextResponse.json({

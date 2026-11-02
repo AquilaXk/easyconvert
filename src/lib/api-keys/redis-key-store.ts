@@ -3,7 +3,7 @@ import Redis from 'ioredis';
 import { redisUserStore } from '../auth/redis-user-store';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { UserTier } from '../auth/types';
-import { KeyStore, TIER_LIMITS, ANONYMOUS_DAILY_LIMIT, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
+import { KeyStore, TIER_LIMITS, getAnonymousDailyLimit, getUtcDateKey, getNextMidnightUtc, apiKeyHashCandidates } from './key-store';
 import type {
   ApiKey,
   ApiKeyCreateOptions,
@@ -19,7 +19,7 @@ import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
 
-export { isIpInCidr, isIpAllowed, getAnonymousDailyLimit };
+export { isIpInCidr, isIpAllowed };
 
 export interface QuotaReservation {
   reservationId: string;
@@ -45,12 +45,12 @@ export interface RedisKeyStoreOptions {
  * Used when connecting to Redis clusters to avoid TOCTOU concurrency race conditions.
  */
 export const RESERVE_QUOTA_LUA_SCRIPT = `
--- KEYS[1]: usage key (e.g. easyconvert:usage:userId:YYYY-MM-DD)
--- KEYS[2]: reservation key (e.g. easyconvert:res:reservationId)
+-- KEYS[1]: usage key (e.g. easyconvert:usage:{userId}:YYYY-MM-DD)
+-- KEYS[2]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
 -- ARGV[1]: units requested
 -- ARGV[2]: max daily limit
--- ARGV[3]: reservation TTL in seconds
--- ARGV[4]: usage key TTL in seconds (until midnight UTC)
+-- ARGV[3]: seconds until the day of the usage key ends (midnight UTC); the reservation lives as long, so it can be
+--          given back for as long as the count it was charged to exists
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')
 local units = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
@@ -58,25 +58,31 @@ local limit = tonumber(ARGV[2])
 if current + units <= limit then
   redis.call('INCRBY', KEYS[1], units)
   if current == 0 then
-    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
   end
-  redis.call('SETEX', KEYS[2], tonumber(ARGV[3]), units)
+  redis.call('SET', KEYS[2], units, 'EX', tonumber(ARGV[3]))
   return {1, limit - (current + units)}
 else
   return {0, limit - current}
 end
 `;
 
+/**
+ * Gives the reserved units back once. A reservation that is gone (committed, settled, rolled back, or its day over)
+ * changes nothing, and a count that is gone (its day over) is not made again.
+ */
 export const ROLLBACK_QUOTA_LUA_SCRIPT = `
 -- KEYS[1]: usage key
 -- KEYS[2]: reservation key
 local units = tonumber(redis.call('GET', KEYS[2]) or '0')
-if units > 0 then
-  redis.call('DECRBY', KEYS[1], units)
-  redis.call('DEL', KEYS[2])
-  return 1
+if units <= 0 then
+  return 0
 end
-return 0
+redis.call('DEL', KEYS[2])
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('DECRBY', KEYS[1], units)
+end
+return 1
 `;
 
 export const COMMIT_QUOTA_LUA_SCRIPT = `
@@ -84,31 +90,21 @@ export const COMMIT_QUOTA_LUA_SCRIPT = `
 return redis.call('DEL', KEYS[1])
 `;
 
+/** Charges the units a request used in place of those it reserved, once, under the same rules as the rollback. */
 export const SETTLE_QUOTA_LUA_SCRIPT = `
 -- KEYS[1]: usage key (e.g. easyconvert:usage:{userId}:YYYY-MM-DD)
 -- KEYS[2]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
 -- ARGV[1]: actual units consumed
-local reservedUnits = tonumber(redis.call('GET', KEYS[2]) or '0')
-local actualUnits = tonumber(ARGV[1] or '0')
-local diff = actualUnits - reservedUnits
-
-if diff < 0 then
-  redis.call('DECRBY', KEYS[1], math.abs(diff))
-elseif diff > 0 then
+local reserved = redis.call('GET', KEYS[2])
+if not reserved then
+  return {0, 0}
+end
+local diff = tonumber(ARGV[1]) - tonumber(reserved)
+redis.call('DEL', KEYS[2])
+if diff ~= 0 and redis.call('EXISTS', KEYS[1]) == 1 then
   redis.call('INCRBY', KEYS[1], diff)
 end
-
-redis.call('DEL', KEYS[2])
 return {1, diff}
-`;
-
-export const RENEW_RESERVATION_LUA_SCRIPT = `
--- KEYS[1]: reservation key (e.g. easyconvert:res:{userId}:reservationId)
--- ARGV[1]: new TTL in seconds
-if redis.call('EXISTS', KEYS[1]) == 1 then
-  return redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
-end
-return 0
 `;
 
 export const DEDUCT_QUOTA_LUA_SCRIPT = `
@@ -187,8 +183,6 @@ else
 end
 `;
 
-export const DEFAULT_RESERVATION_TTL_SECONDS = 900; // 15 minutes default for long-running conversions
-
 export interface TokenBucketOptions {
   capacity?: number;
   refillRate?: number;
@@ -223,10 +217,35 @@ function connectFromEnvironment(endpoint: RedisEndpoint): Redis | undefined {
   return undefined;
 }
 
+/** Seconds from now until the UTC day ends, at least a minute: the lifetime of the day's count and of its reservations. */
+function secondsUntilUtcMidnight(): number {
+  const midnight = new Date();
+  midnight.setUTCHours(24, 0, 0, 0);
+  return Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
+}
+
+/** The id of a reservation: `res_<encoded userId>_<YYYY-MM-DD>_<ms>_<random>`, which names its owner and its day. */
+function reservationIdOf(userId: string, day: string): string {
+  return `res_${encodeURIComponent(userId)}_${day}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/** The owner and day a reservation id names, read from the right: the encoded user id is everything in between. */
+function parseReservationId(reservationId: string): { userId: string; day: string } | undefined {
+  const parts = reservationId.split('_');
+  if (parts.length < 5 || parts[0] !== 'res') return undefined;
+  return { userId: decodeURIComponent(parts.slice(1, -3).join('_')), day: parts[parts.length - 3] };
+}
+
 /** The UTC date a reservation was made on, from its `dateKey` (`<userId>:<YYYY-MM-DD>`); an anonymous user id holds colons itself. */
 function utcDateOfReservation(reservation: QuotaReservation | undefined): string | undefined {
   const dateKey = reservation?.dateKey;
   return dateKey ? dateKey.slice(dateKey.lastIndexOf(':') + 1) : undefined;
+}
+
+/** The keys a reservation is counted in: the count of its owner's day, and the reservation itself. */
+interface ReservationKeys {
+  usageKey: string;
+  reservationKey: string;
 }
 
 /**
@@ -368,17 +387,13 @@ export class RedisKeyStore extends KeyStore {
     if (this.redisClient) {
       try {
         const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
-        const midnight = new Date();
-        midnight.setUTCHours(24, 0, 0, 0);
-        const expireAtMidnightSec = Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
-
         const result = (await this.redisClient.eval(
           DEDUCT_QUOTA_LUA_SCRIPT,
           1,
           usageKey,
           units,
           dailyLimit,
-          expireAtMidnightSec
+          secondsUntilUtcMidnight()
         )) as [number, number];
 
         return {
@@ -416,7 +431,9 @@ export class RedisKeyStore extends KeyStore {
 
   /**
    * 2-Phase Quota Transaction: Phase 1 (Reserve)
-   * Atomically verifies and reserves quota units before executing expensive distributed jobs.
+   * Atomically verifies and reserves quota units before executing expensive distributed jobs. A reservation lives until
+   * the UTC day it was made on ends, as long as the count it was charged to, so a request or a queued job that ends
+   * later that day still commits, settles or gives it back.
    */
   public async reserveQuota(
     userId: string,
@@ -438,45 +455,36 @@ export class RedisKeyStore extends KeyStore {
     const user = isAnonymous ? null : await redisUserStore.findById(userId);
     const tier: UserTier = user?.tier ?? 'free';
     const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
+    // One day for the whole reservation: its count, its id and its record never straddle midnight.
+    const day = getUtcDateKey();
+    const dateKey = `${userId}:${day}`;
+    const reservationId = reservationIdOf(userId, day);
+    const reservation = (): QuotaReservation => ({
+      reservationId,
+      userId,
+      units,
+      dateKey,
+      createdAt: Date.now(),
+      expiresAt: getNextMidnightUtc(),
+      status: 'reserved',
+    });
 
     if (this.redisClient) {
       try {
-        const usageKey = `${this.keyPrefix}usage:{${userId}}:${getUtcDateKey()}`;
-        const reservationId = `res_${encodeURIComponent(userId)}_${getUtcDateKey()}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
-        const resKey = `${this.keyPrefix}res:{${userId}}:${reservationId}`;
-        const ttlSec = DEFAULT_RESERVATION_TTL_SECONDS;
-        const midnight = new Date();
-        midnight.setUTCHours(24, 0, 0, 0);
-        const expireAtMidnightSec = Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
-
         const result = (await this.redisClient.eval(
           RESERVE_QUOTA_LUA_SCRIPT,
           2,
-          usageKey,
-          resKey,
+          `${this.keyPrefix}usage:{${userId}}:${day}`,
+          `${this.keyPrefix}res:{${userId}}:${reservationId}`,
           units,
           dailyLimit,
-          ttlSec,
-          expireAtMidnightSec
+          secondsUntilUtcMidnight()
         )) as [number, number];
 
-        const allowed = Number(result[0]) === 1;
         const remaining = Number(result[1]);
-
-        if (allowed) {
-          const reservation: QuotaReservation = {
-            reservationId,
-            userId,
-            units,
-            dateKey: `${userId}:${getUtcDateKey()}`,
-            createdAt: Date.now(),
-            expiresAt: Date.now() + ttlSec * 1000,
-            status: 'reserved',
-          };
-          this.reservations.set(reservationId, reservation);
-          return { allowed: true, reservationId, remaining };
-        }
-        return { allowed: false, remaining };
+        if (Number(result[0]) !== 1) return { allowed: false, remaining };
+        this.reservations.set(reservationId, reservation());
+        return { allowed: true, reservationId, remaining };
       } catch (err) {
         console.error('[RedisKeyStore] Redis reserveQuota failed:', err);
         return {
@@ -488,7 +496,6 @@ export class RedisKeyStore extends KeyStore {
       }
     }
 
-    const dateKey = `${userId}:${getUtcDateKey()}`;
     const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
 
     if (units === 0) {
@@ -507,17 +514,7 @@ export class RedisKeyStore extends KeyStore {
 
     // Atomic increment in reservation phase
     this.dailyUsage.set(dateKey, currentUsed + units);
-    const reservationId = `res_${encodeURIComponent(userId)}_${getUtcDateKey()}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
-    const reservation: QuotaReservation = {
-      reservationId,
-      userId,
-      units,
-      dateKey,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + DEFAULT_RESERVATION_TTL_SECONDS * 1000, // 15-minute reservation timeout
-      status: 'reserved',
-    };
-    this.reservations.set(reservationId, reservation);
+    this.reservations.set(reservationId, reservation());
     this.persist();
 
     return {
@@ -527,43 +524,56 @@ export class RedisKeyStore extends KeyStore {
     };
   }
 
+  /** The keys of a reservation, from this process's record of it or else from its id; undefined for an id of another form. */
+  private resolveReservation(reservationId: string): ReservationKeys | undefined {
+    const recorded = this.reservations.get(reservationId);
+    const named = parseReservationId(reservationId);
+    const userId = recorded?.userId ?? named?.userId;
+    const day = utcDateOfReservation(recorded) ?? named?.day;
+    if (!userId || !day) return undefined;
+    return {
+      usageKey: `${this.keyPrefix}usage:{${userId}}:${day}`,
+      reservationKey: `${this.keyPrefix}res:{${userId}}:${reservationId}`,
+    };
+  }
+
   /**
-   * Extends the TTL of an active reservation (heartbeat renewal for long-running async jobs).
+   * Runs one script that ends a reservation in Redis. A failed script is logged and reported as undefined: the count in
+   * Redis is unknown, so the counts this process keeps for a store without Redis are left alone.
    */
-  public async renewReservation(
+  private async endReservationInRedis<T>(
+    redis: Redis,
+    action: string,
     reservationId: string,
-    ttlSeconds: number = DEFAULT_RESERVATION_TTL_SECONDS
-  ): Promise<boolean> {
-    if (!reservationId || typeof reservationId !== 'string') return false;
-
-    if (this.redisClient) {
-      try {
-        const res = this.reservations.get(reservationId);
-        let userId = res?.userId;
-        if (!userId) {
-          const parts = reservationId.split('_');
-          if (parts.length >= 5 && parts[0] === 'res') {
-            userId = decodeURIComponent(parts[1]);
-          }
-        }
-        const finalUserId = userId || 'unknown';
-        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
-        const renewed = await this.redisClient.eval(RENEW_RESERVATION_LUA_SCRIPT, 1, resKey, ttlSeconds);
-        const isSuccess = Number(renewed) > 0;
-        if (isSuccess && res) {
-          res.expiresAt = Date.now() + ttlSeconds * 1000;
-        }
-        return isSuccess;
-      } catch (err) {
-        console.error('[RedisKeyStore] Redis renewReservation failed:', err);
-        return false;
-      }
+    run: (redis: Redis, keys: ReservationKeys) => Promise<T>
+  ): Promise<T | undefined> {
+    const keys = this.resolveReservation(reservationId);
+    if (!keys) return undefined;
+    try {
+      const result = await run(redis, keys);
+      this.reservations.delete(reservationId);
+      return result;
+    } catch (err) {
+      console.error(`[RedisKeyStore] Redis ${action} of reservation ${reservationId} failed:`, err);
+      return undefined;
     }
+  }
 
-    const res = this.reservations.get(reservationId);
-    if (!res || res.status !== 'reserved') return false;
-    res.expiresAt = Date.now() + ttlSeconds * 1000;
-    return true;
+  /**
+   * Ends the reservation this process holds under `reservationId`, charging its day `chargeDifference` more units (fewer
+   * when negative); undefined when it holds none.
+   */
+  private endReservationInMemory(reservationId: string, chargeDifference: (reservation: QuotaReservation) => number): number | undefined {
+    const reservation = this.reservations.get(reservationId);
+    if (!reservation || reservation.status !== 'reserved') return undefined;
+    const difference = chargeDifference(reservation);
+    if (difference !== 0) {
+      const currentUsed = this.dailyUsage.get(reservation.dateKey) ?? 0;
+      this.dailyUsage.set(reservation.dateKey, Math.max(0, currentUsed + difference));
+      this.persist();
+    }
+    this.reservations.delete(reservationId);
+    return difference;
   }
 
   /**
@@ -572,33 +582,13 @@ export class RedisKeyStore extends KeyStore {
    */
   public async commitQuota(reservationId: string): Promise<boolean> {
     if (!reservationId || typeof reservationId !== 'string') return false;
-
     if (this.redisClient) {
-      try {
-        const res = this.reservations.get(reservationId);
-        let userId = res?.userId;
-        if (!userId) {
-          const parts = reservationId.split('_');
-          if (parts.length >= 5 && parts[0] === 'res') {
-            userId = decodeURIComponent(parts[1]);
-          }
-        }
-        const finalUserId = userId || 'unknown';
-        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
-        const deleted = await this.redisClient.eval(COMMIT_QUOTA_LUA_SCRIPT, 1, resKey);
-        this.reservations.delete(reservationId);
-        return Number(deleted) > 0;
-      } catch {
-        // Fallback
-      }
+      const deleted = await this.endReservationInRedis(this.redisClient, 'commit', reservationId, (redis, keys) =>
+        redis.eval(COMMIT_QUOTA_LUA_SCRIPT, 1, keys.reservationKey)
+      );
+      return Number(deleted) > 0;
     }
-
-    const res = this.reservations.get(reservationId);
-    if (!res || res.status !== 'reserved') return false;
-
-    res.status = 'committed';
-    this.reservations.delete(reservationId);
-    return true;
+    return this.endReservationInMemory(reservationId, () => 0) !== undefined;
   }
 
   /**
@@ -610,61 +600,17 @@ export class RedisKeyStore extends KeyStore {
     reservationId: string,
     actualUnits: number
   ): Promise<{ success: boolean; difference: number }> {
-    if (!reservationId || typeof reservationId !== 'string') {
-      return { success: false, difference: 0 };
-    }
+    const unsettled = { success: false, difference: 0 };
+    if (!reservationId || typeof reservationId !== 'string') return unsettled;
     const safeUnits = Math.max(0, Number.isFinite(actualUnits) ? Math.floor(actualUnits) : 0);
-
     if (this.redisClient) {
-      try {
-        const res = this.reservations.get(reservationId);
-        let userId = res?.userId;
-        let dateKey = utcDateOfReservation(res);
-        if (!userId || !dateKey) {
-          const parts = reservationId.split('_');
-          if (parts.length >= 5 && parts[0] === 'res') {
-            userId = decodeURIComponent(parts[1]);
-            dateKey = parts[2];
-          }
-        }
-        const finalUserId = userId || 'unknown';
-        const finalDateKey = dateKey || getUtcDateKey();
-        const usageKey = `${this.keyPrefix}usage:{${finalUserId}}:${finalDateKey}`;
-        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
-
-        const result = (await this.redisClient.eval(
-          SETTLE_QUOTA_LUA_SCRIPT,
-          2,
-          usageKey,
-          resKey,
-          safeUnits
-        )) as [number, number];
-
-        this.reservations.delete(reservationId);
-        return {
-          success: Number(result[0]) === 1,
-          difference: Number(result[1]),
-        };
-      } catch {
-        // Fallback
-      }
+      const result = await this.endReservationInRedis(this.redisClient, 'settle', reservationId, async (redis, keys) =>
+        (await redis.eval(SETTLE_QUOTA_LUA_SCRIPT, 2, keys.usageKey, keys.reservationKey, safeUnits)) as [number, number]
+      );
+      return result ? { success: Number(result[0]) === 1, difference: Number(result[1]) } : unsettled;
     }
-
-    const res = this.reservations.get(reservationId);
-    if (!res || res.status !== 'reserved') {
-      return { success: false, difference: 0 };
-    }
-
-    const diff = safeUnits - res.units;
-    const dateKey = res.dateKey || `${res.userId}:${getUtcDateKey()}`;
-    const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
-    this.dailyUsage.set(dateKey, Math.max(0, currentUsed + diff));
-
-    res.status = 'committed';
-    this.reservations.delete(reservationId);
-    this.persist();
-
-    return { success: true, difference: diff };
+    const difference = this.endReservationInMemory(reservationId, (reservation) => safeUnits - reservation.units);
+    return difference === undefined ? unsettled : { success: true, difference };
   }
 
   /**
@@ -673,42 +619,13 @@ export class RedisKeyStore extends KeyStore {
    */
   public async rollbackQuota(reservationId: string): Promise<boolean> {
     if (!reservationId || typeof reservationId !== 'string') return false;
-
     if (this.redisClient) {
-      try {
-        const res = this.reservations.get(reservationId);
-        let userId = res?.userId;
-        let dateKey = utcDateOfReservation(res);
-        if (!userId || !dateKey) {
-          const parts = reservationId.split('_');
-          if (parts.length >= 5 && parts[0] === 'res') {
-            userId = decodeURIComponent(parts[1]);
-            dateKey = parts[2];
-          }
-        }
-        const finalUserId = userId || 'unknown';
-        const finalDateKey = dateKey || getUtcDateKey();
-        const usageKey = `${this.keyPrefix}usage:{${finalUserId}}:${finalDateKey}`;
-        const resKey = `${this.keyPrefix}res:{${finalUserId}}:${reservationId}`;
-        const rolled = await this.redisClient.eval(ROLLBACK_QUOTA_LUA_SCRIPT, 2, usageKey, resKey);
-        this.reservations.delete(reservationId);
-        return Number(rolled) > 0;
-      } catch {
-        // Fallback
-      }
+      const rolled = await this.endReservationInRedis(this.redisClient, 'rollback', reservationId, (redis, keys) =>
+        redis.eval(ROLLBACK_QUOTA_LUA_SCRIPT, 2, keys.usageKey, keys.reservationKey)
+      );
+      return Number(rolled) > 0;
     }
-
-    const res = this.reservations.get(reservationId);
-    if (!res || res.status !== 'reserved') return false;
-
-    const dateKey = res.dateKey || `${res.userId}:${getUtcDateKey()}`;
-    const currentUsed = this.dailyUsage.get(dateKey) ?? 0;
-    this.dailyUsage.set(dateKey, Math.max(0, currentUsed - res.units));
-
-    res.status = 'rolled_back';
-    this.reservations.delete(reservationId);
-    this.persist();
-    return true;
+    return this.endReservationInMemory(reservationId, (reservation) => -reservation.units) !== undefined;
   }
 
   public override async generateApiKey(
@@ -1088,13 +1005,6 @@ export class RedisKeyStore extends KeyStore {
 }
 
 export const redisKeyStore = new RedisKeyStore();
-
-export async function renewReservation(
-  reservationId: string,
-  ttlSeconds?: number
-): Promise<boolean> {
-  return redisKeyStore.renewReservation(reservationId, ttlSeconds);
-}
 
 export async function checkTokenBucketRateLimit(
   identifier: string,

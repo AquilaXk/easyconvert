@@ -187,7 +187,7 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
 
     const over = await initiate(visitor, MIB);
     expect(over.status).toBe(429);
-    expect((await over.json()).detail).toBe('Without an account, uploads may total 2 GiB a day. The limit resets at midnight UTC.');
+    expect((await over.json()).detail).toBe('Without an account, uploads and link imports may total 2 GiB a day. The limit resets at midnight UTC.');
 
     const { uploadId } = await first.json();
     await multipartPost(multipart('abort', { uploadId }, visitor));

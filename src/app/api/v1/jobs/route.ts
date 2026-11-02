@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import type { User } from '@/lib/auth/types';
+import type { FormatDefinition } from '@/lib/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { graphInputKeys, initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
@@ -118,7 +120,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     return reply(
       createProblemDetailsResponse(
         429,
-        `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        tierQuotaExceeded(auth.user.tier),
         instanceUri,
         'Daily Quota Exceeded',
         'https://api.easyconvert.io/problems/quota-exceeded',
@@ -127,20 +129,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     );
   }
 
-  let reservation: { allowed: boolean; reservationId?: string } | null = null;
-
-  const failWithRollback = async (
+  const fail = async (
     status: number,
     message: string,
     title: string = 'Bad Request',
     invalidParams?: Array<{ name: string; reason: string }>,
     headers?: Record<string, string>
-  ) => {
-    if (reservation?.reservationId) {
-      await redisKeyStore.rollbackQuota(reservation.reservationId);
-    }
-    return reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers, invalidParams));
-  };
+  ) => reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers, invalidParams));
 
   try {
     // At most five conversions in flight (queued plus running) for an anonymous or free caller. A refusal is not
@@ -316,7 +311,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         try {
           validateTierPageLimit(options.pages, auth.user.tier);
         } catch (err: any) {
-          return await failWithRollback(422, err.message, 'Unprocessable Entity');
+          return await fail(422, err.message, 'Unprocessable Entity');
         }
       }
     }
@@ -339,7 +334,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         }
       }
       if (pageRangeError) {
-        return await failWithRollback(422, pageRangeError, 'Unprocessable Entity');
+        return await fail(422, pageRangeError, 'Unprocessable Entity');
       }
     }
 
@@ -348,10 +343,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       const tusSession = await tusEngine.getSession(uploadId);
       if (tusSession) {
         if (!tusSession.completed) {
-          return await failWithRollback(400, `Upload session "${uploadId}" is not completed yet.`);
+          return await fail(400, `Upload session "${uploadId}" is not completed yet.`);
         }
         if (tusSession.ownerUserId && tusSession.ownerUserId !== auth.user.id) {
-          return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+          return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
         }
         storageKey = tusSession.key;
         if (!originalFilename) {
@@ -361,14 +356,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
           fileSize = tusSession.uploadLength;
         }
       } else {
-        return await failWithRollback(404, `Upload session "${uploadId}" not found or expired.`, 'Not Found');
+        return await fail(404, `Upload session "${uploadId}" not found or expired.`, 'Not Found');
       }
     }
 
     // 1b'. Refuse what could not be sealed or masked later, before any job exists or is charged.
     const limitProblems = checkSubmissionLimits({ graph, tasks });
     if (limitProblems.length > 0) {
-      return await failWithRollback(
+      return await fail(
         400,
         'The graph or tasks exceed the limits for storing job credentials securely.',
         'Bad Request',
@@ -479,11 +474,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const hasImportUrl = graph && Object.values(normalizeGraphNodes(graph)).some((n) => n.op === 'import.url');
 
     if (!targetFormat) {
-      return await failWithRollback(400, 'Missing required parameter: "targetFormat".');
+      return await fail(400, 'Missing required parameter: "targetFormat".');
     }
 
     if (!storageKey && !inputBufferBase64 && !uploadedBuffer && !hasImportUrl) {
-      return await failWithRollback(
+      return await fail(
         400,
         'Missing input file data. Please upload a "file" or provide "uploadId" / "storageKey" / "inputBufferBase64".'
       );
@@ -491,7 +486,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     // Authorize a caller-supplied key, and hold every stored file of a graph to the plan limit, before anything reads the object.
     const inputRefusal = await storedInputRefusal(storageKey, graph, auth.user);
-    if (inputRefusal) return await failWithRollback(inputRefusal.status, inputRefusal.message, inputRefusal.title);
+    if (inputRefusal) return await fail(inputRefusal.status, inputRefusal.message, inputRefusal.title);
 
     const callerPlan = planOfCaller(auth.user);
 
@@ -517,7 +512,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     if (!sourceDef) {
-      return await failWithRollback(400, `Could not identify source format for file "${originalFilename}".`);
+      return await fail(400, `Could not identify source format for file "${originalFilename}".`);
     }
 
     // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
@@ -530,35 +525,35 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       } else if (storageKey) {
         const info = await s3Storage.stat(storageKey);
         if (!info) {
-          return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+          return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
         }
         if (!fileSize) {
           fileSize = info.size;
         }
         if (info.size > maxFileBytes(callerPlan)) {
-          return await failWithRollback(413, fileTooLargeMessage(callerPlan, info.size), 'Payload Too Large');
+          return await fail(413, fileTooLargeMessage(callerPlan, info.size), 'Payload Too Large');
         }
         if (s3Storage.kind === 'remote') {
           // The object lives in the object store: check its first bytes without downloading the rest.
           const header = await readObjectHeader(s3Storage, storageKey);
           if (!header) {
-            return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
+            return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
           }
           await assertNotSpoofedObject(s3Storage, storageKey, info.size, header, sourceDef.extension, originalFilename);
         } else {
           const stored = await s3Storage.getObject(storageKey);
           if (!stored) {
-            return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+            return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
           }
           if (stored.filePath) {
             if (!fs.existsSync(stored.filePath)) {
               console.error(`Storage file missing on disk: "${stored.filePath}"`);
-              return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
+              return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
             }
             assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
           } else {
             if (stored.size > 512 * 1024 * 1024) {
-              return await failWithRollback(
+              return await fail(
                 413,
                 `Storage object size (${stored.size} bytes) exceeds in-memory buffer limit without a backing file path.`,
                 'Payload Too Large'
@@ -567,20 +562,20 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
             if (stored.buffer && stored.buffer.length > 0) {
               assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
             } else {
-              return await failWithRollback(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
+              return await fail(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
             }
           }
         }
       }
     } catch (err: any) {
       const refusal = spoofCheckRefusal(err);
-      if (refusal) return await failWithRollback(refusal.status, err.message, refusal.title);
+      if (refusal) return await fail(refusal.status, err.message, refusal.title);
       const storageProblem = describeStorageError(err);
       if (storageProblem) {
-        return await failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
+        return await fail(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
       }
       console.error(`Storage file verification error: ${err instanceof Error ? err.message : String(err)}`);
-      return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
+      return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
     }
 
     // Persist multipart upload into S3 staging storage only after magic byte validation passes
@@ -595,13 +590,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const cleanTarget = targetFormat.toLowerCase().replace(/^\./, '').trim();
     const targetDef = getFormatByExtension(cleanTarget);
     if (!targetDef) {
-      return await failWithRollback(400, `Unsupported target format "${targetFormat}".`);
+      return await fail(400, `Unsupported target format "${targetFormat}".`);
     }
 
     // Check format compatibility for direct single conversion (multi-stage tasks and graphs validated above)
     if (!tasks && !graph) {
       if (!sourceDef.targetFormats.includes(cleanTarget) && !sourceDef.targetFormats.includes(targetDef.id)) {
-        return await failWithRollback(
+        return await fail(
           400,
           `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
         );
@@ -613,21 +608,21 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const effectiveWebhookSecret = webhookSecret || auth.apiKey?.webhookSecret;
 
     if (webhookUrl && !webhookSecret) {
-      return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+      return await fail(400, 'webhookSecret is required when webhookUrl is provided.');
     }
 
     if (effectiveWebhookUrl && !effectiveWebhookSecret) {
-      return await failWithRollback(400, 'webhookSecret is required when webhookUrl is provided.');
+      return await fail(400, 'webhookSecret is required when webhookUrl is provided.');
     }
 
     // Phase 1: Atomically reserve quota unit BEFORE enqueueing to BullMQ
-    reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
+    const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
     if (!reservation.allowed) {
       const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
       return reply(
         createProblemDetailsResponse(
           429,
-          `Daily conversion quota exceeded for tier '${auth.user.tier}'. Please upgrade or wait for the midnight UTC reset.`,
+          tierQuotaExceeded(auth.user.tier),
           instanceUri,
           'Too Many Requests',
           undefined,
@@ -636,53 +631,130 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
-    // Resolve resource class and scheduling priority
-    const priority = tierToPriority(auth.user.tier);
-    const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
-    const targetQueue = getQueueForResourceClass(resClass);
+    const submission: ReservedSubmission = {
+      user: auth.user,
+      sourceDef,
+      targetDef,
+      originalFilename,
+      fileSize,
+      options,
+      graph,
+      tasks,
+      storageKey,
+      inputBufferBase64,
+      webhookUrl: effectiveWebhookUrl,
+      webhookSecret: effectiveWebhookSecret,
+    };
+    return reply(await withReservedUnit(reservation.reservationId, (unit) => queueReserved(submission, unit)));
+  } catch (error: unknown) {
+    if (idempotencyCtx) {
+      await idempotencyCtx.abort();
+    }
+    if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
+      return fail(400, 'A URL or header is too large to store securely.');
+    }
+    if (error instanceof SealingKeyConfigError) {
+      // The detail names server configuration, so it stays in the server log.
+      console.error('[Jobs] Job secret sealing is not configured:', error.message);
+      return fail(
+        503,
+        'Job credentials cannot be stored securely right now. Try again later.',
+        'Service Unavailable'
+      );
+    }
+    if (error instanceof QueueUnavailableError) {
+      // The queue could not store the job: release the quota reservation and let the client retry.
+      return fail(503, QUEUE_UNAVAILABLE_DETAIL, 'Service Unavailable', undefined, queueRetryAfterHeaders());
+    }
+    const storageProblem = describeStorageError(error);
+    if (storageProblem) {
+      return fail(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
+    }
+    if (error instanceof JobDeadlineError) {
+      // The detail names a deadline setting, so it stays in the server log.
+      console.error('[Jobs] Invalid deadline setting or input:', error);
+      return fail(500, 'Internal server error', 'Internal Server Error');
+    }
+    const message = error instanceof Error ? error.message : 'Job enqueue failure';
+    return fail(500, message, 'Internal Server Error');
+  }
+}));
 
-    // A graph (including legacy linear tasks) runs only through the graph scheduler, which
-    // enqueues each node; a separate conversion job would run the pipeline a second time.
-    if (graph) {
-      graph.nodes = normalizeGraphNodes(graph);
-      const graphId = generateJobId();
-      const graphState = await initGraphHoldingInputs(graphScheduler, graphId, graph as any, {
-        ownerUserId: auth.user.id,
-        reservationId: reservation.reservationId,
-        webhookUrl: effectiveWebhookUrl,
-        webhookSecret: effectiveWebhookSecret,
+/** The graph the scheduler runs; the request's graph is the same document under the job-graph type. */
+type SchedulerJobGraph = Parameters<typeof initGraphHoldingInputs>[2];
+
+/** A validated job submission whose conversion unit is reserved. */
+interface ReservedSubmission {
+  user: User;
+  sourceDef: FormatDefinition;
+  targetDef: FormatDefinition;
+  originalFilename: string;
+  fileSize: number;
+  options: ConversionOptions;
+  graph?: JobGraph;
+  tasks?: PipelineTask[];
+  storageKey?: string;
+  inputBufferBase64?: string;
+  webhookUrl?: string;
+  webhookSecret?: string;
+}
+
+/**
+ * Queues a submission whose unit is reserved: as a graph when it has one, else as one conversion job on the queue of its
+ * resource class. The graph or the job owns the unit once it is queued, and commits it or gives it back when it ends.
+ */
+async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit): Promise<NextResponse> {
+  const { user, sourceDef, targetDef, originalFilename, fileSize, options, graph, storageKey, inputBufferBase64 } = submission;
+  const answered = { sourceFormat: sourceDef.id, targetFormat: targetDef.id, originalFilename };
+
+  // A graph (including legacy linear tasks) runs only through the graph scheduler, which
+  // enqueues each node; a separate conversion job would run the pipeline a second time.
+  if (graph) {
+    graph.nodes = normalizeGraphNodes(graph);
+    const graphId = generateJobId();
+    let reservationId: string | undefined;
+    const graphState = await unit.handOff((id) => {
+      reservationId = id;
+      return initGraphHoldingInputs(graphScheduler, graphId, graph as unknown as SchedulerJobGraph, {
+        ownerUserId: user.id,
+        reservationId: id,
+        webhookUrl: submission.webhookUrl,
+        webhookSecret: submission.webhookSecret,
         originalFilename,
         sourceStorageKey: storageKey,
         sourceFormat: sourceDef.id,
         targetFormat: targetDef.id,
-        tasks,
+        tasks: submission.tasks,
       });
-      const nodesResponse = Object.fromEntries(
-        Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
-      );
-      return reply(
-        NextResponse.json(
-          {
-            success: true,
-            jobId: graphId,
-            status: graphState.status,
-            statusUrl: `/api/v1/jobs/${graphId}`,
-            createdAt: graphState.createdAt,
-            reservationId: reservation.reservationId,
-            sourceFormat: sourceDef.id,
-            targetFormat: targetDef.id,
-            originalFilename,
-            graph: redactForOutput(graphState.graph),
-            nodes: nodesResponse,
-          },
-          { status: 202 }
-        )
-      );
-    }
+    });
+    const nodesResponse = Object.fromEntries(
+      Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
+    );
+    return NextResponse.json(
+      {
+        success: true,
+        jobId: graphId,
+        status: graphState.status,
+        statusUrl: `/api/v1/jobs/${graphId}`,
+        createdAt: graphState.createdAt,
+        reservationId,
+        ...answered,
+        graph: redactForOutput(graphState.graph),
+        nodes: nodesResponse,
+      },
+      { status: 202 }
+    );
+  }
 
-    // Enqueue conversion job to the appropriate resource-class queue
-    const job = await enqueueConversionJob(
-      targetQueue,
+  // Resolve resource class and scheduling priority
+  const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
+  const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage);
+  let reservationId: string | undefined;
+  // Enqueue conversion job to the appropriate resource-class queue
+  const job = await unit.handOff((id) => {
+    reservationId = id;
+    return enqueueConversionJob(
+      getQueueForResourceClass(resClass),
       'convert',
       {
         jobId: '',
@@ -693,68 +765,34 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         storageKey,
         inputBufferBase64,
         options: stripEngineControls(options),
-        webhookUrl: effectiveWebhookUrl,
-        webhookSecret: effectiveWebhookSecret,
-        userId: auth.user.id,
-        reservationId: reservation.reservationId,
+        webhookUrl: submission.webhookUrl,
+        webhookSecret: submission.webhookSecret,
+        userId: user.id,
+        reservationId: id,
         resourceClass: resClass,
       },
       {
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
-        priority,
+        priority: tierToPriority(user.tier),
       },
-      { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage) }
+      { tier: user.tier, inputBytes }
     );
+  });
 
-    const successRes = NextResponse.json(
-      {
-        success: true,
-        jobId: job.id,
-        status: job.state,
-        statusUrl: `/api/v1/jobs/${job.id}`,
-        createdAt: job.timestamp,
-        reservationId: reservation.reservationId,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        originalFilename,
-      },
-      { status: 202 }
-    );
-    return reply(successRes);
-  } catch (error: unknown) {
-    if (idempotencyCtx) {
-      await idempotencyCtx.abort();
-    }
-    if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
-      return failWithRollback(400, 'A URL or header is too large to store securely.');
-    }
-    if (error instanceof SealingKeyConfigError) {
-      // The detail names server configuration, so it stays in the server log.
-      console.error('[Jobs] Job secret sealing is not configured:', error.message);
-      return failWithRollback(
-        503,
-        'Job credentials cannot be stored securely right now. Try again later.',
-        'Service Unavailable'
-      );
-    }
-    if (error instanceof QueueUnavailableError) {
-      // The queue could not store the job: release the quota reservation and let the client retry.
-      return failWithRollback(503, QUEUE_UNAVAILABLE_DETAIL, 'Service Unavailable', undefined, queueRetryAfterHeaders());
-    }
-    const storageProblem = describeStorageError(error);
-    if (storageProblem) {
-      return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
-    }
-    if (error instanceof JobDeadlineError) {
-      // The detail names a deadline setting, so it stays in the server log.
-      console.error('[Jobs] Invalid deadline setting or input:', error);
-      return failWithRollback(500, 'Internal server error', 'Internal Server Error');
-    }
-    const message = error instanceof Error ? error.message : 'Job enqueue failure';
-    return failWithRollback(500, message, 'Internal Server Error');
-  }
-}));
+  return NextResponse.json(
+    {
+      success: true,
+      jobId: job.id,
+      status: job.state,
+      statusUrl: `/api/v1/jobs/${job.id}`,
+      createdAt: job.timestamp,
+      reservationId,
+      ...answered,
+    },
+    { status: 202 }
+  );
+}
 
 export async function GET(req: NextRequest) {
   return withQueueErrors(req.nextUrl?.pathname || '/api/v1/jobs', () => listJobs(req));
