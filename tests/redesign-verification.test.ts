@@ -34,7 +34,7 @@ import {
   type DomElement,
 } from './helpers/rendered-dom';
 import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
-import { englishSlugCopy } from './helpers/intl';
+import { slugPageCopy } from './helpers/intl';
 import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
 /**
@@ -223,7 +223,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const status = parseConverterSlug('status');
     expect(status.isInfoPage).toBe(true);
     expect(status.infoType).toBe('status');
-    expect(englishSlugCopy('status').title).toBe('System Status');
+    expect(slugPageCopy('status').title).toBe('System Status');
 
     const unitConverter = parseConverterSlug('unit-converter');
     expect(unitConverter.isInfoPage).toBe(true);
@@ -232,7 +232,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const lbsToKg = parseConverterSlug('lbs-to-kg');
     expect(lbsToKg.isInfoPage).toBe(true);
     expect(lbsToKg.infoType).toBe('unit');
-    expect(englishSlugCopy('lbs-to-kg').title).toMatch(/LBS to KG/);
+    expect(slugPageCopy('lbs-to-kg').title).toMatch(/LBS to KG/);
   });
 
   it('verifies category and alias slugs resolve to registered canonical formats', () => {
@@ -255,7 +255,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe(tc.expectedSrc);
       expect(parsed.targetFormat).toBe(tc.expectedTgt);
-      expect(englishSlugCopy(tc.slug).title).toBe(tc.expectedTitle);
+      expect(slugPageCopy(tc.slug).title).toBe(tc.expectedTitle);
 
       const srcDef = FORMAT_REGISTRY[parsed.sourceFormat];
       expect(srcDef, `Format registry must define ${parsed.sourceFormat}`).toBeDefined();
@@ -453,20 +453,20 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
   it('verifies converter descriptions say what the page converts, the related formats and the options, from the registry', () => {
     // A video to audio pair extracts the audio; its options are those of the audio section of the dialog
-    expect(englishSlugCopy('mp4-to-mp3').description).toBe(
+    expect(slugPageCopy('mp4-to-mp3').description).toBe(
       'Extract the audio of MP4 videos as MP3 files online. Besides MP3, MP4 files also convert to WEBM, MKV, AVI, MOV, and WAV. ' +
         'You can use the options to set the bitrate, sample rate, and audio channels.'
     );
     // A pair whose dialog has no options names none
-    expect(englishSlugCopy('docx-to-pdf').description).toBe(
+    expect(slugPageCopy('docx-to-pdf').description).toBe(
       'Convert DOCX files to PDF online. Besides PDF, DOCX files also convert to HTML, TXT, MD, EPUB, and ODT.'
     );
     // Another name of the target (JPEG for JPG) or of a listed format (TIF for TIFF) is not listed again
-    expect(englishSlugCopy('png-to-jpg').description).toBe(
+    expect(slugPageCopy('png-to-jpg').description).toBe(
       'Convert PNG files to JPG online. Besides JPG, PNG files also convert to WEBP, AVIF, TIFF, GIF, and BMP. ' +
         'You can use the options to set the image size, quality, and metadata.'
     );
-    expect(englishSlugCopy('png-to-jpg', 'ko').description).toBe(
+    expect(slugPageCopy('png-to-jpg', 'ko').description).toBe(
       'PNG 파일을 JPG 형식으로 온라인에서 변환해요. PNG 파일은 JPG 말고도 WEBP, AVIF, TIFF, GIF, BMP 형식으로 바꿀 수 있어요. ' +
         '옵션으로 이미지 크기, 품질, 메타데이터 같은 설정을 바꿀 수 있어요.'
     );
@@ -475,12 +475,12 @@ describe('Redesign & Free Static Architecture Verification', () => {
       expect(FORMAT_REGISTRY[format], format).toBeDefined();
     }
     // A format page names the formats its source converts to, never itself, and the options of its first pair
-    expect(englishSlugCopy('mp4-converter').description).toBe(
+    expect(slugPageCopy('mp4-converter').description).toBe(
       'Convert MP4 videos online. Among others, MP4 files convert to WEBM, MKV, AVI, MOV, and MP3. ' +
         'You can use the options to set the video codec, frame rate, and resolution.'
     );
     // A format the registry does not know gets the plain sentence alone
-    expect(englishSlugCopy('xyz-to-abc').description).toBe('Convert XYZ files to ABC online.');
+    expect(slugPageCopy('xyz-to-abc').description).toBe('Convert XYZ files to ABC online.');
   });
 
   it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {

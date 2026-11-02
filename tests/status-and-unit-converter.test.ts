@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseConverterSlug } from '../src/lib/slug-parser';
-import { englishSlugCopy } from './helpers/intl';
+import { slugPageCopy } from './helpers/intl';
 import { UNIT_CATEGORIES, convertValue } from '../src/components/UnitConverter';
 import sharp from 'sharp';
 import { oracleTest } from './helpers/oracle-test';
@@ -186,7 +186,7 @@ describe('Slug Parser Integration for Status and Unit Converter', () => {
     const parsed = parseConverterSlug('status');
     expect(parsed.isInfoPage).toBe(true);
     expect(parsed.infoType).toBe('status');
-    expect(englishSlugCopy('status').title).toBe('System Status');
+    expect(slugPageCopy('status').title).toBe('System Status');
   });
 
   it('correctly maps unit-converter slug to unit page', () => {

@@ -11,6 +11,6 @@ export function testTranslator<N extends NamespaceKeys<Messages, NestedKeyOf<Mes
 }
 
 /** The title and description of a slug page in `locale` (English by default), as the converter page words them. */
-export function englishSlugCopy(slug: string, locale: TestLocale = 'en') {
+export function slugPageCopy(slug: string, locale: TestLocale = 'en') {
   return localizeSlugCopy(testTranslator(locale, 'slugPages'), parseConverterSlug(slug), locale);
 }

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/convert/route';
 import { convertFile } from '../src/lib/conversions/index';
 import { parseConverterSlug } from '../src/lib/slug-parser';
-import { englishSlugCopy } from './helpers/intl';
+import { slugPageCopy } from './helpers/intl';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 
 // Self-contained standard PDF-1.4 blank page without dependencies
@@ -48,13 +48,13 @@ describe('Phase 1: Fail-Closed Enforcement & Schema Sync', () => {
     expect(parsed.isInfoPage).toBe(false);
     expect(parsed.sourceFormat).toBe('pdf');
     expect(parsed.targetFormat).toBe('pdf');
-    expect(englishSlugCopy('/pdf-ocr').title).toBe('PDF OCR Converter');
+    expect(slugPageCopy('/pdf-ocr').title).toBe('PDF OCR Converter');
 
     const parsedNoSlash = parseConverterSlug('pdf-ocr');
     expect(parsedNoSlash.sourceFormat).toBe('pdf');
     expect(parsedNoSlash.targetFormat).toBe('pdf');
 
-    expect(englishSlugCopy('ocr-pdf').title).toBe('PDF OCR Converter');
+    expect(slugPageCopy('ocr-pdf').title).toBe('PDF OCR Converter');
   });
 
   it('synchronizes ocrEnabled and ocrLanguage across all primary image formats in FORMAT_REGISTRY', () => {
