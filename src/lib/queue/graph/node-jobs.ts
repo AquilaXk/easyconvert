@@ -27,13 +27,22 @@ export class GraphNotSealedError extends Error {
   }
 }
 
+/** The id of the graph `sealGraph` sealed a graph for, as a signature names its key. */
+const SEALED_FOR = Symbol('sealedFor');
+
 /**
  * A copy of the graph `graphId` with every node's secrets sealed under that node's job id, done once by the route before the
- * hand-off, so a secret that cannot be sealed refuses the request before its unit is handed off.
+ * hand-off, so a secret that cannot be sealed refuses the request before its unit is handed off. The copy carries `graphId`
+ * under a property that is not stored, for `assertSealedFor`.
  */
 export function sealGraph(graphId: string, graph: JobGraph): SealedJobGraph {
   const nodes = Object.fromEntries(Object.entries(graph.nodes).map(([nodeId, node]) => [nodeId, sealGraphNode(node, graphNodeJobId(graphId, nodeId))]));
-  return { ...graph, nodes } as SealedJobGraph;
+  return Object.defineProperty({ ...graph, nodes }, SEALED_FOR, { value: graphId }) as SealedJobGraph;
+}
+
+/** Throws a GraphNotSealedError unless `sealGraph` sealed `graph` for `graphId`: a scheduler stores no other graph. */
+export function assertSealedFor(graphId: string, graph: SealedJobGraph): void {
+  if ((graph as { [SEALED_FOR]?: string })[SEALED_FOR] !== graphId) throw new GraphNotSealedError(graphId);
 }
 
 /** Where a node's files go: `intermediate` until the graph ends, or `results` for what an `export.internal` node keeps. */

@@ -16,7 +16,7 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
+import { assertSealedFor, cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
@@ -90,6 +90,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
   }
 
   async initGraph(graphId: string, graph: SealedJobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
+    assertSealedFor(graphId, graph);
     const k = this.graphKeys(graphId);
     const entries = Object.entries(graph.nodes);
     const children = new Map<NodeId, NodeId[]>(entries.map(([id]) => [id, []]));

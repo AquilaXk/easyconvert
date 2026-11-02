@@ -12,7 +12,7 @@ import type {
   NodeFailureResult,
   SealedJobGraph,
 } from './scheduler-types';
-import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
+import { assertSealedFor, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { leaseToHandedOffWork, type Recovery } from '../../api-keys/hand-off';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords } from './sealed-nodes';
@@ -37,6 +37,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     graph: SealedJobGraph,
     meta: GraphMetadata = {}
   ): Promise<GraphExecutionState> {
+    assertSealedFor(graphId, graph);
     if (this.graphs.has(graphId)) {
       throw new Error(`Graph already exists: ${graphId}`);
     }
