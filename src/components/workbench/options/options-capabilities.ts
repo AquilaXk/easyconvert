@@ -111,13 +111,11 @@ function isImageCapablePair(
 function computeMediaCaps(
   sourceCategory: FormatCategory | undefined,
   targetCategory: FormatCategory | undefined,
-  tgt: string,
-  traced: boolean
+  tgt: string
 ) {
   const showVideo = FFMPEG_VIDEO_CONTAINERS.has(tgt);
   const showVideoCodec = resolveSelectableVideoCodecs(tgt).length > 0;
-  // A traced picture takes only the tracer's options: an SVG has no pixel size or quality.
-  const showImage = !showVideo && !traced && isImageCapablePair(sourceCategory, targetCategory, tgt);
+  const showImage = !showVideo && isImageCapablePair(sourceCategory, targetCategory, tgt);
   const hasAudioSource = sourceCategory === 'video' || sourceCategory === 'audio';
   const showAudio =
     (targetCategory === 'audio' && tgt !== 'dss') || (targetCategory === 'video' && hasAudioSource);
@@ -186,14 +184,16 @@ export function computeVisibleSections(sourceFormat: string, targetFormat: strin
   const sourceCategory = FORMAT_REGISTRY[src]?.category;
   const targetCategory = tgt ? FORMAT_REGISTRY[tgt]?.category : undefined;
   const showVectorize = isVectorizePair(src, tgt);
-  const media = computeMediaCaps(sourceCategory, targetCategory, tgt, showVectorize);
+  const media = computeMediaCaps(sourceCategory, targetCategory, tgt);
   const doc = computeDocumentCaps(src, tgt, sourceCategory, targetCategory);
   const data = computeDataCaps(src, tgt, targetCategory);
   const passwordMode = resolvePasswordMode(src, tgt);
   const showArchive = targetCategory === 'archive' && tgt !== 'tar';
+  // A traced picture takes only the tracer's options: an SVG has no pixel size or quality.
+  const showImage = media.showImage && !showVectorize;
   const hasAny = [
     showVectorize,
-    media.showImage,
+    showImage,
     doc.showDocument,
     passwordMode !== null,
     media.showVideo,
@@ -201,7 +201,7 @@ export function computeVisibleSections(sourceFormat: string, targetFormat: strin
     data.showData,
     showArchive,
   ].some(Boolean);
-  return { src, tgt, targetCategory, showVectorize, ...media, ...doc, ...data, passwordMode, showArchive, hasAny };
+  return { src, tgt, targetCategory, showVectorize, ...media, showImage, ...doc, ...data, passwordMode, showArchive, hasAny };
 }
 
 export type VisibleOptionsSections = ReturnType<typeof computeVisibleSections>;

@@ -228,7 +228,6 @@ describe('the Advanced disclosure', () => {
     expect(byId<HTMLInputElement>(photo.container, 'opt-vectorize-color-precision-value')?.value).toBe('8');
     mounted?.unmount();
     const changed = await mount({ vectorize: { preset: 'photo', filterSpeckle: 2 } });
-    await expand(changed);
     expect(byId<HTMLInputElement>(changed.container, 'opt-vectorize-filter-speckle')?.value).toBe('2');
     expect(byId<HTMLInputElement>(changed.container, 'opt-vectorize-filter-speckle-value')?.value).toBe('2');
   });
@@ -389,7 +388,6 @@ describe('typing a simplify tolerance', () => {
 
   it('clears the tolerance when the field is emptied', async () => {
     const run = await mount({ vectorize: { simplify: 1.5 } });
-    await expand(run);
     const input = byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify') as HTMLInputElement;
     expect(input.value).toBe('1.5');
     await typeInto(input, '');
