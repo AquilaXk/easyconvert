@@ -1,4 +1,5 @@
-import type { GraphExecutionState, GraphNodeJobMetadata } from './scheduler-types';
+import { setTimeout as sleep } from 'node:timers/promises';
+import type { GraphExecutionState, GraphNodeJobMetadata, IGraphScheduler } from './scheduler-types';
 import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
@@ -7,6 +8,8 @@ import { tierForOwner } from '../page-cap';
 import { tierMaxDeadlineMs } from '../job-deadline';
 import { resolveNodeResourceClass } from '../resource-class';
 import { sealGraphNode } from './sealed-nodes';
+import { finishGraph } from './graph-end';
+import { graphInputKeys } from './input-cleanup';
 
 /** Attempts per graph node job; the node fails the graph only after the last one. */
 export const GRAPH_NODE_JOB_ATTEMPTS = 3;
@@ -93,8 +96,6 @@ const START_FAILED_REASON = 'The job could not be queued';
 export const GRAPH_START_CANCEL_ATTEMPTS = 3;
 const GRAPH_START_CANCEL_RETRY_DELAY_MS = 100;
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /** Cancels graph `graphId` with `cancel`, up to GRAPH_START_CANCEL_ATTEMPTS times while it throws; undefined when every try threw. */
 async function cancelAfterFailedStart(graphId: string, cancel: (reason: string) => Promise<boolean>): Promise<boolean | undefined> {
   for (let attempt = 1; attempt <= GRAPH_START_CANCEL_ATTEMPTS; attempt++) {
@@ -102,39 +103,62 @@ async function cancelAfterFailedStart(graphId: string, cancel: (reason: string) 
       return await cancel(START_FAILED_REASON);
     } catch (err) {
       console.error(`[GraphScheduler] Graph ${graphId}, whose start failed, could not be cancelled (try ${attempt} of ${GRAPH_START_CANCEL_ATTEMPTS}):`, err);
-      if (attempt < GRAPH_START_CANCEL_ATTEMPTS) await delay(GRAPH_START_CANCEL_RETRY_DELAY_MS * attempt);
+      if (attempt < GRAPH_START_CANCEL_ATTEMPTS) await sleep(GRAPH_START_CANCEL_RETRY_DELAY_MS * attempt);
     }
   }
   return undefined;
 }
 
+/** What finishing a failed graph start needs of the scheduler that stored the graph. */
+export interface StartingGraphScheduler extends Pick<IGraphScheduler, 'cancelGraph' | 'getGraphState'> {
+  /** Queues the ready nodes of the stored graph `graphId` that its start left unqueued. */
+  queueReadyNodes(graphId: string): Promise<unknown>;
+  /** Cancels the queue job of one node; the node's resource-class queue when absent. */
+  readonly cancelNode?: typeof cancelGraphNodeJob;
+}
+
 /**
- * Finishes the start of the stored graph `state` by queueing its ready nodes with `queueReady`, which answers it as started,
- * or cancels it with `cancel` when they still cannot be queued, which gives its reservation back and answers it as not started.
- * A graph that refuses the cancel has already ended, and is answered as started with the state `readState` reads after it. A
- * graph whose cancel throws on every try is answered as unknown: it may stay running with ready nodes nobody queues, and its
- * reservation keeps the provisional lease (docs/policy-decisions.md, entry 15).
+ * Runs the end of the cancelled graph `state` again: an earlier try of its cancel recorded the end and lost its reply, so the
+ * steps after the transition may not have run. The reservation is given back, the node jobs the cancel stopped are cancelled,
+ * and the holds on the input files and the intermediate files end. Each step does nothing the second time, so an end that did
+ * run is ended again to no effect.
  */
-export async function queueReadyNodesOrCancel(
-  state: GraphExecutionState,
-  queueReady: () => Promise<unknown>,
-  cancel: (reason: string) => Promise<boolean>,
-  readState: () => Promise<GraphExecutionState | undefined>
-): Promise<Recovery<GraphExecutionState>> {
+async function endCancelledStart(state: GraphExecutionState, cancelNode: StartingGraphScheduler['cancelNode']): Promise<void> {
+  const { graphId } = state;
+  const stopped = Object.values(state.nodes).filter((node) => node.status === 'cancelled');
+  const graph = { graphId, reservationId: state.reservationId, inputKeys: graphInputKeys(state.graph.nodes), readState: async () => state };
+  await finishGraph(graph, { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
+    for (const node of stopped) await cancelGraphNodeJobOrLog(graphId, node.id, state.graph.nodes[node.id], START_FAILED_REASON, cancelNode);
+  });
+}
+
+/**
+ * Finishes the start of the stored graph `state` by queueing its ready nodes, which answers it as started, or cancels it when
+ * they still cannot be queued, which gives its reservation back and answers it as not started. Only a failed start cancels a
+ * graph whose id its client was never given, so a cancel refused because the graph is already cancelled met the end of an
+ * earlier try whose reply was lost: that end is run again (`endCancelledStart`) and the graph answered as not started. A
+ * graph that refuses the cancel because it completed or failed, or that still runs, is answered as started with the state read
+ * after the cancel. A graph whose cancel throws on every try is answered as unknown: it may stay running with ready nodes
+ * nobody queues, and its reservation keeps the provisional lease (docs/policy-decisions.md, entry 15).
+ */
+export async function queueReadyNodesOrCancel(state: GraphExecutionState, scheduler: StartingGraphScheduler): Promise<Recovery<GraphExecutionState>> {
+  const { graphId } = state;
   try {
-    await queueReady();
+    await scheduler.queueReadyNodes(graphId);
     return { status: 'started', work: state };
   } catch (err) {
-    console.error(`[GraphScheduler] The ready nodes of graph ${state.graphId} could not be queued after its start failed, so it is cancelled:`, err);
+    console.error(`[GraphScheduler] The ready nodes of graph ${graphId} could not be queued after its start failed, so it is cancelled:`, err);
   }
-  const cancelled = await cancelAfterFailedStart(state.graphId, cancel);
+  const cancelled = await cancelAfterFailedStart(graphId, (reason) => scheduler.cancelGraph(graphId, reason));
   if (cancelled === undefined) return RECOVERY_UNKNOWN;
   if (cancelled) return { status: 'not-started' };
-  const ended = await readState().catch((err: unknown) => {
-    console.error(`[GraphScheduler] Graph ${state.graphId} ended before its failed start was cancelled, but its state could not be read:`, err);
+  const ended = await scheduler.getGraphState(graphId).catch((err: unknown) => {
+    console.error(`[GraphScheduler] Graph ${graphId} ended before its failed start was cancelled, but its state could not be read:`, err);
     return undefined;
   });
-  return foundOrUnknown(ended);
+  if (ended?.status !== 'cancelled') return foundOrUnknown(ended);
+  await endCancelledStart(ended, scheduler.cancelNode);
+  return { status: 'not-started' };
 }
 
 /** Cancels the queue job of a graph node on the queue it was routed to. */

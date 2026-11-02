@@ -11,7 +11,7 @@ import type {
   NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel } from './node-jobs';
+import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { leaseToHandedOffWork, type Recovery } from '../../api-keys/hand-off';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
@@ -28,7 +28,7 @@ interface InternalGraphData {
   accumulatedUnits: number;
 }
 
-export class InMemoryGraphScheduler implements IGraphScheduler {
+export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphScheduler {
   private readonly graphs = new Map<string, InternalGraphData>();
 
   async initGraph(
@@ -94,30 +94,27 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     };
 
     this.graphs.set(graphId, { state, remainingDeps, children, accumulatedUnits: 0 });
-    await this.enqueueWaitingNodes(state);
+    await this.queueReadyNodes(graphId);
     if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId, `graph ${graphId}`);
     return JSON.parse(JSON.stringify(state));
   }
 
-  /** Queues the job of every node of `state` that waits for one; the queue keeps one job per id, so a repeat adds none. */
-  private async enqueueWaitingNodes(state: GraphExecutionState): Promise<void> {
+  /** Queues the job of every node of graph `graphId` that waits for one; the queue keeps one job per id, so a repeat adds none. */
+  async queueReadyNodes(graphId: string): Promise<void> {
+    const state = this.graphs.get(graphId)?.state;
+    if (!state) return;
     for (const nodeState of Object.values(state.nodes)) {
       if (nodeState.status === 'waiting') {
-        await this.enqueueNodeJob(state.graphId, nodeState.id, state.graph.nodes[nodeState.id], graphNodeJobMetadata(state));
+        await this.enqueueNodeJob(graphId, nodeState.id, state.graph.nodes[nodeState.id], graphNodeJobMetadata(state));
       }
     }
   }
 
   async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
-    const data = this.graphs.get(graphId);
+    const state = await this.getGraphState(graphId);
     // In this process no write lands after its start returned or threw, so a graph that is not here never started.
-    if (!data) return { status: 'not-started' };
-    return queueReadyNodesOrCancel(
-      JSON.parse(JSON.stringify(data.state)),
-      () => this.enqueueWaitingNodes(data.state),
-      (reason) => this.cancelGraph(graphId, reason),
-      () => this.getGraphState(graphId)
-    );
+    if (!state) return { status: 'not-started' };
+    return queueReadyNodesOrCancel(state, this);
   }
 
   async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {

@@ -15,7 +15,7 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel } from './node-jobs';
+import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
@@ -62,11 +62,11 @@ function failClosedRedis(client: Redis): Redis {
   });
 }
 
-export class RedisGraphScheduler implements IGraphScheduler {
+export class RedisGraphScheduler implements IGraphScheduler, StartingGraphScheduler {
   private readonly redisClient: Redis;
   private readonly keyPrefix: string;
   private readonly enqueueNode: typeof enqueueGraphNodeJob;
-  private readonly cancelNode: typeof cancelGraphNodeJob;
+  readonly cancelNode: typeof cancelGraphNodeJob;
 
   constructor(options: RedisGraphSchedulerOptions) {
     this.redisClient = failClosedRedis(options.redisClient);
@@ -136,13 +136,18 @@ export class RedisGraphScheduler implements IGraphScheduler {
       String(createdAt)
     );
     await this.drainOutbox(graphId);
-    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId, `graph ${graphId}`);
-
     const state = await this.getGraphState(graphId);
     if (!state) {
       throw new Error(`Failed to retrieve newly initialized graph: ${graphId}`);
     }
+    // Renewed after the last step, so a start that throws leaves the reservation on the provisional lease.
+    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId, `graph ${graphId}`);
     return state;
+  }
+
+  /** Queues the ready nodes of graph `graphId` by draining its outbox. */
+  async queueReadyNodes(graphId: string): Promise<number> {
+    return this.drainOutbox(graphId);
   }
 
   /**
@@ -271,12 +276,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
   async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
     const state = await this.getGraphState(graphId);
     if (!state) return RECOVERY_UNKNOWN;
-    return queueReadyNodesOrCancel(
-      state,
-      () => this.drainOutbox(graphId),
-      (reason) => this.cancelGraph(graphId, reason),
-      () => this.getGraphState(graphId)
-    );
+    return queueReadyNodesOrCancel(state, this);
   }
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
