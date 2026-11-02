@@ -10,7 +10,7 @@ import { dispatchEngine } from '../src/lib/queue/dispatch-engine';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
 import { initGraphHoldingInputs } from '../src/lib/queue/graph/input-cleanup';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { holdResultForJob, recordServed, registerResult, releaseResultHold, sweepRetention, withInputHeld } from '../src/lib/storage/retention-service';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
@@ -272,9 +272,10 @@ describe('the hold on an owner\'s earlier output chained as a job input', () => 
 });
 
 describe('an upload that several jobs convert to different formats', () => {
-  async function endJob(worker: EventEmitter, job: Job<ConversionJobData, ConversionJobResult>): Promise<void> {
+  /** Reports that `job` completed, and waits until the input no longer holds it, which the listener writes after the event. */
+  async function endJob(worker: EventEmitter, job: Job<ConversionJobData, ConversionJobResult>, key: string): Promise<void> {
     worker.emit('completed', job);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitFor(async () => expect((await getRetentionLedger().get(key))?.holds ?? {}).not.toHaveProperty(job.id));
   }
 
   it('converts for every job, one after the other and at the same time, and goes after the last one ends', async () => {
@@ -286,7 +287,7 @@ describe('an upload that several jobs convert to different formats', () => {
     const [first, second, third] = [await enqueue('a'), await enqueue('b'), await enqueue('c')];
 
     const firstResult = await processConversionJob(first);
-    await endJob(worker, first);
+    await endJob(worker, first, key);
     expect(firstResult.resultKey).toBeDefined();
     expect(s3Storage.getObject(key)).toBeDefined();
     expect(await sweepAfterGrace()).toBe(0);
@@ -294,11 +295,11 @@ describe('an upload that several jobs convert to different formats', () => {
     const [secondResult, thirdResult] = await Promise.all([processConversionJob(second), processConversionJob(third)]);
     expect(secondResult.resultKey).toBeDefined();
     expect(thirdResult.resultKey).toBeDefined();
-    await endJob(worker, second);
+    await endJob(worker, second, key);
     expect(s3Storage.getObject(key)).toBeDefined();
     expect(await sweepAfterGrace()).toBe(0);
 
-    await endJob(worker, third);
+    await endJob(worker, third, key);
     expect(await sweepRetention(s3Storage, beforeGraceEnds())).toBe(0);
     expect(s3Storage.getObject(key)).toBeDefined();
     expect(await sweepAfterGrace()).toBe(1);
