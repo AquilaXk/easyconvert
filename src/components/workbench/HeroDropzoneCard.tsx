@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import { Upload } from 'lucide-react';
 import { useFileLimitCopy } from '../i18n/format';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import type { Plan } from '@/lib/plan-limits';
+import { TIER_LIMITS } from '@/lib/plan-limits';
 import FileSourceButton from './FileSourceButton';
 
 interface HeroDropzoneCardProps {
@@ -20,9 +20,6 @@ interface HeroDropzoneCardProps {
   /** What the card shows under the select button: the format chips of the home page. */
   children?: React.ReactNode;
 }
-
-/** The plans whose day the free allowance bounds; a paid plan has its own allowance. */
-const FREE_ALLOWANCE_PLANS: ReadonlySet<Plan> = new Set(['anonymous', 'free']);
 
 /** The upload card: a dashed drop area with the select-file split button, and the limits of the viewer's plan under it. */
 export default function HeroDropzoneCard({
@@ -40,7 +37,7 @@ export default function HeroDropzoneCard({
   const plan = useViewerPlan();
   const limits = [
     fileLimitCopy(plan),
-    ...(FREE_ALLOWANCE_PLANS.has(plan) ? [t('dailyConversions', { count: dailyLimit })] : []),
+    t('dailyConversions', { count: plan === 'anonymous' ? dailyLimit : TIER_LIMITS[plan] }),
     t('autoDeleted'),
   ];
 
