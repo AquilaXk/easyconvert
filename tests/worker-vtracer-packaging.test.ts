@@ -93,6 +93,39 @@ describe('the install script of the tracer', () => {
     expect(INSTALL).toMatch(/curl --proto '=https' --proto-redir '=https' --tlsv1\.2 --max-filesize "\$MAX_DOWNLOAD_BYTES"/);
   });
 
+  describe('the bound on a download', () => {
+    const fetchFunction = /^fetch\(\) \{\n[\s\S]*?\n\}$/m.exec(INSTALL)?.[0] ?? '';
+    const stubbedCurl = `curl() {
+      local target=""
+      while [ $# -gt 0 ]; do case "$1" in -o|--output) target="$2"; shift;; esac; shift; done
+      if [ "$target" = "-" ]; then head -c "$STUB_BYTES" /dev/zero; else head -c "$STUB_BYTES" /dev/zero > "$target"; fi
+    }`;
+
+    function download(bytesServed: number): { status: number | null; stderr: string; saved: number } {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vtracer-fetch-'));
+      try {
+        const target = path.join(dir, 'archive');
+        const script = ['set -euo pipefail', 'MAX_DOWNLOAD_BYTES=1000', stubbedCurl, fetchFunction, `fetch '${target}' https://example.invalid/archive`].join('\n');
+        const run = spawnSync('bash', ['-c', script], { env: { ...process.env, STUB_BYTES: String(bytesServed) }, encoding: 'utf8' });
+        return { status: run.status, stderr: run.stderr, saved: fs.existsSync(target) ? fs.statSync(target).size : 0 };
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('keeps a download inside the bound', () => {
+      expect(fetchFunction).not.toBe('');
+      expect(download(1000)).toMatchObject({ status: 0, saved: 1000 });
+    });
+
+    it('stops a download that passes the bound while it is read, whether or not curl was told its size', () => {
+      const run = download(5000);
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain('is larger than 1000 bytes');
+      expect(run.saved).toBeLessThanOrEqual(1001);
+    });
+  });
+
   it('names the archive and its digest in a note that ships with the licence text', () => {
     expect(INSTALL).toMatch(/install -m 0644 "\$work\/LICENSE" "\$INSTALL_DIR\/share\/doc\/vtracer\/copyright"/);
     expect(INSTALL).toMatch(/"\$VTRACER_VERSION" "\$VTRACER_URL" "\$digest" "\$VTRACER_COMMIT" > "\$INSTALL_DIR\/share\/doc\/vtracer\/SOURCE"/);

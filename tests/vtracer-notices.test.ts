@@ -4,12 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  electedLicence,
+  LIBUNWIND_COMMIT,
   NOTICES_FILE,
   pinnedLinkedCrates,
   readCrateLicence,
   readPinned,
+  RUST_SRC_SHA256,
   sha256,
+  STD_CRATES,
   UPSTREAM_DIGESTS,
+  UPSTREAM_DIR,
   VTRACER_COMMIT,
 } from '../scripts/generate-vtracer-notices';
 import { parseDockerfile } from './helpers/dockerfile';
@@ -32,6 +37,26 @@ function listedCrates(): string[] {
   const start = lines.findIndex((line) => /^Crates \(\d+\):$/.test(line)) + 1;
   const end = lines.indexOf('', start);
   return lines.slice(start, end).map((line) => line.replace(/ \(.*\)$/, ''));
+}
+
+/** The crates the header lists as vendored by the Rust standard library: the lines after `Rust standard library crates (n):`. */
+function listedStdCrates(): string[] {
+  const lines = noticesText.split('\n');
+  const start = lines.findIndex((line) => /^Rust standard library crates \(\d+\):$/.test(line)) + 1;
+  expect(start).toBeGreaterThan(0);
+  return lines.slice(start, lines.indexOf('', start)).map((line) => line.replace(/ \(.*\)$/, ''));
+}
+
+/** The text blocks the notices write under a `Shipped by:` heading that names the crate. */
+function textsShippedBy(crate: string): string[] {
+  const rule = '='.repeat(80);
+  const parts = noticesText.replaceAll('\r\n', '\n').split(`${rule}\n`);
+  const texts: string[] = [];
+  for (let at = 1; at < parts.length - 1; at += 2) {
+    const heading = parts[at].trim();
+    if (heading.startsWith('Shipped by: ') && heading.includes(`${crate} (`)) texts.push(parts[at + 1]);
+  }
+  return texts;
 }
 
 /** The crates `strings` finds in the pinned aarch64 release program (their source paths stay in its panic messages). */
@@ -75,6 +100,46 @@ describe('the third-party notices of the tracer program', () => {
     for (const file of ['COPYRIGHT', 'LICENSE-MIT', 'LICENSE-APACHE']) expect(noticesText).toMatch(new RegExp(`^Rust standard library .*: ${file} at commit ${rustCommit}$`, 'm'));
   });
 
+  it('name the standard library crates the programs carry, the ones they name in their panic paths among them', () => {
+    const names = listedStdCrates();
+    expect(names).toEqual(STD_CRATES.map((crate) => `${crate.id.name} ${crate.id.version}`));
+    expect(names).toEqual(
+      expect.arrayContaining(['addr2line 0.25.1', 'gimli 0.32.3', 'hashbrown 0.17.1', 'miniz_oxide 0.8.9', 'rustc-demangle 0.1.27', 'compiler_builtins 0.1.160', 'object 0.37.3', 'memchr 2.7.6', 'adler2 2.0.1', 'cfg-if 1.0.4']),
+    );
+    expect(noticesText).toContain(`rust-src component 1.98.0 (SHA-256 ${RUST_SRC_SHA256})`);
+  });
+
+  it('carry the copyright line of every standard library crate the header names, from the text that crate ships', () => {
+    for (const name of listedStdCrates()) {
+      const texts = textsShippedBy(name);
+      expect(texts.length, name).toBeGreaterThan(0);
+      expect(texts.some((text) => /^\s*Copyright\b.*\S/im.test(text)), name).toBe(true);
+    }
+    expect(textsShippedBy('gimli 0.32.3').join('\n')).toContain('The gimli Developers');
+    expect(textsShippedBy('hashbrown 0.17.1').join('\n')).toContain("Amanieu d'Antras");
+    expect(textsShippedBy('compiler_builtins 0.1.160').join('\n')).toContain('contributors listed in CREDITS.TXT');
+  });
+
+  it('carry the licence of LLVM libunwind, which the musl builds link statically, from the llvm-project commit the compiler commit pins', () => {
+    expect(LIBUNWIND_COMMIT).toMatch(/^[0-9a-f]{40}$/);
+    const heading = new RegExp(`^LLVM libunwind .*libunwind/LICENSE\\.TXT at rust-lang/llvm-project commit ${LIBUNWIND_COMMIT}$`, 'm');
+    expect(noticesText).toMatch(heading);
+    const rule = '='.repeat(80);
+    const at = noticesText.search(heading);
+    const text = noticesText.slice(at).split(`${rule}\n`)[2].replaceAll('\r\n', '\n');
+    expect(text).toContain('Apache License');
+    expect(text).toContain('LLVM Exceptions to the Apache 2.0 License');
+    expect(text).toContain('Copyright (c) 2009-2019 by the contributors listed in CREDITS.TXT');
+  });
+
+  it('state the licence elected for each crate offered under several, and that the MIT text and its copyright line are included', () => {
+    const lines = noticesText.split('\n').filter((line) => / \(.* OR .*\)$/.test(line) || /\(MIT\/Apache-2\.0\)$/.test(line));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines.filter((candidate) => /^[A-Za-z0-9_.-]+ \d/.test(candidate))) expect(line, line).toMatch(/; elected (MIT|Apache-2\.0)\)$/);
+    expect(noticesText).toMatch(/where a crate is offered under several licences, the one elected is MIT/i);
+    expect(listedStdCrates().length).toBe(STD_CRATES.length);
+  });
+
   it('carry the Apache-2.0 text for the crates that offer it without shipping it', () => {
     expect(noticesText).toMatch(/^Apache License 2\.0, the text offered without a copy by: vtracer 1\.0\.0-alpha\.4\b/m);
     expect(noticesText).toMatch(/Apache License\s+Version 2\.0, January 2004/);
@@ -88,9 +153,11 @@ describe('the third-party notices of the tracer program', () => {
     expect(check).toBeLessThan(INSTALL.indexOf('\nfetch '));
   });
 
-  it('keep their CRLF lines in any checkout, so the pinned digest holds', () => {
-    const attribute = execFileSync('git', ['check-attr', 'text', '--', path.relative(ROOT, NOTICES_FILE)], { cwd: ROOT, encoding: 'utf8' });
-    expect(attribute.trim().endsWith(': text: unset')).toBe(true);
+  it('keep their CRLF lines, and the upstream files their digests cover, in any checkout, so the pinned digests hold', () => {
+    const files = [NOTICES_FILE, ...Object.keys(UPSTREAM_DIGESTS).map((file) => path.join(UPSTREAM_DIR, `${file}.pinned`))].map((file) => path.relative(ROOT, file));
+    const attributes = execFileSync('git', ['check-attr', 'text', '--', ...files], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n');
+    expect(attributes).toHaveLength(files.length);
+    for (const attribute of attributes) expect(attribute.endsWith(': text: unset'), attribute).toBe(true);
     expect(noticesText).toContain('\r\n');
   });
 
@@ -124,7 +191,33 @@ function crateArchive(files: Record<string, string | { symlinkTo: string }>, nam
 
 const read = (archive: Buffer, name = 'demo', version = '1.0.0') => readCrateLicence({ name, version, checksum: '' }, archive);
 
+describe('electing one licence of an expression', () => {
+  const mitText = { text: 'MIT License\n\nCopyright (c) 2015 Someone\n\nPermission is hereby granted, free of charge, to any person\n' };
+
+  it('elects MIT when it is offered and the crate ships an MIT text with a copyright line', () => {
+    for (const expression of ['MIT OR Apache-2.0', '0BSD OR MIT OR Apache-2.0', 'Unlicense OR MIT', 'MIT/Apache-2.0', 'Zlib OR Apache-2.0 OR MIT']) {
+      expect(electedLicence(expression, [mitText]), expression).toBe('MIT');
+    }
+  });
+
+  it('elects Apache-2.0 when MIT is not offered, or its text has no copyright line, and names none for one licence', () => {
+    expect(electedLicence('BSD-3-Clause OR Apache-2.0', [mitText])).toBe('Apache-2.0');
+    expect(electedLicence('MIT OR Apache-2.0', [{ text: 'Permission is hereby granted, free of charge\n' }])).toBe('Apache-2.0');
+    expect(electedLicence('MIT', [mitText])).toBeUndefined();
+    expect(electedLicence('MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)', [mitText])).toBeUndefined();
+  });
+
+  it('stops at an expression that offers neither', () => {
+    expect(() => electedLicence('BSD-3-Clause OR Zlib', [mitText])).toThrow('offers neither');
+  });
+});
+
 describe('reading the licence texts of a crate archive', () => {
+  it('reads an UNLICENSE next to the other licence files', () => {
+    const licence = read(crateArchive({ UNLICENSE: 'This is free and unencumbered software released into the public domain.\n', 'LICENSE-MIT': 'MIT text\n' }));
+    expect(licence.texts.map(({ file }) => file)).toEqual(['LICENSE-MIT', 'UNLICENSE']);
+  });
+
   it('reads the root licence files and the texts of a REUSE LICENSES directory', () => {
     const licence = read(crateArchive({ 'LICENSE-MIT': 'MIT text\n', 'LICENSES/Apache-2.0.txt': 'Apache text\n', 'src/LICENSE.rs': 'not a licence\n' }));
     expect(licence.texts).toEqual([
