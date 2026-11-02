@@ -304,7 +304,7 @@ export async function processGraphNodeJob(
     await job.updateProgress(10);
     await graphScheduler.onNodeStarted(graphId, nodeId);
     attemptSignal.throwIfAborted();
-    const inputArtifacts = await resolveInputArtifacts(graphId, 'input' in node ? node.input : undefined, job.data.inputArtifacts);
+    const inputArtifacts = await resolveInputArtifacts(graphId, node, job.data.inputArtifacts);
     await holdUnitsForInputs(graphId, nodeId, node, inputArtifacts.length);
 
     switch (node.op) {
@@ -876,14 +876,11 @@ async function exportArtifactToUrl(
   }
 }
 
-async function resolveInputArtifacts(
-  graphId: string,
-  inputRef?: string | string[],
-  providedArtifacts?: string[]
-): Promise<string[]> {
+/** The input files of `node`: those its job carries, else the outputs of the nodes it names; none for a node that names none. */
+async function resolveInputArtifacts(graphId: string, node: GraphNode, providedArtifacts?: string[]): Promise<string[]> {
   if (providedArtifacts && providedArtifacts.length > 0) {
     return providedArtifacts;
   }
-  if (!inputRef) return [];
-  return graphScheduler.getNodeOutputs(graphId, inputRef);
+  if (!('input' in node) || !node.input) return [];
+  return graphScheduler.getNodeOutputs(graphId, node.input);
 }
