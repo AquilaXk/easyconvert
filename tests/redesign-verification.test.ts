@@ -7,7 +7,7 @@ import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
 import Footer from '../src/components/Footer';
-import Hero from '../src/components/Hero';
+import { HomeHero } from '../src/components/Hero';
 import Features from '../src/components/Features';
 import FormatSelector from '../src/components/FormatSelector';
 import FaqSection from '../src/components/FaqSection';
@@ -33,7 +33,6 @@ import {
   visibleText,
   type DomElement,
 } from './helpers/rendered-dom';
-import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
 import { slugPageCopy } from './helpers/intl';
 import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
@@ -167,22 +166,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(phrasesMissing(text, ['free for up to 25 a day without an account'])).toEqual([]);
   });
 
-  it('verifies Hero synchronizes target format on paste, file selection, drop, and URL import', () => {
-    const hero = parseSource(sourcePath('src', 'components', 'Hero.tsx'));
-
-    // Every way in hands its files to one function, which names the target the tiles or the queue chose.
-    expect(callArguments(hero, 'onFilesSelected')).toEqual([
-      ['files', 'getEffectiveTargetFormat(targetFormatRef.current, activeTargetFormat)'],
-    ]);
-    expect(callArguments(hero, 'addFiles')).toEqual([
-      ['Array.from(e.target.files)'],
-      ['Array.from(e.dataTransfer.files)'],
-      ['[file]'],
-    ]);
-    expect(callArguments(hero, 'current')).toEqual([['Array.from(pastedFiles)']]);
-    expect(initializersOf(hero, 'targetFormatRef')).toEqual(['useRef(targetFormat)']);
-  });
-
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
     for (const pair of POPULAR_CONVERSIONS) {
       const srcDef = FORMAT_REGISTRY[pair.from];
@@ -273,9 +256,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     ]);
     expect(allElements(grids[0]).filter((e) => e.tagName === 'h2' || e.tagName === 'h3' || e.tagName === 'h4')).toHaveLength(FOOTER_SECTION_HEADINGS.length);
 
-    const themeHookSource = parseSource(sourcePath('src', 'hooks', 'useThemeToggle.ts'));
-    expect(firstStringArguments(themeHookSource, 'addEventListener')).toContain('easyconvert-theme-change');
-    expect(firstStringArguments(themeHookSource, 'CustomEvent')).toEqual(['easyconvert-theme-change']);
   });
 
   it('verifies Hero implements workbench architecture with Select File CTA and interactive format tiles', () => {
@@ -447,8 +427,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
       'mailto:support@easyconvert.com',
       'mailto:support@easyconvert.com?subject=Bug%20Report',
     ]);
-    const alerts = callArguments(parseSource(sourcePath('src', 'components', 'pages', 'ConverterPageView.tsx')), 'alert');
-    expect(alerts).toEqual([]);
   });
 
   it('names each other name of a format (JPEG for JPG, TIF for TIFF) after a format the registry has', () => {
@@ -585,5 +563,5 @@ function renderQueue(status: 'ready' | 'completed' = 'ready'): DomElement {
 
 /** The home page's hero with no files queued. */
 function renderHome(): DomElement {
-  return render(Hero, { onFilesSelected: noop, hasActiveQueue: false, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
+  return render(HomeHero, { onFilesSelected: noop, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
 }

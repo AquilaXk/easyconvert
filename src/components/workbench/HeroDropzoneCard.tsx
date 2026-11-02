@@ -43,11 +43,13 @@ export default function HeroDropzoneCard({
 
   return (
     <div className="w-full min-w-0">
-      <div className="rounded-xl border border-rule bg-surface p-3 sm:p-[18px] shadow-elev-2">
+      <div
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        className="rounded-xl border border-rule bg-surface p-3 sm:p-[18px] shadow-elev-2"
+      >
         <div
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
           className={`rounded-md border-2 border-dashed px-4 py-7 sm:px-6 sm:py-8 text-center transition-colors duration-200 ${
             isDragOver ? 'border-accent bg-accent-soft' : 'border-accent-edge'
           }`}

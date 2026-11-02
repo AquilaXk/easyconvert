@@ -3,7 +3,8 @@
 import React from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import Header from '@/components/Header';
-import Hero from '@/components/Hero';
+import { PairHero, QueueHeader } from '@/components/Hero';
+import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
 import ConversionQueue from '@/components/ConversionQueue';
 import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
@@ -113,14 +114,24 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
       />
 
       <main id="main-content" className="flex-1">
-        <Hero
-          onFilesSelected={handleFilesSelected}
-          hasActiveQueue={queue.length > 0}
-          dailyLimit={dailyLimit}
-          activeSourceFormat={parsed.sourceFormat}
-          activeTargetFormat={parsed.targetFormat}
-          pair={{ title: copy.title, description: copy.description }}
-        />
+        {queue.length > 0 ? (
+          <QueueHeader
+            onFilesSelected={handleFilesSelected}
+            sourceFormat={queue[0].sourceFormat}
+            targetFormat={queue[0].targetFormat}
+            pageTitle={copy.title}
+          />
+        ) : (
+          <PairHero
+            key={normalizedSlug}
+            onFilesSelected={handleFilesSelected}
+            dailyLimit={dailyLimit}
+            sourceFormat={parsed.sourceFormat}
+            targetFormat={parsed.targetFormat}
+            title={copy.title}
+            description={copy.description}
+          />
+        )}
 
         {queue.length > 0 ? (
           <ConversionQueue
@@ -140,7 +151,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
               }
             }}
             onAddMoreFiles={() => {
-              const input = document.getElementById('main-file-input') as HTMLInputElement | null;
+              const input = document.getElementById(MAIN_FILE_INPUT_ID) as HTMLInputElement | null;
               if (input) input.click();
             }}
             onImportFile={(file) => handleFilesSelected([file])}

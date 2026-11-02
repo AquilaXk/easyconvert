@@ -2,7 +2,8 @@
 
 import React from 'react';
 import Header from '@/components/Header';
-import Hero from '@/components/Hero';
+import { HomeHero, QueueHeader } from '@/components/Hero';
+import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
 import ConversionQueue from '@/components/ConversionQueue';
 import Features from '@/components/Features';
 import FaqSection from '@/components/FaqSection';
@@ -29,7 +30,7 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
   } = useClientQueue({ bundlePrefix: 'easyconvert_bundle' });
 
   const handleOpenFilePicker = () => {
-    const input = document.getElementById('main-file-input');
+    const input = document.getElementById(MAIN_FILE_INPUT_ID);
     if (input instanceof HTMLInputElement) {
       input.click();
     }
@@ -40,13 +41,11 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
       <Header />
 
       <main id="main-content" className="flex-1">
-        <Hero
-          onFilesSelected={handleFilesSelected}
-          hasActiveQueue={queue.length > 0}
-          dailyLimit={dailyLimit}
-          activeSourceFormat={queue.length > 0 ? queue[0].sourceFormat : undefined}
-          activeTargetFormat={queue.length > 0 ? queue[0].targetFormat || 'any' : undefined}
-        />
+        {queue.length > 0 ? (
+          <QueueHeader onFilesSelected={handleFilesSelected} sourceFormat={queue[0].sourceFormat} targetFormat={queue[0].targetFormat} />
+        ) : (
+          <HomeHero onFilesSelected={handleFilesSelected} dailyLimit={dailyLimit} />
+        )}
 
         {queue.length > 0 && (
           <ConversionQueue
