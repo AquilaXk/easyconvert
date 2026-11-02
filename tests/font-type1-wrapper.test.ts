@@ -159,6 +159,15 @@ describe('a missing or failing FontForge never passes for a conversion', () => {
     });
   });
 
+  it('answers 422 that the font is too large when the file-size limit stops the program, on any host', async () => {
+    // The signal the process file-size limit sends, raised by the stand-in itself so that the case does not need prlimit.
+    await withProgram(standIn('kill -XFSZ $$'), async () => {
+      const failure = await failureOf(() => convertPfa());
+      expect(failure).toBeInstanceOf(UnprocessableFontInputError);
+      expect(failure.message).toBe('The font is larger than FontForge may write.');
+    });
+  });
+
   it('answers 422 that the diagnostics are too long when the program floods its error output', async () => {
     // 3 MB of messages against the 1 MiB buffer.
     await withProgram(standIn('head -c 3000000 /dev/zero | tr "\\000" "x" >&2; exit 1'), async () => {

@@ -364,7 +364,7 @@ async function withDirectoryBudget(dir: string, budget: number, run: (signal: Ab
     try {
       const parts = partsIn(dir);
       if (parts.count > MAX_SPLIT_PARTS) controller.abort(tooManyParts(`it has passed ${MAX_SPLIT_PARTS}`));
-      else if (parts.bytes > budget) controller.abort(new SandboxedBufferLimitError(budget));
+      else if (parts.bytes > budget) controller.abort(new SandboxedBufferLimitError(budget, 'file-size'));
     } catch {
       // A part that vanishes between listing and measuring is not an overrun.
     }

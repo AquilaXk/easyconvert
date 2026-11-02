@@ -1,6 +1,7 @@
 import { PIPELINE_OPERATIONS } from './api/contracts/enums';
 import type { ConversionFailure } from './conversion-failure';
 import type { ConversionRefusalCode } from './refusal-codes';
+import type { VectorizeOptions } from './conversions/raster-vectorize-options';
 import type {
   AspectRatioOptions,
   AudioEncodingOptions,
@@ -133,6 +134,8 @@ export interface ConversionOptions {
   toneMap?: 'none' | 'clip' | 'bt2390';
   // CAD options
   outputUnit?: 'mm' | 'cm' | 'm' | 'in';
+  /** Raster to SVG: the tracer's preset, fitting mode and filters (src/lib/conversions/raster-vectorize-options.ts). */
+  vectorize?: VectorizeOptions;
   // Document & PDF options
   page?: number;
   pages?: string;

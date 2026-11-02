@@ -169,7 +169,7 @@ jobs:
           - group: pdf-audio
             families: pdf-ops,audio
           - group: small
-            families: ocr,data,ebook,font,cad,vector
+            families: ocr,data,ebook,font,cad,vector,vectorize
 
     services:
       redis:
@@ -362,7 +362,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        family: [image, video, audio, ocr, document, compression, pdf-ops, data, ebook, font, cad, raw, vector]
+        family: [image, video, audio, ocr, document, compression, pdf-ops, data, ebook, font, cad, raw, vector, vectorize]
 
     services:
       redis:

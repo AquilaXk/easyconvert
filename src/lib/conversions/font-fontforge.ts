@@ -71,8 +71,7 @@ function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): 
   // and crashing on a damaged font look the same to it, and the message says both.
   if (error instanceof SandboxedMemoryLimitError) return new UnprocessableFontInputError('FontForge ran out of memory or crashed on this font.');
   if (error instanceof SandboxedBufferLimitError) {
-    // The sandbox reports a file that grew past its size limit (SIGXFSZ) with the same error as too much diagnostic output; the limit tells them apart.
-    if (error.limitBytes === PROGRAM_MAX_OUTPUT_BYTES) return new UnprocessableFontInputError(OUTPUT_TOO_LARGE);
+    if (error.kind === 'file-size') return new UnprocessableFontInputError(OUTPUT_TOO_LARGE);
     return new UnprocessableFontInputError('FontForge printed more diagnostics than the limit allows: the font is damaged.');
   }
   if (error instanceof SandboxedProcessError) {

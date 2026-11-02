@@ -1454,7 +1454,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/png',
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
-    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto'],
+    targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
     optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpg: {
@@ -1464,7 +1464,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
     optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpeg: {
@@ -1474,7 +1474,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/jpeg',
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
-    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
     optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   webp: {
@@ -1484,7 +1484,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/webp',
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
-    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto', 'svg'],
     optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
@@ -1504,7 +1504,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/tiff',
     category: 'image',
     description: 'Tagged Image File Format - High-depth raster format favored in publishing and printing.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
     optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tif: {
@@ -1514,7 +1514,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/tiff',
     category: 'image',
     description: 'Short extension for Tagged Image File Format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
     optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   gif: {
@@ -1524,7 +1524,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/gif',
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
-    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto'],
+    targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto', 'svg'],
     optionsSchema: { background: true, dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {
@@ -1534,7 +1534,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/bmp',
     category: 'image',
     description: 'Bitmap Image File - Uncompressed standard raster image.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
     optionsSchema: { background: true, dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   svg: {

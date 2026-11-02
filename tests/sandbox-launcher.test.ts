@@ -147,6 +147,14 @@ describe('sandbox launcher', () => {
     const error = await launch('/usr/bin/head', ['-c', '2000000', '/dev/zero'], { networkIsolated: false, maxBuffer: 100_000 }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SandboxedBufferLimitError);
     expect((error as SandboxedBufferLimitError).limitBytes).toBe(100_000);
+    expect((error as SandboxedBufferLimitError).kind).toBe('stdio');
+  });
+
+  it('reports a program stopped by its file-size limit as a file-size overrun, apart from the output limit', async () => {
+    const error = await launch(SH, shell('kill -XFSZ $$'), { networkIsolated: false, maxBuffer: 100_000, maxFileSize: 4096 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SandboxedBufferLimitError);
+    expect((error as SandboxedBufferLimitError).kind).toBe('file-size');
+    expect((error as SandboxedBufferLimitError).limitBytes).toBe(4096);
   });
 
   it('kills the program and rejects with the signal reason when the caller aborts', async () => {

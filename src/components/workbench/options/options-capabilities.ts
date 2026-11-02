@@ -1,5 +1,6 @@
 import { AudioCodec, ConversionOptions, FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
+import { isVectorizePair, sanitizeVectorizeOptions } from '@/lib/conversions/raster-vectorize-options';
 import {
   FFMPEG_VIDEO_CONTAINERS,
   resolveAudioCapabilities,
@@ -110,11 +111,13 @@ function isImageCapablePair(
 function computeMediaCaps(
   sourceCategory: FormatCategory | undefined,
   targetCategory: FormatCategory | undefined,
-  tgt: string
+  tgt: string,
+  traced: boolean
 ) {
   const showVideo = FFMPEG_VIDEO_CONTAINERS.has(tgt);
   const showVideoCodec = resolveSelectableVideoCodecs(tgt).length > 0;
-  const showImage = !showVideo && isImageCapablePair(sourceCategory, targetCategory, tgt);
+  // A traced picture takes only the tracer's options: an SVG has no pixel size or quality.
+  const showImage = !showVideo && !traced && isImageCapablePair(sourceCategory, targetCategory, tgt);
   const hasAudioSource = sourceCategory === 'video' || sourceCategory === 'audio';
   const showAudio =
     (targetCategory === 'audio' && tgt !== 'dss') || (targetCategory === 'video' && hasAudioSource);
@@ -126,7 +129,8 @@ function canSelectSourcePages(
   tgt: string,
   targetCategory: FormatCategory | undefined
 ): boolean {
-  if (TIFF_SOURCES.has(src)) return true;
+  // The tracer reads the first page of a TIFF.
+  if (TIFF_SOURCES.has(src)) return !isVectorizePair(src, tgt);
   return src === 'pdf' && (targetCategory === 'image' || tgt === 'svg');
 }
 
@@ -181,12 +185,14 @@ export function computeVisibleSections(sourceFormat: string, targetFormat: strin
   const tgt = targetFormat.toLowerCase();
   const sourceCategory = FORMAT_REGISTRY[src]?.category;
   const targetCategory = tgt ? FORMAT_REGISTRY[tgt]?.category : undefined;
-  const media = computeMediaCaps(sourceCategory, targetCategory, tgt);
+  const showVectorize = isVectorizePair(src, tgt);
+  const media = computeMediaCaps(sourceCategory, targetCategory, tgt, showVectorize);
   const doc = computeDocumentCaps(src, tgt, sourceCategory, targetCategory);
   const data = computeDataCaps(src, tgt, targetCategory);
   const passwordMode = resolvePasswordMode(src, tgt);
   const showArchive = targetCategory === 'archive' && tgt !== 'tar';
   const hasAny = [
+    showVectorize,
     media.showImage,
     doc.showDocument,
     passwordMode !== null,
@@ -195,7 +201,7 @@ export function computeVisibleSections(sourceFormat: string, targetFormat: strin
     data.showData,
     showArchive,
   ].some(Boolean);
-  return { src, tgt, targetCategory, ...media, ...doc, ...data, passwordMode, showArchive, hasAny };
+  return { src, tgt, targetCategory, showVectorize, ...media, ...doc, ...data, passwordMode, showArchive, hasAny };
 }
 
 export type VisibleOptionsSections = ReturnType<typeof computeVisibleSections>;
@@ -211,6 +217,16 @@ function applySanitizedImageOptions(
   if (options.fit !== undefined) next.fit = options.fit;
   if (options.quality !== undefined) next.quality = options.quality;
   if (options.stripMetadata === true) next.stripMetadata = true;
+}
+
+function applySanitizedVectorizeOptions(
+  next: ConversionOptions,
+  options: ConversionOptions,
+  visible: VisibleOptionsSections
+): void {
+  if (!visible.showVectorize) return;
+  const vectorize = sanitizeVectorizeOptions(options.vectorize);
+  if (vectorize) next.vectorize = vectorize;
 }
 
 function applySanitizedOcrOptions(
@@ -408,6 +424,7 @@ export function sanitizeOptionsForPair(
   if (!targetFormat.trim()) return {};
   const visible = computeVisibleSections(sourceFormat, targetFormat);
   const next: ConversionOptions = {};
+  applySanitizedVectorizeOptions(next, options, visible);
   applySanitizedImageOptions(next, options, visible);
   applySanitizedDocumentOptions(next, options, visible);
   applySanitizedSecurityAndArchiveOptions(next, options, visible);

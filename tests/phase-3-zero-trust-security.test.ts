@@ -82,11 +82,11 @@ describe('Phase 3: Zero-Trust Enterprise Security, Sandboxing & Privacy Hardenin
       // Output 100KB while limit is 10KB
       const args = ['-e', 'process.stdout.write("A".repeat(100 * 1024))'];
 
-      await expect(
-        executeSandboxedBinary(nodeBin, args, {
-          maxBuffer: 10 * 1024,
-        })
-      ).rejects.toThrow(SandboxedBufferLimitError);
+      const failure = executeSandboxedBinary(nodeBin, args, {
+        maxBuffer: 10 * 1024,
+      });
+      await expect(failure).rejects.toThrow(SandboxedBufferLimitError);
+      await expect(failure).rejects.toMatchObject({ kind: 'stdio' });
     });
   });
 

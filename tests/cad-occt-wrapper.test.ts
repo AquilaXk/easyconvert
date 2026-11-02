@@ -144,6 +144,15 @@ describe('a missing or failing converter never passes for a conversion', () => {
     });
   });
 
+  it('answers 422 that the model is too large when the file-size limit stops the program, on any host', async () => {
+    // The signal the process file-size limit sends, raised by the stand-in itself so that the case does not need prlimit.
+    await withProgram(standIn('kill -XFSZ $$'), async () => {
+      const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl'));
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+      expect(failure.message).toBe('The model is larger than the CAD converter may write.');
+    });
+  });
+
   it('answers a typed timeout when the program overruns its time', async () => {
     await withProgram(standIn('sleep 30'), async () => {
       const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl', { timeoutMs: FIXED_TIMEOUT_MS }));

@@ -14,6 +14,7 @@ import { runPdfOps } from './pdf-ops';
 import { runPdfOpsPublic } from './pdf-ops-public';
 import { runRaw } from './raw';
 import { runVector } from './vector';
+import { runVectorize } from './vectorize';
 import { runVideo } from './video';
 
 export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
@@ -30,4 +31,5 @@ export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
   cad: runCad,
   raw: runRaw,
   vector: runVector,
+  vectorize: runVectorize,
 };

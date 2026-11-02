@@ -56,6 +56,7 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'librsvg (rsvg-convert)', tool: 'rsvg-convert' },
   { name: 'inkscape', tool: 'inkscape' },
   { name: 'libredwg (dwg2dxf)', tool: 'dwg2dxf' },
+  { name: 'vtracer', tool: 'vtracer' },
   { name: 'fontforge-nox (fontforge)', tool: 'fontforge' },
   { name: 'veraPDF', tool: 'verapdf' },
   { name: 'libreoffice (soffice)', tool: 'soffice' },

@@ -234,7 +234,7 @@ export function processFailure(result: JobResult, options: LaunchedExecutionOpti
   const signal = result.signal === 0 ? null : (SIGNAL_NAMES[result.signal] ?? (`SIG${result.signal}` as NodeJS.Signals));
   const memoryLimitMb = options.memoryLimitMb ?? (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / BYTES_PER_MB) : undefined);
   if ((result.signal === SIGKILL || result.signal === SIGSEGV) && memoryLimitMb && memoryLimitMb > 0) return new SandboxedMemoryLimitError(memoryLimitMb, signal ?? undefined);
-  if (result.signal === SIGXFSZ) return new SandboxedBufferLimitError(options.maxFileSize || options.rlimits?.fsizeBytes || options.maxBuffer || DEFAULT_MAX_BUFFER_BYTES);
+  if (result.signal === SIGXFSZ) return new SandboxedBufferLimitError(options.maxFileSize || options.rlimits?.fsizeBytes || options.maxBuffer || DEFAULT_MAX_BUFFER_BYTES, 'file-size');
   const stderrText = result.stderr.toString('utf8').trim();
   let summary: string;
   if (signal !== null) summary = stderrText ? `Process terminated by signal ${signal}: ${stderrText}` : `Process terminated by signal ${signal}`;
