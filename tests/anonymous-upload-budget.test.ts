@@ -154,9 +154,11 @@ describe('the hold of a link import', () => {
   });
 
   it('charges an import that ends after midnight to the new day, and its hold is not returned to that day', () => {
-    const settled = settleImport(held(), { id: 'import', receivedBytes: 7 * MIB, day: NEXT_DAY, now: NOW + HOUR });
+    const newDayWithBytes: UploadBudgetRecord = { ...held(), day: NEXT_DAY, bytes: 50 * MIB };
+    const settled = settleImport(newDayWithBytes, { id: 'import', receivedBytes: 7 * MIB, day: NEXT_DAY, now: NOW + HOUR });
     expect(settled.day).toBe(NEXT_DAY);
-    expect(settled.bytes).toBe(7 * MIB);
+    expect(settled.bytes).toBe(57 * MIB);
+    expect(settled.open.import).toBeUndefined();
   });
 
   it('does not count as an open upload', () => {

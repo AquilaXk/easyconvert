@@ -305,3 +305,21 @@ describe.skipIf(!REDIS_URL)('RedisGraphScheduler on a record damaged in a real R
     await expect(scheduler.getGraphState('g_never_stored')).resolves.toBeUndefined();
   });
 });
+
+describe('the units a scheduler script reports for a completed graph', () => {
+  /** A client that answers every script with `reply` and stores no graph record. */
+  function answering(reply: unknown[]): Redis {
+    const client = { eval: async () => reply, hgetall: async () => ({}), hmget: async () => [], lrange: async () => [], lrem: async () => 0 };
+    return client as unknown as Redis;
+  }
+
+  it('fails a graph that completed through a failed node when the script reports units that are not an integer', async () => {
+    const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '[]', 'not-a-number']), keyPrefix: 'units:' });
+    await expect(scheduler.onNodeFailed('g_units', 'src', 'the node failed')).rejects.toBeInstanceOf(GraphStateCorruptError);
+  });
+
+  it('fails a graph that completed through its last node when the script reports units that are not an integer', async () => {
+    const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '1.5']), keyPrefix: 'units:' });
+    await expect(scheduler.onNodeCompleted('g_units', 'out', [], 1)).rejects.toBeInstanceOf(GraphStateCorruptError);
+  });
+});

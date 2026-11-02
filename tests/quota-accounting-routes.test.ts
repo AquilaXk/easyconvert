@@ -26,7 +26,7 @@ import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, LINK_IMPORT_HOLD_GRACE_MS, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
@@ -39,7 +39,7 @@ import { allConversionQueues, attachJobLifecycleListeners, processConversionJob 
 import { graphScheduler } from '../src/lib/queue/graph';
 import { storageProvider } from '../src/lib/storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 
 /**
@@ -54,6 +54,7 @@ const FREE_CONCURRENCY = 5;
 const QUOTA_EXCEEDED_PROBLEM = 'https://api.easyconvert.io/problems/quota-exceeded';
 const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
 const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
+const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://api.easyconvert.io/problems/graph-without-conversion';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The deadline of an import that spends bytes directly; its hold is settled at once. */
 const IMPORT_DEADLINE_MS = 120_000;
@@ -317,6 +318,36 @@ describe('what a request is charged', () => {
       expect((await second.json()).refusal).toBe('daily-bytes');
       expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
       expect((await first).status).toBe(200);
+    });
+
+    it('holds its bytes for the synchronous deadline and the grace after it, so an import that never stops reading gives them back then', async () => {
+      const deadlineMs = 200;
+      vi.stubEnv('SYNC_DEADLINE_MAX_MS', String(deadlineMs));
+      const startedAt = Date.parse('2026-11-02T12:00:00.000Z');
+      vi.useFakeTimers({ toFake: ['Date'], now: startedAt });
+      let endBody: () => void = () => undefined;
+      vi.mocked(undiciFetch).mockImplementation(async () => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('name,score\n'));
+            endBody = () => controller.close();
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
+      });
+      const client = visitor();
+      try {
+        expect((await fetchUrlRoute(importRequest(client))).status).toBe(HTTP_GATEWAY_TIMEOUT);
+
+        const holdEnds = startedAt + deadlineMs + LINK_IMPORT_HOLD_GRACE_MS;
+        vi.setSystemTime(holdEnds - 1);
+        expect(await bytesBroughtInToday(client.userId)).toBe(URL_IMPORT_MAX_BYTES);
+        vi.setSystemTime(holdEnds);
+        expect(await bytesBroughtInToday(client.userId)).toBe(0);
+      } finally {
+        endBody();
+        vi.useRealTimers();
+      }
     });
 
     describe('is charged the bytes it received, however it ends', () => {
@@ -608,16 +639,28 @@ describe('what a request is charged', () => {
       return { userId: user.id, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday, authorization: `Bearer ${secretKey}` };
     }
 
-    async function submitTasks(authorization: string, tasks: Array<{ name: string; operation: string; targetFormat: string }>) {
+    async function storedCsv(): Promise<string> {
       const storageKey = `uploads/quota-v1-jobs-${Date.now()}-${nextClient++}/scores.csv`;
       await storageProvider.saveObject(storageKey, Buffer.from(CSV), 'text/csv', 'scores.csv', 60 * 60 * 1000);
+      return storageKey;
+    }
+
+    function submitJob(authorization: string, body: Record<string, unknown>) {
       return v1JobsRoute(
         new NextRequest('http://localhost/api/v1/jobs', {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization },
-          body: JSON.stringify({ storageKey, tasks }),
+          body: JSON.stringify(body),
         })
       );
+    }
+
+    async function submitTasks(authorization: string, tasks: Array<{ name: string; operation: string; targetFormat: string }>) {
+      return submitJob(authorization, { storageKey: await storedCsv(), tasks });
+    }
+
+    function submitGraph(authorization: string, graph: Record<string, unknown>) {
+      return submitJob(authorization, { graph });
     }
 
     it('charges a tasks pipeline that imports, converts and exports one conversion', async () => {
@@ -633,7 +676,7 @@ describe('what a request is charged', () => {
       await vi.waitFor(async () => expect(await caller.usedToday()).toBe(1));
     }, 30_000);
 
-    it('refuses up front a graph of three conversions when the caller has two left', async () => {
+    it('refuses up front a graph of three conversions when the caller has two left, and says how many it needs and has', async () => {
       const caller = await apiCaller();
       await redisKeyStore.recordUsage(caller.userId, FREE_DAY_ALLOWANCE - 2);
 
@@ -644,7 +687,42 @@ describe('what a request is charged', () => {
       ]);
 
       expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(refused.headers.get('RateLimit-Remaining')).toBe('2');
+      const problem = await refused.json();
+      expect(problem).toMatchObject({ type: QUOTA_EXCEEDED_PROBLEM, remaining: 2, requiredUnits: 3, dailyLimit: FREE_DAY_ALLOWANCE });
+      expect(problem.detail).toContain('needs 3 conversions and 2 are left today');
       expect(await caller.usedToday()).toBe(FREE_DAY_ALLOWANCE - 2);
+    });
+
+    it('reserves a convert node one unit for each input it declares', async () => {
+      const caller = await apiCaller();
+      await redisKeyStore.recordUsage(caller.userId, FREE_DAY_ALLOWANCE - 1);
+
+      const refused = await submitGraph(caller.authorization, {
+        nodes: {
+          first: { op: 'import.upload', storageKey: await storedCsv() },
+          second: { op: 'import.upload', storageKey: await storedCsv() },
+          conv: { op: 'convert', input: ['first', 'second'], targetFormat: 'json' },
+          out: { op: 'export.internal', input: 'conv' },
+        },
+      });
+
+      expect(refused.status, await refused.clone().text()).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await refused.json()).toMatchObject({ remaining: 1, requiredUnits: 2 });
+      expect(await caller.usedToday()).toBe(FREE_DAY_ALLOWANCE - 1);
+    });
+
+    it('refuses a graph without a conversion with 422, before anything is reserved', async () => {
+      const caller = await apiCaller();
+
+      const refused = await submitGraph(caller.authorization, {
+        nodes: { link: { op: 'import.url', url: 'https://files.example.com/scores.csv' }, out: { op: 'export.internal', input: 'link' } },
+      });
+
+      expect(refused.status).toBe(422);
+      expect((await refused.json()).type).toBe(GRAPH_WITHOUT_CONVERSION_PROBLEM);
+      expect(await caller.usedToday()).toBe(0);
+      expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
     });
 
     it('answers 503, not 429, when the quota store cannot reserve', async () => {
