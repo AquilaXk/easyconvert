@@ -146,7 +146,7 @@ export default function QueueItemRow({
     : 'border-warning-edge bg-warning-soft text-warning hover:border-accent';
 
   return (
-    <div className="rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 grid grid-cols-[2.75rem_minmax(0,1fr)_auto] md:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-3 min-w-0">
+    <div className="rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 grid grid-cols-[2.75rem_minmax(0,1fr)_auto] lg:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-3 min-w-0">
       <div className="size-11 flex items-center justify-center rounded-xs bg-sunken">
         <FormatIcon format={item.sourceFormat} className="size-5 text-ink-3" />
       </div>
@@ -166,7 +166,7 @@ export default function QueueItemRow({
         )}
       </div>
 
-      <div className="col-span-3 row-start-2 border-t border-rule pt-3 md:col-span-1 md:col-start-3 md:row-start-1 md:border-0 md:pt-0 flex items-center flex-wrap gap-2 md:gap-2.5">
+      <div className="col-span-3 row-start-2 border-t border-rule pt-3 lg:col-span-1 lg:col-start-3 lg:row-start-1 lg:border-0 lg:pt-0 flex items-center flex-wrap gap-2 lg:gap-2.5">
         <span className="inline-flex items-center gap-1.5 min-h-9 px-2.5 rounded-xs bg-sunken text-sm font-semibold text-ink">
           <FormatIcon format={item.sourceFormat} className="size-3.5 text-ink-3" />
           {sourceLabel}
@@ -182,9 +182,9 @@ export default function QueueItemRow({
             aria-expanded={isFormatSelectorOpen}
             disabled={isBusy || isOversize}
             onClick={onToggleFormatSelector}
-            className={`transition-colors inline-flex items-center justify-between gap-2 w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
+            className={`transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
           >
-            <span className="truncate">{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
+            <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
             <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
           </button>
 
@@ -225,7 +225,7 @@ export default function QueueItemRow({
         type="button"
         aria-label={t(isBusy ? 'cancelLabel' : 'removeLabel', { name: item.name })}
         onClick={onRemove}
-        className="col-start-3 row-start-1 md:col-start-4 -mr-2 inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-xs text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
+        className="col-start-3 row-start-1 lg:col-start-4 -mr-2 inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-xs text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
       >
         <X aria-hidden="true" className="size-4" />
       </button>

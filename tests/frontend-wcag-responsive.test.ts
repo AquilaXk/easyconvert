@@ -342,7 +342,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     });
     const unselectedText = visibleText(unselectedQueue);
     expect(phrasesMissing(unselectedText, ['Select format', 'Please select an output format to continue'])).toEqual([]);
-    expect(phrasesPresent(unselectedText, ['Ready to convert'])).toEqual([]);
+    expect(phrasesPresent(unselectedText, ['ready to convert'])).toEqual([]);
 
     const optionsBtn = select(unselectedQueue, 'button', 'aria-label', 'Conversion options for diagram.png');
     expect(optionsBtn).toHaveLength(1);

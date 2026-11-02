@@ -98,9 +98,9 @@ function QueueBatchHeader({
           <div className="relative">
             <button
               type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="transition-colors inline-flex items-center justify-between gap-2 w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-surface text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-surface text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className="truncate">{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
+              <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
               <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
             </button>
             {isBatchSelectorOpen && (
@@ -126,14 +126,14 @@ function QueueBatchHeader({
 
 interface QueueFileBarProps {
   statusSummary: string; zipError?: boolean; onDismissZipError?: () => void;
-  effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean;
+  effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean; isSettledWell: boolean;
   onAddMoreFiles: () => void; onImportFile: (file: File) => void; onDownloadAllZip: () => void; onConvertAll: () => void;
 }
 
 /** The bar pinned to the bottom of the viewport while the queue is on screen: the status, add more files, and convert. */
 function QueueFileBar({
   statusSummary, zipError, onDismissZipError, effectiveBusy, completedCount,
-  allDone, canConvert, onAddMoreFiles, onImportFile, onDownloadAllZip, onConvertAll,
+  allDone, canConvert, isSettledWell, onAddMoreFiles, onImportFile, onDownloadAllZip, onConvertAll,
 }: Readonly<QueueFileBarProps>) {
   const t = useTranslations('queue');
   const zipFailed = useTranslations('errors.queue')('zipFailed');
@@ -142,7 +142,7 @@ function QueueFileBar({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row md:items-center gap-3">
         <div className="min-w-0 md:flex-1 flex flex-col items-center md:items-start">
           <p className="flex items-center gap-2 text-sm text-ink-3">
-            {(canConvert || allDone) && <CircleCheck aria-hidden="true" className="size-4 shrink-0" />}
+            {isSettledWell && <CircleCheck aria-hidden="true" className="size-4 shrink-0" />}
             <output aria-live="polite">{statusSummary}</output>
           </p>
           {zipError && (
@@ -210,7 +210,9 @@ function deriveQueueViewState(
   const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
   const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
   const statusSummary = getQueueStatusSummary(t, items, convertibleItems, effectiveBusy);
-  return { effectiveBusy, completedCount, allDone, canConvert, statusSummary };
+  // The check mark of page B's bar stands for "ready" or "done", never beside a failure.
+  const isSettledWell = allDone || (canConvert && !convertibleItems.some((i) => i.status === 'error'));
+  return { effectiveBusy, completedCount, allDone, canConvert, isSettledWell, statusSummary };
 }
 
 /**
@@ -276,7 +278,7 @@ export default function ConversionQueue({
       <QueueFileBar
         statusSummary={view.statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}
         effectiveBusy={view.effectiveBusy} completedCount={view.completedCount} allDone={view.allDone} canConvert={view.canConvert}
-        onAddMoreFiles={onAddMoreFiles} onImportFile={onImportFile} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
+        isSettledWell={view.isSettledWell} onAddMoreFiles={onAddMoreFiles} onImportFile={onImportFile} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
       />
       {currentOptionsItem?.targetFormat && currentOptionsItem.size <= maxLimit && (
         <OptionsModal

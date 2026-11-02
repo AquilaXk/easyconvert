@@ -93,6 +93,18 @@
     accent-color: rgb(var(--c-accent));
   }
 
+  /* While the file bar is pinned to the bottom, a control that takes focus scrolls into view above it: the bar measures
+     159 px stacked on a phone and 73 px in one line from 768 px up. */
+  html:has([data-queue-bar]) {
+    scroll-padding-bottom: 11rem;
+  }
+
+  @media (min-width: 768px) {
+    html:has([data-queue-bar]) {
+      scroll-padding-bottom: 5rem;
+    }
+  }
+
   body {
     background-color: rgb(var(--c-canvas));
     color: rgb(var(--c-ink));

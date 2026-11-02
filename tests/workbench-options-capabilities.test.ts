@@ -860,7 +860,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(
       attrOf(select(completedPlusReadyQueueDom, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')
     ).toBeNull();
-    expect(visibleText(select(completedPlusReadyQueueDom, 'output')[0])).toBe('Ready to convert 1 file');
+    expect(visibleText(select(completedPlusReadyQueueDom, 'output')[0])).toBe('1 file ready to convert');
 
     const execSpy = vi.spyOn(clientConverter, 'executeItemConversion').mockResolvedValue(undefined);
     try {
