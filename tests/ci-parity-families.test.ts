@@ -93,7 +93,7 @@ describe('every file of the conversion code is classified', () => {
 
 describe('classifying changed paths', () => {
   it.each<[string, string, string[], string[]]>([
-    ['an image engine file', 'src/lib/conversions/image-resample.ts', ['image', 'raw'], []],
+    ['an image engine file', 'src/lib/conversions/image-resample.ts', ['image', 'raw', 'vectorize'], []],
     ['the AVIF colour code', 'src/lib/conversions/avif-colour.ts', ['image', 'raw'], []],
     ['the zstd encoder', 'src/lib/conversions/zstd-encoder.ts', ['compression'], []],
     ['the LZMA decoder', 'src/lib/conversions/lzma-decoder.ts', ['compression'], []],
@@ -175,6 +175,14 @@ describe('classifying changed paths', () => {
     expect(classify('bench/families/vector-public.ts')).toEqual({ benchmarked: ['vector'], unmapped: [], unclassified: [] });
   });
 
+  it('also sends the modules the tracer stages and routes through to the vectorize family', () => {
+    for (const file of ['src/lib/conversions/bmp.ts', 'src/lib/conversions/bitmap-pipeline.ts', 'src/lib/conversions/image.ts', 'src/lib/conversions/image-input-limits.ts']) {
+      expect(classify(file), file).toEqual({ benchmarked: ['image', 'raw', 'vectorize'], unmapped: [], unclassified: [] });
+    }
+    expect(classify('src/lib/conversions/vector-cad.ts')).toEqual({ benchmarked: ['cad', 'vectorize'], unmapped: [], unclassified: [] });
+    expect(classify('src/lib/conversions/ico.ts')).toEqual({ benchmarked: ['image', 'raw'], unmapped: [], unclassified: [] });
+  });
+
   it('puts the new media modules under their families', () => {
     expect(classify('src/lib/conversions/mp4-layout.ts')).toEqual({ benchmarked: ['video'], unmapped: [], unclassified: [] });
     expect(classify('src/lib/conversions/media-encoder-threads.ts')).toEqual({ benchmarked: ['video', 'audio'], unmapped: [], unclassified: [] });
@@ -199,7 +207,7 @@ describe('classifying changed paths', () => {
 
   it('combines the families of several changed files, benchmarked ones in harness order', () => {
     expect(classify('src/lib/conversions/zstd.ts', 'src/lib/conversions/image.ts', 'src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'docs/a.md')).toEqual({
-      benchmarked: ['image', 'compression', 'font', 'cad', 'raw'],
+      benchmarked: ['image', 'compression', 'font', 'cad', 'raw', 'vectorize'],
       unmapped: [],
       unclassified: [],
     });
@@ -207,7 +215,7 @@ describe('classifying changed paths', () => {
 
   it('reports a path inside the scope that no rule covers', () => {
     expect(classify('src/lib/conversions/brand-new-engine.ts', 'src/lib/conversions/image.ts')).toEqual({
-      benchmarked: ['image', 'raw'],
+      benchmarked: ['image', 'raw', 'vectorize'],
       unmapped: [],
       unclassified: ['src/lib/conversions/brand-new-engine.ts'],
     });

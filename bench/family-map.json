@@ -158,8 +158,12 @@
       "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|deflate-blocks|lz(ip|o1x|op)|lzma-[^/]*|rpm-[^/]*|sevenzip-reader|xz-format|xz-native|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$|^src/worker/archive-source-extraction\\.ts$"
     },
     {
+      "families": ["image", "raw", "vectorize"],
+      "match": "^src/lib/conversions/(bitmap-pipeline|bmp|image[^/]*)\\.ts$"
+    },
+    {
       "families": ["image", "raw"],
-      "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|image[^/]*|kd-tree|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|blue-noise-mask|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|kd-tree|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
     },
     {
       "families": ["hdr-image"],
@@ -222,8 +226,12 @@
       "match": "^src/worker/poppler-ppm\\.ts$"
     },
     {
+      "families": ["cad", "vectorize"],
+      "match": "^src/lib/conversions/vector-cad\\.ts$"
+    },
+    {
       "families": ["cad"],
-      "match": "^src/lib/conversions/(bitmap-glyph-text|cad-[^/]*|vector-cad|vector-dxf)\\.ts$|^native/cad-convert/"
+      "match": "^src/lib/conversions/(bitmap-glyph-text|cad-[^/]*|vector-dxf)\\.ts$|^native/cad-convert/"
     },
     {
       "families": ["font"],
