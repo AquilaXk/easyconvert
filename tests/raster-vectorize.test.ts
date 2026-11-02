@@ -243,15 +243,14 @@ describe('the tracer program, as the wrapper sees it', () => {
     const failure = await withTracer(standIn('kill -SEGV $$'), () => captureError(() => vectorize(clean)));
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(PayloadLimitError);
-    expect(failure.message).toContain('SIGSEGV');
+    expect(failure.message).toBe('The SVG tracer could not trace this picture: it was stopped by SIGSEGV.');
   });
 
   it('runs the program without a network, under the measured memory, output, diagnostics and time limits', async () => {
     sandboxRuns.length = 0;
     await withTracer(writesMinimalSvg(), () => vectorize(clean));
     expect(sandboxRuns).toHaveLength(1);
-    expect(sandboxRuns[0].options).toMatchObject({ networkIsolated: true, memoryLimitMb: 2048, maxFileSize: 32 * 1024 * 1024, maxBuffer: 64 * 1024 });
-    expect(sandboxRuns[0].options.timeoutMs).toBeLessThanOrEqual(120_000);
+    expect(sandboxRuns[0].options).toMatchObject({ networkIsolated: true, memoryLimitMb: 2048, maxFileSize: 32 * 1024 * 1024, maxBuffer: 64 * 1024, timeoutMs: 120_000 });
   });
 
   it('stops a program that overruns the time of the conversion, with a typed timeout and without waiting for it', async () => {
@@ -348,6 +347,7 @@ describe('inputs refused before the program starts', () => {
   it('answers engine-unavailable for a missing program before it decodes the picture', async () => {
     const failure = await withTracer('/nonexistent/vtracer', () => captureError(() => vectorize(clean.subarray(0, 60))));
     expect(failure).toBeInstanceOf(EngineUnavailableError);
+    expect((failure as EngineUnavailableError).engineName).toBe('vtracer');
   });
 
   it('stops a cancelled conversion with its reason before the picture is staged', async () => {
