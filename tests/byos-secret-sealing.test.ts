@@ -5,7 +5,7 @@ import { Dispatcher } from 'undici';
 import { Worker, type Job } from '../src/lib/queue/bullmq-engine';
 import { allConversionQueues, getQueueForResourceClass, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { graphScheduler, InMemoryGraphScheduler, type JobGraph } from '../src/lib/queue/graph';
-import { graphNodeJobId } from '../src/lib/queue/graph/node-jobs';
+import { graphNodeJobId, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { resolveNodeResourceClass } from '../src/lib/queue/resource-class';
 import { SEALED_PREFIX, SecretSealError, unsealJobSecret } from '../src/lib/security/job-secret-seal';
@@ -104,7 +104,7 @@ async function queuedJob(graphId: string, nodeId: string, node: object) {
 /** Initialises the graph in a fresh scheduler and completes its first node so every node job is queued. */
 async function enqueueAllNodes(graphId: string, graph: JobGraph, tasks?: unknown[]) {
   const scheduler = new InMemoryGraphScheduler();
-  const initial = await scheduler.initGraph(graphId, graph, { ownerUserId: 'user-seal', tasks });
+  const initial = await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: 'user-seal', tasks });
   await scheduler.onNodeCompleted(graphId, 'in', ['intermediate/key.csv']);
   for (const [nodeId, node] of Object.entries(graph.nodes)) {
     enqueued.push({ node, jobId: graphNodeJobId(graphId, nodeId) });
@@ -327,7 +327,7 @@ describe.skipIf(!IN_MEMORY_MODE)('import -> convert -> export against customer s
       return saveObject(key, buffer, ...rest);
     });
     workers.push(new Worker([...allConversionQueues], processConversionJob, { concurrency: 2 }));
-    await graphScheduler.initGraph(graphId, graph, { ownerUserId: 'user-byos-e2e' });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: 'user-byos-e2e' });
 
     const state = await waitForTerminal(graphId);
     expect(state.status).toBe('completed');

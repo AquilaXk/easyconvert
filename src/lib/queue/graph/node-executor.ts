@@ -65,6 +65,7 @@ import { importUrlWithinBudget } from './node-url-import';
 import { holdUnitsForInputs } from './node-reservation';
 import type { GraphNode } from './types';
 import { saveRetainedResult } from '../../storage/retention-service';
+import { heldGraphInput } from './input-cleanup';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
@@ -301,7 +302,7 @@ export async function processGraphNodeJob(
 
     switch (node.op) {
       case 'import.upload': {
-        outputKeys = [node.storageKey];
+        outputKeys = [await heldGraphInput(graphId, node.storageKey)];
         await job.log(`Node "${nodeId}" imported uploaded key: ${node.storageKey}`);
         break;
       }

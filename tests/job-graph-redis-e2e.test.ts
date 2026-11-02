@@ -7,6 +7,7 @@ import { graphScheduler, RedisGraphScheduler, type JobGraph } from '../src/lib/q
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { clusterKeySlot, crc16Xmodem } from './helpers/redis-cluster-slot';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * Job graphs on a real Redis server, executed by real queue workers. Runs only when REDIS_URL
@@ -108,7 +109,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       },
     };
     startWorkers(2);
-    await graphScheduler.initGraph(graphId, graph, { ownerUserId: 'user-graph-e2e' });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: 'user-graph-e2e' });
 
     const state = await waitForTerminal(graphId);
     expect(state.status).toBe('completed');
@@ -134,7 +135,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
     nodes.bundle = { op: 'archive.create', input: branches, targetFormat: 'zip' };
     nodes.out = { op: 'export.internal', input: 'bundle' };
     startWorkers(2);
-    await graphScheduler.initGraph(graphId, { failurePolicy: 'fail_fast', nodes }, { ownerUserId: 'user-graph-e2e' });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, { failurePolicy: 'fail_fast', nodes }), { ownerUserId: 'user-graph-e2e' });
 
     const state = await waitForTerminal(graphId);
     expect(state.status).toBe('completed');
@@ -163,7 +164,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       },
     };
     startWorkers(1);
-    await graphScheduler.initGraph(graphId, graph, { ownerUserId: 'user-graph-e2e' });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: 'user-graph-e2e' });
 
     const state = await waitForTerminal(graphId);
     expect(state.status).toBe('completed');
@@ -194,7 +195,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       const scheduler = isolatedScheduler(redis);
       const graphId = uniqueId('dup');
       const keys = scheduler.graphKeys(graphId);
-      await scheduler.initGraph(graphId, chain);
+      await scheduler.initGraph(graphId, sealGraph(graphId, chain));
 
       const first = await scheduler.onNodeCompleted(graphId, 'a', ['k1']);
       const second = await scheduler.onNodeCompleted(graphId, 'a', ['k1']);
@@ -209,7 +210,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
     it('ignores a failure reported for a node that already completed', async () => {
       const scheduler = isolatedScheduler(redis);
       const graphId = uniqueId('late-fail');
-      await scheduler.initGraph(graphId, chain);
+      await scheduler.initGraph(graphId, sealGraph(graphId, chain));
       await scheduler.onNodeCompleted(graphId, 'a', ['k1']);
 
       const result = await scheduler.onNodeFailed(graphId, 'a', 'late failure');
@@ -238,12 +239,12 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       });
       const scheduler = isolatedScheduler(recording);
       const graphId = uniqueId('slots');
-      await scheduler.initGraph(graphId, chain);
+      await scheduler.initGraph(graphId, sealGraph(graphId, chain));
       await scheduler.onNodeStarted(graphId, 'a');
       await scheduler.onNodeCompleted(graphId, 'a', ['k1']);
       await scheduler.onNodeFailed(graphId, 'b', 'boom');
       const other = uniqueId('slots-cancel');
-      await scheduler.initGraph(other, chain);
+      await scheduler.initGraph(other, sealGraph(other, chain));
       await scheduler.cancelGraph(other);
 
       expect(calls.length).toBe(6);

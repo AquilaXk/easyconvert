@@ -4,7 +4,8 @@ name: Deploy to the OCI host
 # request (docs/deploy-oci.md). Nothing here runs on a schedule and nothing deploys by itself.
 #
 #   build   push to main: the worker image (Dockerfile.worker), then the web image (Dockerfile.web) on top of that exact worker digest,
-#           both for linux/arm64, pushed to GHCR as sha-<commit> and main.
+#           both for linux/arm64, pushed to GHCR as sha-<commit> and main; the web image, and the main tag of the worker, only once
+#           the web image started with the production container flags (scripts/boot-web-image.sh).
 #   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner whose only label is
 #           easyconvert-production: pins the chosen build by digest, starts it, checks health and one conversion, and rolls back to the
 #           previous release when either fails. The runner is separate from the one of the other service on this host and the job
@@ -69,6 +70,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # The sharplibvips stage compiles libvips; the layer cache keeps it, so only the first build and a change to that stage pay for it.
+      # The web build reads this image by digest, so it is pushed under its commit tag here; main names it only after the web check.
       - name: Build and push the worker image
         id: worker
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -80,18 +82,19 @@ jobs:
           provenance: false
           tags: |
             ${{ env.WORKER_REPO }}:sha-${{ github.sha }}
-            ${{ env.WORKER_REPO }}:main
           cache-from: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64
           cache-to: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64,mode=max
 
-      - name: Build and push the web image on that worker image
-        id: web
+      # The web image is loaded into the runner's Docker first and pushed only after it starts as production runs it, so a tag that
+      # deploy can pull always names an image whose server answered (docs/policy-decisions.md, entry 141).
+      - name: Build the web image on that worker image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile.web
           platforms: linux/arm64
-          push: true
+          load: true
+          push: false
           provenance: false
           # The public origin is the host of deploy/oci/nginx-easyconvert.conf (tests/oci-deploy.test.ts holds the two together): the
           # prerendered pages name it in their canonical and hreflang links. It is no secret, and the push build has no access to
@@ -105,6 +108,37 @@ jobs:
           tags: |
             ${{ env.WEB_REPO }}:sha-${{ github.sha }}
             ${{ env.WEB_REPO }}:main
+
+      # The production container flags of docker-compose.prod.yml: read-only root, no capabilities, uid 10001, no new privileges,
+      # the seccomp profile and noexec scratch. v0.7.0 passed a plain start and failed only under these flags (entry 141).
+      - name: Start the web image as production runs it
+        run: bash scripts/boot-web-image.sh "$WEB_REPO:sha-$GITHUB_SHA"
+
+      - name: Push the web image
+        id: web
+        run: |
+          set -euo pipefail
+          docker push --quiet "$WEB_REPO:sha-$GITHUB_SHA"
+          docker push --quiet "$WEB_REPO:main"
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$WEB_REPO:sha-$GITHUB_SHA")"
+          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the worker image main
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: docker buildx imagetools create --prefer-index=false --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"
+
+      # deploy.sh pins the digest it pulls for the worker and refuses a pair whose web image was built on another one, so main must
+      # name the worker digest itself, not an index that wraps it.
+      - name: Check that the worker main tag names the worker digest
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          tagged="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$WORKER_REPO:main")"
+          if [ "$tagged" != "\"$WORKER_DIGEST\"" ]; then
+            echo "::error::$WORKER_REPO:main names $tagged, not the worker image $WORKER_DIGEST"
+            exit 1
+          fi
 
       - name: Record the digests
         env:
@@ -151,11 +185,14 @@ jobs:
           printf '%s\n' "$EASYCONVERT_ENV" | bash deploy/oci/deploy.sh filter-env > "$RUNNER_TEMP/easyconvert.env"
           echo "ENV_FILE=$RUNNER_TEMP/easyconvert.env" >> "$GITHUB_ENV"
 
+      # ANONYMOUS_DAILY_LIMIT is the repository variable the web image was built with, the one source of the allowance: deploy.sh
+      # passes it to the servers and refuses a web image built with another value.
       - name: Deploy, check health, roll back on failure
         if: inputs.action == 'deploy'
         env:
           SOURCE_DIR: ${{ github.workspace }}
           IMAGE_REF: ${{ inputs.image_ref }}
+          ANONYMOUS_DAILY_LIMIT: ${{ vars.ANONYMOUS_DAILY_LIMIT }}
         run: exec bash deploy/oci/deploy.sh deploy "$IMAGE_REF"
 
       - name: Roll back to the previous release

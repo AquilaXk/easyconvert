@@ -17,6 +17,8 @@ import {
   REFRESH_HEARTBEAT_LUA_SCRIPT,
   UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT,
   RECOVER_STALLED_JOBS_LUA_SCRIPT,
+  PURGE_DEAD_LETTERS_LUA_SCRIPT,
+  REMOVE_GONE_USER_JOBS_LUA_SCRIPT,
 } from './lua-scripts';
 import { JobTimeoutError, QueueUnavailableError } from '../types';
 
@@ -1744,7 +1746,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
         if (staleJobIds.length > 0) {
           try {
-            await this.redisClient.zrem(userKey, ...staleJobIds);
+            await this.redisClient.eval(REMOVE_GONE_USER_JOBS_LUA_SCRIPT, 2, userKey, this.getJobKey(''), ...staleJobIds);
           } catch {}
         }
 
@@ -1881,9 +1883,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (this.redisClient) {
       await this.assertRedisConnected();
       try {
-        const count = await this.redisClient.llen(this.dlqKey);
-        await this.redisClient.del(this.dlqKey);
-        return count;
+        return Number(await this.redisClient.eval(PURGE_DEAD_LETTERS_LUA_SCRIPT, 1, this.dlqKey));
       } catch (err) {
         throw this.toQueueUnavailable(err);
       }

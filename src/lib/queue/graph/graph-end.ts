@@ -1,9 +1,8 @@
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher, type WebhookDispatchResult } from '../../api-keys/webhook-dispatcher';
 import { storageProvider } from '../../storage';
-import { releaseGraphInputHolds } from './input-cleanup';
+import { releaseInputHolds } from './input-cleanup';
 import type { GraphExecutionState } from './scheduler-types';
-import type { JobGraph } from './types';
 
 /** How a graph ended: completed, failed for a reason, or cancelled. */
 export type GraphOutcome = { status: 'completed' } | { status: 'failed'; error: string } | { status: 'cancelled' };
@@ -15,10 +14,14 @@ async function removeIntermediateFiles(graphId: string): Promise<void> {
   }
 }
 
-/** Gives back the holds the graph took on its input files and removes its intermediate files. */
-async function removeGraphFiles(graphId: string, graph: JobGraph): Promise<void> {
-  await releaseGraphInputHolds(graphId, graph);
-  await removeIntermediateFiles(graphId);
+/** Gives back the holds the graph took on its input files and removes its intermediate files; a failure is logged. */
+async function removeGraphFiles(graphId: string, inputKeys: readonly string[]): Promise<void> {
+  try {
+    await releaseInputHolds(graphId, inputKeys);
+    await removeIntermediateFiles(graphId);
+  } catch (err) {
+    console.error(`[GraphScheduler] The files of graph ${graphId} could not be removed:`, err);
+  }
 }
 
 /** How the reservation of a graph ends: settled to the units its nodes charged, or given back. */
@@ -30,12 +33,19 @@ export interface GraphEnd {
   reservation: ReservationEnd;
 }
 
-/** The graph whose end a scheduler recorded: its id, its reservation, and how to read its state for the announcement. */
+/**
+ * The graph whose end a scheduler recorded: its id, its reservation, the stored files it read as inputs (known without its
+ * state, so their holds end even when the state cannot be read), and how to read its state.
+ */
 export interface EndedGraph {
   graphId: string;
   reservationId: string | undefined;
+  inputKeys: readonly string[];
   readState: () => Promise<GraphExecutionState | undefined>;
 }
+
+/** How often the state of an ended graph is read before the end goes on without it. */
+const ENDED_STATE_READS = 2;
 
 /**
  * Ends the reservation of graph `graphId`: settled or given back as `end` says. It never throws, and a reservation the key
@@ -87,29 +97,41 @@ async function notifyWebhook(state: GraphExecutionState, outcome: GraphOutcome):
   }
 }
 
-/** Tells the webhook that the graph ended, and only then removes its files, so a storage fault delays the cleanup but never the notice. */
-async function announceGraphEnd(state: GraphExecutionState, outcome: GraphOutcome): Promise<void> {
-  await notifyWebhook(state, outcome);
-  await removeGraphFiles(state.graphId, state.graph).catch((err: unknown) => {
-    console.error(`[GraphScheduler] The files of graph ${state.graphId} could not be removed:`, err);
-  });
+/**
+ * The state of the ended graph, read up to ENDED_STATE_READS times while a read fails. A read that fails every time, or that
+ * finds no state, is logged and answers undefined: the webhook cannot be addressed without it.
+ */
+async function readEndedState(graph: EndedGraph): Promise<GraphExecutionState | undefined> {
+  for (let read = 1; read <= ENDED_STATE_READS; read++) {
+    try {
+      const state = await graph.readState();
+      if (!state) console.error(`[GraphScheduler] Graph ${graph.graphId} ended, but its state is gone, so its webhook was not told.`);
+      return state;
+    } catch (err) {
+      const outcome = read < ENDED_STATE_READS ? 'it is read again' : 'its webhook was not told';
+      console.error(`[GraphScheduler] Graph ${graph.graphId} ended, but its state could not be read, so ${outcome}:`, err);
+    }
+  }
+  return undefined;
 }
 
 /**
  * The end of `graph`, run once by the one call that recorded it (the Lua transition in Redis, `recordEnd` in the process).
- * The reservation is ended first, so no later step can leave it open; then `between` runs (cancelling the other node jobs,
- * draining the outbox); then the webhook is told and the files are removed. The state is read again once when its first
- * read fails; without it the webhook cannot be addressed, so that is logged and the intermediate files are removed by the
- * graph id alone. A failure of `between` or of reading the state is logged and never stops what follows, and nothing here
- * throws. Answers what `between` returned, or undefined when it failed.
+ * The reservation is ended first, so no later step can leave it open; then the state is read once (`readEndedState`) and
+ * handed to `between` (cancelling the other node jobs, draining the outbox); then the webhook is told, when the state was
+ * read, and the holds on the input files and the intermediate files are removed, which needs no state. A failure of
+ * `between` is logged and never stops what follows, and nothing here throws. Answers what `between` returned, or undefined
+ * when it failed.
  */
-export async function finishGraph<T>(graph: EndedGraph, end: GraphEnd, between?: () => Promise<T>): Promise<T | undefined> {
+export async function finishGraph<T>(
+  graph: EndedGraph,
+  end: GraphEnd,
+  between?: (state: GraphExecutionState | undefined) => Promise<T>
+): Promise<T | undefined> {
   await endGraphReservation(graph.graphId, graph.reservationId, end.reservation);
-  const result = between && (await orLogged(graph.graphId, 'a step between its settle and its announcement failed', between));
-  const state =
-    (await orLogged(graph.graphId, 'its state could not be read to announce the end', graph.readState)) ??
-    (await orLogged(graph.graphId, 'its state could not be read again, so its webhook was not told', graph.readState));
-  if (state) await announceGraphEnd(state, end.outcome);
-  else await removeIntermediateFiles(graph.graphId).catch((err: unknown) => console.error(`[GraphScheduler] The files of graph ${graph.graphId} could not be removed:`, err));
+  const state = await readEndedState(graph);
+  const result = between && (await orLogged(graph.graphId, 'a step between its settle and its announcement failed', () => between(state)));
+  if (state) await notifyWebhook(state, end.outcome);
+  await removeGraphFiles(graph.graphId, graph.inputKeys);
   return result;
 }

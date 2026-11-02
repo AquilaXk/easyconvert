@@ -19,19 +19,34 @@ import { POST as fetchUrlRoute } from '../src/app/api/fetch-url/route';
 import { DistributedBullMQAdapter, STALLED_SWEEP_INTERVAL_MS, Worker } from '../src/lib/queue/bullmq-engine';
 import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { RedisGraphScheduler } from '../src/lib/queue/graph/redis-scheduler';
+import { CANCEL_GRAPH_LUA_SCRIPT } from '../src/lib/queue/graph/lua-scripts';
+import { withReservedUnit } from '../src/lib/api-keys/guard';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { RESERVATION_LEASE, reservationIdOf } from '../src/lib/api-keys/reservation-ledger';
+import { getUtcDateKey } from '../src/lib/api-keys/key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { storageProvider } from '../src/lib/storage';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, withLinkImportMeter } from '../src/lib/api-keys/anonymous-upload-budget';
+import {
+  ANONYMOUS_DAILY_UPLOAD_BYTES,
+  LINK_IMPORT_METER_BATCH_BYTES,
+  bytesBroughtInToday,
+  reserveAnonymousUpload,
+  resumeUploadReservation,
+  withLinkImportMeter,
+} from '../src/lib/api-keys/anonymous-upload-budget';
+import { spendImportBytes } from './helpers/import-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
-import type { Plan } from '../src/lib/plan-limits';
+import { URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
-import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
+import { itLeasesHandedOffWork, itLeasesReservations } from './helpers/reservation-lease-cases';
+import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * The quota is Lua scripts over real keys, so what a request is charged is checked on a real Redis server, through the
@@ -53,6 +68,8 @@ const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-lim
 const PAST_OLD_RESERVATION_LIFETIME_MS = 901_000;
 const EARLY_IN_A_UTC_DAY = new Date('2026-11-02T00:00:05.000Z');
 const FREE_DAILY_IMPORT_BYTES = 2 * 1024 * 1024 * 1024;
+/** The deadline of a link import of the synchronous route, its default. */
+const SYNC_DEADLINE_MS = 120_000;
 
 interface QuotaJob {
   userId: string;
@@ -92,12 +109,6 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
   }
 
-  /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
-  async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-    const spent = await withLinkImportMeter({ owner: userId, plan }, (meter) => meter.count(bytes));
-    if ('refusal' in spent) throw new Error(`the import budget of ${userId} is already spent`);
-  }
-
   const convertCsv = () => convertRoute(convertRequest({ name: 'scores.csv', content: CSV, target: 'json' }));
 
   /** Every fetch of the link answers `content`, a new response each time. */
@@ -120,11 +131,16 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   }
 
   /**
-   * The keys of the client as Redis sees them `ms` later: each key's time to live shrinks by `ms`, and a key whose time
-   * runs out is gone. Redis has no clock to move, so this stands in for waiting.
+   * The keys of the client as Redis sees them `ms` later: each lease ends `ms` sooner, each key's time to live shrinks by
+   * `ms`, and a key whose time runs out is gone. The scripts read the time of the Redis server, which no test can move, so
+   * this stands in for waiting.
    */
   async function advanceKeyClock(ms: number) {
     for (const key of await admin.keys(`*${client.userId}*`)) {
+      if ((await admin.type(key)) === 'zset') {
+        const leases = await admin.zrange(key, '0', '-1', 'WITHSCORES');
+        for (let i = 0; i < leases.length; i += 2) await admin.zadd(key, Number(leases[i + 1]) - ms, leases[i]);
+      }
       const left = await admin.pttl(key);
       if (left < 0) continue;
       if (left <= ms) await admin.del(key);
@@ -132,12 +148,19 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     }
   }
 
-  /** Reserves a unit as a route does, and puts a job that carries it on a queue. */
+  /** Reserves a unit as a route does, hands its lease to a job that carries it, and puts the job on a queue. */
   async function queueJobWithUnit(queue: DistributedBullMQAdapter<QuotaJob, string>, options: { attempts: number; timeout?: number }) {
     const unit = await redisKeyStore.reserveQuota(client.userId, 1);
     expect(unit.allowed).toBe(true);
+    expect(await redisKeyStore.renewReservation(unit.reservationId as string, RESERVATION_LEASE.handedOffMs)).toBe(true);
     expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
     return queue.add('convert', { userId: client.userId, reservationId: unit.reservationId }, options);
+  }
+
+  /** Lets `ms` pass for the quota store: the clock, and the time to live of the client's keys. */
+  async function advanceQuotaClock(ms: number) {
+    vi.setSystemTime(Date.now() + ms);
+    await advanceKeyClock(ms);
   }
 
   function settledBy(worker: Worker<QuotaJob, string>, event: 'completed' | 'failed') {
@@ -320,6 +343,29 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await remaining()).toBe(DAY_ALLOWANCE);
     });
 
+    it('charges exactly what concurrent imports received while an upload of the same caller keeps changing the record', async () => {
+      const IMPORTS = 6;
+      const BATCHES = 3;
+      const TAIL_BYTES = 7;
+      const UPLOAD_BYTES = 1024 * 1024;
+      const opened = await reserveAnonymousUpload(client.userId, UPLOAD_BYTES, Date.now() + 60_000);
+      if ('refusal' in opened) throw new Error(`refused: ${opened.refusal}`);
+      const uploadId = `upload_${crypto.randomBytes(6).toString('hex')}`;
+      await opened.reservation.bind(uploadId, Date.now() + 60_000);
+      const importAll = () =>
+        withLinkImportMeter({ owner: client.userId, plan: 'anonymous', limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: SYNC_DEADLINE_MS }, async (meter) => {
+          for (let batch = 0; batch < BATCHES; batch++) await meter.count(LINK_IMPORT_METER_BATCH_BYTES);
+          await meter.count(TAIL_BYTES);
+        });
+
+      await Promise.all([
+        ...Array.from({ length: IMPORTS }, importAll),
+        ...Array.from({ length: IMPORTS * BATCHES }, () => resumeUploadReservation(uploadId)),
+      ]);
+
+      expect(await bytesBroughtInToday(client.userId)).toBe(UPLOAD_BYTES + IMPORTS * (BATCHES * LINK_IMPORT_METER_BATCH_BYTES + TAIL_BYTES));
+    });
+
     it('stops at the synchronous deadline when the remote sends the body too slowly, and frees its slot', async () => {
       vi.stubEnv('SYNC_DEADLINE_MAX_MS', '200');
       stalledRemoteFile();
@@ -361,7 +407,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const queue = connect('quota-late');
 
       await queueJobWithUnit(queue, { attempts: 1 });
-      await advanceKeyClock(PAST_OLD_RESERVATION_LIFETIME_MS);
+      await advanceQuotaClock(PAST_OLD_RESERVATION_LIFETIME_MS);
       const failing = listenedTo(new Worker(queue, async () => { throw new Error('the engine failed'); }, { concurrency: 1 }));
       const failed = settledBy(failing, 'failed');
       await failed;
@@ -369,7 +415,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       await failing.close();
 
       await queueJobWithUnit(queue, { attempts: 1 });
-      await advanceKeyClock(PAST_OLD_RESERVATION_LIFETIME_MS);
+      await advanceQuotaClock(PAST_OLD_RESERVATION_LIFETIME_MS);
       const done = listenedTo(new Worker(queue, async () => 'converted', { concurrency: 1 }));
       const completed = settledBy(done, 'completed');
       await completed;
@@ -481,6 +527,89 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
   });
 
+  describe('the lease of a reservation', () => {
+    itLeasesReservations({
+      store: () => redisKeyStore,
+      owner: () => client.userId,
+      advance: advanceQuotaClock,
+    });
+    itLeasesHandedOffWork({ owner: () => client.userId, advance: advanceQuotaClock });
+
+    it('counts a live lease for a caller whose clock runs two minutes ahead, as the clock of Redis decides when it ends', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+
+      vi.setSystemTime(Date.now() + 120_000);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+      vi.setSystemTime(Date.now() - 120_000);
+      expect(await redisKeyStore.commitQuota(unit.reservationId as string)).toBe(true);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
+
+    it('keeps what an extension holds for as long as the renewed lease, so the same extension never holds twice', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
+      expect(await redisKeyStore.renewReservation(unit.reservationId as string, RESERVATION_LEASE.handedOffMs)).toBe(true);
+
+      await advanceQuotaClock(RESERVATION_LEASE.provisionalMs + 60_000);
+
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 3);
+    });
+
+    it.each([
+      ['committed', (id: string) => redisKeyStore.commitQuota(id)],
+      ['given back', (id: string) => redisKeyStore.rollbackQuota(id)],
+      ['settled', (id: string) => redisKeyStore.settleQuota(id, 1)],
+    ])('removes what the extensions of a reservation hold once it is %s', async (_label, end) => {
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      const reservationId = unit.reservationId as string;
+      expect(await redisKeyStore.extendQuota(reservationId, 'conv', 2)).toEqual({ status: 'extended' });
+      const extensions = `${redisKeyStore.getPrefix()}res:{${client.userId}}:${reservationId}:ext`;
+      expect(await admin.exists(extensions)).toBe(1);
+
+      await end(reservationId);
+
+      expect(await admin.exists(extensions)).toBe(0);
+    });
+  });
+
+  describe('a reservation made before leases, during the day after the deploy', () => {
+    /** Reserves `units` as the release before leases did: the count of the day and one key that holds the units. */
+    async function reservedTheOldWay(units: number): Promise<string> {
+      const reservationId = reservationIdOf(client.userId, getUtcDateKey());
+      const prefix = redisKeyStore.getPrefix();
+      await admin.incrby(`${prefix}usage:{${client.userId}}:${getUtcDateKey()}`, units);
+      await admin.set(`${prefix}res:{${client.userId}}:${reservationId}`, String(units), 'EX', 3600);
+      return reservationId;
+    }
+
+    it('is given back once by a rollback', async () => {
+      const reservationId = await reservedTheOldWay(2);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
+
+      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(true);
+      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(false);
+      expect(await remaining()).toBe(DAY_ALLOWANCE);
+    });
+
+    it('stays charged once committed, and changes nothing when rolled back after', async () => {
+      const reservationId = await reservedTheOldWay(1);
+
+      expect(await redisKeyStore.commitQuota(reservationId)).toBe(true);
+      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(false);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
+
+    it('settles to the units used', async () => {
+      const reservationId = await reservedTheOldWay(3);
+
+      expect(await redisKeyStore.settleQuota(reservationId, 1)).toEqual({ success: true, difference: -2 });
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
+  });
+
   describe('a request that needs a conversion left but reserves none', () => {
     itNeedsOneUnitLeftForEveryCaller((userId) => otherUsers.push(userId));
   });
@@ -490,6 +619,71 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       endDay: async (owner) => {
         for (const key of await admin.keys(`*usage*${owner}*`)) await admin.del(key);
       },
+    });
+  });
+
+  describe('the start of a graph that failed', () => {
+    itRecoversAGraphStart({
+      scheduler: () => {
+        let refusing = false;
+        const cancelled: string[] = [];
+        const enqueueNode = async () => {
+          if (refusing) throw new QueueUnavailableError('light', 'the node job could not be stored');
+        };
+        const cancelNode = async (graphId: string, nodeId: string) => {
+          cancelled.push(`${graphId}:${nodeId}`);
+          return true;
+        };
+        return {
+          scheduler: new RedisGraphScheduler({ redisClient: admin, keyPrefix, enqueueNode, cancelNode }),
+          refuseNodeJobs: (refuse) => (refusing = refuse),
+          cancelledNodeJobs: () => cancelled,
+          loseTheNextCancelReply: () => {
+            const evaluate = admin.eval.bind(admin) as (...args: unknown[]) => Promise<unknown>;
+            let lost = 0;
+            vi.spyOn(admin, 'eval').mockImplementation((async (...args: unknown[]) => {
+              const reply = await evaluate(...args);
+              if (lost > 0 || args[0] !== CANCEL_GRAPH_LUA_SCRIPT) return reply;
+              lost++;
+              throw new Error('the connection dropped before the reply');
+            }) as never);
+            return () => lost;
+          },
+        };
+      },
+      lostCancelReply: 'end-skipped',
+      owner: () => client.userId,
+      neverStored: 'unknown',
+    });
+
+    it('leaves a start whose state cannot be read after its outbox drained on the provisional lease, so its unit comes back when that ends', async () => {
+      let drained = false;
+      const unreadable = new Proxy(admin, {
+        get(target, prop) {
+          if (prop === 'hgetall' && drained) return async () => Promise.reject(new Error('the connection dropped'));
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const enqueueNode = async () => {
+        drained = true;
+      };
+      const scheduler = new RedisGraphScheduler({ redisClient: unreadable, keyPrefix, enqueueNode, cancelNode: async () => true });
+      const graphId = `graph_unread_${crypto.randomBytes(6).toString('hex')}`;
+      const graph = { failurePolicy: 'fail_fast' as const, nodes: { up: { op: 'import.upload' as const, storageKey: `uploads/${graphId}/a.csv` } } };
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+
+      const handedOff = withReservedUnit(unit.reservationId, (reserved) =>
+        reserved.handOff({
+          start: (reservationId) => scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, reservationId }),
+          recover: () => scheduler.recoverStart(graphId),
+        })
+      );
+
+      await expect(handedOff).rejects.toBeInstanceOf(QueueUnavailableError);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+      await advanceKeyClock(RESERVATION_LEASE.provisionalMs + 1000);
+      expect(await remaining()).toBe(DAY_ALLOWANCE);
     });
   });
 
@@ -526,7 +720,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
         const unit = await redisKeyStore.reserveQuota(client.userId, 2);
         const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
         const graph = { failurePolicy: 'fail_fast' as const, nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' } } };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
         expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
 
         control.failNextListRead = true;
@@ -541,6 +735,88 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       }
     });
 
+    it('cancels the other node jobs of a failed graph with the state read again when its first read fails', async () => {
+      vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      const control = { failNextStateRead: false };
+      const flaky = new Proxy(connection, {
+        get(target, prop) {
+          if (prop === 'hgetall') {
+            return async (...args: Parameters<Redis['hgetall']>) => {
+              if (control.failNextStateRead) {
+                control.failNextStateRead = false;
+                throw new Error('the connection dropped');
+              }
+              return target.hgetall(...args);
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const cancelNode = vi.fn(async () => true);
+      try {
+        const scheduler = new RedisGraphScheduler({ redisClient: flaky, keyPrefix, enqueueNode: async () => undefined, cancelNode });
+        const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+        const graph = {
+          failurePolicy: 'fail_fast' as const,
+          nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' }, conv: { op: 'convert' as const, input: 'up', targetFormat: 'json' } },
+        };
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, ...WEBHOOK });
+
+        control.failNextStateRead = true;
+        await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
+
+        expect(cancelNode).toHaveBeenCalledWith(graphId, 'conv', expect.objectContaining({ op: 'convert' }), 'Graph failed due to node up');
+      } finally {
+        await connection.quit();
+      }
+    });
+
+    it('reports as cancelled only the node jobs whose cancel succeeded when a node fails its graph', async () => {
+      vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      const cancelNode = vi.fn(async (_graphId: string, nodeId: string) => {
+        if (nodeId === 'left') throw new Error('the queue did not answer');
+        return true;
+      });
+      try {
+        const scheduler = new RedisGraphScheduler({ redisClient: connection, keyPrefix, enqueueNode: async () => undefined, cancelNode });
+        const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+        const graph = {
+          failurePolicy: 'fail_fast' as const,
+          nodes: {
+            up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' },
+            left: { op: 'convert' as const, input: 'up', targetFormat: 'json' },
+            right: { op: 'convert' as const, input: 'up', targetFormat: 'xml' },
+          },
+        };
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, ...WEBHOOK });
+
+        const failure = await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
+
+        expect(failure.graphFailed).toBe(true);
+        expect(cancelNode).toHaveBeenCalledTimes(2);
+        expect(failure.cancelledJobIds).toEqual([`${graphId}:right`]);
+      } finally {
+        await connection.quit();
+      }
+    });
+
+    it('settles a graph that ends after the provisional lease of its reservation would have', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      const scheduler = new RedisGraphScheduler({ redisClient: admin, keyPrefix, enqueueNode: async () => undefined });
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+      const input = `uploads/${graphId}/a.csv`;
+      await scheduler.initGraph(graphId, sealGraph(graphId, { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: input } } }), { ownerUserId: client.userId, reservationId: unit.reservationId });
+
+      await advanceQuotaClock(RESERVATION_LEASE.provisionalMs + 1000);
+
+      expect(await scheduler.onNodeCompleted(graphId, 'up', [input], 1)).toMatchObject({ graphCompleted: true });
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
+
     it('fails the completion of a node that does not end its graph when draining the outbox fails, so the node is tried again', async () => {
       const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
       const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
@@ -552,7 +828,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
           failurePolicy: 'fail_fast' as const,
           nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' }, conv: { op: 'convert' as const, input: 'up', targetFormat: 'json' } },
         };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
 
         control.failNextListRead = true;
         await expect(scheduler.onNodeCompleted(graphId, 'up', ['uploads/graph-end/a.csv'], 0)).rejects.toThrow('the connection dropped');

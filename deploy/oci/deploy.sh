@@ -50,6 +50,7 @@ ENV_KEY_PATTERN='^[A-Z_][A-Z0-9_]*$'
 APPARMOR_PROFILE='easyconvert'
 APPARMOR_INSTALLED="${APPARMOR_INSTALLED:-/etc/apparmor.d/easyconvert}"
 BASE_IMAGE_LABEL='org.opencontainers.image.base.name'
+ALLOWANCE_LABEL='easyconvert.anonymous-daily-limit'
 PNG_SIGNATURE='89504e470d0a1a0a'
 
 CHILD=""
@@ -182,6 +183,16 @@ check_pair() { # check_pair <web repo@digest> <worker repo@digest>
   local web="$1" worker="$2" base
   base="$(docker image inspect --format "{{ index .Config.Labels \"$BASE_IMAGE_LABEL\" }}" "$web" 2> /dev/null || true)"
   [ "$base" = "$worker" ] || die "the web image $web was built on '${base:-no recorded image}', not on $worker"
+}
+
+# The prerendered pages state the anonymous daily allowance the web image was built with (a build argument from the repository
+# variable ANONYMOUS_DAILY_LIMIT), and the servers enforce the one the deploy step passes from the same variable. A web image built
+# with another value would state a number the servers do not enforce, so the release is refused before anything starts.
+check_allowance() { # check_allowance <web repo@digest> <allowance the release runs with>
+  local built
+  built="$(docker image inspect --format "{{ index .Config.Labels \"$ALLOWANCE_LABEL\" }}" "$1" 2> /dev/null)" \
+    || die "the anonymous allowance the web image $1 was built with could not be read"
+  [ "$built" = "$2" ] || die "the web image $1 was built with ANONYMOUS_DAILY_LIMIT '${built}', but the release runs with '$2': rebuild it, or set the repository variable back"
 }
 
 # The profile file installed on the host is the file of this checkout. This compares the installed file only: the policy that the
@@ -350,6 +361,7 @@ deploy() {
   local ref="${1:-}" source_dir="${SOURCE_DIR:?SOURCE_DIR (the checkout)}" raw_env="${ENV_FILE:?ENV_FILE (the filtered env)}"
   local release worker web previous budget_env origin
   [[ "$ref" =~ $IMAGE_REF_PATTERN ]] || die "the image ref must be main or sha-<40 hex characters>"
+  [[ "${ANONYMOUS_DAILY_LIMIT:-}" =~ ^[0-9]*$ ]] || die "ANONYMOUS_DAILY_LIMIT must be digits only (or empty for the default), as it is written into the env file"
   guard "$raw_env"
   check_profile
   budget_env="$(budget "$(env_value "$raw_env" EASYCONVERT_BUDGET_CPUS)" "$(env_value "$raw_env" EASYCONVERT_BUDGET_MEMORY_GB)")" \
@@ -360,6 +372,7 @@ deploy() {
   worker="$(pin "$WORKER_REPO" "$ref")"
   web="$(pin "$WEB_REPO" "$ref")"
   check_pair "$web" "$worker"
+  check_allowance "$web" "${ANONYMOUS_DAILY_LIMIT:-}"
   previous="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
   [ -d "$previous" ] || previous=""
   release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-$ref"
@@ -379,6 +392,7 @@ deploy() {
       grep -q "^$key=" "$raw_env" || printf '%s\n' "$line" >> "$release/.env"
     done <<< "$budget_env"
     cat "$release/images.env" >> "$release/.env"
+    printf 'ANONYMOUS_DAILY_LIMIT=%s\n' "${ANONYMOUS_DAILY_LIMIT:-}" >> "$release/.env"
   )
   chmod 600 "$release/.env"
 

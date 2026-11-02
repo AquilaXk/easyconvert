@@ -22,6 +22,7 @@ import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/rete
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { sweepRetention } from '../src/lib/storage/retention-service';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 describe('WP-32: Unified Shared Node Processor', () => {
   let queue: Queue<ConversionJobData, ConversionJobResult>;
@@ -116,7 +117,7 @@ describe('WP-32: Unified Shared Node Processor', () => {
       // Run A: tsEngine
       s3Storage.saveObject('uploads/inventory.csv', inputBuffer, 'text/csv', 'inventory.csv');
       const graphIdA = `parity_graph_ts_${Date.now()}`;
-      await graphScheduler.initGraph(graphIdA, testGraph);
+      await graphScheduler.initGraph(graphIdA, sealGraph(graphIdA, testGraph));
 
       // Node 1: n_upload
       const jobA1 = await queue.add('graph_node', {
@@ -177,7 +178,7 @@ describe('WP-32: Unified Shared Node Processor', () => {
 
       // Run B: nativeEngine
       const graphIdB = `parity_graph_native_${Date.now()}`;
-      await graphScheduler.initGraph(graphIdB, testGraph);
+      await graphScheduler.initGraph(graphIdB, sealGraph(graphIdB, testGraph));
 
       const jobB1 = await queue.add('graph_node', {
         jobId: `job_${graphIdB}_n_upload`,

@@ -145,16 +145,18 @@ A per-service key in the secret (`EASYCONVERT_WORKER_CONCURRENCY` and the others
 
 ## Deploying
 
-1. Merge to `main`. The `build` job builds the worker image and then the web image for arm64 and pushes them as `sha-<commit>` and `main`. The job summary lists the digests.
+1. Merge to `main`. The `build` job builds the worker image and then the web image for arm64 and pushes them as `sha-<commit>` and `main`. The web image, and the `main` tag of the worker image, are pushed only after the web image started with the container flags of the web service and its home page answered 200 (`scripts/boot-web-image.sh`, on a loopback port Docker picks; run it on any local image with `bash scripts/boot-web-image.sh <image>`). The job summary lists the digests.
 2. Run `deploy-oci` by hand with action `deploy` and image_ref `main` or `sha-<40 character commit>`; any other value is refused. The job runs on the `easyconvert-production` runner and:
    - checks that the scratch directory is a mount point and that the data volume has at least 15 GiB free, that the AppArmor profile loaded from `/etc/apparmor.d/easyconvert` is the file of the checkout (step 7), and that the budget in the secret can be used;
-   - pulls both images, pins them by digest, and refuses the pair when the web image records another worker image than the one pinned (`org.opencontainers.image.base.name`, set by `Dockerfile.web`);
+   - pulls both images, pins them by digest, and refuses the pair when the web image records another worker image than the one pinned (`org.opencontainers.image.base.name`, set by `Dockerfile.web`), or another anonymous daily allowance than the repository variable `ANONYMOUS_DAILY_LIMIT` the deploy step passes (`easyconvert.anonymous-daily-limit`), which it writes into the env file of the release;
    - writes a mode 0600 env file, the compose file and the seccomp profile into `/opt/easyconvert/releases/<time>-<ref>/`;
    - runs `docker compose up -d --wait`, then checks `http://127.0.0.1:8090/api/health` for up to 150 seconds;
    - reads the AppArmor profile of the web and worker containers, which must be `easyconvert`;
    - converts a one-pixel PPM to PNG through `http://127.0.0.1:8090/api/convert`. ImageMagick decodes it in the sandbox, so this fails when the host does not let the sandbox run (the AppArmor profile of step 7), which the health check cannot see;
    - runs `unshare -r -n` in the worker container, because the smoke conversion goes through the web service only;
    - on success moves the `current` and `previous` links, keeps two releases, and removes the images that neither release names (by digest, from the two repositories of this stack only; there is no prune).
+
+   Conversions running across a deploy keep their reservations: no drain step is needed. A reservation made by a release before the leases of policy entry 15 is kept under its own key until its day ends, and commit, settle and rollback of the new release read that key for that day, so the work that started before the deploy is charged or given back as it ends.
 
    The job log is public. It shows the digests, the line numbers of dropped lines of the secret, the HTTP status of a failed smoke conversion (never its answer) and, when a release fails its checks, the last 80 lines of the web and worker logs. The services are not meant to write a secret value to their logs, but no check proves it for every error path. Read the dump of a failed run before you treat its job log as free of secrets, and delete the run (Actions, the run's menu) if it shows one.
 

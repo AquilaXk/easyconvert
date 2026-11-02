@@ -1,4 +1,5 @@
 import type { JobGraph, GraphNode, NodeId } from './types';
+import type { Recovery } from '../../api-keys/hand-off';
 
 export type GraphStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -75,8 +76,13 @@ export interface NodeFailureResult {
   skippedNodeIds: NodeId[];
 }
 
+declare const sealedGraph: unique symbol;
+
+/** A graph whose nodes carry their secrets sealed under their job ids (`sealGraph` in node-jobs.ts): the only graph a scheduler stores. */
+export type SealedJobGraph = JobGraph & { readonly [sealedGraph]: true };
+
 export interface IGraphScheduler {
-  initGraph(graphId: string, graph: JobGraph, meta?: GraphMetadata): Promise<GraphExecutionState>;
+  initGraph(graphId: string, graph: SealedJobGraph, meta?: GraphMetadata): Promise<GraphExecutionState>;
   onNodeStarted(graphId: string, nodeId: NodeId): Promise<void>;
   onNodeCompleted(
     graphId: string,
@@ -86,6 +92,13 @@ export interface IGraphScheduler {
   ): Promise<NodeCompletionResult>;
   onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult>;
   getGraphState(graphId: string): Promise<GraphExecutionState | undefined>;
+  /**
+   * Finishes the start of a graph whose `initGraph` threw after it stored the graph: queues the ready nodes the start left
+   * unqueued (the outbox, drained until it is empty) and answers the graph as started. A graph whose nodes still cannot be
+   * queued is cancelled, which gives its reservation back, and answered as not started; a graph that was not stored is
+   * unknown, as its write may still land.
+   */
+  recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>>;
   cancelGraph(graphId: string, reason?: string): Promise<boolean>;
   /** The output keys of the nodes `nodeIds`, each key once. */
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;

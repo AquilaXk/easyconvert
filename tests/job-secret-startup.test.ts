@@ -1,12 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as createJob } from '../src/app/api/v1/jobs/route';
-import { InMemoryGraphScheduler } from '../src/lib/queue/graph';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { SealingKeyConfigError } from '../src/lib/security/job-secret-seal';
 import type { ConfigurationError as ConfigurationErrorType } from '../src/lib/config';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
-import { getQueueForResourceClass } from '../src/lib/queue/conversion-queue';
 
 /**
  * Sealing fails closed. A worker without a usable sealing key in production refuses to start, and
@@ -74,16 +73,10 @@ describe('graph submission without a sealing key', () => {
     },
   };
 
-  it('refuses to schedule a graph with URL secrets and stores and queues nothing', async () => {
+  it('refuses to seal a graph with URL secrets, the step before anything is stored or queued', () => {
     stubProductionWithoutKey();
-    const scheduler = new InMemoryGraphScheduler();
-    const graphId = `g_nokey_${Date.now()}`;
 
-    await expect(scheduler.initGraph(graphId, graph as never, { ownerUserId: 'u' })).rejects.toBeInstanceOf(
-      SealingKeyConfigError
-    );
-    expect(await scheduler.getGraphState(graphId)).toBeUndefined();
-    expect(await getQueueForResourceClass('light').getJob(`${graphId}:in`)).toBeUndefined();
+    expect(() => sealGraph(`g_nokey_${Date.now()}`, graph as never)).toThrow(SealingKeyConfigError);
   });
 
   it('answers the API with 503 and no configuration detail', async () => {

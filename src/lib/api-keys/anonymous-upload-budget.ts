@@ -40,6 +40,14 @@ export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
  * on every 1 MiB read; this total is a record in a shared store written by compare-and-set, so it is written once per batch.
  */
 export const LINK_IMPORT_METER_BATCH_BYTES = 4 * 1024 * 1024;
+/**
+ * How long past its deadline the record keeps what one link import has charged. A charge writes the import's running total
+ * under its id, so a write that landed but lost its reply, written again, adds only what is new (an idempotency key, as a
+ * retried request with the same key has one effect, and its result is kept after the request ended). The entry is kept
+ * until the import's deadline plus this time, which outlasts the last charge of an import its deadline cut off, written once
+ * it stopped reading.
+ */
+export const LINK_IMPORT_CHARGE_GRACE_MS = 5 * 60 * 1000;
 
 const RESERVATION_ID_BYTES = 12;
 
@@ -51,10 +59,18 @@ interface OpenUpload {
   expiresAt: number;
 }
 
+/** What one link import has charged in all, and until when the record keeps it. */
+interface ChargedImport {
+  bytes: number;
+  keptUntil: number;
+}
+
 export interface UploadBudgetRecord {
   day: string;
   bytes: number;
   open: Record<string, OpenUpload>;
+  /** The link imports of the last hours, by import id (`LINK_IMPORT_CHARGE_GRACE_MS`). */
+  imports?: Record<string, ChargedImport>;
 }
 
 /**
@@ -89,9 +105,20 @@ function withoutUpload(record: UploadBudgetRecord, id: string, refund: boolean):
   return { ...record, bytes: Math.max(0, record.bytes - returned), open };
 }
 
-/** The record on `day` at `now`: a new day starts at zero bytes, and sessions past their expiry return their bytes. */
+/** The running imports of `imports` the record still keeps at `now`. */
+function keptImports(imports: Record<string, ChargedImport> | undefined, now: number): Record<string, ChargedImport> | undefined {
+  if (!imports) return undefined;
+  return Object.fromEntries(Object.entries(imports).filter(([, entry]) => entry.keptUntil > now));
+}
+
+/**
+ * The record on `day` at `now`: a new day starts at zero bytes, sessions past their expiry return their bytes, and running
+ * imports are carried over, so a charge after midnight adds to the new day only what the import received since its last one.
+ */
 function currentRecord(record: UploadBudgetRecord | undefined, day: string, now: number): UploadBudgetRecord {
-  let current = record && record.day === day ? record : { ...emptyRecord(day), open: record?.open ?? {} };
+  let current: UploadBudgetRecord = record && record.day === day ? record : { ...emptyRecord(day), open: record?.open ?? {} };
+  const imports = keptImports(record?.imports, now);
+  current = imports ? { ...current, imports } : current;
   for (const [id, entry] of Object.entries(current.open)) {
     if (entry.expiresAt <= now) current = withoutUpload(current, id, true);
   }
@@ -230,10 +257,19 @@ export async function resumeUploadReservation(uploadId: string): Promise<UploadR
   return refusal;
 }
 
-/** The record on `day` at `now` with `bytes` a link import received charged to it. */
-export function chargeImport(record: UploadBudgetRecord | undefined, charge: { bytes: number; day: string; now: number }): UploadBudgetRecord {
+/**
+ * The record on `day` at `now` once the link import `importId` has charged `totalBytes` in all: only what it did not charge
+ * before is added, so the same charge written twice adds nothing, the last one included. The entry is kept until `keptUntil`.
+ */
+export function chargeImport(
+  record: UploadBudgetRecord | undefined,
+  charge: { importId: string; totalBytes: number; day: string; now: number; keptUntil: number }
+): UploadBudgetRecord {
   const current = currentRecord(record, charge.day, charge.now);
-  return { ...current, bytes: current.bytes + charge.bytes };
+  const charged = current.imports?.[charge.importId];
+  const added = Math.max(0, charge.totalBytes - (charged?.bytes ?? 0));
+  const entry: ChargedImport = { bytes: Math.max(charge.totalBytes, charged?.bytes ?? 0), keptUntil: charge.keptUntil };
+  return { ...current, bytes: current.bytes + added, imports: { ...current.imports, [charge.importId]: entry } };
 }
 
 /** A header value that is a length: decimal digits only, as RFC 9110 writes `Content-Length`, and a safe integer. */
@@ -264,80 +300,113 @@ export function declaredOverflow(declaredBytes: number | undefined, limits: { li
   return undefined;
 }
 
+/**
+ * What a link import may do after its bytes so far: go on, stop because the body passed the import's read limit, or stop because
+ * its day passed its budget. The read limit is checked first, as `declaredOverflow` checks a declared length.
+ */
+export type MeterVerdict = 'ok' | 'too-large' | 'day-reached';
+
 /** The bytes a link import running under its day's budget received, charged to the day as they arrive. */
 export interface LinkImportMeter {
-  /** What the owner's day had left when the import started: a declared length past it is refused before reading. */
+  /** What the owner's day had left when the import started. */
   readonly leftBytes: number;
   /** The bytes received so far, charged or not. */
   readonly receivedBytes: number;
-  /**
-   * Counts `bytes` just received, and charges the batch once it holds LINK_IMPORT_METER_BATCH_BYTES. Answers false once the
-   * day has passed its budget, so the import stops reading.
-   */
-  count(bytes: number): Promise<boolean>;
-  /** Charges what is counted and not charged yet. Answers false when the day has then passed its budget. */
-  charge(): Promise<boolean>;
+  /** The refusal of a body that declares `declaredBytes`, by the import's read limit and then by `leftBytes`, before a byte is read. */
+  declared(declaredBytes: number | undefined): DeclaredOverflow | undefined;
+  /** Counts `bytes` just received, and charges the running total once LINK_IMPORT_METER_BATCH_BYTES are not charged yet. */
+  count(bytes: number): Promise<MeterVerdict>;
+  /** Charges the running total, as the import's last charge: what the body passed once it was read whole. */
+  charge(): Promise<MeterVerdict>;
 }
 
-/** A link import: whose day it charges, and on which plan. */
+/** A link import: whose day it charges, on which plan, the most bytes it reads, and the most time it may run. */
 export interface LinkImportRequest {
   owner: string;
   plan: Plan;
+  limitBytes: number;
+  deadlineMs: number;
 }
 
-/** The meter of a link import of `owner` whose day had `leftBytes` left of `dailyBytes`, charging `store`. */
-function linkImportMeter(store: BudgetStore, owner: string, dailyBytes: number, leftBytes: number): LinkImportMeter {
+/** The meter as `withLinkImportMeter` holds it: also the bytes received and not known to be charged. */
+interface HeldMeter extends LinkImportMeter {
+  readonly unchargedBytes: number;
+}
+
+/**
+ * The meter of the link import `request`, whose owner's day had `leftBytes` left, charging `store` under a new import id.
+ * Each charge writes the running total, so a charge that failed is made good by the next one. After the last charge, a
+ * charge with nothing new answers the verdict it had without writing again. An import that received nothing and never
+ * wrote has nothing to charge and no entry to close, so it writes nothing.
+ */
+function linkImportMeter(store: BudgetStore, request: LinkImportRequest, leftBytes: number): HeldMeter {
+  const dailyBytes = dailyBudgetBytes(request.plan);
+  const importId = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex');
+  const keptUntil = Date.now() + request.deadlineMs + LINK_IMPORT_CHARGE_GRACE_MS;
   let receivedBytes = 0;
-  let unchargedBytes = 0;
-  const charge = async (): Promise<boolean> => {
-    if (unchargedBytes === 0) return true;
-    const bytes = unchargedBytes;
-    unchargedBytes = 0;
+  let chargedBytes = 0;
+  let closedWith: MeterVerdict | undefined;
+  let wrote = false;
+  const verdict = (dayBytes: number): MeterVerdict => {
+    if (receivedBytes > request.limitBytes) return 'too-large';
+    return dayBytes > dailyBytes ? 'day-reached' : 'ok';
+  };
+  const charge = async (closing: boolean): Promise<MeterVerdict> => {
+    if (closedWith && receivedBytes === chargedBytes) return closedWith;
+    if (!wrote && receivedBytes === 0) return 'ok';
+    wrote = true;
+    const totalBytes = receivedBytes;
     let dayBytes = 0;
-    await store.update(owner, (current) => {
-      const charged = chargeImport(current, { bytes, day: getUtcDateKey(), now: Date.now() });
+    await store.update(request.owner, (current) => {
+      const charged = chargeImport(current, { importId, totalBytes, day: getUtcDateKey(), now: Date.now(), keptUntil });
       dayBytes = charged.bytes;
       return charged;
     });
-    return dayBytes <= dailyBytes;
+    chargedBytes = totalBytes;
+    const answer = verdict(dayBytes);
+    if (closing) closedWith = answer;
+    return answer;
   };
   return {
     leftBytes,
     get receivedBytes() {
       return receivedBytes;
     },
+    get unchargedBytes() {
+      return receivedBytes - chargedBytes;
+    },
+    declared: (declaredBytes) => declaredOverflow(declaredBytes, { limitBytes: request.limitBytes, leftBytes }),
     count: async (bytes) => {
       receivedBytes += bytes;
-      unchargedBytes += bytes;
-      return unchargedBytes >= LINK_IMPORT_METER_BATCH_BYTES ? charge() : true;
+      if (receivedBytes > request.limitBytes) return 'too-large';
+      return receivedBytes - chargedBytes >= LINK_IMPORT_METER_BATCH_BYTES ? charge(false) : 'ok';
     },
-    charge,
+    charge: () => charge(true),
   };
 }
 
 /**
  * Runs `run` as a link import of `request.owner`, metered against the day's bytes of `request.plan`: refused as
- * `daily-bytes` before it starts when the day has nothing left, and charged what it received however it ends. A charge
- * that fails at the end is logged and never replaces the outcome of `run`.
+ * `daily-bytes` before it starts when the day has nothing left, and charged what it received however it ends. The last charge
+ * is written once more when `run` did not write it or it failed; one that fails then is logged with the bytes it may leave
+ * unpaid, and never replaces the outcome of `run`.
  */
 export async function withLinkImportMeter<T>(
   request: LinkImportRequest,
   run: (meter: LinkImportMeter) => Promise<T>
 ): Promise<{ result: T } | { refusal: 'daily-bytes' }> {
   const store = activeStore();
-  const dailyBytes = dailyBudgetBytes(request.plan);
-  let leftBytes = 0;
-  await store.update(request.owner, (current) => {
-    leftBytes = dailyBytes - currentRecord(current, getUtcDateKey(), Date.now()).bytes;
-    return undefined;
-  });
+  const leftBytes = dailyBudgetBytes(request.plan) - currentRecord(await store.read(request.owner), getUtcDateKey(), Date.now()).bytes;
   if (leftBytes <= 0) return { refusal: 'daily-bytes' };
-  const meter = linkImportMeter(store, request.owner, dailyBytes, leftBytes);
+  const meter = linkImportMeter(store, request, leftBytes);
   try {
     return { result: await run(meter) };
   } finally {
     await meter.charge().catch((err: unknown) => {
-      console.error(`[UploadBudget] The last bytes of a link import that received ${meter.receivedBytes} could not be charged to the daily budget:`, err);
+      console.error(
+        `[UploadBudget] The last charge of a link import that received ${meter.receivedBytes} bytes failed, so up to ${meter.unchargedBytes} of them are not charged to the daily budget:`,
+        err
+      );
     });
   }
 }
@@ -373,12 +442,7 @@ export function largerThanLeftDetail(leftBytes: number): string {
  * the record is written whole by its store, so this is the one read that shows what a bucket was charged.
  */
 export async function bytesBroughtInToday(callerUserId: string): Promise<number> {
-  let bytes = 0;
-  await activeStore().update(callerUserId, (current) => {
-    bytes = currentRecord(current, getUtcDateKey(), Date.now()).bytes;
-    return undefined;
-  });
-  return bytes;
+  return currentRecord(await activeStore().read(callerUserId), getUtcDateKey(), Date.now()).bytes;
 }
 
 /** Ends the reservation of the session `uploadId`: completed keeps its bytes charged, aborted returns them. */

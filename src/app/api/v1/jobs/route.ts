@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import type { FormatDefinition } from '@/lib/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
-import { graphInputKeys, initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
+import { graphInputKeys, withGraphInputsHeld } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
-import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { JobDeadlineError } from '@/lib/queue/job-deadline';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
@@ -31,6 +32,7 @@ import {
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { graphScheduler } from '@/lib/queue/graph';
+import { sealGraph } from '@/lib/queue/graph/node-jobs';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
@@ -569,14 +571,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
     }
 
-    // Persist multipart upload into S3 staging storage only after magic byte validation passes
-    if (uploadedBuffer && fileMeta && !storageKey) {
-      const init = await s3Storage.initiateMultipartUpload(fileMeta.name, fileMeta.type, fileMeta.size);
-      await s3Storage.uploadPart(init.uploadId, 1, uploadedBuffer);
-      const completed = await s3Storage.completeMultipartUpload(init.uploadId);
-      storageKey = completed.key;
-    }
-
     // Resolve target format definition
     const cleanTarget = targetFormat.toLowerCase().replace(/^\./, '').trim();
     const targetDef = getFormatByExtension(cleanTarget);
@@ -619,8 +613,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       options,
       graph,
       tasks,
-      storageKey,
-      inputBufferBase64,
+      input: { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 },
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
     };
@@ -659,6 +652,46 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   }
 }));
 
+/** Stores an input that came in the request body as an upload, and answers its key. */
+async function storeRequestInput(buffer: Buffer, file: { name: string; type: string; size: number }): Promise<string> {
+  const init = await s3Storage.initiateMultipartUpload(file.name, file.type, file.size);
+  await s3Storage.uploadPart(init.uploadId, 1, buffer);
+  return (await s3Storage.completeMultipartUpload(init.uploadId)).key;
+}
+
+/** The input of a submission as the request gave it: a key it named, a multipart file, or base64 in the body. */
+interface SubmittedInput {
+  storageKey: string | undefined;
+  uploadedBuffer: Buffer | null;
+  fileMeta: { name: string; type: string; size: number } | null;
+  inputBufferBase64: string | undefined;
+}
+
+/**
+ * The input a job or graph reads: a key it named, or the input sent in the request body, stored. A multipart file is always
+ * stored; an inline base64 input is stored only for a graph, which reads every input from storage, and a single job keeps it
+ * in its data. Only a submission that passed every check and holds its units gets here, so a refused request stores nothing.
+ */
+async function storedRequestInput(
+  input: SubmittedInput,
+  graph: JobGraph | undefined,
+  file: { filename: string; mimeType: string }
+): Promise<{ storageKey?: string; inputBufferBase64?: string }> {
+  const { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 } = input;
+  if (storageKey) return { storageKey, inputBufferBase64 };
+  if (uploadedBuffer && fileMeta) return { storageKey: await storeRequestInput(uploadedBuffer, fileMeta), inputBufferBase64 };
+  if (!graph || !inputBufferBase64) return { inputBufferBase64 };
+  const decoded = Buffer.from(inputBufferBase64, 'base64');
+  return { storageKey: await storeRequestInput(decoded, { name: file.filename || 'input', type: file.mimeType, size: decoded.length }) };
+}
+
+/** The nodes of a graph with each import.upload node that names the request's own input (`inline`) reading `storageKey`. */
+function withInlineInputStored(nodes: ReturnType<typeof normalizeGraphNodes>, storageKey: string): ReturnType<typeof normalizeGraphNodes> {
+  return Object.fromEntries(
+    Object.entries(nodes).map(([id, node]) => [id, node.op === 'import.upload' && isInlineInputKey(String(node.storageKey ?? '')) ? { ...node, storageKey } : node])
+  );
+}
+
 /**
  * The output format of a graph that names none at the top level: the format of its last convert node, else that of its
  * first archive.create node, else none ('').
@@ -672,7 +705,7 @@ function graphTargetFormat(graph: JobGraph): string {
 }
 
 /** The graph the scheduler runs; the request's graph is the same document under the job-graph type. */
-type SchedulerJobGraph = Parameters<typeof initGraphHoldingInputs>[2];
+type SchedulerJobGraph = Parameters<typeof sealGraph>[1];
 
 /** A validated job submission whose conversion unit is reserved. */
 interface ReservedSubmission {
@@ -684,8 +717,7 @@ interface ReservedSubmission {
   options: ConversionOptions;
   graph?: JobGraph;
   tasks?: PipelineTask[];
-  storageKey?: string;
-  inputBufferBase64?: string;
+  input: SubmittedInput;
   webhookUrl?: string;
   webhookSecret?: string;
 }
@@ -704,29 +736,34 @@ function unitsToReserve(graph: JobGraph | undefined): number {
  * resource class. The graph or the job owns the unit once it is queued, and commits it or gives it back when it ends.
  */
 async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit): Promise<NextResponse> {
-  const { user, sourceDef, targetDef, originalFilename, fileSize, options, graph, storageKey, inputBufferBase64 } = submission;
+  const { user, sourceDef, targetDef, originalFilename, fileSize, options, graph } = submission;
   const answered = { sourceFormat: sourceDef.id, targetFormat: targetDef.id, originalFilename };
+  const { storageKey, inputBufferBase64 } = await storedRequestInput(submission.input, graph, { filename: originalFilename, mimeType: sourceDef.mimeType });
 
   // A graph (including legacy linear tasks) runs only through the graph scheduler, which
   // enqueues each node; a separate conversion job would run the pipeline a second time.
   if (graph) {
-    graph.nodes = normalizeGraphNodes(graph);
+    graph.nodes = storageKey ? withInlineInputStored(normalizeGraphNodes(graph), storageKey) : normalizeGraphNodes(graph);
     const graphId = generateJobId();
-    let reservationId: string | undefined;
-    const graphState = await unit.handOff((id) => {
-      reservationId = id;
-      return initGraphHoldingInputs(graphScheduler, graphId, graph as unknown as SchedulerJobGraph, {
-        ownerUserId: user.id,
-        reservationId: id,
-        webhookUrl: submission.webhookUrl,
-        webhookSecret: submission.webhookSecret,
-        originalFilename,
-        sourceStorageKey: storageKey,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        tasks: submission.tasks,
-      });
-    });
+    // Sealed before the hand-off, so a secret that cannot be sealed gives the unit back at once.
+    const sealedGraph = sealGraph(graphId, graph as unknown as SchedulerJobGraph);
+    const graphState = await withGraphInputsHeld(graphId, graph.nodes, () =>
+      unit.handOff({
+        start: (reservationId) =>
+          graphScheduler.initGraph(graphId, sealedGraph, {
+            ownerUserId: user.id,
+            reservationId,
+            webhookUrl: submission.webhookUrl,
+            webhookSecret: submission.webhookSecret,
+            originalFilename,
+            sourceStorageKey: storageKey,
+            sourceFormat: sourceDef.id,
+            targetFormat: targetDef.id,
+            tasks: submission.tasks,
+          }),
+        recover: () => graphScheduler.recoverStart(graphId),
+      })
+    );
     const nodesResponse = Object.fromEntries(
       Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
     );
@@ -737,7 +774,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
         status: graphState.status,
         statusUrl: `/api/v1/jobs/${graphId}`,
         createdAt: graphState.createdAt,
-        reservationId,
+        reservationId: graphState.reservationId,
         ...answered,
         graph: redactForOutput(graphState.graph),
         nodes: nodesResponse,
@@ -749,36 +786,31 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
   // Resolve resource class and scheduling priority
   const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
   const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage);
-  let reservationId: string | undefined;
   // Enqueue conversion job to the appropriate resource-class queue
-  const job = await unit.handOff((id) => {
-    reservationId = id;
-    return enqueueConversionJob(
-      getQueueForResourceClass(resClass),
-      'convert',
-      {
-        jobId: '',
-        originalFilename,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        fileSize,
-        storageKey,
-        inputBufferBase64,
-        options: stripEngineControls(options),
-        webhookUrl: submission.webhookUrl,
-        webhookSecret: submission.webhookSecret,
-        userId: user.id,
-        reservationId: id,
-        resourceClass: resClass,
-      },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 1000 },
-        priority: tierToPriority(user.tier),
-      },
-      { tier: user.tier, inputBytes }
-    );
-  });
+  const job = await handOffConversionJob(
+    unit,
+    getQueueForResourceClass(resClass),
+    {
+      jobId: '',
+      originalFilename,
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      fileSize,
+      storageKey,
+      inputBufferBase64,
+      options: stripEngineControls(options),
+      webhookUrl: submission.webhookUrl,
+      webhookSecret: submission.webhookSecret,
+      userId: user.id,
+      resourceClass: resClass,
+    },
+    {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1000 },
+      priority: tierToPriority(user.tier),
+    },
+    { tier: user.tier, inputBytes }
+  );
 
   return NextResponse.json(
     {
@@ -787,7 +819,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
       status: job.state,
       statusUrl: `/api/v1/jobs/${job.id}`,
       createdAt: job.timestamp,
-      reservationId,
+      reservationId: job.data.reservationId,
       ...answered,
     },
     { status: 202 }

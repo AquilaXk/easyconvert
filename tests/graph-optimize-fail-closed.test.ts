@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { POST as createJob } from '../src/app/api/v1/jobs/route';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
+import { nodeOutputKey } from '../src/lib/queue/graph/node-jobs';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { s3Storage } from '../src/lib/storage/s3-storage';
@@ -131,7 +132,7 @@ describe('optimize fails closed for formats without an optimiser', () => {
     expect((error as Error).message).toContain('Supported formats: pdf.');
     const stored = await s3Storage.getObject(artifactPath);
     expect(createHash('sha256').update(stored!.buffer).digest('hex')).toBe(createHash('sha256').update(PNG_SIGNATURE).digest('hex'));
-    expect(await s3Storage.getObject(`intermediate/${job.data.graphId}/n1/src.png`)).toBeUndefined();
+    expect(await s3Storage.getObject(nodeOutputKey('intermediate', job.data.graphId as string, 'n1', 0, 'src.png'))).toBeUndefined();
   });
 
   it('registers exactly the formats validation accepts', () => {

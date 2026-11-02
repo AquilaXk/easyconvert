@@ -1,11 +1,20 @@
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import crypto from 'node:crypto';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
+import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
+import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { QueueUnavailableError } from '../src/lib/types';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
 import { finishGraph } from '../src/lib/queue/graph/graph-end';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { allConversionQueues } from '../src/lib/queue/conversion-queue';
 import { storageProvider } from '../src/lib/storage';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { holdResultForJob } from '../src/lib/storage/retention-service';
+import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
+import type { GraphExecutionState } from '../src/lib/queue/graph/scheduler-types';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 // The scheduler, the queues and the quota store pick Redis or this process when they are first imported.
 vi.hoisted(() => {
@@ -31,6 +40,50 @@ describe('what a queued graph is charged, with the in-memory scheduler and store
   itChargesAGraphOnlyThroughItsScheduler();
 });
 
+describe('the start of a graph that failed, with the in-memory scheduler and store', () => {
+  let owner = '';
+  beforeEach(() => {
+    owner = anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
+  });
+  itRecoversAGraphStart({
+    scheduler: () => {
+      let refusing = false;
+      const cancelled: string[] = [];
+      for (const queue of allConversionQueues) {
+        const add = queue.add.bind(queue);
+        vi.spyOn(queue, 'add').mockImplementation(async (name, data, opts) => {
+          if (refusing && data.graphId) throw new QueueUnavailableError(queue.name, 'the node job could not be stored');
+          return add(name, data, opts);
+        });
+        const cancelJob = queue.cancelJob.bind(queue);
+        vi.spyOn(queue, 'cancelJob').mockImplementation(async (jobId, reason) => {
+          cancelled.push(jobId);
+          return cancelJob(jobId, reason);
+        });
+      }
+      const scheduler = new InMemoryGraphScheduler();
+      return {
+        scheduler,
+        refuseNodeJobs: (refuse) => (refusing = refuse),
+        cancelledNodeJobs: () => cancelled,
+        loseTheNextCancelReply: () => {
+          const cancel = scheduler.cancelGraph.bind(scheduler);
+          let lost = 0;
+          vi.spyOn(scheduler, 'cancelGraph').mockImplementationOnce(async (graphId, reason) => {
+            await cancel(graphId, reason);
+            lost++;
+            throw new Error('the reply was lost');
+          });
+          return () => lost;
+        },
+      };
+    },
+    lostCancelReply: 'end-ran',
+    owner: () => owner,
+    neverStored: 'not-started',
+  });
+});
+
 describe('the in-memory graph scheduler', () => {
   it('completes a graph once when two of its nodes fail at the same time under continue', async () => {
     const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue(undefined as never);
@@ -39,7 +92,7 @@ describe('the in-memory graph scheduler', () => {
       const graphId = `graph_twice_${Date.now()}`;
       await scheduler.initGraph(
         graphId,
-        {
+        sealGraph(graphId, {
           failurePolicy: 'continue',
           nodes: {
             left: { op: 'import.upload', storageKey: 'uploads/graph-twice/left.csv' },
@@ -47,7 +100,7 @@ describe('the in-memory graph scheduler', () => {
             leftJson: { op: 'convert', input: 'left', targetFormat: 'json' },
             rightJson: { op: 'convert', input: 'right', targetFormat: 'json' },
           },
-        },
+        }),
         { webhookUrl: 'https://hooks.example.com/graph', webhookSecret: 'whsec_twice' }
       );
 
@@ -79,7 +132,7 @@ describe('the end of a graph, in this process', () => {
     try {
       const scheduler = new InMemoryGraphScheduler();
       const graphId = `graph_end_read_${Date.now()}`;
-      const state = await scheduler.initGraph(graphId, uploads(graphId), WEBHOOK);
+      const state = await scheduler.initGraph(graphId, sealGraph(graphId, uploads(graphId)), WEBHOOK);
       let reads = 0;
       const readState = async () => {
         reads += 1;
@@ -87,13 +140,58 @@ describe('the end of a graph, in this process', () => {
         return state;
       };
 
-      const between = await finishGraph({ graphId, reservationId: undefined, readState }, { outcome: { status: 'completed' }, reservation: { kind: 'rollback' } }, async () => 'drained');
+      const between = await finishGraph({ graphId, reservationId: undefined, inputKeys: [], readState }, { outcome: { status: 'completed' }, reservation: { kind: 'rollback' } }, async () => 'drained');
 
       expect(between).toBe('drained');
       expect(dispatched.mock.calls.map((call) => call[1])).toEqual(['graph.completed']);
       expect(removed).toHaveBeenCalledWith(`intermediate/${graphId}/`);
     } finally {
       dispatched.mockRestore();
+      removed.mockRestore();
+    }
+  });
+
+  it('ends the holds on its inputs and removes its files, telling no webhook, when its state cannot be read twice', async () => {
+    const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const removed = vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const graphId = `graph_end_unread_${Date.now()}`;
+      const input = `uploads/${graphId}/left.csv`;
+      s3Storage.saveObject(input, Buffer.from('a,b\n1,2\n'), 'text/csv', 'left.csv', 60_000);
+      expect(await holdResultForJob(input, graphId)).toBe(true);
+      const readState = vi.fn(async (): Promise<GraphExecutionState | undefined> => {
+        throw new Error('the connection dropped');
+      });
+      const between = vi.fn(async (state: GraphExecutionState | undefined) => state);
+
+      await finishGraph({ graphId, reservationId: undefined, inputKeys: [input], readState }, { outcome: { status: 'failed', error: 'left failed' }, reservation: { kind: 'rollback' } }, between);
+
+      expect(readState).toHaveBeenCalledTimes(2);
+      expect(between).toHaveBeenCalledWith(undefined);
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(removed).toHaveBeenCalledWith(`intermediate/${graphId}/`);
+      expect((await getRetentionLedger().get(input))?.holds ?? {}).not.toHaveProperty(graphId);
+    } finally {
+      dispatched.mockRestore();
+      removed.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it('logs a state that is gone once, without reading it again', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const removed = vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
+    try {
+      const graphId = `graph_end_gone_${Date.now()}`;
+      const readState = vi.fn(async (): Promise<GraphExecutionState | undefined> => undefined);
+
+      await finishGraph({ graphId, reservationId: undefined, inputKeys: [], readState }, { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } });
+
+      expect(readState).toHaveBeenCalledTimes(1);
+      expect(logged.mock.calls.filter(([line]) => String(line).includes(graphId))).toHaveLength(1);
+    } finally {
+      logged.mockRestore();
       removed.mockRestore();
     }
   });
@@ -110,11 +208,14 @@ describe('the end of a graph, in this process', () => {
     try {
       const scheduler = new InMemoryGraphScheduler();
       const graphId = `graph_end_cancel_${Date.now()}`;
-      await scheduler.initGraph(graphId, uploads(graphId));
+      await scheduler.initGraph(graphId, sealGraph(graphId, uploads(graphId)));
 
-      await scheduler.onNodeFailed(graphId, 'left', 'left failed');
+      const failure = await scheduler.onNodeFailed(graphId, 'left', 'left failed');
 
-      expect(cancelled.sort()).toEqual([`${graphId}:leftJson`, `${graphId}:right`, `${graphId}:rightJson`]);
+      const [refused, ...carriedOut] = cancelled;
+      expect([...cancelled].sort()).toEqual([`${graphId}:leftJson`, `${graphId}:right`, `${graphId}:rightJson`]);
+      expect(failure.cancelledJobIds).not.toContain(refused);
+      expect([...failure.cancelledJobIds].sort()).toEqual(carriedOut.sort());
     } finally {
       spies.forEach((spy) => spy.mockRestore());
     }

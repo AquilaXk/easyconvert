@@ -358,7 +358,8 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       await cleanup();
     });
 
-    it('supports Dead-Letter Queue (DLQ) operations on Redis backend', async () => {
+    // The purge is one Lua script, which this mock does not run: tests/queue-lists-redis.test.ts purges on a real Redis server.
+    it('records and lists dead letters on the Redis backend', async () => {
       const mockRedis = new InMemoryRedisMock();
       const adapter = new DistributedBullMQAdapter('dlq-test-queue', {
         redisClient: mockRedis as any,
@@ -372,12 +373,6 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       expect(dlqEntries.length).toBe(1);
       expect(dlqEntries[0].jobId).toBe(job.id);
       expect(dlqEntries[0].failedReason).toBe('Unrecoverable syntax corruption in stream');
-
-      const purged = await adapter.purgeDlq();
-      expect(purged).toBe(1);
-
-      const emptyEntries = await adapter.getDlqEntries();
-      expect(emptyEntries.length).toBe(0);
 
       await adapter.close();
     });

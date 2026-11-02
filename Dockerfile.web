@@ -61,6 +61,9 @@ FROM ${WORKER_IMAGE} AS web
 # it pins, so that a web and a worker image of two different builds are never started together.
 ARG WORKER_IMAGE
 LABEL org.opencontainers.image.base.name="${WORKER_IMAGE}"
+# The anonymous daily allowance the pages were built with, which deploy/oci/deploy.sh compares with the one the servers run with.
+ARG ANONYMOUS_DAILY_LIMIT=
+LABEL easyconvert.anonymous-daily-limit="${ANONYMOUS_DAILY_LIMIT}"
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

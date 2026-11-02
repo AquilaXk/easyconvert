@@ -1,4 +1,7 @@
 import { redisKeyStore } from './redis-key-store';
+import { RESERVATION_LEASE } from './reservation-ledger';
+import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
+import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getAnonymousDailyLimit } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
@@ -558,42 +561,62 @@ export async function reserveConversionUnit(user: User, units: number = 1): Prom
   return { reserved: false, refusal: conversionsUsedUp(user, { ...usage, remaining: quota.remaining ?? 0 }, units) };
 }
 
-/** A reservation while its request runs. Each way of ending it acts once; after one, the others do nothing. */
-export interface ReservedUnit {
-  /** Charges the reserved units: the conversion succeeded. */
-  commit(): Promise<void>;
-  /**
-   * Starts the queued work that will end the reservation itself (a job or a graph commits it or gives it back), with the
-   * reservation id; the request stops owning the reservation once `start` resolves, and keeps it when `start` throws.
-   */
-  handOff<T>(start: (reservationId: string | undefined) => Promise<T>): Promise<T>;
-}
-
 const NO_RESERVATION: ReservedUnit = {
   commit: async () => undefined,
-  handOff: (start) => start(undefined),
+  handOff: (work) => work.start(undefined),
 };
+
+/** Renews the provisional lease of `reservationId` every heartbeat until stopped; a renewal that fails is logged by `renewLease`. */
+function keepLeaseAlive(reservationId: string): () => void {
+  const timer = setInterval(() => {
+    renewLease(reservationId, RESERVATION_LEASE.provisionalMs).catch(() => undefined);
+  }, RESERVATION_LEASE.heartbeatMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 
 /**
  * Runs `run` while `reservationId` is reserved, and gives the reservation back when `run` ends, by an answer or a throw,
- * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md,
- * entry 15), so no early return of a route has to remember the reservation.
+ * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md, entry 15),
+ * so no early return of a route has to remember the reservation. While `run` holds the reservation its lease is renewed, so
+ * the unit of a process that dies comes back when the lease ends. A hand-off starts nothing once the lease is lost: a renewal
+ * just before the start is the proof that the reservation still counts, as a fencing token proves a lock. The reservation
+ * keeps the provisional lease through the start, and takes the lease of handed-off work only once its work is known to be
+ * stored, as a lease holder extends a lease after the work it covers is confirmed; a start whose outcome is unknown then
+ * needs no further write to the store that failed.
  */
 export async function withReservedUnit<T>(reservationId: string | undefined, run: (unit: ReservedUnit) => Promise<T>): Promise<T> {
   if (reservationId === undefined) return run(NO_RESERVATION);
   let held = true;
+  const stopRenewing = keepLeaseAlive(reservationId);
   const release = (): boolean => {
     const wasHeld = held;
     held = false;
+    stopRenewing();
     return wasHeld;
   };
   const unit: ReservedUnit = {
     commit: async () => {
       if (release()) await redisKeyStore.commitQuota(reservationId);
     },
-    handOff: async (start) => {
-      const started = await start(held ? reservationId : undefined);
+    handOff: async (work) => {
+      if (!held) return work.start(undefined);
+      if (!(await renewLease(reservationId, RESERVATION_LEASE.provisionalMs))) {
+        release();
+        throw new QueueUnavailableError(RESERVATION_ENGINE, `the lease of reservation ${reservationId} ended before its work was queued`);
+      }
+      const started = await work.start(reservationId).catch(async (error: unknown) => {
+        const recovery = await work.recover().catch((lookupErr: unknown): Recovery<never> => {
+          console.error(`[Guard] Work that may hold reservation ${reservationId} could not be looked up:`, lookupErr);
+          return RECOVERY_UNKNOWN;
+        });
+        if (recovery.status === 'not-started') throw error;
+        release();
+        if (recovery.status === 'unknown') throw error;
+        return recovery.work;
+      });
       release();
+      await leaseToHandedOffWork(reservationId);
       return started;
     },
   };
