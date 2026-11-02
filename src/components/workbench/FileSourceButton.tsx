@@ -30,37 +30,95 @@ interface FileSourceButtonProps {
   className?: string;
 }
 
-/** A split button: the device picker on the main part, and a menu of the other file sources (device, link) on the chevron. */
+/** Where focus lands when the menu opens: its first item from a click, Enter, Space or Down, its last from Up. */
+type MenuState = 'closed' | 'first' | 'last';
+
+/** The item a key moves focus to within the menu, by the menu button pattern of the WAI-ARIA Authoring Practices. */
+function nextItemIndex(key: string, current: number, count: number): number | null {
+  switch (key) {
+    case 'ArrowDown':
+      return (current + 1) % count;
+    case 'ArrowUp':
+      return (current - 1 + count) % count;
+    case 'Home':
+      return 0;
+    case 'End':
+      return count - 1;
+    default:
+      return null;
+  }
+}
+
+/**
+ * A split button: the device picker on the main part, and a menu of the other file sources (device, link) on the chevron,
+ * which follows the menu button pattern: opening it moves focus to an item, the arrows, Home and End move within it, Escape
+ * and a choice return focus to the chevron, and focus leaving it closes it.
+ */
 export default function FileSourceButton({
   label, variant, disabled = false, onPickDevice, onImportFile, className = '',
 }: Readonly<FileSourceButtonProps>) {
   const t = useTranslations('hero.dropzone');
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [menu, setMenu] = useState<MenuState>('closed');
   const [isUrlModalOpen, setIsUrlModalOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const itemsRef = useRef<HTMLButtonElement[]>([]);
   const styles = VARIANTS[variant];
+  const isMenuOpen = menu !== 'closed';
 
   useEffect(() => {
-    if (!isMenuOpen) return;
+    if (menu === 'closed') return;
+    const items = itemsRef.current;
+    items[menu === 'first' ? 0 : items.length - 1]?.focus();
     const handleOutside = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setIsMenuOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsMenuOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setMenu('closed');
     };
     document.addEventListener('pointerdown', handleOutside);
-    window.addEventListener('keydown', handleKey);
-    return () => {
-      document.removeEventListener('pointerdown', handleOutside);
-      window.removeEventListener('keydown', handleKey);
-    };
-  }, [isMenuOpen]);
+    return () => document.removeEventListener('pointerdown', handleOutside);
+  }, [menu]);
+
+  const closeToToggle = () => {
+    setMenu('closed');
+    toggleRef.current?.focus();
+  };
+
+  const handleToggleKey = (event: React.KeyboardEvent) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    setMenu(event.key === 'ArrowDown' ? 'first' : 'last');
+  };
+
+  const handleMenuKey = (event: React.KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeToToggle();
+      return;
+    }
+    const items = itemsRef.current;
+    const next = nextItemIndex(event.key, items.indexOf(document.activeElement as HTMLButtonElement), items.length);
+    if (next === null) return;
+    event.preventDefault();
+    items[next].focus();
+  };
+
+  const handleFocusLeave = (event: React.FocusEvent) => {
+    if (isMenuOpen && !rootRef.current?.contains(event.relatedTarget as Node | null)) setMenu('closed');
+  };
+
+  const choose = (action: () => void) => () => {
+    closeToToggle();
+    action();
+  };
 
   const menuItemClass =
     'min-h-[44px] w-full px-3 rounded-xs text-sm font-medium text-ink hover:bg-sunken flex items-center gap-2.5 transition-colors cursor-pointer';
+  const menuItems = [
+    { key: 'device', Icon: HardDrive, text: t('fromDevice'), action: onPickDevice },
+    { key: 'url', Icon: Globe, text: t('fromUrl'), action: () => setIsUrlModalOpen(true) },
+  ];
 
   return (
-    <div ref={rootRef} className={`relative inline-flex items-stretch ${className}`}>
+    <div ref={rootRef} onBlur={handleFocusLeave} className={`relative inline-flex items-stretch ${className}`}>
       <button
         type="button"
         disabled={disabled}
@@ -71,9 +129,11 @@ export default function FileSourceButton({
         <span>{label}</span>
       </button>
       <button
+        ref={toggleRef}
         type="button"
         disabled={disabled}
-        onClick={() => setIsMenuOpen((open) => !open)}
+        onClick={() => setMenu(isMenuOpen ? 'closed' : 'first')}
+        onKeyDown={handleToggleKey}
         aria-label={t('moreSources')}
         aria-haspopup="menu"
         aria-expanded={isMenuOpen}
@@ -86,32 +146,25 @@ export default function FileSourceButton({
         <div
           role="menu"
           aria-label={t('sourcesMenu')}
+          onKeyDown={handleMenuKey}
           className={`absolute right-0 ${styles.menu} w-52 max-w-[calc(100dvw-2rem)] rounded-sm bg-surface border border-rule shadow-elev-1 p-1.5 z-40 text-left`}
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setIsMenuOpen(false);
-              onPickDevice();
-            }}
-            className={menuItemClass}
-          >
-            <HardDrive aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
-            <span>{t('fromDevice')}</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setIsMenuOpen(false);
-              setIsUrlModalOpen(true);
-            }}
-            className={menuItemClass}
-          >
-            <Globe aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
-            <span>{t('fromUrl')}</span>
-          </button>
+          {menuItems.map(({ key, Icon, text, action }, index) => (
+            <button
+              key={key}
+              ref={(node) => {
+                if (node) itemsRef.current[index] = node;
+              }}
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              onClick={choose(action)}
+              className={menuItemClass}
+            >
+              <Icon aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
+              <span>{text}</span>
+            </button>
+          ))}
         </div>
       )}
 
