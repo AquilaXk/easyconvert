@@ -145,10 +145,10 @@ A per-service key in the secret (`EASYCONVERT_WORKER_CONCURRENCY` and the others
 
 ## Deploying
 
-1. Merge to `main`. The `build` job builds the worker image and then the web image for arm64 and pushes them as `sha-<commit>` and `main`. The job summary lists the digests.
+1. Merge to `main`. The `build` job builds the worker image and then the web image for arm64 and pushes them as `sha-<commit>` and `main`. The web image is pushed only after it started with the container flags of the web service and its home page answered 200 (`scripts/boot-web-image.sh`; run it on any local image with `bash scripts/boot-web-image.sh <image>`). The job summary lists the digests.
 2. Run `deploy-oci` by hand with action `deploy` and image_ref `main` or `sha-<40 character commit>`; any other value is refused. The job runs on the `easyconvert-production` runner and:
    - checks that the scratch directory is a mount point and that the data volume has at least 15 GiB free, that the AppArmor profile loaded from `/etc/apparmor.d/easyconvert` is the file of the checkout (step 7), and that the budget in the secret can be used;
-   - pulls both images, pins them by digest, and refuses the pair when the web image records another worker image than the one pinned (`org.opencontainers.image.base.name`, set by `Dockerfile.web`);
+   - pulls both images, pins them by digest, and refuses the pair when the web image records another worker image than the one pinned (`org.opencontainers.image.base.name`, set by `Dockerfile.web`), or another anonymous daily allowance than the repository variable `ANONYMOUS_DAILY_LIMIT` the deploy step passes (`easyconvert.anonymous-daily-limit`), which it writes into the env file of the release;
    - writes a mode 0600 env file, the compose file and the seccomp profile into `/opt/easyconvert/releases/<time>-<ref>/`;
    - runs `docker compose up -d --wait`, then checks `http://127.0.0.1:8090/api/health` for up to 150 seconds;
    - reads the AppArmor profile of the web and worker containers, which must be `easyconvert`;
