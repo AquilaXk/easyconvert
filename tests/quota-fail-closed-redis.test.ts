@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import type Redis from 'ioredis';
-import { RedisKeyStore, redisKeyStore, TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT } from '../src/lib/api-keys/redis-key-store';
+import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT } from '../src/lib/api-keys/quota-lua-scripts';
 import { validateApiAccess, ANONYMOUS_BURST_LIMIT } from '../src/lib/api-keys/guard';
 import { getAnonymousDailyLimit } from '../src/lib/api-keys/key-store';
 import { createSessionToken } from '../src/lib/auth/session';
