@@ -1,5 +1,5 @@
 import type { NextRequest, NextResponse } from 'next/server';
-import { authErrorHeaders, validateApiAccess } from '@/lib/api-keys/guard';
+import { authErrorHeaders, extractApiKeySecret, validateApiAccess } from '@/lib/api-keys/guard';
 import type { ApiKeyScope } from '@/lib/api-keys/types';
 import { getSessionFromRequest } from '@/lib/auth/session';
 import type { User } from '@/lib/auth/types';
@@ -22,15 +22,16 @@ export interface DashboardAccess {
 }
 
 /**
- * The person a dashboard route acts for: the signed-in person, else the owner of the key the request carries, or the
- * refusal. A refusal of the access check carries its status and `Retry-After` and no code, since the status names its
- * cause; a key without a scope the route needs answers `admin_scope_required`.
+ * The person a dashboard route acts for: the owner of the key the request carries, else the signed-in person, or the
+ * refusal. A key is an explicit credential, so it decides over a session cookie sent with it. A refusal of the access check
+ * carries its status and `Retry-After` and no code, since the status names its cause; a key without a scope the route
+ * needs answers `admin_scope_required`.
  */
 export async function resolveDashboardCaller(
   req: NextRequest,
   { action, adminKey = false, scope }: DashboardAccess
 ): Promise<{ user: User } | { refused: NextResponse }> {
-  const sessionUser = await getSessionFromRequest(req);
+  const sessionUser = extractApiKeySecret(req) ? null : await getSessionFromRequest(req);
   if (sessionUser) return { user: sessionUser };
 
   const auth = await validateApiAccess(req, 0, scope);
