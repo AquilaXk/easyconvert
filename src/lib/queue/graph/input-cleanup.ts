@@ -1,4 +1,4 @@
-import { releaseResultHold, withInputHeld } from '../../storage/retention-service';
+import { releaseResultHold, takeInputHold, withInputHeld } from '../../storage/retention-service';
 
 /** The stored files the `import.upload` nodes of a graph with these `nodes` read. */
 export function graphInputKeys(nodes: Readonly<Record<string, object>>): string[] {
@@ -18,6 +18,16 @@ export function graphInputKeys(nodes: Readonly<Record<string, object>>): string[
 export function withGraphInputsHeld<T>(graphId: string, nodes: Readonly<Record<string, object>>, start: () => Promise<T>): Promise<T> {
   const holding = graphInputKeys(nodes).reduceRight<() => Promise<T>>((startHolding, key) => () => withInputHeld(key, graphId, startHolding), start);
   return holding();
+}
+
+/**
+ * Holds `key`, the file an `import.upload` node of the graph `graphId` reads, for the graph when the node runs (`takeInputHold`),
+ * so a graph whose start gave the hold up holds it from then until it ends, and returns `key`. Throws a StorageNotFoundError
+ * when the file was deleted.
+ */
+export async function heldGraphInput(graphId: string, key: string): Promise<string> {
+  await takeInputHold(key, graphId);
+  return key;
 }
 
 /**
