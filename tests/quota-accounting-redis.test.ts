@@ -20,11 +20,15 @@ import { DistributedBullMQAdapter, STALLED_SWEEP_INTERVAL_MS, Worker } from '../
 import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, chargeAnonymousImport } from '../src/lib/api-keys/anonymous-upload-budget';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { createSessionToken } from '../src/lib/auth/session';
+import { userStore } from '../src/lib/auth/user-store';
+import type { Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
+import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
 
 /**
  * The quota is Lua scripts over real keys, so what a request is charged is checked on a real Redis server, through the
@@ -45,6 +49,7 @@ const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-lim
 /** A little past the 15 minutes a reservation used to live. */
 const PAST_OLD_RESERVATION_LIFETIME_MS = 901_000;
 const EARLY_IN_A_UTC_DAY = new Date('2026-11-02T00:00:05.000Z');
+const FREE_DAILY_IMPORT_BYTES = 2 * 1024 * 1024 * 1024;
 
 interface QuotaJob {
   userId: string;
@@ -76,12 +81,19 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     return new NextRequest('http://localhost/api/convert', { method: 'POST', headers: client.headers, body: form });
   }
 
-  function importRequest() {
+  function importRequest(headers: Record<string, string> = client.headers) {
     return new NextRequest('http://localhost/api/fetch-url', {
       method: 'POST',
-      headers: { ...client.headers, 'content-type': 'application/json' },
+      headers: { ...headers, 'content-type': 'application/json' },
       body: JSON.stringify({ url: 'https://files.example.com/scores.csv' }),
     });
+  }
+
+  /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
+  async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
+    const held = await reserveLinkImport(userId, plan);
+    if ('refusal' in held) throw new Error(`the import budget of ${userId} is already spent`);
+    await held.reservation.settle(bytes);
   }
 
   const convertCsv = () => convertRoute(convertRequest({ name: 'scores.csv', content: CSV, target: 'json' }));
@@ -266,7 +278,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   describe('a link import', () => {
     it('counts the bytes it brings in against the daily byte budget, is refused once that is spent, and leaves the conversion count alone', async () => {
-      await chargeAnonymousImport(client.userId, ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
       remoteFile(CSV);
 
       expect((await fetchUrlRoute(importRequest())).status).toBe(200);
@@ -276,6 +288,22 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
       expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
       expect(await remaining()).toBe(DAY_ALLOWANCE);
+    });
+
+    it('by a free account is refused once the plan allowance is spent, in a budget keyed by the account', async () => {
+      const user = userStore.sanitizeUser(await userStore.createUser({ email: `import-${crypto.randomBytes(6).toString('hex')}@quota.test`, name: 'Import', tier: 'free' }));
+      otherUsers.push(user.id);
+      const session = { cookie: `easyconvert_session=${createSessionToken(user)}` };
+      await spendImportBytes(user.id, 'free', FREE_DAILY_IMPORT_BYTES - 1);
+      remoteFile(CSV);
+
+      expect((await fetchUrlRoute(importRequest(session))).status).toBe(200);
+      expect(await bytesBroughtInToday(user.id)).toBe(FREE_DAILY_IMPORT_BYTES - 1 + Buffer.byteLength(CSV));
+      const refused = await fetchUrlRoute(importRequest(session));
+
+      expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: FREE_DAILY_IMPORT_BYTES, plan: 'free' });
+      expect(await admin.keys(`*upload-budget*${user.id}*`)).toHaveLength(1);
     });
 
     it('stops at the synchronous deadline when the remote sends the body too slowly, and frees its slot', async () => {
@@ -416,5 +444,9 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   describe('a request that needs a conversion left but reserves none', () => {
     itNeedsOneUnitLeftForEveryCaller((userId) => otherUsers.push(userId));
+  });
+
+  describe('a queued graph', () => {
+    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId));
   });
 });

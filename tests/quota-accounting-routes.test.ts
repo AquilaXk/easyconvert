@@ -25,14 +25,15 @@ import { POST as fetchUrlRoute } from '../src/app/api/fetch-url/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, chargeAnonymousImport } from '../src/lib/api-keys/anonymous-upload-budget';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { createSessionToken } from '../src/lib/auth/session';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { InMemoryIdempotencyStore, setIdempotencyStore, type StoredResponse } from '../src/lib/api/idempotency';
 import { acquireSyncSlot, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
-import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 
 /**
@@ -51,6 +52,9 @@ const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
 const DAY_ALLOWANCE = 25;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+const TRUST_UNCONFIGURED_PROBLEM = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
 
 let nextClient = 1;
 
@@ -87,11 +91,46 @@ function batchRequest(client: Visitor, files: Array<{ name: string; content: str
   return new NextRequest('http://localhost/api/convert/batch', { method: 'POST', headers: client.headers, body: form });
 }
 
-function importRequest(client: Visitor, url = 'https://files.example.com/scores.csv') {
+function importRequest(client: { headers: Record<string, string> }, signal?: AbortSignal) {
   return new NextRequest('http://localhost/api/fetch-url', {
     method: 'POST',
     headers: { ...client.headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url: 'https://files.example.com/scores.csv' }),
+    signal,
+  });
+}
+
+/** A signed-in account of `tier`, sending its session cookie. */
+async function account(tier: 'free' | 'pro') {
+  const email = `import-budget-${tier}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@quota.test`;
+  const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Import Budget', tier }));
+  return { userId: user.id, headers: { cookie: `easyconvert_session=${createSessionToken(user)}` } };
+}
+
+/** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
+async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
+  const held = await reserveLinkImport(userId, plan);
+  if ('refusal' in held) throw new Error(`the import budget of ${userId} is already spent`);
+  await held.reservation.settle(bytes);
+}
+
+/** A remote that sends `first`, then `afterAbort` a little after the import is aborted, then fails the body. */
+function remoteCutOffMidBody(first: string, afterAbort: string, onStart: () => void = () => undefined) {
+  vi.mocked(undiciFetch).mockImplementation(async (_url, init) => {
+    const signal = (init as { signal?: AbortSignal } | undefined)?.signal;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(first));
+        signal?.addEventListener('abort', () =>
+          setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode(afterAbort));
+            setTimeout(() => controller.error(signal.reason), 0);
+          }, 20)
+        );
+        onStart();
+      },
+    });
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
   });
 }
 
@@ -212,7 +251,7 @@ describe('what a request is charged', () => {
     it('counts the bytes it brings in against the daily byte budget and is refused once that is spent', async () => {
       const client = visitor();
       const before = await client.remaining();
-      await chargeAnonymousImport(client.userId, ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
       remoteFile(CSV);
 
       expect((await fetchUrlRoute(importRequest(client))).status).toBe(200);
@@ -222,6 +261,125 @@ describe('what a request is charged', () => {
       expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes' });
       expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
       expect(await client.remaining()).toBe(before);
+    });
+
+    it.each([
+      ['free', 2 * GIB],
+      ['pro', 10 * GIB],
+    ] as const)('by a %s account is refused once the plan allowance of %d bytes is spent', async (tier, allowance) => {
+      const caller = await account(tier);
+      await spendImportBytes(caller.userId, tier, allowance - 1);
+      remoteFile(CSV);
+
+      expect((await fetchUrlRoute(importRequest(caller))).status).toBe(200);
+      const refused = await fetchUrlRoute(importRequest(caller));
+
+      expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: allowance, plan: tier });
+      expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it('is refused to the shared identity of visitors no proxy attributes, as an upload is', async () => {
+      vi.stubEnv('TRUSTED_PROXIES', 'none');
+      remoteFile(CSV);
+
+      const res = await fetchUrlRoute(importRequest({ headers: {} }));
+
+      expect(res.status).toBe(503);
+      expect((await res.json()).type).toBe(TRUST_UNCONFIGURED_PROBLEM);
+      expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
+    });
+
+    it('holds the bytes it may still read while it runs, so a second import cannot pass the budget beside it', async () => {
+      const client = visitor();
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 10);
+      let send: () => void = () => undefined;
+      remoteFile(CSV);
+      vi.mocked(undiciFetch).mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => (send = resolve));
+        return new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
+      });
+      const first = fetchUrlRoute(importRequest(client));
+      await vi.waitFor(() => expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1));
+
+      const second = await fetchUrlRoute(importRequest(client));
+      send();
+
+      expect(second.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect((await second.json()).refusal).toBe('daily-bytes');
+      expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
+      expect((await first).status).toBe(200);
+    });
+
+    describe('is charged the bytes it received, however it ends', () => {
+      const ends: Array<[string, (client: AbortController) => void, number, number]> = [
+        ['a file it imports (200)', () => remoteFile(CSV), 200, Buffer.byteLength(CSV)],
+        [
+          'a file over the import limit (413)',
+          () => {
+            const mebibyte = new Uint8Array(MIB);
+            vi.mocked(undiciFetch).mockImplementation(async () => {
+              const body = new ReadableStream<Uint8Array>({ pull: (controller) => controller.enqueue(mebibyte) });
+              return new Response(body, { status: 200 }) as never;
+            });
+          },
+          413,
+          101 * MIB,
+        ],
+        [
+          'a remote still sending at the deadline (504), the bytes read after it included',
+          () => {
+            vi.stubEnv('SYNC_DEADLINE_MAX_MS', '200');
+            remoteCutOffMidBody('name,score\n', 'Alice,100\n');
+          },
+          HTTP_GATEWAY_TIMEOUT,
+          21,
+        ],
+        [
+          'a client that goes away mid-body (499)',
+          (client) => remoteCutOffMidBody('name,score\n', 'Alice,100\n', () => setTimeout(() => client.abort(), 20)),
+          HTTP_CLIENT_CLOSED_REQUEST,
+          21,
+        ],
+        [
+          'a remote error (502), whose body it never reads',
+          () => vi.mocked(undiciFetch).mockImplementation(async () => new Response('upstream is down', { status: 503, statusText: 'Service Unavailable' }) as never),
+          502,
+          0,
+        ],
+      ];
+
+      it.each(ends)('%s', async (_label, arrange, status, receivedBytes) => {
+        const client = visitor();
+        const clientConnection = new AbortController();
+        arrange(clientConnection);
+
+        const res = await fetchUrlRoute(importRequest(client, clientConnection.signal));
+
+        expect(res.status).toBe(status);
+        await vi.waitFor(async () => expect(await bytesBroughtInToday(client.userId)).toBe(receivedBytes));
+      });
+    });
+
+    it.each([
+      ['a redirect it follows', 302, { location: 'https://files.example.com/moved.csv' }, 200],
+      ['an error answer', 503, {}, 502],
+      ['a file whose declared length is over the import limit', 200, { 'content-length': String(101 * MIB) }, 413],
+    ] as const)('stops the remote sending the body of %s', async (_label, remoteStatus, headers, status) => {
+      let cancelled = false;
+      const unread = new ReadableStream<Uint8Array>({
+        start: (controller) => controller.enqueue(new TextEncoder().encode('a body the import does not read')),
+        cancel: () => {
+          cancelled = true;
+        },
+      });
+      remoteFile(CSV);
+      vi.mocked(undiciFetch).mockImplementationOnce(async () => new Response(unread, { status: remoteStatus, headers }) as never);
+
+      const res = await fetchUrlRoute(importRequest(visitor()));
+
+      expect(res.status).toBe(status);
+      expect(cancelled).toBe(true);
     });
 
     it('is still allowed with one conversion left, which it leaves for the conversion', async () => {
@@ -328,7 +486,7 @@ describe('what a request is charged', () => {
       expect(await client.remaining()).toBe(before);
     });
 
-    it('is kept, not given back, while its request runs past 15 minutes', async () => {
+    it('is kept, however long its request runs that day, until the request gives it back', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       try {
         vi.setSystemTime(new Date('2026-11-02T00:00:05.000Z'));

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import type Redis from 'ioredis';
 import { RedisKeyStore, redisKeyStore, TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT } from '../src/lib/api-keys/redis-key-store';
 import { validateApiAccess, ANONYMOUS_BURST_LIMIT } from '../src/lib/api-keys/guard';
-import { ANONYMOUS_DAILY_LIMIT, getAnonymousDailyLimit } from '../src/lib/api-keys/key-store';
+import { getAnonymousDailyLimit } from '../src/lib/api-keys/key-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { User } from '../src/lib/auth/types';

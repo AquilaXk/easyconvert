@@ -1,10 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET as getFormats } from '../src/app/api/formats/route';
 import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 
+/** A visitor a declared proxy attributes: one no proxy attributes is refused every link import, as every upload. */
+const VISITOR = { 'x-forwarded-for': '203.0.113.40' };
+
 describe('API Route Logic Tests', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('GET /api/formats returns valid response structure', async () => {
     const res = await getFormats();
     expect(res.status).toBe(200);
@@ -17,8 +24,10 @@ describe('API Route Logic Tests', () => {
   });
 
   it('POST /api/fetch-url blocks SSRF attempts to private hosts and localhost', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const req = new NextRequest('http://localhost/api/fetch-url', {
       method: 'POST',
+      headers: VISITOR,
       body: JSON.stringify({ url: 'http://127.0.0.1:8080/secret' }),
     });
 
@@ -30,8 +39,10 @@ describe('API Route Logic Tests', () => {
   });
 
   it('POST /api/fetch-url rejects invalid URLs', async () => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const req = new NextRequest('http://localhost/api/fetch-url', {
       method: 'POST',
+      headers: VISITOR,
       body: JSON.stringify({ url: 'not-a-valid-url' }),
     });
 
