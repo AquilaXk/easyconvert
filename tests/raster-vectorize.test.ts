@@ -195,7 +195,8 @@ describe('the tracer program, as the wrapper sees it', () => {
   });
 
   it('refuses an SVG past the output limit (413) instead of returning part of it', async () => {
-    const program = standIn(`head -c ${VECTORIZE_MAX_OUTPUT_BYTES + 1} /dev/zero | tr '\\000' ' ' > "$out"`);
+    // The writer is the program itself (exec), so where the file-size limit applies it is the program the limit stops.
+    const program = standIn(`exec head -c ${VECTORIZE_MAX_OUTPUT_BYTES + 1} /dev/zero > "$out"`);
     const failure = await withTracer(program, () => captureError(() => vectorize(clean)));
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as PayloadLimitError).status).toBe(413);
