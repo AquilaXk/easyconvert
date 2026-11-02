@@ -416,11 +416,10 @@ describe('Redesign & Free Static Architecture Verification', () => {
     ]);
   });
 
-  it('names each other name of a format (JPEG for JPG, TIF for TIFF) after a format the registry has', () => {
-    for (const [alias, format] of Object.entries(FORMAT_NAME_ALIASES)) {
-      expect(FORMAT_REGISTRY[alias], alias).toBeDefined();
-      expect(FORMAT_REGISTRY[format], format).toBeDefined();
-    }
+  it('names each other name of a format (JPEG for JPG, TIF for TIFF) after another format the registry has', () => {
+    const pairs = Object.entries(FORMAT_NAME_ALIASES);
+    expect(pairs.flat().filter((id) => !Object.hasOwn(FORMAT_REGISTRY, id))).toEqual([]);
+    expect(pairs.filter(([alias, format]) => alias === format || Object.hasOwn(FORMAT_NAME_ALIASES, format))).toEqual([]);
   });
 
   it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
