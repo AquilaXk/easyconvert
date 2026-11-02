@@ -12,6 +12,8 @@ import {
 } from './result-properties';
 import { MANIFEST_EXTENSION_BY_FORMAT_SCHEMA, MASTER_PLAYLIST_NAME_SCHEMA, PACKAGING_FORMATS } from '@/lib/conversions/media-packaging';
 import { SERVER_ONLY_KEYWORD, SERVER_ONLY_OPTION_KEYS } from './server-only-options';
+import { PdfOptimizeOptionsSchema, PdfReorderOptionsSchema, PdfRotateOptionsSchema, PdfSplitOptionsSchema } from './pdf-operation-schemas';
+import { COLOR_PRECISION_RANGE, FILTER_SPECKLE_RANGE, VECTORIZE_MODES, VECTORIZE_PRESETS } from '@/lib/conversions/raster-vectorize-options';
 
 /** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
 const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
@@ -87,103 +89,6 @@ export const PdfAOptionsSchema = {
   properties: {
     conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level. Defaults to pdfa-2b.' },
     recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
-  },
-} as const;
-
-/** Pages as the `pages` option writes them: `3`, `2-5`, `4-`, `-3`, comma separated. */
-const PAGE_SPEC_PATTERN = String.raw`^[0-9,\-\s]+$`;
-const MAX_PAGE_SPEC_LENGTH = 8192;
-const MAX_SPLIT_RANGES_PARTS = 1000;
-
-export const PdfSplitOptionsSchema = {
-  type: 'object',
-  additionalProperties: false,
-  description:
-    'pdf.split-pages node: cuts the PDF into parts and returns one ZIP of PDFs. Give `ranges` or `everyNPages`; with neither, every page becomes a file of its own.',
-  properties: {
-    ranges: {
-      type: 'string',
-      pattern: PAGE_SPEC_PATTERN,
-      maxLength: MAX_PAGE_SPEC_LENGTH,
-      description: `One part per comma separated range, in the order written (for example "1-3,4-6,7-"). At most ${MAX_SPLIT_RANGES_PARTS} parts.`,
-    },
-    everyNPages: {
-      type: 'integer',
-      minimum: 1,
-      description: 'One part per this many pages; the last part holds the remainder.',
-    },
-  },
-} as const;
-
-const PdfRotationDegreesSchema = {
-  type: 'integer',
-  enum: [90, 180, 270],
-  description: 'Degrees clockwise, added to the rotation the page already has.',
-} as const;
-
-export const PdfRotateOptionsSchema = {
-  type: 'object',
-  additionalProperties: false,
-  description:
-    'pdf.rotate-pages node. Give `rotation` (for `pages`, every page when omitted), or `rotations` to turn several groups of pages by different amounts; not both.',
-  properties: {
-    rotation: PdfRotationDegreesSchema,
-    pages: {
-      type: 'string',
-      pattern: PAGE_SPEC_PATTERN,
-      maxLength: MAX_PAGE_SPEC_LENGTH,
-      description: 'Pages to turn (for example "1-3,5" or "2-"). Every page when omitted.',
-    },
-    rotations: {
-      type: 'array',
-      minItems: 1,
-      description: 'One entry per group of pages; a page in two groups turns by both.',
-      items: {
-        type: 'object',
-        required: ['rotation'],
-        additionalProperties: false,
-        properties: {
-          rotation: PdfRotationDegreesSchema,
-          pages: {
-            type: 'string',
-            pattern: PAGE_SPEC_PATTERN,
-            maxLength: MAX_PAGE_SPEC_LENGTH,
-            description: 'Pages of this group. Every page when omitted.',
-          },
-        },
-      },
-    },
-  },
-} as const;
-
-export const PdfReorderOptionsSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['order'],
-  description: 'pdf.reorder-pages node.',
-  properties: {
-    order: {
-      type: 'string',
-      pattern: PAGE_SPEC_PATTERN,
-      maxLength: MAX_PAGE_SPEC_LENGTH,
-      description: 'The pages to put first, in the new order (for example "3,1,2" or "4-6,1-3"); a full order lists every page once. Pages not listed follow in their original order, so no page is lost. A page listed twice answers 400.',
-    },
-  },
-} as const;
-
-export const PdfOptimizeOptionsSchema = {
-  type: 'object',
-  additionalProperties: false,
-  description:
-    'optimize node on a PDF. The result is never larger than the input: when the profile gains nothing the input is returned and the node reports `optimized: false`.',
-  properties: {
-    profile: {
-      type: 'string',
-      enum: ['web', 'print', 'archive', 'max'],
-      default: 'web',
-      description:
-        '`web`: images downsampled to 150 dpi and recompressed. `print`: 300 dpi. `archive`: lossless, only streams and structure are repacked. `max`: 72 dpi and strong JPEG compression.',
-    },
   },
 } as const;
 
@@ -367,24 +272,24 @@ export const ConversionOptionsSchema = {
       properties: {
         preset: {
           type: 'string',
-          enum: ['bw', 'poster', 'photo'],
+          enum: VECTORIZE_PRESETS,
           description: 'Start from settings tuned for the input: bw for black and white line art, poster for flat graphics with few colours, photo for photographs.',
         },
         mode: {
           type: 'string',
-          enum: ['spline', 'polygon', 'pixel'],
+          enum: VECTORIZE_MODES,
           description: 'Curve fitting: spline (default) draws smooth curves, polygon straight edges, pixel keeps the pixel edges (for pixel art).',
         },
         filterSpeckle: {
           type: 'integer',
-          minimum: 0,
-          maximum: 128,
+          minimum: FILTER_SPECKLE_RANGE.min,
+          maximum: FILTER_SPECKLE_RANGE.max,
           description: 'Discard patches smaller than this size in pixels (0 to 128, default 4). Raise it to remove noise from scans and JPEG artefacts.',
         },
         colorPrecision: {
           type: 'integer',
-          minimum: 1,
-          maximum: 8,
+          minimum: COLOR_PRECISION_RANGE.min,
+          maximum: COLOR_PRECISION_RANGE.max,
           description: 'Significant bits per RGB channel (1 to 8, default 6). Lower values give fewer colours and flatter shapes.',
         },
         simplify: {

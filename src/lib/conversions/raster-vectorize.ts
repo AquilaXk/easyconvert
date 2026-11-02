@@ -52,7 +52,7 @@ const ENGINE_CANDIDATES = ['/usr/local/bin/vtracer', '/usr/bin/vtracer', '/opt/h
  * that gives every pixel a path, takes 200 s and 2.7 GB at 16 megapixels with the defaults. 16 megapixels keeps every real
  * picture of the measured set inside the limits below; the memory, time and output limits stop the adversarial ones.
  */
-export const VECTORIZE_PIXEL_BUDGET: PixelBudget = { maxPixels: 16_000_000, scope: 'tracing a picture to SVG' };
+const VECTORIZE_PIXEL_BUDGET: PixelBudget = { maxPixels: 16_000_000, scope: 'tracing a picture to SVG' };
 const ENGINE_DEFAULT_TIMEOUT_MS = 120_000;
 const ENGINE_MEMORY_LIMIT_MB = 2048;
 /** The largest SVG written: three times the measured 16 MP poster trace, and what the sanitizer is allowed to read for this path. */
@@ -76,7 +76,7 @@ const STAGED_PNG = { compressionLevel: 0, adaptiveFiltering: false } as const;
 const SVG_MIME_TYPE = 'image/svg+xml';
 
 /** The CLI flags of the options a request set, in the engine's spelling. Explicit flags override the preset, so only set values are sent. */
-export function vectorizeArgs(options: VectorizeOptions): string[] {
+function vectorizeArgs(options: VectorizeOptions): string[] {
   const args: string[] = [];
   if (options.preset !== undefined) args.push('--preset', options.preset);
   if (options.mode !== undefined) args.push('--mode', options.mode);

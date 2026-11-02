@@ -95,6 +95,8 @@ function standIn(body: string): string {
   return file;
 }
 
+/** The 30 s stand-in must be stopped long before it ends: a bound only a hang crosses. */
+const STOP_HANG_GUARD_MS = 10_000;
 const MINIMAL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><path d="M0,0h4v4h-4z" fill="#000000"/></svg>';
 const writesMinimalSvg = (): string => standIn(`printf '%s' '${MINIMAL_SVG}' > "$out"`);
 
@@ -186,12 +188,14 @@ describe('the tracer program, as the wrapper sees it', () => {
     expect(failure.message).not.toContain(os.tmpdir());
   });
 
-  it('answers a typed failure when the program writes nothing, or something that is no SVG', async () => {
-    for (const body of ['exit 0', `printf 'not an svg' > "$out"`]) {
-      const failure = await withTracer(standIn(body), () => captureError(() => vectorize(clean)));
-      expect(failure).toBeInstanceOf(ConversionFailedError);
-      expect(failure).not.toBeInstanceOf(EngineMissingError);
-    }
+  it.each([
+    ['writes nothing', 'exit 0', 'The SVG tracer wrote no SVG from this picture.'],
+    ['writes something that is no SVG', `printf 'not an svg' > "$out"`, 'The SVG tracer wrote something that is not an SVG document.'],
+  ])('answers a typed failure when the program %s', async (_name, body, message) => {
+    const failure = await withTracer(standIn(body), () => captureError(() => vectorize(clean)));
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect(failure).not.toBeInstanceOf(EngineMissingError);
+    expect(failure.message).toBe(message);
   });
 
   it('refuses an SVG past the output limit (413) instead of returning part of it', async () => {
@@ -206,13 +210,15 @@ describe('the tracer program, as the wrapper sees it', () => {
     const program = standIn(`echo "memory allocation of 4294967296 bytes failed" >&2; kill -ABRT $$`);
     const failure = await withTracer(program, () => captureError(() => vectorize(clean)));
     expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect(failure.message).toMatch(/^Tracing this picture needs more than the 2048 MB the SVG tracer may use\./);
   });
 
   it('stops a program that overruns the time of the conversion, with a typed timeout and without waiting for it', async () => {
     const started = Date.now();
     const failure = await withTracer(standIn('sleep 30'), () => captureError(() => convertFile(clean, 'png', 'svg', { timeoutMs: 700 }, 'p.png')));
     expect(failure).toBeInstanceOf(CpuTaskTimeoutError);
-    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(Date.now() - started).toBeLessThan(STOP_HANG_GUARD_MS);
   });
 
   it('leaves no scratch directory behind', async () => {
@@ -383,5 +389,7 @@ describe.skipIf(!haveTracer)('the pinned tracer', () => {
     const noise = await sharp(seededNoise(side, side, 3, 11), { raw: { width: side, height: side, channels: 3 } }).png().toBuffer();
     const failure = await captureError(() => vectorize(noise, 'png', { preset: 'poster', filterSpeckle: 0, mode: 'pixel' }));
     expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect(failure.message).toBe(`The SVG traced from this picture is larger than ${VECTORIZE_MAX_OUTPUT_BYTES} bytes. Raise filterSpeckle or lower colorPrecision for fewer shapes.`);
   }, 60_000);
 });

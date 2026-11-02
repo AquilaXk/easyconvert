@@ -6,12 +6,12 @@
 
 /** Raster sources traced to SVG: exactly the inputs the reference converter serves with the same engine. */
 export const VECTORIZE_SOURCES: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff']);
-export const VECTORIZE_TARGET = 'svg';
+const VECTORIZE_TARGET = 'svg';
 
 export const VECTORIZE_PRESETS = ['bw', 'poster', 'photo'] as const;
 export const VECTORIZE_MODES = ['spline', 'polygon', 'pixel'] as const;
-export type VectorizePreset = (typeof VECTORIZE_PRESETS)[number];
-export type VectorizeMode = (typeof VECTORIZE_MODES)[number];
+type VectorizePreset = (typeof VECTORIZE_PRESETS)[number];
+type VectorizeMode = (typeof VECTORIZE_MODES)[number];
 
 export interface VectorizeOptions {
   /** A starting point tuned for line art (`bw`), flat graphics (`poster`) or photographs (`photo`). */
@@ -36,7 +36,7 @@ export const COLOR_PRECISION_RANGE: IntegerRange = { min: 1, max: 8 };
 export const DEFAULT_VECTORIZE_MODE: VectorizeMode = 'spline';
 
 /** What the engine uses for the values a request leaves out: its defaults, or those of the preset (`Config::from_preset`). */
-export interface VectorizeDefaults {
+interface VectorizeDefaults {
   readonly filterSpeckle: number;
   readonly colorPrecision: number;
 }
