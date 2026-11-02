@@ -5,7 +5,6 @@ import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { POST as login } from '../src/app/api/auth/login/route';
 import { POST as register } from '../src/app/api/auth/register/route';
 import {
-  NO_STATUS_PROBLEMS,
   useAuthErrorWording,
   useConversionFailureWording,
   useProblemWording,
@@ -177,7 +176,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   });
 
   it('words an answer without a problem type by the action alone when the caller gives no status map', () => {
-    const useWithoutMap = () => useProblemWording(NO_STATUS_PROBLEMS);
+    const useWithoutMap = () => useProblemWording({ byStatus: false, untypedRefusal: 'action' });
     for (const status of [400, 401, 403, 404, 429, 503]) expect(worded(useWithoutMap, 'ko', UNTYPED, status, ACTION), String(status)).toBe(ACTION);
   });
 

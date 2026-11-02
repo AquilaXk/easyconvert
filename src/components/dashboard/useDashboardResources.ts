@@ -13,6 +13,7 @@ export function useFilesAndDlqController(
 ) {
   const t = useTranslations('dashboard.errors');
   const problemWording = useDashboardErrorWording();
+  const readWording = useDashboardErrorWording({ untypedRefusal: 'action' });
   const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>([]);
@@ -31,7 +32,7 @@ export function useFilesAndDlqController(
       const data: unknown = await res.json().catch(() => null);
       if (!isLatest()) return;
       if (!res.ok) {
-        onReportError(problemWording(data, res.status, t('loadFiles')));
+        onReportError(readWording(data, res.status, t('loadFiles')));
         return;
       }
       if (data && typeof data === 'object' && 'files' in data && Array.isArray(data.files)) {
@@ -43,7 +44,7 @@ export function useFilesAndDlqController(
     } finally {
       if (isLatest()) setFilesLoading(false);
     }
-  }, [beginFilesRead, onReportError, problemWording, t]);
+  }, [beginFilesRead, onReportError, readWording, t]);
 
   const fetchDlqEntries = useCallback(async () => {
     const isLatest = beginDlqRead();
@@ -53,7 +54,7 @@ export function useFilesAndDlqController(
       const data: unknown = await res.json().catch(() => null);
       if (!isLatest()) return;
       if (!res.ok) {
-        onReportError(problemWording(data, res.status, t('loadDlq')));
+        onReportError(readWording(data, res.status, t('loadDlq')));
         return;
       }
       if (data && typeof data === 'object' && 'entries' in data && Array.isArray(data.entries)) {
@@ -65,7 +66,7 @@ export function useFilesAndDlqController(
     } finally {
       if (isLatest()) setDlqLoading(false);
     }
-  }, [beginDlqRead, onReportError, problemWording, t]);
+  }, [beginDlqRead, onReportError, readWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const readersRef = useRef({ fetchUserFiles, fetchDlqEntries });
@@ -113,7 +114,7 @@ export function useFilesAndDlqController(
     try {
       const res = await fetch(`/api/webhooks/dlq/${id}/replay`, { method: 'POST' });
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-      setDlqFeedback(res.ok && data?.success ? t('replaySucceeded') : problemWording(data, res.status, t('replayFailed')));
+      setDlqFeedback(res.ok && data?.success ? t('replaySucceeded') : readWording(data, res.status, t('replayFailed')));
       await fetchDlqEntries();
     } catch (error) {
       warnBrowserFailure('Sending a webhook again failed', error);

@@ -84,6 +84,7 @@ export function useApiKeysController(
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
   const problemWording = useDashboardErrorWording();
+  const readWording = useDashboardErrorWording({ untypedRefusal: 'action' });
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [quota, setQuota] = useState<QuotaUsage | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -112,14 +113,14 @@ export function useApiKeysController(
         quotaRes.json().catch(() => null),
       ]);
       if (!isLatest()) return;
-      if (!keysRes.ok) onReportError(problemWording(keysData, keysRes.status, t('loadKeys')));
+      if (!keysRes.ok) onReportError(readWording(keysData, keysRes.status, t('loadKeys')));
       else if (isSuccess(keysData, 'keys')) setApiKeys(keysData.keys as ApiKey[]);
       if (quotaRes.ok && isSuccess(quotaData, 'usage')) setQuota(quotaData.usage as QuotaUsage);
     } catch (error) {
       warnBrowserFailure('Reading the API keys failed', error);
       if (isLatest()) onReportError(t('loadKeysNetwork'));
     }
-  }, [beginKeysRead, onReportError, problemWording, t]);
+  }, [beginKeysRead, onReportError, readWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const fetchKeysAndQuotaRef = useRef(fetchKeysAndQuota);

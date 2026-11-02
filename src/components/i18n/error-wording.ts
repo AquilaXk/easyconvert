@@ -38,14 +38,11 @@ const isProblemName = (problems: Messages['errors']['problems'], name: string): 
 
 type StatusProblems = Readonly<Record<number, ProblemName>>;
 
-export const NO_STATUS_PROBLEMS: StatusProblems = {};
-
 /**
  * The problem a status names when an answer carries no `type`, for the statuses that have one cause on the routes of the web
  * application and in front of them (the proxy's burst limit is an untyped 429 that is not the daily quota, and its body limit
  * an untyped 413). Any other status stands for several causes: a 400 or 422 reads as "check what you entered", a 5xx as the
- * sentence of the action that failed. This map is the default; a caller that cannot tell the cause by status (the sign-in
- * form) passes `NO_STATUS_PROBLEMS`.
+ * sentence of the action that failed. A caller that cannot tell the cause by status (the sign-in form) turns it off.
  */
 const SINGLE_CAUSE_STATUS_PROBLEMS: StatusProblems = {
   401: 'unauthorized',
@@ -58,10 +55,10 @@ const SINGLE_CAUSE_STATUS_PROBLEMS: StatusProblems = {
   503: 'service-unavailable',
 };
 
-/** The name of the problem an answer states: its own `type` when it has one, else the problem its status names. */
-function problemNameOf(answer: Answer, status: number, statusProblems: StatusProblems): string | undefined {
+/** The name of the problem an answer states: its own `type` when it has one, else the problem its status names, if read. */
+function problemNameOf(answer: Answer, status: number, byStatus: boolean): string | undefined {
   const type = textField(answer, 'type');
-  if (type === undefined) return statusProblems[status];
+  if (type === undefined) return byStatus ? SINGLE_CAUSE_STATUS_PROBLEMS[status] : undefined;
   return type.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
 }
 
@@ -102,17 +99,29 @@ const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, wor
   },
 };
 
+export interface ProblemWordingOptions {
+  /** Whether an answer without a `type` takes the problem its status names when the status has one cause (the default). */
+  byStatus?: boolean;
+  /**
+   * How a refusal (4xx) with no problem reads: "check what you entered" for an action that sent input (the default), or the
+   * sentence of the action for one that sent none, such as a read, a replay or the sign-in form, whose causes the status
+   * cannot tell apart.
+   */
+  untypedRefusal?: 'checkInput' | 'action';
+}
+
 /**
  * The wording of any refused request (RFC 9457 practice): the sentence of its problem `type`, which is a stable key of a
  * sentence in the page's language, with the numbers that sentence names taken from the answer's fields. An answer without a
- * `type` takes the problem `statusProblems` names for its status. Any other refusal (4xx) reads "check what you entered",
- * since "try again" would not help, and any other failure reads `fallback` (the sentence of the action that failed) or the
- * sentence of its status class; a caller without the map keeps its `fallback` for a refusal too. The server's `detail` is
- * written for the developer of an API client, so no sentence of the interface carries it.
+ * `type` takes the problem its status names when the status has one cause. Any other refusal (4xx) reads "check what you
+ * entered", since "try again" would not help, or `fallback` for an action that sent nothing to check; any other failure reads
+ * `fallback` (the sentence of the action that failed) or the sentence of its status class. The server's `detail` is written
+ * for the developer of an API client, so no sentence of the interface carries it.
  */
-export function useProblemWording(
-  statusProblems: StatusProblems = SINGLE_CAUSE_STATUS_PROBLEMS
-): (payload: unknown, status: number, fallback?: string) => string {
+export function useProblemWording({
+  byStatus = true,
+  untypedRefusal = 'checkInput',
+}: ProblemWordingOptions = {}): (payload: unknown, status: number, fallback?: string) => string {
   const t = useTranslations('errors');
   const problems = useMessages().errors.problems;
   const format = useFormatter();
@@ -121,7 +130,7 @@ export function useProblemWording(
   return useCallback(
     (payload: unknown, status: number, fallback?: string) => {
       const answer = answerOf(payload);
-      const name = problemNameOf(answer, status, statusProblems);
+      const name = problemNameOf(answer, status, byStatus);
       if (name !== undefined && isProblemName(problems, name)) {
         const limit: LimitWords['limit'] = (key, fields, field, unit) => {
           const value = numberField(fields, field);
@@ -131,10 +140,10 @@ export function useProblemWording(
         const limitSentence = LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge, conversionsShort });
         return limitSentence ?? t(`problems.${name}`);
       }
-      if (isRefusal(status)) return statusProblems === NO_STATUS_PROBLEMS && fallback ? fallback : t('generic.client');
+      if (isRefusal(status)) return untypedRefusal === 'action' && fallback ? fallback : t('generic.client');
       return fallback ?? t('generic.server');
     },
-    [t, problems, format, formatBytes, fileTooLarge, statusProblems]
+    [t, problems, format, formatBytes, fileTooLarge, byStatus, untypedRefusal]
   );
 }
 
@@ -159,7 +168,7 @@ export function useUrlImportErrorWording(): (payload: unknown, status: number) =
 /** A refusal of `/api/auth/login` or `/api/auth/register`, by its `code`; never by its status alone. */
 export function useAuthErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.auth');
-  const problemWording = useProblemWording(NO_STATUS_PROBLEMS);
+  const problemWording = useProblemWording({ byStatus: false, untypedRefusal: 'action' });
   return useCallback(
     (payload: unknown, status: number) => {
       const answer = answerOf(payload);
@@ -174,11 +183,14 @@ export function useAuthErrorWording(): (payload: unknown, status: number) => str
 
 /**
  * A refusal of a dashboard route (files, API keys, failed webhooks), by its `code`; an answer without a code this build knows
- * (one from the proxy, or from an older server) is worded as `useProblemWording` words it, with `fallback` for a failure.
+ * is worded as `useProblemWording` words it, with `fallback` for a failure. A read or a replay sends nothing to check, so it
+ * passes `untypedRefusal: 'action'` and an untyped refusal of it reads as its own sentence.
  */
-export function useDashboardErrorWording(): (payload: unknown, status: number, fallback: string) => string {
+export function useDashboardErrorWording(
+  options: Pick<ProblemWordingOptions, 'untypedRefusal'> = {}
+): (payload: unknown, status: number, fallback: string) => string {
   const t = useTranslations('errors.dashboard');
-  const problemWording = useProblemWording();
+  const problemWording = useProblemWording({ untypedRefusal: options.untypedRefusal });
   return useCallback(
     (payload: unknown, status: number, fallback: string) => {
       const code = answerOf(payload).code;
