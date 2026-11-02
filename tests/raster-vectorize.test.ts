@@ -3,13 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { NextRequest } from 'next/server';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { convertFile } from '../src/lib/conversions';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { VECTORIZE_MAX_OUTPUT_BYTES } from '../src/lib/conversions/raster-vectorize';
 import { VECTORIZE_SOURCES, type VectorizeOptions } from '../src/lib/conversions/raster-vectorize-options';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { resolveResourceClass } from '../src/lib/queue/resource-class';
+import { JOB_DEADLINE_AT } from '../src/lib/conversions/job-time';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import {
@@ -30,6 +32,19 @@ import { skipUnless } from './helpers/strict-skip';
  * each way a real program can, or record what they were given); the real program, when installed, is judged through the public route
  * and by what each option visibly does to the SVG, against properties of the pictures drawn here (their colours, their straight edges).
  */
+
+/** What each run of a program in the sandbox was given, recorded on the way to the real sandbox: its limits are what the sandbox enforces. */
+const sandboxRuns = vi.hoisted(() => [] as Array<{ options: Record<string, unknown> }>);
+vi.mock('../src/worker/sandbox', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/worker/sandbox')>();
+  return {
+    ...actual,
+    executeSandboxedBinary: (...call: Parameters<typeof actual.executeSandboxedBinary>) => {
+      sandboxRuns.push({ options: { ...call[2] } });
+      return actual.executeSandboxedBinary(...call);
+    },
+  };
+});
 
 const vtracer = getOracleToolPath('vtracer');
 const haveTracer = !skipUnless('vtracer', vtracer !== null);
@@ -99,6 +114,11 @@ function standIn(body: string): string {
 const STOP_HANG_GUARD_MS = 10_000;
 const MINIMAL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><path d="M0,0h4v4h-4z" fill="#000000"/></svg>';
 const writesMinimalSvg = (): string => standIn(`printf '%s' '${MINIMAL_SVG}' > "$out"`);
+/** A stand-in that writes an SVG, and whether it was started. */
+const started = (): { program: string; ran: () => boolean } => {
+  const marker = path.join(tmpDir('vtracer-ran-'), 'ran');
+  return { program: standIn(`touch '${marker}'\nprintf '%s' '${MINIMAL_SVG}' > "$out"`), ran: () => fs.existsSync(marker) };
+};
 
 const vectorize = (input: Buffer, source = 'png', options: VectorizeOptions | undefined = undefined) =>
   convertFile(input, source, 'svg', options === undefined ? {} : { vectorize: options }, `picture.${source}`);
@@ -136,6 +156,13 @@ describe('the raster to SVG pairs', () => {
     for (const source of traced) expect(FORMAT_REGISTRY[source].targetFormats).toContain('svg');
     const withTracerOptions = Object.values(FORMAT_REGISTRY).filter((format) => format.optionsSchema?.vectorize).map((format) => format.id).sort();
     expect(withTracerOptions).toEqual(traced);
+  });
+
+  it('run on the CPU lane whatever the file size, since a small compressible picture can trace for seconds with gigabytes', () => {
+    for (const source of VECTORIZE_SOURCES) {
+      for (const bytes of [1_000, 5 * 1024 * 1024, 60 * 1024 * 1024]) expect(resolveResourceClass(source, 'svg', bytes, {}), `${source} ${bytes}`).toBe('cpu');
+    }
+    expect(resolveResourceClass('png', 'webp', 1_000, {})).toBe('light');
   });
 });
 
@@ -214,6 +241,21 @@ describe('the tracer program, as the wrapper sees it', () => {
     expect(failure.message).toMatch(/^Tracing this picture needs more than the 2048 MB the SVG tracer may use\./);
   });
 
+  it('reports a program that crashes with SIGSEGV as a failed trace that names the signal, not as a memory refusal', async () => {
+    const failure = await withTracer(standIn('kill -SEGV $$'), () => captureError(() => vectorize(clean)));
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect(failure).not.toBeInstanceOf(PayloadLimitError);
+    expect(failure.message).toContain('SIGSEGV');
+  });
+
+  it('runs the program without a network, under the measured memory, output, diagnostics and time limits', async () => {
+    sandboxRuns.length = 0;
+    await withTracer(writesMinimalSvg(), () => vectorize(clean));
+    expect(sandboxRuns).toHaveLength(1);
+    expect(sandboxRuns[0].options).toMatchObject({ networkIsolated: true, memoryLimitMb: 2048, maxFileSize: 32 * 1024 * 1024, maxBuffer: 64 * 1024 });
+    expect(sandboxRuns[0].options.timeoutMs).toBeLessThanOrEqual(120_000);
+  });
+
   it('stops a program that overruns the time of the conversion, with a typed timeout and without waiting for it', async () => {
     const started = Date.now();
     const failure = await withTracer(standIn('sleep 30'), () => captureError(() => convertFile(clean, 'png', 'svg', { timeoutMs: 700 }, 'p.png')));
@@ -238,12 +280,26 @@ describe('the tracer program, as the wrapper sees it', () => {
   });
 });
 
-describe('inputs refused before the program starts', () => {
-  const started = (): { program: string; ran: () => boolean } => {
-    const marker = path.join(tmpDir('vtracer-ran-'), 'ran');
-    return { program: standIn(`touch '${marker}'\nprintf '%s' '${MINIMAL_SVG}' > "$out"`), ran: () => fs.existsSync(marker) };
-  };
+/** A run-length BMP of `side` x `side` pixels of colour 0: runs of 255 pixels per row, so the file is about 8 bytes per 1000 pixels. */
+function runLengthBmp(side: number): Buffer {
+  const stream: number[] = [];
+  for (let row = 0; row < side; row++) {
+    for (let left = side; left > 0; left -= 255) stream.push(Math.min(255, left), 0);
+    stream.push(0, 0);
+  }
+  stream.push(0, 1);
+  return craftBmp({ width: side, height: side, bitCount: 8, compression: 1, palette: [[0, 0, 0], [255, 255, 255]], pixels: Uint8Array.from(stream) });
+}
 
+/** A BMP (V5 header) of `width` x `height` pixels of one RGB colour, with an embedded ICC profile. */
+function profiledBmp(width: number, height: number, rgb: readonly number[], icc: Buffer): Buffer {
+  const rowBytes = storedRowBytes(width, 24);
+  const pixels = new Uint8Array(rowBytes * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) pixels.set([rgb[2], rgb[1], rgb[0]], y * rowBytes + x * 3);
+  return craftBmp({ width, height, bitCount: 24, pixels, header: 124, icc: new Uint8Array(icc) });
+}
+
+describe('inputs refused before the program starts', () => {
   it('refuses a picture over the 16 megapixel budget of tracing (413) from its header', async () => {
     const huge = await sharp({ create: { width: 5000, height: 4000, channels: 3, background: '#ffffff' } }).png({ compressionLevel: 9 }).toBuffer();
     const { program, ran } = started();
@@ -276,6 +332,89 @@ describe('inputs refused before the program starts', () => {
     const failure = await withTracer(program, () => captureError(() => convertFile(clean, 'png', 'svg', { vectorize: raw as VectorizeOptions }, 'p.png')));
     expect(failure).toBeInstanceOf(UnsupportedOptionError);
     expect(ran()).toBe(false);
+  });
+
+  it('refuses a small run-length BMP that declares more than 16 megapixels before it allocates the picture', async () => {
+    const bomb = runLengthBmp(10_000);
+    expect(bomb.length).toBeLessThan(1024 * 1024);
+    const { program, ran } = started();
+    const before = process.memoryUsage().arrayBuffers;
+    const failure = await withTracer(program, () => captureError(() => vectorize(bomb, 'bmp')));
+    const allocated = process.memoryUsage().arrayBuffers - before;
+    expect(failure).toBeInstanceOf(InputPixelLimitError);
+    expect((failure as InputPixelLimitError).status).toBe(413);
+    expect(allocated).toBeLessThan(50 * 1024 * 1024);
+    expect(ran()).toBe(false);
+  });
+
+  it('answers engine-unavailable for a missing program before it decodes the picture', async () => {
+    const failure = await withTracer('/nonexistent/vtracer', () => captureError(() => vectorize(clean.subarray(0, 60))));
+    expect(failure).toBeInstanceOf(EngineUnavailableError);
+  });
+
+  it('stops a cancelled conversion with its reason before the picture is staged', async () => {
+    const { program, ran } = started();
+    const controller = new AbortController();
+    const reason = new Error('cancelled by the caller');
+    controller.abort(reason);
+    const failure = await withTracer(program, () => captureError(() => convertFile(clean, 'png', 'svg', { signal: controller.signal }, 'p.png')));
+    expect(failure).toBe(reason);
+    expect(ran()).toBe(false);
+  });
+
+  it('stops a conversion whose job deadline has passed with a typed timeout, without starting the program', async () => {
+    const { program, ran } = started();
+    const failure = await withTracer(program, () => captureError(() => convertFile(clean, 'png', 'svg', { [JOB_DEADLINE_AT]: Date.now() - 1 } as never, 'p.png')));
+    expect(failure).toBeInstanceOf(CpuTaskTimeoutError);
+    expect(ran()).toBe(false);
+  });
+});
+
+describe('what the program reads', () => {
+  /** The PNG the program was handed for `input`, decoded: its header and its first pixel. */
+  async function staged(input: Buffer, source: string) {
+    const copy = path.join(tmpDir('vtracer-staged-'), 'staged.png');
+    await withTracer(standIn(`cp "$in" '${copy}'\nprintf '%s' '${MINIMAL_SVG}' > "$out"`), () => vectorize(input, source));
+    const png = fs.readFileSync(copy);
+    const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+    return { meta: await sharp(png).metadata(), info, first: [...data.subarray(0, 4)] };
+  }
+  const RGB_RED = { r: 200, g: 40, b: 40 };
+  const twoFrames = (side: number) => sharp(Buffer.concat([Buffer.alloc(side * side * 3, 0), Buffer.alloc(side * side * 3, 255)]), { raw: { width: side, height: side * 2, channels: 3, pageHeight: side } });
+
+  it('is the picture turned upright by its EXIF orientation', async () => {
+    const turned = await sharp({ create: { width: 64, height: 32, channels: 3, background: RGB_RED } }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+    const { info } = await staged(turned, 'jpg');
+    expect([info.width, info.height]).toEqual([32, 64]);
+  });
+
+  it.each<[string, string, () => Promise<Buffer>]>([
+    ['a 16-bit PNG', 'png', () => sharp({ create: { width: 16, height: 16, channels: 3, background: RGB_RED } }).toColourspace('rgb16').png().toBuffer()],
+    ['a CMYK JPEG', 'jpg', () => sharp({ create: { width: 16, height: 16, channels: 3, background: RGB_RED } }).toColourspace('cmyk').jpeg().toBuffer()],
+    ['a palette PNG', 'png', () => sharp({ create: { width: 16, height: 16, channels: 3, background: RGB_RED } }).png({ palette: true }).toBuffer()],
+  ])('is 8-bit sRGB with alpha for %s, in the colour it shows', async (_name, source, encode) => {
+    const { meta, first } = await staged(await encode(), source);
+    expect(meta).toMatchObject({ depth: 'uchar', channels: 4, space: 'srgb' });
+    expect(first.slice(0, 3).map((value, index) => Math.abs(value - [RGB_RED.r, RGB_RED.g, RGB_RED.b][index]))).toSatisfy((gaps: number[]) => gaps.every((gap) => gap <= 24));
+    expect(first[3]).toBe(255);
+  });
+
+  it.each([
+    ['the first page of a multi-page TIFF', 'tiff', (side: number) => twoFrames(side).tiff().toBuffer()],
+    ['the first frame of an animated WebP', 'webp', (side: number) => twoFrames(side).webp({ lossless: true }).toBuffer()],
+  ])('is %s', async (_name, source, encode) => {
+    const { info, first } = await staged(await encode(16), source);
+    expect([info.width, info.height]).toEqual([16, 16]);
+    expect(first).toEqual([0, 0, 0, 255]);
+  });
+
+  it('is a BMP with an embedded profile converted to sRGB', async () => {
+    const colour = { r: 200, g: 100, b: 50 };
+    const p3 = await sharp({ create: { width: 8, height: 8, channels: 3, background: colour } }).withIccProfile('p3').png().toBuffer();
+    const p3Values = [...(await sharp(p3, { ignoreIcc: true }).raw().toBuffer()).subarray(0, 3)];
+    const { first } = await staged(profiledBmp(8, 8, p3Values, (await sharp(p3).metadata()).icc as Buffer), 'bmp');
+    expect(p3Values).not.toEqual([colour.r, colour.g, colour.b]);
+    expect(first.slice(0, 3).map((value, index) => Math.abs(value - [colour.r, colour.g, colour.b][index]))).toSatisfy((gaps: number[]) => gaps.every((gap) => gap <= 2));
   });
 });
 

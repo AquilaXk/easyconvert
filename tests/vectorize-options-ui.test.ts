@@ -1,8 +1,13 @@
-import { createElement } from 'react';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { createElement, useState } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { NextIntlClientProvider } from 'next-intl';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
-import { sanitizeOptionsForPair } from '../src/components/vectorize/pair-options';
+import { VectorizeOptionsSection } from '../src/components/vectorize/VectorizeOptionsSection';
+import { sanitizeOptionsForPair } from '../src/components/workbench/options/options-capabilities';
 import type { ConversionOptions } from '../src/lib/types';
+import { testMessages } from './helpers/intl-messages';
 import { attrOf, phrasesMissing, phrasesPresent, renderDom, select, visibleText, type DomElement } from './helpers/rendered-dom';
 
 /**
@@ -12,9 +17,12 @@ import { attrOf, phrasesMissing, phrasesPresent, renderDom, select, visibleText,
 
 const noop = () => undefined;
 
-function dialog(initialOptions: ConversionOptions, locale: 'en' | 'ko' = 'en', targetFormat = 'svg'): DomElement {
-  return renderDom(createElement(OptionsModal, { filename: 'logo.png', sourceFormat: 'png', targetFormat, initialOptions, onSave: noop, onClose: noop }), locale);
+function dialog(initialOptions: ConversionOptions, locale: 'en' | 'ko' = 'en', targetFormat = 'svg', sourceFormat = 'png'): DomElement {
+  return renderDom(createElement(OptionsModal, { filename: `logo.${sourceFormat}`, sourceFormat, targetFormat, initialOptions, onSave: noop, onClose: noop }), locale);
 }
+
+const field = (root: DomElement, id: string): DomElement | undefined => select(root, 'input').find((element) => attrOf(element, 'id') === id);
+const isDisabled = (root: DomElement, id: string): boolean => attrOf(field(root, id) as DomElement, 'disabled') !== null;
 
 /** The value a field shows: an input's value attribute, or the value of the option a select marks as selected. */
 const valueOf = (root: DomElement, id: string): string | null => {
@@ -57,6 +65,66 @@ describe('the options dialog of a raster to SVG pair', () => {
     const text = visibleText(dialog({}, 'en', 'webp'));
     expect(phrasesMissing(text, ['Compression Quality'])).toEqual([]);
     expect(phrasesPresent(text, ['Vector Tracing'])).toEqual([]);
+  });
+
+  it('offers no page range for a TIFF, since the tracer reads its first page', () => {
+    const text = visibleText(dialog({}, 'en', 'svg', 'tiff'));
+    expect(phrasesMissing(text, ['Vector Tracing'])).toEqual([]);
+    expect(phrasesPresent(text, ['Page Range'])).toEqual([]);
+  });
+
+  it('greys out simplify outside the spline mode and says why, as the engine applies it to splines only', () => {
+    expect(isDisabled(dialog({}), 'opt-vectorize-simplify')).toBe(false);
+    for (const mode of ['polygon', 'pixel'] as const) {
+      const root = dialog({ vectorize: { mode } });
+      expect(isDisabled(root, 'opt-vectorize-simplify'), mode).toBe(true);
+      expect(phrasesMissing(visibleText(root), ['Applies only to the Spline mode.'])).toEqual([]);
+    }
+    expect(phrasesMissing(visibleText(dialog({ vectorize: { mode: 'polygon' } }, 'ko')), ['스플라인 곡선 방식에만 적용돼요.'])).toEqual([]);
+  });
+
+  it('greys out color precision under the black and white preset and says why, as that preset traces two colors', () => {
+    expect(isDisabled(dialog({ vectorize: { preset: 'poster' } }), 'opt-vectorize-color-precision')).toBe(false);
+    const root = dialog({ vectorize: { preset: 'bw' } });
+    expect(isDisabled(root, 'opt-vectorize-color-precision')).toBe(true);
+    expect(phrasesMissing(visibleText(root), ['The black and white preset traces two colors, so this does not apply.'])).toEqual([]);
+  });
+
+  it('lets simplify take any value above 0, as the request schema does', () => {
+    expect(attrOf(field(dialog({}), 'opt-vectorize-simplify') as DomElement, 'min')).toBe('0');
+  });
+});
+
+describe('typing a simplify tolerance', () => {
+  let root: Root | undefined;
+  afterEach(() => {
+    root?.unmount();
+    root = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps a leading 0 while the person types 0.5, and sends 0.5', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
+    const sent: Array<number | undefined> = [];
+    function Editable() {
+      const [options, setOptions] = useState<ConversionOptions>({});
+      return createElement(VectorizeOptionsSection, { options, onChange: (next: ConversionOptions) => { sent.push(next.vectorize?.simplify); setOptions(next); } });
+    }
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    root.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: createElement(Editable) }));
+    await vi.waitFor(() => expect(container.querySelector('#opt-vectorize-simplify')).not.toBeNull());
+    const input = container.querySelector('#opt-vectorize-simplify') as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set as (value: string) => void;
+    for (const typed of ['0', '0.5']) {
+      setValue.call(input, typed);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await vi.waitFor(() => expect(sent).toHaveLength(typed === '0' ? 1 : 2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(input.value).toBe(typed);
+    }
+    expect(sent).toEqual([undefined, 0.5]);
   });
 });
 
