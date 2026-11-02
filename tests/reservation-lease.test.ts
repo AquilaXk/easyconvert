@@ -14,9 +14,11 @@ import { JobDeadlineError, jobDeadlineSettings } from '../src/lib/queue/job-dead
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { userStore } from '../src/lib/auth/user-store';
 import { POST as createJob } from '../src/app/api/v1/jobs/route';
-import { Queue } from '../src/lib/queue/bullmq-engine';
-import { getJobAcrossQueues } from '../src/lib/queue/conversion-queue';
-import { QueueUnavailableError } from '../src/lib/types';
+import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
+import { attachJobLifecycleListeners, getJobAcrossQueues } from '../src/lib/queue/conversion-queue';
+import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
+import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
@@ -229,6 +231,54 @@ describe('a reservation a request hands to queued work', () => {
     });
 
     expect(await used(owner)).toBe(1);
+  });
+});
+
+describe('queued work that takes a reservation', () => {
+  const PAST_THE_PROVISIONAL_LEASE_MS = RESERVATION_LEASE.provisionalMs + 1000;
+  const used = async (owner: string) => (await redisKeyStore.getQuotaUsage(owner)).usedToday;
+  const workers: Worker<ConversionJobData, ConversionJobResult>[] = [];
+
+  afterEach(async () => {
+    await Promise.all(workers.splice(0).map((worker) => worker.close()));
+    vi.useRealTimers();
+  });
+
+  it('charges a job that a worker takes while its reservation is on the provisional lease, when it ends after that lease would have', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const owner = freshOwner();
+    const unit = await redisKeyStore.reserveQuota(owner, 1);
+    const reservationId = unit.reservationId as string;
+    const queue = new Queue<ConversionJobData, ConversionJobResult>(`lease-pickup-${crypto.randomBytes(4).toString('hex')}`);
+    const worker = new Worker<ConversionJobData, ConversionJobResult>(queue, async (job) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      vi.setSystemTime(Date.now() + PAST_THE_PROVISIONAL_LEASE_MS);
+      return { jobId: job.id, status: 'completed' } as ConversionJobResult;
+    });
+    workers.push(worker);
+    attachJobLifecycleListeners(worker);
+
+    await queue.add('convert', { jobId: '', originalFilename: 'a.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 1, options: {}, userId: owner, reservationId }, {});
+
+    await vi.waitFor(async () => expect(await redisKeyStore.renewReservation(reservationId, 1)).toBe(false), { timeout: 5_000, interval: 20 });
+    expect(await used(owner)).toBe(1);
+  });
+
+  it('charges a graph that ends after the provisional lease of its reservation would have', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const owner = freshOwner();
+    const unit = await redisKeyStore.reserveQuota(owner, 1);
+    const scheduler = new InMemoryGraphScheduler();
+    const graphId = `graph_lease_${crypto.randomBytes(6).toString('hex')}`;
+    const key = `uploads/${graphId}/a.csv`;
+    await scheduler.initGraph(graphId, { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: key } } } as never, { ownerUserId: owner, reservationId: unit.reservationId });
+
+    vi.setSystemTime(Date.now() + PAST_THE_PROVISIONAL_LEASE_MS);
+    expect(await scheduler.onNodeCompleted(graphId, 'up', [key], 1)).toMatchObject({ graphCompleted: true });
+
+    expect(await used(owner)).toBe(1);
+    vi.restoreAllMocks();
   });
 });
 
