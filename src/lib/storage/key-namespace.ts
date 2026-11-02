@@ -5,7 +5,8 @@ import { isAnonymousUserId } from '../auth/anonymous-identity';
  * - `uploads/...`: multipart uploads used as job inputs, including every upload of an anonymous caller. They have no
  *   owner and are reachable by anyone holding the key (capability semantics). A key never names a client address.
  * - `conversions/<userId>/...`: synchronous API outputs owned by that user.
- * - `results/<jobId>/...`: queue job outputs, owned by the job's user when the job has one.
+ * - `results/<jobId>/...`: queue job outputs, owned by the job's user when the job has one. A graph's exports are
+ *   `results/<graphId>/<nodeId>/<index>/<name>` (`nodeOutputKey`), read as outputs of the job the graph id names.
  * - `intermediate/<graphId>/<nodeId>/...`: outputs of the nodes of a job graph, which a node answers with as its
  *   `downloadUrl`. They have no owner and are reachable by anyone holding the key (capability semantics).
  * Any other key is `other`: no writer of the server produces one, so no route serves or resolves it.
