@@ -112,7 +112,7 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
     });
   });
 
-  describe('3. Cloud Serverless Fallback with Zero-Data Retention Header', () => {
+  describe('3. Cloud Serverless Fallback without a retention header', () => {
     it('sends the file to the server with no retention header and returns Cloud tier telemetry when cloud is permitted', async () => {
       const mockBlob = new Blob(['mock-result'], { type: 'video/mp4' });
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({

@@ -744,7 +744,7 @@ export function resolveConversionTier(
     };
   }
 
-  // 8. Level 4: Serverless API fallback (Fail-closed or Zero-Data Retention cloud)
+  // 8. Level 4: Serverless API fallback (fail-closed, or the server pipeline)
   return {
     tier: 'L4',
     tierName: SERVER_TIER_NAME,

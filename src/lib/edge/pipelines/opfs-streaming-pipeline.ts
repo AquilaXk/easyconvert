@@ -13,7 +13,7 @@ import {
   createSessionId,
   sweepOrphanedSessions,
   destroySessionImmediately,
-  registerZeroRetentionLifecycleHooks,
+  registerSessionCleanupOnPageExit,
 } from '../opfs/storage-gc';
 import { processOpfsStreaming } from '../workers/opfs-vfs.worker';
 import { EdgeUnsupportedError, rehydrateWorkerError } from '../workers/worker-errors';
@@ -44,7 +44,7 @@ function resultUrlOf(blob: Blob): string {
 // Active OPFS conversion sessions, deleted from the browser's storage when the page unloads
 const activePipelineSessions = new Set<string>();
 if (typeof window !== 'undefined' || typeof self !== 'undefined') {
-  registerZeroRetentionLifecycleHooks(activePipelineSessions);
+  registerSessionCleanupOnPageExit(activePipelineSessions);
 }
 
 /**

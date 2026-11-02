@@ -1820,7 +1820,7 @@
   {
     "file": "src/lib/edge/opfs/storage-gc.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "registerZeroRetentionLifecycleHooks",
+    "function": "registerSessionCleanupOnPageExit",
     "count": 2
   },
   {

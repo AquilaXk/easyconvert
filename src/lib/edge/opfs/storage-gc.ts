@@ -223,7 +223,7 @@ export async function destroySessionImmediately(sessionId: string, rootDir?: any
  * Global lifecycle hook registry that deletes the OPFS sessions left in the browser's storage.
  * Listens for browser unload/pagehide events to eradicate any remaining active session directories.
  */
-export function registerZeroRetentionLifecycleHooks(
+export function registerSessionCleanupOnPageExit(
   activeSessionIds: Set<string>,
   rootDir?: any
 ): () => void {

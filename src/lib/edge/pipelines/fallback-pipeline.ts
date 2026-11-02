@@ -67,7 +67,7 @@ export interface CloudConversionResult {
 }
 
 /**
- * Executes serverless cloud conversion with Zero-Data Retention guarantees.
+ * Executes serverless cloud conversion; the server keeps the result until the retention rule of entry 125 deletes it.
  */
 export async function executeServerlessCloudFallback(
   file: File | Blob,
