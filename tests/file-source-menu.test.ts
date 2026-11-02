@@ -7,9 +7,10 @@ import FileSourceButton from '../src/components/workbench/FileSourceButton';
 import { testMessages } from './helpers/intl-messages';
 
 /**
- * The "more sources" menu of the file button, driven by keyboard as the menu button pattern of the WAI-ARIA Authoring
- * Practices describes it: opening moves focus into the menu, the arrows, Home and End move within it, and every way out
- * returns focus to the button or hands it to what the item opens.
+ * The "more sources" menu of the file button, driven as the menu button pattern of the WAI-ARIA Authoring Practices
+ * describes it: opening moves focus into the menu, the arrows, Home and End move within it, Escape and a choice return focus
+ * to the button, and Tab or a pointer press outside closes it. A mouse press inside never closes it, in an engine that
+ * blurs the focused item on that press as well.
  */
 
 let root: Root | undefined;
@@ -86,11 +87,50 @@ describe('the menu of more file sources', () => {
     expect(onPickDevice).toHaveBeenCalledTimes(1);
   });
 
-  it('closes when focus leaves it, as Tab moves it on', async () => {
+  it.each([['Tab', false], ['Shift+Tab', true]] as const)('closes on %s and leaves focus to move on', async (_keys, shiftKey) => {
+    const { host, toggle } = await mount();
+    await open(host, toggle);
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(tab);
+    await vi.waitFor(() => expect(items(host)).toEqual([]));
+    expect(tab.defaultPrevented).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('stays open when a mouse press blurs its item without moving focus anywhere, as WebKit does, so the link item opens its dialog', async () => {
+    const { host, toggle } = await mount();
+    await open(host, toggle);
+    items(host)[0].dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(items(host)).toHaveLength(2);
+    items(host)[1].click();
+    await vi.waitFor(() => expect(document.querySelector('dialog[aria-labelledby=url-import-heading]')).not.toBeNull());
+  });
+
+  it('keeps focus where it is when pressed with a mouse, so a press inside it never blurs its item', async () => {
+    const { host, toggle } = await mount();
+    await open(host, toggle);
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    items(host)[1].dispatchEvent(mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+  });
+
+  it('closes on a pointer press outside it', async () => {
     const { host, toggle, after } = await mount();
     await open(host, toggle);
-    after.focus();
+    after.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     await vi.waitFor(() => expect(items(host)).toEqual([]));
-    expect(document.activeElement).toBe(after);
+  });
+
+  it('closes on Escape from the button, and Down on the button of an open menu moves focus into it', async () => {
+    const { host, toggle } = await mount();
+    await open(host, toggle);
+    toggle.focus();
+    press('ArrowDown');
+    await vi.waitFor(() => expect(document.activeElement).toBe(items(host)[0]));
+    toggle.focus();
+    press('Escape');
+    await vi.waitFor(() => expect(items(host)).toEqual([]));
+    expect(document.activeElement).toBe(toggle);
   });
 });
