@@ -756,9 +756,8 @@ export async function processGraphNodeJob(
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
-          const filename = stored.filename || path.basename(inputKey);
-          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, filename);
-          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, filename);
+          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, stored.filename || path.basename(inputKey));
+          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, stored.filename || path.basename(inputKey));
           outputKeys.push(promotedKey);
         }
         await job.log(`Promoted ${outputKeys.length} result(s) for download`);
