@@ -329,20 +329,28 @@ async function changeHold(key: string, holder: string, change: (current: Retenti
 const RETENTION_PROVIDER = 'retention';
 
 /**
+ * Holds the input `key` for the job `holder` (`holdResultForJob`), or throws a StorageNotFoundError when it was deleted.
+ * A worker calls it again when it takes the job, as a queue consumer takes its own lease on what it receives, so a job whose
+ * request gave the hold up, because its hand-off could not tell whether the job was stored, holds its input while it runs.
+ */
+export async function takeInputHold(key: string, holder: string): Promise<void> {
+  if (!(await holdResultForJob(key, holder))) throw new StorageNotFoundError(key, RETENTION_PROVIDER);
+}
+
+/**
  * Runs `start`, which queues the job `holder`, while its input `key` is held for it, so that neither the sweep nor an
  * early deletion for space removes a result the job reads, and no other job's end deletes an upload it reads, before
  * it ends (its end calls `releaseResultHold`). When the input was deleted after it was authorized, nothing is queued
  * and a StorageNotFoundError is thrown, which the routes answer like a missing object. A failed `start` gives the
- * hold up again and leaves the file as it was, unless `mayBeQueued` says the job may have been stored anyway: the hold
- * then stays under the job's id, for the job to end when it ends, and lapses after JOB_INPUT_HOLD_MAX_MS otherwise.
+ * hold up again and leaves the file as it was; a job that was stored anyway takes it again when it runs (`takeInputHold`).
  */
-export async function withInputHeld<T>(key: string | undefined, holder: string, start: () => Promise<T>, mayBeQueued: () => boolean = () => false): Promise<T> {
+export async function withInputHeld<T>(key: string | undefined, holder: string, start: () => Promise<T>): Promise<T> {
   if (key === undefined) return start();
-  if (!(await holdResultForJob(key, holder))) throw new StorageNotFoundError(key, RETENTION_PROVIDER);
+  await takeInputHold(key, holder);
   try {
     return await start();
   } catch (error) {
-    if (!mayBeQueued()) await giveUpHold(key, holder);
+    await giveUpHold(key, holder);
     throw error;
   }
 }
