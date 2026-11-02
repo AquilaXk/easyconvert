@@ -111,7 +111,7 @@ export function useFormatDetail(): (formatKey: string) => FormatSpecification {
 
   return (formatKey) => {
     const key = formatKey.toLowerCase();
-    const known = FORMAT_SPECIFICATIONS[key];
+    const known = Object.hasOwn(FORMAT_SPECIFICATIONS, key) ? FORMAT_SPECIFICATIONS[key] : undefined;
     if (known) {
       const specKey = key as 'pdf';
       return {

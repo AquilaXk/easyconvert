@@ -35,7 +35,7 @@ export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;
 const PER_FORMAT: ReadonlySet<Namespace> = new Set(['formatSpecs', 'formatDescriptions']);
 
 function pickKeys(table: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
-  return Object.fromEntries(keys.filter((key) => key in table).map((key) => [key, table[key]]));
+  return Object.fromEntries(keys.filter((key) => Object.hasOwn(table, key)).map((key) => [key, table[key]]));
 }
 
 /** The messages `page`'s client components read; for a converter page, the format prose of `formatIds` only. */
