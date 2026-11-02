@@ -11,26 +11,26 @@ import {
 
 export type { CategoryWord, ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
 
-/** The words a slug may name a category by instead of a format: the format its page converts and the word of its title. */
-const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; title: string }>> = {
-  video: { format: 'mp4', title: 'Video' },
-  audio: { format: 'mp3', title: 'Audio' },
-  image: { format: 'jpg', title: 'Image' },
-  document: { format: 'docx', title: 'Document' },
-  ebook: { format: 'epub', title: 'Ebook' },
-  archive: { format: 'zip', title: 'Archive' },
-  vector: { format: 'svg', title: 'Vector' },
-  font: { format: 'ttf', title: 'Font' },
-  cad: { format: 'dxf', title: 'CAD' },
-  spreadsheet: { format: 'xlsx', title: 'Spreadsheet' },
-  presentation: { format: 'pptx', title: 'Presentation' },
-  data: { format: 'csv', title: 'Data' },
-  word: { format: 'docx', title: 'Word' },
-  excel: { format: 'xlsx', title: 'Excel' },
-  powerpoint: { format: 'pptx', title: 'PowerPoint' },
-  photo: { format: 'jpg', title: 'Photo' },
-  picture: { format: 'jpg', title: 'Picture' },
-  music: { format: 'mp3', title: 'Music' },
+/** The words a slug may name a category by instead of a format: the format its page converts and the word its title shows. */
+const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: string }>> = {
+  video: { format: 'mp4', display: 'Video' },
+  audio: { format: 'mp3', display: 'Audio' },
+  image: { format: 'jpg', display: 'Image' },
+  document: { format: 'docx', display: 'Document' },
+  ebook: { format: 'epub', display: 'Ebook' },
+  archive: { format: 'zip', display: 'Archive' },
+  vector: { format: 'svg', display: 'Vector' },
+  font: { format: 'ttf', display: 'Font' },
+  cad: { format: 'dxf', display: 'CAD' },
+  spreadsheet: { format: 'xlsx', display: 'Spreadsheet' },
+  presentation: { format: 'pptx', display: 'Presentation' },
+  data: { format: 'csv', display: 'Data' },
+  word: { format: 'docx', display: 'Word' },
+  excel: { format: 'xlsx', display: 'Excel' },
+  powerpoint: { format: 'pptx', display: 'PowerPoint' },
+  photo: { format: 'jpg', display: 'Photo' },
+  picture: { format: 'jpg', display: 'Picture' },
+  music: { format: 'mp3', display: 'Music' },
 };
 
 const OCR_SLUGS = new Set(['pdf-ocr', 'ocr-pdf', 'ocr']);
@@ -39,7 +39,7 @@ const OCR_SLUGS = new Set(['pdf-ocr', 'ocr-pdf', 'ocr']);
 function readSlugWord(raw: string): { format: string; name: SlugName } {
   if (Object.hasOwn(CATEGORY_WORDS, raw)) {
     const id = raw as CategoryWord;
-    return { format: CATEGORY_WORDS[id].format, name: { kind: 'category', id, display: CATEGORY_WORDS[id].title } };
+    return { format: CATEGORY_WORDS[id].format, name: { kind: 'category', id, display: CATEGORY_WORDS[id].display } };
   }
   return { format: raw, name: { kind: 'format', id: raw, display: raw.toUpperCase() } };
 }
