@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown } from 'lucide-react';
 import { getAvailableTargetFormats } from '@/lib/registry';
-import FormatSelector from '../FormatSelector';
+import FormatPickerButton from './FormatPickerButton';
 import { FormatIcon } from './FormatIcon';
 
 interface HeroFormatTilesProps {
@@ -14,44 +14,24 @@ interface HeroFormatTilesProps {
   onTargetChange: (nextTarget: string) => void;
 }
 
-type Side = 'source' | 'target';
+const TILE_CLASS =
+  'group relative w-24 h-[104px] sm:w-28 sm:h-[120px] rounded-sm border border-rule bg-surface shadow-elev-1 hover:border-accent-edge text-ink flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer';
 
-interface FormatTileProps {
-  side: Side;
-  format: string;
-  display: string;
-  label: string;
-  isOpen: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}
-
-/** One tile of the pair: the format's icon over its name, a button that opens the format picker of its side. */
-function FormatTile({ side, format, display, label, isOpen, onToggle, children }: Readonly<FormatTileProps>) {
+/** What a tile shows: the format's icon over its name, and a chevron that turns while its picker is open. */
+function TileFace({ format, display }: Readonly<{ format: string; display: string }>) {
   return (
-    <div className="relative">
-      <button
-        type="button"
-        data-testid={`hero-${side}-format-btn`}
-        aria-haspopup="dialog"
-        aria-expanded={isOpen}
-        aria-label={label}
-        onClick={onToggle}
-        className="relative w-24 h-[104px] sm:w-28 sm:h-[120px] rounded-sm border border-rule bg-surface shadow-elev-1 hover:border-accent-edge text-ink flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer"
-      >
-        <FormatIcon format={format} className="size-6 text-ink-2" />
-        <span className="text-sm font-bold uppercase">{display}</span>
-        <ChevronDown
-          aria-hidden="true"
-          className={`absolute right-2 bottom-2 size-3.5 text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
-        />
-      </button>
-      {children}
-    </div>
+    <>
+      <FormatIcon format={format} className="size-6 text-ink-2" />
+      <span className="text-sm font-bold uppercase">{display}</span>
+      <ChevronDown
+        aria-hidden="true"
+        className="absolute right-2 bottom-2 size-3.5 text-ink-3 transition-transform duration-200 group-aria-expanded:rotate-180"
+      />
+    </>
   );
 }
 
-/** The pair of a converter page as two format tiles, each of which changes its side of the pair. */
+/** The pair of a converter page as two format tiles, each a button that opens the format picker of its side. */
 export default function HeroFormatTiles({
   sourceFormat,
   targetFormat,
@@ -59,7 +39,6 @@ export default function HeroFormatTiles({
   onTargetChange,
 }: Readonly<HeroFormatTilesProps>) {
   const t = useTranslations('hero.tiles');
-  const [openPicker, setOpenPicker] = useState<Side | null>(null);
 
   const normalizedSource = sourceFormat.toLowerCase();
   const normalizedTarget = targetFormat.toLowerCase();
@@ -67,55 +46,34 @@ export default function HeroFormatTiles({
   const isAnyTarget = normalizedTarget === 'any' || !normalizedTarget;
   const sourceDisplay = isAnySource ? t('any') : normalizedSource.toUpperCase();
   const targetDisplay = isAnyTarget ? t('any') : normalizedTarget.toUpperCase();
-  const toggle = (side: Side) => setOpenPicker((current) => (current === side ? null : side));
 
   return (
     <div className="inline-flex items-center justify-center gap-3 sm:gap-5">
-      <FormatTile
-        side="source"
-        format={normalizedSource}
-        display={sourceDisplay}
-        label={t('sourceLabel', { format: sourceDisplay })}
-        isOpen={openPicker === 'source'}
-        onToggle={() => toggle('source')}
+      <FormatPickerButton
+        testId="hero-source-format-btn"
+        ariaLabel={t('sourceLabel', { format: sourceDisplay })}
+        className={TILE_CLASS}
+        selectedFormatId={normalizedSource}
+        onSelect={onSourceChange}
+        title={t('fromTitle')}
       >
-        {openPicker === 'source' && (
-          <FormatSelector
-            selectedFormatId={normalizedSource}
-            onSelect={(fmt) => {
-              onSourceChange(fmt);
-              setOpenPicker(null);
-            }}
-            onClose={() => setOpenPicker(null)}
-            title={t('fromTitle')}
-          />
-        )}
-      </FormatTile>
+        <TileFace format={normalizedSource} display={sourceDisplay} />
+      </FormatPickerButton>
 
       <span className="text-xs uppercase tracking-widest text-ink-3 font-medium">{t('joiner')}</span>
 
-      <FormatTile
-        side="target"
-        format={normalizedTarget}
-        display={targetDisplay}
-        label={t('targetLabel', { format: targetDisplay })}
-        isOpen={openPicker === 'target'}
-        onToggle={() => toggle('target')}
+      <FormatPickerButton
+        testId="hero-target-format-btn"
+        ariaLabel={t('targetLabel', { format: targetDisplay })}
+        className={TILE_CLASS}
+        availableFormats={isAnySource ? undefined : getAvailableTargetFormats(normalizedSource)}
+        sourceFormat={isAnySource ? undefined : normalizedSource}
+        selectedFormatId={normalizedTarget}
+        onSelect={onTargetChange}
+        title={t('toTitle')}
       >
-        {openPicker === 'target' && (
-          <FormatSelector
-            availableFormats={isAnySource ? undefined : getAvailableTargetFormats(normalizedSource)}
-            sourceFormat={isAnySource ? undefined : normalizedSource}
-            selectedFormatId={normalizedTarget}
-            onSelect={(fmt) => {
-              onTargetChange(fmt);
-              setOpenPicker(null);
-            }}
-            onClose={() => setOpenPicker(null)}
-            title={t('toTitle')}
-          />
-        )}
-      </FormatTile>
+        <TileFace format={normalizedTarget} display={targetDisplay} />
+      </FormatPickerButton>
     </div>
   );
 }

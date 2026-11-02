@@ -26,8 +26,7 @@ function rowOf(item: Partial<ConversionQueueItem>, locale: TestLocale) {
   };
   return renderDom(
     createElement(QueueItemRow, {
-      item: row, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-      onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
+      item: row, onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
     }),
     locale
   );

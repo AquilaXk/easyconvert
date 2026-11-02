@@ -110,7 +110,7 @@ export default function Header() {
   }, [isToolsOpen]);
 
   return (
-    <header className="bg-surface/80 backdrop-blur-xl text-ink border-b border-rule sticky top-0 z-40 h-[var(--header-height)]">
+    <header data-sticky-header className="bg-surface/80 backdrop-blur-xl text-ink border-b border-rule sticky top-0 z-40 h-[var(--header-height)]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
         <div className="flex items-center gap-6 min-w-0">
           <Link

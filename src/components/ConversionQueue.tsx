@@ -7,7 +7,7 @@ import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/
 import { getAvailableTargetFormats } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import FormatSelector from './FormatSelector';
+import FormatPickerButton from './workbench/FormatPickerButton';
 import OptionsModal from './OptionsModal';
 import QueueItemRow from './workbench/QueueItemRow';
 import FileSourceButton from './workbench/FileSourceButton';
@@ -77,15 +77,14 @@ function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefiniti
 }
 
 interface QueueBatchHeaderProps {
-  itemCount: number; canBatchSelect: boolean; effectiveBusy: boolean; isBatchSelectorOpen: boolean; batchTargetLabel: string;
+  itemCount: number; canBatchSelect: boolean; effectiveBusy: boolean; batchTargetLabel: string;
   batchAvailableFormats: FormatDefinition[]; onUpdateAllTargets?: (targetFormat: string) => void;
-  onToggleBatchSelector: () => void; onCloseBatchSelector: () => void;
   onSelectBatchTarget: (fmt: string) => void; onClearAll: () => void;
 }
 
 function QueueBatchHeader({
-  itemCount, canBatchSelect, effectiveBusy, isBatchSelectorOpen, batchTargetLabel, batchAvailableFormats,
-  onUpdateAllTargets, onToggleBatchSelector, onCloseBatchSelector, onSelectBatchTarget, onClearAll,
+  itemCount, canBatchSelect, effectiveBusy, batchTargetLabel, batchAvailableFormats,
+  onUpdateAllTargets, onSelectBatchTarget, onClearAll,
 }: Readonly<QueueBatchHeaderProps>) {
   const t = useTranslations('queue');
   return (
@@ -93,21 +92,15 @@ function QueueBatchHeader({
       {onUpdateAllTargets && canBatchSelect ? (
         <div className="flex items-center flex-wrap gap-2.5">
           <span className="text-sm font-medium text-ink-2">{t('convertAllTo')}</span>
-          <div className="relative">
-            <button
-              type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-surface text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
-              <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
-            </button>
-            {isBatchSelectorOpen && (
-              <FormatSelector
-                availableFormats={batchAvailableFormats} selectedFormatId={batchTargetLabel}
-                onSelect={onSelectBatchTarget} onClose={onCloseBatchSelector} title={t('convertAllTitle')}
-              />
-            )}
-          </div>
+          <FormatPickerButton
+            disabled={effectiveBusy}
+            className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-surface text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            availableFormats={batchAvailableFormats} selectedFormatId={batchTargetLabel}
+            onSelect={onSelectBatchTarget} title={t('convertAllTitle')}
+          >
+            <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
+            <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
+          </FormatPickerButton>
         </div>
       ) : (
         <span className="text-sm font-medium text-ink-2">{t('filesInQueue', { count: itemCount })}</span>
@@ -240,8 +233,6 @@ export default function ConversionQueue({
   isConverting, zipError, onDismissZipError,
 }: Readonly<ConversionQueueProps>) {
   const t = useTranslations('queue');
-  const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
-  const [isBatchSelectorOpen, setIsBatchSelectorOpen] = useState(false);
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
@@ -263,11 +254,9 @@ export default function ConversionQueue({
       <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {items.length > 1 && (
           <QueueBatchHeader
-            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
+            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy}
             batchTargetLabel={batchTargetLabel} batchAvailableFormats={batchAvailableFormats} onUpdateAllTargets={onUpdateAllTargets}
-            onToggleBatchSelector={() => { setActiveFormatSelectorId(null); setIsBatchSelectorOpen((prev) => !prev); }}
-            onCloseBatchSelector={() => setIsBatchSelectorOpen(false)}
-            onSelectBatchTarget={(fmt) => { setBatchTargetLabel(fmt); onUpdateAllTargets?.(fmt); setIsBatchSelectorOpen(false); }}
+            onSelectBatchTarget={(fmt) => { setBatchTargetLabel(fmt); onUpdateAllTargets?.(fmt); }}
             onClearAll={onClearAll}
           />
         )}
@@ -275,13 +264,8 @@ export default function ConversionQueue({
           {items.map((item) => (
             <li key={item.id}>
               <QueueItemRow
-                item={item} isFormatSelectorOpen={activeFormatSelectorId === item.id}
-                onToggleFormatSelector={() => {
-                  setIsBatchSelectorOpen(false);
-                  setActiveFormatSelectorId((prev) => (prev === item.id ? null : item.id));
-                }}
-                onCloseFormatSelector={() => setActiveFormatSelectorId(null)}
-                onSelectTargetFormat={(fmt) => { onUpdateTargetFormat(item.id, fmt); setActiveFormatSelectorId(null); }}
+                item={item}
+                onSelectTargetFormat={(fmt) => onUpdateTargetFormat(item.id, fmt)}
                 onOpenOptions={() => setActiveOptionsModalId(item.id)}
                 onRemove={() => onRemoveItem(item.id)}
               />

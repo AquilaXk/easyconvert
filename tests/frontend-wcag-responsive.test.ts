@@ -257,7 +257,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(select(hocrModal, 'input', 'id', 'opt-doc-ocr')).toHaveLength(0);
     expect(attrOf(select(hocrModal, 'select', 'id', 'opt-doc-ocr-lang')[0], 'disabled')).toBeNull();
 
-    const flipped = computePopoverPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, 1440, 820);
+    const flipped = computePopoverPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, { left: 0, top: 64, right: 1440, bottom: 820 }, 820);
     expect(flipped).toMatchObject({ top: 'auto', bottom: 62 });
 
     const maxBytes = getViewerMaxFileBytes();
@@ -334,7 +334,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onUpdateTargetFormat: noop,
       onUpdateOptions: noop,
       onConvertAll: noop,
-     
       onAddMoreFiles: noop,
       onImportFile: noop,
       onDownloadAllZip: noop,
@@ -363,7 +362,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onUpdateTargetFormat: noop,
       onUpdateOptions: noop,
       onConvertAll: noop,
-     
       onAddMoreFiles: noop,
       onImportFile: noop,
       onDownloadAllZip: noop,
@@ -380,7 +378,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onUpdateTargetFormat: noop,
       onUpdateOptions: noop,
       onConvertAll: noop,
-     
       onAddMoreFiles: noop,
       onImportFile: noop,
       onDownloadAllZip: noop,
@@ -393,6 +390,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
   it('handles FormatSelector empty capability arrays, OAuth error allowlists, and unsupported diagnostics', () => {
     const imagePicker = render(FormatSelector, {
+      triggerRef: { current: null },
       sourceFormat: 'png',
       onSelect: noop,
       onClose: noop,
@@ -400,6 +398,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(phrasesMissing(visibleText(imagePicker), ['WEBP', 'JPG', 'AVIF'])).toEqual([]);
 
     const emptyPicker = render(FormatSelector, {
+      triggerRef: { current: null },
       availableFormats: [],
       sourceFormat: 'xyz',
       onSelect: noop,

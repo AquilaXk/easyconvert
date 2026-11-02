@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, Globe, HardDrive, Upload } from 'lucide-react';
 import UrlImportModal from '../UrlImportModal';
+import { usePopoverDismiss } from './usePopoverDismiss';
 
 /** How the split button reads: the drop zone's primary "select file" or the file bar's secondary "add more files". */
 const VARIANTS = {
@@ -53,9 +54,8 @@ function nextItemIndex(key: string, current: number, count: number): number | nu
 
 /**
  * A split button: the device picker on the main part, and a menu of the other file sources (device, link) on the chevron,
- * which follows the menu button pattern: opening it moves focus to an item, the arrows, Home and End move within it, Escape
- * and a choice return focus to the chevron, and Tab or a pointer press outside closes it. It never closes on a blur, since
- * WebKit blurs the focused item on a mouse press without focusing what was pressed.
+ * which follows the menu button pattern: opening it moves focus to an item, the arrows, Home and End move within it, and a
+ * choice returns focus to the chevron; Escape, Tab and a pointer press outside close it as `usePopoverDismiss` describes.
  */
 export default function FileSourceButton({
   label, variant, disabled = false, onPickDevice, onImportFile, className = '',
@@ -64,20 +64,24 @@ export default function FileSourceButton({
   const [menu, setMenu] = useState<MenuState>('closed');
   const [isUrlModalOpen, setIsUrlModalOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef<HTMLButtonElement[]>([]);
   const styles = VARIANTS[variant];
   const isMenuOpen = menu !== 'closed';
 
+  usePopoverDismiss({
+    isOpen: isMenuOpen,
+    triggerRef: toggleRef,
+    insideRefs: [rootRef],
+    leavesOnTab: () => Boolean(menuRef.current?.contains(document.activeElement)),
+    onClose: () => setMenu('closed'),
+  });
+
   useEffect(() => {
     if (menu === 'closed') return;
     const items = itemsRef.current;
     items[itemIndexFor(menu, items.length)]?.focus();
-    const handleOutside = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setMenu('closed');
-    };
-    document.addEventListener('pointerdown', handleOutside);
-    return () => document.removeEventListener('pointerdown', handleOutside);
   }, [menu]);
 
   const closeToToggle = () => {
@@ -86,11 +90,6 @@ export default function FileSourceButton({
   };
 
   const handleToggleKey = (event: React.KeyboardEvent) => {
-    if (event.key === 'Escape' && isMenuOpen) {
-      event.preventDefault();
-      setMenu('closed');
-      return;
-    }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
     const next = event.key === 'ArrowDown' ? 'first' : 'last';
@@ -99,15 +98,6 @@ export default function FileSourceButton({
   };
 
   const handleMenuKey = (event: React.KeyboardEvent) => {
-    if (event.key === 'Tab') {
-      setMenu('closed');
-      return;
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeToToggle();
-      return;
-    }
     const items = itemsRef.current;
     const next = nextItemIndex(event.key, items.indexOf(document.activeElement as HTMLButtonElement), items.length);
     if (next === null) return;
@@ -154,6 +144,7 @@ export default function FileSourceButton({
 
       {isMenuOpen && (
         <div
+          ref={menuRef}
           role="menu"
           aria-label={t('sourcesMenu')}
           onKeyDown={handleMenuKey}

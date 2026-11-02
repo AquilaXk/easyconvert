@@ -15,7 +15,7 @@ interface TileState {
 }
 
 export interface PairTiles extends Omit<TileState, 'page'> {
-  /** The target files take: the tiles' target, else the page's, else none. */
+  /** The target files take: the one the target tile shows, or none while it shows any format. */
   chosenTarget: string | undefined;
   changeSource: (next: string) => void;
   changeTarget: (next: string) => void;
@@ -51,7 +51,7 @@ export function usePairTiles(sourceFormat: string, targetFormat: string): PairTi
     source: tiles.source,
     target: tiles.target,
     changed: tiles.changed,
-    chosenTarget: [tiles.target, starting.target].find((format) => format !== ANY_FORMAT),
+    chosenTarget: tiles.target === ANY_FORMAT ? undefined : tiles.target,
     changeSource,
     changeTarget,
   };

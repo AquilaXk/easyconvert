@@ -21,7 +21,6 @@ declare global {
 }
 
 interface UseClientQueueOptions {
-  defaultTarget?: string;
   bundlePrefix?: string;
 }
 
@@ -470,7 +469,7 @@ export function createConversionRunners(ctx: QueueMutationContext) {
     }
   };
 
-  return { convertSingleItem, handleConvertAll };
+  return { handleConvertAll };
 }
 
 const updateQueueState = (
@@ -511,9 +510,8 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   };
   const isItemBusy = (i: ConversionQueueItem) =>
     isRunning(i) || inFlightIdsRef.current.has(i.id);
-  const handleFilesSelected = (files: File[], overrideTarget?: string) => {
-    const def = overrideTarget || options?.defaultTarget;
-    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, def))]);
+  const handleFilesSelected = (files: File[], target?: string) => {
+    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, target))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
   useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, abortersRef, handleFilesSelectedRef, handleFilesSelected);

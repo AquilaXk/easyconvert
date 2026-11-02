@@ -50,8 +50,7 @@ function renderedFailure(failure: ConversionFailure, locale: TestLocale): { aler
   const item: ConversionQueueItem = { ...hwpItem(), status: 'error', error: failure };
   const dom = renderDom(
     createElement(QueueItemRow, {
-      item, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-      onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
+      item, onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
     }),
     locale
   );

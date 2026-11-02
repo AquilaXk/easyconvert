@@ -30,7 +30,7 @@ import {
   IStorageBackend,
 } from '../src/lib/storage/s3-storage';
 
-describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distributed Interfaces', () => {
+describe('Phase 3: OPFS Streaming VFS, Immediate Disposal & Distributed Interfaces', () => {
   describe('1. Level 3 OPFS Streaming VFS Chunk Transcoders', () => {
     it('accurately resolves and executes Audio PCM Endianness swap (pcm -> pcm_be)', async () => {
       const transformer = resolveChunkTransformer('pcm', 'pcm_be', { bitDepth: 16 });
@@ -187,7 +187,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
     });
   });
 
-  describe('2. Zero-Retention Immediate Physical Disk Disposal', () => {
+  describe('2. Immediate Physical Disk Disposal', () => {
     it('safely attempts physical session directory deletion via destroySessionImmediately', async () => {
       const sessionId = createSessionId();
       // In environment without navigator.storage, it fails closed gracefully and returns false

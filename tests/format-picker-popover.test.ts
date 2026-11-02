@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { act, createElement, useState } from 'react';
+import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import FormatSelector, { computePopoverPosition } from '../src/components/FormatSelector';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { computePopoverPosition } from '../src/components/FormatSelector';
+import FormatPickerButton from '../src/components/workbench/FormatPickerButton';
 import { getAllFormats, getAvailableTargetFormats } from '../src/lib/registry';
 import type { FormatDefinition } from '../src/lib/types';
 import { testMessages } from './helpers/intl-messages';
@@ -15,15 +16,13 @@ import { testMessages } from './helpers/intl-messages';
  */
 
 let root: Root | undefined;
-let onSelect: ReturnType<typeof vi.fn>;
-let onClose: ReturnType<typeof vi.fn>;
+let onSelect: Mock<(formatId: string) => void>;
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   // jsdom lays nothing out; the popover opens only under a trigger that is on screen.
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(100, 200, 128, 32));
-  onSelect = vi.fn();
-  onClose = vi.fn();
+  onSelect = vi.fn<(formatId: string) => void>();
 });
 
 afterEach(() => {
@@ -39,24 +38,12 @@ interface PickerCase {
   available?: FormatDefinition[];
 }
 
+/** A trigger as the pages draw one; `mountCase` presses it. */
 function Harness({ selected, source, available }: Readonly<PickerCase>) {
-  const [open, setOpen] = useState(true);
-  return createElement(
-    'div',
-    null,
-    createElement('button', { type: 'button', id: 'trigger', onClick: () => setOpen(true) }, 'JPG'),
-    open &&
-      createElement(FormatSelector, {
-        sourceFormat: source,
-        availableFormats: available,
-        selectedFormatId: selected,
-        onSelect,
-        onClose: () => {
-          onClose();
-          setOpen(false);
-        },
-      })
-  );
+  return createElement(FormatPickerButton, {
+    testId: 'trigger', className: '', sourceFormat: source, availableFormats: available, selectedFormatId: selected, onSelect,
+    children: 'JPG',
+  });
 }
 
 function mountCase(picker: PickerCase) {
@@ -71,7 +58,11 @@ function mountCase(picker: PickerCase) {
       })
     )
   );
+  act(() => trigger().click());
 }
+
+const trigger = () => document.querySelector<HTMLButtonElement>('[data-testid=trigger]')!;
+const isClosed = () => popover() === null && trigger().getAttribute('aria-expanded') === 'false';
 
 const mount = (selected = 'jpg') => mountCase({ selected, source: 'png', available: getAvailableTargetFormats('png') });
 
@@ -141,7 +132,7 @@ describe('the format picker popover', () => {
   it('finds a format offered only under an alias by the name it stands for', () => {
     mountCase({ source: '7z', available: getAvailableTargetFormats('7z') });
     typeInto(search(), 'tgz');
-    expect(formatNames()).toContain('TAR.GZ');
+    expect(formatNames()).toEqual(['TAR.GZ']);
   });
 
   it('leaves Space on a format to the button, so it chooses the format and types nothing into the search', () => {
@@ -162,6 +153,7 @@ describe('the format picker popover', () => {
     expect(formatNames().filter((name) => name === 'JPG')).toHaveLength(1);
     const current = formatButtons().filter((button) => button.getAttribute('aria-current') === 'true');
     expect(current.map((button) => button.textContent)).toEqual(['ULTRAHDR']);
+    expect(current[0].title).toBe('ULTRAHDR');
     expect(new Set(formatButtons().map(accessibleName)).size).toBe(formatButtons().length);
   });
 
@@ -173,9 +165,31 @@ describe('the format picker popover', () => {
       window.dispatchEvent(new Event('scroll'));
     });
     expect(popover()).not.toBeNull();
-    expect(onClose).not.toHaveBeenCalled();
     expect(popover()!.style.top).not.toBe(before);
     expect(popover()!.contains(document.activeElement)).toBe(true);
+  });
+
+  it('closes when another picker on the page opens, so one is open at a time', () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    const button = (testId: string) => createElement(FormatPickerButton, { testId, className: '', onSelect, children: testId });
+    act(() =>
+      root!.render(
+        createElement(NextIntlClientProvider, {
+          locale: 'en', messages: testMessages('en'), timeZone: 'UTC',
+          children: createElement('div', null, button('first'), button('second')),
+        })
+      )
+    );
+    const [first, second] = ['first', 'second'].map((id) => document.querySelector<HTMLButtonElement>(`[data-testid=${id}]`)!);
+    act(() => first.click());
+    act(() => {
+      second.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      second.click();
+    });
+    expect(document.querySelectorAll('dialog[open]')).toHaveLength(1);
+    expect([first, second].map((b) => b.getAttribute('aria-expanded'))).toEqual(['false', 'true']);
   });
 
   it('moves through the grid of three columns with the arrow keys and back to the search above the first row', () => {
@@ -209,9 +223,8 @@ describe('the format picker popover', () => {
     mount();
     press(search(), 'ArrowDown');
     press(document.activeElement!, 'Escape');
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(popover()).toBeNull();
-    expect(document.activeElement?.id).toBe('trigger');
+    expect(isClosed()).toBe(true);
+    expect(document.activeElement).toBe(trigger());
   });
 
   it('stays open through a WebKit mouse press, which blurs the search without focusing the format, then takes the click', () => {
@@ -224,8 +237,7 @@ describe('the format picker popover', () => {
       search().dispatchEvent(new FocusEvent('blur', { relatedTarget: null }));
     });
     expect(pressed.defaultPrevented).toBe(true);
-    expect(onClose).not.toHaveBeenCalled();
-    expect(popover()).not.toBeNull();
+    expect(isClosed()).toBe(false);
     act(() => target.click());
     expect(onSelect).toHaveBeenCalledWith('gif');
   });

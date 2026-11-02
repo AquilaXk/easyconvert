@@ -677,7 +677,6 @@ describe('Workbench media, document, and tabular capability model', () => {
     const maxBytes = getViewerMaxFileBytes();
     const noop = () => undefined;
     const rowNoops = {
-      isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
       onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
     };
     const recoverableRowDom = renderDom(
@@ -823,7 +822,7 @@ describe('Workbench media, document, and tabular capability model', () => {
 
     const invalidZipRowDom = renderDom(
       createElement(QueueItemRow, {
-        item: zipItem, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
+        item: zipItem,
         onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
       })
     );
@@ -859,7 +858,6 @@ describe('Workbench media, document, and tabular capability model', () => {
 
     const execSpy = vi.spyOn(clientConverter, 'executeItemConversion').mockResolvedValue(undefined);
     try {
-      await pwHarness.runners.convertSingleItem('arch-1');
       await pwHarness.runners.handleConvertAll();
       expect(execSpy).not.toHaveBeenCalled();
 
@@ -909,7 +907,7 @@ describe('removing an item that is on its way to the server', () => {
       expect(harness.ctx.abortersRef.current.has('c')).toBe(true);
     });
     try {
-      await harness.runners.convertSingleItem('c');
+      await harness.runners.handleConvertAll();
       expect(seen?.aborted).toBe(false);
       expect(harness.ctx.abortersRef.current.size).toBe(0);
     } finally {

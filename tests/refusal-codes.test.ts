@@ -100,7 +100,7 @@ function renderedRow(failure: ConversionFailure) {
     id: 'row-1', file, name: 'pixel.png', size: file.size, sourceFormat: 'png', targetFormat: 'jpg', status: 'error', progress: 0, options: {}, error: failure,
   };
   const dom = renderDom(createElement(QueueItemRow, {
-    item, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
+    item,
     onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
   }));
   return visibleText(dom) + select(dom, 'details').map(visibleText).join(' ');

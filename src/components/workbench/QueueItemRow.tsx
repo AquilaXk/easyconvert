@@ -7,17 +7,14 @@ import { ConversionQueueItem } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import FormatSelector from '../FormatSelector';
 import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
 import { useConversionFailureWording } from '../i18n/error-wording';
 import { getPasswordValidationError } from './options/options-capabilities';
 import { FormatIcon } from './FormatIcon';
+import FormatPickerButton from './FormatPickerButton';
 
 export interface QueueItemRowProps {
   item: ConversionQueueItem;
-  isFormatSelectorOpen: boolean;
-  onToggleFormatSelector: () => void;
-  onCloseFormatSelector: () => void;
   onSelectTargetFormat: (targetFormat: string) => void;
   onOpenOptions: () => void;
   onRemove: () => void;
@@ -112,9 +109,6 @@ function RowStatusDisplay({ item, isBusy }: Readonly<{ item: ConversionQueueItem
  */
 export default function QueueItemRow({
   item,
-  isFormatSelectorOpen,
-  onToggleFormatSelector,
-  onCloseFormatSelector,
   onSelectTargetFormat,
   onOpenOptions,
   onRemove,
@@ -161,36 +155,24 @@ export default function QueueItemRow({
         </span>
         <ArrowRight aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
 
-        <div className="relative">
-          <button
-            type="button"
-            data-testid="queue-target-format-btn"
-            aria-label={
-              hasTarget
-                ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
-                : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
-            }
-            aria-haspopup="dialog"
-            aria-expanded={isFormatSelectorOpen}
-            disabled={isBusy || isOversize}
-            onClick={onToggleFormatSelector}
-            className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-canvas text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
-            <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
-          </button>
-
-          {isFormatSelectorOpen && !isOversize && (
-            <FormatSelector
-              sourceFormat={item.sourceFormat}
-              availableFormats={getAvailableTargetFormats(item.sourceFormat)}
-              selectedFormatId={item.targetFormat}
-              onSelect={onSelectTargetFormat}
-              onClose={onCloseFormatSelector}
-              title={t('selectorTitle', { format: sourceLabel })}
-            />
-          )}
-        </div>
+        <FormatPickerButton
+          testId="queue-target-format-btn"
+          ariaLabel={
+            hasTarget
+              ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
+              : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
+          }
+          disabled={isBusy || isOversize}
+          className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-canvas text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          sourceFormat={item.sourceFormat}
+          availableFormats={getAvailableTargetFormats(item.sourceFormat)}
+          selectedFormatId={item.targetFormat}
+          onSelect={onSelectTargetFormat}
+          title={t('selectorTitle', { format: sourceLabel })}
+        >
+          <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
+          <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
+        </FormatPickerButton>
 
         <button
           type="button"

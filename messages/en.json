@@ -1435,7 +1435,7 @@
         "name": "CAD & Geometric Engine (DXF, SVG)",
         "description": "Spline tessellation, IEEE 754 coordinate precision, and vector export"
       },
-      "privacy-zero-retention": {
+      "privacy-in-browser": {
         "name": "In-Browser File Handling",
         "description": "A file converted in the browser stays on this device and is not uploaded"
       },
@@ -1451,7 +1451,7 @@
     "sandbox": {
       "heading": "Local Browser Sandbox Execution",
       "body": "Conversions the browser supports run with WebAssembly in an isolated worker of this tab, so their files are not uploaded. Other conversions run on our servers.",
-      "zeroRetention": "No upload for in-browser conversions",
+      "noUpload": "No upload for in-browser conversions",
       "simd": "Hardware SIMD & WebCodecs Support",
       "noBrowserLimit": "No daily limit in the browser"
     },
@@ -1662,13 +1662,13 @@
       "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
       "import_budget_exceeded": "Today's limit for link imports has no room for this file. Try again tomorrow.",
       "quota_exceeded": "This job needs more conversions than are left today. Try again tomorrow.",
-      "timeout": "The conversion did not finish in time. Try again.",
+      "timeout": "The conversion did not finish in time. Select Convert to try again.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
-      "conversion_failed": "Conversion failed. Try another format or try again."
+      "conversion_failed": "Conversion failed. Try another format, or select Convert to try again."
     },
     "queue": {
-      "conversionFailed": "Conversion failed. Try another format or try again.",
-      "jobFailed": "The conversion failed on the server. Try again, or try another format.",
+      "conversionFailed": "Conversion failed. Try another format, or select Convert to try again.",
+      "jobFailed": "The conversion failed on the server. Select Convert to try again, or try another format.",
       "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
       "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
       "edgeFailedFirst": "The browser tried first and could not convert it.",

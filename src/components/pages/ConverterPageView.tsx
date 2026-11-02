@@ -35,10 +35,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
   const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
-  const defaultTarget =
-    parsed.targetFormat && parsed.targetFormat.toLowerCase() !== 'any'
-      ? parsed.targetFormat
-      : undefined;
   const bundlePrefix = `easyconvert_${parsed.sourceFormat}_to_${parsed.targetFormat || 'files'}`;
 
   const {
@@ -54,11 +50,9 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
     handleUpdateOptions,
     handleConvertAll,
     handleDownloadAllZip,
-  } = useClientQueue({
-    defaultTarget,
-    bundlePrefix,
-  });
+  } = useClientQueue({ bundlePrefix });
   const tiles = usePairTiles(parsed.sourceFormat, parsed.targetFormat);
+  const queueTarget = tiles.chosenTarget ?? queue[0]?.targetFormat;
 
   if (parsed.isInfoPage) {
     return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />;
@@ -118,7 +112,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           <QueueHeader
             onFilesSelected={handleFilesSelected}
             sourceFormat={queue[0].sourceFormat}
-            targetFormat={tiles.chosenTarget ?? queue[0].targetFormat}
+            targetFormat={queueTarget}
             pageTitle={copy.title}
           />
         ) : (
@@ -146,7 +140,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
               const input = document.getElementById(MAIN_FILE_INPUT_ID) as HTMLInputElement | null;
               if (input) input.click();
             }}
-            onImportFile={(file) => handleFilesSelected([file])}
+            onImportFile={(file) => handleFilesSelected([file], queueTarget)}
             onDownloadAllZip={() => {
               void handleDownloadAllZip();
             }}
