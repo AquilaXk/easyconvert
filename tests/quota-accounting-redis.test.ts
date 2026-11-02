@@ -21,6 +21,7 @@ import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { RedisGraphScheduler } from '../src/lib/queue/graph/redis-scheduler';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { storageProvider } from '../src/lib/storage';
 import {
@@ -40,6 +41,7 @@ import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
+import { itLeasesReservations } from './helpers/reservation-lease-cases';
 
 /**
  * The quota is Lua scripts over real keys, so what a request is charged is checked on a real Redis server, through the
@@ -134,12 +136,19 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     }
   }
 
-  /** Reserves a unit as a route does, and puts a job that carries it on a queue. */
+  /** Reserves a unit as a route does, hands its lease to a job that carries it, and puts the job on a queue. */
   async function queueJobWithUnit(queue: DistributedBullMQAdapter<QuotaJob, string>, options: { attempts: number; timeout?: number }) {
     const unit = await redisKeyStore.reserveQuota(client.userId, 1);
     expect(unit.allowed).toBe(true);
+    expect(await redisKeyStore.renewReservation(unit.reservationId as string, RESERVATION_LEASE.handedOffMs)).toBe(true);
     expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
     return queue.add('convert', { userId: client.userId, reservationId: unit.reservationId }, options);
+  }
+
+  /** Lets `ms` pass for the quota store: the clock, and the time to live of the client's keys. */
+  async function advanceQuotaClock(ms: number) {
+    vi.setSystemTime(Date.now() + ms);
+    await advanceKeyClock(ms);
   }
 
   function settledBy(worker: Worker<QuotaJob, string>, event: 'completed' | 'failed') {
@@ -386,7 +395,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const queue = connect('quota-late');
 
       await queueJobWithUnit(queue, { attempts: 1 });
-      await advanceKeyClock(PAST_OLD_RESERVATION_LIFETIME_MS);
+      await advanceQuotaClock(PAST_OLD_RESERVATION_LIFETIME_MS);
       const failing = listenedTo(new Worker(queue, async () => { throw new Error('the engine failed'); }, { concurrency: 1 }));
       const failed = settledBy(failing, 'failed');
       await failed;
@@ -394,7 +403,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       await failing.close();
 
       await queueJobWithUnit(queue, { attempts: 1 });
-      await advanceKeyClock(PAST_OLD_RESERVATION_LIFETIME_MS);
+      await advanceQuotaClock(PAST_OLD_RESERVATION_LIFETIME_MS);
       const done = listenedTo(new Worker(queue, async () => 'converted', { concurrency: 1 }));
       const completed = settledBy(done, 'completed');
       await completed;
@@ -503,6 +512,14 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       } finally {
         await connection.quit();
       }
+    });
+  });
+
+  describe('the lease of a reservation', () => {
+    itLeasesReservations({
+      store: () => redisKeyStore,
+      owner: () => client.userId,
+      advance: advanceQuotaClock,
     });
   });
 
