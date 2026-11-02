@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { NextRequest } from 'next/server';
 import { fetch as undiciFetch } from 'undici';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -45,8 +46,14 @@ function saveUpload(name: string, content: string | Buffer, mimeType: string): s
   return key;
 }
 
-function csvUpload(name = 'scores.csv') {
-  return { op: 'import.upload', storageKey: saveUpload(name, CSV, 'text/csv') } as const;
+function csvUpload(name = 'scores.csv', content = CSV) {
+  return { op: 'import.upload', storageKey: saveUpload(name, content, 'text/csv') } as const;
+}
+
+/** A small picture of one colour, as an upload a thumbnail node reads. */
+async function pngUpload(name: string, colour: string) {
+  const picture = await sharp({ create: { width: 64, height: 48, channels: 3, background: colour } }).png().toBuffer();
+  return { op: 'import.upload', storageKey: saveUpload(name, picture, 'image/png') } as const;
 }
 
 function notAPngUpload() {
@@ -182,6 +189,62 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
       'completed',
       2
     );
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  /**
+   * The objects node `nodeId` of graph `graphId` answered with, read once the graph ended: the graph's intermediate files are
+   * kept for the read, so each key the node named can be opened.
+   */
+  async function storedOutputs(graphId: string, nodeId: string) {
+    const keys = await graphScheduler.getNodeOutputs(graphId, nodeId);
+    return Promise.all(
+      [...new Set(keys)].map(async (key) => {
+        const stored = await storageProvider.getObject(key);
+        if (!stored) throw new Error(`the output ${key} of node ${nodeId} is not in storage`);
+        return stored;
+      })
+    );
+  }
+
+  it('stores a thumbnail for each of two pictures and charges a unit for each', async () => {
+    vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
+    const queued = await queueGraph(
+      {
+        failurePolicy: 'fail_fast',
+        nodes: {
+          red: await pngUpload('red.png', '#ff0000'),
+          blue: await pngUpload('blue.png', '#0000ff'),
+          thumbs: { op: 'thumbnail', input: ['red', 'blue'], targetFormat: 'png' },
+        },
+      },
+      2
+    );
+    await queued.ended('completed');
+
+    const thumbnails = await storedOutputs(queued.graphId, 'thumbs');
+    expect(thumbnails).toHaveLength(2);
+    const colours = await Promise.all(thumbnails.map(async ({ buffer }) => (await sharp(buffer).raw().toBuffer()).subarray(0, 3).toString('hex')));
+    expect(colours.sort()).toEqual(['0000ff', 'ff0000']);
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('stores a result for each of two inputs of the same name, under that name, and charges a unit for each', async () => {
+    vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
+    const queued = await queueGraph(
+      {
+        failurePolicy: 'fail_fast',
+        nodes: {
+          monday: csvUpload('scores.csv', 'name,score\nAlice,100\n'),
+          tuesday: csvUpload('scores.csv', 'name,score\nBob,95\n'),
+          conv: { op: 'convert', input: ['monday', 'tuesday'], targetFormat: 'json' },
+        },
+      },
+      2
+    );
+    await queued.ended('completed');
+
+    const results = await storedOutputs(queued.graphId, 'conv');
+    expect(results.map((stored) => stored.filename)).toEqual(['scores.json', 'scores.json']);
+    expect(results.map((stored) => JSON.parse(stored.buffer.toString('utf-8'))[0].name).sort()).toEqual(['Alice', 'Bob']);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('charges nothing for an optimize node that received no input, beside a convert node that charges one unit', async () => {
