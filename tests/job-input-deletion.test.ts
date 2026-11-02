@@ -23,7 +23,8 @@ import {
   resolveRetentionPolicy,
   type RetentionRecord,
 } from '../src/lib/storage/result-retention';
-import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
+import { graphScheduler } from '../src/lib/queue/graph/scheduler';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
@@ -114,6 +115,18 @@ describe('the input of a single job', () => {
     await queue.close();
   });
 
+  it('fails a job whose upload was deleted before a worker took it as a missing input', async () => {
+    const key = storeUpload('gone-at-pickup');
+    expect(await holdResultForJob(key, 'job-refused')).toBe(true);
+    await releaseResultHold(key, 'job-refused');
+    expect(await sweepAfterGrace()).toBe(1);
+    const queue = new Queue<ConversionJobData, ConversionJobResult>('input-deletion-gone');
+    const job = await queue.add('convert', jobData(key), { attempts: 1 });
+
+    await expect(processConversionJob(job)).rejects.toBeInstanceOf(StorageNotFoundError);
+    await queue.close();
+  });
+
   it('keeps an owner\'s earlier output that was chained as the input of a cancelled job', async () => {
     const key = `conversions/user-1/${Date.now()}_chained.csv`;
     s3Storage.saveObject(key, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'chained.csv');
@@ -141,6 +154,19 @@ describe('the uploaded input of a graph', () => {
       out: { op: 'convert' as const, input: 'src', targetFormat: 'json' },
     },
   });
+
+  /** The queue job of the `import.upload` node `src` of graph `graphId`, as a worker takes it. */
+  function uploadNodeJob(graphId: string, node: object): Job<ConversionJobData, ConversionJobResult> {
+    return {
+      id: `${graphId}:src`,
+      data: { jobId: `${graphId}:src`, originalFilename: 'src.bin', sourceFormat: 'bin', targetFormat: 'bin', fileSize: 0, options: {}, graphId, graphNodeId: 'src', graphNode: node, inputArtifacts: [] },
+      opts: { attempts: 1 },
+      attemptsMade: 1,
+      signal: new AbortController().signal,
+      log: async () => {},
+      updateProgress: async () => {},
+    } as unknown as Job<ConversionJobData, ConversionJobResult>;
+  }
 
   it('is kept while a node can still read it and goes when the graph completes', async () => {
     const key = storeUpload('graph-complete');
@@ -181,6 +207,27 @@ describe('the uploaded input of a graph', () => {
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
+    expect(await sweepAfterGrace()).toBe(1);
+    expect(s3Storage.getObject(key)).toBeUndefined();
+  });
+
+  it('is held from the moment its upload node runs when the start of the graph gave its hold up, until the graph ends', async () => {
+    const key = storeUpload('graph-late');
+    const graphId = newGraphId();
+    const graph = sealGraph(graphId, twoNodes(key));
+    await expect(
+      withGraphInputsHeld(graphId, graph.nodes, async () => {
+        await graphScheduler.initGraph(graphId, graph);
+        throw new QueueUnavailableError('light', 'the reply was lost');
+      })
+    ).rejects.toBeInstanceOf(QueueUnavailableError);
+    expect((await getRetentionLedger().get(key))?.holds ?? {}).not.toHaveProperty(graphId);
+
+    await processConversionJob(uploadNodeJob(graphId, graph.nodes.src));
+
+    expect((await getRetentionLedger().get(key))?.holds?.[graphId]).toBeGreaterThan(Date.now());
+    expect(await sweepAfterGrace()).toBe(0);
+    expect(await graphScheduler.cancelGraph(graphId)).toBe(true);
     expect(await sweepAfterGrace()).toBe(1);
     expect(s3Storage.getObject(key)).toBeUndefined();
   });

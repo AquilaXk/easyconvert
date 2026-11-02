@@ -19,14 +19,20 @@ import type { JobGraph } from '../../src/lib/queue/graph/types';
 export interface GraphRecoveryControls {
   /**
    * A new scheduler; how to make its queue refuse every node job until told otherwise; the node jobs it was asked to cancel;
-   * and how to lose the reply of its next cancel of a graph, which still applies, as a dropped connection loses it.
+   * and how to lose the reply of its next cancel of a graph, which still applies, as a dropped connection loses it. That
+   * returns how many replies were lost so far.
    */
   scheduler: () => {
     scheduler: IGraphScheduler;
     refuseNodeJobs: (refuse: boolean) => void;
     cancelledNodeJobs: () => string[];
-    loseTheNextCancelReply: () => void;
+    loseTheNextCancelReply: () => () => number;
   };
+  /**
+   * What the cancel whose reply was lost had done: only the transition (Redis, whose script returns before the end steps run),
+   * so the recovery runs the end steps; or the whole end (this process), so the recovery ends the graph a second time.
+   */
+  lostCancelReply: 'end-skipped' | 'end-ran';
   owner: () => string;
   /** What a lookup answers for a graph whose state was never written: certainly nothing in this process, unknown in Redis. */
   neverStored: 'not-started' | 'unknown';
@@ -83,7 +89,12 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
     expect(await used()).toBe(0);
   });
 
-  it('answers a start whose cancel landed but lost its reply as not started, gives the unit back at once, and ends the node jobs and input holds', async () => {
+  const LOST_CANCEL_REPLY_CASE = {
+    'end-skipped': 'answers a start whose cancel landed but lost its reply as not started, and runs the end steps that try skipped',
+    'end-ran': 'answers a start whose cancel ended it but lost its reply as not started, and ends it a second time to no effect',
+  } as const;
+
+  it(LOST_CANCEL_REPLY_CASE[controls.lostCancelReply], async () => {
     vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
     const { scheduler, refuseNodeJobs, cancelledNodeJobs, loseTheNextCancelReply } = controls.scheduler();
     const graphId = `graph_recovery_${crypto.randomBytes(6).toString('hex')}`;
@@ -92,7 +103,7 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
     const unit = await redisKeyStore.reserveQuota(controls.owner(), 1);
     expect(await holdResultForJob(input, graphId)).toBe(true);
     refuseNodeJobs(true);
-    loseTheNextCancelReply();
+    const lostReplies = loseTheNextCancelReply();
 
     const handedOff = withReservedUnit(unit.reservationId, (reserved) =>
       reserved.handOff({
@@ -102,10 +113,24 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
     );
 
     await expect(handedOff).rejects.toBeInstanceOf(QueueUnavailableError);
+    expect(lostReplies()).toBe(1);
     expect(await used()).toBe(0);
     expect((await scheduler.getGraphState(graphId))?.status).toBe('cancelled');
     expect([...new Set(cancelledNodeJobs())].sort()).toEqual([`${graphId}:conv`, `${graphId}:up`]);
     expect((await getRetentionLedger().get(input))?.holds ?? {}).not.toHaveProperty(graphId);
+  });
+
+  it('answers a graph its owner cancelled before the cancel of its failed start as started, with the state read after the cancel', async () => {
+    const { scheduler, graphId } = await storedButNotQueued();
+    const cancel = scheduler.cancelGraph.bind(scheduler);
+    vi.spyOn(scheduler, 'cancelGraph').mockImplementation(async (id, reason) => {
+      await cancel(id, 'Cancelled by its owner');
+      return cancel(id, reason);
+    });
+
+    const recovery = await scheduler.recoverStart(graphId);
+
+    expect(recovery).toMatchObject({ status: 'started', work: { graphId, status: 'cancelled', failedReason: 'Cancelled by its owner' } });
   });
 
   it('answers unknown and leaves the unit to the graph when every try of the cancel throws', async () => {

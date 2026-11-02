@@ -15,7 +15,8 @@ import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { userStore } from '../src/lib/auth/user-store';
 import { POST as createJob } from '../src/app/api/v1/jobs/route';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
-import { attachJobLifecycleListeners, getJobAcrossQueues } from '../src/lib/queue/conversion-queue';
+import { attachJobLifecycleListeners, getJobAcrossQueues, processConversionJob } from '../src/lib/queue/conversion-queue';
+import { dispatchEngine } from '../src/lib/queue/dispatch-engine';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
@@ -335,12 +336,12 @@ describe('POST /api/v1/jobs when the password of a job or a graph cannot be seal
 
 describe('POST /api/v1/jobs when the queue stores the job and then fails', () => {
   const CSV = 'name,score\nAlice,100\n';
+  const add = Queue.prototype.add;
   let ledgerDir: string;
 
   beforeEach(() => {
     ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-lease-holds-'));
     setRetentionLedger(new FileRetentionLedger(ledgerDir));
-    const add = Queue.prototype.add;
     vi.spyOn(Queue.prototype, 'add').mockImplementation(async function (this: Queue, ...args) {
       await add.apply(this, args);
       throw new QueueUnavailableError(this.name, 'the reply was lost');
@@ -375,16 +376,57 @@ describe('POST /api/v1/jobs when the queue stores the job and then fails', () =>
     expect((await redisKeyStore.getQuotaUsage(userId)).usedToday).toBe(1);
   });
 
-  it('keeps the hold on the stored input of a job whose lookup failed too, for that job to end if it was stored', async () => {
+  /** Makes the queue refuse every job without storing it, and its lookup fail, so no hand-off can tell whether its job was stored. */
+  function refuseEveryJob(): void {
+    vi.mocked(Queue.prototype.add).mockRejectedValue(new QueueUnavailableError('convert', 'the queue is down'));
     vi.spyOn(Queue.prototype, 'getJob').mockRejectedValue(new QueueUnavailableError('convert', 'still down'));
+  }
+
+  async function storedUpload(): Promise<string> {
     const key = `uploads/lease-${crypto.randomBytes(6).toString('hex')}/scores.csv`;
     await storageProvider.saveObject(key, Buffer.from(CSV), 'text/csv', 'scores.csv');
+    return key;
+  }
+
+  it('accepts a good submission of an upload after 40 the queue refused, since each refused hand-off gives its hold up', async () => {
+    refuseEveryJob();
+    const key = await storedUpload();
     try {
+      for (let attempt = 1; attempt <= 40; attempt++) expect((await submit({ storageKey: key })).res.status, `attempt ${attempt}`).toBe(503);
+      vi.mocked(Queue.prototype.add).mockImplementation(add);
+      vi.mocked(Queue.prototype.getJob).mockRestore();
+
       const { res } = await submit({ storageKey: key });
 
+      expect(res.status).toBe(202);
+    } finally {
+      await storageProvider.deleteObject(key);
+    }
+  });
+
+  it('gives up the hold of a job whose hand-off could not tell, and a job stored late takes it when it runs', async () => {
+    refuseEveryJob();
+    const key = await storedUpload();
+    try {
+      const { res } = await submit({ storageKey: key });
       expect(res.status).toBe(503);
-      const jobId = vi.mocked(Queue.prototype.add).mock.calls[0][2]?.jobId as string;
-      expect((await getRetentionLedger().get(key))?.holds?.[jobId]).toBeGreaterThan(Date.now());
+      const [name, data, opts] = vi.mocked(Queue.prototype.add).mock.calls[0];
+      const jobId = opts?.jobId as string;
+      expect((await getRetentionLedger().get(key))?.holds ?? {}).not.toHaveProperty(jobId);
+      vi.restoreAllMocks();
+
+      const queue = new Queue<ConversionJobData, ConversionJobResult>(`lease-late-${crypto.randomBytes(4).toString('hex')}`);
+      const late = await queue.add(name, data, opts);
+      const convert = dispatchEngine.convert.bind(dispatchEngine);
+      let heldUntil: number | undefined;
+      vi.spyOn(dispatchEngine, 'convert').mockImplementation(async (...args) => {
+        heldUntil = (await getRetentionLedger().get(key))?.holds?.[jobId];
+        return convert(...args);
+      });
+      await processConversionJob(late);
+      await queue.close();
+
+      expect(heldUntil).toBeGreaterThan(Date.now());
     } finally {
       await storageProvider.deleteObject(key);
     }

@@ -68,13 +68,17 @@ describe('the start of a graph that failed, with the in-memory scheduler and sto
         cancelledNodeJobs: () => cancelled,
         loseTheNextCancelReply: () => {
           const cancel = scheduler.cancelGraph.bind(scheduler);
+          let lost = 0;
           vi.spyOn(scheduler, 'cancelGraph').mockImplementationOnce(async (graphId, reason) => {
             await cancel(graphId, reason);
+            lost++;
             throw new Error('the reply was lost');
           });
+          return () => lost;
         },
       };
     },
+    lostCancelReply: 'end-ran',
     owner: () => owner,
     neverStored: 'not-started',
   });

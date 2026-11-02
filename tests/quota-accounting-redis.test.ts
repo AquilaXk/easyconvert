@@ -640,16 +640,18 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
           cancelledNodeJobs: () => cancelled,
           loseTheNextCancelReply: () => {
             const evaluate = admin.eval.bind(admin) as (...args: unknown[]) => Promise<unknown>;
-            let lost = false;
+            let lost = 0;
             vi.spyOn(admin, 'eval').mockImplementation((async (...args: unknown[]) => {
               const reply = await evaluate(...args);
-              if (lost || args[0] !== CANCEL_GRAPH_LUA_SCRIPT) return reply;
-              lost = true;
+              if (lost > 0 || args[0] !== CANCEL_GRAPH_LUA_SCRIPT) return reply;
+              lost++;
               throw new Error('the connection dropped before the reply');
             }) as never);
+            return () => lost;
           },
         };
       },
+      lostCancelReply: 'end-skipped',
       owner: () => client.userId,
       neverStored: 'unknown',
     });

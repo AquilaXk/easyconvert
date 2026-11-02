@@ -16,7 +16,7 @@ import { POST as createJobHandler } from '../src/app/api/v1/jobs/route';
 import { GET as getJobHandler, DELETE as cancelJobHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { isStrictMode } from './helpers/strict-skip';
-import { sealGraph } from '../src/lib/queue/graph/node-jobs';
+import { GraphNotSealedError, sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
@@ -221,6 +221,30 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         const state = await scheduler.getGraphState(gid);
         expect(state?.nodes.d.status).toBe('waiting');
       }
+    });
+
+    describe('a graph that was not sealed for its own id', () => {
+      const plainGraph: JobGraph = {
+        failurePolicy: 'fail_fast',
+        nodes: { a: { op: 'import.url', url: 'https://bucket.example/obj?sig=open-secret', headers: { Authorization: 'Bearer open-secret' } } },
+      };
+      const newId = (label: string) => `${label}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+      it('is refused unsealed, and nothing is stored', async () => {
+        const graphId = newId('unsealed');
+
+        await expect(scheduler.initGraph(graphId, plainGraph as never)).rejects.toBeInstanceOf(GraphNotSealedError);
+
+        expect(await scheduler.getGraphState(graphId)).toBeUndefined();
+      });
+
+      it('is refused when it was sealed for another graph id, and nothing is stored', async () => {
+        const graphId = newId('g_B');
+
+        await expect(scheduler.initGraph(graphId, sealGraph(newId('g_A'), plainGraph))).rejects.toBeInstanceOf(GraphNotSealedError);
+
+        expect(await scheduler.getGraphState(graphId)).toBeUndefined();
+      });
     });
 
     it('enforces fail_fast policy: node failure cancels all pending and active downstream nodes immediately', async () => {

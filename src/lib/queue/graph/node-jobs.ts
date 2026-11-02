@@ -19,6 +19,14 @@ export function graphNodeJobId(graphId: string, nodeId: NodeId): string {
   return `${graphId}:${nodeId}`;
 }
 
+/** A scheduler was given a graph that `sealGraph` did not seal for the id it is stored under. */
+export class GraphNotSealedError extends Error {
+  constructor(graphId: string) {
+    super(`Graph ${graphId} was not sealed for its own id, so it is not stored`);
+    this.name = 'GraphNotSealedError';
+  }
+}
+
 /**
  * A copy of the graph `graphId` with every node's secrets sealed under that node's job id, done once by the route before the
  * hand-off, so a secret that cannot be sealed refuses the request before its unit is handed off.
