@@ -147,7 +147,7 @@ describe('design tokens', () => {
     expect(tokenNames.filter((name) => !declared(block('.dark')).has(name))).toEqual([]);
   });
 
-  it('keeps text on every surface at WCAG AA (4.5:1) in both themes, field borders at 3:1 and the focus ring on the page at 3:1', () => {
+  it('keeps text on every surface at WCAG AA (4.5:1) in both themes, field borders at 3:1 and the focus ring on the canvas, a card and a sunken area at 3:1', () => {
     const block = (selector: string) => {
       const start = globalsCss.indexOf(`${selector} {`);
       return globalsCss.slice(start, globalsCss.indexOf('\n}', start));
@@ -179,6 +179,9 @@ describe('design tokens', () => {
       ['danger', 'danger-soft'],
       ['info', 'info-soft'],
     ];
+    const lightFocus = /(?:^|\n)\s*:focus-visible\s*\{[^}]*outline:\s*2px solid rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1];
+    const darkFocus = /(?:^|\n)\s*\.dark :focus-visible\s*\{[^}]*outline-color:\s*rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1] ?? lightFocus;
+    const focusColour = { light: lightFocus, dark: darkFocus };
     const below: string[] = [];
     for (const [theme, selector] of [['light', ':root'], ['dark', '.dark']] as const) {
       const tokens = channels(block(selector));
@@ -193,7 +196,11 @@ describe('design tokens', () => {
         const value = contrast(fg, bg);
         if (value < 4.5) below.push(`${theme} ${fg} on ${bg}: ${value.toFixed(2)}`);
       }
-      for (const [fg, bg] of [['rule-strong', 'canvas'], ['rule-strong', 'surface'], ['accent', 'canvas']]) {
+      for (const [fg, bg] of [
+        ['rule-strong', 'canvas'],
+        ['rule-strong', 'surface'],
+        ...['canvas', 'surface', 'sunken'].map((surface) => [focusColour[theme] ?? 'a-missing-focus-rule', surface]),
+      ]) {
         const value = contrast(fg, bg);
         if (value < 3) below.push(`${theme} ${fg} on ${bg}: ${value.toFixed(2)}`);
       }
@@ -205,6 +212,8 @@ describe('design tokens', () => {
     const rule = /(?:^|\n)\s*:focus-visible\s*\{([^}]*)\}/.exec(globalsCss)?.[1] ?? '';
     expect(rule).toMatch(/outline:\s*2px solid rgb\(var\(--c-accent\)\)\s*;/);
     expect(rule).toMatch(/outline-offset:\s*2px\s*;/);
+    const darkRule = /(?:^|\n)\s*\.dark :focus-visible\s*\{([^}]*)\}/.exec(globalsCss)?.[1] ?? '';
+    expect(darkRule).toMatch(/outline-color:\s*rgb\(var\(--c-accent-ink\)\)\s*;/);
     expect(globalsCss.indexOf(':focus-visible {')).toBeGreaterThan(globalsCss.indexOf('@layer base'));
     expect(globalsCss.indexOf(':focus-visible {')).toBeLessThan(globalsCss.indexOf('@layer components'));
   });

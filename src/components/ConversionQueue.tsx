@@ -7,7 +7,6 @@ import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/
 import { getAvailableTargetFormats } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import { useConversionFailureWording } from './i18n/error-wording';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
@@ -133,14 +132,14 @@ function QueueFooterBar({
   allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
 }: Readonly<QueueFooterBarProps>) {
   const t = useTranslations('queue');
-  const failureWording = useConversionFailureWording();
+  const zipFailed = useTranslations('errors.queue')('zipFailed');
   return (
     <div className="bg-surface border-t border-rule px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
       <div className="min-w-0">
         <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
         {zipError && (
           <div className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <p role="alert" className="min-w-0">{failureWording({ code: 'zipFailed' })}</p>
+            <p role="alert" className="min-w-0">{zipFailed}</p>
             {onDismissZipError && (
               <button
                 type="button" aria-label={t('dismissZipError')} onClick={onDismissZipError}

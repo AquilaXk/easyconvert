@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { PdfAValidationError, type EngineUnavailableError, type PdfPostprocessError } from '../types';
-import { DEFAULT_PROBLEM_TYPES, PROBLEM_TYPE_BASE } from '../refusal-codes';
+import { PROBLEM_TYPE_BASE } from '../refusal-codes';
 
 /**
  * RFC 9457 Problem Details for HTTP APIs (supersedes RFC 7807).
@@ -41,6 +41,53 @@ export interface ProblemDetails {
   error: string;
   [key: string]: unknown;
 }
+
+const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
+  400: {
+    type: 'https://api.easyconvert.io/problems/bad-request',
+    title: 'Bad Request',
+  },
+  401: {
+    type: 'https://api.easyconvert.io/problems/unauthorized',
+    title: 'Unauthorized',
+  },
+  403: {
+    type: 'https://api.easyconvert.io/problems/forbidden',
+    title: 'Forbidden',
+  },
+  404: {
+    type: 'https://api.easyconvert.io/problems/not-found',
+    title: 'Not Found',
+  },
+  405: {
+    type: 'https://api.easyconvert.io/problems/method-not-allowed',
+    title: 'Method Not Allowed',
+  },
+  413: {
+    type: 'https://api.easyconvert.io/problems/payload-too-large',
+    title: 'Payload Too Large',
+  },
+  415: {
+    type: 'https://api.easyconvert.io/problems/unsupported-media-type',
+    title: 'Unsupported Media Type',
+  },
+  422: {
+    type: 'https://api.easyconvert.io/problems/unprocessable-entity',
+    title: 'Unprocessable Entity',
+  },
+  429: {
+    type: 'https://api.easyconvert.io/problems/quota-exceeded',
+    title: 'Too Many Requests',
+  },
+  500: {
+    type: 'https://api.easyconvert.io/problems/internal-server-error',
+    title: 'Internal Server Error',
+  },
+  503: {
+    type: 'https://api.easyconvert.io/problems/service-unavailable',
+    title: 'Service Unavailable',
+  },
+};
 
 /** Problem type for a conversion whose native engine (for example LibreOffice) is not installed. */
 export const ENGINE_UNAVAILABLE_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}engine-unavailable`;

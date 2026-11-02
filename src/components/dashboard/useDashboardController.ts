@@ -12,7 +12,8 @@ import {
 import { useFilesAndDlqController } from './useDashboardResources';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { applySessionChange } from '@/lib/viewer-plan';
-import { useProblemWording } from '../i18n/error-wording';
+import { SINGLE_CAUSE_STATUS_PROBLEMS, useProblemWording } from '../i18n/error-wording';
+import { settleAlreadyGone } from './already-gone';
 
 /** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
 export function buildKeyCreationRequest(
@@ -70,13 +71,13 @@ function useClipboardCopyStatus() {
   return { copiedKey, copyToClipboard };
 }
 
-function useApiKeysController(
+export function useApiKeysController(
   enabled: boolean,
   onReportError: (error: string | null) => void
 ) {
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
-  const problemWording = useProblemWording();
+  const problemWording = useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [quota, setQuota] = useState<QuotaUsage | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -166,6 +167,11 @@ function useApiKeysController(
     onReportError(null);
     try {
       const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
+      const dropRow = () => {
+        setApiKeys((prev) => prev.filter((key) => key.id !== id));
+        setRevokingKeyId(null);
+      };
+      if (settleAlreadyGone(res.status, t('revokeKeyGone'), onReportError, dropRow)) return;
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
         onReportError(problemWording(data, res.status, t('revokeKey')));

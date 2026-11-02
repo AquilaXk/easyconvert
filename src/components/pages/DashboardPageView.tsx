@@ -91,6 +91,7 @@ export default function DashboardPageView() {
             {activeTab === 'files' && (
               <JobsHistoryPanel
                 files={filesAndDlq.userFiles}
+                deletingFileIds={filesAndDlq.deletingFileIds}
                 loading={filesAndDlq.filesLoading}
                 onRefresh={() => {
                   void filesAndDlq.fetchUserFiles();

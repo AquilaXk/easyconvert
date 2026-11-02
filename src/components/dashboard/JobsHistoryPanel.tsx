@@ -8,6 +8,8 @@ import { useRetentionLabel } from './useRetentionLabel';
 
 interface JobsHistoryPanelProps {
   files: FileWithRemaining[];
+  /** The files whose delete request is still running; their button is off so a second click sends no second request. */
+  deletingFileIds?: readonly string[];
   loading: boolean;
   onRefresh: () => void;
   onDeleteFile: (id: string) => void;
@@ -15,6 +17,7 @@ interface JobsHistoryPanelProps {
 
 export function JobsHistoryPanel({
   files,
+  deletingFileIds = [],
   loading,
   onRefresh,
   onDeleteFile,
@@ -107,8 +110,9 @@ export function JobsHistoryPanel({
                       <button
                         type="button"
                         onClick={() => onDeleteFile(file.id)}
+                        disabled={deletingFileIds.includes(file.id)}
                         aria-label={t('deleteLabel', { name: file.fileName })}
-                        className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule text-ink-3 hover:text-danger transition-colors"
+                        className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule text-ink-3 hover:text-danger transition-colors disabled:opacity-60"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

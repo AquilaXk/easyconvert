@@ -99,11 +99,12 @@ describe('a refusal of /api/convert reads in the page language, without the serv
     }
   });
 
-  it('words an answer with no code it knows by the problem its status names, never with its text', () => {
+  it('words an answer with no code it knows by its status class, never with its text', () => {
     const alertOf = (problem: Record<string, unknown>, locale: TestLocale) => renderedFailure({ code: 'server', problem }, locale).alert;
-    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 읽지 못했어요. 입력한 값을 확인한 뒤 다시 시도해 주세요.');
+    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 처리하지 못했어요. 파일과 설정을 확인한 뒤 다시 시도해 주세요.');
     expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'ko')).toBe('문제가 생겼어요. 잠시 후 다시 시도해 주세요.');
     expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'en')).toBe('Something went wrong on our side. Try again.');
+    expect(alertOf({ success: false, error: 'Too many requests', status: 429 }, 'en')).toBe('Too many requests in a short time. Wait a moment and try again.');
     expect(alertOf({ status: 409 }, 'en')).toBe('The request was refused. Check the file and its settings, then try again.');
   });
 });

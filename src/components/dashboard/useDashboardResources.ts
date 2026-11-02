@@ -3,17 +3,17 @@ import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import type { FileWithRemaining } from './dashboard-types';
 import { warnBrowserFailure } from '@/lib/browser-failure';
-import { useProblemWording } from '../i18n/error-wording';
-
-const HTTP_NOT_FOUND = 404;
+import { SINGLE_CAUSE_STATUS_PROBLEMS, useProblemWording } from '../i18n/error-wording';
+import { settleAlreadyGone } from './already-gone';
 
 export function useFilesAndDlqController(
   enabled: boolean,
   onReportError: (error: string | null) => void
 ) {
   const t = useTranslations('dashboard.errors');
-  const problemWording = useProblemWording();
+  const problemWording = useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
   const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
+  const [deletingFileIds, setDeletingFileIds] = useState<readonly string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>([]);
   const [dlqLoading, setDlqLoading] = useState(false);
@@ -91,19 +91,22 @@ export function useFilesAndDlqController(
 
   const handleDeleteFile = async (id: string) => {
     onReportError(null);
+    setDeletingFileIds((prev) => [...prev, id]);
+    const dropRow = () => setUserFiles((prev) => prev.filter((file) => file.id !== id));
     try {
       const res = await fetch(`/api/account/files/${id}`, { method: 'DELETE' });
-      if (res.status === HTTP_NOT_FOUND) {
-        onReportError(t('deleteFileGone'));
-      } else if (!res.ok) {
+      if (settleAlreadyGone(res.status, t('deleteFileGone'), onReportError, dropRow)) return;
+      if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
         onReportError(problemWording(data, res.status, t('deleteFile')));
         return;
       }
-      setUserFiles((prev) => prev.filter((file) => file.id !== id));
+      dropRow();
     } catch (error) {
       warnBrowserFailure('Deleting a file failed', error);
       onReportError(t('deleteFileNetwork'));
+    } finally {
+      setDeletingFileIds((prev) => prev.filter((pending) => pending !== id));
     }
   };
 
@@ -128,14 +131,14 @@ export function useFilesAndDlqController(
     onReportError(null);
     try {
       const res = await fetch(`/api/webhooks/dlq/${id}`, { method: 'DELETE' });
+      const dropRow = () => setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
+      if (settleAlreadyGone(res.status, t('deleteDlqGone'), onReportError, dropRow)) return;
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(
-          problemWording(data, res.status, t('deleteDlq'))
-        );
+        onReportError(problemWording(data, res.status, t('deleteDlq')));
         return;
       }
-      setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
+      dropRow();
     } catch (error) {
       warnBrowserFailure('Deleting a failed webhook failed', error);
       onReportError(t('deleteDlqNetwork'));
@@ -163,6 +166,7 @@ export function useFilesAndDlqController(
 
   return {
     userFiles,
+    deletingFileIds,
     filesLoading,
     fetchUserFiles,
     handleDeleteFile,

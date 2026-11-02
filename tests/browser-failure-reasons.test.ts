@@ -95,6 +95,25 @@ describe('the API documentation', () => {
   });
 });
 
+describe('the API documentation retry', () => {
+  it('keeps keyboard focus on the page while the specification loads again and on the button when it fails again', async () => {
+    let finish: (res: Response) => void = () => undefined;
+    const second = new Promise<Response>((resolve) => { finish = resolve; });
+    const fetchSpec = vi.fn(async () => (fetchSpec.mock.calls.length === 1 ? new Response('{}', { status: 503 }) : second));
+    vi.stubGlobal('fetch', fetchSpec);
+    const page = mount(createElement(ApiDocsPageView), 'en');
+    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
+    await vi.waitFor(() => expect(retry()).not.toBeNull());
+    retry()!.focus();
+    retry()!.click();
+    await vi.waitFor(() => expect(page.querySelector('output')).not.toBeNull());
+    expect(document.activeElement).toBe(page.querySelector('output'));
+    finish(new Response('{}', { status: 503 }));
+    await vi.waitFor(() => expect(retry()).not.toBeNull());
+    expect(document.activeElement).toBe(retry());
+  });
+});
+
 describe('the ZIP of the converted files', () => {
   it('says in the page language that the ZIP failed, and logs the reason in English', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {

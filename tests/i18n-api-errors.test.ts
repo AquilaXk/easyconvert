@@ -5,11 +5,13 @@ import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { POST as login } from '../src/app/api/auth/login/route';
 import { POST as register } from '../src/app/api/auth/register/route';
 import {
+  SINGLE_CAUSE_STATUS_PROBLEMS,
   useAuthErrorWording,
   useConversionFailureWording,
   useProblemWording,
   useUrlImportErrorWording,
 } from '../src/components/i18n/error-wording';
+import ConversionQueue from '../src/components/ConversionQueue';
 import type { ConversionFailure } from '../src/lib/conversion-failure';
 import { resetLoginRateLimiterStore } from '../src/lib/auth/login-rate-limiter';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
@@ -19,7 +21,7 @@ import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
 import { AUTH_ERROR_CODES, URL_IMPORT_ERROR_CODES } from '../src/lib/refusal-codes';
 import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import type { TestLocale } from './helpers/intl';
-import { renderDom, visibleText } from './helpers/rendered-dom';
+import { renderDom, select, visibleText } from './helpers/rendered-dom';
 
 /**
  * A refused API call reads in the page's language. The interface words a stable `code` or a problem `type`, formats the
@@ -105,15 +107,52 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(failure).not.toBe(korean);
   });
 
-  it('words an answer without a problem type by the type its status names, never by the server text', () => {
-    const untyped = { success: false, error: 'File record not found or not owned by user.' };
-    expect(worded(useProblemWording, 'ko', untyped, 404, '파일을 지우지 못했어요.')).toBe('찾는 항목이 더 이상 없어요.');
-    expect(worded(useProblemWording, 'ko', untyped, 409, '파일을 지우지 못했어요.')).toBe('파일을 지우지 못했어요.');
+  const useStatusWording = () => useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
+  const UNTYPED = { success: false, error: 'File record not found or not owned by user.' };
+  const ACTION = '파일을 지우지 못했어요.';
+
+  it.each([
+    [401, '계속하려면 로그인해 주세요.'],
+    [403, '이 계정으로는 할 수 없는 작업이에요.'],
+    [404, '찾는 항목이 더 이상 없어요.'],
+    [429, '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.'],
+    [503, '서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.'],
+  ])('words an answer without a problem type by the one cause its %i names, never by the server text', (status, sentence) => {
+    expect(worded(useStatusWording, 'ko', UNTYPED, status, ACTION)).toBe(sentence);
   });
 
-  it('words a ZIP of the results that could not be built through the same wording as the conversions', () => {
-    expect(worded(useConversionFailureWording, 'ko', { code: 'zipFailed' })).toBe('ZIP 파일을 만들지 못했어요. 다시 시도해 주세요.');
-    expect(worded(useConversionFailureWording, 'en', { code: 'zipFailed' })).toBe('Could not build the ZIP archive.');
+  it.each([400, 409, 413, 415, 422, 500, 502, 504])('words an answer without a problem type and a %i by the sentence of the action that failed', (status) => {
+    expect(worded(useStatusWording, 'ko', UNTYPED, status, ACTION)).toBe(ACTION);
+  });
+
+  it('words an answer without a problem type by the action alone when the caller gives no status map', () => {
+    for (const status of [401, 403, 404, 429, 503]) expect(worded(useProblemWording, 'ko', UNTYPED, status, ACTION), String(status)).toBe(ACTION);
+  });
+
+  const NGINX_BURST = { success: false, error: 'Too many requests' };
+  const RATE_LIMITED_KO = '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.';
+
+  it('reads the nginx burst limit (an untyped 429) as a short wait on the queue, not as the daily limit', () => {
+    const failure: ConversionFailure = { code: 'server', problem: { ...NGINX_BURST, status: 429 } };
+    expect(worded(useConversionFailureWording, 'ko', failure)).toBe(RATE_LIMITED_KO);
+    expect(worded(useConversionFailureWording, 'en', failure)).toBe('Too many requests in a short time. Wait a moment and try again.');
+  });
+
+  it('reads the nginx burst limit as a short wait on a link import', () => {
+    expect(worded(useUrlImportErrorWording, 'ko', NGINX_BURST, 429)).toBe(RATE_LIMITED_KO);
+  });
+
+  it('words a ZIP of the results that could not be built in the queue footer, in both languages', () => {
+    const alert = (locale: TestLocale) => {
+      const noop = () => undefined;
+      const queue = renderDom(createElement(ConversionQueue, {
+        items: [], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop,
+        onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false, zipError: true,
+      }), locale);
+      return select(queue, 'p', 'role', 'alert').map(visibleText);
+    };
+    expect(alert('ko')).toEqual(['ZIP 파일을 만들지 못했어요. 다시 시도해 주세요.']);
+    expect(alert('en')).toEqual(['Could not build the ZIP archive.']);
   });
 
   it('words a refusal of a known type by its sentence, not by the server text', () => {
@@ -175,8 +214,7 @@ describe('link import refusals', () => {
   it('words an answer without a known code by its status, never with the server text', () => {
     const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 400);
     expectKorean(korean, 'unknown');
-    expect(korean).toBe('요청을 읽지 못했어요. 입력한 값을 확인한 뒤 다시 시도해 주세요.');
-    expect(korean).not.toContain('Upstream');
+    expect(korean).toBe('요청을 처리하지 못했어요. 파일과 설정을 확인한 뒤 다시 시도해 주세요.');
     expectKorean(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502), 'server failure');
   });
 });

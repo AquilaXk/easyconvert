@@ -413,6 +413,7 @@
       "replayFailed": "웹훅을 다시 전송하지 못했어요.",
       "replayRequestFailed": "다시 전송을 요청하지 못했어요. 연결을 확인해 주세요.",
       "deleteDlq": "웹훅을 삭제하지 못했어요. 잠시 후 다시 시도해 주세요.",
+      "deleteDlqGone": "이미 삭제된 웹훅이에요.",
       "deleteDlqNetwork": "연결이 끊겨 웹훅을 삭제하지 못했어요. 다시 시도해 주세요.",
       "clearDlq": "실패한 웹훅을 비우지 못했어요. 잠시 후 다시 시도해 주세요.",
       "dlqCleared": "실패한 웹훅을 모두 비웠어요.",
@@ -423,6 +424,7 @@
       "createKey": "API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요.",
       "createKeyNetwork": "연결이 끊겨 API 키를 만들지 못했어요. 다시 시도해 주세요.",
       "revokeKey": "API 키를 폐기하지 못했어요. 잠시 후 다시 시도해 주세요.",
+      "revokeKeyGone": "이미 폐기된 API 키예요.",
       "revokeKeyNetwork": "연결이 끊겨 API 키를 폐기하지 못했어요. 다시 시도해 주세요.",
       "signOutNetwork": "연결이 끊겨 로그아웃하지 못했어요. 다시 시도해 주세요."
     }

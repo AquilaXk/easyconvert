@@ -413,6 +413,7 @@
       "replayFailed": "Could not send the webhook again.",
       "replayRequestFailed": "Could not ask for the webhook to be sent again. Check your connection.",
       "deleteDlq": "Could not delete the webhook. Try again in a moment.",
+      "deleteDlqGone": "The webhook was already deleted.",
       "deleteDlqNetwork": "The connection dropped and the webhook was not deleted. Try again.",
       "clearDlq": "Could not clear the failed webhooks. Try again in a moment.",
       "dlqCleared": "All failed webhooks were cleared.",
@@ -423,6 +424,7 @@
       "createKey": "Could not create the API key. Try again in a moment.",
       "createKeyNetwork": "The connection dropped and the API key was not created. Try again.",
       "revokeKey": "Could not revoke the API key. Try again in a moment.",
+      "revokeKeyGone": "The API key was already revoked.",
       "revokeKeyNetwork": "The connection dropped and the API key was not revoked. Try again.",
       "signOutNetwork": "The connection dropped and you were not signed out. Try again."
     }

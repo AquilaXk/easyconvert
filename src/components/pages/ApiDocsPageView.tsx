@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
@@ -26,6 +26,15 @@ export default function ApiDocsPageView() {
   const [expandedEndpoints, setExpandedEndpoints] = useState<Record<string, boolean>>({});
   const { copiedKey, copyText } = useCopyFeedback(2000);
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const loadingRef = useRef<HTMLOutputElement>(null);
+  const retryRef = useRef<HTMLButtonElement>(null);
+
+  // The retry button unmounts with the failure box, so focus follows the page's state: the loading notice, then the button again.
+  useEffect(() => {
+    if (attempt === 0) return;
+    if (loading) loadingRef.current?.focus();
+    else if (failed) retryRef.current?.focus();
+  }, [attempt, loading, failed]);
 
   useEffect(() => {
     let active = true;
@@ -138,6 +147,8 @@ export default function ApiDocsPageView() {
 
           {loading && (
             <output
+              ref={loadingRef}
+              tabIndex={-1}
               aria-live="polite"
               className="block py-16 text-center border-t border-rule"
             >
@@ -161,6 +172,7 @@ export default function ApiDocsPageView() {
                 <h3 className="font-semibold text-sm">{t('loadFailedHeading')}</h3>
                 <p className="text-xs mt-1">{t('loadFailedBody')}</p>
                 <button
+                  ref={retryRef}
                   type="button" onClick={() => setAttempt((count) => count + 1)}
                   className="mt-3 transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-xs border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer"
                 >

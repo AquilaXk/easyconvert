@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { useFormatter, useMessages, useTranslations, type Messages } from 'next-intl';
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '@/lib/plan-limits';
-import { AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, DEFAULT_PROBLEM_TYPES, PROBLEM_TYPE_BASE, URL_IMPORT_ERROR_CODES, isCodeOf } from '@/lib/refusal-codes';
+import { AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, PROBLEM_TYPE_BASE, URL_IMPORT_ERROR_CODES, isCodeOf } from '@/lib/refusal-codes';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { useFileTooLargeMessage, useFormatBytes } from './format';
 
@@ -34,6 +34,31 @@ const isPlan = (value: unknown): value is Plan => typeof value === 'string' && O
 /** A problem name the messages have a sentence for: an own key of `errors.problems`, never an inherited property. */
 const isProblemName = (problems: Messages['errors']['problems'], name: string): name is ProblemName => Object.hasOwn(problems, name);
 
+type StatusProblems = Readonly<Record<number, ProblemName>>;
+
+const NO_STATUS_PROBLEMS: StatusProblems = {};
+
+/**
+ * The problem a status names when an answer carries no `type`, for the statuses that have one cause on the routes of the web
+ * application (and in front of them: the proxy's burst limit is an untyped 429 that is not the daily quota). Any other status
+ * (400, 422, 500, 502, 504) stands for several causes, so it reads as the sentence of the action that failed. A caller that
+ * cannot tell the cause by status (the sign-in form) passes no map.
+ */
+export const SINGLE_CAUSE_STATUS_PROBLEMS: StatusProblems = {
+  401: 'unauthorized',
+  403: 'forbidden',
+  404: 'not-found',
+  429: 'rate-limited',
+  503: 'service-unavailable',
+};
+
+/** The name of the problem an answer states: its own `type` when it has one, else the problem its status names. */
+function problemNameOf(answer: Answer, status: number, statusProblems: StatusProblems): string | undefined {
+  const type = textField(answer, 'type');
+  if (type === undefined) return statusProblems[status];
+  return type.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
+}
+
 interface LimitWords {
   /** The sentence `key` with the number in `field` of the answer, or undefined when the answer does not carry it. */
   limit: (key: LimitKey, answer: Answer, field: string, unit: 'bytes' | 'count') => string | undefined;
@@ -58,12 +83,13 @@ const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, wor
 /**
  * The wording of any refused request (RFC 9457 practice): the sentence of its problem `type`, which is a stable key of a
  * sentence in the page's language, with the numbers that sentence names taken from the answer's fields. A route that
- * answers `{ success: false, error }` carries no `type`, so the type its status names stands for it. A `type` this build has
- * no sentence for gives `fallback` (the sentence of the action that failed) or the sentence of the status class. The
- * server's `detail` is written for the developer of an API client, so no sentence of the interface carries it. A caller for
- * which one status stands for several causes (the sign-in form) turns the status off with `byStatus: false`.
+ * answers `{ success: false, error }` carries no `type`, so the problem `statusProblems` names for its status stands for it.
+ * Anything else gives `fallback` (the sentence of the action that failed) or the sentence of the status class. The server's
+ * `detail` is written for the developer of an API client, so no sentence of the interface carries it.
  */
-export function useProblemWording({ byStatus = true }: { readonly byStatus?: boolean } = {}): (payload: unknown, status: number, fallback?: string) => string {
+export function useProblemWording(
+  statusProblems: StatusProblems = NO_STATUS_PROBLEMS
+): (payload: unknown, status: number, fallback?: string) => string {
   const t = useTranslations('errors');
   const problems = useMessages().errors.problems;
   const format = useFormatter();
@@ -72,8 +98,7 @@ export function useProblemWording({ byStatus = true }: { readonly byStatus?: boo
   return useCallback(
     (payload: unknown, status: number, fallback?: string) => {
       const answer = answerOf(payload);
-      const type = textField(answer, 'type') ?? (byStatus ? DEFAULT_PROBLEM_TYPES[status]?.type : undefined);
-      const name = type?.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
+      const name = problemNameOf(answer, status, statusProblems);
       if (name !== undefined && isProblemName(problems, name)) {
         const limit: LimitWords['limit'] = (key, fields, field, unit) => {
           const value = numberField(fields, field);
@@ -84,14 +109,14 @@ export function useProblemWording({ byStatus = true }: { readonly byStatus?: boo
       }
       return fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server'));
     },
-    [t, problems, format, formatBytes, fileTooLarge, byStatus]
+    [t, problems, format, formatBytes, fileTooLarge, statusProblems]
   );
 }
 
 /** A refusal of `/api/fetch-url`, by its `code`; an answer without a code this build words as `useProblemWording` words it. */
 export function useUrlImportErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.urlImport');
-  const problemWording = useProblemWording();
+  const problemWording = useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
   const formatBytes = useFormatBytes();
   const plan = useViewerPlan();
   return useCallback(
@@ -109,7 +134,7 @@ export function useUrlImportErrorWording(): (payload: unknown, status: number) =
 /** A refusal of `/api/auth/login` or `/api/auth/register`, by its `code`; never by its status alone. */
 export function useAuthErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.auth');
-  const problemWording = useProblemWording({ byStatus: false });
+  const problemWording = useProblemWording();
   return useCallback(
     (payload: unknown, status: number) => {
       const answer = answerOf(payload);
@@ -128,7 +153,7 @@ export function useAuthErrorWording(): (payload: unknown, status: number) => str
  */
 export function useConversionFailureWording(): (failure: ConversionFailure) => string {
   const t = useTranslations('errors');
-  const problemWording = useProblemWording();
+  const problemWording = useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
   return useCallback(
     (failure: ConversionFailure) => {
       const conversionSentence = (code: unknown) => (isCodeOf(CONVERSION_REFUSAL_CODES, code) ? t(`conversion.${code}`) : undefined);
@@ -149,8 +174,6 @@ export function useConversionFailureWording(): (failure: ConversionFailure) => s
           return t('queue.clientEdgeFailed');
         case 'conversionFailed':
           return t('queue.conversionFailed');
-        case 'zipFailed':
-          return t('queue.zipFailed');
       }
     },
     [t, problemWording]
