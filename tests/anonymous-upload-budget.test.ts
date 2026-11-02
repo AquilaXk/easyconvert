@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
@@ -32,6 +32,10 @@ const DAY = '2026-11-01';
 const NOW = Date.UTC(2026, 10, 1, 12);
 
 installUploadFlowHooks();
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('the upload budget of an address bucket', () => {
   const policy = { maxOpenUploads: 2, dailyBytes: 2 * GIB, idleMs: HOUR };

@@ -8,12 +8,17 @@ import type { JobGraph } from './types';
 /** How a graph ended: completed, failed for a reason, or cancelled. */
 export type GraphOutcome = { status: 'completed' } | { status: 'failed'; error: string } | { status: 'cancelled' };
 
-/** Gives back the holds the graph took on its input files and removes its intermediate files. */
-async function removeGraphFiles(graphId: string, graph: JobGraph): Promise<void> {
-  await releaseGraphInputHolds(graphId, graph);
+/** Removes the intermediate files of graph `graphId`. */
+async function removeIntermediateFiles(graphId: string): Promise<void> {
   if (typeof storageProvider.deleteByPrefix === 'function') {
     await storageProvider.deleteByPrefix(`intermediate/${graphId}/`);
   }
+}
+
+/** Gives back the holds the graph took on its input files and removes its intermediate files. */
+async function removeGraphFiles(graphId: string, graph: JobGraph): Promise<void> {
+  await releaseGraphInputHolds(graphId, graph);
+  await removeIntermediateFiles(graphId);
 }
 
 /** How the reservation of a graph ends: settled to the units its nodes charged, or given back. */
@@ -93,12 +98,18 @@ async function announceGraphEnd(state: GraphExecutionState, outcome: GraphOutcom
 /**
  * The end of `graph`, run once by the one call that recorded it (the Lua transition in Redis, `recordEnd` in the process).
  * The reservation is ended first, so no later step can leave it open; then `between` runs (cancelling the other node jobs,
- * draining the outbox); then the webhook is told and the files are removed. A failure of `between` or of reading the state
- * is logged and never stops what follows, and nothing here throws.
+ * draining the outbox); then the webhook is told and the files are removed. The state is read again once when its first
+ * read fails; without it the webhook cannot be addressed, so that is logged and the intermediate files are removed by the
+ * graph id alone. A failure of `between` or of reading the state is logged and never stops what follows, and nothing here
+ * throws. Answers what `between` returned, or undefined when it failed.
  */
-export async function finishGraph(graph: EndedGraph, end: GraphEnd, between: () => Promise<unknown> = async () => undefined): Promise<void> {
+export async function finishGraph<T>(graph: EndedGraph, end: GraphEnd, between?: () => Promise<T>): Promise<T | undefined> {
   await endGraphReservation(graph.graphId, graph.reservationId, end.reservation);
-  await orLogged(graph.graphId, 'a step between its settle and its announcement failed', between);
-  const state = await orLogged(graph.graphId, 'its state could not be read to announce the end', graph.readState);
+  const result = between && (await orLogged(graph.graphId, 'a step between its settle and its announcement failed', between));
+  const state =
+    (await orLogged(graph.graphId, 'its state could not be read to announce the end', graph.readState)) ??
+    (await orLogged(graph.graphId, 'its state could not be read again, so its webhook was not told', graph.readState));
   if (state) await announceGraphEnd(state, end.outcome);
+  else await removeIntermediateFiles(graph.graphId).catch((err: unknown) => console.error(`[GraphScheduler] The files of graph ${graph.graphId} could not be removed:`, err));
+  return result;
 }

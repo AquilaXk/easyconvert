@@ -98,6 +98,24 @@ export async function cancelGraphNodeJob(
   return getQueueForResourceClass(resolveNodeResourceClass(node)).cancelJob(graphNodeJobId(graphId, nodeId), reason);
 }
 
+/**
+ * Cancels the queue job of node `nodeId` with `cancel`, and logs a cancel that fails, so one node job that cannot be
+ * cancelled never leaves the others of its graph running.
+ */
+export async function cancelGraphNodeJobOrLog(
+  cancel: typeof cancelGraphNodeJob,
+  graphId: string,
+  nodeId: NodeId,
+  node: GraphNode | undefined,
+  reason: string
+): Promise<void> {
+  try {
+    await cancel(graphId, nodeId, node, reason);
+  } catch (err) {
+    console.error(`[GraphScheduler] The job of node ${nodeId} of graph ${graphId} could not be cancelled:`, err);
+  }
+}
+
 async function graphDeadlineOwner(meta: GraphNodeJobMetadata): Promise<{ tier: string; notAfter?: number }> {
   const tier = await tierForOwner(meta.ownerUserId);
   return meta.createdAt === undefined ? { tier } : { tier, notAfter: meta.createdAt + tierMaxDeadlineMs(tier) };

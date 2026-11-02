@@ -15,7 +15,7 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
+import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
@@ -195,17 +195,19 @@ export class RedisGraphScheduler implements IGraphScheduler {
       String(actualUnits)
     )) as [number, string, string, string, string?];
 
+    const graphCompleted = Number(raw[0]) === 1 && raw[1] === 'completed';
     const proceed = async (): Promise<NodeCompletionResult> => {
       const graphStatus = parseGraphStatus(graphId, raw[1]);
       const readyNodeIds = parseStoredList<NodeId>(graphId, 'the ready node list', raw[2]);
       await this.drainOutbox(graphId);
-      return { graphCompleted: false, graphStatus, readyNodeIds };
+      return { graphCompleted, graphStatus, readyNodeIds };
     };
     // Only the call whose script recorded the completion ends the graph. A failure while it proceeds is then logged, as the
-    // node is done; any other completion fails with it, so the node job is tried again and the outbox drained then.
-    if (Number(raw[0]) !== 1 || raw[1] !== 'completed') return proceed();
-    await finishGraph(this.endedGraph(graphId, raw[4]), { outcome: { status: 'completed' }, reservation: reservationEnd(graphId, raw[3]) }, proceed);
-    return { graphCompleted: true, graphStatus: 'completed', readyNodeIds: [] };
+    // node is done, and the answer is what the script recorded: a completed graph readies no node. Any other completion
+    // fails with it, so the node job is tried again and the outbox drained then.
+    if (!graphCompleted) return proceed();
+    const end: GraphEnd = { outcome: { status: 'completed' }, reservation: reservationEnd(graphId, raw[3]) };
+    return (await finishGraph(this.endedGraph(graphId, raw[4]), end, proceed)) ?? { graphCompleted, graphStatus: 'completed', readyNodeIds: [] };
   }
 
   /** The graph `graphId` whose end a script recorded, with the reservation id the script returned. */
@@ -239,19 +241,16 @@ export class RedisGraphScheduler implements IGraphScheduler {
         const state = await this.getGraphState(graphId);
         const reason = `Graph failed due to node ${nodeId}`;
         for (const nid of stopped) {
-          await this.cancelNode(graphId, nid, state?.graph.nodes[nid], reason).catch(() => false);
+          await cancelGraphNodeJobOrLog(this.cancelNode, graphId, nid, state?.graph.nodes[nid], reason);
         }
       }
       return { graphStatus, cancelledJobIds: cancelledNodeIds.map((nid) => `${graphId}:${nid}`), skippedNodeIds };
     };
     const end = recordedFailureEnd(graphId, raw, error);
     if (!end) return { graphFailed: false, ...(await stopNodes()) };
-    // A graph whose end this call recorded has no stopped nodes to report when cancelling them failed (`finishGraph` logs it).
-    let stopped: Omit<NodeFailureResult, 'graphFailed'> = { graphStatus: end.outcome.status, cancelledJobIds: [], skippedNodeIds: [] };
-    await finishGraph(this.endedGraph(graphId, raw[5]), end, async () => {
-      stopped = await stopNodes();
-    });
-    return { graphFailed: end.outcome.status === 'failed', ...stopped };
+    // A graph whose end this call recorded has no stopped nodes to report when stopping them failed (`finishGraph` logs it).
+    const stopped = await finishGraph(this.endedGraph(graphId, raw[5]), end, stopNodes);
+    return { graphFailed: end.outcome.status === 'failed', ...(stopped ?? { graphStatus: end.outcome.status, cancelledJobIds: [], skippedNodeIds: [] }) };
   }
 
   async getGraphState(graphId: string): Promise<GraphExecutionState | undefined> {
@@ -284,7 +283,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
     await finishGraph(this.endedGraph(graphId, raw[3]), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
       const state = await this.getGraphState(graphId);
       for (const nid of parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2])) {
-        await this.cancelNode(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason).catch(() => false);
+        await cancelGraphNodeJobOrLog(this.cancelNode, graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason);
       }
     });
     return true;

@@ -418,8 +418,9 @@ export class RedisKeyStore extends KeyStore {
 
   private extendReservationInMemory(reservationId: string, extensionId: string, units: number, dailyLimit: number): QuotaExtension {
     const reservation = this.reservations.get(reservationId);
-    if (!reservation || reservation.status !== 'reserved') return { status: 'no-reservation' };
-    const used = this.dailyUsage.get(reservation.dateKey) ?? 0;
+    // As the script in Redis: a reservation whose day's count is gone (its day over) is not extended, and no count is made.
+    const used = this.dailyUsage.get(reservation?.dateKey ?? '');
+    if (!reservation || reservation.status !== 'reserved' || used === undefined) return { status: 'no-reservation' };
     const added = units - (reservation.extensions?.[extensionId] ?? 0);
     if (added <= 0) return { status: 'extended' };
     if (used + added > dailyLimit) return { status: 'does-not-fit', remaining: Math.max(0, dailyLimit - used) };

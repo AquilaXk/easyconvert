@@ -11,7 +11,7 @@ import type {
   NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
+import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { finishGraph, type EndedGraph, type GraphEnd } from './graph-end';
@@ -198,21 +198,22 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
     if (data.state.policy === 'fail_fast') {
       recordEnd(data.state, 'failed', error);
-      const cancelledJobIds: string[] = [];
-      await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } }, async () => {
+      const cancelledJobIds = await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } }, async () => {
+        const cancelled: string[] = [];
         for (const [nid, ns] of Object.entries(data.state.nodes)) {
           if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
             ns.status = 'cancelled';
-            await cancelGraphNodeJob(graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
-            cancelledJobIds.push(`${graphId}:${nid}`);
+            await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
+            cancelled.push(graphNodeJobId(graphId, nid));
           }
         }
+        return cancelled;
       });
 
       return {
         graphFailed: true,
         graphStatus: 'failed',
-        cancelledJobIds,
+        cancelledJobIds: cancelledJobIds ?? [],
         skippedNodeIds: [],
       };
     } else {
@@ -238,7 +239,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
             ) {
               childState.status = 'skipped';
               skippedNodeIds.push(childId);
-              await cancelGraphNodeJob(
+              await cancelGraphNodeJobOrLog(
+                cancelGraphNodeJob,
                 graphId,
                 childId,
                 data.state.graph.nodes[childId],
@@ -274,7 +276,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
       for (const [nid, ns] of Object.entries(data.state.nodes)) {
         if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
           ns.status = 'cancelled';
-          await cancelGraphNodeJob(graphId, nid, data.state.graph.nodes[nid], reason);
+          await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], reason);
         }
       }
     });
