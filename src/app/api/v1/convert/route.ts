@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -257,8 +257,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
-    const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
-    if (!reservation.allowed) return quotaExhausted();
+    const unit = await reserveConversionUnit(auth.user);
+    if (!unit.reserved) return quotaExhausted();
 
     const conversion: ReservedConversion = {
       req,
@@ -274,7 +274,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       startTime,
       reply,
     };
-    return await withReservedUnit(reservation.reservationId, (unit) => convertReserved(conversion, unit));
+    return await withReservedUnit(unit.reservationId, (reserved) => convertReserved(conversion, reserved));
   } catch (err: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();

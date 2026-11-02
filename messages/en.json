@@ -1600,7 +1600,8 @@
       "concurrency-limit": "{limit} conversions are already running, the most at once. Try again when one finishes.",
       "quota-exceeded": "You have used today's limit of {limit} conversions. Try again tomorrow.",
       "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
-      "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow."
+      "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow.",
+      "daily-import-bytes": "On your plan, link imports may total {limit} a day. Try again tomorrow."
     },
     "conversion": {
       "file_required": "Choose a file to convert.",

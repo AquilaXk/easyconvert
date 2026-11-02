@@ -21,7 +21,7 @@ import {
   reserveAnonymousUpload,
   resumeUploadReservation,
 } from '@/lib/api-keys/anonymous-upload-budget';
-import { uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
+import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
 import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse, uploadErrorResponse, uploadUnavailableResponse } from '@/lib/api/part-response';
 import { isUploadIdShape } from '@/lib/storage/upload-id';
@@ -37,11 +37,7 @@ const MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_FORBIDDEN = 403;
-const HTTP_SERVICE_UNAVAILABLE = 503;
 const QUOTA_EXCEEDED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
-const TRUST_UNCONFIGURED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
-const UNATTRIBUTED_UPLOAD_DETAIL =
-  'Uploads without an account are off until this server can tell visitors apart: set TRUSTED_PROXIES to the proxies in front of it. Sign in to upload meanwhile.';
 const ANONYMOUS_PRESIGN_REFUSED =
   'An upload without an account sends its parts through action=chunk, which holds them to the size it declared; it gets no signed part link.';
 
@@ -221,19 +217,11 @@ async function jobStartRefusal(user: User, instanceUri: string): Promise<NextRes
 }
 
 /**
- * The 503 for an anonymous caller while no client can be attributed: every visitor would share one budget, which one
- * of them could use up for all, so anonymous uploads stay off until the proxies are declared (docs/client-ip-trust.md).
- */
-function unattributedUploadRefusal(instanceUri: string): NextResponse {
-  return createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, UNATTRIBUTED_UPLOAD_DETAIL, instanceUri, 'Service Unavailable', TRUST_UNCONFIGURED_PROBLEM_TYPE);
-}
-
-/**
  * Opens an upload session: the declared size is held to the plan limit and the part size to the bounds of a part, a
  * job must be able to start for the caller, and an anonymous caller's budget must have room for the declared size.
  */
 async function openSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
-  if (isUnattributedAnonymous(user.id)) return unattributedUploadRefusal(instanceUri);
+  if (isUnattributedAnonymous(user.id)) return unattributedTransferRefusal(instanceUri);
   const { filename, mimeType, totalSize, partSize } = body;
   if (typeof filename !== 'string' || !filename || typeof totalSize !== 'number' || !Number.isSafeInteger(totalSize)) {
     return badRequest('Missing "filename" or "totalSize" in initiation payload.', instanceUri);

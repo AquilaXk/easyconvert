@@ -21,9 +21,6 @@ function isPolicyPage(infoType: string | undefined): infoType is PolicyPage {
   return infoType !== undefined && infoType in POLICY_SECTIONS;
 }
 
-/** The section whose body states the anonymous daily allowance. */
-const DAILY_LIMIT_SECTION: PolicySectionKey = 'terms.availability';
-
 export function PolicySections({
   infoType,
   totalFormatCount,
@@ -39,7 +36,7 @@ export function PolicySections({
         return (
           <section key={key} className="space-y-2">
             <h2 className="text-xl text-ink">{t(`${key}.heading`)}</h2>
-            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, ...(key === DAILY_LIMIT_SECTION ? { dailyLimit } : {}) })}</p>
+            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, dailyLimit })}</p>
             {key === 'accessibility.feedback' && (
               <div>
                 <a

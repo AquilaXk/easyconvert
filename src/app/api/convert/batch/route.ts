@@ -252,7 +252,8 @@ async function convertPlanned(
 
   const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
 
-  await unit.settle(convertedFiles.length);
+  // Every planned file was converted: a file that fails ends the batch, so the reserved units are what it used.
+  await unit.commit();
 
   return new NextResponse(new Uint8Array(zipResult.buffer), {
     status: 200,

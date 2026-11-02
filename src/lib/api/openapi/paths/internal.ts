@@ -352,8 +352,15 @@ export const internalPaths = {
         '401': createProblemResponse('Authentication required.'),
         '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
         '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),
+        '429': createProblemResponse(
+          'The daily byte budget of the caller is spent (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, `refusal` "daily-bytes", `limitBytes`, and `plan` for an account), or the caller has no conversion left today (problem type `https://api.easyconvert.io/problems/quota-exceeded`).' +
+            CONCURRENCY_LIMIT_NOTE
+        ),
+        '499': createProblemResponse('The client closed the connection before the import finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The bytes received until the import stopped count toward the daily byte budget.'),
         '502': createCodedErrorResponse('Redirect failure, remote 5xx (its status in `remoteStatus`), or empty body.', URL_IMPORT_CODES[502]),
         '500': createCodedErrorResponse('The file could not be fetched for a reason the server did not classify (fixed `error`).', ['fetch_failed']),
+        '503': createProblemResponse('An anonymous caller while the server cannot tell visitors apart (problem type `https://api.easyconvert.io/problems/client-ip-trust-unconfigured`).'),
+        '504': createCodedErrorResponse('The remote did not send the whole file within the synchronous deadline.', ['fetch_timeout']),
       },
     },
   },

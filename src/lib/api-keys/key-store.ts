@@ -26,8 +26,6 @@ export const TIER_LIMITS: Record<UserTier, number> = {
 
 export { getAnonymousDailyLimit };
 
-export const ANONYMOUS_DAILY_LIMIT = getAnonymousDailyLimit();
-
 const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
 let pepperWarningEmitted = false;
 

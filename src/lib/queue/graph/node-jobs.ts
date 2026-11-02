@@ -40,7 +40,8 @@ export async function enqueueGraphNodeJob(
       fileSize: 0,
       options: nodeFields.options || {},
       userId: meta.ownerUserId,
-      reservationId: meta.reservationId,
+      // No reservation id: the graph holds one reservation for all its nodes, and only the graph scheduler settles it
+      // or gives it back when the graph ends. The lifecycle listeners end the reservation of any job that carries one.
       graphId,
       graphNodeId: nodeId,
       // Fail closed: whatever path got a node here, its secrets are sealed before the queue sees it.

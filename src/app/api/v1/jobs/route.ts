@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
 import type { User } from '@/lib/auth/types';
 import type { FormatDefinition } from '@/lib/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
@@ -616,8 +616,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     // Phase 1: Atomically reserve quota unit BEFORE enqueueing to BullMQ
-    const reservation = await redisKeyStore.reserveQuota(auth.user.id, 1);
-    if (!reservation.allowed) {
+    const unit = await reserveConversionUnit(auth.user);
+    if (!unit.reserved) {
       const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
       return reply(
         createProblemDetailsResponse(
@@ -645,7 +645,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
     };
-    return reply(await withReservedUnit(reservation.reservationId, (unit) => queueReserved(submission, unit)));
+    return reply(await withReservedUnit(unit.reservationId, (reserved) => queueReserved(submission, reserved)));
   } catch (error: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();

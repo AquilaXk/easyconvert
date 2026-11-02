@@ -6,7 +6,7 @@
 # image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE:
 #
 #   docker build -f Dockerfile.web --build-arg WORKER_IMAGE=ghcr.io/<owner>/easyconvert-worker@sha256:<digest> \
-#     --build-arg APP_ORIGIN=https://<public host> .
+#     --build-arg APP_ORIGIN=https://<public host> [--build-arg ANONYMOUS_DAILY_LIMIT=<the server's value>] .
 #
 # Next.js standalone output is not used: next.config.mjs turns output file tracing off, and the worker image already carries the
 # production node_modules (with the libvips build the worker pins), which `next start` reads.
@@ -42,6 +42,11 @@ COPY scripts/check-built-alternates.mjs ./scripts/
 ARG APP_ORIGIN
 ENV APP_ORIGIN=${APP_ORIGIN}
 RUN test -n "$APP_ORIGIN" || { echo 'APP_ORIGIN must be set: pass --build-arg APP_ORIGIN=https://<public host>' >&2; exit 1; }
+
+# The anonymous daily allowance the prerendered pages (the home page and the unit converter) state. Empty means the default of
+# src/lib/plan-limits.ts. Pass the ANONYMOUS_DAILY_LIMIT the server runs with, so those pages name the number its 429 names.
+ARG ANONYMOUS_DAILY_LIMIT=
+ENV ANONYMOUS_DAILY_LIMIT=${ANONYMOUS_DAILY_LIMIT}
 
 # `next build` has no runtime environment: the production requirements of the configuration are enforced at start-up, not here
 # (NEXT_PHASE=phase-production-build).

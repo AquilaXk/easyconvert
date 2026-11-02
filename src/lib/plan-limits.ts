@@ -88,7 +88,7 @@ const PLAN_PHRASE: Readonly<Record<Plan, string>> = {
   enterprise: 'the Enterprise plan',
 };
 
-const PLAN_NAME: Readonly<Record<Plan, string>> = {
+export const PLAN_NAME: Readonly<Record<Plan, string>> = {
   anonymous: 'Anonymous',
   free: 'Free',
   pro: 'Pro',

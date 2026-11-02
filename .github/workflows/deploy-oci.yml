@@ -96,9 +96,12 @@ jobs:
           # The public origin is the host of deploy/oci/nginx-easyconvert.conf (tests/oci-deploy.test.ts holds the two together): the
           # prerendered pages name it in their canonical and hreflang links. It is no secret, and the push build has no access to
           # the environment secret that holds APP_URL for the running server.
+          # ANONYMOUS_DAILY_LIMIT is the repository variable of that name, empty while it is unset (the build then uses the default
+          # of src/lib/plan-limits.ts). Set it with the value the server runs with, so the prerendered pages name the same allowance.
           build-args: |
             WORKER_IMAGE=${{ env.WORKER_REPO }}@${{ steps.worker.outputs.digest }}
             APP_ORIGIN=https://convert.aquilaxk.site
+            ANONYMOUS_DAILY_LIMIT=${{ vars.ANONYMOUS_DAILY_LIMIT }}
           tags: |
             ${{ env.WEB_REPO }}:sha-${{ github.sha }}
             ${{ env.WEB_REPO }}:main

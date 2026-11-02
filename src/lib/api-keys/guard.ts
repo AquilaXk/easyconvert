@@ -538,8 +538,6 @@ export async function reserveConversionUnit(user: User, units: number = 1): Prom
 export interface ReservedUnit {
   /** Charges the reserved units: the conversion succeeded. */
   commit(): Promise<void>;
-  /** Charges `units` in place of the reserved units, such as the files a batch converted. */
-  settle(units: number): Promise<void>;
   /**
    * Starts the queued work that will end the reservation itself (a job or a graph commits it or gives it back), with the
    * reservation id; the request stops owning the reservation once `start` resolves, and keeps it when `start` throws.
@@ -549,13 +547,12 @@ export interface ReservedUnit {
 
 const NO_RESERVATION: ReservedUnit = {
   commit: async () => undefined,
-  settle: async () => undefined,
   handOff: (start) => start(undefined),
 };
 
 /**
  * Runs `run` while `reservationId` is reserved, and gives the reservation back when `run` ends, by an answer or a throw,
- * unless `run` committed, settled or handed it off. Only a successful conversion is charged (docs/policy-decisions.md,
+ * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md,
  * entry 15), so no early return of a route has to remember the reservation.
  */
 export async function withReservedUnit<T>(reservationId: string | undefined, run: (unit: ReservedUnit) => Promise<T>): Promise<T> {
@@ -569,9 +566,6 @@ export async function withReservedUnit<T>(reservationId: string | undefined, run
   const unit: ReservedUnit = {
     commit: async () => {
       if (release()) await redisKeyStore.commitQuota(reservationId);
-    },
-    settle: async (units) => {
-      if (release()) await redisKeyStore.settleQuota(reservationId, units);
     },
     handOff: async (start) => {
       const started = await start(held ? reservationId : undefined);

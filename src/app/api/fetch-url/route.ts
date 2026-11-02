@@ -7,17 +7,18 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { anonymousImportRefusal, chargeAnonymousImport } from '@/lib/api-keys/anonymous-upload-budget';
+import { reserveLinkImport, type LinkImportReservation } from '@/lib/api-keys/anonymous-upload-budget';
+import { isUnattributedAnonymous } from '@/lib/auth/anonymous-identity';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
-import { uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
+import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { currentJobDeadlineSettings } from '@/lib/queue/job-deadline';
 import { formatBytes } from '@/lib/format-bytes';
 import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
 import type { UrlImportErrorCode } from '@/lib/refusal-codes';
-import { JobTimeoutError } from '@/lib/types';
+import { JobTimeoutError, RequestAbortedError } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,6 +56,11 @@ function linkImportTooLarge(caller: PlanCaller | undefined): NextResponse {
   return refusal(413, 'file_too_large', error);
 }
 
+/** Lets go of the body of an answer the import will not read, so the remote stops sending it. */
+function discardBody(res: Response): void {
+  res.body?.cancel().catch(() => undefined);
+}
+
 /** The answer of the remote after its redirects were followed, each hop checked against the SSRF rules, or the refusal. */
 type RemoteAnswer = { res: Response; finalUrl: URL } | { refusal: NextResponse };
 
@@ -89,6 +95,7 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
     }
 
     if (res.status < 300 || res.status >= 400) return { res, finalUrl: currentUrl };
+    discardBody(res);
 
     // Handle redirect manually with recursive DNS/IP validation
     const location = res.headers.get('location');
@@ -120,6 +127,7 @@ async function readBody(res: Response, received: Received, caller: PlanCaller): 
   // Check Content-Length upfront if provided
   const contentLength = parseInt(res.headers.get('content-length') ?? '', 10);
   if (!isNaN(contentLength) && contentLength > URL_IMPORT_MAX_BYTES) {
+    discardBody(res);
     return { refusal: linkImportTooLarge(caller) };
   }
 
@@ -193,6 +201,7 @@ async function importFrom(
   if ('refusal' in answer) return answer.refusal;
   const { res, finalUrl } = answer;
   if (!res.ok) {
+    discardBody(res);
     return refusal(
       res.status >= 400 && res.status < 500 ? 400 : 502,
       'remote_error',
@@ -208,6 +217,37 @@ async function importFrom(
 function importTimedOut(timeoutMs: number): NextResponse {
   const seconds = Math.ceil(timeoutMs / MS_PER_SECOND);
   return refusal(504, 'fetch_timeout', `The remote server did not send the whole file within ${seconds} seconds.`);
+}
+
+/** The link a request names, or the refusal of a body that names none the server may fetch. */
+async function importTarget(req: NextRequest): Promise<URL | NextResponse> {
+  const body = await readJsonObject(req);
+  if (!body) return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
+  const { url } = body;
+  if (!url || typeof url !== 'string') return refusal(400, 'url_required', 'URL is required.');
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return refusal(400, 'invalid_url', 'Invalid URL format provided.');
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
+  }
+  return parsedUrl;
+}
+
+/**
+ * Charges `budget` the bytes the import received once `stopped` settles, so bytes read after a deadline count too. A
+ * charge that fails is logged and never replaces the answer.
+ */
+async function chargeOnceStopped(budget: LinkImportReservation, stopped: Promise<unknown>, received: Received): Promise<void> {
+  await stopped;
+  try {
+    await budget.settle(received.bytes);
+  } catch (err) {
+    console.error('[fetch-url] The bytes of a link import could not be charged to the daily budget:', err);
+  }
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -234,47 +274,43 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   }
   const caller = auth.user;
 
-  // 2. What bounds an import instead of the conversion count: the anonymous caller's daily byte budget, shared with
-  // uploads, and the conversion slots, held until the request ends (docs/policy-decisions.md, entries 15 and 137).
-  const budgetRefusal = await anonymousImportRefusal(caller.id);
-  if (budgetRefusal) return uploadBudgetRefusalResponse(budgetRefusal, instanceUri);
+  // 2. What bounds an import instead of the conversion count (docs/policy-decisions.md, entries 15 and 137): a conversion
+  // slot held until the request ends, the caller's daily byte budget, and the synchronous deadline. Visitors no proxy
+  // attributes would share one budget, so they are refused as their uploads are.
+  if (isUnattributedAnonymous(caller.id)) return unattributedTransferRefusal(instanceUri);
   const slot = await acquireSyncSlot(caller.id, caller.tier);
   if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
 
   const received: Received = { bytes: 0 };
   const ssrfAgent = createSsrfSafeAgent();
+  let budget: LinkImportReservation | undefined;
+  let stopped: Promise<unknown> = Promise.resolve();
+  let cutOff = false;
   try {
-    const body = await readJsonObject(req);
-    if (!body) {
-      return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
-    }
-    const { url } = body;
-
-    if (!url || typeof url !== 'string') {
-      return refusal(400, 'url_required', 'URL is required.');
-    }
-
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      return refusal(400, 'invalid_url', 'Invalid URL format provided.');
-    }
-
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
-    }
+    const target = await importTarget(req);
+    if (!(target instanceof URL)) return target;
+    const plan = planOfCaller(caller);
+    const held = await reserveLinkImport(caller.id, plan);
+    if ('refusal' in held) return uploadBudgetRefusalResponse(held.refusal, instanceUri, plan);
+    budget = held.reservation;
 
     // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS).
-    return await runUnderDeadline(req, currentJobDeadlineSettings().syncMaxMs, (limits) =>
-      importFrom(parsedUrl, ssrfAgent, limits.signal, received, caller)
-    );
+    return await runUnderDeadline(req, currentJobDeadlineSettings().syncMaxMs, (limits) => {
+      const work = importFrom(target, ssrfAgent, limits.signal, received, caller);
+      stopped = work.catch(() => undefined);
+      return work;
+    });
   } catch (err: unknown) {
+    cutOff = err instanceof JobTimeoutError || err instanceof RequestAbortedError;
     if (err instanceof JobTimeoutError) return importTimedOut(err.timeoutMs);
     return deadlineErrorResponse(err, instanceUri) ?? serverFault<UrlImportErrorCode>('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed');
   } finally {
     ssrfAgent.close().catch(() => {});
     slot.release();
-    await chargeAnonymousImport(caller.id, received.bytes);
+    // An import that ended is charged before the answer; one cut off is charged once it has stopped, without holding it.
+    if (budget) {
+      const charged = chargeOnceStopped(budget, stopped, received);
+      if (!cutOff) await charged;
+    }
   }
 });

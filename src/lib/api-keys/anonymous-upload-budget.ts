@@ -1,25 +1,33 @@
 import crypto from 'node:crypto';
 import { isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
+import { URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '../plan-limits';
 import { getUtcDateKey } from './key-store';
 import { redisKeyStore } from './redis-key-store';
 import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-budget-store';
 
 /**
- * What one anonymous address bucket may bring in through uploads in parts and link imports (docs/policy-decisions.md,
- * entry 137): at most ANONYMOUS_OPEN_UPLOADS_MAX sessions open at once, and at most ANONYMOUS_DAILY_UPLOAD_BYTES per
- * UTC day for both together. The declared size of an upload is reserved when the session opens, returned when it is
- * aborted or its session expires, and kept when it completes. A link import has no declared size: it is let in while
- * the day has bytes left, and the bytes it received are charged when it ends. Accounts are not metered here; their
- * plan and quota already bound them.
+ * What a caller may bring onto the server each UTC day (docs/policy-decisions.md, entries 15 and 137). An anonymous
+ * address bucket has at most ANONYMOUS_OPEN_UPLOADS_MAX upload sessions open at once, and ANONYMOUS_DAILY_UPLOAD_BYTES
+ * for its uploads in parts and link imports together. An account has `dailyBudgetBytes` of its plan for link imports;
+ * its uploads are not metered here, because each one opens only while the account has a conversion left and a job
+ * slot. The declared size of an upload is reserved when the session opens, returned when it is aborted or its session
+ * expires, and kept when it completes. A link import holds what it may still read (the import limit, or the bytes left
+ * that day when fewer) when it starts, and is charged the bytes it received once it has ended.
  *
  * The state of a bucket is one record changed by the pure functions below and written whole by its store
  * (upload-budget-store.ts): in Redis beside the quota counters, or in this process when the quota store has no Redis.
  */
 
-const GIB = 1024 * 1024 * 1024;
+/** Files at the plan's file size limit a caller may bring in each day: two, the size entry 137 gave the anonymous budget. */
+const DAILY_FILES_AT_PLAN_LIMIT = 2;
+
+/** The bytes a caller of `plan` may bring in each UTC day: two files at the plan's limit (2 GiB free, 10 GiB Pro, 20 GiB Enterprise). */
+export function dailyBudgetBytes(plan: Plan): number {
+  return DAILY_FILES_AT_PLAN_LIMIT * maxFileBytes(plan);
+}
 
 export const ANONYMOUS_OPEN_UPLOADS_MAX = 2;
-export const ANONYMOUS_DAILY_UPLOAD_BYTES = 2 * GIB;
+export const ANONYMOUS_DAILY_UPLOAD_BYTES = dailyBudgetBytes('anonymous');
 /** An open session that received no part for this long stops counting as open; its bytes stay reserved until it expires. */
 export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
 
@@ -127,7 +135,11 @@ function activeStore(): BudgetStore {
   return redis ? new RedisBudgetStore(redis, redisKeyStore.getPrefix()) : memoryStore;
 }
 
-/** Whether uploads of `callerUserId` are metered: an anonymous caller attributed to an address. */
+/**
+ * Whether uploads of `callerUserId` are metered: an anonymous caller attributed to an address. The shared identity of
+ * unattributed callers is refused uploads and link imports before it gets here; an account's link imports are metered by
+ * `reserveLinkImport`, and its uploads are bounded by its conversions and job slots.
+ */
 function isMetered(callerUserId: string): boolean {
   return isAnonymousUserId(callerUserId) && !isUnattributedAnonymous(callerUserId);
 }
@@ -204,24 +216,61 @@ export async function resumeUploadReservation(uploadId: string): Promise<BudgetR
   return refusal;
 }
 
-/** The bound a link import of `callerUserId` would pass now: the day's bytes are spent. Undefined when it may start. */
-export async function anonymousImportRefusal(callerUserId: string): Promise<BudgetRefusal | undefined> {
-  if (!isMetered(callerUserId)) return undefined;
-  let refusal: BudgetRefusal | undefined;
-  await activeStore().update(callerUserId, (current) => {
-    refusal = currentRecord(current, getUtcDateKey(), Date.now()).bytes >= POLICY.dailyBytes ? 'daily-bytes' : undefined;
-    return undefined;
-  });
-  return refusal;
+/**
+ * The record once link import `id` ended having received `receivedBytes`: its hold is replaced by those bytes on the day
+ * it was charged to, whether the import succeeded, was too large, failed or was cut off.
+ */
+function settleImport(record: UploadBudgetRecord, id: string, receivedBytes: number): UploadBudgetRecord {
+  const entry = record.open[id];
+  const released = withoutUpload(record, id, true);
+  return entry && entry.day === record.day ? { ...released, bytes: released.bytes + receivedBytes } : released;
 }
 
-/** Charges the `bytes` a link import of `callerUserId` received to the day's bytes, whether the import succeeded or not. */
-export async function chargeAnonymousImport(callerUserId: string, bytes: number): Promise<void> {
-  if (!isMetered(callerUserId) || bytes <= 0) return;
-  await activeStore().update(callerUserId, (current) => {
-    const record = currentRecord(current, getUtcDateKey(), Date.now());
-    return { ...record, bytes: record.bytes + bytes };
+/** A link import's hold on the day's bytes, taken when it starts. */
+export interface LinkImportReservation {
+  /** Charges the bytes the import received in place of its hold, once it has ended. */
+  settle(receivedBytes: number): Promise<void>;
+}
+
+/**
+ * Takes the hold of a link import of `callerUserId` on the day's bytes of `plan`: the import limit, or the bytes left
+ * when fewer, so imports running at once cannot pass the budget together. Refused once the day has no byte left. A hold
+ * does not count as an open upload (the import holds a conversion slot instead), and one whose process died returns its
+ * bytes after OPEN_UPLOAD_IDLE_MS.
+ */
+export async function reserveLinkImport(
+  callerUserId: string,
+  plan: Plan
+): Promise<{ reservation: LinkImportReservation } | { refusal: BudgetRefusal }> {
+  const store = activeStore();
+  const id = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex');
+  const policy: BudgetPolicy = { maxOpenUploads: Number.POSITIVE_INFINITY, dailyBytes: dailyBudgetBytes(plan), idleMs: 0 };
+  let refusal: BudgetRefusal | undefined;
+  await store.update(callerUserId, (current) => {
+    const now = Date.now();
+    const day = getUtcDateKey();
+    const left = policy.dailyBytes - currentRecord(current, day, now).bytes;
+    refusal = left > 0 ? undefined : 'daily-bytes';
+    if (refusal) return undefined;
+    const held = reserveUpload(current, { id, bytes: Math.min(URL_IMPORT_MAX_BYTES, left), day, now, expiresAt: now + OPEN_UPLOAD_IDLE_MS }, policy);
+    return 'record' in held ? held.record : undefined;
   });
+  if (refusal) return { refusal };
+  return {
+    reservation: {
+      settle: (receivedBytes) => store.update(callerUserId, (current) => current && settleImport(current, id, receivedBytes)),
+    },
+  };
+}
+
+/** The bytes `callerUserId` has brought in today, holds of link imports still running included. */
+export async function bytesBroughtInToday(callerUserId: string): Promise<number> {
+  let bytes = 0;
+  await activeStore().update(callerUserId, (current) => {
+    bytes = currentRecord(current, getUtcDateKey(), Date.now()).bytes;
+    return undefined;
+  });
+  return bytes;
 }
 
 /** Ends the reservation of the session `uploadId`: completed keeps its bytes charged, aborted returns them. */

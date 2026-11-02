@@ -236,12 +236,6 @@ function parseReservationId(reservationId: string): { userId: string; day: strin
   return { userId: decodeURIComponent(parts.slice(1, -3).join('_')), day: parts[parts.length - 3] };
 }
 
-/** The UTC date a reservation was made on, from its `dateKey` (`<userId>:<YYYY-MM-DD>`); an anonymous user id holds colons itself. */
-function utcDateOfReservation(reservation: QuotaReservation | undefined): string | undefined {
-  const dateKey = reservation?.dateKey;
-  return dateKey ? dateKey.slice(dateKey.lastIndexOf(':') + 1) : undefined;
-}
-
 /** The keys a reservation is counted in: the count of its owner's day, and the reservation itself. */
 interface ReservationKeys {
   usageKey: string;
@@ -312,7 +306,9 @@ export class RedisKeyStore extends KeyStore {
     return this.reservations.size;
   }
 
+  /** Gives back the in-memory reservations past their day; Redis expires its own, and this process keeps none of them. */
   public cleanExpiredReservations(): number {
+    if (this.redisClient) return 0;
     const now = Date.now();
     let cleaned = 0;
     for (const [id, res] of this.reservations.entries()) {
@@ -459,15 +455,6 @@ export class RedisKeyStore extends KeyStore {
     const day = getUtcDateKey();
     const dateKey = `${userId}:${day}`;
     const reservationId = reservationIdOf(userId, day);
-    const reservation = (): QuotaReservation => ({
-      reservationId,
-      userId,
-      units,
-      dateKey,
-      createdAt: Date.now(),
-      expiresAt: getNextMidnightUtc(),
-      status: 'reserved',
-    });
 
     if (this.redisClient) {
       try {
@@ -483,7 +470,6 @@ export class RedisKeyStore extends KeyStore {
 
         const remaining = Number(result[1]);
         if (Number(result[0]) !== 1) return { allowed: false, remaining };
-        this.reservations.set(reservationId, reservation());
         return { allowed: true, reservationId, remaining };
       } catch (err) {
         console.error('[RedisKeyStore] Redis reserveQuota failed:', err);
@@ -514,7 +500,15 @@ export class RedisKeyStore extends KeyStore {
 
     // Atomic increment in reservation phase
     this.dailyUsage.set(dateKey, currentUsed + units);
-    this.reservations.set(reservationId, reservation());
+    this.reservations.set(reservationId, {
+      reservationId,
+      userId,
+      units,
+      dateKey,
+      createdAt: Date.now(),
+      expiresAt: getNextMidnightUtc(),
+      status: 'reserved',
+    });
     this.persist();
 
     return {
@@ -524,16 +518,13 @@ export class RedisKeyStore extends KeyStore {
     };
   }
 
-  /** The keys of a reservation, from this process's record of it or else from its id; undefined for an id of another form. */
+  /** The keys of a reservation in Redis, from the owner and day its id names; undefined for an id of another form. */
   private resolveReservation(reservationId: string): ReservationKeys | undefined {
-    const recorded = this.reservations.get(reservationId);
     const named = parseReservationId(reservationId);
-    const userId = recorded?.userId ?? named?.userId;
-    const day = utcDateOfReservation(recorded) ?? named?.day;
-    if (!userId || !day) return undefined;
+    if (!named?.userId || !named.day) return undefined;
     return {
-      usageKey: `${this.keyPrefix}usage:{${userId}}:${day}`,
-      reservationKey: `${this.keyPrefix}res:{${userId}}:${reservationId}`,
+      usageKey: `${this.keyPrefix}usage:{${named.userId}}:${named.day}`,
+      reservationKey: `${this.keyPrefix}res:{${named.userId}}:${reservationId}`,
     };
   }
 
@@ -550,9 +541,7 @@ export class RedisKeyStore extends KeyStore {
     const keys = this.resolveReservation(reservationId);
     if (!keys) return undefined;
     try {
-      const result = await run(redis, keys);
-      this.reservations.delete(reservationId);
-      return result;
+      return await run(redis, keys);
     } catch (err) {
       console.error(`[RedisKeyStore] Redis ${action} of reservation ${reservationId} failed:`, err);
       return undefined;
