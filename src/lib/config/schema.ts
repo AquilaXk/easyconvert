@@ -1449,7 +1449,7 @@ const SCHEMA_ENTRIES = [
   {
     name: 'NEXT_PUBLIC_ADSENSE_CLIENT',
     area: 'ui',
-    description: 'Ad network publisher id shown in the page banner; no ads are rendered without it.',
+    description: 'Ad network publisher id for the page banner, read once an ad loader is installed; no ad renders today (policy decision 139).',
     kind: { type: 'string' },
     requiredInProduction: false,
     secret: false,
@@ -1458,7 +1458,7 @@ const SCHEMA_ENTRIES = [
   {
     name: 'NEXT_PUBLIC_ADSENSE_SLOT',
     area: 'ui',
-    description: 'Ad slot id of the page banner.',
+    description: 'Ad slot id of the page banner, read once an ad loader is installed.',
     kind: { type: 'string' },
     requiredInProduction: false,
     secret: false,

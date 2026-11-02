@@ -1,7 +1,4 @@
 {
-  "ads": {
-    "label": "Advertisement"
-  },
   "apiDocs": {
     "masthead": {
       "fallbackTitle": "EasyConvert Developer API",

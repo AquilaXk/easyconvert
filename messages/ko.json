@@ -1,7 +1,4 @@
 {
-  "ads": {
-    "label": "광고"
-  },
   "apiDocs": {
     "masthead": {
       "fallbackTitle": "EasyConvert 개발자 API",

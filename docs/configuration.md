@@ -341,5 +341,5 @@ Generate a secret with `openssl rand -hex 32`.
 | `NEXT_PUBLIC_ADSENSE_CLIENT` | text | none | no | web |
 | `NEXT_PUBLIC_ADSENSE_SLOT` | text | none | no | web |
 
-- `NEXT_PUBLIC_ADSENSE_CLIENT`: Ad network publisher id shown in the page banner; no ads are rendered without it.
-- `NEXT_PUBLIC_ADSENSE_SLOT`: Ad slot id of the page banner.
+- `NEXT_PUBLIC_ADSENSE_CLIENT`: Ad network publisher id for the page banner, read once an ad loader is installed; no ad renders today (policy decision 139).
+- `NEXT_PUBLIC_ADSENSE_SLOT`: Ad slot id of the page banner, read once an ad loader is installed.

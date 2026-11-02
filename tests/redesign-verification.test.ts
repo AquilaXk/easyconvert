@@ -368,23 +368,10 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(phrasesPresent(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
-  it('verifies AdBanner shows a configured ad unit in a box of fixed height, and nothing without one', () => {
-    const slots = ['top-leaderboard', 'mid-content', 'in-feed', 'post-conversion', 'sidebar'] as const;
-    for (const slot of slots) {
-      for (const unconfigured of [render(AdBanner, { slot }), render(AdBanner, { slot, adClient: 'ca-pub-1' })]) {
-        expect(select(unconfigured, 'aside'), slot).toHaveLength(0);
-        expect(visibleText(unconfigured), slot).toBe('');
-      }
-
-      const banner = render(AdBanner, { slot, adClient: 'ca-pub-1', adSlotId: '42' });
-      expect(select(banner, 'aside', 'aria-label', 'Advertisement'), slot).toHaveLength(1);
-      expect(visibleText(banner)).toBe('Advertisement');
-      const unit = select(banner, 'ins');
-      expect(unit.map((u) => [attrOf(u, 'data-ad-client'), attrOf(u, 'data-ad-slot')])).toEqual([['ca-pub-1', '42']]);
-      // The box around the unit keeps a fixed height, so the page does not shift when the ad loads.
-      expect([...classTokens(banner)].some((token) => /^(?:sm:)?h-\[\d+px\]$/.test(token)), slot).toBe(true);
-      expect(presentIn(classTokens(banner), ['border-dashed'])).toEqual([]);
-      expect(select(banner, 'a')).toHaveLength(0);
+  it('verifies AdBanner renders nothing in any slot, since no ad loader is installed to fill a unit', () => {
+    for (const slot of ['top-leaderboard', 'mid-content', 'in-feed', 'post-conversion', 'sidebar'] as const) {
+      const banner = render(AdBanner, { slot });
+      expect(allElements(banner).filter((e) => !['html', 'head', 'body'].includes(e.tagName)), slot).toEqual([]);
     }
   });
 
