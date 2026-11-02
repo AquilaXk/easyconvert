@@ -96,8 +96,14 @@ function anonymousOwner(): string {
   return anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
 }
 
+/** What a suite can do to the quota store besides what every store does. */
+interface StoreControls {
+  /** Ends the day of `owner`'s daily count, as midnight does: its count expires while a reservation made that day lives on. */
+  endDay?: (owner: string) => Promise<void>;
+}
+
 /** Registers the cases; `track` receives each owner, for a suite that removes its keys afterwards. */
-export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) => void = () => undefined): void {
+export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) => void = () => undefined, controls: StoreControls = {}): void {
   let workers: Worker<ConversionJobData, ConversionJobResult>[] = [];
 
   afterEach(async () => {
@@ -447,6 +453,16 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     const queued = await queueGraph(await fiveFilesIntoConvert(), used + 1 + 5, { owner, reservedUnits: 2 });
     await queued.ended('completed');
   }, GRAPH_TIMEOUT_MS + 10_000);
+
+  const { endDay } = controls;
+  if (endDay) {
+    it('runs a convert node over five unpacked files on, without extending, once the day of its reservation ended', async () => {
+      const queued = await queueGraph(await fiveFilesIntoConvert(), 0, { reservedUnits: 2, startWorkers: false });
+      await endDay(queued.owner);
+      startWorker();
+      await queued.ended('completed');
+    }, GRAPH_TIMEOUT_MS + 10_000);
+  }
 
   it('charges nothing under continue when no node produces a result', async () => {
     await runGraph(

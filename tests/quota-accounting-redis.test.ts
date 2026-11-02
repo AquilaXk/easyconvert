@@ -423,6 +423,31 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await remaining()).toBe(DAY_ALLOWANCE);
     });
 
+    it('extended after the count of its day expired is reported gone, and writes no count', async () => {
+      const unit = await redisKeyStore.reserveQuota(client.userId, 2);
+      for (const key of await admin.keys(`*usage*${client.userId}*`)) await admin.del(key);
+
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 3)).toEqual({ status: 'no-reservation' });
+      expect(await admin.keys(`*usage*${client.userId}*`)).toEqual([]);
+    });
+
+    it('extended after it ended is reported gone, and changes no count', async () => {
+      const unit = await redisKeyStore.reserveQuota(client.userId, 2);
+      await redisKeyStore.rollbackQuota(unit.reservationId as string);
+
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 3)).toEqual({ status: 'no-reservation' });
+      expect(await remaining()).toBe(DAY_ALLOWANCE);
+    });
+
+    it('extended past the day is refused with the conversions left, and within it holds the units of each extension once', async () => {
+      const unit = await redisKeyStore.reserveQuota(client.userId, DAY_ALLOWANCE - 3);
+
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 4)).toEqual({ status: 'does-not-fit', remaining: 3 });
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
+      expect(await remaining()).toBe(1);
+    });
+
     it('made across midnight is charged and given back on the day it was made', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date('2026-11-02T23:59:59.500Z'));
@@ -461,7 +486,11 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   });
 
   describe('a queued graph', () => {
-    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId));
+    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId), {
+      endDay: async (owner) => {
+        for (const key of await admin.keys(`*usage*${owner}*`)) await admin.del(key);
+      },
+    });
   });
 
   describe('the end of a graph', () => {
