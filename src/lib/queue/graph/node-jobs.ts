@@ -161,10 +161,10 @@ async function endCancelledStart(state: GraphExecutionState, cancelNode: Startin
 /**
  * Finishes the start of the stored graph `state` by queueing its ready nodes, which answers it as started, or cancels it when
  * they still cannot be queued, which gives its reservation back and answers it as not started. Only a failed start cancels a
- * graph whose id its client was never given, so a cancel refused because the graph is already cancelled met the end of an
- * earlier try whose reply was lost: that end is run again (`endCancelledStart`) and the graph answered as not started. A
- * graph that refuses the cancel because it completed or failed, or that still runs, is answered as started with the state read
- * after the cancel. A graph whose cancel throws on every try is answered as unknown: it may stay running with ready nodes
+ * graph whose id its client was never given, so a cancel refused because the graph is already cancelled for that reason met
+ * the end of an earlier try whose reply was lost: that end is run again (`endCancelledStart`) and the graph answered as not
+ * started. A graph that refuses the cancel because it completed, failed or was cancelled for another reason, or that still
+ * runs, is answered as started with the state read after the cancel. A graph whose cancel throws on every try is answered as unknown: it may stay running with ready nodes
  * nobody queues, and its reservation keeps the provisional lease (docs/policy-decisions.md, entry 15).
  */
 export async function queueReadyNodesOrCancel(state: GraphExecutionState, scheduler: StartingGraphScheduler): Promise<Recovery<GraphExecutionState>> {
@@ -182,7 +182,7 @@ export async function queueReadyNodesOrCancel(state: GraphExecutionState, schedu
     console.error(`[GraphScheduler] Graph ${graphId} ended before its failed start was cancelled, but its state could not be read:`, err);
     return undefined;
   });
-  if (ended?.status !== 'cancelled') return foundOrUnknown(ended);
+  if (ended?.status !== 'cancelled' || ended.failedReason !== START_FAILED_REASON) return foundOrUnknown(ended);
   await endCancelledStart(ended, scheduler.cancelNode);
   return { status: 'not-started' };
 }
