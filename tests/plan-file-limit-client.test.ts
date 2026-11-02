@@ -151,6 +151,7 @@ describe('the signed-in person of the viewer', () => {
 
 describe('the drop zone states the limit of the plan', () => {
   const noop = () => undefined;
+  /** The card as a page renders it, with the anonymous allowance the server read (an operator set it to 7). */
   const dropzoneText = () =>
     visibleText(
       renderDom(
@@ -161,17 +162,17 @@ describe('the drop zone states the limit of the plan', () => {
           onDrop: noop,
           onOpenFileDialog: noop,
           onImportFile: noop,
-          dailyLimit: 25,
+          dailyLimit: 7,
         })
       )
     );
 
   it.each([
-    ['anonymous', 'Up to 1 GiB per file · 25 conversions a day · Files deleted automatically'],
+    ['anonymous', 'Up to 1 GiB per file · 7 conversions a day · Files deleted automatically'],
     ['free', 'Up to 1 GiB per file · 25 conversions a day · Files deleted automatically'],
-    ['pro', 'Up to 5 GiB per file · Files deleted automatically'],
-    ['enterprise', 'Up to 10 GiB per file · Files deleted automatically'],
-  ] as const)('shows "%s" viewers "%s", the free allowance only on a free plan', (plan, copy) => {
+    ['pro', 'Up to 5 GiB per file · 500 conversions a day · Files deleted automatically'],
+    ['enterprise', 'Up to 10 GiB per file · 10,000 conversions a day · Files deleted automatically'],
+  ] as const)('shows "%s" viewers "%s", the allowance of their own plan', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
     expect(text).toContain(copy);
