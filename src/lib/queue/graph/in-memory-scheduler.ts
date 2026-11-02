@@ -11,7 +11,8 @@ import type {
   NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
+import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel } from './node-jobs';
+import type { Recovery } from '../hand-off';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
@@ -93,16 +94,24 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     };
 
     this.graphs.set(graphId, { state, remainingDeps, children, accumulatedUnits: 0 });
+    await this.enqueueWaitingNodes(state);
+    return JSON.parse(JSON.stringify(state));
+  }
 
-    // Enqueue initial ready nodes (in-degree == 0)
-    for (const [nodeId, nodeState] of Object.entries(nodesRecord)) {
+  /** Queues the job of every node of `state` that waits for one; the queue keeps one job per id, so a repeat adds none. */
+  private async enqueueWaitingNodes(state: GraphExecutionState): Promise<void> {
+    for (const nodeState of Object.values(state.nodes)) {
       if (nodeState.status === 'waiting') {
-        const node = graph.nodes[nodeId];
-        await this.enqueueNodeJob(graphId, nodeId, node, graphNodeJobMetadata(state));
+        await this.enqueueNodeJob(state.graphId, nodeState.id, state.graph.nodes[nodeState.id], graphNodeJobMetadata(state));
       }
     }
+  }
 
-    return JSON.parse(JSON.stringify(state));
+  async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
+    const data = this.graphs.get(graphId);
+    // This process stores a graph before its start can fail, and no write of it can land later: a graph not here never started.
+    if (!data) return { status: 'not-started' };
+    return queueReadyNodesOrCancel(JSON.parse(JSON.stringify(data.state)), () => this.enqueueWaitingNodes(data.state), (reason) => this.cancelGraph(graphId, reason));
   }
 
   async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {

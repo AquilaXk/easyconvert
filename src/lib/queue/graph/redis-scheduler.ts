@@ -15,7 +15,7 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
+import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
@@ -23,6 +23,7 @@ import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { finishGraph, type EndedGraph, type GraphEnd, type ReservationEnd } from './graph-end';
 import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredCount, parseStoredList } from './redis-state-parsers';
+import { RECOVERY_UNKNOWN, type Recovery } from '../hand-off';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;
@@ -240,8 +241,12 @@ export class RedisGraphScheduler implements IGraphScheduler {
     /** Cancels the node jobs the script cancelled or skipped, with their nodes read from `state`, and answers what it did. */
     const stopNodes = async (state: GraphExecutionState | undefined): Promise<Omit<NodeFailureResult, 'graphFailed'>> => {
       const reason = `Graph failed due to node ${nodeId}`;
-      for (const nid of stoppedNodeIds) await cancelGraphNodeJobOrLog(graphId, nid, state?.graph.nodes[nid], reason, this.cancelNode);
-      return { graphStatus, cancelledJobIds: cancelledNodeIds.map((nid) => `${graphId}:${nid}`), skippedNodeIds };
+      const cancelledJobIds: string[] = [];
+      for (const nid of stoppedNodeIds) {
+        const cancelled = await cancelGraphNodeJobOrLog(graphId, nid, state?.graph.nodes[nid], reason, this.cancelNode);
+        if (cancelled && cancelledNodeIds.includes(nid)) cancelledJobIds.push(graphNodeJobId(graphId, nid));
+      }
+      return { graphStatus, cancelledJobIds, skippedNodeIds };
     };
     const end = recordedFailureEnd(graphId, raw, error);
     if (!end) return { graphFailed: false, ...(await stopNodes(stoppedNodeIds.length > 0 ? await this.getGraphState(graphId) : undefined)) };
@@ -260,6 +265,12 @@ export class RedisGraphScheduler implements IGraphScheduler {
     const meta = parseGraphMeta(graphId, rawGraph);
     const nodes = parseNodeStates(graphId, await this.redisClient.hgetall(k.nodes), meta.totalNodes);
     return { ...meta, nodes };
+  }
+
+  async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
+    const state = await this.getGraphState(graphId);
+    if (!state) return RECOVERY_UNKNOWN;
+    return queueReadyNodesOrCancel(state, () => this.drainOutbox(graphId), (reason) => this.cancelGraph(graphId, reason));
   }
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {

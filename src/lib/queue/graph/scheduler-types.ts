@@ -1,4 +1,5 @@
 import type { JobGraph, GraphNode, NodeId } from './types';
+import type { Recovery } from '../hand-off';
 
 export type GraphStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -86,6 +87,13 @@ export interface IGraphScheduler {
   ): Promise<NodeCompletionResult>;
   onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult>;
   getGraphState(graphId: string): Promise<GraphExecutionState | undefined>;
+  /**
+   * Finishes the start of a graph whose `initGraph` threw after it stored the graph: queues the ready nodes the start left
+   * unqueued (the outbox, drained until it is empty) and answers the graph as started. A graph whose nodes still cannot be
+   * queued is cancelled, which gives its reservation back, and answered as not started; a graph that was not stored is
+   * unknown, as its write may still land.
+   */
+  recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>>;
   cancelGraph(graphId: string, reason?: string): Promise<boolean>;
   /** The output keys of the nodes `nodeIds`, each key once. */
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;

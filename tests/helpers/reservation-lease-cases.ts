@@ -16,7 +16,7 @@ export interface LeaseCaseControls {
   /** The store the cases reserve in, and the owner whose day they use. */
   store: () => RedisKeyStore;
   owner: () => string;
-  /** Lets `ms` pass for the store: the clock, and in Redis the time to live of the owner's keys. */
+  /** Lets `ms` pass for the store: the clock, and in Redis the ends of the leases and the time to live of the owner's keys. */
   advance: (ms: number) => Promise<void>;
 }
 

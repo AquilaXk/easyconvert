@@ -1,6 +1,4 @@
 import { releaseResultHold, withInputHeld } from '../../storage/retention-service';
-import type { GraphExecutionState, GraphMetadata, IGraphScheduler } from './scheduler-types';
-import type { JobGraph } from './types';
 
 /** The stored files the `import.upload` nodes of a graph with these `nodes` read. */
 export function graphInputKeys(nodes: Readonly<Record<string, object>>): string[] {
@@ -13,21 +11,13 @@ export function graphInputKeys(nodes: Readonly<Record<string, object>>): string[
 }
 
 /**
- * Starts the graph `graphId` while every file its `import.upload` nodes read, an upload or an earlier result, is held
- * for it (see `withInputHeld`), so that no deletion removes one before a node reads it; `releaseInputHolds` ends
- * the holds when the graph ends.
+ * Runs `start`, which starts the graph `graphId` with these `nodes`, while every file its `import.upload` nodes read, an
+ * upload or an earlier result, is held for it (see `withInputHeld`), so that no deletion removes one before a node reads it;
+ * `releaseInputHolds` ends the holds when the graph ends. A `start` that throws gives the holds up.
  */
-export function initGraphHoldingInputs(
-  scheduler: Pick<IGraphScheduler, 'initGraph'>,
-  graphId: string,
-  graph: JobGraph,
-  meta: GraphMetadata
-): Promise<GraphExecutionState> {
-  const start = graphInputKeys(graph.nodes).reduceRight<() => Promise<GraphExecutionState>>(
-    (startHolding, key) => () => withInputHeld(key, graphId, startHolding),
-    () => scheduler.initGraph(graphId, graph, meta)
-  );
-  return start();
+export function withGraphInputsHeld<T>(graphId: string, nodes: Readonly<Record<string, object>>, start: () => Promise<T>): Promise<T> {
+  const holding = graphInputKeys(nodes).reduceRight<() => Promise<T>>((startHolding, key) => () => withInputHeld(key, graphId, startHolding), start);
+  return holding();
 }
 
 /**

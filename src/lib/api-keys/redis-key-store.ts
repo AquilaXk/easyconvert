@@ -90,6 +90,8 @@ export class RedisKeyStore extends KeyStore {
   private static sharedLedger: MemoryReservationLedger | undefined;
   protected static sharedTokenBuckets = new Map<string, { tokens: number; lastRefill: number }>();
   private readonly memoryLedger: MemoryReservationLedger;
+  /** The ledger in Redis, made once for the client it was made with. */
+  private redisLedger: { client: Redis; ledger: RedisReservationLedger } | undefined;
   private readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
   private readonly keyPrefix: string;
   private redisClient: Redis | null = null;
@@ -142,12 +144,15 @@ export class RedisKeyStore extends KeyStore {
 
   /** The ledger of the reservations: in Redis when the store has it, else in this process. */
   private ledger(): ReservationLedger {
-    return this.redisClient ? new RedisReservationLedger(this.redisClient, this.keyPrefix) : this.memoryLedger;
+    const client = this.redisClient;
+    if (!client) return this.memoryLedger;
+    if (this.redisLedger?.client !== client) this.redisLedger = { client, ledger: new RedisReservationLedger(client, this.keyPrefix) };
+    return this.redisLedger.ledger;
   }
 
   /** Gives back the in-memory reservations whose lease ended; Redis gives back its own in every step. */
   public cleanExpiredReservations(): number {
-    return this.redisClient ? 0 : this.memoryLedger.reclaim(Date.now());
+    return this.redisClient ? 0 : this.memoryLedger.reclaim();
   }
 
   public override async getQuotaUsage(userId: string) {
@@ -159,7 +164,7 @@ export class RedisKeyStore extends KeyStore {
         const user = isAnonymous ? null : await redisUserStore.findById(userId);
         const tier: UserTier = user?.tier || 'free';
         const dailyLimit = isAnonymous ? getAnonymousDailyLimit() : TIER_LIMITS[tier];
-        const usedToday = await this.ledger().used(userId, getUtcDateKey(), Date.now());
+        const usedToday = await this.ledger().used(userId, getUtcDateKey());
         const remaining = Math.max(0, dailyLimit - usedToday);
         const resetAt = getNextMidnightUtc();
 
@@ -271,15 +276,14 @@ export class RedisKeyStore extends KeyStore {
     const dailyLimit = await this.dailyLimitOf(userId);
     // One day for the whole reservation: its count, its id and its record never straddle midnight.
     const day = getUtcDateKey();
-    const now = Date.now();
     try {
       if (units === 0) {
-        const remaining = Math.max(0, dailyLimit - (await this.ledger().used(userId, day, now)));
+        const remaining = Math.max(0, dailyLimit - (await this.ledger().used(userId, day)));
         return { allowed: remaining > 0, remaining };
       }
       const reservationId = reservationIdOf(userId, day);
-      const request = { owner: userId, day, dayEnd: getNextMidnightUtc(), reservationId, units, limit: dailyLimit, leaseUntil: now + RESERVATION_LEASE.provisionalMs };
-      const reserved = await this.ledger().reserve(request, now);
+      const request = { owner: userId, day, dayLeftMs: getNextMidnightUtc() - Date.now(), reservationId, units, limit: dailyLimit, leaseMs: RESERVATION_LEASE.provisionalMs };
+      const reserved = await this.ledger().reserve(request);
       return reserved.allowed ? { allowed: true, reservationId, remaining: reserved.remaining } : { allowed: false, remaining: Math.max(0, reserved.remaining) };
     } catch (err) {
       console.error('[RedisKeyStore] Redis reserveQuota failed:', err);
@@ -306,8 +310,11 @@ export class RedisKeyStore extends KeyStore {
    */
   public async extendQuota(reservationId: string, extensionId: string, units: number): Promise<QuotaExtension> {
     const named = parseReservationId(reservationId);
-    if (!named) return { status: 'no-reservation' };
-    return this.ledger().extend(reservationId, extensionId, units, await this.dailyLimitOf(named.userId), Date.now());
+    const extension: QuotaExtension = named
+      ? await this.ledger().extend(reservationId, extensionId, units, await this.dailyLimitOf(named.userId))
+      : { status: 'no-reservation' };
+    if (extension.status === 'no-reservation') console.warn(`[RedisKeyStore] Extension ${extensionId} found no live reservation ${reservationId}`);
+    return extension;
   }
 
   /**
@@ -316,19 +323,26 @@ export class RedisKeyStore extends KeyStore {
    * Answers false when the reservation is gone. A failure in Redis throws.
    */
   public async renewReservation(reservationId: string, leaseMs: number): Promise<boolean> {
-    if (!parseReservationId(reservationId)) return false;
-    const now = Date.now();
-    return this.ledger().renew(reservationId, now + leaseMs, now);
+    return this.ledger().renew(reservationId, leaseMs, 'extend');
+  }
+
+  /**
+   * Sets the lease of the live reservation `reservationId` to end `leaseMs` from now, also when that is sooner than it is:
+   * a hand-off whose work may not have started goes back to the provisional lease. Answers false when the reservation is
+   * gone. A failure in Redis throws.
+   */
+  public async setReservationLease(reservationId: string, leaseMs: number): Promise<boolean> {
+    return this.ledger().renew(reservationId, leaseMs, 'set');
   }
 
   /**
    * Runs one step that ends a reservation. A failed step is logged and reported as undefined: the count in Redis is unknown,
    * and nothing here tries it again.
    */
-  private async endReservation<T>(action: string, reservationId: string, step: (ledger: ReservationLedger, now: number) => Promise<T>): Promise<T | undefined> {
+  private async endReservation<T>(action: string, reservationId: string, step: (ledger: ReservationLedger) => Promise<T>): Promise<T | undefined> {
     if (!reservationId || typeof reservationId !== 'string') return undefined;
     try {
-      return await step(this.ledger(), Date.now());
+      return await step(this.ledger());
     } catch (err) {
       console.error(`[RedisKeyStore] Redis ${action} of reservation ${reservationId} failed:`, err);
       return undefined;
@@ -340,7 +354,9 @@ export class RedisKeyStore extends KeyStore {
    * Confirms successful task completion and finalizes the reservation.
    */
   public async commitQuota(reservationId: string): Promise<boolean> {
-    return (await this.endReservation('commit', reservationId, (ledger, now) => ledger.commit(reservationId, now))) === true;
+    const committed = await this.endReservation('commit', reservationId, (ledger) => ledger.commit(reservationId));
+    if (committed === false) console.warn(`[RedisKeyStore] Commit found no live reservation ${reservationId}`);
+    return committed === true;
   }
 
   /**
@@ -353,7 +369,9 @@ export class RedisKeyStore extends KeyStore {
     actualUnits: number
   ): Promise<{ success: boolean; difference: number }> {
     const safeUnits = Math.max(0, Number.isFinite(actualUnits) ? Math.floor(actualUnits) : 0);
-    return (await this.endReservation('settle', reservationId, (ledger, now) => ledger.settle(reservationId, safeUnits, now))) ?? { success: false, difference: 0 };
+    const settled = await this.endReservation('settle', reservationId, (ledger) => ledger.settle(reservationId, safeUnits));
+    if (settled?.success === false) console.warn(`[RedisKeyStore] Settle found no live reservation ${reservationId}`);
+    return settled ?? { success: false, difference: 0 };
   }
 
   /**
@@ -361,7 +379,7 @@ export class RedisKeyStore extends KeyStore {
    * Rolls back reserved quota units when a conversion fails or times out.
    */
   public async rollbackQuota(reservationId: string): Promise<boolean> {
-    return (await this.endReservation('rollback', reservationId, (ledger, now) => ledger.rollback(reservationId, now))) === true;
+    return (await this.endReservation('rollback', reservationId, (ledger) => ledger.rollback(reservationId))) === true;
   }
 
   public override async generateApiKey(

@@ -1,4 +1,5 @@
-import type { GraphNodeJobMetadata } from './scheduler-types';
+import type { GraphExecutionState, GraphNodeJobMetadata } from './scheduler-types';
+import type { Recovery } from '../hand-off';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { enqueueConversionJob } from '../enqueue';
@@ -83,6 +84,28 @@ export function nodeJobCancelRefusal(data: { graphId?: string; graphNodeId?: str
     graphId: data.graphId,
     detail: `This job is node "${data.graphNodeId}" of the graph job "${data.graphId}", which is cancelled as a whole. Cancel "${data.graphId}" instead.`,
   };
+}
+
+/** Why a graph is cancelled when its ready nodes cannot be queued after its start failed. */
+const START_FAILED_REASON = 'The job could not be queued';
+
+/**
+ * Finishes the start of the stored graph `state` by queueing its ready nodes with `queueReady`, which answers it as started,
+ * or cancels it with `cancel` when they still cannot be queued, which gives its reservation back and answers it as not started.
+ */
+export async function queueReadyNodesOrCancel(
+  state: GraphExecutionState,
+  queueReady: () => Promise<unknown>,
+  cancel: (reason: string) => Promise<boolean>
+): Promise<Recovery<GraphExecutionState>> {
+  try {
+    await queueReady();
+  } catch (err) {
+    console.error(`[GraphScheduler] The ready nodes of graph ${state.graphId} could not be queued after its start failed, so it is cancelled:`, err);
+    await cancel(START_FAILED_REASON);
+    return { status: 'not-started' };
+  }
+  return { status: 'started', work: state };
 }
 
 /** Cancels the queue job of a graph node on the queue it was routed to. */

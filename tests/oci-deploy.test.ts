@@ -1506,7 +1506,7 @@ esac`
   const boot = (env: Record<string, string> = {}) =>
     spawnSync('bash', [path.join(ROOT, 'scripts', 'boot-web-image.sh'), 'img:tag'], {
       encoding: 'utf-8',
-      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, BOOT_CHECK_ATTEMPTS: '3', ...env },
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, BOOT_CHECK_ATTEMPTS: '3', ...env } as unknown as NodeJS.ProcessEnv,
     });
   const calls = (): string[] => readFileSync(log, 'utf-8').split('\n').filter(Boolean);
   const removed = () => calls().some((call) => /^docker rm -f easyconvert-boot-check-\d+$/.test(call));

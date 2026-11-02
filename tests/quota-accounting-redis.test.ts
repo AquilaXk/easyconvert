@@ -64,6 +64,8 @@ const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-lim
 const PAST_OLD_RESERVATION_LIFETIME_MS = 901_000;
 const EARLY_IN_A_UTC_DAY = new Date('2026-11-02T00:00:05.000Z');
 const FREE_DAILY_IMPORT_BYTES = 2 * 1024 * 1024 * 1024;
+/** The deadline of a link import of the synchronous route, its default. */
+const SYNC_DEADLINE_MS = 120_000;
 
 interface QuotaJob {
   userId: string;
@@ -132,7 +134,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   async function advanceKeyClock(ms: number) {
     for (const key of await admin.keys(`*${client.userId}*`)) {
       if ((await admin.type(key)) === 'zset') {
-        const leases = await admin.zrange(key, 0, -1, 'WITHSCORES');
+        const leases = await admin.zrange(key, '0', '-1', 'WITHSCORES');
         for (let i = 0; i < leases.length; i += 2) await admin.zadd(key, Number(leases[i + 1]) - ms, leases[i]);
       }
       const left = await admin.pttl(key);
@@ -347,7 +349,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const uploadId = `upload_${crypto.randomBytes(6).toString('hex')}`;
       await opened.reservation.bind(uploadId, Date.now() + 60_000);
       const importAll = () =>
-        withLinkImportMeter({ owner: client.userId, plan: 'anonymous', limitBytes: URL_IMPORT_MAX_BYTES }, async (meter) => {
+        withLinkImportMeter({ owner: client.userId, plan: 'anonymous', limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: SYNC_DEADLINE_MS }, async (meter) => {
           for (let batch = 0; batch < BATCHES; batch++) await meter.count(LINK_IMPORT_METER_BATCH_BYTES);
           await meter.count(TAIL_BYTES);
         });

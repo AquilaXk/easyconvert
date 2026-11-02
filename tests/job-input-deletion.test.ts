@@ -8,7 +8,7 @@ import { Queue, type Job } from '../src/lib/queue/bullmq-engine';
 import { attachInputCleanupOnCompletion, attachJobCancellationListeners, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { dispatchEngine } from '../src/lib/queue/dispatch-engine';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
-import { initGraphHoldingInputs } from '../src/lib/queue/graph/input-cleanup';
+import { withGraphInputsHeld } from '../src/lib/queue/graph/input-cleanup';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
@@ -145,7 +145,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-complete');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await initGraphHoldingInputs(scheduler, graphId, twoNodes(key), {});
+    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, twoNodes(key)));
 
     await scheduler.onNodeStarted(graphId, 'src');
     const first = await scheduler.onNodeCompleted(graphId, 'src', [key]);
@@ -163,7 +163,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-failed');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await initGraphHoldingInputs(scheduler, graphId, twoNodes(key), {});
+    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, twoNodes(key)));
 
     const failure = await scheduler.onNodeFailed(graphId, 'src', 'boom');
 
@@ -176,7 +176,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-cancelled');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await initGraphHoldingInputs(scheduler, graphId, twoNodes(key), {});
+    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, twoNodes(key)));
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
@@ -247,12 +247,13 @@ describe('the hold on an owner\'s earlier output chained as a job input', () => 
     const key = await deliveredResult();
     const scheduler = new InMemoryGraphScheduler();
     const graphId = `g_hold_${crypto.randomBytes(4).toString('hex')}`;
-    await initGraphHoldingInputs(scheduler, graphId, {
+    const graph = {
       nodes: {
         src: { op: 'import.upload' as const, storageKey: key },
         out: { op: 'convert' as const, input: 'src', targetFormat: 'json' },
       },
-    }, {});
+    };
+    await withGraphInputsHeld(graphId, graph.nodes, () => scheduler.initGraph(graphId, graph));
     expect(await sweepRetention(storage, afterUndelivered())).toBe(0);
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
