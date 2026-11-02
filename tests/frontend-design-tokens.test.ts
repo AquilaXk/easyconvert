@@ -130,7 +130,7 @@ describe('design tokens', () => {
     expect(globalsCss).not.toMatch(/serif|--font-display/);
     expect(findAll(/\bfont-display\b|WovenGround|woven-ground/g)).toEqual([]);
     const layout = fs.readFileSync(path.join(rootDir, 'src', 'app', '[locale]', 'layout.tsx'), 'utf8');
-    expect(layout.match(/localFont\(/g)).toHaveLength(1);
+    expect(layout.match(/localFont\(/g), 'a Latin and a Hangul file of one family').toHaveLength(2);
   });
 
   it('defines every colour token for both themes', () => {
@@ -146,7 +146,8 @@ describe('design tokens', () => {
     expect(tokenNames.filter((name) => !declared(block(':root')).has(name))).toEqual([]);
     expect(tokenNames.filter((name) => !declared(block('.dark')).has(name))).toEqual([]);
   });
-  it('keeps text on every surface at WCAG AA (4.5:1) in both themes, and control borders at 3:1', () => {
+
+  it('keeps text on every surface at WCAG AA (4.5:1) in both themes, field borders at 3:1 and the focus ring on the page at 3:1', () => {
     const block = (selector: string) => {
       const start = globalsCss.indexOf(`${selector} {`);
       return globalsCss.slice(start, globalsCss.indexOf('\n}', start));
@@ -161,10 +162,13 @@ describe('design tokens', () => {
       const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
       return (hi + 0.05) / (lo + 0.05);
     };
+    const placeholderToken = /input::placeholder,\s*textarea::placeholder\s*\{[^}]*color:\s*rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1];
+    expect(placeholderToken, 'a base rule colours the placeholder of an input and a textarea from a token').toBeDefined();
     const textOnSurface: ReadonlyArray<[string, string]> = [
       ...['ink', 'ink-2', 'ink-3', 'accent-ink', 'success', 'warning', 'danger', 'info'].flatMap((fg) =>
         ['canvas', 'surface', 'sunken'].map((bg): [string, string] => [fg, bg]),
       ),
+      ...['canvas', 'surface', 'sunken'].map((bg): [string, string] => [placeholderToken!, bg]),
       ['on-accent', 'accent'],
       ['on-accent', 'accent-hover'],
       ['on-accent', 'accent-to'],
@@ -178,16 +182,30 @@ describe('design tokens', () => {
     const below: string[] = [];
     for (const [theme, selector] of [['light', ':root'], ['dark', '.dark']] as const) {
       const tokens = channels(block(selector));
+      const contrast = (fg: string, bg: string) => {
+        if (!tokens[fg] || !tokens[bg]) {
+          below.push(`${theme} ${fg} on ${bg}: a token is missing`);
+          return Infinity;
+        }
+        return ratio(tokens[fg], tokens[bg]);
+      };
       for (const [fg, bg] of textOnSurface) {
-        if (!tokens[fg] || !tokens[bg]) continue;
-        const value = ratio(tokens[fg], tokens[bg]);
+        const value = contrast(fg, bg);
         if (value < 4.5) below.push(`${theme} ${fg} on ${bg}: ${value.toFixed(2)}`);
       }
-      for (const bg of ['canvas', 'surface']) {
-        const value = ratio(tokens['rule-strong'], tokens[bg]);
-        if (value < 3) below.push(`${theme} rule-strong on ${bg}: ${value.toFixed(2)}`);
+      for (const [fg, bg] of [['rule-strong', 'canvas'], ['rule-strong', 'surface'], ['accent', 'canvas']]) {
+        const value = contrast(fg, bg);
+        if (value < 3) below.push(`${theme} ${fg} on ${bg}: ${value.toFixed(2)}`);
       }
     }
     expect(below).toEqual([]);
+  });
+
+  it('draws keyboard focus as an explicit 2px accent outline with a 2px offset on every focusable element', () => {
+    const rule = /(?:^|\n)\s*:focus-visible\s*\{([^}]*)\}/.exec(globalsCss)?.[1] ?? '';
+    expect(rule).toMatch(/outline:\s*2px solid rgb\(var\(--c-accent\)\)\s*;/);
+    expect(rule).toMatch(/outline-offset:\s*2px\s*;/);
+    expect(globalsCss.indexOf(':focus-visible {')).toBeGreaterThan(globalsCss.indexOf('@layer base'));
+    expect(globalsCss.indexOf(':focus-visible {')).toBeLessThan(globalsCss.indexOf('@layer components'));
   });
 });

@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
+import { warnBrowserFailure } from '@/lib/browser-failure';
 import { getViewerMaxFileBytes } from '@/lib/viewer-plan';
 import { useRefreshViewerPlan, useViewerPlan } from './useViewerPlan';
 import {
@@ -354,7 +355,8 @@ function createDownloadAllZipHandler(ctx: QueueMutationContext) {
         ctx.revokeBlobUrl(zipUrl);
       }, ZIP_REVOKE_DELAY_MS);
       ctx.timersRef.current.add(timer);
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Bundling the converted files into a ZIP failed', error);
       if (ctx.mountedRef.current) {
         ctx.setZipError(true);
       }

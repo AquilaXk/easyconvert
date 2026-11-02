@@ -10,6 +10,7 @@ import {
   type KeyExpiryOption,
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
+import { warnBrowserFailure } from '@/lib/browser-failure';
 import { applySessionChange } from '@/lib/viewer-plan';
 import { useProblemWording } from '../i18n/error-wording';
 
@@ -108,7 +109,8 @@ function useApiKeysController(
         const quotaData = await quotaRes.json();
         if (quotaData.success) setQuota(quotaData.usage);
       }
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Reading the API keys failed', error);
       onReportError(t('loadKeysNetwork'));
     }
   }, [onReportError, problemWording, t]);
@@ -152,7 +154,8 @@ function useApiKeysController(
         return;
       }
       onReportError(problemWording(data, res.status, t('createKey')));
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Creating an API key failed', error);
       onReportError(t('createKeyNetwork'));
     } finally {
       setIsGeneratingKey(false);
@@ -170,7 +173,8 @@ function useApiKeysController(
       }
       setRevokingKeyId(null);
       await fetchKeysAndQuota();
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Revoking an API key failed', error);
       onReportError(t('revokeKeyNetwork'));
     }
   };
@@ -240,7 +244,8 @@ export function useDashboardController() {
       const res = await fetch('/api/auth/logout', { method: 'POST' });
       // A sign-out the server refused leaves the session, so the header keeps the account until the page is read again.
       if (res.ok) applySessionChange(null);
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Signing out failed', error);
       setActionError(t('signOutNetwork'));
     }
     router.push('/auth');

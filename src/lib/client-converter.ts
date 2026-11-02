@@ -3,6 +3,7 @@ import { tryProcessClientEdgeOcr } from './edge-ocr';
 import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } from './edge/tier-router';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
+import { warnBrowserFailure } from './browser-failure';
 import { conversionFailureOf, type ConversionFailure } from './conversion-failure';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { canvasToBlob } from './edge/pipelines/canvas-blob';
@@ -594,12 +595,15 @@ export async function executeItemConversion(
   } catch (err: any) {
     if (err instanceof ClientEdgeEscalationError) {
       escalation = { fallbackFrom: err.fallbackFrom, escalationReason: err.message };
-    } else if (item.options.clientEdgeMode === true) {
-      // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
-      callbacks.onError({ code: 'clientEdgeFailed' });
-      return;
+    } else {
+      warnBrowserFailure('Client edge conversion failed', err);
+      if (item.options.clientEdgeMode === true) {
+        // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
+        callbacks.onError({ code: 'clientEdgeFailed' });
+        return;
+      }
+      // Otherwise cascade to cloud fallback
     }
-    // Otherwise cascade to cloud fallback
   }
 
   // 2. Fail-closed check: if user strictly mandated client-only execution, block cloud upload

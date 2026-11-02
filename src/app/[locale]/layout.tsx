@@ -8,14 +8,27 @@ import { routing } from '@/i18n/routing';
 import { siteMetadataBase } from '@/i18n/metadata';
 import '../globals.css';
 
-// One OFL sans for Latin and Hangul: a subset of Pretendard Variable (scripts/subset-web-font.py), vendored so a build
-// needs no network (licence beside the files). Text the messages do not hold falls back to the system sans.
-const uiFont = localFont({
-  src: '../fonts/EasyConvertSans-subset.woff2',
+// One OFL sans for Latin and Hangul, cut from Pretendard Variable into two files by scripts/subset-web-font.py and vendored
+// so a build needs no network (licence beside the files). Both carry the family name EasyConvert Sans. Latin is preloaded
+// and holds the language name every page shows; Hangul is fetched only by a page that draws another syllable of the
+// unicode-range below, so an English page loads Latin alone.
+// Text the messages do not hold falls back to the system sans.
+const latinFont = localFont({
+  src: '../fonts/EasyConvertSans-latin.woff2',
   weight: '400 700',
   display: 'swap',
   variable: '--font-ui',
   adjustFontFallback: 'Arial',
+});
+
+const hangulFont = localFont({
+  src: '../fonts/EasyConvertSans-hangul.woff2',
+  weight: '400 700',
+  display: 'swap',
+  variable: '--font-ui-hangul',
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [{ prop: 'unicode-range', value: 'U+1100-11FF, U+3130-318F, U+AC00-D7A3' }],
 });
 
 interface LocaleLayoutProps {
@@ -50,7 +63,7 @@ export default async function LocaleLayout({ children, params }: Readonly<Locale
   const [t, messages] = await Promise.all([getTranslations('layout'), getMessages()]);
 
   return (
-    <html lang={locale} className={uiFont.variable} suppressHydrationWarning>
+    <html lang={locale} className={`${latinFont.variable} ${hangulFont.variable}`} suppressHydrationWarning>
       <head>
         <meta name="color-scheme" content="light dark" />
         <script

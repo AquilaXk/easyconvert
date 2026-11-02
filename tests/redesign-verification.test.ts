@@ -484,7 +484,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     for (const slug of ['pdf-to-docx', 'terms', 'status', 'unit-converter']) {
       const page = renderSlug(slug);
       const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
-      // The body paints the woven ground for both themes, so the page root carries layout only and never covers it.
+      // The body paints the canvas colour of both themes, so the page root carries layout only and never covers it.
       expect(classAttr(root), slug).toBe('flex flex-col min-h-screen');
     }
   });

@@ -31,6 +31,7 @@
       "loading": "Loading OpenAPI specification...",
       "loadFailedHeading": "Could not load the OpenAPI specification",
       "loadFailedBody": "Try again in a moment.",
+      "retry": "Try again",
       "noMatches": "No matching API endpoints found."
     },
     "endpoint": {
@@ -406,7 +407,7 @@
       "loadDlq": "Could not load the failed webhooks. Try again in a moment.",
       "loadDlqNetwork": "The connection dropped and the failed webhooks did not load. Try again.",
       "deleteFile": "Could not delete the file. Try again in a moment.",
-      "deleteFileBusy": "The file is still being made, so it cannot be deleted yet. Try again in a moment.",
+      "deleteFileGone": "The file was already deleted.",
       "deleteFileNetwork": "The connection dropped and the file was not deleted. Try again.",
       "replaySucceeded": "The webhook was sent again.",
       "replayFailed": "Could not send the webhook again.",
@@ -920,7 +921,7 @@
       },
       "contrast": {
         "heading": "Visual Contrast, Motion & Zoom",
-        "body": "Body copy maintains at least a 4.5:1 contrast ratio and interactive UI boundaries maintain at least a 3:1 contrast ratio across light and dark palettes. Form controls use a minimum 16px text size to prevent forced viewport zoom on mobile browsers, primary and icon buttons provide 44px touch targets, layouts reflow cleanly at 390px width and 200% browser zoom without horizontal page scroll, and non-essential motion honours <code>prefers-reduced-motion</code>."
+        "body": "Text keeps at least a 4.5:1 contrast ratio and the borders of text fields keep at least 3:1 across light and dark palettes, and buttons are identified by their labels rather than by their outlines. Form controls use a minimum 16px text size to prevent forced viewport zoom on mobile browsers, primary and icon buttons provide 44px touch targets, layouts reflow cleanly at 390px width and 200% browser zoom without horizontal page scroll, and non-essential motion honours <code>prefers-reduced-motion</code>."
       },
       "feedback": {
         "heading": "Feedback & Assistance",

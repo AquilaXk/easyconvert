@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import type { FileWithRemaining } from './dashboard-types';
+import { warnBrowserFailure } from '@/lib/browser-failure';
 import { useProblemWording } from '../i18n/error-wording';
 
-const HTTP_CONFLICT = 409;
+const HTTP_NOT_FOUND = 404;
 
 export function useFilesAndDlqController(
   enabled: boolean,
@@ -32,7 +33,8 @@ export function useFilesAndDlqController(
       if (data && typeof data === 'object' && 'files' in data && Array.isArray(data.files)) {
         setUserFiles(data.files as FileWithRemaining[]);
       }
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Reading the converted files failed', error);
       onReportError(t('loadFilesNetwork'));
     } finally {
       setFilesLoading(false);
@@ -51,7 +53,8 @@ export function useFilesAndDlqController(
       if (data && typeof data === 'object' && 'entries' in data && Array.isArray(data.entries)) {
         setDlqEntries(data.entries as WebhookDlqEntry[]);
       }
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Reading the failed webhooks failed', error);
       onReportError(t('loadDlqNetwork'));
     } finally {
       setDlqLoading(false);
@@ -90,13 +93,16 @@ export function useFilesAndDlqController(
     onReportError(null);
     try {
       const res = await fetch(`/api/account/files/${id}`, { method: 'DELETE' });
-      if (!res.ok) {
+      if (res.status === HTTP_NOT_FOUND) {
+        onReportError(t('deleteFileGone'));
+      } else if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(problemWording(data, res.status, res.status === HTTP_CONFLICT ? t('deleteFileBusy') : t('deleteFile')));
+        onReportError(problemWording(data, res.status, t('deleteFile')));
         return;
       }
       setUserFiles((prev) => prev.filter((file) => file.id !== id));
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Deleting a file failed', error);
       onReportError(t('deleteFileNetwork'));
     }
   };
@@ -110,7 +116,8 @@ export function useFilesAndDlqController(
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       setDlqFeedback(res.ok && data?.success ? t('replaySucceeded') : problemWording(data, res.status, t('replayFailed')));
       await fetchDlqEntries();
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Sending a webhook again failed', error);
       setDlqFeedback(t('replayRequestFailed'));
     } finally {
       setReplayingDlqId(null);
@@ -129,7 +136,8 @@ export function useFilesAndDlqController(
         return;
       }
       setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Deleting a failed webhook failed', error);
       onReportError(t('deleteDlqNetwork'));
     }
   };
@@ -147,7 +155,8 @@ export function useFilesAndDlqController(
       }
       setDlqEntries([]);
       setDlqFeedback(t('dlqCleared'));
-    } catch {
+    } catch (error) {
+      warnBrowserFailure('Clearing the failed webhooks failed', error);
       onReportError(t('clearDlqNetwork'));
     }
   };

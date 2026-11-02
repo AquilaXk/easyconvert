@@ -383,8 +383,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       isConverting: false,
     });
     const alerts = allElements(errorQueue).filter((el) => attrOf(el, 'role') === 'alert');
-    expect(alerts.map((a) => visibleText(a))).toEqual(['The request was refused. Check the file and its settings, then try again.']);
-    expect(select(errorQueue, 'details')).toEqual([]);
+    expect(alerts.map((a) => visibleText(a))).toEqual(['The request could not be read. Check the values and try again.']);
     expect(visibleText(errorQueue)).not.toContain('Corrupt PNG header signature');
   });
 

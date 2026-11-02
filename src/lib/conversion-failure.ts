@@ -1,10 +1,10 @@
 /**
- * Why a conversion in the queue failed, in a form the interface words in the page's language: a code for a failure the
- * client decided, the server's refusing answer (its `code` or problem type, RFC 9457, with the HTTP status), or a queued
- * job that failed on a worker (the refusal code the job recorded; a job's failure has no HTTP status).
+ * Why a conversion in the queue, or the ZIP of its results, failed, in a form the interface words in the page's language: a
+ * code for a failure the client decided, the server's refusing answer (its `code` or problem type, RFC 9457, with the HTTP
+ * status), or a queued job that failed on a worker (the refusal code the job recorded; a job's failure has no HTTP status).
  */
 export type ConversionFailure =
-  | { readonly code: 'conversionFailed' | 'jobTimedOut' }
+  | { readonly code: 'conversionFailed' | 'jobTimedOut' | 'zipFailed' }
   | { readonly code: 'clientEdgeFailed' }
   | { readonly code: 'clientOnlyBlocked'; readonly source: string; readonly target: string; readonly edgeFailed?: true }
   | { readonly code: 'server'; readonly problem: Readonly<Record<string, unknown>> }

@@ -46,12 +46,7 @@ function answer(body: unknown, status: number): void {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/problem+json' } })));
 }
 
-interface RenderedFailure {
-  alert: string;
-  hasDisclosure: boolean;
-}
-
-function renderedFailure(failure: ConversionFailure, locale: TestLocale): RenderedFailure {
+function renderedFailure(failure: ConversionFailure, locale: TestLocale): { alert: string } {
   const item: ConversionQueueItem = { ...hwpItem(), status: 'error', error: failure };
   const dom = renderDom(
     createElement(QueueItemRow, {
@@ -61,10 +56,10 @@ function renderedFailure(failure: ConversionFailure, locale: TestLocale): Render
     locale
   );
   const [alert] = select(dom, 'p', 'role', 'alert');
-  return { alert: visibleText(alert), hasDisclosure: select(dom, 'details').length > 0 };
+  return { alert: visibleText(alert) };
 }
 
-/** The row reads in Korean and in English, with no server text, no disclosure and no status code. */
+/** The row reads in Korean and in English, with no server text and no status code. */
 function expectWorded(failure: ConversionFailure, serverText: string): void {
   const korean = renderedFailure(failure, 'ko');
   const english = renderedFailure(failure, 'en');
@@ -73,7 +68,6 @@ function expectWorded(failure: ConversionFailure, serverText: string): void {
   for (const row of [korean, english]) {
     expect(row.alert, JSON.stringify(failure)).not.toContain(serverText);
     expect(row.alert, JSON.stringify(failure)).not.toMatch(/HTTP/);
-    expect(row.hasDisclosure, JSON.stringify(failure)).toBe(false);
   }
 }
 
@@ -105,10 +99,12 @@ describe('a refusal of /api/convert reads in the page language, without the serv
     }
   });
 
-  it('words an answer with no code it knows by its status class, never with its text', () => {
-    expectWorded({ code: 'server', problem: { error: 'Unsupported target format "xyz".', status: 400 } }, 'Unsupported target format');
-    expectWorded({ code: 'server', problem: { error: 'Worker pool exploded.', status: 500 } }, 'Worker pool');
-    expectWorded({ code: 'server', problem: { status: 400 } }, 'Bad Request');
+  it('words an answer with no code it knows by the problem its status names, never with its text', () => {
+    const alertOf = (problem: Record<string, unknown>, locale: TestLocale) => renderedFailure({ code: 'server', problem }, locale).alert;
+    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 읽지 못했어요. 입력한 값을 확인한 뒤 다시 시도해 주세요.');
+    expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'ko')).toBe('문제가 생겼어요. 잠시 후 다시 시도해 주세요.');
+    expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'en')).toBe('Something went wrong on our side. Try again.');
+    expect(alertOf({ status: 409 }, 'en')).toBe('The request was refused. Check the file and its settings, then try again.');
   });
 });
 
@@ -144,15 +140,16 @@ describe('the failures the client decides read in the page language', () => {
   });
 
   it('words a browser-only conversion that failed in the browser', () => {
-    expectWorded({ code: 'clientEdgeFailed' }, 'WASM module failed to load');
+    expect(renderedFailure({ code: 'clientEdgeFailed' }, 'ko').alert).toBe('브라우저에서 이 파일을 변환하지 못했어요. 브라우저에서만 변환하도록 설정돼 있어서 파일은 기기 밖으로 보내지 않았어요.');
+    expect(renderedFailure({ code: 'clientEdgeFailed' }, 'en').alert).toBe('The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.');
   });
 });
 
 describe('a job that failed on the worker reads as one sentence', () => {
   it('shows the generic job sentence and no HTTP status', () => {
     const failure: ConversionFailure = { code: 'jobFailed' };
-    expectWorded(failure, 'Worker process exited');
-    expect(renderedFailure(failure, 'ko').alert).not.toMatch(/\d{3}/);
+    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했어요. 다시 시도하거나 다른 형식을 골라 주세요.');
+    expect(renderedFailure(failure, 'en').alert).toBe('The conversion failed on the server. Try again, or try another format.');
   });
 
   it('words a job that hit its time limit by the code the worker recorded', () => {

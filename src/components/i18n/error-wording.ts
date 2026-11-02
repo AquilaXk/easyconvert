@@ -2,15 +2,9 @@ import { useCallback } from 'react';
 import { useFormatter, useMessages, useTranslations, type Messages } from 'next-intl';
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '@/lib/plan-limits';
-import { AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, PROBLEM_TYPE_BASE, URL_IMPORT_ERROR_CODES, isCodeOf } from '@/lib/refusal-codes';
+import { AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, DEFAULT_PROBLEM_TYPES, PROBLEM_TYPE_BASE, URL_IMPORT_ERROR_CODES, isCodeOf } from '@/lib/refusal-codes';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { useFileTooLargeMessage, useFormatBytes } from './format';
-
-/**
- * How the interface words a refused request or a failed conversion (RFC 9457 practice): a stable `code` or problem `type`
- * is the key of a sentence in the page's language, and the numbers that sentence names come from the answer's fields. The
- * server's `detail` is written for the developer of an API client, so no sentence of the interface carries it.
- */
 
 type Answer = Readonly<Record<string, unknown>>;
 type ProblemName = keyof Messages['errors']['problems'];
@@ -62,10 +56,14 @@ const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, wor
 };
 
 /**
- * The wording of any refused request: the sentence of its problem type, else `fallback` (the sentence of the action that
- * failed) or the sentence of its status class.
+ * The wording of any refused request (RFC 9457 practice): the sentence of its problem `type`, which is a stable key of a
+ * sentence in the page's language, with the numbers that sentence names taken from the answer's fields. A route that
+ * answers `{ success: false, error }` carries no `type`, so the type its status names stands for it. A `type` this build has
+ * no sentence for gives `fallback` (the sentence of the action that failed) or the sentence of the status class. The
+ * server's `detail` is written for the developer of an API client, so no sentence of the interface carries it. A caller for
+ * which one status stands for several causes (the sign-in form) turns the status off with `byStatus: false`.
  */
-export function useProblemWording(): (payload: unknown, status: number, fallback?: string) => string {
+export function useProblemWording({ byStatus = true }: { readonly byStatus?: boolean } = {}): (payload: unknown, status: number, fallback?: string) => string {
   const t = useTranslations('errors');
   const problems = useMessages().errors.problems;
   const format = useFormatter();
@@ -74,7 +72,7 @@ export function useProblemWording(): (payload: unknown, status: number, fallback
   return useCallback(
     (payload: unknown, status: number, fallback?: string) => {
       const answer = answerOf(payload);
-      const type = textField(answer, 'type');
+      const type = textField(answer, 'type') ?? (byStatus ? DEFAULT_PROBLEM_TYPES[status]?.type : undefined);
       const name = type?.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
       if (name !== undefined && isProblemName(problems, name)) {
         const limit: LimitWords['limit'] = (key, fields, field, unit) => {
@@ -86,7 +84,7 @@ export function useProblemWording(): (payload: unknown, status: number, fallback
       }
       return fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server'));
     },
-    [t, problems, format, formatBytes, fileTooLarge]
+    [t, problems, format, formatBytes, fileTooLarge, byStatus]
   );
 }
 
@@ -111,7 +109,7 @@ export function useUrlImportErrorWording(): (payload: unknown, status: number) =
 /** A refusal of `/api/auth/login` or `/api/auth/register`, by its `code`; never by its status alone. */
 export function useAuthErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.auth');
-  const problemWording = useProblemWording();
+  const problemWording = useProblemWording({ byStatus: false });
   return useCallback(
     (payload: unknown, status: number) => {
       const answer = answerOf(payload);
@@ -151,6 +149,8 @@ export function useConversionFailureWording(): (failure: ConversionFailure) => s
           return t('queue.clientEdgeFailed');
         case 'conversionFailed':
           return t('queue.conversionFailed');
+        case 'zipFailed':
+          return t('queue.zipFailed');
       }
     },
     [t, problemWording]

@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server';
 import { NextIntlClientProvider, useTimeZone } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useDashboardController } from '../src/components/dashboard/useDashboardController';
+import { useRetentionLabel } from '../src/components/dashboard/useRetentionLabel';
 import { useFilesAndDlqController } from '../src/components/dashboard/useDashboardResources';
 import {
   useAuthErrorWording,
@@ -145,6 +146,7 @@ describe('the wording and formatting hooks keep their identity across renders', 
         useFileLimitCopy: useFileLimitCopy(),
         useFileTooLargeMessage: useFileTooLargeMessage(),
         useTierLabel: useTierLabel(),
+        useRetentionLabel: useRetentionLabel(),
       };
       if (zone !== BROWSER_ZONE) return null;
       for (const [name, value] of Object.entries(hooks)) seen.set(name, (seen.get(name) ?? new Set()).add(value));
@@ -164,6 +166,7 @@ describe('the wording and formatting hooks keep their identity across renders', 
       useFileLimitCopy: 1,
       useFileTooLargeMessage: 1,
       useTierLabel: 1,
+      useRetentionLabel: 1,
     });
   });
 });

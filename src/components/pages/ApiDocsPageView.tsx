@@ -13,12 +13,14 @@ import {
   type ParsedEndpointItem,
 } from '@/components/api-docs/openapi-types';
 import { useCopyFeedback } from '@/hooks/useCopyFeedback';
+import { warnBrowserFailure } from '@/lib/browser-failure';
 
 export default function ApiDocsPageView() {
   const t = useTranslations('apiDocs.page');
   const [spec, setSpec] = useState<OpenApiSpec | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMethod, setSelectedMethod] = useState<string>('all');
   const [expandedEndpoints, setExpandedEndpoints] = useState<Record<string, boolean>>({});
@@ -30,8 +32,10 @@ export default function ApiDocsPageView() {
     async function loadSpec() {
       try {
         setLoading(true);
+        setFailed(false);
         const res = await fetch('/api/v1/openapi.json');
         if (!res.ok) {
+          warnBrowserFailure('Loading the API specification failed', `the server answered ${res.status}`);
           if (active) setFailed(true);
           return;
         }
@@ -39,7 +43,8 @@ export default function ApiDocsPageView() {
         if (active) {
           setSpec(data);
         }
-      } catch {
+      } catch (error) {
+        warnBrowserFailure('Loading the API specification failed', error);
         if (active) setFailed(true);
       } finally {
         if (active) {
@@ -51,7 +56,7 @@ export default function ApiDocsPageView() {
     return () => {
       active = false;
     };
-  }, [t]);
+  }, [attempt]);
 
   const toggleEndpoint = (key: string) => {
     setExpandedEndpoints((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -155,6 +160,12 @@ export default function ApiDocsPageView() {
               <div>
                 <h3 className="font-semibold text-sm">{t('loadFailedHeading')}</h3>
                 <p className="text-xs mt-1">{t('loadFailedBody')}</p>
+                <button
+                  type="button" onClick={() => setAttempt((count) => count + 1)}
+                  className="mt-3 transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-xs border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer"
+                >
+                  {t('retry')}
+                </button>
               </div>
             </div>
           )}

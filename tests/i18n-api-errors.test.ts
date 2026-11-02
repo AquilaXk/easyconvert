@@ -105,6 +105,17 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(failure).not.toBe(korean);
   });
 
+  it('words an answer without a problem type by the type its status names, never by the server text', () => {
+    const untyped = { success: false, error: 'File record not found or not owned by user.' };
+    expect(worded(useProblemWording, 'ko', untyped, 404, '파일을 지우지 못했어요.')).toBe('찾는 항목이 더 이상 없어요.');
+    expect(worded(useProblemWording, 'ko', untyped, 409, '파일을 지우지 못했어요.')).toBe('파일을 지우지 못했어요.');
+  });
+
+  it('words a ZIP of the results that could not be built through the same wording as the conversions', () => {
+    expect(worded(useConversionFailureWording, 'ko', { code: 'zipFailed' })).toBe('ZIP 파일을 만들지 못했어요. 다시 시도해 주세요.');
+    expect(worded(useConversionFailureWording, 'en', { code: 'zipFailed' })).toBe('Could not build the ZIP archive.');
+  });
+
   it('words a refusal of a known type by its sentence, not by the server text', () => {
     const quota = { type: `${PROBLEM}quota-exceeded`, detail: 'The daily limit of 50 conversions is used up.', dailyLimit: 50 };
     expect(worded(useProblemWording, 'ko', quota, 429)).toBe('오늘 변환 한도 50회를 모두 썼어요. 내일 다시 시도해 주세요.');
@@ -161,10 +172,10 @@ describe('link import refusals', () => {
     );
   });
 
-  it('words an answer without a known code by its status class, never with the server text', () => {
+  it('words an answer without a known code by its status, never with the server text', () => {
     const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 400);
     expectKorean(korean, 'unknown');
-    expect(korean).toBe('요청을 처리하지 못했어요. 파일과 설정을 확인한 뒤 다시 시도해 주세요.');
+    expect(korean).toBe('요청을 읽지 못했어요. 입력한 값을 확인한 뒤 다시 시도해 주세요.');
     expect(korean).not.toContain('Upstream');
     expectKorean(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502), 'server failure');
   });
@@ -258,6 +269,9 @@ describe('sign-in refusals are worded by their code', () => {
     const untyped = worded(useAuthErrorWording, 'ko', { error: 'Email and password are required strings.' }, 400);
     expect(untyped).not.toContain('Email and password');
     expect(untyped).not.toBe(worded(useAuthErrorWording, 'ko', { code: 'missing_fields' }, 400));
+    for (const status of [400, 401, 403, 429, 503]) {
+      expect(worded(useAuthErrorWording, 'ko', { error: 'Rejected.' }, status), String(status)).toBe('로그인하지 못했어요. 다시 시도해 주세요.');
+    }
   });
 });
 
@@ -265,7 +279,7 @@ describe('a name or code outside the closed lists reads as its status class', ()
   const NOT_CODES = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'];
 
   it.each(NOT_CODES)('words the problem type %s as a refusal', (name) => {
-    expect(worded(useProblemWording, 'en', { type: `${PROBLEM}${name}`, detail: 'x' }, 400)).toBe(worded(useProblemWording, 'en', {}, 400));
+    expect(worded(useProblemWording, 'en', { type: `${PROBLEM}${name}`, detail: 'x' }, 400)).toBe(worded(useProblemWording, 'en', { type: `${PROBLEM}retired-problem` }, 400));
   });
 
   it.each(NOT_CODES)('words the link import code %s by its status class', (code) => {

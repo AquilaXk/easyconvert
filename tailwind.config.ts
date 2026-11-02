@@ -50,7 +50,7 @@ const config: Config = {
         "8xl": "90rem",
       },
       fontFamily: {
-        sans: ["var(--font-ui)", "ui-sans-serif", "system-ui", "sans-serif"],
+        sans: ["var(--font-ui)", "var(--font-ui-hangul)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
     },
   },

@@ -47,10 +47,12 @@ const ALLOWED_TEXT = new Set([
 /**
  * An error's message is for logs and API callers: the interface words a failure by its code (src/lib/conversion-failure.ts)
  * and never shows the message, which tests/i18n-queue-errors.test.ts checks on the rendered queue. Only that argument is
- * exempt: the message of an error constructor, and the third argument of `serverRefusal`, the message an error has when the
- * server gave no sentence. Any other argument (a failure the interface shows) is scanned.
+ * exempt: the message of an error constructor, the third argument of `serverRefusal` (the message an error has when the
+ * server gave no sentence), and the first argument of `warnBrowserFailure`, the English reason a browser-side failure
+ * writes to the console (tests/browser-failure-reasons.test.ts). Any other argument (a failure the interface shows) is
+ * scanned.
  */
-const ERROR_MESSAGE_ARGUMENT: Readonly<Record<string, number>> = { serverRefusal: 2 };
+const ERROR_MESSAGE_ARGUMENT: Readonly<Record<string, number>> = { serverRefusal: 2, warnBrowserFailure: 0 };
 const ERROR_CLASS = /(?:Error|Exception)$/;
 
 /** Elements whose text is code a visitor copies, not copy. */

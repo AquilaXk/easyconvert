@@ -107,7 +107,7 @@ describe('the Korean copy keeps one register and one set of terms', () => {
   const koreanEntries = [...korean];
 
   it('uses 해요체, never 합니다체 or 하십시오체 endings', () => {
-    const formal = /(?:니다|십시오|십시요|하소서)(?=[.!?\s"]|$)/;
+    const formal = /(?:니다|십시오|십시요|하소서)(?![가-힣])/;
     expect(koreanEntries.filter(([, text]) => formal.test(text)).map(([key]) => key)).toEqual([]);
   });
 
