@@ -263,9 +263,9 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     const maxBytes = getViewerMaxFileBytes();
     const oversizeItem = { id: 'over', file: new File(['x'], 'big.mp4'), name: 'big.mp4', size: maxBytes + 1, sourceFormat: 'mp4', targetFormat: '', status: 'error' as const, progress: 0, options: {} };
     const validItem = { id: 'ok', file: new File(['x'], 'ok.png'), name: 'ok.png', size: 128, sourceFormat: 'png', targetFormat: 'webp', status: 'ready' as const, progress: 0, options: {} };
-    const mixedQueue = render(ConversionQueue, { items: [oversizeItem, validItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false });
+    const mixedQueue = render(ConversionQueue, { items: [oversizeItem, validItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false });
     expect(attrOf(select(mixedQueue, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')).toBeNull();
-    const onlyOversize = render(ConversionQueue, { items: [oversizeItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false });
+    const onlyOversize = render(ConversionQueue, { items: [oversizeItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false });
     expect(attrOf(select(onlyOversize, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')).toBe('');
 
     const labelTargets = new Set(
@@ -336,6 +336,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onConvertAll: noop,
       onConvertSingle: noop,
       onAddMoreFiles: noop,
+      onImportFile: noop,
       onDownloadAllZip: noop,
       isConverting: false,
     });
@@ -364,6 +365,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onConvertAll: noop,
       onConvertSingle: noop,
       onAddMoreFiles: noop,
+      onImportFile: noop,
       onDownloadAllZip: noop,
       isConverting: true,
     });
@@ -380,6 +382,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onConvertAll: noop,
       onConvertSingle: noop,
       onAddMoreFiles: noop,
+      onImportFile: noop,
       onDownloadAllZip: noop,
       isConverting: false,
     });

@@ -160,17 +160,18 @@ describe('the drop zone states the limit of the plan', () => {
           onDragLeave: noop,
           onDrop: noop,
           onOpenFileDialog: noop,
-          onOpenUrlModal: noop,
+          onImportFile: noop,
+          dailyLimit: 25,
         })
       )
     );
 
   it.each([
-    ['anonymous', 'Up to 1 GiB per file'],
-    ['free', 'Up to 1 GiB per file'],
-    ['pro', 'Up to 5 GiB per file'],
-    ['enterprise', 'Up to 10 GiB per file'],
-  ] as const)('shows "%s" viewers %s', (plan, copy) => {
+    ['anonymous', 'Up to 1 GiB per file · 25 conversions a day · Files deleted automatically'],
+    ['free', 'Up to 1 GiB per file · 25 conversions a day · Files deleted automatically'],
+    ['pro', 'Up to 5 GiB per file · Files deleted automatically'],
+    ['enterprise', 'Up to 10 GiB per file · Files deleted automatically'],
+  ] as const)('shows "%s" viewers "%s", the free allowance only on a free plan', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
     expect(text).toContain(copy);

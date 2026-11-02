@@ -81,13 +81,13 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
     <>
       <Link
         href="/auth"
-        className="min-h-[44px] inline-flex items-center px-3 text-sm font-medium text-ink-2 hover:text-ink rounded-sm transition-colors"
+        className="min-h-[44px] inline-flex items-center px-4 text-sm font-medium text-ink-2 hover:text-ink rounded-sm transition-colors"
       >
         {t('logIn')}
       </Link>
       <Link
         href={{ pathname: '/auth', query: { tab: 'register' } }}
-        className="btn-primary min-h-[44px] inline-flex items-center px-4 text-sm font-semibold rounded-sm"
+        className="btn-primary min-h-[44px] inline-flex items-center px-5 text-sm font-semibold rounded-sm"
       >
         {t('signUp')}
       </Link>

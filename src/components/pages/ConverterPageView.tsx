@@ -116,42 +116,41 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
         <Hero
           onFilesSelected={handleFilesSelected}
           hasActiveQueue={queue.length > 0}
+          dailyLimit={dailyLimit}
           activeSourceFormat={parsed.sourceFormat}
           activeTargetFormat={parsed.targetFormat}
-          categoryTitle={copy.title}
-          categoryDescription={copy.description}
+          pair={{ title: copy.title, description: copy.description }}
         />
 
         {queue.length > 0 ? (
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-            <ConversionQueue
-              items={queue}
-              onRemoveItem={handleRemoveItem}
-              onClearAll={handleClearAll}
-              onUpdateTargetFormat={handleUpdateTargetFormat}
-              onUpdateAllTargets={handleUpdateAllTargets}
-              onUpdateOptions={handleUpdateOptions}
-              onConvertAll={() => {
-                void handleConvertAll();
-              }}
-              onConvertSingle={(id) => {
-                const target = queue.find((item) => item.id === id);
-                if (target) {
-                  void convertSingleItem(target);
-                }
-              }}
-              onAddMoreFiles={() => {
-                const input = document.getElementById('main-file-input') as HTMLInputElement | null;
-                if (input) input.click();
-              }}
-              onDownloadAllZip={() => {
-                void handleDownloadAllZip();
-              }}
-              isConverting={isConverting}
-              zipError={zipError}
-              onDismissZipError={dismissZipError}
-            />
-          </div>
+          <ConversionQueue
+            items={queue}
+            onRemoveItem={handleRemoveItem}
+            onClearAll={handleClearAll}
+            onUpdateTargetFormat={handleUpdateTargetFormat}
+            onUpdateAllTargets={handleUpdateAllTargets}
+            onUpdateOptions={handleUpdateOptions}
+            onConvertAll={() => {
+              void handleConvertAll();
+            }}
+            onConvertSingle={(id) => {
+              const target = queue.find((item) => item.id === id);
+              if (target) {
+                void convertSingleItem(target);
+              }
+            }}
+            onAddMoreFiles={() => {
+              const input = document.getElementById('main-file-input') as HTMLInputElement | null;
+              if (input) input.click();
+            }}
+            onImportFile={(file) => handleFilesSelected([file])}
+            onDownloadAllZip={() => {
+              void handleDownloadAllZip();
+            }}
+            isConverting={isConverting}
+            zipError={zipError}
+            onDismissZipError={dismissZipError}
+          />
         ) : (
           <>
             <div className="w-full min-h-[50px] sm:min-h-[64px] flex items-center justify-center my-2">

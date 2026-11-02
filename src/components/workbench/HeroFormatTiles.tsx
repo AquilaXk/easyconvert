@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { ChevronDown } from 'lucide-react';
 import { getAvailableTargetFormats } from '@/lib/registry';
 import FormatSelector from '../FormatSelector';
+import { FormatIcon } from './FormatIcon';
 
 interface HeroFormatTilesProps {
   sourceFormat: string;
@@ -13,6 +14,44 @@ interface HeroFormatTilesProps {
   onTargetChange: (nextTarget: string) => void;
 }
 
+type Side = 'source' | 'target';
+
+interface FormatTileProps {
+  side: Side;
+  format: string;
+  display: string;
+  label: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}
+
+/** One tile of the pair: the format's icon over its name, a button that opens the format picker of its side. */
+function FormatTile({ side, format, display, label, isOpen, onToggle, children }: Readonly<FormatTileProps>) {
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-testid={`hero-${side}-format-btn`}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        aria-label={label}
+        onClick={onToggle}
+        className="relative w-24 h-[104px] sm:w-28 sm:h-[120px] rounded-sm border border-rule bg-surface shadow-elev-1 hover:border-accent-edge text-ink flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer"
+      >
+        <FormatIcon format={format} className="size-6 text-ink-2" />
+        <span className="text-sm font-bold uppercase">{display}</span>
+        <ChevronDown
+          aria-hidden="true"
+          className={`absolute right-2 bottom-2 size-3.5 text-ink-3 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {children}
+    </div>
+  );
+}
+
+/** The pair of a converter page as two format tiles, each of which changes its side of the pair. */
 export default function HeroFormatTiles({
   sourceFormat,
   targetFormat,
@@ -20,49 +59,26 @@ export default function HeroFormatTiles({
   onTargetChange,
 }: Readonly<HeroFormatTilesProps>) {
   const t = useTranslations('hero.tiles');
-  const [openPicker, setOpenPicker] = useState<'source' | 'target' | null>(null);
+  const [openPicker, setOpenPicker] = useState<Side | null>(null);
 
   const normalizedSource = sourceFormat.toLowerCase();
   const normalizedTarget = targetFormat.toLowerCase();
   const isAnySource = normalizedSource === 'any' || !normalizedSource;
   const isAnyTarget = normalizedTarget === 'any' || !normalizedTarget;
   const sourceDisplay = isAnySource ? t('any') : normalizedSource.toUpperCase();
-  const targetDisplay = isAnyTarget ? '...' : normalizedTarget.toUpperCase();
-
-  const targetAvailableFormats =
-    normalizedSource !== 'any' && normalizedSource
-      ? getAvailableTargetFormats(normalizedSource)
-      : undefined;
+  const targetDisplay = isAnyTarget ? t('any') : normalizedTarget.toUpperCase();
+  const toggle = (side: Side) => setOpenPicker((current) => (current === side ? null : side));
 
   return (
-    <div className="inline-flex items-center justify-center gap-2.5 sm:gap-3">
-      <span className="hidden sm:inline text-xs uppercase tracking-widest text-ink-3 font-medium">
-        {t('convert')}
-      </span>
-
-      <div className="relative">
-        <button
-          type="button"
-          data-testid="hero-source-format-btn"
-          aria-haspopup="dialog"
-          aria-expanded={openPicker === 'source'}
-          aria-label={t('sourceLabel', { format: sourceDisplay })}
-          onClick={() => setOpenPicker((cur) => (cur === 'source' ? null : 'source'))}
-          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-md border border-rule bg-surface shadow-elev-1 hover:border-accent-edge px-3 pt-2.5 pb-2 text-ink flex flex-col items-start justify-between cursor-pointer"
-        >
-          <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
-            {t('from')}
-          </span>
-          <span className="w-full flex items-center justify-between gap-2 text-3xl font-bold uppercase">
-            <span>{sourceDisplay}</span>
-            <ChevronDown
-              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-200 ${
-                openPicker === 'source' ? 'rotate-180' : ''
-              }`}
-            />
-          </span>
-        </button>
-
+    <div className="inline-flex items-center justify-center gap-3 sm:gap-5">
+      <FormatTile
+        side="source"
+        format={normalizedSource}
+        display={sourceDisplay}
+        label={t('sourceLabel', { format: sourceDisplay })}
+        isOpen={openPicker === 'source'}
+        onToggle={() => toggle('source')}
+      >
         {openPicker === 'source' && (
           <FormatSelector
             allowAny
@@ -75,38 +91,23 @@ export default function HeroFormatTiles({
             title={t('fromTitle')}
           />
         )}
-      </div>
+      </FormatTile>
 
       <span className="text-xs uppercase tracking-widest text-ink-3 font-medium">{t('joiner')}</span>
 
-      <div className="relative">
-        <button
-          type="button"
-          data-testid="hero-target-format-btn"
-          aria-haspopup="dialog"
-          aria-expanded={openPicker === 'target'}
-          aria-label={t('targetLabel', { format: isAnyTarget ? t('anyFormat') : targetDisplay })}
-          onClick={() => setOpenPicker((cur) => (cur === 'target' ? null : 'target'))}
-          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-md border border-rule bg-surface shadow-elev-1 hover:border-accent-edge px-3 pt-2.5 pb-2 text-ink flex flex-col items-start justify-between cursor-pointer"
-        >
-          <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
-            {t('to')}
-          </span>
-          <span className="w-full flex items-center justify-between gap-2 text-3xl font-bold uppercase">
-            <span>{targetDisplay}</span>
-            <ChevronDown
-              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-200 ${
-                openPicker === 'target' ? 'rotate-180' : ''
-              }`}
-            />
-          </span>
-        </button>
-
+      <FormatTile
+        side="target"
+        format={normalizedTarget}
+        display={targetDisplay}
+        label={t('targetLabel', { format: targetDisplay })}
+        isOpen={openPicker === 'target'}
+        onToggle={() => toggle('target')}
+      >
         {openPicker === 'target' && (
           <FormatSelector
             allowAny
-            availableFormats={targetAvailableFormats}
-            sourceFormat={normalizedSource !== 'any' ? normalizedSource : undefined}
+            availableFormats={isAnySource ? undefined : getAvailableTargetFormats(normalizedSource)}
+            sourceFormat={isAnySource ? undefined : normalizedSource}
             selectedFormatId={normalizedTarget}
             onSelect={(fmt) => {
               onTargetChange(fmt);
@@ -116,7 +117,7 @@ export default function HeroFormatTiles({
             title={t('toTitle')}
           />
         )}
-      </div>
+      </FormatTile>
     </div>
   );
 }

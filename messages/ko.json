@@ -783,36 +783,47 @@
     },
     "dropzone": {
       "heading": "변환할 파일을 선택하세요",
-      "hint": "파일을 여기에 끌어다 놓거나 클립보드에서 붙여 넣으세요",
+      "hint": "또는 파일을 여기에 끌어다 놓으세요",
       "selectFile": "파일 선택",
       "moreSources": "다른 파일 가져오기",
       "sourcesMenu": "파일 가져오기",
       "fromDevice": "기기에서",
       "fromUrl": "URL에서",
-      "addFromUrl": "URL로 추가",
-      "formatsSupported": "{count}개 형식 지원",
-      "assurance": "암호화 · 자동 삭제",
-      "popular": "인기"
-    },
-    "popularPairs": {
-      "pdfToWord": "PDF → Word 변환",
-      "wordToPdf": "Word → PDF 변환",
-      "imageToWebp": "이미지 → WebP 변환",
-      "videoToMp3": "동영상 → MP3 변환",
-      "heicToJpg": "HEIC → JPG 변환",
-      "epubToPdf": "EPUB → PDF 변환"
+      "dailyConversions": "하루 {count, number}회",
+      "autoDeleted": "파일 자동 삭제"
     },
     "tiles": {
-      "convert": "변환",
-      "from": "원본",
-      "to": "대상",
       "joiner": "→",
       "any": "전체",
       "sourceLabel": "원본 형식 {format}",
       "targetLabel": "대상 형식 {format}",
-      "anyFormat": "모든 형식",
       "fromTitle": "원본 형식 선택",
       "toTitle": "대상 형식 선택"
+    },
+    "popular": {
+      "label": "인기 변환",
+      "pairs": {
+        "pdfToWord": "PDF → Word",
+        "wordToPdf": "Word → PDF",
+        "jpgToPng": "JPG → PNG",
+        "pngToJpg": "PNG → JPG",
+        "heicToJpg": "HEIC → JPG",
+        "imageToWebp": "이미지 → WebP",
+        "videoToMp3": "동영상 → MP3",
+        "movToMp4": "MOV → MP4",
+        "epubToPdf": "EPUB → PDF",
+        "excelToPdf": "Excel → PDF"
+      }
+    },
+    "chips": {
+      "heading": "어떤 형식을 변환할까요?",
+      "back": "뒤로",
+      "targets": "<format>{src}</format> 파일을 다음 형식으로 변환:"
+    },
+    "trust": {
+      "formats": "{count, number}개 형식 지원",
+      "encrypted": "암호화 전송",
+      "noSignup": "회원가입 없이 사용"
     }
   },
   "home": {
@@ -1146,7 +1157,7 @@
       "fixOptions": "계속하려면 비밀번호 옵션이나 출력 형식을 확인해 주세요.",
       "complete": "파일 {count, number}개 변환을 마쳤어요",
       "failed": "파일 {count, number}개를 변환하지 못했어요. 계속하려면 다시 시도하거나 제거해 주세요.",
-      "ready": "파일 {count, number}개를 변환할 준비가 됐어요"
+      "ready": "{count, number}개 파일을 변환할 준비가 됐어요"
     },
     "convertAllTo": "모두 변환할 형식",
     "chooseFormat": "형식 선택",
@@ -1154,7 +1165,7 @@
     "filesInQueue": "대기열의 파일 {count, number}개",
     "clearAll": "모두 지우기",
     "dismissZipError": "압축 오류 닫기",
-    "addMore": "+ 파일 추가",
+    "addMore": "파일 추가",
     "downloadAll": "모두 다운로드(.zip)",
     "converting": "변환 중...",
     "convert": "변환",
@@ -1165,15 +1176,16 @@
       "download": "다운로드",
       "failed": "실패",
       "retry": "다시 시도",
-      "ready": "준비됨",
-      "to": "→",
       "selectFormatLabel": "{name}의 출력 형식 선택",
       "selectFormat": "형식 선택",
       "selectorTitle": "{format} 변환 대상 형식",
       "optionsLabel": "{name} 변환 옵션",
       "cancelLabel": "{name} 취소",
-      "removeLabel": "{name} 제거"
-    }
+      "removeLabel": "{name} 제거",
+      "options": "옵션",
+      "formatName": "{format} {category, select, image {이미지} document {문서} archive {압축 파일} video {동영상} audio {오디오} ebook {전자책} spreadsheet {스프레드시트} presentation {프레젠테이션} data {데이터} vector {벡터} font {글꼴} cad {CAD} other {파일}}"
+    },
+    "label": "변환할 파일"
   },
   "siteLinks": {
     "pdfConverter": "PDF 변환기",

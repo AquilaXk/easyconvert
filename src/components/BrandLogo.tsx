@@ -35,7 +35,7 @@ export function BrandIcon({
       viewBox="0 0 120 120"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={`shrink-0 text-accent-ink transition-transform duration-200 ${className}`}
+      className={`shrink-0 text-accent transition-transform duration-200 ${className}`}
       aria-hidden={decorative ? 'true' : undefined}
       role={decorative ? undefined : 'img'}
       aria-label={decorative ? undefined : 'EasyConvert'}

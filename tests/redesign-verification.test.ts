@@ -15,6 +15,7 @@ import StatusDashboard from '../src/components/StatusDashboard';
 import AdBanner from '../src/components/AdBanner';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
+import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
   allElements,
@@ -167,51 +168,41 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
   it('verifies Hero synchronizes target format on paste, file selection, drop, and URL import', () => {
     const hero = parseSource(sourcePath('src', 'components', 'Hero.tsx'));
-    const handlerCalls = callArguments(hero, 'onFilesSelected').filter((args) => args[1] === 'effectiveTarget');
 
-    expect(handlerCalls).toEqual([
-      ['files', 'effectiveTarget'],
-      ['files', 'effectiveTarget'],
-      ['files', 'effectiveTarget'],
-      ['[file]', 'effectiveTarget'],
+    // Every way in hands its files to one function, which names the target the tiles or the queue chose.
+    expect(callArguments(hero, 'onFilesSelected')).toEqual([
+      ['files', 'getEffectiveTargetFormat(targetFormatRef.current, activeTargetFormat)'],
     ]);
-    expect(initializersOf(hero, 'effectiveTarget')).toEqual([
-      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
-      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
-      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
-      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
+    expect(callArguments(hero, 'addFiles')).toEqual([
+      ['Array.from(e.target.files)'],
+      ['Array.from(e.dataTransfer.files)'],
+      ['[file]'],
     ]);
-    expect(initializersOf(hero, 'chosen')).toEqual([
-      'targetFormatRef.current',
-      'targetFormatRef.current',
-      'targetFormatRef.current',
-      'targetFormatRef.current',
-    ]);
+    expect(callArguments(hero, 'current')).toEqual([['Array.from(pastedFiles)']]);
     expect(initializersOf(hero, 'targetFormatRef')).toEqual(['useRef(targetFormat)']);
   });
 
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
-    const popularPresets = [
-      { label: 'PDF to Word', src: 'pdf', tgt: 'docx' },
-      { label: 'Word to PDF', src: 'docx', tgt: 'pdf' },
-      { label: 'Image to WebP', src: 'png', tgt: 'webp' },
-      { label: 'Video to MP3', src: 'mp4', tgt: 'mp3' },
-      { label: 'HEIC to JPG', src: 'heic', tgt: 'jpg' },
-      { label: 'EPUB to PDF', src: 'epub', tgt: 'pdf' },
-    ];
-
-    for (const preset of popularPresets) {
-      const srcDef = FORMAT_REGISTRY[preset.src];
-      expect(srcDef, `Source format ${preset.src} should exist`).toBeDefined();
-      expect(
-        srcDef.targetFormats.includes(preset.tgt),
-        `Source ${preset.src} should support target ${preset.tgt}`
-      ).toBe(true);
+    for (const pair of POPULAR_CONVERSIONS) {
+      const srcDef = FORMAT_REGISTRY[pair.from];
+      expect(srcDef, `Source format ${pair.from} should exist`).toBeDefined();
+      expect(srcDef.targetFormats.includes(pair.to), `Source ${pair.from} should support target ${pair.to}`).toBe(true);
     }
 
-    const hero = render(Hero, { onFilesSelected: noop, hasActiveQueue: false });
-    expect(visibleText(hero)).toMatch(/Popular PDF to Word Word to PDF Image to WebP Video to MP3 HEIC to JPG EPUB to PDF$/);
-    expect(popularPresets.map((p) => p.label)).toEqual(['PDF to Word', 'Word to PDF', 'Image to WebP', 'Video to MP3', 'HEIC to JPG', 'EPUB to PDF']);
+    const popular = select(renderHome(), 'nav', 'aria-label', 'Popular conversions');
+    expect(popular).toHaveLength(1);
+    expect(links(popular[0])).toEqual([
+      { text: 'PDF to Word', href: '/pdf-to-docx' },
+      { text: 'Word to PDF', href: '/docx-to-pdf' },
+      { text: 'JPG to PNG', href: '/jpg-to-png' },
+      { text: 'PNG to JPG', href: '/png-to-jpg' },
+      { text: 'HEIC to JPG', href: '/heic-to-jpg' },
+      { text: 'Image to WebP', href: '/png-to-webp' },
+      { text: 'Video to MP3', href: '/mp4-to-mp3' },
+      { text: 'MOV to MP4', href: '/mov-to-mp4' },
+      { text: 'EPUB to PDF', href: '/epub-to-pdf' },
+      { text: 'Excel to PDF', href: '/xlsx-to-pdf' },
+    ]);
   });
 
   it('verifies parseConverterSlug properly routes dynamic converter and informational paths', () => {
@@ -287,15 +278,25 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies Hero implements workbench architecture with Select File CTA and interactive format tiles', () => {
-    const hero = render(Hero, { onFilesSelected: noop, hasActiveQueue: false });
+    const hero = renderHome();
     const text = visibleText(hero);
 
     const selectFile = select(hero, 'button').filter((b) => visibleText(b) === 'Select File');
     expect(selectFile).toHaveLength(1);
     expect(classAttr(selectFile[0])).toMatch(/\bbtn-primary\b/);
-    expect(phrasesMissing(text, ['Select your file to convert', `${REGISTRY_STATS.formatCount} Formats Supported`, 'Popular'])).toEqual([]);
-    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(1);
-    expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(1);
+    expect(select(hero, 'button', 'aria-haspopup', 'menu').map((b) => attrOf(b, 'aria-label'))).toEqual(['More file sources']);
+    expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here', `${REGISTRY_STATS.formatCount} formats`, 'What do you want to convert?'])).toEqual([]);
+
+    // The home page offers source chips as toggle buttons, not the source and target tiles of a converter page.
+    const chips = select(hero, 'button', 'data-testid', 'source-chip');
+    expect(chips.map((chip) => visibleText(chip)).slice(0, 5)).toEqual(['PDF', 'DOCX', 'DOC', 'JPG', 'PNG']);
+    expect(new Set(chips.map((chip) => attrOf(chip, 'aria-pressed')))).toEqual(new Set(['false']));
+    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
+
+    const pairPage = renderSlug('png-to-jpg');
+    expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
+    expect(select(pairPage, 'button', 'data-testid', 'hero-target-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Target format JPG']);
+    expect(select(pairPage, 'button', 'data-testid', 'source-chip')).toHaveLength(0);
 
     expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
     expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
@@ -523,20 +524,20 @@ describe('Redesign & Free Static Architecture Verification', () => {
       return tokens.includes('fixed') && tokens.includes('bottom-0');
     });
     expect(fixedBottom).toEqual([]);
-    expect(phrasesPresent(text, ['files ready'])).toEqual([]);
+    expect(phrasesMissing(text, ['1 file ready to convert'])).toEqual([]);
 
     // Must NOT have fake/dummy cloud storage options
     expect(phrasesPresent(text, ['From Google Drive', 'From Dropbox', 'From OneDrive'])).toEqual([]);
 
     // Must have the one attached conversion dock with Add more files and Convert CTA
     expect(select(queue, 'button').map((b) => visibleText(b)).filter((label) => /Add more files|^Convert$/.test(label))).toEqual([
-      '+ Add more files',
+      'Add more files',
       'Convert',
     ]);
   });
 
   it('verifies Hero and dynamic slug pages do not contain fake cloud storage options or claims', () => {
-    const hero = visibleText(render(Hero, { onFilesSelected: noop, hasActiveQueue: false }));
+    const hero = visibleText(renderHome());
     expect(phrasesPresent(hero, ['From Google Drive', 'From Dropbox', 'From OneDrive'])).toEqual([]);
 
     const slugPage = visibleText(renderSlug('pdf-to-docx'));
@@ -550,22 +551,19 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // Must NOT have jarring dark navy background in light mode
     expect(presentIn(tokens, ['bg-[#1F2340]'])).toEqual([]);
 
-    // The dock: the surface under the queue rows, divided from them by a top rule
-    const dock = allElements(queue).find((e) => {
-      const classes = (attrOf(e, 'class') ?? '').split(/\s+/);
-      return classes.includes('border-t') && classes.includes('bg-surface');
-    });
-    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['bg-surface', 'border-t', 'border-rule'])).toEqual([]);
+    // The bar: a surface pinned to the bottom of the viewport while the queue scrolls, divided from the rows by a top rule
+    const dock = allElements(queue).find((e) => attrOf(e, 'data-queue-bar') !== null);
+    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['sticky', 'bottom-0', 'bg-surface', 'border-t', 'border-rule'])).toEqual([]);
 
-    // "Add more files" is a sunken control with a hairline border, the helper text uses the secondary ink
-    const addMore = select(queue, 'button').find((b) => visibleText(b) === '+ Add more files');
-    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule', 'bg-sunken'])).toEqual([]);
-    expect(missingFrom(tokens, ['text-ink-2'])).toEqual([]);
+    // "Add more files" is a secondary control on the canvas with a hairline border; the status uses the tertiary ink
+    const addMore = select(queue, 'button').find((b) => visibleText(b) === 'Add more files');
+    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule', 'bg-canvas'])).toEqual([]);
+    expect(missingFrom(tokens, ['text-ink-3'])).toEqual([]);
 
-    // The primary Convert CTA, and responsive layout classes preventing mobile overflow
+    // The primary Convert CTA; the bar stacks its parts on a phone and lays them in one line from a tablet up
     const convert = select(queue, 'button').find((b) => visibleText(b) === 'Convert');
     expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['btn-primary'])).toEqual([]);
-    expect(missingFrom(tokens, ['flex-wrap', 'sm:flex-nowrap'])).toEqual([]);
+    expect(missingFrom(tokens, ['flex-col', 'md:flex-row'])).toEqual([]);
   });
 });
 
@@ -591,7 +589,13 @@ function renderQueue(): DomElement {
     onConvertAll: noop,
     onConvertSingle: noop,
     onAddMoreFiles: noop,
+    onImportFile: noop,
     onDownloadAllZip: noop,
     isConverting: false,
   });
+}
+
+/** The home page's hero with no files queued. */
+function renderHome(): DomElement {
+  return render(Hero, { onFilesSelected: noop, hasActiveQueue: false, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
 }

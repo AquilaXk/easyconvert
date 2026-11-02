@@ -783,36 +783,47 @@
     },
     "dropzone": {
       "heading": "Select your file to convert",
-      "hint": "Drop files here, or paste from clipboard",
+      "hint": "or drop your files here",
       "selectFile": "Select File",
       "moreSources": "More file sources",
       "sourcesMenu": "File sources",
       "fromDevice": "From Device",
       "fromUrl": "From URL",
-      "addFromUrl": "Add from URL",
-      "formatsSupported": "{count} Formats Supported",
-      "assurance": "Encrypted & Ephemeral",
-      "popular": "Popular"
-    },
-    "popularPairs": {
-      "pdfToWord": "PDF to Word",
-      "wordToPdf": "Word to PDF",
-      "imageToWebp": "Image to WebP",
-      "videoToMp3": "Video to MP3",
-      "heicToJpg": "HEIC to JPG",
-      "epubToPdf": "EPUB to PDF"
+      "dailyConversions": "{count, plural, one {# conversion} other {# conversions}} a day",
+      "autoDeleted": "Files deleted automatically"
     },
     "tiles": {
-      "convert": "Convert",
-      "from": "FROM",
-      "to": "TO",
       "joiner": "to",
       "any": "ANY",
       "sourceLabel": "Source format {format}",
       "targetLabel": "Target format {format}",
-      "anyFormat": "any",
       "fromTitle": "Convert from format",
       "toTitle": "Convert to format"
+    },
+    "popular": {
+      "label": "Popular conversions",
+      "pairs": {
+        "pdfToWord": "PDF to Word",
+        "wordToPdf": "Word to PDF",
+        "jpgToPng": "JPG to PNG",
+        "pngToJpg": "PNG to JPG",
+        "heicToJpg": "HEIC to JPG",
+        "imageToWebp": "Image to WebP",
+        "videoToMp3": "Video to MP3",
+        "movToMp4": "MOV to MP4",
+        "epubToPdf": "EPUB to PDF",
+        "excelToPdf": "Excel to PDF"
+      }
+    },
+    "chips": {
+      "heading": "What do you want to convert?",
+      "back": "Back",
+      "targets": "Convert <format>{src}</format> to:"
+    },
+    "trust": {
+      "formats": "{count, number} formats",
+      "encrypted": "Encrypted transfers",
+      "noSignup": "No sign-up needed"
     }
   },
   "home": {
@@ -1146,7 +1157,7 @@
       "fixOptions": "Update password options or output format to continue.",
       "complete": "Conversion complete for {count, plural, one {# file} other {# files}}",
       "failed": "{count, plural, one {# file} other {# files}} failed conversion. Retry or remove to continue.",
-      "ready": "Ready to convert {count, plural, one {# file} other {# files}}"
+      "ready": "{count, plural, one {# file} other {# files}} ready to convert"
     },
     "convertAllTo": "Convert all to",
     "chooseFormat": "Choose format",
@@ -1154,7 +1165,7 @@
     "filesInQueue": "{count} files in queue",
     "clearAll": "Clear all",
     "dismissZipError": "Dismiss archive error",
-    "addMore": "+ Add more files",
+    "addMore": "Add more files",
     "downloadAll": "Download All (.zip)",
     "converting": "Converting...",
     "convert": "Convert",
@@ -1165,15 +1176,16 @@
       "download": "Download",
       "failed": "Failed",
       "retry": "Retry",
-      "ready": "Ready",
-      "to": "to",
       "selectFormatLabel": "Select output format for {name}",
       "selectFormat": "Select format",
       "selectorTitle": "Convert {format} to",
       "optionsLabel": "Conversion options for {name}",
       "cancelLabel": "Cancel {name}",
-      "removeLabel": "Remove {name}"
-    }
+      "removeLabel": "Remove {name}",
+      "options": "Options",
+      "formatName": "{format} {category, select, image {Image} document {Document} archive {Archive} video {Video} audio {Audio} ebook {Ebook} spreadsheet {Spreadsheet} presentation {Presentation} data {Data} vector {Vector} font {Font} cad {CAD} other {File}}"
+    },
+    "label": "Files to convert"
   },
   "siteLinks": {
     "pdfConverter": "PDF Converter",
