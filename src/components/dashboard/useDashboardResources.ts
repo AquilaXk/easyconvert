@@ -4,6 +4,7 @@ import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import type { FileWithRemaining } from './dashboard-types';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { useDashboardErrorWording } from '../i18n/error-wording';
+import { useReadSequence } from './useReadSequence';
 import { useRecordDelete } from './useRecordDelete';
 
 export function useFilesAndDlqController(
@@ -19,12 +20,16 @@ export function useFilesAndDlqController(
   const [inspectingDlq, setInspectingDlq] = useState<WebhookDlqEntry | null>(null);
   const [replayingDlqId, setReplayingDlqId] = useState<string | null>(null);
   const [dlqFeedback, setDlqFeedback] = useState<string | null>(null);
+  const beginFilesRead = useReadSequence();
+  const beginDlqRead = useReadSequence();
 
   const fetchUserFiles = useCallback(async () => {
+    const isLatest = beginFilesRead();
     setFilesLoading(true);
     try {
       const res = await fetch('/api/account/files');
       const data: unknown = await res.json().catch(() => null);
+      if (!isLatest()) return;
       if (!res.ok) {
         onReportError(problemWording(data, res.status, t('loadFiles')));
         return;
@@ -34,17 +39,19 @@ export function useFilesAndDlqController(
       }
     } catch (error) {
       warnBrowserFailure('Reading the converted files failed', error);
-      onReportError(t('loadFilesNetwork'));
+      if (isLatest()) onReportError(t('loadFilesNetwork'));
     } finally {
-      setFilesLoading(false);
+      if (isLatest()) setFilesLoading(false);
     }
-  }, [onReportError, problemWording, t]);
+  }, [beginFilesRead, onReportError, problemWording, t]);
 
   const fetchDlqEntries = useCallback(async () => {
+    const isLatest = beginDlqRead();
     setDlqLoading(true);
     try {
       const res = await fetch('/api/webhooks/dlq');
       const data: unknown = await res.json().catch(() => null);
+      if (!isLatest()) return;
       if (!res.ok) {
         onReportError(problemWording(data, res.status, t('loadDlq')));
         return;
@@ -54,11 +61,11 @@ export function useFilesAndDlqController(
       }
     } catch (error) {
       warnBrowserFailure('Reading the failed webhooks failed', error);
-      onReportError(t('loadDlqNetwork'));
+      if (isLatest()) onReportError(t('loadDlqNetwork'));
     } finally {
-      setDlqLoading(false);
+      if (isLatest()) setDlqLoading(false);
     }
-  }, [onReportError, problemWording, t]);
+  }, [beginDlqRead, onReportError, problemWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const readersRef = useRef({ fetchUserFiles, fetchDlqEntries });

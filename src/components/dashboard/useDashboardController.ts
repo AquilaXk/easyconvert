@@ -13,6 +13,7 @@ import { useFilesAndDlqController } from './useDashboardResources';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import { applySessionChange } from '@/lib/viewer-plan';
 import { useDashboardErrorWording } from '../i18n/error-wording';
+import { useReadSequence } from './useReadSequence';
 import { useRecordDelete } from './useRecordDelete';
 
 /** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
@@ -34,6 +35,11 @@ export function buildKeyCreationRequest(
       expiresAt: resolveExpiryTimestamp(keyExpiry, nowMs),
     },
   };
+}
+
+/** A successful answer of a dashboard route that carries `field`. */
+function isSuccess<Field extends string>(data: unknown, field: Field): data is { success: true } & Record<Field, unknown> {
+  return typeof data === 'object' && data !== null && 'success' in data && data.success === true && field in data;
 }
 
 function useClipboardCopyStatus() {
@@ -92,29 +98,28 @@ export function useApiKeysController(
   ]);
   const [keyExpiry, setKeyExpiry] = useState<KeyExpiryOption>('30d');
   const { copiedKey, copyToClipboard } = useClipboardCopyStatus();
+  const beginKeysRead = useReadSequence();
 
   const fetchKeysAndQuota = useCallback(async () => {
+    const isLatest = beginKeysRead();
     try {
       const [keysRes, quotaRes] = await Promise.all([
         fetch('/api/keys'),
         fetch('/api/keys/usage'),
       ]);
-      if (keysRes.ok) {
-        const keysData = await keysRes.json();
-        if (keysData.success) setApiKeys(keysData.keys);
-      } else {
-        const errBody: unknown = await keysRes.json().catch(() => null);
-        onReportError(problemWording(errBody, keysRes.status, t('loadKeys')));
-      }
-      if (quotaRes.ok) {
-        const quotaData = await quotaRes.json();
-        if (quotaData.success) setQuota(quotaData.usage);
-      }
+      const [keysData, quotaData]: unknown[] = await Promise.all([
+        keysRes.json().catch(() => null),
+        quotaRes.json().catch(() => null),
+      ]);
+      if (!isLatest()) return;
+      if (!keysRes.ok) onReportError(problemWording(keysData, keysRes.status, t('loadKeys')));
+      else if (isSuccess(keysData, 'keys')) setApiKeys(keysData.keys as ApiKey[]);
+      if (quotaRes.ok && isSuccess(quotaData, 'usage')) setQuota(quotaData.usage as QuotaUsage);
     } catch (error) {
       warnBrowserFailure('Reading the API keys failed', error);
-      onReportError(t('loadKeysNetwork'));
+      if (isLatest()) onReportError(t('loadKeysNetwork'));
     }
-  }, [onReportError, problemWording, t]);
+  }, [beginKeysRead, onReportError, problemWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const fetchKeysAndQuotaRef = useRef(fetchKeysAndQuota);

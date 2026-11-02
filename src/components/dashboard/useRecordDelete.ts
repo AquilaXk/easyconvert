@@ -17,7 +17,7 @@ export interface RecordDeleteOptions {
   onReportError: (error: string | null) => void;
   /** The record is gone, deleted now or before (`wasGone`): the caller drops its row. */
   onRemoved: (id: string, wasGone: boolean) => void;
-  /** Reads the list again, so that a read in flight while the record was deleted cannot bring its row back. */
+  /** Reads the list again; the list applies only its latest read (`useReadSequence`), so an older read cannot bring the row back. */
   refetch: () => Promise<void>;
 }
 
