@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { PAGE_NAMESPACES, type ClientMessagesPage } from '../src/i18n/client-messages';
+import { PAGE_NAMESPACES, clientMessages, type ClientMessagesPage } from '../src/i18n/client-messages';
 import { parseSource } from './helpers/ts-source';
+import { testMessages } from './helpers/intl-messages';
 
 /**
  * Each page hands its client components only the message namespaces they read (`PAGE_NAMESPACES`). This walks the
@@ -85,4 +86,13 @@ describe('each page carries the messages its components read, and no others', ()
       expect([...provided].filter((namespace) => !read.has(namespace)).sort(), 'provided but never read').toEqual([]);
     });
   }
+});
+
+describe('a converter page', () => {
+  it('carries the format prose of its own formats only, and none for a name every object has', () => {
+    const messages = clientMessages(testMessages('en'), 'converter', ['constructor', 'PDF']);
+    expect(Object.keys(messages.formatSpecs)).toEqual(['pdf']);
+    expect(Object.keys(messages.formatDescriptions)).toEqual(['pdf']);
+    expect(JSON.parse(JSON.stringify(messages))).toEqual(messages);
+  });
 });
