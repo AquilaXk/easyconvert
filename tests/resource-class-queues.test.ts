@@ -402,8 +402,11 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
         tier: 'pro',
       });
 
+      const usedToday = async () => (await redisKeyStore.getQuotaUsage(testUser.id)).usedToday;
+      const before = await usedToday();
       const reservation = await redisKeyStore.reserveQuota(testUser.id, 1);
       expect(reservation.allowed).toBe(true);
+      expect(await usedToday()).toBe(before + 1);
 
       const job = await resourceQueues.memory.add('test_cad', {
         jobId: '',
@@ -422,8 +425,8 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       expect(cancelled).toBe(true);
       expect(job.state).toBe('cancelled');
 
-      // Check quota reservation is rolled back
-      expect(redisKeyStore.getReservation(reservation.reservationId!)).toBeUndefined();
+      await vi.waitFor(async () => expect(await usedToday()).toBe(before));
+      expect(await redisKeyStore.rollbackQuota(reservation.reservationId!)).toBe(false);
     });
   });
 

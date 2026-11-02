@@ -584,7 +584,6 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
 
       // Server B (isolated replica instance, no shared local memory) rolls back
       const serverB = new RedisKeyStore({ redisClient: mockRedis, keyPrefix: 'cluster:quota:', isolated: true });
-      expect(serverB.getReservation(resId)).toBeUndefined(); // Zero shared local memory
 
       const rolledBack = await serverB.rollbackQuota(resId);
       expect(rolledBack).toBe(true);

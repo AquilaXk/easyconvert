@@ -23,6 +23,7 @@ import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { POST as fetchUrlRoute } from '../src/app/api/fetch-url/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
+import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
@@ -33,6 +34,11 @@ import { userStore } from '../src/lib/auth/user-store';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { InMemoryIdempotencyStore, setIdempotencyStore, type StoredResponse } from '../src/lib/api/idempotency';
 import { acquireSyncSlot, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
+import { Worker } from '../src/lib/queue/bullmq-engine';
+import { allConversionQueues, attachJobLifecycleListeners, processConversionJob } from '../src/lib/queue/conversion-queue';
+import { graphScheduler } from '../src/lib/queue/graph';
+import { storageProvider } from '../src/lib/storage';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 
@@ -49,6 +55,8 @@ const QUOTA_EXCEEDED_PROBLEM = 'https://api.easyconvert.io/problems/quota-exceed
 const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
 const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
+/** The deadline of an import that spends bytes directly; its hold is settled at once. */
+const IMPORT_DEADLINE_MS = 120_000;
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
 const DAY_ALLOWANCE = 25;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
@@ -109,7 +117,7 @@ async function account(tier: 'free' | 'pro') {
 
 /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
 async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-  const held = await reserveLinkImport(userId, plan);
+  const held = await reserveLinkImport(userId, plan, IMPORT_DEADLINE_MS);
   if ('refusal' in held) throw new Error(`the import budget of ${userId} is already spent`);
   await held.reservation.settle(bytes);
 }
@@ -582,6 +590,71 @@ describe('what a request is charged', () => {
       expect(first.status).toBe(200);
       expect(repeat.status).not.toBe(200);
       expect(await remaining()).toBe(before - 1);
+    });
+  });
+
+  describe('/api/v1/jobs', () => {
+    const FREE_DAY_ALLOWANCE = 25;
+    let worker: Worker<ConversionJobData, ConversionJobResult> | undefined;
+
+    afterEach(async () => {
+      await worker?.close();
+      worker = undefined;
+    });
+
+    async function apiCaller() {
+      const user = userStore.sanitizeUser(await userStore.createUser({ email: `v1-jobs-${Date.now()}-${nextClient++}@quota.test`, name: 'V1 jobs', tier: 'free' }));
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'v1 jobs key', { scopes: ['convert:write'] });
+      return { userId: user.id, usedToday: async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday, authorization: `Bearer ${secretKey}` };
+    }
+
+    async function submitTasks(authorization: string, tasks: Array<{ name: string; operation: string; targetFormat: string }>) {
+      const storageKey = `uploads/quota-v1-jobs-${Date.now()}-${nextClient++}/scores.csv`;
+      await storageProvider.saveObject(storageKey, Buffer.from(CSV), 'text/csv', 'scores.csv', 60 * 60 * 1000);
+      return v1JobsRoute(
+        new NextRequest('http://localhost/api/v1/jobs', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization },
+          body: JSON.stringify({ storageKey, tasks }),
+        })
+      );
+    }
+
+    it('charges a tasks pipeline that imports, converts and exports one conversion', async () => {
+      const caller = await apiCaller();
+      worker = new Worker<ConversionJobData, ConversionJobResult>([...allConversionQueues] as never, processConversionJob, { concurrency: 2 });
+      attachJobLifecycleListeners(worker);
+
+      const submitted = await submitTasks(caller.authorization, [{ name: 'c', operation: 'convert', targetFormat: 'json' }]);
+      expect(submitted.status).toBe(202);
+      const { jobId } = (await submitted.json()) as { jobId: string };
+
+      await vi.waitFor(async () => expect((await graphScheduler.getGraphState(jobId))?.status).toBe('completed'), { timeout: 20_000, interval: 100 });
+      await vi.waitFor(async () => expect(await caller.usedToday()).toBe(1));
+    }, 30_000);
+
+    it('refuses up front a graph of three conversions when the caller has two left', async () => {
+      const caller = await apiCaller();
+      await redisKeyStore.recordUsage(caller.userId, FREE_DAY_ALLOWANCE - 2);
+
+      const refused = await submitTasks(caller.authorization, [
+        { name: 'a', operation: 'convert', targetFormat: 'tsv' },
+        { name: 'b', operation: 'convert', targetFormat: 'csv' },
+        { name: 'c', operation: 'convert', targetFormat: 'json' },
+      ]);
+
+      expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await caller.usedToday()).toBe(FREE_DAY_ALLOWANCE - 2);
+    });
+
+    it('answers 503, not 429, when the quota store cannot reserve', async () => {
+      const caller = await apiCaller();
+      vi.spyOn(redisKeyStore, 'reserveQuota').mockResolvedValueOnce({ allowed: false, remaining: 0, serviceUnavailable: true, error: 'the quota store is offline' });
+
+      const refused = await submitTasks(caller.authorization, [{ name: 'c', operation: 'convert', targetFormat: 'json' }]);
+
+      expect(refused.status).toBe(503);
+      expect(await caller.usedToday()).toBe(0);
     });
   });
 

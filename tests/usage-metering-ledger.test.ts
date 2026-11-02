@@ -213,28 +213,35 @@ describe('WP-13 Usage Metering Ledger & Standard RateLimit Headers', () => {
 
   describe('3. 2-Phase Quota Settlement & Refund Reconciliation', () => {
     it('adjusts quota accurately on settlement: refunds difference when actual units are lower than reserved', async () => {
-      // 1. Reserve 5 units
+      const usedToday = async () => (await redisKeyStore.getQuotaUsage(testUser.id)).usedToday;
+      const before = await usedToday();
       const reserveResult = await redisKeyStore.reserveQuota(testUser.id, 5);
       expect(reserveResult.allowed).toBe(true);
       const resId = reserveResult.reservationId!;
+      expect(await usedToday()).toBe(before + 5);
 
-      // 2. Settle with 2 actual units (surplus refund of 3 units)
       const settleResult = await redisKeyStore.settleQuota(resId, 2);
       expect(settleResult.success).toBe(true);
-      expect(settleResult.difference).toBe(-3); // actual(2) - reserved(5) = -3
+      expect(settleResult.difference).toBe(-3);
+      expect(await usedToday()).toBe(before + 2);
 
-      // 3. Confirm reservation is finalized and deleted
-      expect(redisKeyStore.getReservation(resId)).toBeUndefined();
+      expect((await redisKeyStore.settleQuota(resId, 0)).success).toBe(false);
+      expect(await usedToday()).toBe(before + 2);
     });
 
     it('refunds 100% of reserved units on rollbackQuota and leaves zero stranded reservations', async () => {
+      const usedToday = async () => (await redisKeyStore.getQuotaUsage(testUser.id)).usedToday;
+      const before = await usedToday();
       const reserveResult = await redisKeyStore.reserveQuota(testUser.id, 4);
       expect(reserveResult.allowed).toBe(true);
       const resId = reserveResult.reservationId!;
 
       const rollbackSuccess = await redisKeyStore.rollbackQuota(resId);
       expect(rollbackSuccess).toBe(true);
-      expect(redisKeyStore.getReservation(resId)).toBeUndefined();
+      expect(await usedToday()).toBe(before);
+
+      expect(await redisKeyStore.rollbackQuota(resId)).toBe(false);
+      expect(await usedToday()).toBe(before);
     });
   });
 

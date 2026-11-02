@@ -296,7 +296,7 @@ describe('Dockerfile.web', () => {
     expect(finalStage).toMatch(/^LABEL org\.opencontainers\.image\.base\.name="\$\{WORKER_IMAGE\}"$/m);
   });
 
-  it('builds the pages with the public origin and checks their absolute alternates before the image is made', () => {
+  it('builds the pages with the public origin and the daily allowance, and checks their absolute alternates before the image is made', () => {
     const builder = web.slice(web.search(/^FROM \$\{NODE_IMAGE\} AS webbuilder$/m), web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
     const build = builder.search(/^RUN \.\/node_modules\/\.bin\/next build/m);
     expect(build).toBeGreaterThan(0);
@@ -306,6 +306,9 @@ describe('Dockerfile.web', () => {
     expect(originRequired).toBeGreaterThan(builder.search(/^ARG APP_ORIGIN$/m));
     expect(originRequired).toBeLessThan(build);
     expect(builder.slice(build)).toMatch(/node scripts\/check-built-alternates\.mjs \.next\/server\/app/);
+    const allowance = builder.search(/^ARG ANONYMOUS_DAILY_LIMIT=$/m);
+    expect(allowance).toBeGreaterThan(0);
+    expect(allowance).toBeLessThan(build);
   });
 
   it('is built on the worker image, runs as its non-root user and starts Next.js', () => {
@@ -399,6 +402,7 @@ describe('deploy workflow', () => {
     expect(buildSteps[1].with?.['build-args']).toContain('@${{ steps.worker.outputs.digest }}');
     const serverName = /server_name (\S+);/.exec(read('deploy/oci/nginx-easyconvert.conf'))?.[1];
     expect(buildSteps[1].with?.['build-args']).toMatch(new RegExp(`^APP_ORIGIN=https://${serverName?.replaceAll('.', '\\.')}$`, 'm'));
+    expect(buildSteps[1].with?.['build-args']).toMatch(/^ANONYMOUS_DAILY_LIMIT=\$\{\{ vars\.ANONYMOUS_DAILY_LIMIT \}\}$/m);
     expect(build.permissions).toEqual({ contents: 'read', packages: 'write' });
   });
 

@@ -8,6 +8,7 @@ import { s3Storage } from '../src/lib/storage/s3-storage';
 import { storageProvider } from '../src/lib/storage';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
+import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { getIdempotencyStore } from '../src/lib/api/idempotency';
@@ -15,10 +16,15 @@ import { mayPresignDownload, sweepRetention } from '../src/lib/storage/retention
 import {
   ANONYMOUS_DAILY_UPLOAD_BYTES,
   ANONYMOUS_OPEN_UPLOADS_MAX,
+  LINK_IMPORT_HOLD_GRACE_MS,
   OPEN_UPLOAD_IDLE_MS,
+  bytesBroughtInToday,
   closeUpload,
+  holdImport,
+  reserveLinkImport,
   reserveUpload,
   resumeUpload,
+  settleImport,
   type UploadBudgetRecord,
 } from '../src/lib/api-keys/anonymous-upload-budget';
 import { MemoryBudgetStore, RECORD_TTL_MS } from '../src/lib/api-keys/upload-budget-store';
@@ -111,6 +117,65 @@ describe('the upload budget of an address bucket', () => {
     const result = reserveUpload(record, { ...request('b', MIB, NOW + HOUR), day: '2026-11-02' }, policy);
     if ('refusal' in result) throw new Error('refused');
     expect(closeUpload(result.record, 'a', 'aborted').bytes).toBe(MIB);
+  });
+});
+
+describe('the hold of a link import', () => {
+  const policy = { maxOpenUploads: 2, dailyBytes: 2 * GIB, idleMs: HOUR };
+  const IMPORT_DEADLINE_MS = 2 * HOUR;
+  const HOLD_ENDS = NOW + IMPORT_DEADLINE_MS + LINK_IMPORT_HOLD_GRACE_MS;
+  const NEXT_DAY = '2026-11-02';
+  const held = () => holdImport(undefined, { id: 'import', bytes: 100 * MIB, day: DAY, now: NOW, expiresAt: HOLD_ENDS });
+
+  /** The bytes of the day `record` is charged at `now`, read through a session that declares none. */
+  function bytesAt(record: UploadBudgetRecord, now: number): number {
+    const probe = reserveUpload(record, { id: 'probe', bytes: 0, day: DAY, now, expiresAt: now + HOUR }, policy);
+    if ('refusal' in probe) throw new Error(`refused: ${probe.refusal}`);
+    return probe.record.bytes;
+  }
+
+  it('holds its bytes until the deadline of the import and the grace after it have passed', () => {
+    expect(bytesAt(held(), NOW + OPEN_UPLOAD_IDLE_MS + 1)).toBe(100 * MIB);
+    expect(bytesAt(held(), HOLD_ENDS - 1)).toBe(100 * MIB);
+    expect(bytesAt(held(), HOLD_ENDS)).toBe(0);
+  });
+
+  it('is replaced by the bytes the import received', () => {
+    expect(settleImport(held(), { id: 'import', receivedBytes: 7 * MIB, day: DAY, now: NOW + HOUR }).bytes).toBe(7 * MIB);
+  });
+
+  it('charges the bytes received after the hold expired, also when the record changed in between', () => {
+    expect(settleImport(held(), { id: 'import', receivedBytes: 7 * MIB, day: DAY, now: HOLD_ENDS + 1 }).bytes).toBe(7 * MIB);
+
+    const changedAfterExpiry = reserveUpload(held(), { id: 'upload', bytes: MIB, day: DAY, now: HOLD_ENDS + 1, expiresAt: HOLD_ENDS + HOUR }, policy);
+    if ('refusal' in changedAfterExpiry) throw new Error('refused');
+    expect(changedAfterExpiry.record.open.import).toBeUndefined();
+    expect(settleImport(changedAfterExpiry.record, { id: 'import', receivedBytes: 7 * MIB, day: DAY, now: HOLD_ENDS + 2 }).bytes).toBe(8 * MIB);
+  });
+
+  it('charges an import that ends after midnight to the new day, and its hold is not returned to that day', () => {
+    const settled = settleImport(held(), { id: 'import', receivedBytes: 7 * MIB, day: NEXT_DAY, now: NOW + HOUR });
+    expect(settled.day).toBe(NEXT_DAY);
+    expect(settled.bytes).toBe(7 * MIB);
+  });
+
+  it('does not count as an open upload', () => {
+    const first = reserveUpload(held(), { id: 'a', bytes: MIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy);
+    if ('refusal' in first) throw new Error('refused');
+    const second = reserveUpload(first.record, { id: 'b', bytes: MIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy);
+    if ('refusal' in second) throw new Error('refused');
+    expect(reserveUpload(second.record, { id: 'c', bytes: MIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy)).toEqual({ refusal: 'open-uploads' });
+  });
+
+  it('is settled once: a second settle of the same import charges nothing more', async () => {
+    const caller = anonymousUserId(`198.51.100.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
+    const hold = await reserveLinkImport(caller, 'anonymous', IMPORT_DEADLINE_MS);
+    if ('refusal' in hold) throw new Error('refused');
+
+    await hold.reservation.settle(5 * MIB);
+    await hold.reservation.settle(5 * MIB);
+
+    expect(await bytesBroughtInToday(caller)).toBe(5 * MIB);
   });
 });
 

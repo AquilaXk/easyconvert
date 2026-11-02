@@ -38,6 +38,8 @@ import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-c
 const REDIS_URL = process.env.REDIS_URL;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const CSV = 'name,score\nAlice,100\nBob,95\n';
+/** The deadline of an import that spends bytes directly; its hold is settled at once. */
+const IMPORT_DEADLINE_MS = 120_000;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JOB_TIMEOUT_MS = 300;
@@ -91,7 +93,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
   async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-    const held = await reserveLinkImport(userId, plan);
+    const held = await reserveLinkImport(userId, plan, IMPORT_DEADLINE_MS);
     if ('refusal' in held) throw new Error(`the import budget of ${userId} is already spent`);
     await held.reservation.settle(bytes);
   }
@@ -447,6 +449,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   });
 
   describe('a queued graph', () => {
-    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId));
+    // The Redis scheduler refuses `fail_job` as an unknown policy (tests/graph-scheduler-corrupt-state.test.ts), so only `continue` runs on here.
+    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId), ['continue']);
   });
 });
