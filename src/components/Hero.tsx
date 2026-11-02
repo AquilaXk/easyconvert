@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Files, Lock, UserRound } from 'lucide-react';
-import { getAvailableTargetFormats } from '@/lib/registry';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
@@ -11,10 +10,9 @@ import SourceChipPicker from './workbench/SourceChipPicker';
 import PopularConversions from './workbench/PopularConversions';
 import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload } from './hero/useHeroUpload';
+import type { PairTiles } from './hero/usePairTiles';
 
 type FilesSelected = (files: File[], target?: string) => void;
-
-const ANY_FORMAT = 'any';
 
 function HomeTrustRow() {
   const t = useTranslations('hero.trust');
@@ -72,9 +70,8 @@ export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps
 interface PairHeroProps {
   onFilesSelected: FilesSelected;
   dailyLimit: number;
-  /** The formats the page converts, which the tiles start from; `any` when the page names no target. */
-  sourceFormat: string;
-  targetFormat: string;
+  /** The pair the tiles name, which the page holds so that it outlives the queue. */
+  tiles: PairTiles;
   /** The page's own title and intro, shown until the tiles name another pair. */
   title: string;
   description: string;
@@ -82,29 +79,12 @@ interface PairHeroProps {
 
 /**
  * A converter page's hero: its title and intro beside the source and target tiles, and the upload card under them. Files
- * take the target the tiles name, else the page's own. The page keys it by its slug, so another page starts it afresh.
+ * take the target the tiles name, else the page's own.
  */
-export function PairHero({ onFilesSelected, dailyLimit, sourceFormat, targetFormat, title, description }: Readonly<PairHeroProps>) {
+export function PairHero({ onFilesSelected, dailyLimit, tiles, title, description }: Readonly<PairHeroProps>) {
   const t = useTranslations('hero');
-  const [source, setSource] = useState(sourceFormat.toLowerCase());
-  const [target, setTarget] = useState(targetFormat.toLowerCase());
-  const [tilesChanged, setTilesChanged] = useState(false);
-  const pageTarget = targetFormat.toLowerCase();
-  const chosenTarget = [target, pageTarget].find((format) => format !== ANY_FORMAT);
-  const upload = useHeroUpload(onFilesSelected, chosenTarget);
-
-  const handleSourceChange = (next: string) => {
-    const normalized = next.toLowerCase();
-    setSource(normalized);
-    setTilesChanged(true);
-    const keepsTarget = getAvailableTargetFormats(normalized).some((format) => format.id === target);
-    if (normalized !== ANY_FORMAT && target !== ANY_FORMAT && !keepsTarget) setTarget(ANY_FORMAT);
-  };
-
-  const handleTargetChange = (next: string) => {
-    setTarget(next.toLowerCase());
-    setTilesChanged(true);
-  };
+  const { source, target, changed } = tiles;
+  const upload = useHeroUpload(onFilesSelected, tiles.chosenTarget);
 
   return (
     <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
@@ -112,17 +92,17 @@ export function PairHero({ onFilesSelected, dailyLimit, sourceFormat, targetForm
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
           <div className="text-center lg:text-left lg:max-w-2xl">
-            <h1 className="text-4xl sm:text-5xl leading-none text-ink">{tilesChanged ? formatsTitle(t, source, target) : title}</h1>
+            <h1 className="text-4xl sm:text-5xl leading-none text-ink">{changed ? formatsTitle(t, source, target) : title}</h1>
             <p className="mt-5 text-lg leading-relaxed text-ink-2">
-              {tilesChanged ? formatsSubtitle(t, source, target) : description}
+              {changed ? formatsSubtitle(t, source, target) : description}
             </p>
           </div>
           <div className="mt-8 lg:mt-0 flex justify-center shrink-0">
             <HeroFormatTiles
               sourceFormat={source}
               targetFormat={target}
-              onSourceChange={handleSourceChange}
-              onTargetChange={handleTargetChange}
+              onSourceChange={tiles.changeSource}
+              onTargetChange={tiles.changeTarget}
             />
           </div>
         </div>
@@ -136,8 +116,9 @@ export function PairHero({ onFilesSelected, dailyLimit, sourceFormat, targetForm
 
 interface QueueHeaderProps {
   onFilesSelected: FilesSelected;
-  /** The formats of the first file in the queue: more files take its target. */
+  /** The formats the title names without a page title: those of the first file in the queue. */
   sourceFormat: string;
+  /** The target files added over the queue take: the tiles' on a converter page, else the first file's. */
   targetFormat?: string;
   /** The title of a converter page, which stays while its queue is shown; the home page names the first file's formats. */
   pageTitle?: string;

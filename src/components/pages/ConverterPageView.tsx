@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import { PairHero, QueueHeader } from '@/components/Hero';
 import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
+import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
 import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
@@ -59,6 +60,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
     defaultTarget,
     bundlePrefix,
   });
+  const tiles = usePairTiles(parsed.sourceFormat, parsed.targetFormat);
 
   if (parsed.isInfoPage) {
     return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />;
@@ -118,16 +120,14 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           <QueueHeader
             onFilesSelected={handleFilesSelected}
             sourceFormat={queue[0].sourceFormat}
-            targetFormat={queue[0].targetFormat}
+            targetFormat={tiles.chosenTarget ?? queue[0].targetFormat}
             pageTitle={copy.title}
           />
         ) : (
           <PairHero
-            key={normalizedSlug}
             onFilesSelected={handleFilesSelected}
             dailyLimit={dailyLimit}
-            sourceFormat={parsed.sourceFormat}
-            targetFormat={parsed.targetFormat}
+            tiles={tiles}
             title={copy.title}
             description={copy.description}
           />

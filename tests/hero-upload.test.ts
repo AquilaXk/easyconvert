@@ -10,6 +10,7 @@ vi.mock('../src/i18n/navigation', () => ({
 }));
 
 const { HomeHero, PairHero, QueueHeader } = await import('../src/components/Hero');
+const { usePairTiles } = await import('../src/components/hero/usePairTiles');
 
 /**
  * The ways files reach the page from a hero, driven as a person does: picking them in the file input, dropping them
@@ -87,9 +88,11 @@ describe('the home hero', () => {
 describe('a converter page hero', () => {
   it('hands on files with the target of its pair', async () => {
     const onFilesSelected = vi.fn();
-    const host = await mount(
-      createElement(PairHero, { onFilesSelected, dailyLimit: 25, sourceFormat: 'png', targetFormat: 'jpg', title: 'PNG to JPG Converter', description: 'Convert PNG files to JPG online.' })
-    );
+    function PngToJpgPage() {
+      const tiles = usePairTiles('png', 'jpg');
+      return createElement(PairHero, { onFilesSelected, dailyLimit: 25, tiles, title: 'PNG to JPG Converter', description: 'Convert PNG files to JPG online.' });
+    }
+    const host = await mount(createElement(PngToJpgPage));
     const dropped = file();
     drop(uploadCard(host), [dropped]);
     expect(onFilesSelected).toHaveBeenCalledWith([dropped], 'jpg');
