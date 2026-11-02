@@ -1,5 +1,6 @@
 import type { Messages, useTranslations } from 'next-intl';
 import { getAvailableTargetFormats } from '@/lib/registry';
+import { canonicalFormat } from '@/lib/format-aliases';
 import type { ParsedSlug, SlugName } from '@/lib/slug-parser';
 import { computeVisibleSections, type VisibleOptionsSections } from '../workbench/options/options-capabilities';
 
@@ -48,13 +49,17 @@ function listOf(locale: string, items: readonly string[]): string {
   return locale === 'en' ? new Intl.ListFormat('en', { type: 'conjunction' }).format(items) : items.join(', ');
 }
 
-/** Formats the registry converts `source` to, other than those named in `exclude`. */
+/** Formats the registry converts `source` to, each named once, other than those named in `exclude` or another name of them. */
 function relatedTargets(source: string, exclude: readonly string[]): string[] {
-  return getAvailableTargetFormats(source)
-    .map((format) => format.id)
-    .filter((id) => !exclude.includes(id))
-    .slice(0, RELATED_FORMAT_COUNT)
-    .map((id) => id.toUpperCase());
+  const named = new Set(exclude.map(canonicalFormat));
+  const related: string[] = [];
+  for (const { id } of getAvailableTargetFormats(source)) {
+    if (related.length === RELATED_FORMAT_COUNT) break;
+    if (named.has(canonicalFormat(id))) continue;
+    named.add(canonicalFormat(id));
+    related.push(id.toUpperCase());
+  }
+  return related;
 }
 
 /** What the options dialog lets a person set when converting `source` to `target`. */

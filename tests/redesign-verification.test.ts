@@ -16,6 +16,7 @@ import AdBanner from '../src/components/AdBanner';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
+import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
   allElements,
@@ -460,10 +461,19 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(englishSlugCopy('docx-to-pdf').description).toBe(
       'Convert DOCX files to PDF online. Besides PDF, DOCX files also convert to HTML, TXT, MD, EPUB, and ODT.'
     );
+    // Another name of the target (JPEG for JPG) or of a listed format (TIF for TIFF) is not listed again
+    expect(englishSlugCopy('png-to-jpg').description).toBe(
+      'Convert PNG files to JPG online. Besides JPG, PNG files also convert to WEBP, AVIF, TIFF, GIF, and BMP. ' +
+        'You can use the options to set the image size, quality, and metadata.'
+    );
     expect(englishSlugCopy('png-to-jpg', 'ko').description).toBe(
-      'PNG 파일을 JPG 형식으로 온라인에서 변환해요. PNG 파일은 JPG 말고도 JPEG, WEBP, AVIF, TIFF, GIF 형식으로 바꿀 수 있어요. ' +
+      'PNG 파일을 JPG 형식으로 온라인에서 변환해요. PNG 파일은 JPG 말고도 WEBP, AVIF, TIFF, GIF, BMP 형식으로 바꿀 수 있어요. ' +
         '옵션으로 이미지 크기, 품질, 메타데이터 같은 설정을 바꿀 수 있어요.'
     );
+    for (const [alias, format] of Object.entries(FORMAT_NAME_ALIASES)) {
+      expect(FORMAT_REGISTRY[alias], alias).toBeDefined();
+      expect(FORMAT_REGISTRY[format], format).toBeDefined();
+    }
     // A format page names the formats its source converts to, never itself, and the options of its first pair
     expect(englishSlugCopy('mp4-converter').description).toBe(
       'Convert MP4 videos online. Among others, MP4 files convert to WEBM, MKV, AVI, MOV, and MP3. ' +

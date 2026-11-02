@@ -260,7 +260,6 @@ async function convertPlanned(
       'Content-Type': 'application/zip',
       'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
       'Content-Length': zipResult.size.toString(),
-      'X-Zero-Data-Retention': 'true',
       'X-Storage-Footprint': '0-bytes',
     },
   });

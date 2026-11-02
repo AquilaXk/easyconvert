@@ -52,7 +52,7 @@ describe('API Route Logic Tests', () => {
     expect(json.success).toBe(false);
   });
 
-  it('POST /api/convert executes zero-retention stream conversion', async () => {
+  it('POST /api/convert answers the converted bytes and claims no retention it does not have', async () => {
     const formData = new FormData();
     formData.append('file', new File(['col1,col2\nval1,val2'], 'test.csv', { type: 'text/csv' }));
     formData.append('targetFormat', 'ods');
@@ -64,7 +64,7 @@ describe('API Route Logic Tests', () => {
 
     const res = await convertRoute(req);
     expect(res.status).toBe(200);
-    expect(res.headers.get('x-zero-data-retention')).toBe('true');
+    expect(res.headers.has('x-zero-data-retention')).toBe(false);
     expect(res.headers.get('x-storage-footprint')).toBe('0-bytes');
     expect(res.headers.get('content-type')).toBe('application/vnd.oasis.opendocument.spreadsheet');
   });
