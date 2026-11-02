@@ -47,14 +47,32 @@ describe('the start of a graph that failed, with the in-memory scheduler and sto
   itRecoversAGraphStart({
     scheduler: () => {
       let refusing = false;
+      const cancelled: string[] = [];
       for (const queue of allConversionQueues) {
         const add = queue.add.bind(queue);
         vi.spyOn(queue, 'add').mockImplementation(async (name, data, opts) => {
           if (refusing && data.graphId) throw new QueueUnavailableError(queue.name, 'the node job could not be stored');
           return add(name, data, opts);
         });
+        const cancelJob = queue.cancelJob.bind(queue);
+        vi.spyOn(queue, 'cancelJob').mockImplementation(async (jobId, reason) => {
+          cancelled.push(jobId);
+          return cancelJob(jobId, reason);
+        });
       }
-      return { scheduler: new InMemoryGraphScheduler(), refuseNodeJobs: (refuse) => (refusing = refuse) };
+      const scheduler = new InMemoryGraphScheduler();
+      return {
+        scheduler,
+        refuseNodeJobs: (refuse) => (refusing = refuse),
+        cancelledNodeJobs: () => cancelled,
+        loseTheNextCancelReply: () => {
+          const cancel = scheduler.cancelGraph.bind(scheduler);
+          vi.spyOn(scheduler, 'cancelGraph').mockImplementationOnce(async (graphId, reason) => {
+            await cancel(graphId, reason);
+            throw new Error('the reply was lost');
+          });
+        },
+      };
     },
     owner: () => owner,
     neverStored: 'not-started',

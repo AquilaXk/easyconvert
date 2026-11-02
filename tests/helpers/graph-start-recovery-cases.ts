@@ -1,8 +1,12 @@
 import crypto from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
+import { withReservedUnit } from '../../src/lib/api-keys/guard';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
 import { GRAPH_START_CANCEL_ATTEMPTS } from '../../src/lib/queue/graph/node-jobs';
+import { getRetentionLedger } from '../../src/lib/storage/retention-ledger';
+import { holdResultForJob } from '../../src/lib/storage/retention-service';
+import { QueueUnavailableError } from '../../src/lib/types';
 import type { IGraphScheduler } from '../../src/lib/queue/graph/scheduler-types';
 import type { JobGraph } from '../../src/lib/queue/graph/types';
 
@@ -13,8 +17,16 @@ import type { JobGraph } from '../../src/lib/queue/graph/types';
  */
 
 export interface GraphRecoveryControls {
-  /** A new scheduler, and how to make its queue refuse every node job until told otherwise. */
-  scheduler: () => { scheduler: IGraphScheduler; refuseNodeJobs: (refuse: boolean) => void };
+  /**
+   * A new scheduler; how to make its queue refuse every node job until told otherwise; the node jobs it was asked to cancel;
+   * and how to lose the reply of its next cancel of a graph, which still applies, as a dropped connection loses it.
+   */
+  scheduler: () => {
+    scheduler: IGraphScheduler;
+    refuseNodeJobs: (refuse: boolean) => void;
+    cancelledNodeJobs: () => string[];
+    loseTheNextCancelReply: () => void;
+  };
   owner: () => string;
   /** What a lookup answers for a graph whose state was never written: certainly nothing in this process, unknown in Redis. */
   neverStored: 'not-started' | 'unknown';
@@ -69,6 +81,31 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
     expect(tries).toHaveBeenCalledTimes(2);
     expect((await scheduler.getGraphState(graphId))?.status).toBe('cancelled');
     expect(await used()).toBe(0);
+  });
+
+  it('answers a start whose cancel landed but lost its reply as not started, gives the unit back at once, and ends the node jobs and input holds', async () => {
+    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const { scheduler, refuseNodeJobs, cancelledNodeJobs, loseTheNextCancelReply } = controls.scheduler();
+    const graphId = `graph_recovery_${crypto.randomBytes(6).toString('hex')}`;
+    const input = `uploads/${graphId}/a.csv`;
+    const graph = { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: input }, conv: { op: 'convert', input: 'up', targetFormat: 'json' } } } as unknown as JobGraph;
+    const unit = await redisKeyStore.reserveQuota(controls.owner(), 1);
+    expect(await holdResultForJob(input, graphId)).toBe(true);
+    refuseNodeJobs(true);
+    loseTheNextCancelReply();
+
+    const handedOff = withReservedUnit(unit.reservationId, (reserved) =>
+      reserved.handOff({
+        start: (reservationId) => scheduler.initGraph(graphId, graph, { ownerUserId: controls.owner(), reservationId }),
+        recover: () => scheduler.recoverStart(graphId),
+      })
+    );
+
+    await expect(handedOff).rejects.toBeInstanceOf(QueueUnavailableError);
+    expect(await used()).toBe(0);
+    expect((await scheduler.getGraphState(graphId))?.status).toBe('cancelled');
+    expect([...new Set(cancelledNodeJobs())].sort()).toEqual([`${graphId}:conv`, `${graphId}:up`]);
+    expect((await getRetentionLedger().get(input))?.holds ?? {}).not.toHaveProperty(graphId);
   });
 
   it('answers unknown and leaves the unit to the graph when every try of the cancel throws', async () => {

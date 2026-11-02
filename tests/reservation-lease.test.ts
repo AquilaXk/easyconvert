@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { itLeasesReservations } from './helpers/reservation-lease-cases';
+import { itLeasesHandedOffWork, itLeasesReservations } from './helpers/reservation-lease-cases';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { MemoryReservationLedger, RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { withReservedUnit } from '../src/lib/api-keys/guard';
@@ -49,6 +49,19 @@ describe('a reservation in this process', () => {
   });
   afterEach(() => {
     store = new RedisKeyStore({ isolated: true });
+    owner = freshOwner();
+  });
+});
+
+describe('a reservation handed to queued work in this process', () => {
+  let owner = freshOwner();
+  itLeasesHandedOffWork({
+    owner: () => owner,
+    advance: async (ms) => {
+      vi.setSystemTime(Date.now() + ms);
+    },
+  });
+  afterEach(() => {
     owner = freshOwner();
   });
 });
@@ -174,6 +187,7 @@ describe('a reservation a request hands to queued work', () => {
     );
 
     expect(start).not.toHaveBeenCalled();
+    expect(await used(owner)).toBe(0);
     vi.restoreAllMocks();
   });
 
@@ -285,14 +299,19 @@ describe('queued work that takes a reservation', () => {
   });
 });
 
-describe('POST /api/v1/jobs when the password of a job cannot be sealed', () => {
+describe('POST /api/v1/jobs when the password of a job or a graph cannot be sealed', () => {
+  const PDF = Buffer.from('%PDF-1.7\n').toString('base64');
+
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.stubEnv('REDIS_URL', '');
     vi.stubEnv('REDIS_HOST', '');
   });
 
-  it('answers 503 and gives the unit back at once, since nothing was handed off', async () => {
+  it.each([
+    ['a job', { filename: 'locked.pdf', targetFormat: 'docx', inputBufferBase64: PDF, options: { password: 'open-sesame' } }],
+    ['a graph', { filename: 'locked.pdf', inputBufferBase64: PDF, tasks: [{ name: 'unlock', operation: 'convert', targetFormat: 'docx', options: { password: 'open-sesame' } }] }],
+  ])('answers 503 for %s and gives the unit back at once, since nothing was handed off', async (_label, body) => {
     const user = await userStore.createUser({ email: `seal_${crypto.randomBytes(6).toString('hex')}@lease.test`, name: 'seal', tier: 'pro' });
     const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'seal', { scopes: ['convert:write'] });
     vi.stubEnv('NODE_ENV', 'production');
@@ -303,11 +322,12 @@ describe('POST /api/v1/jobs when the password of a job cannot be sealed', () => 
       new NextRequest('https://easyconvert.app/api/v1/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secretKey}` },
-        body: JSON.stringify({ filename: 'locked.pdf', targetFormat: 'docx', inputBufferBase64: Buffer.from('%PDF-1.7\n').toString('base64'), options: { password: 'open-sesame' } }),
+        body: JSON.stringify(body),
       })
     );
 
-    expect(res.status, await res.text()).toBe(503);
+    expect(res.status).toBe(503);
+    expect((await res.json()).detail).toBe('Job credentials cannot be stored securely right now. Try again later.');
     expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(0);
   });
 });
@@ -352,6 +372,21 @@ describe('POST /api/v1/jobs when the queue stores the job and then fails', () =>
     const { jobId, reservationId } = await res.json();
     expect((await getJobAcrossQueues(jobId))?.data.reservationId).toBe(reservationId);
     expect((await redisKeyStore.getQuotaUsage(userId)).usedToday).toBe(1);
+  });
+
+  it('keeps the hold on the stored input of a job whose lookup failed too, for that job to end if it was stored', async () => {
+    vi.spyOn(Queue.prototype, 'getJob').mockRejectedValue(new QueueUnavailableError('convert', 'still down'));
+    const key = `uploads/lease-${crypto.randomBytes(6).toString('hex')}/scores.csv`;
+    await storageProvider.saveObject(key, Buffer.from(CSV), 'text/csv', 'scores.csv');
+    try {
+      const { res } = await submit({ storageKey: key });
+
+      expect(res.status).toBe(503);
+      const jobId = vi.mocked(Queue.prototype.add).mock.calls[0][2]?.jobId as string;
+      expect((await getRetentionLedger().get(key))?.holds?.[jobId]).toBeGreaterThan(Date.now());
+    } finally {
+      await storageProvider.deleteObject(key);
+    }
   });
 
   it('keeps the hold the stored job took on the stored input it reads', async () => {

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { RedisKeyStore } from '../../src/lib/api-keys/redis-key-store';
+import { withReservedUnit } from '../../src/lib/api-keys/guard';
+import { RECOVERY_UNKNOWN } from '../../src/lib/api-keys/hand-off';
+import { redisKeyStore, type RedisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { RESERVATION_LEASE } from '../../src/lib/api-keys/reservation-ledger';
 
 /**
@@ -97,5 +99,56 @@ export function itLeasesReservations(controls: LeaseCaseControls): void {
 
     expect(await controls.store().renewReservation(unit.reservationId as string, RESERVATION_LEASE.handedOffMs)).toBe(false);
     expect(await used()).toBe(0);
+  });
+}
+
+/**
+ * How a request hands its reservation to queued work (docs/policy-decisions.md, entry 15): once the work is stored, its
+ * reservation outlives the provisional lease without a worker renewing it, so the work is charged when it commits. The same
+ * cases run on the key store of this process and on a real Redis server.
+ */
+export function itLeasesHandedOffWork(controls: Omit<LeaseCaseControls, 'store'>): void {
+  const used = async () => (await redisKeyStore.getQuotaUsage(controls.owner())).usedToday;
+
+  /** Hands a reserved unit to work that is stored at once, and answers the reservation id. */
+  async function handedOffUnit(): Promise<string> {
+    const unit = await redisKeyStore.reserveQuota(controls.owner(), 1);
+    const reservationId = unit.reservationId as string;
+    await withReservedUnit(reservationId, (reserved) => reserved.handOff({ start: async () => 'queued', recover: async () => RECOVERY_UNKNOWN }));
+    return reservationId;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps the unit of stored work past the provisional lease before any worker takes it, and charges it on commit', async () => {
+    const reservationId = await handedOffUnit();
+
+    await controls.advance(RESERVATION_LEASE.provisionalMs + MINUTE_MS);
+
+    expect(await redisKeyStore.commitQuota(reservationId)).toBe(true);
+    expect(await used()).toBe(1);
+  });
+
+  it('extends the lease of stored work on a second try when the first extension throws', async () => {
+    const renew = redisKeyStore.renewReservation.bind(redisKeyStore);
+    vi.spyOn(redisKeyStore, 'renewReservation').mockImplementation(async (id, leaseMs) => {
+      if (leaseMs === RESERVATION_LEASE.handedOffMs && vi.mocked(redisKeyStore.renewReservation).mock.calls.filter(([, ms]) => ms === leaseMs).length === 1) {
+        throw new Error('ECONNRESET');
+      }
+      return renew(id, leaseMs);
+    });
+    const reservationId = await handedOffUnit();
+
+    await controls.advance(RESERVATION_LEASE.provisionalMs + MINUTE_MS);
+
+    expect(await redisKeyStore.commitQuota(reservationId)).toBe(true);
+    expect(await used()).toBe(1);
   });
 }
