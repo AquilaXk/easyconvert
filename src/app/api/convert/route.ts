@@ -257,7 +257,6 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         'Content-Length': result.size.toString(),
         'X-Conversion-Time-Ms': duration.toString(),
         'X-Engine-Used': result.engineUsed,
-        'X-Storage-Footprint': '0-bytes',
         ...frameMetadataHeaders(result),
         ...droppedStreamsHeaders(result),
         ...conversionWarningsHeaders(result),

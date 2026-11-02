@@ -51,7 +51,6 @@ const WOFF_DIRECTORY_ENTRY_BYTES = 20;
  * Universal Font Conversion Engine
  * Supports TrueType (TTF), OpenType (OTF), WOFF, WOFF2, EOT, and SVG Fonts, plus Macintosh
  * DFONT and MacBinary containers that wrap an SFNT font.
- * Adheres strictly to the in-memory zero-retention architecture.
  */
 
 export interface SfntTable {

@@ -20,8 +20,8 @@ describe('the inline conversion route', () => {
     expect(json.error).toContain('POST /api/storage/multipart');
   });
 
-  // Results are kept until the retention rule deletes them (entry 125), so no answer claims zero retention.
-  it('answers a successful conversion without a zero-retention header', async () => {
+  // Comparable services send no retention claim with each answer; retention is stated in the docs and in `expiresAt` (entry 125).
+  it('answers a successful conversion without a retention or storage header', async () => {
     const textContent = '# Heading\n\nA paragraph.';
     const file = new File([textContent], 'test.md', { type: 'text/markdown' });
 
@@ -37,7 +37,7 @@ describe('the inline conversion route', () => {
     const res = await convertRoute(req);
     expect(res.status).toBe(200);
     expect(res.headers.has('X-Zero-Data-Retention')).toBe(false);
-    expect(res.headers.get('X-Storage-Footprint')).toBe('0-bytes');
+    expect(res.headers.has('X-Storage-Footprint')).toBe(false);
     expect(res.headers.get('Content-Type')).toBe('text/html');
   });
 });

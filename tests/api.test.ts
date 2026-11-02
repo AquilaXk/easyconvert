@@ -65,7 +65,7 @@ describe('API Route Logic Tests', () => {
     const res = await convertRoute(req);
     expect(res.status).toBe(200);
     expect(res.headers.has('x-zero-data-retention')).toBe(false);
-    expect(res.headers.get('x-storage-footprint')).toBe('0-bytes');
+    expect(res.headers.has('x-storage-footprint')).toBe(false);
     expect(res.headers.get('content-type')).toBe('application/vnd.oasis.opendocument.spreadsheet');
   });
 });

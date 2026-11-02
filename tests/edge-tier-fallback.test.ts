@@ -27,7 +27,7 @@ const { resolveConversionTier: realResolveConversionTier } = await vi.importActu
   typeof import('../src/lib/edge/tier-router')
 >('../src/lib/edge/tier-router');
 
-const SERVER_TIER_NAME = 'Cloud (Zero-Retention)';
+const SERVER_TIER_NAME = 'Cloud';
 const KIB = 1024;
 const WEBCODECS_CAPABLE: Partial<EdgeCapabilities> = {
   hasWebCodecsVideo: true,

@@ -256,7 +256,7 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       const res = resolveConversionTier('csv', 'tsv', fileSize, {}, { hasOpfsSyncAccess: false });
 
       expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
+      expect(res.tierName).toBe('Cloud');
       expect(res.isClientEdge).toBe(false);
     });
   });

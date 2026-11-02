@@ -419,7 +419,7 @@ describe('Phase 5: Tier Router Budgets & WebGPU Compute Probing', () => {
       // 35MB Office docx exceeds 30MB budget
       const res = resolveConversionTier('docx', 'pdf', 35 * 1024 * 1024);
       expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
+      expect(res.tierName).toBe('Cloud');
       expect(res.isClientEdge).toBe(false);
       expect(res.reason).toContain('30MB');
     });

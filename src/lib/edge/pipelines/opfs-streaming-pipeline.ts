@@ -41,7 +41,7 @@ function resultUrlOf(blob: Blob): string {
   return URL.createObjectURL(blob);
 }
 
-// Active OPFS conversion session registry for zero-retention guarantee
+// Active OPFS conversion sessions, deleted from the browser's storage when the page unloads
 const activePipelineSessions = new Set<string>();
 if (typeof window !== 'undefined' || typeof self !== 'undefined') {
   registerZeroRetentionLifecycleHooks(activePipelineSessions);

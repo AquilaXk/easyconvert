@@ -81,7 +81,7 @@ describe('POST /api/v1/convert reports conversion warnings', () => {
 });
 
 describe('POST /api/convert reports conversion warnings', () => {
-  it('sends the header on the zero-retention response', async () => {
+  it('sends the header on the inline response', async () => {
     const form = new FormData();
     form.append('file', new File([PAGE], 'report.html', { type: 'text/html' }));
     form.append('targetFormat', 'pdf');

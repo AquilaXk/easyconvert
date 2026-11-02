@@ -375,7 +375,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     }
   });
 
-  it('verifies fake rating pills are purged and replaced with genuine client-side zero-retention guarantee', () => {
+  it('verifies fake rating pills are purged and the real limits are stated once', () => {
     const page = renderSlug('pdf-to-docx');
     const text = visibleText(page);
 

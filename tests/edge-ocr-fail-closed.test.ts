@@ -282,7 +282,7 @@ describe('edge OCR failure escalates to the cloud tier', () => {
     const [, size, edgeProcessed, tierName, fallback] = onSuccess.mock.calls[0];
     expect(size).toBe(cloudBody.size);
     expect(edgeProcessed).toBe(false);
-    expect(tierName).toBe('Cloud (Zero-Retention)');
+    expect(tierName).toBe('Cloud');
     expect(fallback.fallbackFrom).toBe('L2');
     expect(fallback.escalationReason).toMatch(/language data fetch failed: 403/);
   });
@@ -354,7 +354,7 @@ describe('edge OCR only produces searchable PDFs', () => {
     const [, size, edgeProcessed, tierName, fallback] = onSuccess.mock.calls[0];
     expect(size).toBe(cloudBody.size);
     expect(edgeProcessed).toBe(false);
-    expect(tierName).toBe('Cloud (Zero-Retention)');
+    expect(tierName).toBe('Cloud');
     expect(fallback).toBeUndefined();
   });
 });

@@ -53,7 +53,7 @@ export interface ClientEdgeResult {
   escalationReason?: string;
 }
 
-const CLOUD_TIER_NAME = 'Cloud (Zero-Retention)';
+const CLOUD_TIER_NAME = 'Cloud';
 const CLOUD_PARTS_TIER_NAME = 'Cloud (Upload in parts)';
 
 /** Reason recorded when a tier returned no result without raising an error. */
