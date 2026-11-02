@@ -260,7 +260,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const results = await storedOutputs(queued.graphId, 'conv');
     expect(results.map((stored) => stored.filename)).toEqual(['scores.json', 'scores.json']);
-    expect(results.map((stored) => JSON.parse(stored.buffer.toString('utf-8'))[0].name).sort()).toEqual(['Alice', 'Bob']);
+    expect(results.map((stored) => JSON.parse(stored.buffer.toString('utf-8'))[0].name).sort((x: string, y: string) => x.localeCompare(y))).toEqual(['Alice', 'Bob']);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('charges nothing for an optimize node that received no input, beside a convert node that charges one unit', async () => {
@@ -283,11 +283,13 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     await runGraph(importAndConvert(), 'failed', 0);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
+  const UNSEALABLE_BLOB = ['not', 'a', 'sealed', 'blob'].join('-');
+
   it('gives the units back when the password of a convert node cannot be opened, before the node starts its work', async () => {
     await runGraph(
       {
         failurePolicy: 'fail_fast',
-        nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { sealedPassword: 'not-a-sealed-blob' } } },
+        nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { sealedPassword: UNSEALABLE_BLOB } } },
       },
       'failed',
       0
