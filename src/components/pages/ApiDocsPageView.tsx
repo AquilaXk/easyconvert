@@ -18,7 +18,7 @@ export default function ApiDocsPageView() {
   const t = useTranslations('apiDocs.page');
   const [spec, setSpec] = useState<OpenApiSpec | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMethod, setSelectedMethod] = useState<string>('all');
   const [expandedEndpoints, setExpandedEndpoints] = useState<Record<string, boolean>>({});
@@ -32,7 +32,7 @@ export default function ApiDocsPageView() {
         setLoading(true);
         const res = await fetch('/api/v1/openapi.json');
         if (!res.ok) {
-          if (active) setError(t('loadFailedStatus', { status: `${res.status} ${res.statusText}`.trim() }));
+          if (active) setFailed(true);
           return;
         }
         const data: OpenApiSpec = await res.json();
@@ -40,7 +40,7 @@ export default function ApiDocsPageView() {
           setSpec(data);
         }
       } catch {
-        if (active) setError(t('loadFailedUnknown'));
+        if (active) setFailed(true);
       } finally {
         if (active) {
           setLoading(false);
@@ -146,7 +146,7 @@ export default function ApiDocsPageView() {
             </output>
           )}
 
-          {error && (
+          {failed && (
             <div
               role="alert"
               className="p-5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger flex items-start gap-3"
@@ -154,12 +154,12 @@ export default function ApiDocsPageView() {
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
               <div>
                 <h3 className="font-semibold text-sm">{t('loadFailedHeading')}</h3>
-                <p className="text-xs mt-1">{error}</p>
+                <p className="text-xs mt-1">{t('loadFailedBody')}</p>
               </div>
             </div>
           )}
 
-          {!loading && !error && (
+          {!loading && !failed && (
             <div className="border-t border-rule-strong">
               {filteredEndpoints.length === 0 ? (
                 <div className="py-14 text-center">

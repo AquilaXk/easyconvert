@@ -11,7 +11,6 @@ import {
   useConversionFailureWording,
   useProblemWording,
   useUrlImportErrorWording,
-  useZipFailureWording,
 } from '../src/components/i18n/error-wording';
 import { useFileLimitCopy, useFileTooLargeMessage, useFormatBytes, useTierLabel } from '../src/components/i18n/format';
 import ViewerTimeZone, { browserTimeZone } from '../src/i18n/ViewerTimeZone';
@@ -142,7 +141,6 @@ describe('the wording and formatting hooks keep their identity across renders', 
         useUrlImportErrorWording: useUrlImportErrorWording(),
         useAuthErrorWording: useAuthErrorWording(),
         useConversionFailureWording: useConversionFailureWording(),
-        useZipFailureWording: useZipFailureWording(),
         useFormatBytes: useFormatBytes(),
         useFileLimitCopy: useFileLimitCopy(),
         useFileTooLargeMessage: useFileTooLargeMessage(),
@@ -162,7 +160,6 @@ describe('the wording and formatting hooks keep their identity across renders', 
       useUrlImportErrorWording: 1,
       useAuthErrorWording: 1,
       useConversionFailureWording: 1,
-      useZipFailureWording: 1,
       useFormatBytes: 1,
       useFileLimitCopy: 1,
       useFileTooLargeMessage: 1,

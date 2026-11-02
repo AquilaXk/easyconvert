@@ -154,7 +154,7 @@ describe('router fallback to the server tier for what the edge cannot convert (i
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError.mock.calls[0][0]).toMatchObject({
         code: 'clientOnlyBlocked',
-        edgeFailure: { tier: 'L1', reason: expect.stringMatching(/^MP4: .*overruns its parent/s) },
+        edgeFailed: true,
       });
     });
 

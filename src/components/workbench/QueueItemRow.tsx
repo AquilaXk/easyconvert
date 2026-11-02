@@ -12,8 +12,7 @@ import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
 import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
-import { useConversionFailureWording, type ErrorWording } from '../i18n/error-wording';
-import TechnicalDetails from '../i18n/TechnicalDetails';
+import { useConversionFailureWording } from '../i18n/error-wording';
 import { getPasswordValidationError } from './options/options-capabilities';
 
 export interface QueueItemRowProps {
@@ -41,13 +40,7 @@ const CATEGORY_ICONS: Partial<Record<FormatCategory, LucideIcon>> = {
   font: Type,
 };
 
-type RowTranslator = ReturnType<typeof useTranslations<'queue.row'>>;
 type PasswordErrorTranslator = ReturnType<typeof useTranslations<'options.password.errors'>>;
-
-function getFormatLabel(t: RowTranslator, ext: string): string {
-  const clean = ext.toLowerCase();
-  return FORMAT_REGISTRY[clean]?.name || t('unknownFormat', { ext: clean.toUpperCase() });
-}
 
 function renderCategoryIcon(ext: string): React.ReactNode {
   const clean = ext.toLowerCase();
@@ -66,9 +59,9 @@ function resolveRowError(
   item: ConversionQueueItem,
   optionError: string | null,
   oversizeError: string | null
-): ErrorWording | null {
-  if (oversizeError) return { message: oversizeError };
-  if (optionError) return { message: optionError };
+): string | null {
+  if (oversizeError) return oversizeError;
+  if (optionError) return optionError;
   if (item.status !== 'error') return null;
   return failureWording(item.error ?? { code: 'conversionFailed' });
 }
@@ -170,32 +163,27 @@ export default function QueueItemRow({
     : 'border-warning-edge bg-warning-soft text-warning hover:border-accent font-medium';
 
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 min-w-0">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <div className="w-8 shrink-0 flex items-center justify-center">
-          {renderCategoryIcon(item.sourceFormat)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-ink truncate" title={item.name}>
-            {item.name}
+    <div className="grid grid-cols-[2rem_minmax(0,1fr)_auto] sm:grid-cols-[2rem_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-3 p-4 min-w-0">
+      <div className="h-5 self-start flex items-center justify-center">
+        {renderCategoryIcon(item.sourceFormat)}
+      </div>
+      <div className="self-start min-w-0">
+        <p className="text-sm font-semibold text-ink truncate" title={item.name}>
+          {item.name}
+        </p>
+        <p className="text-xs text-ink-2 flex items-center flex-wrap gap-1.5 mt-0.5">
+          <span className="font-mono tabular-nums">{formatBytes(item.size)}</span>
+          <span aria-hidden="true">&bull;</span>
+          <span>{item.sourceFormat.toUpperCase()}</span>
+        </p>
+        {rowError && (
+          <p role="alert" className="text-xs text-danger mt-1">
+            {rowError}
           </p>
-          <p className="text-xs text-ink-2 flex items-center flex-wrap gap-1.5 mt-0.5">
-            <span className="font-mono tabular-nums">{formatBytes(item.size)}</span>
-            <span aria-hidden="true">&bull;</span>
-            <span>{getFormatLabel(t, item.sourceFormat)}</span>
-          </p>
-          {rowError && (
-            <>
-              <p role="alert" className="text-xs text-danger mt-1">
-                {rowError.message}
-              </p>
-              <TechnicalDetails text={rowError.technical} />
-            </>
-          )}
-        </div>
+        )}
       </div>
 
-      <div className="flex items-center flex-wrap gap-2 shrink-0">
+      <div className="col-start-2 col-span-2 row-start-2 sm:col-span-1 sm:col-start-3 sm:row-start-1 flex items-center flex-wrap gap-2">
         <span className="text-xs text-ink-3 font-medium">{t('to')}</span>
 
         <div className="relative">
@@ -243,16 +231,16 @@ export default function QueueItemRow({
           optionError={optionError}
           onRetry={onRetry}
         />
-
-        <button
-          type="button"
-          aria-label={t(isBusy ? 'cancelLabel' : 'removeLabel', { name: item.name })}
-          onClick={onRemove}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
       </div>
+
+      <button
+        type="button"
+        aria-label={t(isBusy ? 'cancelLabel' : 'removeLabel', { name: item.name })}
+        onClick={onRemove}
+        className="col-start-3 row-start-1 sm:col-start-4 self-start sm:self-center -mt-3 -mr-3 sm:m-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
+      >
+        <X className="w-4 h-4" />
+      </button>
     </div>
   );
 }

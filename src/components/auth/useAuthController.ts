@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
-import { useAuthErrorWording, type ErrorWording } from '../i18n/error-wording';
+import { useAuthErrorWording } from '../i18n/error-wording';
 import {
   resolveOAuthErrorKey,
   validateRegistrationInput,
@@ -21,9 +21,9 @@ export function useAuthController() {
   const t = useTranslations('auth');
   const locale = useLocale();
   const authErrorWording = useAuthErrorWording();
-  const oauthErrorMessage = (urlError: string | null): ErrorWording | null => {
+  const oauthErrorMessage = (urlError: string | null): string | null => {
     const key = resolveOAuthErrorKey(urlError);
-    return key ? { message: t(`oauthErrors.${key}`) } : null;
+    return key ? t(`oauthErrors.${key}`) : null;
   };
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -40,8 +40,7 @@ export function useAuthController() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [error, setError] = useState<ErrorWording | null>(() => oauthErrorMessage(urlError));
-  const setErrorMessage = (message: string | null) => setError(message === null ? null : { message });
+  const [error, setError] = useState<string | null>(() => oauthErrorMessage(urlError));
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const tabRefs = useRef<Record<AuthTab, HTMLButtonElement | null>>({
     login: null,
@@ -54,12 +53,12 @@ export function useAuthController() {
 
   useEffect(() => {
     const key = resolveOAuthErrorKey(urlError);
-    setError(key ? { message: t(`oauthErrors.${key}`) } : null);
+    setError(key ? t(`oauthErrors.${key}`) : null);
   }, [urlError, t]);
 
   const handleTabSwitch = (tab: AuthTab) => {
     setActiveTab(tab);
-    setErrorMessage(null);
+    setError(null);
     setSuccessMessage(null);
   };
 
@@ -86,7 +85,7 @@ export function useAuthController() {
 
   const handleGoogleLogin = async () => {
     setIsGoogleLoading(true);
-    setErrorMessage(null);
+    setError(null);
     try {
       const res = await fetch(`/api/auth/google/url?locale=${encodeURIComponent(locale)}`);
       const data = await res.json();
@@ -94,28 +93,28 @@ export function useAuthController() {
         window.location.href = data.url;
         return;
       }
-      setErrorMessage(t('messages.googleFailed'));
+      setError(t('messages.googleFailed'));
       setIsGoogleLoading(false);
     } catch {
-      setErrorMessage(t('messages.googleNetwork'));
+      setError(t('messages.googleNetwork'));
       setIsGoogleLoading(false);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorMessage(null);
+    setError(null);
     setSuccessMessage(null);
 
     if (!email || !password) {
-      setErrorMessage(t('messages.missingFields'));
+      setError(t('messages.missingFields'));
       return;
     }
 
     if (activeTab === 'register') {
       const regProblem = validateRegistrationInput(password, confirmPassword);
       if (regProblem) {
-        setErrorMessage(t(`messages.${regProblem}`));
+        setError(t(`messages.${regProblem}`));
         return;
       }
     }
@@ -148,7 +147,7 @@ export function useAuthController() {
         router.refresh();
       }, 500);
     } catch {
-      setErrorMessage(t('messages.connection'));
+      setError(t('messages.connection'));
       setIsLoading(false);
     }
   };

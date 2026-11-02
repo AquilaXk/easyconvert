@@ -8,14 +8,9 @@ import { useFileTooLargeMessage, useFormatBytes } from './format';
 
 /**
  * How the interface words a refused request or a failed conversion (RFC 9457 practice): a stable `code` or problem `type`
- * is the key of a sentence in the page's language, the numbers that sentence names come from the answer's fields, and the
- * server's English text is never part of the sentence. A refusal (4xx) keeps that text as `technical` for the "technical
- * details" disclosure; a server failure (5xx) never shows it, since an exception's text can name the server's paths.
+ * is the key of a sentence in the page's language, and the numbers that sentence names come from the answer's fields. The
+ * server's `detail` is written for the developer of an API client, so no sentence of the interface carries it.
  */
-export interface ErrorWording {
-  readonly message: string;
-  readonly technical?: string;
-}
 
 type Answer = Readonly<Record<string, unknown>>;
 type ProblemName = keyof Messages['errors']['problems'];
@@ -39,12 +34,6 @@ function answerOf(payload: unknown): Answer {
 }
 
 const isRefusal = (status: number): boolean => status >= HTTP_CLIENT_ERROR_MIN && status < HTTP_SERVER_ERROR_MIN;
-
-/** The server's English text of a refusal (4xx), for technical details; undefined for any other status. */
-function refusalText(answer: Answer, status: number): string | undefined {
-  if (!isRefusal(status)) return undefined;
-  return textField(answer, 'detail') ?? textField(answer, 'error') ?? textField(answer, 'message');
-}
 
 const isPlan = (value: unknown): value is Plan => typeof value === 'string' && Object.hasOwn(PLAN_MAX_FILE_BYTES, value);
 
@@ -76,7 +65,7 @@ const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, wor
  * The wording of any refused request: the sentence of its problem type, else `fallback` (the sentence of the action that
  * failed) or the sentence of its status class.
  */
-export function useProblemWording(): (payload: unknown, status: number, fallback?: string) => ErrorWording {
+export function useProblemWording(): (payload: unknown, status: number, fallback?: string) => string {
   const t = useTranslations('errors');
   const problems = useMessages().errors.problems;
   const format = useFormatter();
@@ -85,7 +74,6 @@ export function useProblemWording(): (payload: unknown, status: number, fallback
   return useCallback(
     (payload: unknown, status: number, fallback?: string) => {
       const answer = answerOf(payload);
-      const technical = refusalText(answer, status);
       const type = textField(answer, 'type');
       const name = type?.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
       if (name !== undefined && isProblemName(problems, name)) {
@@ -94,16 +82,16 @@ export function useProblemWording(): (payload: unknown, status: number, fallback
           return value === undefined ? undefined : t(`limits.${key}`, { limit: unit === 'bytes' ? formatBytes(value) : format.number(value) });
         };
         const limitSentence = LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge });
-        return { message: limitSentence ?? t(`problems.${name}`), technical };
+        return limitSentence ?? t(`problems.${name}`);
       }
-      return { message: fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server')), technical };
+      return fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server'));
     },
     [t, problems, format, formatBytes, fileTooLarge]
   );
 }
 
 /** A refusal of `/api/fetch-url`, by its `code`; an answer without a code this build words as `useProblemWording` words it. */
-export function useUrlImportErrorWording(): (payload: unknown, status: number) => ErrorWording {
+export function useUrlImportErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.urlImport');
   const problemWording = useProblemWording();
   const formatBytes = useFormatBytes();
@@ -113,20 +101,15 @@ export function useUrlImportErrorWording(): (payload: unknown, status: number) =
       const answer = answerOf(payload);
       const code = answer.code;
       if (!isCodeOf(URL_IMPORT_ERROR_CODES, code)) return problemWording(answer, status);
-      const technical = refusalText(answer, status);
-      if (code === 'file_too_large') {
-        return { message: t(code, { limit: formatBytes(URL_IMPORT_MAX_BYTES), planLimit: formatBytes(maxFileBytes(plan)) }), technical };
-      }
-      const remoteStatus = numberField(answer, 'remoteStatus');
-      if (code === 'remote_error' && remoteStatus !== undefined) return { message: t('remoteAnswered', { status: String(remoteStatus) }), technical };
-      return { message: t(code), technical };
+      if (code === 'file_too_large') return t(code, { limit: formatBytes(URL_IMPORT_MAX_BYTES), planLimit: formatBytes(maxFileBytes(plan)) });
+      return t(code);
     },
     [t, problemWording, formatBytes, plan]
   );
 }
 
 /** A refusal of `/api/auth/login` or `/api/auth/register`, by its `code`; never by its status alone. */
-export function useAuthErrorWording(): (payload: unknown, status: number) => ErrorWording {
+export function useAuthErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.auth');
   const problemWording = useProblemWording();
   return useCallback(
@@ -134,9 +117,8 @@ export function useAuthErrorWording(): (payload: unknown, status: number) => Err
       const answer = answerOf(payload);
       const code = answer.code;
       if (!isCodeOf(AUTH_ERROR_CODES, code)) return problemWording(answer, status, t('failed'));
-      const technical = refusalText(answer, status);
-      if (code === 'login_locked') return { message: t(code, { seconds: numberField(answer, 'retryAfterSeconds') ?? 0 }), technical };
-      return { message: t(code), technical };
+      if (code === 'login_locked') return t(code, { seconds: numberField(answer, 'retryAfterSeconds') ?? 0 });
+      return t(code);
     },
     [t, problemWording]
   );
@@ -144,9 +126,9 @@ export function useAuthErrorWording(): (payload: unknown, status: number) => Err
 
 /**
  * The wording of a conversion that failed in the queue: a server refusal by its `code` or problem type, a failed job by the
- * refusal code its worker recorded (its reason, masked by the worker, under technical details), else as a failed job.
+ * refusal code its worker recorded, else as a failed job.
  */
-export function useConversionFailureWording(): (failure: ConversionFailure) => ErrorWording {
+export function useConversionFailureWording(): (failure: ConversionFailure) => string {
   const t = useTranslations('errors');
   const problemWording = useProblemWording();
   return useCallback(
@@ -155,30 +137,22 @@ export function useConversionFailureWording(): (failure: ConversionFailure) => E
       switch (failure.code) {
         case 'server': {
           const status = numberField(failure.problem, 'status') ?? HTTP_SERVER_ERROR_MIN;
-          const message = conversionSentence(failure.problem.code);
-          return message ? { message, technical: refusalText(failure.problem, status) } : problemWording(failure.problem, status);
+          return conversionSentence(failure.problem.code) ?? problemWording(failure.problem, status);
         }
         case 'jobFailed':
-          return { message: conversionSentence(failure.refusalCode) ?? t('queue.jobFailed'), technical: failure.reason };
+          return conversionSentence(failure.refusalCode) ?? t('queue.jobFailed');
         case 'jobTimedOut':
-          return { message: t('conversion.timeout') };
+          return t('conversion.timeout');
         case 'clientOnlyBlocked': {
           const blocked = t('queue.clientOnlyBlocked', { source: failure.source, target: failure.target });
-          const tier = failure.edgeFailure?.tier;
-          return { message: tier ? `${blocked} ${t('queue.edgeTierFailed', { tier })}` : blocked, technical: failure.edgeFailure?.reason };
+          return failure.edgeFailed ? `${blocked} ${t('queue.edgeFailedFirst')}` : blocked;
         }
         case 'clientEdgeFailed':
-          return { message: t('queue.clientEdgeFailed'), technical: failure.reason };
+          return t('queue.clientEdgeFailed');
         case 'conversionFailed':
-          return { message: t('queue.conversionFailed') };
+          return t('queue.conversionFailed');
       }
     },
     [t, problemWording]
   );
-}
-
-/** A ZIP bundle that could not be built, with the archiver's reason as technical details. */
-export function useZipFailureWording(): (detail: string) => ErrorWording {
-  const t = useTranslations('errors.queue');
-  return useCallback((detail: string) => ({ message: t('zipFailed'), technical: detail || undefined }), [t]);
 }

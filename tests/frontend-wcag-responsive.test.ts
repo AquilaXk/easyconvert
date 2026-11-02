@@ -384,7 +384,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     });
     const alerts = allElements(errorQueue).filter((el) => attrOf(el, 'role') === 'alert');
     expect(alerts.map((a) => visibleText(a))).toEqual(['The request was refused. Check the file and its settings, then try again.']);
-    expect(select(errorQueue, 'details').map((d) => visibleText(d))).toEqual(['Technical details Corrupt PNG header signature']);
+    expect(select(errorQueue, 'details')).toEqual([]);
+    expect(visibleText(errorQueue)).not.toContain('Corrupt PNG header signature');
   });
 
   it('handles FormatSelector empty capability arrays, OAuth error allowlists, and unsupported diagnostics', () => {

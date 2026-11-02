@@ -7,12 +7,9 @@ import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/
 import { getAvailableTargetFormats } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import type { ZipFailure } from '@/hooks/useClientQueue';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
-import { useZipFailureWording } from './i18n/error-wording';
-import TechnicalDetails from './i18n/TechnicalDetails';
 import QueueItemRow from './workbench/QueueItemRow';
 import { getPasswordValidationError } from './workbench/options/options-capabilities';
 
@@ -28,7 +25,7 @@ export interface ConversionQueueProps {
   onAddMoreFiles: () => void;
   onDownloadAllZip: () => void;
   isConverting: boolean;
-  zipError?: ZipFailure | null;
+  zipError?: boolean;
   onDismissZipError?: () => void;
 }
 
@@ -125,7 +122,7 @@ function QueueBatchHeader({
 }
 
 interface QueueFooterBarProps {
-  statusSummary: string; zipError?: ZipFailure | null; onDismissZipError?: () => void;
+  statusSummary: string; zipError?: boolean; onDismissZipError?: () => void;
   effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean;
   onAddMoreFiles: () => void; onDownloadAllZip: () => void; onConvertAll: () => void;
 }
@@ -135,17 +132,14 @@ function QueueFooterBar({
   allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
 }: Readonly<QueueFooterBarProps>) {
   const t = useTranslations('queue');
-  const zipWording = useZipFailureWording()(zipError?.detail ?? '');
+  const tErrors = useTranslations('errors.queue');
   return (
     <div className="bg-sunken/50 border-t border-rule rounded-b-md px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
       <div className="min-w-0">
         <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
         {zipError && (
           <div className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <div className="min-w-0">
-              <p role="alert">{zipWording.message}</p>
-              <TechnicalDetails text={zipWording.technical} />
-            </div>
+            <p role="alert" className="min-w-0">{tErrors('zipFailed')}</p>
             {onDismissZipError && (
               <button
                 type="button" aria-label={t('dismissZipError')} onClick={onDismissZipError}

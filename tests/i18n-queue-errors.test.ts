@@ -8,12 +8,12 @@ import type { ConversionFailure } from '../src/lib/conversion-failure';
 import { CONVERSION_REFUSAL_CODES } from '../src/lib/refusal-codes';
 import type { ConversionQueueItem } from '../src/lib/types';
 import type { TestLocale } from './helpers/intl';
-import { WebhooksPanel } from '../src/components/dashboard/WebhooksPanel';
-import { allElements, attrOf, renderComponent, renderDom, select, visibleText, type DomElement } from './helpers/rendered-dom';
+import { renderDom, select, visibleText } from './helpers/rendered-dom';
 
 /**
- * A conversion that fails in the queue is worded in the page's language, and the server's English text stays one click
- * away under "technical details". The refusals come from the real `/api/convert` route and the real conversion path.
+ * A conversion that fails in the queue is worded in the page's language and shows none of the server's text: the English
+ * `error` and `detail` are for API clients and logs. The refusals come from the real `/api/convert` route and the real
+ * conversion path.
  */
 
 /** Two Latin words in a row: an English sentence or phrase, unlike a format name (`HWP`) or a number. */
@@ -48,7 +48,7 @@ function answer(body: unknown, status: number): void {
 
 interface RenderedFailure {
   alert: string;
-  details: string | null;
+  hasDisclosure: boolean;
 }
 
 function renderedFailure(failure: ConversionFailure, locale: TestLocale): RenderedFailure {
@@ -61,23 +61,27 @@ function renderedFailure(failure: ConversionFailure, locale: TestLocale): Render
     locale
   );
   const [alert] = select(dom, 'p', 'role', 'alert');
-  const [details] = select(dom, 'details');
-  return { alert: visibleText(alert), details: details ? visibleText(details) : null };
+  return { alert: visibleText(alert), hasDisclosure: select(dom, 'details').length > 0 };
 }
 
-function expectKoreanWithDetails(failure: ConversionFailure, englishDetail: string): void {
+/** The row reads in Korean and in English, with no server text, no disclosure and no status code. */
+function expectWorded(failure: ConversionFailure, serverText: string): void {
   const korean = renderedFailure(failure, 'ko');
+  const english = renderedFailure(failure, 'en');
   expect(korean.alert, JSON.stringify(failure)).toMatch(HANGUL);
   expect(korean.alert, JSON.stringify(failure)).not.toMatch(ENGLISH_PHRASE);
-  expect(korean.details, JSON.stringify(failure)).toBe(`기술 정보 ${englishDetail}`);
-  expect(renderedFailure(failure, 'en').details).toBe(`Technical details ${englishDetail}`);
+  for (const row of [korean, english]) {
+    expect(row.alert, JSON.stringify(failure)).not.toContain(serverText);
+    expect(row.alert, JSON.stringify(failure)).not.toMatch(/HTTP/);
+    expect(row.hasDisclosure, JSON.stringify(failure)).toBe(false);
+  }
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('a refusal of /api/convert reads in the page language, with the English text under technical details', () => {
+describe('a refusal of /api/convert reads in the page language, without the server text', () => {
   const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   const cases: Array<[string, ConversionQueueItem, string]> = [
     ['a file whose content is not the format its name says', queueItem('photo.png', new TextEncoder().encode('this is plain text, not a picture'), 'png', 'jpg'), 'spoofed_file'],
@@ -92,20 +96,19 @@ describe('a refusal of /api/convert reads in the page language, with the English
     const problem = (failure as Extract<ConversionFailure, { code: 'server' }>).problem;
     expect(problem.code).toBe(code);
     expect(typeof problem.error).toBe('string');
-    expectKoreanWithDetails(failure, problem.error as string);
-    expect(renderedFailure(failure, 'en').alert).not.toContain(problem.error as string);
+    expectWorded(failure, problem.error as string);
   });
 
   it('words every conversion refusal code in Korean', () => {
     for (const code of CONVERSION_REFUSAL_CODES) {
-      expectKoreanWithDetails({ code: 'server', problem: { code, error: 'English text.', status: 400 } }, 'English text.');
+      expectWorded({ code: 'server', problem: { code, error: 'English text.', status: 400 } }, 'English text.');
     }
   });
 
-  it('words an answer with no code it knows by its status class, keeping the English text of a refusal only', () => {
-    expectKoreanWithDetails({ code: 'server', problem: { error: 'Unsupported target format "xyz".', status: 400 } }, 'Unsupported target format "xyz".');
-    expect(renderedFailure({ code: 'server', problem: { error: 'Worker pool exploded.', status: 500 } }, 'ko')).toMatchObject({ details: null });
-    expect(renderedFailure({ code: 'server', problem: { status: 400 } }, 'ko')).toMatchObject({ details: null });
+  it('words an answer with no code it knows by its status class, never with its text', () => {
+    expectWorded({ code: 'server', problem: { error: 'Unsupported target format "xyz".', status: 400 } }, 'Unsupported target format');
+    expectWorded({ code: 'server', problem: { error: 'Worker pool exploded.', status: 500 } }, 'Worker pool');
+    expectWorded({ code: 'server', problem: { status: 400 } }, 'Bad Request');
   });
 });
 
@@ -131,57 +134,29 @@ describe('the failures the client decides read in the page language', () => {
     expect(renderedFailure(failures[0], 'ko').alert).toContain('HWP → PDF');
   });
 
-  it('names the browser tier that failed before a client-only refusal, with its error under technical details', () => {
-    const failure: ConversionFailure = { code: 'clientOnlyBlocked', source: 'MP4', target: 'FLV', edgeFailure: { tier: 'L1', reason: 'MP4: box overruns its parent' } };
+  it('says that the browser failed first before a client-only refusal, without naming a tier', () => {
+    const failure: ConversionFailure = { code: 'clientOnlyBlocked', source: 'MP4', target: 'FLV', edgeFailed: true };
     const korean = renderedFailure(failure, 'ko');
-    expect(korean.alert).toMatch(/^MP4 → FLV .*L1/);
+    expect(korean.alert).toMatch(/^MP4 → FLV /);
     expect(korean.alert).not.toMatch(ENGLISH_PHRASE);
-    expect(korean.details).toBe('기술 정보 MP4: box overruns its parent');
+    expect(korean.alert).not.toMatch(/\bL\d\b/);
+    expect(korean.alert).not.toBe(renderedFailure({ ...failure, edgeFailed: undefined }, 'ko').alert);
   });
 
-  it('keeps the browser error of a client-only conversion under technical details', () => {
-    expectKoreanWithDetails({ code: 'clientEdgeFailed', reason: 'WASM module failed to load' }, 'WASM module failed to load');
+  it('words a browser-only conversion that failed in the browser', () => {
+    expectWorded({ code: 'clientEdgeFailed' }, 'WASM module failed to load');
   });
 });
 
-describe('a job that failed on the worker reads as one sentence, with the worker reason under technical details', () => {
+describe('a job that failed on the worker reads as one sentence', () => {
   it('shows the generic job sentence and no HTTP status', () => {
-    const failure: ConversionFailure = { code: 'jobFailed', reason: 'Worker process exited with code 137.' };
-    expectKoreanWithDetails(failure, 'Worker process exited with code 137.');
+    const failure: ConversionFailure = { code: 'jobFailed' };
+    expectWorded(failure, 'Worker process exited');
     expect(renderedFailure(failure, 'ko').alert).not.toMatch(/\d{3}/);
   });
 
   it('words a job that hit its time limit by the code the worker recorded', () => {
-    const korean = renderedFailure({ code: 'jobFailed', reason: 'The conversion exceeded its 600 s limit.', refusalCode: 'timeout' }, 'ko');
+    const korean = renderedFailure({ code: 'jobFailed', refusalCode: 'timeout' }, 'ko');
     expect(korean.alert).toBe(renderedFailure({ code: 'jobTimedOut' }, 'ko').alert);
-  });
-});
-
-describe('technical details sit beside the message that is announced, never inside it', () => {
-  const liveRegions = (dom: DomElement) => allElements(dom).filter((element) => attrOf(element, 'role') === 'alert' || attrOf(element, 'aria-live') !== null);
-
-  function expectDisclosureOutsideLiveRegions(dom: DomElement): void {
-    const [details] = select(dom, 'details');
-    expect(details).toBeDefined();
-    expect(liveRegions(dom).length).toBeGreaterThan(0);
-    for (const region of liveRegions(dom)) expect(select(region, 'details')).toEqual([]);
-    const [summary] = select(details, 'summary');
-    expect(attrOf(summary, 'class')?.split(' ')).toContain('min-h-[44px]');
-  }
-
-  it('keeps the disclosure of a failed queue row out of its alert', () => {
-    const item: ConversionQueueItem = { ...hwpItem(), status: 'error', error: { code: 'clientEdgeFailed', reason: 'WASM module failed to load' } };
-    expectDisclosureOutsideLiveRegions(renderDom(createElement(QueueItemRow, {
-      item, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-      onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
-    })));
-  });
-
-  it('keeps the disclosure of a webhook replay out of its status message', () => {
-    expectDisclosureOutsideLiveRegions(renderComponent(WebhooksPanel, {
-      entries: [], loading: false, replayingId: null, inspectingEntry: null,
-      feedback: { message: 'The replay failed.', technical: 'Endpoint answered HTTP 500.' },
-      onRefresh: noop, onClearAll: noop, onDismissFeedback: noop, onInspect: noop, onReplay: noop, onDelete: noop,
-    }));
   });
 });

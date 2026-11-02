@@ -10,7 +10,7 @@ import { completeMessages } from '../src/i18n/messages';
 import en from '../messages/en.json';
 
 /**
- * Every offered language carries every message, with the same arguments, and the Korean copy keeps one register (합니다체)
+ * Every offered language carries every message, with the same arguments, and the Korean copy keeps one register (해요체)
  * and one set of terms. The messages are read as the server assembles them (`src/i18n/messages.ts`). English keeps its
  * format descriptions, format categories and unit names in the registry and the unit catalog, where the API reads them
  * too, so `en.json` has no `formatDescriptions`, `formatCategories`, `unitCategories` or `unitNames`; `ko.json` keeps its
@@ -106,9 +106,15 @@ describe('every language carries every message', () => {
 describe('the Korean copy keeps one register and one set of terms', () => {
   const koreanEntries = [...korean];
 
-  it('uses 합니다체, never 해요체 endings', () => {
-    const haeyo = /(?:세요|어요|아요|해요|에요|예요|네요|죠)(?=[.!?\s"]|$)/;
-    expect(koreanEntries.filter(([, text]) => haeyo.test(text)).map(([key]) => key)).toEqual([]);
+  it('uses 해요체, never 합니다체 or 하십시오체 endings', () => {
+    const formal = /(?:니다|십시오|십시요|하소서)(?=[.!?\s"]|$)/;
+    expect(koreanEntries.filter(([, text]) => formal.test(text)).map(([key]) => key)).toEqual([]);
+  });
+
+  it('carries no status code or protocol name in a sentence a person reads', () => {
+    const protocolTerms = /HTTP\s*\d|\(HTTP|\bMIME\b|\bRBAC\b/;
+    const developerPages = /^(?:apiDocs|dashboard\.keys|dashboard\.usage|dashboard\.guide|home\.api|converterPage\.(?:dossier|specs)|formatSpecs|formatDescriptions)\./;
+    expect(koreanEntries.filter(([key, text]) => !developerPages.test(key) && protocolTerms.test(text)).map(([key]) => key)).toEqual([]);
   });
 
   it('never leaves a particle hanging on an argument, whose last sound decides the particle', () => {

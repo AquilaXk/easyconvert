@@ -28,10 +28,3 @@ export function resolveExpiryTimestamp(expiry: KeyExpiryOption, nowMs: number): 
 export interface FileWithRemaining extends UserConversionFile {
   remainingSeconds: number;
 }
-
-/** Whole minutes and the seconds left over of a countdown, for the copy to word (`dashboard.files.countdown`). */
-export function countdownParts(seconds: number): { minutes: number; seconds: string } {
-  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
-  const secs = safeSeconds % 60;
-  return { minutes: Math.floor(safeSeconds / 60), seconds: `${secs < 10 ? '0' : ''}${secs}` };
-}

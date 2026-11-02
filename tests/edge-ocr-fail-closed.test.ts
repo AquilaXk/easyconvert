@@ -301,11 +301,8 @@ describe('edge OCR failure escalates to the cloud tier', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(1);
-    // The specific edge OCR failure is reported, not only the generic client-only message.
-    expect(onError.mock.calls[0][0]).toMatchObject({
-      code: 'clientOnlyBlocked',
-      edgeFailure: { tier: 'L2', reason: expect.stringMatching(/language data fetch failed: 403/) },
-    });
+    // The refusal says that the browser tried first, so the row can word it.
+    expect(onError.mock.calls[0][0]).toMatchObject({ code: 'clientOnlyBlocked', edgeFailed: true });
   });
 });
 

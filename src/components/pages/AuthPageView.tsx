@@ -7,7 +7,6 @@ import Footer from '@/components/Footer';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { AuthCredentialsForm, GoogleOAuthButton } from '@/components/auth/AuthForms';
 import { useAuthController } from '@/components/auth/useAuthController';
-import TechnicalDetails from '@/components/i18n/TechnicalDetails';
 
 function LoginFormContent() {
   const t = useTranslations('auth');
@@ -100,10 +99,7 @@ function LoginFormContent() {
         {error && (
           <div className="mb-5 flex items-start gap-3 p-3.5 rounded-md bg-danger-soft border border-danger-edge/25 text-danger text-sm">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <p role="alert">{error.message}</p>
-              <TechnicalDetails text={error.technical} />
-            </div>
+            <p role="alert" className="min-w-0">{error}</p>
           </div>
         )}
 

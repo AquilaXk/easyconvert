@@ -11,7 +11,7 @@ import {
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
 import { applySessionChange } from '@/lib/viewer-plan';
-import { useProblemWording, type ErrorWording } from '../i18n/error-wording';
+import { useProblemWording } from '../i18n/error-wording';
 
 /** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
 export function buildKeyCreationRequest(
@@ -71,7 +71,7 @@ function useClipboardCopyStatus() {
 
 function useApiKeysController(
   enabled: boolean,
-  onReportError: (error: ErrorWording | null) => void
+  onReportError: (error: string | null) => void
 ) {
   const t = useTranslations('dashboard.errors');
   const tKeys = useTranslations('dashboard.keys');
@@ -102,14 +102,14 @@ function useApiKeysController(
         if (keysData.success) setApiKeys(keysData.keys);
       } else {
         const errBody: unknown = await keysRes.json().catch(() => null);
-        onReportError(problemWording(errBody, keysRes.status, t('loadKeys', { status: keysRes.status })));
+        onReportError(problemWording(errBody, keysRes.status, t('loadKeys')));
       }
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
         if (quotaData.success) setQuota(quotaData.usage);
       }
     } catch {
-      onReportError({ message: t('loadKeysNetwork') });
+      onReportError(t('loadKeysNetwork'));
     }
   }, [onReportError, problemWording, t]);
 
@@ -124,7 +124,7 @@ function useApiKeysController(
     e.preventDefault();
     const request = buildKeyCreationRequest(newKeyName, selectedScopes, keyExpiry, Date.now(), tKeys('defaultName'));
     if (!request.ok) {
-      onReportError({ message: t(request.error) });
+      onReportError(t(request.error));
       return;
     }
     setIsGeneratingKey(true);
@@ -151,9 +151,9 @@ function useApiKeysController(
         await fetchKeysAndQuota();
         return;
       }
-      onReportError(problemWording(data, res.status, t('createKey', { status: res.status })));
+      onReportError(problemWording(data, res.status, t('createKey')));
     } catch {
-      onReportError({ message: t('createKeyNetwork') });
+      onReportError(t('createKeyNetwork'));
     } finally {
       setIsGeneratingKey(false);
     }
@@ -165,13 +165,13 @@ function useApiKeysController(
       const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(problemWording(data, res.status, t('revokeKey', { status: res.status })));
+        onReportError(problemWording(data, res.status, t('revokeKey')));
         return;
       }
       setRevokingKeyId(null);
       await fetchKeysAndQuota();
     } catch {
-      onReportError({ message: t('revokeKeyNetwork') });
+      onReportError(t('revokeKeyNetwork'));
     }
   };
 
@@ -209,9 +209,9 @@ export function useDashboardController() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardTab>('api');
   const [loading, setLoading] = useState(true);
-  const [actionError, setActionError] = useState<ErrorWording | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const reportError = useCallback((error: ErrorWording | null) => setActionError(error), []);
+  const reportError = useCallback((error: string | null) => setActionError(error), []);
   const clearActionError = useCallback(() => setActionError(null), []);
 
   const fetchProfile = useCallback(async () => {
@@ -241,7 +241,7 @@ export function useDashboardController() {
       // A sign-out the server refused leaves the session, so the header keeps the account until the page is read again.
       if (res.ok) applySessionChange(null);
     } catch {
-      setActionError({ message: t('signOutNetwork') });
+      setActionError(t('signOutNetwork'));
     }
     router.push('/auth');
     router.refresh();

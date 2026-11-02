@@ -32,7 +32,6 @@ import {
   createConversionRunners,
   createQueueMutators,
   type QueueMutationContext,
-  type ZipFailure,
 } from '../src/hooks/useClientQueue';
 import * as clientConverter from '../src/lib/client-converter';
 import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
@@ -95,7 +94,7 @@ function buildTestQueueContext(initialItems: ConversionQueueItem[]) {
   const state = {
     isBatchRunning: false,
     inFlightCount: 0,
-    zipError: null as ZipFailure | null,
+    zipError: false,
     revokedUrls: [] as string[],
   };
   const queueRef = { current: [...initialItems] };

@@ -106,8 +106,8 @@ export function DashboardHeader({
             <div className="flex flex-wrap items-center gap-2.5 text-xs text-ink-3 mt-1.5">
               <span>
                 {t.rich('provider', {
-                  provider: user.provider,
-                  strong: (chunks) => <strong className="capitalize">{chunks}</strong>,
+                  provider: t(`providers.${user.provider}`),
+                  strong: (chunks) => <strong>{chunks}</strong>,
                 })}
               </span>
               <span aria-hidden="true">&bull;</span>

@@ -243,7 +243,7 @@ describe('Client edge tier attribution and escalation reasons', () => {
         code: 'clientOnlyBlocked',
         source: 'CSV',
         target: 'TSV',
-        edgeFailure: { tier: 'L3', reason: 'OPFS quota exceeded' },
+        edgeFailed: true,
       });
     });
   });

@@ -2,8 +2,9 @@ import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Clock, Download, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
-import { countdownParts, type FileWithRemaining } from './dashboard-types';
+import type { FileWithRemaining } from './dashboard-types';
 import { useFormatBytes } from '../i18n/format';
+import { useRetentionLabel } from './useRetentionLabel';
 
 interface JobsHistoryPanelProps {
   files: FileWithRemaining[];
@@ -20,6 +21,7 @@ export function JobsHistoryPanel({
 }: Readonly<JobsHistoryPanelProps>) {
   const t = useTranslations('dashboard.files');
   const formatBytes = useFormatBytes();
+  const retentionLabel = useRetentionLabel();
   return (
     <div
       id="dashboard-panel-files"
@@ -89,7 +91,7 @@ export function JobsHistoryPanel({
                   <td className="py-3.5 pr-4 text-xs font-medium whitespace-nowrap">
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-warning-soft text-warning border border-warning-edge">
                       <Clock className="w-3.5 h-3.5" />
-                      {t('countdown', countdownParts(file.remainingSeconds))}
+                      {retentionLabel(file.remainingSeconds)}
                     </span>
                   </td>
                   <td className="py-3.5 text-right whitespace-nowrap">

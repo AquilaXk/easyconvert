@@ -1,5 +1,4 @@
 import type { useTranslations } from 'next-intl';
-import { REGISTRY_STATS } from '@/lib/registry-stats';
 
 export type HeroTranslator = ReturnType<typeof useTranslations<'hero'>>;
 
@@ -61,13 +60,12 @@ export function computeHeroSubtitle(
   userChangedTiles: boolean
 ): string {
   if (categoryDescription && !userChangedTiles && !hasActiveQueue) return categoryDescription;
-  const counts = { formats: REGISTRY_STATS.formatCount, categories: REGISTRY_STATS.categoryCount };
-  if (hasActiveQueue) return t('subtitle.queue', counts);
+  if (hasActiveQueue) return t('subtitle.queue');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
   if (src && src !== 'any' && tgt && tgt !== 'any') {
-    return t('subtitle.pair', { ...counts, src: src.toUpperCase(), tgt: tgt.toUpperCase() });
+    return t('subtitle.pair', { src: src.toUpperCase(), tgt: tgt.toUpperCase() });
   }
-  if (src && src !== 'any') return t('subtitle.source', { ...counts, src: src.toUpperCase() });
-  return t('subtitle.default', counts);
+  if (src && src !== 'any') return t('subtitle.source', { src: src.toUpperCase() });
+  return t('subtitle.default');
 }

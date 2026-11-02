@@ -6,8 +6,7 @@ import { Globe, X, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { URL_IMPORT_MAX_BYTES } from '@/lib/plan-limits';
 import { useFormatBytes } from './i18n/format';
-import { useUrlImportErrorWording, type ErrorWording } from './i18n/error-wording';
-import TechnicalDetails from './i18n/TechnicalDetails';
+import { useUrlImportErrorWording } from './i18n/error-wording';
 
 export interface UrlImportModalProps {
   isOpen?: boolean;
@@ -25,7 +24,7 @@ export default function UrlImportModal({
   const urlImportErrorWording = useUrlImportErrorWording();
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<ErrorWording | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, isOpen, onClose);
@@ -42,7 +41,7 @@ export default function UrlImportModal({
     try {
       new URL(targetUrl);
     } catch {
-      setError({ message: t('invalidUrl') });
+      setError(t('invalidUrl'));
       setLoading(false);
       return;
     }
@@ -71,7 +70,7 @@ export default function UrlImportModal({
       onAddFile?.(file);
       onClose();
     } catch {
-      setError({ message: t('networkError') });
+      setError(t('networkError'));
     } finally {
       setLoading(false);
     }
@@ -137,10 +136,7 @@ export default function UrlImportModal({
         {error && (
           <div className="flex items-start gap-2 p-3 rounded-sm bg-danger-soft border border-danger-edge text-danger text-xs">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <p role="alert">{error.message}</p>
-              <TechnicalDetails text={error.technical} />
-            </div>
+            <p role="alert" className="min-w-0">{error}</p>
           </div>
         )}
 

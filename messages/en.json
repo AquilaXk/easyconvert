@@ -29,9 +29,8 @@
     },
     "page": {
       "loading": "Loading OpenAPI specification...",
-      "loadFailedHeading": "Failed to Load OpenAPI Specification",
-      "loadFailedStatus": "Failed to load OpenAPI spec ({status})",
-      "loadFailedUnknown": "Unknown error loading OpenAPI specification",
+      "loadFailedHeading": "Could not load the OpenAPI specification",
+      "loadFailedBody": "Try again in a moment.",
       "noMatches": "No matching API endpoints found."
     },
     "endpoint": {
@@ -64,7 +63,7 @@
     "loginHeading": "Sign in to EasyConvert",
     "registerHeading": "Create an EasyConvert account",
     "intro": "Manage developer API keys, webhooks, and conversion history.",
-    "modeLabel": "Authentication mode",
+    "modeLabel": "Sign in or sign up",
     "tabs": {
       "login": "Sign In",
       "register": "Sign Up"
@@ -87,21 +86,21 @@
     "oauthErrors": {
       "oauth_code_missing": "Authentication request cancelled or authorization code missing.",
       "oauth_denied": "Google sign-in was cancelled before completion.",
-      "invalid_oauth_callback": "Invalid OAuth callback parameters. Please try signing in again.",
+      "invalid_oauth_callback": "The sign-in request is not valid. Sign in again.",
       "invalid_oauth_state": "Invalid authentication state. Try signing in again.",
-      "oauth_exchange_failed": "Could not verify Google credentials. Please try signing in again.",
+      "oauth_exchange_failed": "Could not verify your Google account. Sign in again.",
       "account_linking_required": "An account with this email already exists. Sign in with your password first to link Google.",
       "generic": "Authentication failed. Please try signing in again."
     },
     "messages": {
-      "googleFailed": "Failed to initiate Google authentication.",
-      "googleNetwork": "Network error initiating Google authentication.",
+      "googleFailed": "Could not start Google sign-in. Try again.",
+      "googleNetwork": "The connection dropped and Google sign-in did not start. Try again.",
       "missingFields": "Fill in all required fields.",
       "passwordTooShort": "Password must be at least 8 characters long.",
       "passwordMismatch": "Passwords do not match.",
       "created": "Account created. Redirecting...",
       "signedIn": "Signed in. Redirecting...",
-      "connection": "Connection error while signing in. Try again."
+      "connection": "The connection dropped. Try again."
     }
   },
   "converterPage": {
@@ -139,7 +138,7 @@
       "intro": "Step-by-Step Guide for converting and downloading your files in three steps.",
       "upload": {
         "heading": "Upload {src} File(s)",
-        "body": "Click 'Select File' or drag and drop {src} files into the workbench. You can also import a public HTTP URL."
+        "body": "Click 'Select File' or drag and drop {src} files into the workbench. You can also import a public link."
       },
       "choose": {
         "pair": {
@@ -183,7 +182,7 @@
         },
         "single": {
           "q": "How do I convert {src} files online for free?",
-          "a": "Add your {src} file to the workbench above, select any output format from {count} supported formats, and click Convert. Conversions are free without watermarks or daily paywalls."
+          "a": "Add your {src} file to the workbench above, pick an output format from {count} supported formats, and click Convert. Conversions are free and carry no watermark."
         }
       },
       "privacy": {
@@ -193,7 +192,7 @@
         "single": {
           "q": "How are {src} files handled for privacy?"
         },
-        "a": "Supported client formats run directly inside your browser using WebAssembly. Server-assisted jobs transmit over TLS 1.3 into isolated worker sandboxes and delete temporary output automatically upon download or short TTL expiration."
+        "a": "Formats the browser supports run inside your browser with WebAssembly. Anything that needs a server is sent over TLS 1.3 to an isolated worker, and the temporary output is deleted after you download it or after a short retention time."
       },
       "quality": {
         "pair": {
@@ -219,15 +218,19 @@
     "dismissError": "Dismiss dashboard error",
     "header": {
       "heading": "Developer Dashboard",
-      "tier": "{tier} TIER",
-      "provider": "Auth provider <strong>{provider}</strong>",
+      "tier": "{tier} plan",
+      "provider": "Signed in with <strong>{provider}</strong>",
+      "providers": {
+        "email": "Email",
+        "google": "Google"
+      },
       "memberSince": "Member since {date}",
       "signOut": "Sign Out",
       "sectionsLabel": "Dashboard sections",
       "tabs": {
         "api": "Developer API Keys",
         "files": "My Converted Files",
-        "dlq": "Webhook DLQ",
+        "dlq": "Failed webhooks",
         "usage": "Usage & Rate Limits"
       }
     },
@@ -237,17 +240,18 @@
       "refresh": "Refresh",
       "emptyHeading": "No active conversion files",
       "emptyBody": "Files converted via your account or API keys appear here with a live automatic expiration countdown.",
-      "openWorkbench": "Open Converter Workbench",
+      "openWorkbench": "Open the converter",
       "columns": {
         "name": "File Name",
         "format": "Format",
         "size": "Size",
-        "ttl": "Auto-Purge TTL",
+        "ttl": "Retention",
         "actions": "Actions"
       },
       "pair": "{src} to {tgt}",
-      "countdown": "{minutes}m {seconds}s",
       "downloadLabel": "Download {name}",
+      "expiresIn": "Deleted {when}",
+      "expiresSoon": "Deleted soon",
       "deleteLabel": "Delete {name}"
     },
     "quota": {
@@ -255,7 +259,7 @@
       "allowed": "/ {limit, number} allowed",
       "remaining": "Remaining Quota",
       "callsLeft": "calls left",
-      "remainingNote": "Authenticated REST requests with automatic TTL cleanup.",
+      "remainingNote": "Counts authenticated REST requests. Output files are deleted automatically.",
       "reset": "Daily Reset",
       "resetNote": "Daily API counters reset automatically at midnight UTC."
     },
@@ -267,7 +271,7 @@
       "createHeading": "Create New API Key",
       "name": "Key Name",
       "namePlaceholder": "Production Backend Worker",
-      "scopesLegend": "Granular Scopes (RBAC)",
+      "scopesLegend": "Scopes",
       "scopes": {
         "convertWrite": "{scope} (Upload & Convert)",
         "convertRead": "{scope} (Job Status & Polling)",
@@ -328,14 +332,14 @@
       }
     },
     "dlq": {
-      "heading": "Webhook Dead Letter Queue (DLQ)",
+      "heading": "Failed webhooks",
       "failedCount": "{count} Failed",
-      "intro": "Failed webhook deliveries retained after exhausted backoff retries. Inspect payloads or trigger a replay.",
+      "intro": "Webhooks that could not be delivered after every retry. Inspect a payload or send it again.",
       "refresh": "Refresh",
-      "clear": "Clear DLQ",
+      "clear": "Clear all",
       "dismissFeedback": "Dismiss webhook notification",
-      "emptyHeading": "Dead Letter Queue is Empty",
-      "emptyBody": "All webhook deliveries succeeded or no failed dispatches are pending.",
+      "emptyHeading": "No failed webhooks",
+      "emptyBody": "Every webhook was delivered.",
       "columns": {
         "event": "Event",
         "target": "Target URL",
@@ -366,24 +370,24 @@
     },
     "usage": {
       "heading": "Usage & Rate Limits",
-      "intro": "Live account tier telemetry, programmatic API rate allocations, and retention rules.",
+      "intro": "Your plan, your API request allowance, and the retention rules.",
       "tier": "Active Tier: {tier}",
       "quota": "Daily API Quota",
       "remaining": "{count, number} programmatic requests remaining today",
       "activeKeys": "Active API Keys",
-      "activeKeysNote": "Scoped RBAC credentials enabled on this account",
+      "activeKeysNote": "Keys with scopes that work on this account",
       "reset": "Quota Window Reset",
       "nextReset": "Next reset at {date}",
       "resetDaily": "Counters reset daily at midnight UTC",
       "workbench": {
-        "heading": "Interactive Web Workbench",
+        "heading": "Web converter",
         "free": "Free interactive browser conversions without daily paywalls or watermarks",
         "local": "Local WebAssembly execution for supported client-side formats"
       },
       "api": {
         "heading": "Programmatic REST API Policy",
-        "scopes": "Per-key RBAC scopes (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
-        "isolation": "Isolated worker execution with automatic short-TTL artifact deletion"
+        "scopes": "Scopes per key (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
+        "isolation": "Runs in an isolated worker, and output files are deleted automatically after a short retention time"
       },
       "reference": "View OpenAPI Reference"
     },
@@ -397,28 +401,29 @@
       "copiedAnnouncement": "Copied {language} integration snippet"
     },
     "errors": {
-      "loadFiles": "Failed to load converted files (HTTP {status}).",
-      "loadFilesNetwork": "Network error while loading converted files.",
-      "loadDlq": "Failed to load webhook DLQ (HTTP {status}).",
-      "loadDlqNetwork": "Network error while loading webhook DLQ.",
-      "deleteFile": "Failed to delete file (HTTP {status}).",
-      "deleteFileNetwork": "Network error while deleting file.",
-      "replaySucceeded": "Webhook replay succeeded (HTTP {status}).",
-      "replayFailed": "Webhook replay failed.",
-      "replayRequestFailed": "The replay request failed.",
-      "deleteDlq": "Failed to delete webhook entry (HTTP {status}).",
-      "deleteDlqNetwork": "Network error while deleting webhook entry.",
-      "clearDlq": "Failed to clear dead letter queue (HTTP {status}).",
-      "dlqCleared": "Dead letter queue cleared.",
-      "clearDlqNetwork": "Network error while clearing dead letter queue.",
-      "loadKeys": "Failed to load API keys (HTTP {status}).",
-      "loadKeysNetwork": "Network error while loading API keys.",
+      "loadFiles": "Could not load your converted files. Try again in a moment.",
+      "loadFilesNetwork": "The connection dropped and your converted files did not load. Try again.",
+      "loadDlq": "Could not load the failed webhooks. Try again in a moment.",
+      "loadDlqNetwork": "The connection dropped and the failed webhooks did not load. Try again.",
+      "deleteFile": "Could not delete the file. Try again in a moment.",
+      "deleteFileBusy": "The file is still being made, so it cannot be deleted yet. Try again in a moment.",
+      "deleteFileNetwork": "The connection dropped and the file was not deleted. Try again.",
+      "replaySucceeded": "The webhook was sent again.",
+      "replayFailed": "Could not send the webhook again.",
+      "replayRequestFailed": "Could not ask for the webhook to be sent again. Check your connection.",
+      "deleteDlq": "Could not delete the webhook. Try again in a moment.",
+      "deleteDlqNetwork": "The connection dropped and the webhook was not deleted. Try again.",
+      "clearDlq": "Could not clear the failed webhooks. Try again in a moment.",
+      "dlqCleared": "All failed webhooks were cleared.",
+      "clearDlqNetwork": "The connection dropped and the failed webhooks were not cleared. Try again.",
+      "loadKeys": "Could not load your API keys. Try again in a moment.",
+      "loadKeysNetwork": "The connection dropped and your API keys did not load. Try again.",
       "noScopes": "Select at least one permission scope before creating an API key.",
-      "createKey": "Failed to create API key (HTTP {status}).",
-      "createKeyNetwork": "Network error while creating API key.",
-      "revokeKey": "Failed to revoke API key (HTTP {status}).",
-      "revokeKeyNetwork": "Network error while revoking API key.",
-      "signOutNetwork": "Network error while signing out."
+      "createKey": "Could not create the API key. Try again in a moment.",
+      "createKeyNetwork": "The connection dropped and the API key was not created. Try again.",
+      "revokeKey": "Could not revoke the API key. Try again in a moment.",
+      "revokeKeyNetwork": "The connection dropped and the API key was not revoked. Try again.",
+      "signOutNetwork": "The connection dropped and you were not signed out. Try again."
     }
   },
   "faq": {
@@ -432,7 +437,7 @@
       },
       "handling": {
         "q": "How are my files handled during conversion?",
-        "a": "Supported image, audio, and data pairs run directly inside browser memory on your device. Formats that require native codecs or document engines are transmitted over TLS 1.3 to isolated worker sandboxes and deleted automatically when their short retention TTL expires."
+        "a": "Image, audio, and data conversions the browser supports run in your browser's memory on your device. Formats that need native codecs or document engines are sent over TLS 1.3 to isolated workers and deleted automatically after a short retention time."
       },
       "maxSize": {
         "q": "What is the maximum file size limit?",
@@ -768,10 +773,10 @@
       "default": "File Converter"
     },
     "subtitle": {
-      "queue": "Choose output formats, adjust parameters, and download converted files across {formats} formats in {categories} categories.",
-      "pair": "Convert {src} to {tgt} online. Supports {formats} formats in {categories} categories with encrypted transfer and ephemeral processing.",
-      "source": "Convert {src} files online across {formats} formats in {categories} categories with encrypted transfer and ephemeral processing.",
-      "default": "Convert documents, images, audio, video, structured data, and archives online across {formats} formats in {categories} categories."
+      "queue": "Choose an output format, adjust the options, and convert.",
+      "pair": "Convert {src} files to {tgt} online.",
+      "source": "Convert {src} files to any format online.",
+      "default": "Convert documents, images, audio, video, and archives to the format you need, online."
     },
     "dropzone": {
       "heading": "Select your file to convert",
@@ -820,7 +825,7 @@
         "body": "Supported pairs run locally in browser memory, while complex formats execute inside isolated worker sandboxes."
       },
       "cleanup": {
-        "heading": "Automatic TTL File Cleanup",
+        "heading": "Automatic File Cleanup",
         "body": "Temporary job inputs and converted outputs expire automatically after short retention windows."
       }
     },
@@ -839,7 +844,7 @@
       "intro": "Three direct steps without account walls or watermarks.",
       "add": {
         "heading": "1. Add source files",
-        "body": "Select files from your device, drag them onto the workbench, paste from clipboard, or import from a public HTTP URL."
+        "body": "Select files from your device, drag them onto the workbench, paste from clipboard, or import from a public link."
       },
       "pick": {
         "heading": "2. Pick format & options",
@@ -858,8 +863,8 @@
         "body": "EasyConvert processes supported client-side conversions directly in your browser memory without uploading source files to external storage."
       },
       "isolation": {
-        "heading": "Isolated Worker Execution & Automatic TTL Cleanup",
-        "body": "When a format pair uses server-assisted processing or the REST API, requests travel over TLS 1.3 into isolated ephemeral worker containers. Output artifacts are removed automatically after download or when their short retention TTL expires."
+        "heading": "Isolated Workers & Automatic Cleanup",
+        "body": "When a format pair needs server processing, or you use the REST API, requests travel over TLS 1.3 to isolated, temporary worker containers. Output files are deleted after you download them or after a short retention time."
       },
       "noResale": {
         "heading": "No Content Resale or Inspection",
@@ -887,7 +892,7 @@
       },
       "architecture": {
         "heading": "Hybrid Browser & Ephemeral Sandbox Architecture",
-        "body": "Browser-supported formats run locally on your device through WebAssembly and WebCodecs. Heavy or specialized containers execute inside isolated worker sandboxes over TLS 1.3 with automatic short-TTL cleanup."
+        "body": "Formats the browser supports run on your device through WebAssembly and WebCodecs. Heavy or specialized formats run in isolated workers over TLS 1.3 and are deleted automatically after a short retention time."
       }
     },
     "security": {
@@ -897,7 +902,7 @@
       },
       "isolation": {
         "heading": "Sandboxed Browser & Worker Isolation",
-        "body": "Client-side conversions stay inside the browser origin sandbox. Server-assisted jobs execute in resource-bounded worker processes with strict input validation, archive decompression limits, and automatic TTL artifact deletion."
+        "body": "Browser conversions stay inside the browser's origin sandbox. Server conversions run in resource-limited worker processes with strict input validation, archive decompression limits, and automatic deletion of output files."
       }
     },
     "accessibility": {
@@ -1151,7 +1156,6 @@
     "converting": "Converting...",
     "convert": "Convert",
     "row": {
-      "unknownFormat": "{ext} File",
       "uploadingLabel": "Uploading {name}",
       "convertingLabel": "Converting {name}",
       "done": "Done",
@@ -1419,8 +1423,8 @@
       "running": "Running browser edge diagnostics...",
       "complete": "Edge diagnostics complete. {active} of {total} capabilities active."
     },
-    "checkedAt": "Client telemetry checked at {time}",
-    "telemetryActive": "Client telemetry active in browser sandbox",
+    "checkedAt": "Browser status checked at {time}",
+    "telemetryActive": "Checking status in the browser sandbox",
     "overview": {
       "heading": "All Client-Side Conversion Engines Operational",
       "ready": "Ready",
@@ -1549,7 +1553,6 @@
     "signUp": "Sign Up"
   },
   "errors": {
-    "technicalDetails": "Technical details",
     "generic": {
       "client": "The request was refused. Check the file and its settings, then try again.",
       "server": "Something went wrong on our side. Try again."
@@ -1558,10 +1561,10 @@
       "bad-request": "The request could not be read. Check the values and try again.",
       "unauthorized": "Sign in to continue.",
       "forbidden": "This action is not allowed for your account.",
-      "not-found": "What this request names no longer exists.",
+      "not-found": "This item no longer exists.",
       "method-not-allowed": "This request cannot be sent this way.",
       "payload-too-large": "The file is larger than this request can take.",
-      "length-required": "The upload did not state its size. Try again.",
+      "length-required": "The upload did not report its size. Try again.",
       "unsupported-media-type": "This file type cannot be sent here.",
       "rate-limited": "Too many requests in a short time. Wait a moment and try again.",
       "concurrency-limit": "Too many conversions are running at once. Try again when one finishes.",
@@ -1583,7 +1586,7 @@
       "archive-encrypted-header": "The archive is protected with a password, so its contents cannot be listed.",
       "job-state-corrupt": "The conversion record could not be read. Start the conversion again.",
       "part-in-flight": "A part of this upload is still being received. Try again in a moment.",
-      "idempotency-key-reused": "This request repeats an earlier one with different contents. Start again.",
+      "idempotency-key-reused": "This is the same request with different contents. Start again.",
       "idempotency-key-in-flight": "The same request is still being processed. Try again in a moment.",
       "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly.",
       "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
@@ -1626,7 +1629,7 @@
       "jobFailed": "The conversion failed on the server. Try again, or try another format.",
       "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
       "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
-      "edgeTierFailed": "The browser step {tier} failed first.",
+      "edgeFailedFirst": "The browser tried first and could not convert it.",
       "zipFailed": "Could not build the ZIP archive."
     },
     "urlImport": {
@@ -1639,7 +1642,6 @@
       "too_many_redirects": "The link redirected too many times. Try the file's direct link.",
       "invalid_redirect": "The link redirected to an address that cannot be read. Try the file's direct link.",
       "remote_error": "The site of the link did not send the file. Check that the link opens the file in a browser.",
-      "remoteAnswered": "The site of the link answered HTTP {status} instead of the file. Check that the link opens the file in a browser.",
       "empty_body": "The site of the link sent an empty file.",
       "file_too_large": "A file imported from a link may be at most {limit}. Download it and add it from your device to convert a file of up to {planLimit}.",
       "fetch_failed": "The file could not be fetched from the link. Try again."

@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import type { FileWithRemaining } from './dashboard-types';
-import { useProblemWording, type ErrorWording } from '../i18n/error-wording';
+import { useProblemWording } from '../i18n/error-wording';
+
+const HTTP_CONFLICT = 409;
 
 export function useFilesAndDlqController(
   enabled: boolean,
-  onReportError: (error: ErrorWording | null) => void
+  onReportError: (error: string | null) => void
 ) {
   const t = useTranslations('dashboard.errors');
   const problemWording = useProblemWording();
@@ -16,7 +18,7 @@ export function useFilesAndDlqController(
   const [dlqLoading, setDlqLoading] = useState(false);
   const [inspectingDlq, setInspectingDlq] = useState<WebhookDlqEntry | null>(null);
   const [replayingDlqId, setReplayingDlqId] = useState<string | null>(null);
-  const [dlqFeedback, setDlqFeedback] = useState<ErrorWording | null>(null);
+  const [dlqFeedback, setDlqFeedback] = useState<string | null>(null);
 
   const fetchUserFiles = useCallback(async () => {
     setFilesLoading(true);
@@ -24,14 +26,14 @@ export function useFilesAndDlqController(
       const res = await fetch('/api/account/files');
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
-        onReportError(problemWording(data, res.status, t('loadFiles', { status: res.status })));
+        onReportError(problemWording(data, res.status, t('loadFiles')));
         return;
       }
       if (data && typeof data === 'object' && 'files' in data && Array.isArray(data.files)) {
         setUserFiles(data.files as FileWithRemaining[]);
       }
     } catch {
-      onReportError({ message: t('loadFilesNetwork') });
+      onReportError(t('loadFilesNetwork'));
     } finally {
       setFilesLoading(false);
     }
@@ -43,14 +45,14 @@ export function useFilesAndDlqController(
       const res = await fetch('/api/webhooks/dlq');
       const data: unknown = await res.json().catch(() => null);
       if (!res.ok) {
-        onReportError(problemWording(data, res.status, t('loadDlq', { status: res.status })));
+        onReportError(problemWording(data, res.status, t('loadDlq')));
         return;
       }
       if (data && typeof data === 'object' && 'entries' in data && Array.isArray(data.entries)) {
         setDlqEntries(data.entries as WebhookDlqEntry[]);
       }
     } catch {
-      onReportError({ message: t('loadDlqNetwork') });
+      onReportError(t('loadDlqNetwork'));
     } finally {
       setDlqLoading(false);
     }
@@ -90,12 +92,12 @@ export function useFilesAndDlqController(
       const res = await fetch(`/api/account/files/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
-        onReportError(problemWording(data, res.status, t('deleteFile', { status: res.status })));
+        onReportError(problemWording(data, res.status, res.status === HTTP_CONFLICT ? t('deleteFileBusy') : t('deleteFile')));
         return;
       }
       setUserFiles((prev) => prev.filter((file) => file.id !== id));
     } catch {
-      onReportError({ message: t('deleteFileNetwork') });
+      onReportError(t('deleteFileNetwork'));
     }
   };
 
@@ -106,15 +108,10 @@ export function useFilesAndDlqController(
     try {
       const res = await fetch(`/api/webhooks/dlq/${id}/replay`, { method: 'POST' });
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-      if (res.ok && data?.success) {
-        const statusLabel = typeof data.statusCode === 'number' ? data.statusCode : res.status;
-        setDlqFeedback({ message: t('replaySucceeded', { status: statusLabel }) });
-      } else {
-        setDlqFeedback(problemWording(data, res.status, t('replayFailed')));
-      }
+      setDlqFeedback(res.ok && data?.success ? t('replaySucceeded') : problemWording(data, res.status, t('replayFailed')));
       await fetchDlqEntries();
-    } catch (err: unknown) {
-      setDlqFeedback({ message: t('replayRequestFailed'), technical: err instanceof Error ? err.message : undefined });
+    } catch {
+      setDlqFeedback(t('replayRequestFailed'));
     } finally {
       setReplayingDlqId(null);
     }
@@ -127,13 +124,13 @@ export function useFilesAndDlqController(
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
         onReportError(
-          problemWording(data, res.status, t('deleteDlq', { status: res.status }))
+          problemWording(data, res.status, t('deleteDlq'))
         );
         return;
       }
       setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
     } catch {
-      onReportError({ message: t('deleteDlqNetwork') });
+      onReportError(t('deleteDlqNetwork'));
     }
   };
 
@@ -144,14 +141,14 @@ export function useFilesAndDlqController(
       if (!res.ok) {
         const data: unknown = await res.json().catch(() => null);
         onReportError(
-          problemWording(data, res.status, t('clearDlq', { status: res.status }))
+          problemWording(data, res.status, t('clearDlq'))
         );
         return;
       }
       setDlqEntries([]);
-      setDlqFeedback({ message: t('dlqCleared') });
+      setDlqFeedback(t('dlqCleared'));
     } catch {
-      onReportError({ message: t('clearDlqNetwork') });
+      onReportError(t('clearDlqNetwork'));
     }
   };
 

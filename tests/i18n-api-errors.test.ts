@@ -9,7 +9,6 @@ import {
   useConversionFailureWording,
   useProblemWording,
   useUrlImportErrorWording,
-  type ErrorWording,
 } from '../src/components/i18n/error-wording';
 import type { ConversionFailure } from '../src/lib/conversion-failure';
 import { resetLoginRateLimiterStore } from '../src/lib/auth/login-rate-limiter';
@@ -24,29 +23,32 @@ import { renderDom, visibleText } from './helpers/rendered-dom';
 
 /**
  * A refused API call reads in the page's language. The interface words a stable `code` or a problem `type`, formats the
- * numbers the answer carries as fields, never glues the server's English `detail` into the sentence, and words any other
- * answer by its status class with the English text kept for "technical details". API callers keep the English `error`.
+ * numbers the answer carries as fields, never shows the server's English `detail`, and words any other answer by its
+ * status class. API callers keep the English `error`.
  */
 
 const ENGLISH_PHRASE = /[A-Za-z]{2,}[\s,.]+[A-Za-z]{2,}/;
 const HANGUL = /[가-힣]/;
+/** The name of the protocol, which no sentence of the interface carries. */
+const HTTP_STATUS = /HTTP/;
 const PROBLEM = 'https://api.easyconvert.io/problems/';
 
 /** What a wording hook gives, read under the page's message provider. */
-function worded<A extends unknown[]>(useWording: () => (...args: A) => ErrorWording, locale: TestLocale, ...args: A): ErrorWording {
-  let result: ErrorWording | undefined;
+function worded<A extends unknown[]>(useWording: () => (...args: A) => string, locale: TestLocale, ...args: A): string {
+  let result: string | undefined;
   function Wording() {
     result = useWording()(...args);
-    return createElement('p', null, result.message);
+    return createElement('p', null, result);
   }
   visibleText(renderDom(createElement(Wording), locale));
   if (!result) throw new Error('the wording hook did not run');
   return result;
 }
 
-function expectKorean(wording: ErrorWording, label: string): void {
-  expect(wording.message, label).toMatch(HANGUL);
-  expect(wording.message, label).not.toMatch(ENGLISH_PHRASE);
+function expectKorean(wording: string, label: string): void {
+  expect(wording, label).toMatch(HANGUL);
+  expect(wording, label).not.toMatch(ENGLISH_PHRASE);
+  expect(wording, label).not.toMatch(HTTP_STATUS);
 }
 
 async function bodyOf(res: Response) {
@@ -65,9 +67,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   it('words the concurrency limit with its number and no English sentence', async () => {
     const { status, body } = await bodyOf(concurrencyLimitResponse(5, '/api/convert'));
     expect(status).toBe(429);
-    expect(worded(useProblemWording, 'ko', body, status).message).toBe(
-      '동시에 진행할 수 있는 변환 5개가 모두 진행 중입니다. 진행 중인 변환이 끝난 뒤 다시 시도하십시오.'
-    );
+    expect(worded(useProblemWording, 'ko', body, status)).toBe('동시에 진행할 수 있는 변환은 5개예요. 하나가 끝난 뒤 다시 시도해 주세요.');
   });
 
   it('words the plan limit of a file from the plan and the size the 413 names', async () => {
@@ -76,8 +76,8 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(body).toMatchObject({ plan: 'free', sizeBytes: 3 * 1024 ** 3, limitBytes: PLAN_MAX_FILE_BYTES.free });
     const korean = worded(useProblemWording, 'ko', body, status);
     expectKorean(korean, 'plan limit');
-    expect(korean.message).toContain('3 GiB');
-    expect(korean.message).not.toContain(body.detail as string);
+    expect(korean).toContain('3 GiB');
+    expect(korean).not.toContain(body.detail as string);
   });
 
   it('words the daily quota, the upload budget and the request size from their fields', () => {
@@ -90,25 +90,33 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     for (const [body, number] of cases) {
       const korean = worded(useProblemWording, 'ko', body, 429);
       expectKorean(korean, String(body.type));
-      expect(korean.message, String(body.type)).toContain(number);
+      expect(korean, String(body.type)).toContain(number);
     }
   });
 
-  it('words an answer it does not know by its status class, keeping the English text of a refusal and never of a server failure', () => {
+  it('words an answer it does not know by its status class, and never shows the server text of either', () => {
     const unknown = { type: `${PROBLEM}retired-problem`, detail: 'The endpoint is not reachable.' };
     const korean = worded(useProblemWording, 'ko', unknown, 400);
     expectKorean(korean, 'unknown type');
-    expect(korean.technical).toBe('The endpoint is not reachable.');
-    expect(worded(useProblemWording, 'ko', { error: 'spawn /usr/bin/magick ENOENT' }, 500).technical).toBeUndefined();
-    expect(worded(useProblemWording, 'ko', { error: 'Database offline.' }, 500).message).not.toBe(korean.message);
+    expect(korean).not.toContain(unknown.detail);
+    const failure = worded(useProblemWording, 'ko', { error: 'spawn /usr/bin/magick ENOENT' }, 500);
+    expectKorean(failure, 'server failure');
+    expect(failure).not.toContain('magick');
+    expect(failure).not.toBe(korean);
   });
 
-  it('keeps the English text of a refusal of a known type under technical details', () => {
+  it('words a refusal of a known type by its sentence, not by the server text', () => {
     const quota = { type: `${PROBLEM}quota-exceeded`, detail: 'The daily limit of 50 conversions is used up.', dailyLimit: 50 };
-    expect(worded(useProblemWording, 'ko', quota, 429).technical).toBe(quota.detail);
+    expect(worded(useProblemWording, 'ko', quota, 429)).toBe('오늘 변환 한도 50회를 모두 썼어요. 내일 다시 시도해 주세요.');
     const plan = { type: `${PROBLEM}payload-too-large`, detail: 'File size 3 GiB exceeds the 1 GiB limit.', plan: 'free', sizeBytes: 3 * 1024 ** 3 };
-    expect(worded(useProblemWording, 'ko', plan, 413).technical).toBe(plan.detail);
-    expect(worded(useProblemWording, 'ko', { type: `${PROBLEM}service-unavailable`, detail: 'Redis at /var/run/redis.sock is down.' }, 503).technical).toBeUndefined();
+    expect(worded(useProblemWording, 'ko', plan, 413)).not.toContain(plan.detail);
+    const down = { type: `${PROBLEM}service-unavailable`, detail: 'Redis at /var/run/redis.sock is down.' };
+    expect(worded(useProblemWording, 'ko', down, 503)).not.toContain('redis');
+  });
+
+  it('words a refusal that names no known type by the sentence of the action that failed', () => {
+    const conflict = { type: `${PROBLEM}conflict`, status: 409, detail: 'The file is still being written and cannot be deleted yet.' };
+    expect(worded(useProblemWording, 'ko', conflict, 409, '파일을 지우지 못했어요.')).toBe('파일을 지우지 못했어요.');
   });
 });
 
@@ -144,20 +152,21 @@ describe('link import refusals', () => {
     expect(logged).not.toHaveBeenCalled();
   });
 
-  it('words every refusal code in Korean, and the remote status as a number', () => {
+  it('words every refusal code in Korean, with no status code', () => {
     for (const code of URL_IMPORT_ERROR_CODES) {
       expectKorean(worded(useUrlImportErrorWording, 'ko', { code, error: 'English text', status: 404 }, 400), code);
     }
-    expect(worded(useUrlImportErrorWording, 'ko', { code: 'remote_error', remoteStatus: 404, error: 'x' }, 400).message).toBe(
-      '링크의 사이트가 파일 대신 HTTP 404 응답을 보냈습니다. 브라우저에서 링크가 파일을 여는지 확인하십시오.'
+    expect(worded(useUrlImportErrorWording, 'ko', { code: 'remote_error', remoteStatus: 404, error: 'x' }, 400)).toBe(
+      '링크의 사이트가 파일을 보내 주지 않았어요. 브라우저에서 링크가 파일을 여는지 확인해 주세요.'
     );
   });
 
-  it('words an answer without a known code by its status class, keeping the text of a refusal only', () => {
+  it('words an answer without a known code by its status class, never with the server text', () => {
     const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 400);
     expectKorean(korean, 'unknown');
-    expect(korean.technical).toBe('Upstream said no.');
-    expect(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502).technical).toBeUndefined();
+    expect(korean).toBe('요청을 처리하지 못했어요. 파일과 설정을 확인한 뒤 다시 시도해 주세요.');
+    expect(korean).not.toContain('Upstream');
+    expectKorean(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502), 'server failure');
   });
 });
 
@@ -187,7 +196,7 @@ describe('sign-in refusals are worded by their code', () => {
     expect(seconds).toBeGreaterThan(0);
     const korean = worded(useAuthErrorWording, 'ko', answer.body, answer.status);
     expectKorean(korean, 'lockout');
-    expect(korean.message).toContain(new Intl.NumberFormat('ko').format(seconds));
+    expect(korean).toContain(new Intl.NumberFormat('ko').format(seconds));
   });
 
   it('gives each cause of a refused sign-in or sign-up its own code', async () => {
@@ -247,8 +256,8 @@ describe('sign-in refusals are worded by their code', () => {
       expectKorean(worded(useAuthErrorWording, 'ko', { code, error: 'English text.', retryAfterSeconds: 30 }, 400), code);
     }
     const untyped = worded(useAuthErrorWording, 'ko', { error: 'Email and password are required strings.' }, 400);
-    expect(untyped.technical).toBe('Email and password are required strings.');
-    expect(untyped.message).not.toBe(worded(useAuthErrorWording, 'ko', { code: 'missing_fields' }, 400).message);
+    expect(untyped).not.toContain('Email and password');
+    expect(untyped).not.toBe(worded(useAuthErrorWording, 'ko', { code: 'missing_fields' }, 400));
   });
 });
 
@@ -256,25 +265,21 @@ describe('a name or code outside the closed lists reads as its status class', ()
   const NOT_CODES = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'];
 
   it.each(NOT_CODES)('words the problem type %s as a refusal', (name) => {
-    const wording = worded(useProblemWording, 'en', { type: `${PROBLEM}${name}`, detail: 'x' }, 400);
-    expect(wording.message).toBe(worded(useProblemWording, 'en', {}, 400).message);
+    expect(worded(useProblemWording, 'en', { type: `${PROBLEM}${name}`, detail: 'x' }, 400)).toBe(worded(useProblemWording, 'en', {}, 400));
   });
 
-  it.each([...NOT_CODES, 'remoteAnswered'])('words the link import code %s by its status class', (code) => {
-    const wording = worded(useUrlImportErrorWording, 'en', { code, remoteStatus: 404, error: 'x' }, 400);
-    expect(wording.message).toBe(worded(useUrlImportErrorWording, 'en', { error: 'x' }, 400).message);
+  it.each(NOT_CODES)('words the link import code %s by its status class', (code) => {
+    expect(worded(useUrlImportErrorWording, 'en', { code, remoteStatus: 404, error: 'x' }, 400)).toBe(worded(useUrlImportErrorWording, 'en', { error: 'x' }, 400));
   });
 
   it.each([...NOT_CODES, 'failed'])('words the sign-in code %s as a failed sign-in', (code) => {
-    expect(worded(useAuthErrorWording, 'en', { code, error: 'x' }, 400).message).toBe(worded(useAuthErrorWording, 'en', { error: 'x' }, 400).message);
+    expect(worded(useAuthErrorWording, 'en', { code, error: 'x' }, 400)).toBe(worded(useAuthErrorWording, 'en', { error: 'x' }, 400));
   });
 
   it.each(NOT_CODES)('words the conversion code %s as a failed job or a refusal', (code) => {
-    const jobFailed: ConversionFailure = { code: 'jobFailed', refusalCode: code, reason: 'x' };
+    const jobFailed: ConversionFailure = { code: 'jobFailed', refusalCode: code };
     const refused: ConversionFailure = { code: 'server', problem: { status: 400, code, error: 'x' } };
-    expect(worded(useConversionFailureWording, 'en', jobFailed).message).toBe(
-      worded(useConversionFailureWording, 'en', { code: 'jobFailed', reason: 'x' }).message
-    );
-    expect(worded(useConversionFailureWording, 'en', refused).message).toBe(worded(useProblemWording, 'en', {}, 400).message);
+    expect(worded(useConversionFailureWording, 'en', jobFailed)).toBe(worded(useConversionFailureWording, 'en', { code: 'jobFailed' }));
+    expect(worded(useConversionFailureWording, 'en', refused)).toBe(worded(useProblemWording, 'en', {}, 400));
   });
 });
