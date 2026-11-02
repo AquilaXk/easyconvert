@@ -116,7 +116,7 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
     expect(lostReplies()).toBe(1);
     expect(await used()).toBe(0);
     expect((await scheduler.getGraphState(graphId))?.status).toBe('cancelled');
-    expect([...new Set(cancelledNodeJobs())].sort()).toEqual([`${graphId}:conv`, `${graphId}:up`]);
+    expect(new Set(cancelledNodeJobs())).toEqual(new Set([`${graphId}:conv`, `${graphId}:up`]));
     expect((await getRetentionLedger().get(input))?.holds ?? {}).not.toHaveProperty(graphId);
   });
 
