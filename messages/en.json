@@ -476,7 +476,7 @@
       "csv-json": "Structured JSON record array",
       "yaml-json": "Configuration file normalization",
       "json-csv": "Tabular row and column export",
-      "svg-png": "Crisp rasterized PNG graphic",
+      "svg-png": "Rasterized PNG graphic",
       "ai-pdf": "Vector artwork to PDF",
       "eps-svg": "Web-ready scalable SVG vector",
       "ttf-woff2": "Compressed WOFF2 web font",
@@ -821,7 +821,7 @@
       },
       "sandbox": {
         "heading": "Sandboxed Browser & Worker Execution",
-        "body": "Supported pairs run locally in browser memory, while complex formats execute inside isolated worker sandboxes."
+        "body": "Some conversions run in your browser; the others run in isolated workers on our servers."
       },
       "cleanup": {
         "heading": "Automatic File Cleanup",
@@ -986,7 +986,7 @@
       "subtitle": "{filename} ({src} to {tgt})",
       "targetFallback": "TARGET",
       "close": "Close options",
-      "noOptions": "Standard lossless conversion parameters apply for this format pair.",
+      "noOptions": "This format pair has no options to set.",
       "reset": "Reset",
       "apply": "Apply Options"
     },
