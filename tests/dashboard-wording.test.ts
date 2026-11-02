@@ -115,6 +115,25 @@ describe('a refused dashboard request', () => {
     expect(en.reported()).toBe(english);
   });
 
+  it('words an untyped refusal of a read with the sentence of the read, since the page sent nothing to check', async () => {
+    const refusingReads = (url: string, method: string) => {
+      if (method === 'POST') return new Response(JSON.stringify(routeBody('Bad request')), { status: 400 });
+      if (url === '/api/account/files') return new Response(JSON.stringify(routeBody('Bad request')), { status: 400 });
+      return new Response(JSON.stringify({ entries: [{ id: 'd-1' }] }), { status: 200 });
+    };
+    const reported: string[] = [];
+    const dashboard = await mountController('ko', refusingReads, (report) => useFilesAndDlqController(true, (error) => { if (error) reported.push(error); }), (c) => c.dlqEntries.length === 1);
+    await vi.waitFor(() => expect(reported).toContain('변환한 파일을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'));
+    await dashboard.controller.handleReplayWebhook('d-1');
+    await vi.waitFor(() => expect(dashboard.controller.dlqFeedback).toBe('웹훅을 다시 전송하지 못했어요.'));
+    root?.unmount();
+
+    const keysRefused = (url: string) =>
+      url === '/api/keys' ? new Response(JSON.stringify(routeBody('Bad request')), { status: 400 }) : new Response(JSON.stringify({ success: true, usage: {} }));
+    const keys = await mountController('en', keysRefused, (report) => useApiKeysController(true, report), () => true);
+    await vi.waitFor(() => expect(keys.reported()).toBe('Could not load your API keys. Try again in a moment.'));
+  });
+
   it('says a file that is already gone is gone, and drops its row', async () => {
     const ko = await mountDashboard('ko', answerWith(404, 'File record not found or not owned by user.'));
     await ko.controller.handleDeleteFile('f-1');
