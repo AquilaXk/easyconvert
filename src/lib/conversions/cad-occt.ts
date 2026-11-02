@@ -136,8 +136,7 @@ function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): 
   // and crashing on a damaged file look the same to it, and the message says both.
   if (error instanceof SandboxedMemoryLimitError) return new UnprocessableCadInputError('The CAD converter ran out of memory or crashed on this model.');
   if (error instanceof SandboxedBufferLimitError) {
-    // The sandbox reports a file that grew past its size limit (SIGXFSZ) with the same error as too much diagnostic output; the limit tells them apart.
-    if (error.limitBytes === PROGRAM_MAX_OUTPUT_BYTES) return new UnprocessableCadInputError(OUTPUT_TOO_LARGE);
+    if (error.kind === 'file-size') return new UnprocessableCadInputError(OUTPUT_TOO_LARGE);
     return new UnprocessableCadInputError('The CAD converter printed more diagnostics than the limit allows: the file is damaged.');
   }
   if (error instanceof SandboxedProcessError) {
