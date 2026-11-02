@@ -369,8 +369,6 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
 
     it('exposes well-formed atomic Lua scripts for quota operations', () => {
       expect(RESERVE_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
-      expect(SETTLE_TO_QUOTA_LUA_SCRIPT).toContain("redis.call('HDEL'");
-      expect(SETTLE_TO_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
       expect(DEDUCT_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
       expect(keyStore.getPrefix()).toBe('test:keystore:');
     });

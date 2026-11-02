@@ -552,10 +552,12 @@ esac
     });
 
     it('fails the build when main names another digest after the tag', () => {
-      writeFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), `sha256:${'b'.repeat(64)}\n`);
+      const other = `sha256:${'b'.repeat(64)}`;
+      writeFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), `${other}\n`);
       expect(checkMain).toBeGreaterThan(tagMain);
       const result = runSteps([checkMain]);
       expect(result.status).not.toBe(0);
+      expect(result.stdout).toContain(`::error::${WORKER_REPO}:main names "${other}", not the worker image ${WORKER_DIGEST}`);
     });
   });
 
