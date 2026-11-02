@@ -32,7 +32,7 @@ import {
 } from './image-input-limits';
 import { remainingJobMs, stageTimeoutMs } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
-import { vectorizeOptionsProblem, type VectorizeOptions } from './raster-vectorize-options';
+import { vectorizeArgs, vectorizeOptionsProblem, type VectorizeOptions } from './raster-vectorize-options';
 
 /**
  * Raster pictures traced to SVG by vtracer (visioncortex, MIT OR Apache-2.0), the engine the reference converter runs for the
@@ -77,17 +77,6 @@ const UNPRINTABLE = /[^\x20-\x7e]/g;
  */
 const STAGED_PNG = { compressionLevel: 0, adaptiveFiltering: false } as const;
 const SVG_MIME_TYPE = 'image/svg+xml';
-
-/** The CLI flags of the options a request set, in the engine's spelling. Explicit flags override the preset, so only set values are sent. */
-function vectorizeArgs(options: VectorizeOptions): string[] {
-  const args: string[] = [];
-  if (options.preset !== undefined) args.push('--preset', options.preset);
-  if (options.mode !== undefined) args.push('--mode', options.mode);
-  if (options.filterSpeckle !== undefined) args.push('--filter-speckle', String(options.filterSpeckle));
-  if (options.colorPrecision !== undefined) args.push('--color-precision', String(options.colorPrecision));
-  if (options.simplify !== undefined) args.push('--simplify', String(options.simplify));
-  return args;
-}
 
 function parseOptions(raw: unknown): VectorizeOptions {
   if (raw === undefined) return {};
