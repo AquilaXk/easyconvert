@@ -309,7 +309,7 @@ function textBlocks(licences: readonly CrateLicence[]): string[] {
   return [...users].map(([text, labels]) => block(`Shipped by: ${labels.join(', ')}`, text));
 }
 
-function render(licences: readonly CrateLicence[], program: ProgramInfo, toolchain: readonly string[], apache: string): string {
+function render(licences: readonly CrateLicence[], program: ProgramInfo, toolchain: ReadonlyArray<{ heading: string; text: string }>, apache: string): string {
   const withoutText = licences.filter((licence) => licence.texts.length === 0);
   const apacheFor = [
     `vtracer ${program.version}`,
@@ -337,7 +337,7 @@ function render(licences: readonly CrateLicence[], program: ProgramInfo, toolcha
       ? []
       : ['Crates whose archive ships no licence text, with the authors their manifest names:', ...withoutText.map((licence) => `${crateLine(licence.crate, licence.license)}: ${licence.authors.join('; ') || 'no authors listed'}`), '']),
     ...textBlocks(licences),
-    ...TOOLCHAIN_TEXTS.map(({ heading }, index) => block(heading, toolchain[index])),
+    ...toolchain.map(({ heading, text }) => block(heading, text)),
     block(`Apache License 2.0, the text offered without a copy by: ${apacheFor.join(', ')}`, apache),
   ].join('\n');
 }
@@ -360,8 +360,10 @@ async function main(): Promise<void> {
     const archive = await downloadChecked(`${CRATE_URL}/${crate.name}/${crate.name}-${crate.version}.crate`, crate.checksum, MAX_CRATE_BYTES);
     licences.push(readCrateLicence(crate, archive));
   }
-  const toolchain: string[] = [];
-  for (const { url, sha256: digest } of TOOLCHAIN_TEXTS) toolchain.push((await downloadChecked(url, digest, MAX_LICENSE_FILE_BYTES)).toString('utf8'));
+  const toolchain: Array<{ heading: string; text: string }> = [];
+  for (const { heading, url, sha256: digest } of TOOLCHAIN_TEXTS) {
+    toolchain.push({ heading, text: (await downloadChecked(url, digest, MAX_LICENSE_FILE_BYTES)).toString('utf8') });
+  }
   const apache = (await downloadChecked(APACHE_LICENSE_URL, APACHE_LICENSE_SHA256, MAX_LICENSE_FILE_BYTES)).toString('utf8');
   fs.writeFileSync(NOTICES_FILE, render(licences, program, toolchain, apache), 'utf8');
   console.log(`wrote ${path.relative(process.cwd(), NOTICES_FILE)}: ${licences.length} crates, SHA-256 ${sha256(fs.readFileSync(NOTICES_FILE))}`);

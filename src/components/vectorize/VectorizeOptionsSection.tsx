@@ -72,22 +72,20 @@ function ChoiceList<T extends string>({ label, choices, selected, onSelect }: Re
   );
 }
 
-interface NumberFieldProps {
+/**
+ * A field with a range has a slider and always a value, a whole number in the range. A field without one takes any number above
+ * TOLERANCE_EXCLUSIVE_MINIMUM, and has no value while it holds anything else.
+ */
+type NumberFieldProps = {
   id: string;
   label: string;
   unit: string;
   /** The hint, or why the engine ignores the field when it is disabled. */
   help: string;
-  /**
-   * The whole numbers a field with a slider takes. A field without one takes any number above TOLERANCE_EXCLUSIVE_MINIMUM, and has no
-   * value while it holds anything else.
-   */
-  range?: IntegerRange;
   placeholder?: string;
-  value: number | undefined;
   disabled: boolean;
   onChange: (value: number | undefined) => void;
-}
+} & ({ range: IntegerRange; value: number } | { range?: undefined; value: number | undefined });
 
 /** The value a text sets as it is typed, or null when it sets none: a whole number in the range, or a tolerance above its minimum. */
 function parseNumber(text: string, range: IntegerRange | undefined): number | null {
@@ -107,7 +105,8 @@ function clampNumber(text: string, range: IntegerRange): number | null {
  * person typed is kept while it is not a value yet ("0" on the way to "0.5", an empty field on the way to "9") and until the value
  * changes some other way. Leaving the field brings a number past the range to the nearest whole number inside it, and shows the value.
  */
-function NumberField({ id, label, unit, help, range, placeholder, value, disabled, onChange }: Readonly<NumberFieldProps>) {
+function NumberField(props: Readonly<NumberFieldProps>) {
+  const { id, label, unit, help, range, placeholder, value, disabled, onChange } = props;
   const t = useTranslations('options.vectorize');
   const [draft, setDraft] = useState<{ text: string; forValue: number | undefined } | null>(null);
   const shown = draft && draft.forValue === value ? draft.text : String(value ?? '');
@@ -147,19 +146,19 @@ function NumberField({ id, label, unit, help, range, placeholder, value, disable
   return (
     <div>
       <label htmlFor={id} className={LABEL_CLASS}>{label}</label>
-      {range ? (
+      {props.range ? (
         <div className="flex items-center gap-3">
           <input
             id={id}
             type="range"
-            min={range.min}
-            max={range.max}
-            value={value}
+            min={props.range.min}
+            max={props.range.max}
+            value={props.value}
             disabled={disabled}
             aria-describedby={helpId}
             onChange={(e) => onChange(Number(e.target.value))}
             className={`${RANGE_CLASS} min-w-0 flex-1 ${DISABLED_CLASS}`}
-            style={rangeFill(value ?? range.min, range.min, range.max)}
+            style={rangeFill(props.value, props.range.min, props.range.max)}
           />
           <div className="w-28 shrink-0">{field}</div>
         </div>
