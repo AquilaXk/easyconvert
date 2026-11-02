@@ -1,5 +1,5 @@
 import type { JobGraph, GraphNode, NodeId } from './types';
-import type { Recovery } from '../hand-off';
+import type { Recovery } from '../../api-keys/hand-off';
 
 export type GraphStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 

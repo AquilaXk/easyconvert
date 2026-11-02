@@ -5,7 +5,7 @@ import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './b
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
 import { tierForOwner } from './page-cap';
-import { foundOrUnknown, type ReservedUnit } from './hand-off';
+import { foundOrUnknown, type ReservedUnit } from '../api-keys/hand-off';
 
 /**
  * The one way a conversion job reaches a queue. The job's wall-clock deadline is computed here from the owner's

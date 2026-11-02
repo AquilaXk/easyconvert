@@ -23,7 +23,7 @@ import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { finishGraph, type EndedGraph, type GraphEnd, type ReservationEnd } from './graph-end';
 import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredCount, parseStoredList } from './redis-state-parsers';
-import { RECOVERY_UNKNOWN, type Recovery } from '../hand-off';
+import { RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;

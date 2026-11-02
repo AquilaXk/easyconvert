@@ -1,5 +1,5 @@
 import type { GraphExecutionState, GraphNodeJobMetadata } from './scheduler-types';
-import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../hand-off';
+import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { enqueueConversionJob } from '../enqueue';

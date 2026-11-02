@@ -1,6 +1,6 @@
 import { redisKeyStore } from './redis-key-store';
 import { RESERVATION_LEASE } from './reservation-ledger';
-import { RECOVERY_UNKNOWN, type Recovery, type ReservedUnit } from '../queue/hand-off';
+import { RECOVERY_UNKNOWN, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getAnonymousDailyLimit } from '../plan-limits';
@@ -15,7 +15,6 @@ import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE, SERVICE_UNAVAILABLE_PROBLEM_TYPE } from '../refusal-codes';
 
 export { extractClientIp };
-export type { ReservedUnit };
 
 /** The engine a refused hand-off names: the reservation it needed was gone. */
 const RESERVATION_ENGINE = 'reservation';

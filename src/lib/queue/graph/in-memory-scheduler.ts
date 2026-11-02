@@ -12,7 +12,7 @@ import type {
   NodeFailureResult,
 } from './scheduler-types';
 import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel } from './node-jobs';
-import type { Recovery } from '../hand-off';
+import type { Recovery } from '../../api-keys/hand-off';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';

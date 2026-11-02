@@ -1,6 +1,6 @@
 /**
  * How a request hands its reserved conversion units to queued work (docs/policy-decisions.md, entry 15). The queue layer
- * builds the work, and the reservation layer (`withReservedUnit` in src/lib/api-keys/guard.ts) decides who owns the units.
+ * builds the work, and the reservation layer (`withReservedUnit` in guard.ts) decides who owns the units.
  */
 
 /**
