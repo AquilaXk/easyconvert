@@ -10,7 +10,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { graphInputKeys, initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
-import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { JobDeadlineError } from '@/lib/queue/job-deadline';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
@@ -729,20 +729,20 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
   if (graph) {
     graph.nodes = normalizeGraphNodes(graph);
     const graphId = generateJobId();
-    let reservationId: string | undefined;
-    const graphState = await unit.handOff((id) => {
-      reservationId = id;
-      return initGraphHoldingInputs(graphScheduler, graphId, graph as unknown as SchedulerJobGraph, {
-        ownerUserId: user.id,
-        reservationId: id,
-        webhookUrl: submission.webhookUrl,
-        webhookSecret: submission.webhookSecret,
-        originalFilename,
-        sourceStorageKey: storageKey,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        tasks: submission.tasks,
-      });
+    const graphState = await unit.handOff({
+      start: (reservationId) =>
+        initGraphHoldingInputs(graphScheduler, graphId, graph as unknown as SchedulerJobGraph, {
+          ownerUserId: user.id,
+          reservationId,
+          webhookUrl: submission.webhookUrl,
+          webhookSecret: submission.webhookSecret,
+          originalFilename,
+          sourceStorageKey: storageKey,
+          sourceFormat: sourceDef.id,
+          targetFormat: targetDef.id,
+          tasks: submission.tasks,
+        }),
+      recover: () => graphScheduler.getGraphState(graphId),
     });
     const nodesResponse = Object.fromEntries(
       Object.entries(graphState.nodes).map(([nid, ns]) => [nid, { status: ns.status, outputs: ns.outputs || [] }])
@@ -754,7 +754,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
         status: graphState.status,
         statusUrl: `/api/v1/jobs/${graphId}`,
         createdAt: graphState.createdAt,
-        reservationId,
+        reservationId: graphState.reservationId,
         ...answered,
         graph: redactForOutput(graphState.graph),
         nodes: nodesResponse,
@@ -766,36 +766,31 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
   // Resolve resource class and scheduling priority
   const resClass = resolveResourceClass(sourceDef.id, targetDef.id, fileSize, options);
   const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage);
-  let reservationId: string | undefined;
   // Enqueue conversion job to the appropriate resource-class queue
-  const job = await unit.handOff((id) => {
-    reservationId = id;
-    return enqueueConversionJob(
-      getQueueForResourceClass(resClass),
-      'convert',
-      {
-        jobId: '',
-        originalFilename,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        fileSize,
-        storageKey,
-        inputBufferBase64,
-        options: stripEngineControls(options),
-        webhookUrl: submission.webhookUrl,
-        webhookSecret: submission.webhookSecret,
-        userId: user.id,
-        reservationId: id,
-        resourceClass: resClass,
-      },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 1000 },
-        priority: tierToPriority(user.tier),
-      },
-      { tier: user.tier, inputBytes }
-    );
-  });
+  const job = await handOffConversionJob(
+    unit,
+    getQueueForResourceClass(resClass),
+    {
+      jobId: '',
+      originalFilename,
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      fileSize,
+      storageKey,
+      inputBufferBase64,
+      options: stripEngineControls(options),
+      webhookUrl: submission.webhookUrl,
+      webhookSecret: submission.webhookSecret,
+      userId: user.id,
+      resourceClass: resClass,
+    },
+    {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1000 },
+      priority: tierToPriority(user.tier),
+    },
+    { tier: user.tier, inputBytes }
+  );
 
   return NextResponse.json(
     {
@@ -804,7 +799,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
       status: job.state,
       statusUrl: `/api/v1/jobs/${job.id}`,
       createdAt: job.timestamp,
-      reservationId,
+      reservationId: job.data.reservationId,
       ...answered,
     },
     { status: 202 }

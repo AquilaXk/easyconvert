@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
@@ -128,28 +128,25 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
     if (oversize) return oversize;
 
     // Add conversion task to BullMQ Distributed Queue
-    const job = await unit.handOff((reservationId) =>
-      enqueueConversionJob(
-        conversionQueue,
-        'convert',
-        {
-          jobId: '',
-          originalFilename,
-          sourceFormat,
-          targetFormat,
-          fileSize,
-          storageKey,
-          inputBufferBase64,
-          options: stripEngineControls(options),
-          userId: user.id,
-          reservationId,
-        },
-        {
-          attempts: 2,
-          backoff: { type: 'fixed', delay: 1500 },
-        },
-        { tier: user.tier, inputBytes }
-      )
+    const job = await handOffConversionJob(
+      unit,
+      conversionQueue,
+      {
+        jobId: '',
+        originalFilename,
+        sourceFormat,
+        targetFormat,
+        fileSize,
+        storageKey,
+        inputBufferBase64,
+        options: stripEngineControls(options),
+        userId: user.id,
+      },
+      {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 1500 },
+      },
+      { tier: user.tier, inputBytes }
     );
 
     return NextResponse.json({

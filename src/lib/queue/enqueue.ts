@@ -5,6 +5,7 @@ import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './b
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
 import { tierForOwner } from './page-cap';
+import type { ReservedUnit } from '../api-keys/guard';
 
 /**
  * The one way a conversion job reaches a queue. The job's wall-clock deadline is computed here from the owner's
@@ -55,6 +56,25 @@ export async function enqueueConversionJob(
       ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
     })
   );
+}
+
+/**
+ * Queues a conversion job that takes over the reservation of `unit` (`ReservedUnit.handOff`). The job id is chosen before the
+ * job is queued, so a job that an enqueue stored before it failed is found by that id, and the request answers it instead of
+ * giving its unit back while it runs.
+ */
+export function handOffConversionJob(
+  unit: ReservedUnit,
+  queue: IQueueEngine<ConversionJobData, ConversionJobResult>,
+  data: Omit<ConversionJobData, 'reservationId'>,
+  opts: ConversionJobOptions,
+  owner: JobDeadlineOwner
+): Promise<Job<ConversionJobData, ConversionJobResult>> {
+  const jobId = opts.jobId ?? generateJobId();
+  return unit.handOff({
+    start: (reservationId) => enqueueConversionJob(queue, 'convert', { ...data, reservationId }, { ...opts, jobId }, owner),
+    recover: () => queue.getJob(jobId),
+  });
 }
 
 /** Byte length of a base64 payload without decoding it. */

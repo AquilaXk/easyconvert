@@ -22,6 +22,7 @@ import {
   COMMIT_QUOTA_LUA_SCRIPT,
   ROLLBACK_QUOTA_LUA_SCRIPT,
 } from '../src/lib/api-keys/quota-lua-scripts';
+import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { userStore } from '../src/lib/auth/user-store';
 
 describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
@@ -369,7 +370,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
 
     it('exposes well-formed atomic Lua scripts for quota operations', () => {
       expect(RESERVE_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
-      expect(COMMIT_QUOTA_LUA_SCRIPT).toContain("redis.call('DEL'");
+      expect(COMMIT_QUOTA_LUA_SCRIPT).toContain("redis.call('HDEL'");
       expect(ROLLBACK_QUOTA_LUA_SCRIPT).toContain("redis.call('DECRBY'");
       expect(DEDUCT_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
       expect(keyStore.getPrefix()).toBe('test:keystore:');
@@ -441,9 +442,9 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(probe.remaining).toBe(25);
     });
 
-    describe('a reservation that outlives its UTC day', () => {
+    describe('a reservation whose lease ends after its UTC day', () => {
       const LAST_SECOND_OF_DAY = Date.parse('2026-11-01T23:59:59.000Z');
-      const NEXT_DAY = Date.parse('2026-11-02T00:00:01.000Z');
+      const NEXT_DAY = LAST_SECOND_OF_DAY + RESERVATION_LEASE.provisionalMs + 1000;
 
       beforeEach(() => {
         vi.useFakeTimers({ toFake: ['Date'], now: LAST_SECOND_OF_DAY });
@@ -462,7 +463,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
         return used;
       }
 
-      it('cleans up and refunds expired reservations to that day automatically', async () => {
+      it('cleans up and refunds reservations whose lease ended to that day automatically', async () => {
         const res = await keyStore.reserveQuota(testUserId, 10);
         expect(res.allowed).toBe(true);
         vi.setSystemTime(NEXT_DAY);
@@ -581,7 +582,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       const rollbackCall = evalCalls.find((c) => c.script === ROLLBACK_QUOTA_LUA_SCRIPT);
       expect(rollbackCall).toBeDefined();
       expect(rollbackCall.args[0]).toContain(`cluster:quota:usage:{${testUserId}}:`);
-      expect(rollbackCall.args[1]).toContain(`cluster:quota:res:{${testUserId}}:`);
+      expect(rollbackCall.args[1]).toContain(`cluster:quota:leases:{${testUserId}}:`);
       expect(rollbackCall.args[0]).not.toContain('unknown');
     });
   });

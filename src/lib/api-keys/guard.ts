@@ -1,4 +1,5 @@
 import { redisKeyStore } from './redis-key-store';
+import { RESERVATION_LEASE } from './reservation-ledger';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getAnonymousDailyLimit } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
@@ -558,43 +559,84 @@ export async function reserveConversionUnit(user: User, units: number = 1): Prom
   return { reserved: false, refusal: conversionsUsedUp(user, { ...usage, remaining: quota.remaining ?? 0 }, units) };
 }
 
+/**
+ * Queued work that takes over a reservation: `start` queues it with the reservation id, and `recover` looks it up by the id
+ * the caller gave it before it started. When `start` throws, the work may still have been stored (a write that landed and
+ * lost its reply), so `recover` decides: the stored work is answered as started, and owns the reservation.
+ */
+export interface HandOff<T> {
+  start(reservationId: string | undefined): Promise<T>;
+  recover(): Promise<T | undefined>;
+}
+
 /** A reservation while its request runs. Each way of ending it acts once; after one, the others do nothing. */
 export interface ReservedUnit {
   /** Charges the reserved units: the conversion succeeded. */
   commit(): Promise<void>;
   /**
    * Starts the queued work that will end the reservation itself (a job or a graph commits it or gives it back), with the
-   * reservation id; the request stops owning the reservation once `start` resolves, and keeps it when `start` throws.
+   * reservation id, and gives the reservation the lease of handed-off work first. The request stops owning the reservation
+   * once the work started, or once `recover` finds it after `start` threw. When `start` threw and `recover` finds nothing,
+   * the request keeps the reservation and gives it back; when `recover` fails too, the work may run, so the reservation is
+   * left to it and its lease.
    */
-  handOff<T>(start: (reservationId: string | undefined) => Promise<T>): Promise<T>;
+  handOff<T>(work: HandOff<T>): Promise<T>;
 }
 
 const NO_RESERVATION: ReservedUnit = {
   commit: async () => undefined,
-  handOff: (start) => start(undefined),
+  handOff: (work) => work.start(undefined),
 };
+
+/** Renews the provisional lease of `reservationId` every heartbeat until stopped; a renewal that fails is logged. */
+function keepLeaseAlive(reservationId: string): () => void {
+  const timer = setInterval(() => {
+    redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.provisionalMs).catch((err: unknown) => {
+      console.error(`[Guard] The lease of reservation ${reservationId} could not be renewed:`, err);
+    });
+  }, RESERVATION_LEASE.heartbeatMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 
 /**
  * Runs `run` while `reservationId` is reserved, and gives the reservation back when `run` ends, by an answer or a throw,
- * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md,
- * entry 15), so no early return of a route has to remember the reservation.
+ * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md, entry 15),
+ * so no early return of a route has to remember the reservation. While `run` holds the reservation its lease is renewed, so
+ * the unit of a process that dies comes back when the lease ends.
  */
 export async function withReservedUnit<T>(reservationId: string | undefined, run: (unit: ReservedUnit) => Promise<T>): Promise<T> {
   if (reservationId === undefined) return run(NO_RESERVATION);
   let held = true;
+  const stopRenewing = keepLeaseAlive(reservationId);
   const release = (): boolean => {
     const wasHeld = held;
     held = false;
+    stopRenewing();
     return wasHeld;
   };
   const unit: ReservedUnit = {
     commit: async () => {
       if (release()) await redisKeyStore.commitQuota(reservationId);
     },
-    handOff: async (start) => {
-      const started = await start(held ? reservationId : undefined);
-      release();
-      return started;
+    handOff: async (work) => {
+      if (!held) return work.start(undefined);
+      stopRenewing();
+      await redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.handedOffMs);
+      try {
+        const started = await work.start(reservationId);
+        release();
+        return started;
+      } catch (error) {
+        const recovered = await work.recover().catch((lookupErr: unknown) => {
+          console.error(`[Guard] Work that may hold reservation ${reservationId} could not be looked up, so the reservation is left to it:`, lookupErr);
+          release();
+          return undefined;
+        });
+        if (recovered === undefined) throw error;
+        release();
+        return recovered;
+      }
     },
   };
   try {

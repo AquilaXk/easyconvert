@@ -24,7 +24,7 @@ import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { POST as fetchUrlRoute } from '../src/app/api/fetch-url/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
-import { validateApiAccess } from '../src/lib/api-keys/guard';
+import { validateApiAccess, withReservedUnit } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { ANONYMOUS_DAILY_UPLOAD_BYTES, LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday } from '../src/lib/api-keys/anonymous-upload-budget';
 import { spendImportBytes } from './helpers/import-budget';
@@ -555,16 +555,17 @@ describe('what a request is charged', () => {
     });
 
     it('is kept, however long its request runs that day, until the request gives it back', async () => {
-      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
       try {
         vi.setSystemTime(new Date('2026-11-02T00:00:05.000Z'));
         const client = visitor();
         const before = await client.remaining();
         const unit = await redisKeyStore.reserveQuota(client.userId, 1);
 
-        vi.setSystemTime(new Date('2026-11-02T00:20:05.000Z'));
-        expect(await client.remaining()).toBe(before - 1);
-        expect(await redisKeyStore.rollbackQuota(unit.reservationId as string)).toBe(true);
+        await withReservedUnit(unit.reservationId, async () => {
+          await vi.advanceTimersByTimeAsync(20 * 60_000);
+          expect(await client.remaining()).toBe(before - 1);
+        });
         expect(await client.remaining()).toBe(before);
       } finally {
         vi.useRealTimers();

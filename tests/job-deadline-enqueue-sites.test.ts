@@ -78,7 +78,7 @@ describe('no conversion job is queued without a deadline', () => {
 
   it('keeps the routes and the graph enqueue on the wrapper', () => {
     const callers = sourceFiles(SRC_DIR)
-      .filter((file) => /\benqueueConversionJob\(/.test(fs.readFileSync(file, 'utf8')))
+      .filter((file) => /\b(enqueueConversionJob|handOffConversionJob)\(/.test(fs.readFileSync(file, 'utf8')))
       .map(relative)
       .filter((name) => name !== 'lib/queue/enqueue.ts')
       .sort();
