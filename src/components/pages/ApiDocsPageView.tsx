@@ -28,12 +28,18 @@ export default function ApiDocsPageView() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const loadingRef = useRef<HTMLOutputElement>(null);
   const retryRef = useRef<HTMLButtonElement>(null);
+  const endpointsRef = useRef<HTMLDivElement>(null);
 
-  // The retry button unmounts with the failure box, so focus follows the page's state: the loading notice, then the button again.
+  // A retry unmounts the button that had focus, and the loading notice unmounts in turn, so focus follows the page's
+  // state (the notice, then the button again or the endpoints) only while it rests on the notice or fell to the body; focus
+  // the person moved elsewhere, such as the search field, stays where it is.
   useEffect(() => {
     if (attempt === 0) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused !== loadingRef.current) return;
     if (loading) loadingRef.current?.focus();
     else if (failed) retryRef.current?.focus();
+    else endpointsRef.current?.focus();
   }, [attempt, loading, failed]);
 
   useEffect(() => {
@@ -183,7 +189,7 @@ export default function ApiDocsPageView() {
           )}
 
           {!loading && !failed && (
-            <div className="border-t border-rule">
+            <div ref={endpointsRef} tabIndex={-1} className="border-t border-rule">
               {filteredEndpoints.length === 0 ? (
                 <div className="py-14 text-center">
                   <FileCode className="w-8 h-8 text-ink-3 mx-auto mb-2.5" />

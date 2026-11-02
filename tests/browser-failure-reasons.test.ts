@@ -112,6 +112,39 @@ describe('the API documentation retry', () => {
     await vi.waitFor(() => expect(retry()).not.toBeNull());
     expect(document.activeElement).toBe(retry());
   });
+
+  it('leaves focus in the search field when a retry fails while the person types there', async () => {
+    let finish: (res: Response) => void = () => undefined;
+    const second = new Promise<Response>((resolve) => { finish = resolve; });
+    const fetchSpec = vi.fn(async () => (fetchSpec.mock.calls.length === 1 ? new Response('{}', { status: 503 }) : second));
+    vi.stubGlobal('fetch', fetchSpec);
+    const page = mount(createElement(ApiDocsPageView), 'en');
+    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
+    await vi.waitFor(() => expect(retry()).not.toBeNull());
+    retry()!.click();
+    await vi.waitFor(() => expect(page.querySelector('output')).not.toBeNull());
+    const search = page.querySelector<HTMLInputElement>('#endpoint-search-input')!;
+    search.focus();
+    finish(new Response('{}', { status: 503 }));
+    await vi.waitFor(() => expect(retry()).not.toBeNull());
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('moves focus from the loading notice to the endpoints when a retry succeeds, not to the body', async () => {
+    const spec = { openapi: '3.1.0', info: { title: 'API', version: '1' }, paths: {} };
+    const fetchSpec = vi.fn(async () =>
+      fetchSpec.mock.calls.length === 1 ? new Response('{}', { status: 503 }) : new Response(JSON.stringify(spec)));
+    vi.stubGlobal('fetch', fetchSpec);
+    const page = mount(createElement(ApiDocsPageView), 'en');
+    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
+    await vi.waitFor(() => expect(retry()).not.toBeNull());
+    retry()!.focus();
+    retry()!.click();
+    await vi.waitFor(() => expect(page.textContent).toContain('No matching API endpoints found.'));
+    await vi.waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement?.closest('main')).not.toBeNull();
+    expect(document.activeElement?.textContent).toContain('No matching API endpoints found.');
+  });
 });
 
 describe('the ZIP of the converted files', () => {
