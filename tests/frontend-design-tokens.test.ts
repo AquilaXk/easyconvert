@@ -39,9 +39,10 @@ const COLOR_UTILITY = String.raw`(?:bg|text|border(?:-[trblxy])?|divide|ring(?:-
 const LEGACY_PALETTE = String.raw`(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|white|black|brand|primary|dark|status|ink-(?:primary|secondary|muted))`;
 const CLASS_START = String.raw`(?<=^|[\s"'\x60{])(?:[a-z0-9-]+:)*!?`;
 const RAW_HEX = /(?<![&\w])#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})\b/gi;
-/** Third-party marks whose owners fix their colours: the Google sign-in "G". */
+/** Marks whose owners fix their colours: the Google sign-in "G", and the brand mark QA supplied (entry 139). */
 const MARK_COLOURS: Record<string, readonly string[]> = {
   [path.join('src', 'components', 'auth', 'AuthForms.tsx')]: ['#4285F4', '#34A853', '#FBBC05', '#EA4335'],
+  [path.join('src', 'components', 'BrandLogo.tsx')]: ['#1E3A8A', '#4F46E5', '#7C3AED', '#38BDF8', '#E0F2FE', '#FFFFFF', '#E0E7FF', '#C4B5FD', '#BAE6FD'],
 };
 const globalsCss = fs.readFileSync(path.join(rootDir, 'src', 'app', 'globals.css'), 'utf8');
 

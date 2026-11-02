@@ -8,48 +8,40 @@ import sharp from 'sharp';
 import { oracleTest } from './helpers/oracle-test';
 import { xmlWellFormed, xpathAttributes, xpathCount, xpathString } from './helpers/xml-oracle';
 
-/** The static brand files keep the signature colours; the app draws the same mark from its colour tokens. */
-const BRAND = { accent: '#5C6BC0', lavender: '#B4BCFB', ink: '#1F2340', chrome: '#F8F9FF' } as const;
+const appFile = (name: string) => fs.readFileSync(path.join(process.cwd(), 'src', 'app', name));
 
-describe('Brand Signature Palette & Design Tokens Verification', () => {
-  oracleTest('verifies official logo.svg and icon.svg are valid XML with the circular emblem badge, EC monogram and lavender arrow', ['xmllint'], async () => {
-    const logoSvg = fs.readFileSync(path.join(process.cwd(), 'public/logo.svg'), 'utf-8');
-    const iconSvg = fs.readFileSync(path.join(process.cwd(), 'public/icon.svg'), 'utf-8');
+/** The browser icons: QA's mark, its small form (tile to the edge, no glow, rim or shadow) up to 32 px, the full form above. */
+describe('the brand icon files', () => {
+  oracleTest('draw the small mark as a full-bleed tile with three bars and a chevron, and nothing that blurs at tab size', ['xmllint'], async () => {
+    const svg = appFile('icon.svg').toString('utf8');
+    expect(xmlWellFormed(svg).ok).toBe(true);
+    expect(xpathAttributes(svg, "/*[local-name()='svg']/@viewBox")).toEqual(['8 8 112 112']);
+    expect(['x', 'y', 'width', 'height'].map((a) => xpathString(svg, `string(//*[local-name()='rect']/@${a})`))).toEqual(['8', '8', '112', '112']);
+    expect(xpathCount(svg, "//*[local-name()='path']")).toBe(4);
+    expect(xpathCount(svg, "//*[local-name()='filter' or local-name()='radialGradient']")).toBe(0);
+    expect(xpathCount(svg, "//*[@stroke]")).toBe(0);
+  });
 
-    // Both files are well-formed XML (xmllint) and carry no JSX comment syntax, which XML would not accept.
-    expect(xmlWellFormed(logoSvg).ok).toBe(true);
-    expect(xmlWellFormed(iconSvg).ok).toBe(true);
+  it('keep three bars apart at 32 px and the tile to the edge, with only the rounded corner left clear', async () => {
+    const { data, info } = await sharp(appFile('icon.svg'), { density: 72 }).resize(32, 32).raw().toBuffer({ resolveWithObject: true });
+    const lum = (x: number, y: number) => {
+      const i = (y * info.width + x) * info.channels;
+      return data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722;
+    };
+    const column = 6;
+    const rows = Array.from({ length: 32 }, (_, y) => lum(column, y) > 150);
+    const bars = rows.filter((light, y) => light && !rows[y - 1]).length;
+    expect(bars).toBe(3);
+    expect(data[3]).toBe(0);
+    expect(data[(16 * info.width) * info.channels + 3]).toBe(255);
+  });
 
-    // The drawing, read with XPath: root size, the emblem circle, the monogram and arrow paths with their palette
-    // colours (accent monogram, lavender arrow), and no obsolete badge groups.
-    const circle = (svg: string, attribute: string) => xpathString(svg, `string(//*[local-name()='circle']/@${attribute})`);
-    for (const svg of [logoSvg, iconSvg]) {
-      expect(['cx', 'cy', 'r', 'fill', 'stroke', 'stroke-width'].map((attribute) => circle(svg, attribute))).toEqual([
-        '60', '60', '50', '#F4F5FD', BRAND.accent, '3.75',
-      ]);
-      expect(xpathAttributes(svg, "//*[local-name()='path']/@fill").map((fill) => fill.toUpperCase())).toEqual([
-        BRAND.lavender,
-        BRAND.accent,
-      ]);
-      expect(xpathString(svg, "string(//*[local-name()='g']/@id)")).toBe('brand-signature-icon');
-      expect(xpathCount(svg, "//*[contains(@id, 'badge')]")).toBe(0);
-    }
-    expect(xpathAttributes(logoSvg, "/*[local-name()='svg']/@viewBox")).toEqual(['0 0 420 120']);
-    expect(xpathAttributes(iconSvg, "/*[local-name()='svg']/@viewBox")).toEqual(['0 0 120 120']);
-    expect(xpathString(logoSvg, "string(//*[local-name()='text'])")).toBe('EasyConvert');
-    expect(xpathString(logoSvg, "string(//*[local-name()='text']/@fill)").toUpperCase()).toBe(BRAND.ink);
-    // The icon sits on a rounded plate in the chrome colour.
-    expect(['width', 'height', 'rx', 'fill'].map((attribute) => xpathString(iconSvg, `string(//*[local-name()='rect']/@${attribute})`))).toEqual([
-      '120', '120', '28', BRAND.chrome,
-    ]);
-
-    // Rendered with librsvg: the plate, the emblem disc, a monogram pixel and the rounded corner.
-    const { data, info } = await sharp(Buffer.from(iconSvg)).raw().toBuffer({ resolveWithObject: true });
-    const pixel = (x: number, y: number) => [...data.subarray((y * info.width + x) * info.channels, (y * info.width + x) * info.channels + info.channels)];
-    expect([info.width, info.height]).toEqual([120, 120]);
-    expect(pixel(4, 60)).toEqual([0xf8, 0xf9, 0xff, 255]); // plate, outside the emblem (the circle starts at x = 10)
-    expect(pixel(14, 60)).toEqual([0xf4, 0xf5, 0xfd, 255]); // emblem disc, clear of the monogram
-    expect(pixel(1, 1)[3]).toBe(0); // outside the plate's rounded corner
+  it('pack 16 and 32 px images in the favicon and a 180 px touch icon', async () => {
+    const ico = appFile('favicon.ico');
+    expect(ico.readUInt16LE(2)).toBe(1);
+    expect([ico.readUInt8(6), ico.readUInt8(22)]).toEqual([16, 32]);
+    const apple = await sharp(appFile('apple-icon.png')).metadata();
+    expect([apple.width, apple.height]).toEqual([180, 180]);
   });
 });
 
