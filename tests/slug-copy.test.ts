@@ -136,7 +136,7 @@ function optionsSentence(subjects: string[]): string {
   return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
 }
 
-/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner. */
+/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner; the 30 s ceiling is about five times that. */
 const REGISTRY_WIDE_TIMEOUT_MS = 30_000;
 
 describe('the options a pair page names', () => {

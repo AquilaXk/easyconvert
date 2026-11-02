@@ -79,7 +79,7 @@ interface PairHeroProps {
 
 /**
  * A converter page's hero: its title and intro beside the source and target tiles, and the upload card under them. Files
- * take the target the tiles name, else the page's own.
+ * take the target the target tile shows, and none while it shows any format.
  */
 export function PairHero({ onFilesSelected, dailyLimit, tiles, title, description }: Readonly<PairHeroProps>) {
   const t = useTranslations('hero');

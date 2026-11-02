@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 export interface PopoverDismissOptions {
   isOpen: boolean;
@@ -15,21 +15,24 @@ export interface PopoverDismissOptions {
 
 /**
  * Closes a popover the way the menu button and dialog patterns of the WAI-ARIA Authoring Practices do. Escape closes it and
- * returns focus to its trigger. A Tab out of it first puts focus on the trigger, so a forward Tab moves on from the trigger,
- * as if the popover sat right after it, and a backward Tab stays on it. A pointer press outside closes it and leaves focus
- * where the press lands. It never closes on a blur, since WebKit blurs the focused element on a mouse press without
- * focusing what was pressed.
+ * returns focus to its trigger, scrolling to it if it is off screen (the page's scroll padding keeps it clear of the sticky
+ * header). A Tab out of it first puts focus on the trigger, so a forward Tab moves on from the trigger, as if the popover sat
+ * right after it, and a backward Tab stays on it. A pointer press outside closes it and leaves focus where the press lands,
+ * and so does focus moving outside without one, as a screen reader's click does. It never closes on a blur, since WebKit
+ * blurs the focused element on a mouse press without focusing what was pressed.
  */
 export function usePopoverDismiss(options: PopoverDismissOptions): void {
   const latest = useRef(options);
-  latest.current = options;
+  useLayoutEffect(() => {
+    latest.current = options;
+  });
   const { isOpen } = options;
 
   useEffect(() => {
     if (!isOpen) return;
     const closeToTrigger = () => {
       const { triggerRef, onClose } = latest.current;
-      triggerRef.current?.focus({ preventScroll: true });
+      triggerRef.current?.focus();
       onClose();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -42,16 +45,18 @@ export function usePopoverDismiss(options: PopoverDismissOptions): void {
       if (event.shiftKey) event.preventDefault();
       closeToTrigger();
     };
-    const handlePointerDown = (event: PointerEvent) => {
+    const closeOnOutside = (event: Event) => {
       const target = event.target as Node | null;
       if (!target || latest.current.insideRefs.some((ref) => ref.current?.contains(target))) return;
       latest.current.onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('pointerdown', closeOnOutside);
+    document.addEventListener('focusin', closeOnOutside);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('pointerdown', closeOnOutside);
+      document.removeEventListener('focusin', closeOnOutside);
     };
   }, [isOpen]);
 }

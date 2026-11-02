@@ -36,7 +36,6 @@ import {
 } from '../src/components/workbench/options/options-capabilities';
 import UrlImportModal from '../src/components/UrlImportModal';
 import ConversionQueue from '../src/components/ConversionQueue';
-import FormatSelector, { computePopoverPosition } from '../src/components/FormatSelector';
 import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import { CreateApiKeyForm } from '../src/components/dashboard/ApiKeyCreateCard';
 import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
@@ -257,9 +256,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(select(hocrModal, 'input', 'id', 'opt-doc-ocr')).toHaveLength(0);
     expect(attrOf(select(hocrModal, 'select', 'id', 'opt-doc-ocr-lang')[0], 'disabled')).toBeNull();
 
-    const flipped = computePopoverPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, { left: 0, top: 64, right: 1440, bottom: 820 }, 820);
-    expect(flipped).toMatchObject({ top: 'auto', bottom: 62 });
-
     const maxBytes = getViewerMaxFileBytes();
     const oversizeItem = { id: 'over', file: new File(['x'], 'big.mp4'), name: 'big.mp4', size: maxBytes + 1, sourceFormat: 'mp4', targetFormat: '', status: 'error' as const, progress: 0, options: {} };
     const validItem = { id: 'ok', file: new File(['x'], 'ok.png'), name: 'ok.png', size: 128, sourceFormat: 'png', targetFormat: 'webp', status: 'ready' as const, progress: 0, options: {} };
@@ -388,25 +384,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(visibleText(errorQueue)).not.toContain('Corrupt PNG header signature');
   });
 
-  it('handles FormatSelector empty capability arrays, OAuth error allowlists, and unsupported diagnostics', () => {
-    const imagePicker = render(FormatSelector, {
-      triggerRef: { current: null },
-      sourceFormat: 'png',
-      onSelect: noop,
-      onClose: noop,
-    });
-    expect(phrasesMissing(visibleText(imagePicker), ['WEBP', 'JPG', 'AVIF'])).toEqual([]);
-
-    const emptyPicker = render(FormatSelector, {
-      triggerRef: { current: null },
-      availableFormats: [],
-      sourceFormat: 'xyz',
-      onSelect: noop,
-      onClose: noop,
-    });
-    expect(visibleText(emptyPicker)).toMatch(/No supported output formats for this file/);
-    expect(phrasesPresent(visibleText(emptyPicker), ['WEBP', 'DOCX', 'MP4'])).toEqual([]);
-
+  it('handles OAuth error allowlists and unsupported diagnostics', () => {
     const tOAuth = testTranslator('en', 'auth');
     const oauthMessage = (code: string | null) => {
       const key = resolveOAuthErrorKey(code);

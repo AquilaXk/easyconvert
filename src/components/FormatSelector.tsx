@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useId } from 'react';
 import { createPortal } from 'react-dom';
+import { autoUpdate, computePosition, flip, hide, offset, platform, shift, size } from '@floating-ui/dom';
 import { useTranslations } from 'next-intl';
 import type { FormatDefinition } from '@/lib/types';
 import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
@@ -10,11 +11,16 @@ import { canonicalFormat } from '@/lib/format-aliases';
 import { FormatSelectorBody } from './workbench/FormatSelectorView';
 import { usePopoverDismiss } from './workbench/usePopoverDismiss';
 
-export interface FormatSelectorProps {
+/** What a picker offers and reports, which the button that opens it takes as its own props. */
+export interface FormatChoiceProps {
+  availableFormats?: FormatDefinition[]; selectedFormatId?: string; sourceFormat?: string;
+  onSelect: (formatId: string) => void; title?: string;
+}
+
+export interface FormatSelectorProps extends FormatChoiceProps {
   /** The button the popover hangs from, where focus returns when it closes. */
   triggerRef: React.RefObject<HTMLElement | null>;
-  availableFormats?: FormatDefinition[]; selectedFormatId?: string; sourceFormat?: string;
-  onSelect: (formatId: string) => void; onClose: () => void; title?: string;
+  onClose: () => void;
 }
 
 /** The reference popover: 352 px wide, 321 px tall (a 33 px search over a 288 px body), 2 px under its trigger. */
@@ -22,7 +28,6 @@ const PANEL_WIDTH = 352;
 const PANEL_HEIGHT = 321;
 const PANEL_GAP = 2;
 const VIEWPORT_GUTTER = 8;
-const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 /** Under the sticky header (z-40) and over the pinned queue bar (z-30): it scrolls under the header with its trigger. */
 const PANEL_CLASS = 'fixed z-[35] m-0 p-0 rounded-xs bg-surface border border-rule shadow-elev-1 overflow-hidden flex flex-col text-ink text-left select-none';
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -81,85 +86,67 @@ function shouldCloseOnTab(e: KeyboardEvent, popover: HTMLElement | null): boolea
   return document.activeElement === (e.shiftKey ? focusables[0] : focusables.at(-1));
 }
 
-/** The part of the screen a person sees, in the layout coordinates `getBoundingClientRect` reports. */
-export interface VisibleArea {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
+/**
+ * How far down the visible area starts: the bottom of the sticky header while it is in view. The header is read through
+ * the platform of Floating UI, which puts it in the frame the trigger is placed in, so that WebKit's visual viewport offsets
+ * are added to it as they are to the trigger.
+ */
+async function headerInset(popover: HTMLElement): Promise<number> {
+  const header = document.querySelector('[data-sticky-header]');
+  if (!header) return 0;
+  const { reference } = await platform.getElementRects({ reference: header, floating: popover, strategy: 'fixed' });
+  return Math.max(0, reference.y + reference.height - (window.visualViewport?.offsetTop ?? 0));
 }
 
 /**
- * Where the popover sits for a trigger at `triggerRect`, as Floating UI places a fixed element: in layout coordinates,
- * under the trigger and start-aligned, or above it when there is more room there, with `visible` (the visual viewport
- * below the header) deciding only the side, the horizontal clamp and the height. `layoutHeight` is the height of the
- * layout viewport, which a fixed `bottom` is measured from.
+ * Keeps the popover under its trigger as the page scrolls, the window resizes, an on-screen keyboard moves the visual
+ * viewport or a row above it changes size. It places the popover as Floating UI places a fixed element: under the trigger,
+ * above it when there is more room there, inside an 8 px gutter and the visual viewport below the sticky header, and no
+ * taller than the room on its side. It follows the trigger off screen rather than closing, as the reference popover does;
+ * the first placement alone is held below the header, so a popover never opens under it. When the popover has scrolled out
+ * of view with focus inside, focus moves to the trigger.
  */
-export function computePopoverPosition(triggerRect: DOMRect, visible: VisibleArea, layoutHeight: number): React.CSSProperties {
-  const width = Math.min(PANEL_WIDTH, visible.right - visible.left - 2 * VIEWPORT_GUTTER);
-  const minLeft = visible.left + VIEWPORT_GUTTER;
-  const left = Math.min(Math.max(minLeft, triggerRect.left), Math.max(minLeft, visible.right - width - VIEWPORT_GUTTER));
-  const spaceBelow = visible.bottom - triggerRect.bottom - PANEL_GAP - VIEWPORT_GUTTER;
-  const spaceAbove = triggerRect.top - PANEL_GAP - visible.top;
-  const below = spaceBelow >= PANEL_HEIGHT || spaceBelow >= spaceAbove;
-  const maxHeight = Math.max(0, Math.min(PANEL_HEIGHT, below ? spaceBelow : spaceAbove));
-  return below
-    ? { top: triggerRect.bottom + PANEL_GAP, bottom: 'auto', left, width, maxHeight }
-    : { top: 'auto', bottom: layoutHeight - triggerRect.top + PANEL_GAP, left, width, maxHeight };
-}
-
-/**
- * The visual viewport, which leaves out an on-screen keyboard and a pinch zoom, below the sticky header. For a fixed
- * element client coordinates are relative to the layout viewport in every engine, so the visual viewport sits at its
- * offsets there (Floating UI's `getViewportRect`).
- */
-function visibleArea(): VisibleArea {
-  const html = document.documentElement;
-  const viewport = window.visualViewport;
-  const left = viewport?.offsetLeft ?? 0;
-  const top = viewport?.offsetTop ?? 0;
-  const headerBottom = document.querySelector('[data-sticky-header]')?.getBoundingClientRect().bottom ?? 0;
-  return {
-    left,
-    top: Math.max(top, headerBottom),
-    right: left + (viewport?.width ?? html.clientWidth),
-    bottom: top + (viewport?.height ?? html.clientHeight),
-  };
-}
-
-const POSITION_KEYS = ['top', 'bottom', 'left', 'width', 'maxHeight'] as const;
-const samePosition = (a: React.CSSProperties, b: React.CSSProperties) => POSITION_KEYS.every((key) => a[key] === b[key]);
-
-/**
- * Keeps the popover under its trigger as the page scrolls, the window resizes or an on-screen keyboard moves the visual
- * viewport. It follows the trigger off screen rather than closing, as the reference popover does; a scroll inside the
- * popover moves nothing.
- */
-function usePopoverPlacement(
-  triggerRef: React.RefObject<HTMLElement | null>,
-  popoverRef: React.RefObject<HTMLDialogElement | null>,
-  setPortalStyle: React.Dispatch<React.SetStateAction<React.CSSProperties>>
-): void {
-  useIsomorphicLayoutEffect(() => {
-    const updatePosition = (event?: Event) => {
-      const trigger = triggerRef.current;
-      if (!trigger || (event?.target instanceof Node && popoverRef.current?.contains(event.target))) return;
-      const next = computePopoverPosition(trigger.getBoundingClientRect(), visibleArea(), document.documentElement.clientHeight || window.innerHeight);
-      setPortalStyle((current) => (samePosition(current, next) ? current : next));
+function usePopoverPlacement(triggerRef: React.RefObject<HTMLElement | null>, popoverRef: React.RefObject<HTMLDialogElement | null>): void {
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current;
+    const popover = popoverRef.current;
+    if (!trigger || !popover) return;
+    popover.style.width = `${PANEL_WIDTH}px`;
+    let alive = true;
+    let placed = false;
+    const update = async () => {
+      const inset = await headerInset(popover);
+      const padding = { top: inset, right: VIEWPORT_GUTTER, bottom: VIEWPORT_GUTTER, left: VIEWPORT_GUTTER };
+      const { x, y, middlewareData } = await computePosition(trigger, popover, {
+        strategy: 'fixed',
+        placement: 'bottom-start',
+        middleware: [
+          offset(PANEL_GAP),
+          flip({ padding, crossAxis: false, fallbackPlacements: ['top-start'] }),
+          shift({ padding }),
+          size({
+            padding,
+            apply: ({ availableWidth, availableHeight, elements }) => {
+              Object.assign(elements.floating.style, {
+                width: `${Math.min(PANEL_WIDTH, availableWidth)}px`,
+                maxHeight: `${Math.max(0, Math.min(PANEL_HEIGHT, availableHeight))}px`,
+              });
+            },
+          }),
+          hide({ strategy: 'escaped', padding: { top: inset } }),
+        ],
+      });
+      if (!alive) return;
+      Object.assign(popover.style, { left: `${x}px`, top: `${placed ? y : Math.max(y, inset)}px` });
+      placed = true;
+      if (middlewareData.hide?.escaped && popover.contains(document.activeElement)) trigger.focus({ preventScroll: true });
     };
-    updatePosition();
-    const viewport = window.visualViewport;
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    viewport?.addEventListener('resize', updatePosition);
-    viewport?.addEventListener('scroll', updatePosition);
+    const stopUpdating = autoUpdate(trigger, popover, update);
     return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-      viewport?.removeEventListener('resize', updatePosition);
-      viewport?.removeEventListener('scroll', updatePosition);
+      alive = false;
+      stopUpdating();
     };
-  }, [triggerRef, popoverRef, setPortalStyle]);
+  }, [triggerRef, popoverRef]);
 }
 
 /**
@@ -173,7 +160,6 @@ export default function FormatSelector({
   const t = useTranslations('formatSelector');
   const inputId = useId();
   const [search, setSearch] = useState('');
-  const [portalStyle, setPortalStyle] = useState<React.CSSProperties>({ top: 0, bottom: 'auto', left: VIEWPORT_GUTTER });
   const popoverRef = useRef<HTMLDialogElement>(null);
 
   const allFormats = useMemo(() => collapseAliases(availableFormats ?? getAllFormats()), [availableFormats]);
@@ -195,7 +181,7 @@ export default function FormatSelector({
     leavesOnTab: (event) => shouldCloseOnTab(event, popoverRef.current),
     onClose,
   });
-  usePopoverPlacement(triggerRef, popoverRef, setPortalStyle);
+  usePopoverPlacement(triggerRef, popoverRef);
 
   const displayedFormats = useMemo(
     () => filterDisplayedFormats(allFormats, categoriesWithFormats, activeCategory, search),
@@ -205,12 +191,12 @@ export default function FormatSelector({
   const handleSelect = (formatId: string) => {
     onSelect(formatId);
     onClose();
-    triggerRef.current?.focus({ preventScroll: true });
+    triggerRef.current?.focus();
   };
 
   const panel = (
     <dialog
-      open ref={popoverRef} aria-label={title || t('defaultTitle')} style={portalStyle} className={PANEL_CLASS}
+      open ref={popoverRef} aria-label={title || t('defaultTitle')} className={PANEL_CLASS}
       onMouseDown={(event) => {
         // WebKit moves focus nowhere on a press, so keep it where it is; the search itself still takes a press.
         if ((event.target as HTMLElement).id !== inputId) event.preventDefault();

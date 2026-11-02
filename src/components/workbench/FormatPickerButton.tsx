@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
-import FormatSelector, { type FormatSelectorProps } from '../FormatSelector';
+import React, { useEffect, useRef, useState } from 'react';
+import FormatSelector, { type FormatChoiceProps } from '../FormatSelector';
 
-interface FormatPickerButtonProps extends Omit<FormatSelectorProps, 'triggerRef' | 'onClose'> {
+interface FormatPickerButtonProps extends FormatChoiceProps {
   /** What the button shows: the current format, or a prompt to choose one. */
   children: React.ReactNode;
   className: string;
@@ -21,7 +21,10 @@ export default function FormatPickerButton({
 }: Readonly<FormatPickerButtonProps>) {
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  if (isOpen && disabled) setIsOpen(false);
+  const open = isOpen && !disabled;
+  useEffect(() => {
+    if (disabled) setIsOpen(false);
+  }, [disabled]);
 
   return (
     <>
@@ -31,14 +34,14 @@ export default function FormatPickerButton({
         data-testid={testId}
         aria-label={ariaLabel}
         aria-haspopup="dialog"
-        aria-expanded={isOpen}
+        aria-expanded={open}
         disabled={disabled}
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={() => setIsOpen((current) => !current)}
         className={className}
       >
         {children}
       </button>
-      {isOpen && <FormatSelector {...picker} triggerRef={triggerRef} onClose={() => setIsOpen(false)} />}
+      {open && <FormatSelector {...picker} triggerRef={triggerRef} onClose={() => setIsOpen(false)} />}
     </>
   );
 }

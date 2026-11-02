@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronRight, Search } from 'lucide-react';
 import type { FormatCategory, FormatDefinition } from '@/lib/types';
@@ -38,8 +38,8 @@ function formatCategoryLabel(tCategory: CategoryTranslator, category: string): s
 
 /**
  * A format by its id, as its trigger names it: JPG and ULTRAHDR, not two buttons reading JPG, since an Ultra HDR JPEG
- * shares the extension of a JPEG. A label wider than the reference's 55 px button is cut short and shown whole on hover,
- * as a file row's long name is.
+ * shares the extension of a JPEG. A label is never cut short: the reference lets a long name overflow its button, and ours
+ * wraps inside it, so ULTRAHDR and WEBPVIDEO read whole at any width and on touch.
  */
 const formatLabel = (fmt: FormatDefinition) => fmt.id.toUpperCase();
 
@@ -54,9 +54,12 @@ function gridTarget(key: string, current: number, count: number): number | 'sear
   return next < count ? next : null;
 }
 
-/** A character typed on a format that goes to the search, as typeahead does in the grid pattern; Space stays with the button. */
+/** The characters a format's id is written with, which typeahead takes; Space stays with the button, and so does anything else. */
+const FORMAT_ID_CHARACTER = /^[a-z0-9.+_-]$/i;
+
+/** A character of a format's id typed on a format goes to the search, as typeahead does in the grid pattern. */
 const isTypeaheadKey = (event: React.KeyboardEvent) =>
-  event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey;
+  FORMAT_ID_CHARACTER.test(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey;
 
 function EmptyMessage({ children }: Readonly<{ children: React.ReactNode }>) {
   return <p className="flex items-center justify-center h-full px-3 text-ink-3 text-sm text-center">{children}</p>;
@@ -66,8 +69,9 @@ function EmptyMessage({ children }: Readonly<{ children: React.ReactNode }>) {
  * The body of the reference popover: a search field ruled off at the bottom, then a column of categories beside a grid of
  * small format buttons, three to a row, the current format filled with the primary colour. The arrow keys move through the
  * grid, a letter typed on a format goes to the search, Enter in a search with text takes the first match, and the grid
- * starts at its top for each category. Under a 368 px screen, where the popover is narrower than the reference's 352 px,
- * the category column narrows so three formats still fit a row.
+ * starts at its top for each category. A list of one category has no column, and its grid takes the width of the popover.
+ * Where the popover is narrower than the reference's 352 px the category column narrows with it, so that a four-letter
+ * format still fits a button.
  */
 export function FormatSelectorBody({
   inputId, search, onSearchChange, categories, activeCategory, onSelectCategory, displayedFormats, hasNoSupportedFormats,
@@ -75,10 +79,13 @@ export function FormatSelectorBody({
 }: Readonly<FormatSelectorBodyProps>) {
   const t = useTranslations('formatSelector');
   const tCategory = useTranslations('formatCategories');
-  const tName = useTranslations('queue.row');
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const formatButtons = () => Array.from(gridRef.current?.querySelectorAll<HTMLButtonElement>('[data-format]') ?? []);
+
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.scrollTop = 0;
+  }, [activeCategory]);
 
   const handleSearchKey = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter' && search.trim() && displayedFormats.length > 0) {
@@ -105,7 +112,7 @@ export function FormatSelectorBody({
     else buttons[target].focus();
   };
 
-  const showCategories = !search.trim() && categories.length > 0;
+  const showCategories = !search.trim() && categories.length > 1;
   let grid: React.ReactNode;
   if (hasNoSupportedFormats) grid = <EmptyMessage>{t('noTargets')}</EmptyMessage>;
   else if (displayedFormats.length === 0) grid = <EmptyMessage>{t('noMatches', { search })}</EmptyMessage>;
@@ -120,11 +127,10 @@ export function FormatSelectorBody({
               key={fmt.id}
               type="button"
               data-format={fmt.id}
-              aria-label={tName('formatName', { format: label, category: fmt.category })}
-              title={label}
+              aria-label={t('formatName', { format: label, category: fmt.category })}
               aria-current={isCurrent ? 'true' : undefined}
               onClick={() => onChoose(fmt.id)}
-              className={`h-8 px-2 rounded-xs border text-xs font-semibold uppercase tracking-wide text-center truncate transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent ${
+              className={`min-h-8 px-1 py-1.5 rounded-xs border text-xs font-semibold uppercase tracking-wide text-center [overflow-wrap:anywhere] transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent ${
                 isCurrent ? 'bg-accent border-accent text-on-accent' : 'border-rule text-ink-2 hover:bg-sunken hover:text-ink hover:border-rule-strong'
               }`}
             >
@@ -161,7 +167,7 @@ export function FormatSelectorBody({
 
       <div className="flex h-72 min-h-0 shrink">
         {showCategories && (
-          <ul className="w-32 min-[368px]:w-40 shrink-0 overflow-y-auto border-r border-rule py-1">
+          <ul className="w-[clamp(6.5rem,calc(100%-192px),10rem)] shrink-0 overflow-y-auto border-r border-rule py-1">
             {categories.map((cat) => {
               const isActive = cat.toLowerCase() === activeCategory.toLowerCase();
               return (
@@ -170,11 +176,11 @@ export function FormatSelectorBody({
                     type="button"
                     aria-pressed={isActive}
                     onClick={() => onSelectCategory(cat)}
-                    className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left transition-colors cursor-pointer focus-visible:outline-none focus-visible:bg-sunken focus-visible:text-ink ${
+                    className={`w-full flex items-center justify-between gap-2 px-2 min-[368px]:px-3 py-2 text-sm text-left transition-colors cursor-pointer focus-visible:outline-none focus-visible:bg-sunken focus-visible:text-ink ${
                       isActive ? 'bg-sunken text-ink' : 'text-ink-2 hover:bg-sunken/60 hover:text-ink'
                     }`}
                   >
-                    <span className="truncate">{formatCategoryLabel(tCategory, cat)}</span>
+                    <span className="[overflow-wrap:anywhere]">{formatCategoryLabel(tCategory, cat)}</span>
                     {isActive && <ChevronRight aria-hidden="true" className="size-3 shrink-0 text-ink-3" />}
                   </button>
                 </li>
@@ -182,7 +188,7 @@ export function FormatSelectorBody({
             })}
           </ul>
         )}
-        <div key={activeCategory} ref={gridRef} onKeyDown={handleGridKey} className="flex-1 min-w-0 overflow-y-auto p-2">
+        <div ref={gridRef} onKeyDown={handleGridKey} className="flex-1 min-w-0 overflow-y-auto p-2">
           {grid}
         </div>
       </div>

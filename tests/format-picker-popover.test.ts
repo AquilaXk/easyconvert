@@ -3,11 +3,11 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { computePopoverPosition } from '../src/components/FormatSelector';
 import FormatPickerButton from '../src/components/workbench/FormatPickerButton';
 import { getAllFormats, getAvailableTargetFormats } from '../src/lib/registry';
 import type { FormatDefinition } from '../src/lib/types';
 import { testMessages } from './helpers/intl-messages';
+import { layOutPage, moveScreen, restorePage, screen, settled } from './helpers/picker-screen';
 
 /**
  * The format picker as a person drives it: a popover under its trigger with a search field, a category column and a grid
@@ -20,8 +20,7 @@ let onSelect: Mock<(formatId: string) => void>;
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-  // jsdom lays nothing out; the popover opens only under a trigger that is on screen.
-  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(100, 200, 128, 32));
+  layOutPage();
   onSelect = vi.fn<(formatId: string) => void>();
 });
 
@@ -29,35 +28,43 @@ afterEach(() => {
   unmount();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  restorePage();
 });
 
 interface PickerCase {
   selected?: string;
+  locale?: 'en' | 'ko';
+  disabled?: boolean;
   /** The source whose targets the picker lists; none lists every format, as the source tile does. */
   source?: string;
   available?: FormatDefinition[];
 }
 
 /** A trigger as the pages draw one; `mountCase` presses it. */
-function Harness({ selected, source, available }: Readonly<PickerCase>) {
+function Harness({ selected, source, available, disabled }: Readonly<PickerCase>) {
   return createElement(FormatPickerButton, {
-    testId: 'trigger', className: '', sourceFormat: source, availableFormats: available, selectedFormatId: selected, onSelect,
+    testId: 'trigger', className: '', sourceFormat: source, availableFormats: available, selectedFormatId: selected, disabled, onSelect,
     children: 'JPG',
   });
+}
+
+function render(picker: PickerCase) {
+  const { locale = 'en' } = picker;
+  act(() =>
+    root!.render(
+      createElement(NextIntlClientProvider, {
+        locale, messages: testMessages(locale), timeZone: 'UTC',
+        children: createElement('div', null, createElement('header', { 'data-sticky-header': '' }), createElement(Harness, picker)),
+      })
+    )
+  );
 }
 
 function mountCase(picker: PickerCase) {
   const host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  act(() =>
-    root!.render(
-      createElement(NextIntlClientProvider, {
-        locale: 'en', messages: testMessages('en'), timeZone: 'UTC',
-        children: createElement(Harness, picker),
-      })
-    )
-  );
+  render(picker);
   act(() => trigger().click());
 }
 
@@ -100,6 +107,17 @@ describe('the format picker popover', () => {
     expect(formatNames()).not.toContain('JPEG');
     expect(formatNames()).toContain('TIFF');
     expect(formatNames()).not.toContain('TIF');
+  });
+
+  it('lists the image formats first for an image source when it is passed no list of targets', () => {
+    mountCase({ source: 'png' });
+    expect(formatNames()).toEqual(expect.arrayContaining(['WEBP', 'JPG', 'AVIF']));
+  });
+
+  it('says so, and lists no format, for a source with no targets', () => {
+    mountCase({ source: 'xyz', available: [] });
+    expect(popover()!.textContent).toMatch(/No supported output formats for this file/);
+    expect(formatButtons()).toHaveLength(0);
   });
 
   it('offers no catch-all choice, only formats', () => {
@@ -153,19 +171,16 @@ describe('the format picker popover', () => {
     expect(formatNames().filter((name) => name === 'JPG')).toHaveLength(1);
     const current = formatButtons().filter((button) => button.getAttribute('aria-current') === 'true');
     expect(current.map((button) => button.textContent)).toEqual(['ULTRAHDR']);
-    expect(current[0].title).toBe('ULTRAHDR');
     expect(new Set(formatButtons().map(accessibleName)).size).toBe(formatButtons().length);
   });
 
-  it('stays open and follows its trigger when the page scrolls, keeping focus inside, as the reference popover does', () => {
+  it('stays open and follows its trigger when the page scrolls, keeping focus inside, as the reference popover does', async () => {
     mount();
-    const before = popover()!.style.top;
-    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(100, -400, 128, 32));
-    act(() => {
-      window.dispatchEvent(new Event('scroll'));
-    });
+    await settled();
+    expect(popover()!.style.top).toBe('234px');
+    await moveScreen({ trigger: new DOMRect(100, -100, 128, 32) });
     expect(popover()).not.toBeNull();
-    expect(popover()!.style.top).not.toBe(before);
+    expect(popover()!.style.top).toBe('-66px');
     expect(popover()!.contains(document.activeElement)).toBe(true);
   });
 
@@ -219,6 +234,83 @@ describe('the format picker popover', () => {
     expect(formatNames()).not.toContain('JPG');
   });
 
+  it.each(['Escape', 'choosing a format'])('hands focus back to its trigger on %s by scrolling to it, since the trigger may be off screen', (how) => {
+    mount();
+    const focus = vi.spyOn(trigger(), 'focus');
+    if (how === 'Escape') press(search(), 'Escape');
+    else act(() => formatButtons()[0].click());
+    expect(isClosed()).toBe(true);
+    expect(focus).toHaveBeenCalledOnce();
+    expect(focus).toHaveBeenCalledWith();
+  });
+
+  it('closes when focus lands outside of it without a pointer press, as a screen reader moving to another control does', () => {
+    mount();
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    act(() => outside.focus());
+    expect(isClosed()).toBe(true);
+  });
+
+  it('closes when its trigger becomes disabled, and stays closed once the trigger is enabled again', () => {
+    mount();
+    render({ disabled: true });
+    expect(isClosed()).toBe(true);
+    render({ disabled: false });
+    expect(isClosed()).toBe(true);
+  });
+
+  it('draws no format label cut short or hidden behind a hover title, so a long id such as ULTRAHDR reads whole', () => {
+    mountCase({ selected: 'ultrahdr', source: 'cr2', available: getAvailableTargetFormats('cr2') });
+    const long = formatButtons().find((button) => button.textContent === 'ULTRAHDR')!;
+    expect(formatButtons().filter((button) => button.title)).toEqual([]);
+    for (const button of [long, ...formatButtons()]) {
+      expect(button.classList.contains('truncate')).toBe(false);
+      expect(button.className).not.toMatch(/overflow-hidden|text-ellipsis|whitespace-nowrap/);
+      expect(button.className).toContain('[overflow-wrap:anywhere]');
+    }
+  });
+
+  it('shows no category column for a list of one category, so its grid takes the whole popover', () => {
+    mountCase({ source: 'rar', available: getAvailableTargetFormats('rar') });
+    expect(categoryButtons()).toHaveLength(0);
+    expect(formatNames()).toEqual(['ZIP', 'TAR', '7Z', 'TAR.BZ2', 'TAR.GZ']);
+  });
+
+  it('keeps the category column for a list of several categories', () => {
+    mountCase({ source: 'cr2', available: getAvailableTargetFormats('cr2') });
+    expect(categoryButtons().length).toBeGreaterThan(1);
+  });
+
+  it('starts the grid at its top for each category', () => {
+    const scrollTop = vi.spyOn(Element.prototype, 'scrollTop', 'set');
+    mount();
+    scrollTop.mockClear();
+    act(() => categoryButtons()[1].click());
+    expect(scrollTop).toHaveBeenCalledWith(0);
+  });
+
+  it.each(['f', '7', '.', '+', '_', '-'])('sends %s typed on a format to the search', (key) => {
+    mount();
+    press(search(), 'ArrowDown');
+    press(document.activeElement!, key);
+    expect(document.activeElement).toBe(search());
+    expect(search().value).toBe(key);
+  });
+
+  it('leaves a character no format name holds, like ?, to the browser', () => {
+    mount();
+    press(search(), 'ArrowDown');
+    const focused = document.activeElement;
+    const question = new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true });
+    act(() => {
+      focused!.dispatchEvent(question);
+    });
+    expect(question.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(focused);
+    expect(search().value).toBe('');
+  });
+
   it('closes on Escape and hands focus back to its trigger', () => {
     mount();
     press(search(), 'ArrowDown');
@@ -243,34 +335,72 @@ describe('the format picker popover', () => {
   });
 });
 
-/** The phone of the review: a 390 by 844 layout viewport under a 64 px sticky header. */
-const LAYOUT_HEIGHT = 844;
-const rect = (left: number, top: number, width: number, height: number) => new DOMRect(left, top, width, height);
-const visible = (top: number, bottom: number) => ({ left: 0, top, right: 390, bottom });
+const PHONE = { width: 390, height: 844, offsetLeft: 0, offsetTop: 0 };
+const rect = (left: number, top: number, width = 112, height = 120) => new DOMRect(left, top, width, height);
 
 describe('where the popover sits', () => {
-  it('opens under a tile with room below while no keyboard is up', () => {
-    expect(computePopoverPosition(rect(20, 330, 112, 120), visible(64, 844), LAYOUT_HEIGHT)).toMatchObject({ top: 452, bottom: 'auto', maxHeight: 321 });
+  it('opens under a tile with room below, 2 px from it, at the reference size', async () => {
+    screen.viewport = PHONE;
+    screen.trigger = rect(20, 330);
+    mount();
+    await settled();
+    expect(popover()!.style).toMatchObject({ top: '452px', left: '20px', width: '352px', maxHeight: '321px' });
   });
 
-  it('opens above a tile in layout coordinates once a keyboard leaves 508 px of the screen, and fits the height above it', () => {
-    const style = computePopoverPosition(rect(20, 330, 112, 120), visible(64, 508), LAYOUT_HEIGHT);
-    expect(style).toMatchObject({ top: 'auto', bottom: LAYOUT_HEIGHT - 330 + 2, maxHeight: 330 - 2 - 64 });
+  it('opens above a tile once a keyboard leaves 508 px of the screen, and fits the height above it', async () => {
+    screen.viewport = { ...PHONE, height: 508 };
+    screen.trigger = rect(20, 330);
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    expect(popover()!.style).toMatchObject({ top: '64px', maxHeight: '264px' });
   });
 
-  it('keeps a trigger the keyboard covers placed, instead of closing', () => {
-    const style = computePopoverPosition(rect(20, 700, 128, 44), visible(64, 508), LAYOUT_HEIGHT);
-    expect(style).toMatchObject({ top: 'auto', bottom: LAYOUT_HEIGHT - 700 + 2, maxHeight: 321 });
+  it('keeps a trigger the keyboard covers placed against it, instead of closing', async () => {
+    screen.viewport = { ...PHONE, height: 508 };
+    screen.trigger = rect(20, 700, 128, 44);
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    expect(popover()).not.toBeNull();
+    expect(popover()!.style).toMatchObject({ top: '377px', maxHeight: '321px' });
   });
 
-  it('measures the room from the top of a visual viewport scrolled down by the keyboard', () => {
-    const style = computePopoverPosition(rect(20, 500, 128, 44), visible(200, 708), LAYOUT_HEIGHT);
-    expect(style).toMatchObject({ top: 'auto', bottom: LAYOUT_HEIGHT - 500 + 2, maxHeight: 500 - 2 - 200 });
+  it('places it against the trigger when the visual viewport is panned down by the keyboard', async () => {
+    screen.viewport = { ...PHONE, height: 508, offsetTop: 200 };
+    screen.trigger = rect(20, 500, 128, 44);
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    expect(popover()!.style).toMatchObject({ top: '200px', maxHeight: '298px' });
   });
 
-  it('stays inside the 8 px gutter and the width of a narrow screen', () => {
-    const style = computePopoverPosition(rect(300, 330, 112, 120), { left: 0, top: 64, right: 320, bottom: 700 }, 700);
-    expect(style).toMatchObject({ left: 8, width: 304 });
+  it('stays inside the 8 px gutter and the width of a narrow screen', async () => {
+    screen.viewport = { ...PHONE, width: 320 };
+    screen.trigger = rect(300, 330);
+    mount();
+    await settled();
+    expect(popover()!.style).toMatchObject({ left: '8px', width: '304px' });
+  });
+
+  it('never opens under the sticky header, and slides under it only as its trigger scrolls away', async () => {
+    screen.headerBottom = 64;
+    screen.trigger = rect(20, 20, 128, 32);
+    mount();
+    await settled();
+    expect(popover()!.style.top).toBe('64px');
+    await moveScreen({ trigger: rect(20, -60, 128, 32) });
+    expect(popover()!.style.top).toBe('-26px');
+  });
+
+  it('moves focus to the trigger, without closing, once the whole popover has scrolled out of view', async () => {
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    expect(popover()!.contains(document.activeElement)).toBe(true);
+    await moveScreen({ trigger: rect(100, -400, 128, 32) });
+    expect(popover()).not.toBeNull();
+    expect(document.activeElement).toBe(trigger());
   });
 });
 
@@ -286,10 +416,10 @@ function pickerLists(): Array<[string, PickerCase]> {
 }
 
 describe('the names the picker shows', () => {
-  it('are unique within every list it can show, across its categories, to the eye and to a screen reader', () => {
+  it.each(['en', 'ko'] as const)('are unique within every list it can show, across its categories, to the eye and to a screen reader, in %s', (locale) => {
     const repeated: string[] = [];
     for (const [list, picker] of pickerLists()) {
-      mountCase(picker);
+      mountCase({ ...picker, locale });
       const seen = new Map<string, string>();
       for (const category of categoryButtons()) {
         act(() => category.click());

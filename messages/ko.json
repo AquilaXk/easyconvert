@@ -541,7 +541,8 @@
     "noTargets": "이 파일을 변환할 수 있는 출력 형식이 없어요.",
     "noMatches": "‘{search}’ 검색 결과가 없어요",
     "searchLabel": "형식 검색",
-    "searchPlaceholder": "형식 검색..."
+    "searchPlaceholder": "형식 검색...",
+    "formatName": "{format} {category, select, image {이미지} document {문서} archive {압축 파일} video {동영상} audio {오디오} ebook {전자책} spreadsheet {스프레드시트} presentation {프레젠테이션} data {데이터} vector {벡터} font {글꼴} cad {CAD} other {파일}}"
   },
   "formatSpecs": {
     "pdf": {
