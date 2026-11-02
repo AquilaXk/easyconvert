@@ -2,8 +2,9 @@
 
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { formatBytes } from '@/lib/format-bytes';
+import { useTranslations } from 'next-intl';
 import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
+import { useFormatBytes } from './i18n/format';
 
 export interface FaqItem {
   q: string;
@@ -16,52 +17,41 @@ export interface FaqSectionProps {
   subtitle?: string;
 }
 
-const FREE_FILE_LIMIT = formatBytes(PLAN_MAX_FILE_BYTES.free);
-/** The paid plans are named only once they can be bought (`PAID_PLANS_ON_SALE`). */
-const PAID_FILE_LIMITS = PAID_PLANS_ON_SALE
-  ? ` The Pro plan raises it to ${formatBytes(PLAN_MAX_FILE_BYTES.pro)} and the Enterprise plan to ${formatBytes(PLAN_MAX_FILE_BYTES.enterprise)}.`
-  : '';
+const DEFAULT_FAQ_KEYS = ['free', 'handling', 'maxSize', 'batch', 'install'] as const;
 
-const DEFAULT_FAQS: FaqItem[] = [
-  {
-    q: 'Is EasyConvert free to use?',
-    a: `Yes. You can convert without an account, up to ${FREE_FILE_LIMIT} per file and within a daily conversion limit.${PAID_FILE_LIMITS}`,
-  },
-  {
-    q: 'How are my files handled during conversion?',
-    a: 'Supported image, audio, and data pairs run directly inside browser memory on your device. Formats that require native codecs or document engines are transmitted over TLS 1.3 to isolated worker sandboxes and deleted automatically when their short retention TTL expires.',
-  },
-  {
-    q: 'What is the maximum file size limit?',
-    a: `EasyConvert takes files of up to ${FREE_FILE_LIMIT} each, with or without an account.${PAID_FILE_LIMITS} Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled.`,
-  },
-  {
-    q: 'Can I convert multiple files in one batch?',
-    a: 'Yes. Drop or select multiple files to queue them together, assign a shared or per-file output format, tune optional parameters, and download finished files individually or as one ZIP archive.',
-  },
-  {
-    q: 'Do I need to install desktop software or browser plugins?',
-    a: 'No installation is needed. EasyConvert runs in modern web browsers across macOS, Windows, Linux, iOS, and Android.',
-  },
-];
+/** The default questions, in the page's language. The paid plans are named only once they can be bought (`PAID_PLANS_ON_SALE`). */
+function useDefaultFaqs(): FaqItem[] {
+  const t = useTranslations('faq');
+  const formatBytes = useFormatBytes();
+  const limit = formatBytes(PLAN_MAX_FILE_BYTES.free);
+  const paidLimits = PAID_PLANS_ON_SALE
+    ? ` ${t('paidLimits', { pro: formatBytes(PLAN_MAX_FILE_BYTES.pro), enterprise: formatBytes(PLAN_MAX_FILE_BYTES.enterprise) })}`
+    : '';
+  return DEFAULT_FAQ_KEYS.map((key) => ({
+    q: t(`items.${key}.q`),
+    a: t(`items.${key}.a`, { limit, paidLimits }),
+  }));
+}
 
 export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionProps = {}) {
+  const t = useTranslations('faq');
   const [openIndex, setOpenIndex] = useState<number | null>(0);
-  const faqs = customFaqs && customFaqs.length > 0 ? customFaqs : DEFAULT_FAQS;
+  const defaultFaqs = useDefaultFaqs();
+  const faqs = customFaqs && customFaqs.length > 0 ? customFaqs : defaultFaqs;
 
   return (
     <section className="py-14 border-t border-rule">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h2 className="text-2xl sm:text-3xl text-ink">
-            {title || 'Frequently Asked Questions'}
+            {title || t('title')}
           </h2>
           <p className="mt-1.5 text-sm text-ink-2">
-            {subtitle || 'Answers about format support, execution boundaries, and batch limits.'}
+            {subtitle || t('subtitle')}
           </p>
         </div>
 
-        <div className="border-y border-rule-strong divide-y divide-rule">
+        <div className="border-y border-rule divide-y divide-rule">
           {faqs.map((faq, idx) => {
             const isOpen = openIndex === idx;
             const questionId = `faq-question-${idx}`;
@@ -81,7 +71,7 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                     {faq.q}
                   </span>
                   <ChevronDown
-                    className={`w-4 h-4 text-accent-ink shrink-0 transition-transform duration-500 ease-spring ${
+                    className={`w-4 h-4 text-accent-ink shrink-0 transition-transform duration-200 ${
                       isOpen ? 'rotate-180' : ''
                     }`}
                   />
@@ -91,7 +81,7 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                     id={answerId}
                     role="region"
                     aria-labelledby={questionId}
-                    className="settle px-1 pb-5 max-w-3xl text-sm text-ink-2 leading-relaxed"
+                    className="px-1 pb-5 max-w-3xl text-sm text-ink-2 leading-relaxed"
                   >
                     {faq.a}
                   </div>

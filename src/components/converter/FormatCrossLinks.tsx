@@ -1,6 +1,7 @@
 import React from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import { ArrowRight } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 
 interface ConversionGridCardProps {
   formatName: string;
@@ -13,18 +14,17 @@ function ConversionGridCard({
   formats,
   direction,
 }: Readonly<ConversionGridCardProps>) {
+  const t = useTranslations('converterPage.crossLinks');
   const isFrom = direction === 'from';
   const upperName = formatName.toUpperCase();
 
   return (
-    <div className="border-t border-rule-strong pt-6">
+    <div className="border-t border-rule pt-6">
       <h2 className="text-xl sm:text-2xl text-ink mb-1">
-        Convert {direction} {upperName}
+        {t(`${direction}.heading`, { format: upperName })}
       </h2>
       <p className="text-xs sm:text-sm text-ink-2 mb-5">
-        {isFrom
-          ? `Pick a target format to start a ${upperName} conversion.`
-          : `Pick a source format to convert into ${upperName}.`}
+        {t(`${direction}.body`, { format: upperName })}
       </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
@@ -38,7 +38,7 @@ function ConversionGridCard({
               className="min-h-[44px] sm:min-h-[40px] flex items-center justify-between gap-2 px-3 py-2 rounded-sm bg-sunken border border-rule hover:border-accent hover:bg-accent-soft text-xs font-semibold text-ink transition-colors group"
             >
               <span className="truncate">
-                {fromFmt.toUpperCase()} to {toFmt.toUpperCase()}
+                {t('pair', { src: fromFmt.toUpperCase(), tgt: toFmt.toUpperCase() })}
               </span>
               <ArrowRight className="w-3.5 h-3.5 text-ink-3 group-hover:text-accent-ink shrink-0 transition-colors" />
             </Link>

@@ -14,7 +14,7 @@ import FaqSection from '../src/components/FaqSection';
 import StatusDashboard from '../src/components/StatusDashboard';
 import AdBanner from '../src/components/AdBanner';
 import ConversionQueue from '../src/components/ConversionQueue';
-import DynamicConverterPage from '../src/app/[slug]/page';
+import ConverterPageView from '../src/components/pages/ConverterPageView';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
   allElements,
@@ -32,6 +32,7 @@ import {
   type DomElement,
 } from './helpers/rendered-dom';
 import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
+import { englishSlugCopy } from './helpers/intl';
 
 /**
  * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
@@ -43,16 +44,7 @@ import { callArguments, firstStringArguments, initializersOf, parseSource } from
 const rootDir = path.resolve(__dirname, '..');
 const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
-/** A resolved promise React's `use()` reads synchronously, standing in for the route's `params`. */
-function slugParams(slug: string): Promise<{ slug: string }> {
-  const value = { slug };
-  const settled = Promise.resolve(value) as Promise<{ slug: string }> & { status: string; value: { slug: string } };
-  settled.status = 'fulfilled';
-  settled.value = value;
-  return settled;
-}
-
-const renderSlug = (slug: string) => renderDom(createElement(DynamicConverterPage, { params: slugParams(slug) }));
+const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug }));
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -107,6 +99,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'How It Works', href: '/#how-it-works' },
       { text: 'API Docs', href: '/api-docs' },
       { text: 'Dashboard', href: '/dashboard' },
+      { text: 'English', href: '/' },
+      { text: '한국어', href: '/ko' },
       { text: 'Log In', href: '/auth' },
       { text: 'Sign Up', href: '/auth?tab=register' },
     ]);
@@ -235,7 +229,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const status = parseConverterSlug('status');
     expect(status.isInfoPage).toBe(true);
     expect(status.infoType).toBe('status');
-    expect(status.pageTitle).toBe('System Status');
+    expect(englishSlugCopy('status').title).toBe('System Status');
 
     const unitConverter = parseConverterSlug('unit-converter');
     expect(unitConverter.isInfoPage).toBe(true);
@@ -244,7 +238,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const lbsToKg = parseConverterSlug('lbs-to-kg');
     expect(lbsToKg.isInfoPage).toBe(true);
     expect(lbsToKg.infoType).toBe('unit');
-    expect(lbsToKg.pageTitle).toMatch(/LBS to KG/);
+    expect(englishSlugCopy('lbs-to-kg').title).toMatch(/LBS to KG/);
   });
 
   it('verifies category and alias slugs resolve to registered canonical formats', () => {
@@ -267,7 +261,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe(tc.expectedSrc);
       expect(parsed.targetFormat).toBe(tc.expectedTgt);
-      expect(parsed.pageTitle).toBe(tc.expectedTitle);
+      expect(englishSlugCopy(tc.slug).title).toBe(tc.expectedTitle);
 
       const srcDef = FORMAT_REGISTRY[parsed.sourceFormat];
       expect(srcDef, `Format registry must define ${parsed.sourceFormat}`).toBeDefined();
@@ -296,22 +290,22 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     const selectFile = select(hero, 'button').filter((b) => visibleText(b) === 'Select File');
     expect(selectFile).toHaveLength(1);
-    expect(classAttr(selectFile[0])).toMatch(/\bbg-accent\b/);
+    expect(classAttr(selectFile[0])).toMatch(/\bbtn-primary\b/);
     expect(phrasesMissing(text, ['Select your file to convert', `${REGISTRY_STATS.formatCount} Formats Supported`, 'Popular'])).toEqual([]);
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(1);
     expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(1);
 
     expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
-    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast', 'border-dashed'])).toEqual([]);
+    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
   });
 
   it('verifies semantic design token alignment across FormatSelector and Features', () => {
-    // The selector floats as a glass layer with the menu elevation; the directory rests on hairline rules without a box.
+    // The selector floats as a solid surface with the menu elevation; the directory rests on hairline rules without a box.
     const selector = classTokens(render(FormatSelector, {} as never));
-    expect(missingFrom(selector, ['glass', 'border-rule', 'shadow-elev-1'])).toEqual([]);
+    expect(missingFrom(selector, ['bg-surface', 'border-rule', 'shadow-elev-1'])).toEqual([]);
 
     const features = classTokens(render(Features, {} as never));
-    expect(missingFrom(features, ['border-rule', 'border-rule-strong'])).toEqual([]);
+    expect(missingFrom(features, ['border-rule'])).toEqual([]);
     expect(presentIn(features, ['bg-surface', 'shadow-elev-1', 'shadow-elev-2'])).toEqual([]);
   });
 
@@ -449,26 +443,26 @@ describe('Redesign & Free Static Architecture Verification', () => {
       'mailto:support@easyconvert.com',
       'mailto:support@easyconvert.com?subject=Bug%20Report',
     ]);
-    const alerts = callArguments(parseSource(sourcePath('src', 'app', '[slug]', 'page.tsx')), 'alert');
+    const alerts = callArguments(parseSource(sourcePath('src', 'components', 'pages', 'ConverterPageView.tsx')), 'alert');
     expect(alerts).toEqual([]);
   });
 
   it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
     // Video to Audio pair must not claim to preserve typography or document formatting
-    expect(parseConverterSlug('mp4-to-mp3').pageDescription).toBe(
+    expect(englishSlugCopy('mp4-to-mp3').description).toBe(
       'Convert MP4 to MP3 online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.'
     );
 
     // Document pair preserves layout and typography
-    expect(parseConverterSlug('pdf-to-docx').pageDescription).toBe(
+    expect(englishSlugCopy('pdf-to-docx').description).toBe(
       'Convert PDF to DOCX online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.'
     );
 
     // Format converters do not falsely claim to be document converters or mention external office software
-    expect(parseConverterSlug('mp4-converter').pageDescription).toBe(
+    expect(englishSlugCopy('mp4-converter').description).toBe(
       'Convert MP4 video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.'
     );
-    expect(parseConverterSlug('svg-converter').pageDescription).toBe(
+    expect(englishSlugCopy('svg-converter').description).toBe(
       'Convert SVG files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.'
     );
   });
@@ -490,7 +484,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     for (const slug of ['pdf-to-docx', 'terms', 'status', 'unit-converter']) {
       const page = renderSlug(slug);
       const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
-      // The body paints the woven ground for both themes, so the page root carries layout only and never covers it.
+      // The body paints the canvas colour of both themes, so the page root carries layout only and never covers it.
       expect(classAttr(root), slug).toBe('flex flex-col min-h-screen');
     }
   });
@@ -544,18 +538,21 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // Must NOT have jarring dark navy background in light mode
     expect(presentIn(tokens, ['bg-[#1F2340]'])).toEqual([]);
 
-    // The dock: a translucent sunken strip under the glass queue, a rounded bottom edge and a top rule
-    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-sunken/50'));
-    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['rounded-b-md', 'border-t', 'border-rule'])).toEqual([]);
+    // The dock: the surface under the queue rows, divided from them by a top rule
+    const dock = allElements(queue).find((e) => {
+      const classes = (attrOf(e, 'class') ?? '').split(/\s+/);
+      return classes.includes('border-t') && classes.includes('bg-surface');
+    });
+    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['bg-surface', 'border-t', 'border-rule'])).toEqual([]);
 
-    // "Add more files" is a hairline control with a 3:1 boundary, the helper text uses the secondary ink
+    // "Add more files" is a sunken control with a hairline border, the helper text uses the secondary ink
     const addMore = select(queue, 'button').find((b) => visibleText(b) === '+ Add more files');
-    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule-strong'])).toEqual([]);
+    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule', 'bg-sunken'])).toEqual([]);
     expect(missingFrom(tokens, ['text-ink-2'])).toEqual([]);
 
-    // The accent Convert CTA with its hover and press states, and responsive layout classes preventing mobile overflow
+    // The primary Convert CTA, and responsive layout classes preventing mobile overflow
     const convert = select(queue, 'button').find((b) => visibleText(b) === 'Convert');
-    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['bg-accent', 'hover:bg-accent-hover', 'active:bg-accent-press'])).toEqual([]);
+    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['btn-primary'])).toEqual([]);
     expect(missingFrom(tokens, ['flex-wrap', 'sm:flex-nowrap'])).toEqual([]);
   });
 });

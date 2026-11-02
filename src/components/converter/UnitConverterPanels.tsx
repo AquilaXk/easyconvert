@@ -1,4 +1,5 @@
 import React from 'react';
+import { useFormatter, useTranslations, type Messages } from 'next-intl';
 import { Check, Copy, TrendingUp } from 'lucide-react';
 import {
   POPULAR_CONVERSIONS,
@@ -7,6 +8,8 @@ import {
   formatEditableDecimal,
   type UnitDefinition,
 } from '@/lib/unit-catalog';
+
+type PopularKey = `popular.${keyof Messages['unitConverter']['popular']}`;
 
 export interface ConversionRow {
   key: string;
@@ -48,25 +51,27 @@ export function CategoryBreakdownSection({
   copiedKey,
   onCopyRow,
 }: Readonly<CategoryBreakdownSectionProps>) {
+  const t = useTranslations('unitConverter');
+  const format = useFormatter();
   const copiedRow = copiedKey ? rows.find((item) => item.key === copiedKey) : undefined;
 
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg sm:text-xl text-ink">
-          {inputVal} {fromName} Converted to All {categoryName} Units
+          {t('breakdownHeading', { value: format.number(inputVal), from: fromName, category: categoryName })}
         </h2>
-        <span className="text-xs text-ink-3">{rows.length} units</span>
+        <span className="text-xs text-ink-3">{t('unitCount', { count: rows.length })}</span>
       </div>
 
       <output aria-live="polite" className="sr-only">
-        {copiedRow ? `Copied ${copiedRow.name} value to clipboard.` : ''}
+        {copiedRow ? t('rowCopied', { name: copiedRow.name }) : ''}
       </output>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {rows.map((conv) => {
           const formatted = Number.isFinite(conv.value)
-            ? conv.value.toLocaleString(undefined, { maximumFractionDigits: precision })
+            ? format.number(conv.value, { maximumFractionDigits: precision })
             : '0';
           const copyText = formatEditableDecimal(conv.value, precision);
           const cardClass = getBreakdownCardClass(conv.key === toUnitKey, conv.key === fromUnitKey);
@@ -89,7 +94,7 @@ export function CategoryBreakdownSection({
               <button
                 type="button"
                 onClick={() => onCopyRow(copyText, conv.key)}
-                aria-label={`Copy ${conv.name} value`}
+                aria-label={t('rowCopyLabel', { name: conv.name })}
                 className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2 rounded-sm text-ink-3 hover:text-accent-ink hover:bg-accent-soft transition-colors shrink-0 cursor-pointer"
               >
                 {copiedKey === conv.key ? (
@@ -106,21 +111,31 @@ export function CategoryBreakdownSection({
   );
 }
 
+/** A unit with its name in the page's language. */
+interface NamedUnit {
+  def: UnitDefinition;
+  name: string;
+}
+
 interface QuickReferenceSectionProps {
-  fromDef: UnitDefinition;
-  toDef: UnitDefinition;
+  from: NamedUnit;
+  to: NamedUnit;
   precision: number;
 }
 
 export function QuickReferenceSection({
-  fromDef,
-  toDef,
+  from,
+  to,
   precision,
 }: Readonly<QuickReferenceSectionProps>) {
+  const t = useTranslations('unitConverter');
+  const format = useFormatter();
+  const fromDef = from.def;
+  const toDef = to.def;
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-4">
       <h2 className="text-lg sm:text-xl text-ink">
-        {fromDef.name} to {toDef.name} Quick Reference Table
+        {t('referenceHeading', { from: from.name, to: to.name })}
       </h2>
 
       <div className="overflow-x-auto">
@@ -128,10 +143,10 @@ export function QuickReferenceSection({
           <thead>
             <tr className="border-b border-rule text-ink-3">
               <th scope="col" className="py-2.5 px-4 font-bold">
-                {fromDef.name} ({fromDef.symbol})
+                {from.name} ({fromDef.symbol})
               </th>
               <th scope="col" className="py-2.5 px-4 font-bold">
-                {toDef.name} ({toDef.symbol})
+                {to.name} ({toDef.symbol})
               </th>
             </tr>
           </thead>
@@ -144,10 +159,10 @@ export function QuickReferenceSection({
                   className="hover:bg-sunken/50 transition-colors"
                 >
                   <td className="py-2.5 px-4 font-mono font-semibold text-ink">
-                    {refVal} {fromDef.symbol}
+                    {format.number(refVal)} {fromDef.symbol}
                   </td>
                   <td className="py-2.5 px-4 font-mono text-accent-ink font-bold">
-                    {converted.toLocaleString(undefined, { maximumFractionDigits: precision })}{' '}
+                    {format.number(converted, { maximumFractionDigits: precision })}{' '}
                     {toDef.symbol}
                   </td>
                 </tr>
@@ -167,24 +182,25 @@ interface PopularConversionsSectionProps {
 export function PopularConversionsSection({
   onSelectPreset,
 }: Readonly<PopularConversionsSectionProps>) {
+  const t = useTranslations('unitConverter');
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-4">
       <div className="flex items-center gap-2">
         <TrendingUp className="w-4 h-4 text-accent-ink" aria-hidden="true" />
         <h2 className="text-lg sm:text-xl text-ink">
-          Popular Unit Conversions
+          {t('popularHeading')}
         </h2>
       </div>
 
       <div className="flex flex-wrap gap-2.5">
         {POPULAR_CONVERSIONS.map((item) => (
           <button
-            key={item.label}
+            key={`${item.from}-${item.to}`}
             type="button"
             onClick={() => onSelectPreset(item.category, item.from, item.to)}
             className="min-h-[44px] px-3.5 py-2 rounded-sm text-xs font-semibold border border-rule text-ink-2 hover:text-ink hover:border-accent transition-colors cursor-pointer"
           >
-            {item.label}
+            {t(`popular.${item.from}-${item.to}` as PopularKey)}
           </button>
         ))}
       </div>

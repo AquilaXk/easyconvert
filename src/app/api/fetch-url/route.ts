@@ -7,11 +7,32 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
-import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
+import { readJsonObject } from '@/lib/api/json-body';
 import { formatBytes } from '@/lib/format-bytes';
 import { URL_IMPORT_MAX_BYTES, maxFileBytes, planOfCaller, type PlanCaller } from '@/lib/plan-limits';
+import type { UrlImportErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
+
+const refusal = codedRefusal<UrlImportErrorCode>;
+
+/** File name extensions for the content types of a link whose name has none. */
+const EXTENSIONS_BY_CONTENT_TYPE: ReadonlyArray<readonly [string, string]> = [
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/webp', '.webp'],
+  ['application/pdf', '.pdf'],
+  ['text/csv', '.csv'],
+  ['application/json', '.json'],
+];
+
+/** `filename`, with the extension of its content type when it has none (`.bin` for any other type). */
+function withExtension(filename: string, contentType: string): string {
+  if (filename.includes('.')) return filename;
+  const known = EXTENSIONS_BY_CONTENT_TYPE.find(([type]) => contentType.includes(type));
+  return filename + (known ? known[1] : '.bin');
+}
 
 /**
  * The 413 for a file past the limit of an import from a link. The limit is its own and smaller than the plan limit,
@@ -21,7 +42,7 @@ function linkImportTooLarge(caller: PlanCaller | undefined): NextResponse {
   const error =
     `A file imported from a link may be at most ${formatBytes(URL_IMPORT_MAX_BYTES)}. ` +
     `Download it and add it from your device to convert a file of up to ${formatBytes(maxFileBytes(planOfCaller(caller)))}.`;
-  return NextResponse.json({ success: false, error }, { status: 413 });
+  return refusal(413, 'file_too_large', error);
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -47,11 +68,11 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
 
   const reservationId = auth.reservationId;
 
-  const failWithRollback = async (status: number, error: string) => {
+  const failWithRollback = async (status: number, code: UrlImportErrorCode, error: string) => {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    return NextResponse.json({ success: false, error }, { status });
+    return refusal(status, code, error);
   };
 
   const refuseTooLarge = async () => {
@@ -61,22 +82,25 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
 
   const ssrfAgent = createSsrfSafeAgent();
   try {
-    const body = await req.json();
+    const body = await readJsonObject(req);
+    if (!body) {
+      return await failWithRollback(400, 'invalid_json', 'Invalid JSON request payload.');
+    }
     const { url } = body;
 
     if (!url || typeof url !== 'string') {
-      return await failWithRollback(400, 'URL is required.');
+      return await failWithRollback(400, 'url_required', 'URL is required.');
     }
 
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
     } catch {
-      return await failWithRollback(400, 'Invalid URL format provided.');
+      return await failWithRollback(400, 'invalid_url', 'Invalid URL format provided.');
     }
 
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      return await failWithRollback(400, 'Only HTTP and HTTPS URLs are permitted.');
+      return await failWithRollback(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
     }
 
     let currentUrl = parsedUrl;
@@ -85,10 +109,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
       const isValid = await validateUrlForSsrf(currentUrl);
       if (!isValid) {
-        return NextResponse.json(
-          { success: false, error: 'Requests to internal/private addresses are blocked.' },
-          { status: 403 }
-        );
+        return refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
       }
 
       const controller = new AbortController();
@@ -106,10 +127,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       } catch (fetchErr: unknown) {
         const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
         if (msg.includes('SSRF blocked') || msg.includes('restricted')) {
-          return NextResponse.json(
-            { success: false, error: 'Requests to internal/private addresses are blocked.' },
-            { status: 403 }
-          );
+          return refusal(403, 'address_blocked', 'Requests to internal/private addresses are blocked.');
         }
         throw fetchErr;
       } finally {
@@ -120,32 +138,20 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location');
         if (!location) {
-          return NextResponse.json(
-            { success: false, error: `Redirect status ${res.status} missing Location header` },
-            { status: 502 }
-          );
+          return refusal(502, 'redirect_without_location', `Redirect status ${res.status} missing Location header`);
         }
         if (redirectCount === MAX_REDIRECTS) {
-          return NextResponse.json(
-            { success: false, error: 'Too many redirects encountered.' },
-            { status: 502 }
-          );
+          return refusal(502, 'too_many_redirects', 'Too many redirects encountered.');
         }
         try {
           const nextUrl = new URL(location, currentUrl);
           if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
-            return NextResponse.json(
-              { success: false, error: 'Only HTTP and HTTPS URLs are permitted.' },
-              { status: 400 }
-            );
+            return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
           }
           currentUrl = nextUrl;
           continue;
         } catch {
-          return NextResponse.json(
-            { success: false, error: 'Invalid redirect location URL.' },
-            { status: 502 }
-          );
+          return refusal(502, 'invalid_redirect', 'Invalid redirect location URL.');
         }
       }
 
@@ -153,13 +159,15 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     if (!res) {
-      return NextResponse.json({ success: false, error: 'Failed to fetch remote URL' }, { status: 502 });
+      return refusal(502, 'fetch_failed', 'Failed to fetch remote URL');
     }
 
     if (!res.ok) {
-      return NextResponse.json(
-        { success: false, error: `Remote server returned HTTP ${res.status}: ${res.statusText}` },
-        { status: res.status >= 400 && res.status < 500 ? 400 : 502 }
+      return refusal(
+        res.status >= 400 && res.status < 500 ? 400 : 502,
+        'remote_error',
+        `Remote server returned HTTP ${res.status}: ${res.statusText}`,
+        { remoteStatus: res.status }
       );
     }
 
@@ -173,7 +181,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     if (!res.body) {
-      return NextResponse.json({ success: false, error: 'Empty response body from remote server' }, { status: 502 });
+      return refusal(502, 'empty_body', 'Empty response body from remote server');
     }
 
     // Stream chunks with a strict byte counter
@@ -217,17 +225,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     const contentType = res.headers.get('content-type') || 'application/octet-stream';
-
-    // Ensure extension
-    if (!filename.includes('.')) {
-      if (contentType.includes('image/png')) filename += '.png';
-      else if (contentType.includes('image/jpeg')) filename += '.jpg';
-      else if (contentType.includes('image/webp')) filename += '.webp';
-      else if (contentType.includes('application/pdf')) filename += '.pdf';
-      else if (contentType.includes('text/csv')) filename += '.csv';
-      else if (contentType.includes('application/json')) filename += '.json';
-      else filename += '.bin';
-    }
+    filename = withExtension(filename, contentType);
 
     if (reservationId) {
       await commitQuota(reservationId);
@@ -246,8 +244,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    const msg = err instanceof Error ? err.message : 'Failed to fetch remote URL';
-    return NextResponse.json({ success: false, error: msg }, { status: 500 });
+    return serverFault<UrlImportErrorCode>('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed');
   } finally {
     ssrfAgent.close().catch(() => {});
   }

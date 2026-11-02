@@ -1,16 +1,18 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import {
   Archive, BookOpen, ChevronDown, Compass, Database, Download,
   FileImage, FileText, Music, Presentation, Sliders, Type, Video, X, type LucideIcon,
 } from 'lucide-react';
 import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
-import { fileTooLargeMessage, maxFileBytes } from '@/lib/plan-limits';
-import { formatBytes } from '@/lib/format-bytes';
+import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
+import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
+import { useConversionFailureWording } from '../i18n/error-wording';
 import { getPasswordValidationError } from './options/options-capabilities';
 
 export interface QueueItemRowProps {
@@ -38,26 +40,30 @@ const CATEGORY_ICONS: Partial<Record<FormatCategory, LucideIcon>> = {
   font: Type,
 };
 
-function getFormatLabel(ext: string): string {
-  const clean = ext.toLowerCase();
-  return FORMAT_REGISTRY[clean]?.name || `${clean.toUpperCase()} File`;
-}
+type PasswordErrorTranslator = ReturnType<typeof useTranslations<'options.password.errors'>>;
 
 function renderCategoryIcon(ext: string): React.ReactNode {
   const clean = ext.toLowerCase();
   const Icon = (clean !== 'pdf' && CATEGORY_ICONS[FORMAT_REGISTRY[clean]?.category || 'document']) || FileText;
-  return <Icon className="w-5 h-5 text-accent-ink" />;
+  return <Icon className="w-5 h-5 text-ink-3" />;
 }
 
-function resolveOptionError(item: ConversionQueueItem): string | null {
+function resolveOptionError(tPassword: PasswordErrorTranslator, item: ConversionQueueItem): string | null {
   if (!item.targetFormat) return null;
-  return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password);
+  const problem = getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password);
+  return problem ? tPassword(problem) : null;
 }
 
-function resolveRowError(item: ConversionQueueItem, optionError: string | null, oversizeError: string | null): string | null {
+function resolveRowError(
+  failureWording: ReturnType<typeof useConversionFailureWording>,
+  item: ConversionQueueItem,
+  optionError: string | null,
+  oversizeError: string | null
+): string | null {
   if (oversizeError) return oversizeError;
   if (optionError) return optionError;
-  return item.status === 'error' ? item.error || 'Conversion failed.' : null;
+  if (item.status !== 'error') return null;
+  return failureWording(item.error ?? { code: 'conversionFailed' });
 }
 
 function isRetryDisabled(
@@ -78,12 +84,13 @@ function RowStatusDisplay({
   optionError: string | null;
   onRetry: () => void;
 }>) {
+  const t = useTranslations('queue.row');
   if (isBusy) {
     const rounded = Math.round(item.progress);
     return (
       <div className="flex items-center gap-2.5 min-w-[140px]">
         <progress
-          value={rounded} max={100} aria-label={`${item.status === 'uploading' ? 'Uploading' : 'Converting'} ${item.name}`}
+          value={rounded} max={100} aria-label={t(item.status === 'uploading' ? 'uploadingLabel' : 'convertingLabel', { name: item.name })}
           className="thread flex-1"
         />
         <span className="text-xs text-accent-ink tabular-nums">{rounded}%</span>
@@ -94,13 +101,13 @@ function RowStatusDisplay({
     const baseName = item.name.replace(/\.[^/.]+$/, '') || item.name;
     return (
       <div className="flex items-center gap-2">
-        <span className="settle inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-success"><span aria-hidden="true" className="size-1.5 rounded-full bg-success" />Done</span>
+        <span className="inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-success"><span aria-hidden="true" className="size-1.5 rounded-full bg-success" />{t('done')}</span>
         {item.resultUrl && (
           <a
             href={item.resultUrl} download={`${baseName}.${item.targetFormat}`}
-            className="settle lift bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-sm text-xs font-semibold"
+            className="btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-xs text-xs font-semibold"
           >
-            <Download className="w-4 h-4" /><span>Download</span>
+            <Download className="w-4 h-4" /><span>{t('download')}</span>
           </a>
         )}
       </div>
@@ -109,19 +116,19 @@ function RowStatusDisplay({
   if (item.status === 'error' || isOversize || optionError !== null) {
     return (
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-danger"><span aria-hidden="true" className="size-1.5 rounded-full bg-danger" />Failed</span>
+        <span className="inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-danger"><span aria-hidden="true" className="size-1.5 rounded-full bg-danger" />{t('failed')}</span>
         <button
           type="button" disabled={isRetryDisabled(item, isBusy, isOversize, optionError)} onClick={onRetry}
-          className="transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-sm border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-xs border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Retry
+          {t('retry')}
         </button>
       </div>
     );
   }
   if (!item.targetFormat) return null;
   return (
-    <span className="inline-flex items-center gap-1.5 px-1 text-xs font-medium text-ink-3"><span aria-hidden="true" className="size-1.5 rounded-full bg-rule-strong" />Ready</span>
+    <span className="inline-flex items-center gap-1.5 px-1 text-xs font-medium text-ink-3"><span aria-hidden="true" className="size-1.5 rounded-full bg-rule-strong" />{t('ready')}</span>
   );
 }
 
@@ -135,57 +142,62 @@ export default function QueueItemRow({
   onRetry,
   onRemove,
 }: Readonly<QueueItemRowProps>) {
+  const t = useTranslations('queue.row');
+  const tPassword = useTranslations('options.password.errors');
+  const formatBytes = useFormatBytes();
+  const fileTooLargeMessage = useFileTooLargeMessage();
+  const failureWording = useConversionFailureWording();
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const plan = useViewerPlan();
   const isIdle = !isBusy && item.status !== 'completed';
   // Read at render, not when the file was dropped: the plan of the session may answer after the drop.
   const isOversize = isIdle && item.size > maxFileBytes(plan);
   const hasTarget = Boolean(item.targetFormat);
-  const optionError = isIdle ? resolveOptionError(item) : null;
-  const rowError = isIdle ? resolveRowError(item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null) : null;
+  const optionError = isIdle ? resolveOptionError(tPassword, item) : null;
+  const rowError = isIdle
+    ? resolveRowError(failureWording, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
+    : null;
 
   const targetButtonClass = hasTarget
-    ? 'border-rule-strong text-ink hover:border-accent font-mono font-semibold uppercase'
+    ? 'border-rule bg-sunken text-ink hover:border-accent font-semibold uppercase'
     : 'border-warning-edge bg-warning-soft text-warning hover:border-accent font-medium';
 
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 min-w-0">
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <div className="w-8 shrink-0 flex items-center justify-center">
-          {renderCategoryIcon(item.sourceFormat)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-ink truncate" title={item.name}>
-            {item.name}
+    <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] sm:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-3 p-4 min-w-0">
+      <div className="size-11 self-start flex items-center justify-center rounded-xs bg-surface ring-1 ring-inset ring-rule">
+        {renderCategoryIcon(item.sourceFormat)}
+      </div>
+      <div className="self-start min-w-0">
+        <p className="text-[15px] font-semibold text-ink truncate" title={item.name}>
+          {item.name}
+        </p>
+        <p className="text-xs text-ink-3 flex items-center flex-wrap gap-1.5 mt-0.5">
+          <span className="tabular-nums">{formatBytes(item.size)}</span>
+          <span aria-hidden="true">&bull;</span>
+          <span>{item.sourceFormat.toUpperCase()}</span>
+        </p>
+        {rowError && (
+          <p role="alert" className="text-xs text-danger mt-1">
+            {rowError}
           </p>
-          <p className="text-xs text-ink-2 flex items-center flex-wrap gap-1.5 mt-0.5">
-            <span className="font-mono tabular-nums">{formatBytes(item.size)}</span>
-            <span aria-hidden="true">&bull;</span>
-            <span>{getFormatLabel(item.sourceFormat)}</span>
-          </p>
-          {rowError && (
-            <p role="alert" className="text-xs text-danger mt-1">
-              {rowError}
-            </p>
-          )}
-        </div>
+        )}
       </div>
 
-      <div className="flex items-center flex-wrap gap-2 shrink-0">
-        <span className="text-xs text-ink-3 font-medium">to</span>
+      <div className="col-start-2 col-span-2 row-start-2 sm:col-span-1 sm:col-start-3 sm:row-start-1 flex items-center flex-wrap gap-2">
+        <span className="text-xs text-ink-3 font-medium">{t('to')}</span>
 
         <div className="relative">
           <button
             type="button"
             data-testid="queue-target-format-btn"
-            aria-label={`Select output format for ${item.name}`}
+            aria-label={t('selectFormatLabel', { name: item.name })}
             aria-haspopup="dialog"
             aria-expanded={isFormatSelectorOpen}
             disabled={isBusy || isOversize}
             onClick={onToggleFormatSelector}
-            className={`transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
+            className={`transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-xs border text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
           >
-            <span>{hasTarget ? item.targetFormat.toUpperCase() : 'Select format'}</span>
+            <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
             <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
           </button>
 
@@ -196,7 +208,7 @@ export default function QueueItemRow({
               selectedFormatId={item.targetFormat}
               onSelect={onSelectTargetFormat}
               onClose={onCloseFormatSelector}
-              title={`Convert ${item.sourceFormat.toUpperCase()} to`}
+              title={t('selectorTitle', { format: item.sourceFormat.toUpperCase() })}
             />
           )}
         </div>
@@ -204,10 +216,10 @@ export default function QueueItemRow({
         <button
           type="button"
           data-testid="queue-options-btn"
-          aria-label={`Conversion options for ${item.name}`}
+          aria-label={t('optionsLabel', { name: item.name })}
           disabled={!item.targetFormat || isBusy || isOversize}
           onClick={onOpenOptions}
-          className="transition-colors inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-sm border border-rule text-ink-2 hover:border-accent hover:text-ink cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-xs border border-rule bg-sunken text-ink-2 hover:border-accent hover:text-ink cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Sliders className="w-4 h-4" />
         </button>
@@ -219,16 +231,16 @@ export default function QueueItemRow({
           optionError={optionError}
           onRetry={onRetry}
         />
-
-        <button
-          type="button"
-          aria-label={`${isBusy ? 'Cancel' : 'Remove'} ${item.name}`}
-          onClick={onRemove}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
       </div>
+
+      <button
+        type="button"
+        aria-label={t(isBusy ? 'cancelLabel' : 'removeLabel', { name: item.name })}
+        onClick={onRemove}
+        className="col-start-3 row-start-1 sm:col-start-4 self-start sm:self-center -mt-3 -mr-3 sm:m-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-xs text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
+      >
+        <X className="w-4 h-4" />
+      </button>
     </div>
   );
 }

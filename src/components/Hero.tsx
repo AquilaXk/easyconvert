@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslations } from 'next-intl';
 import { getAvailableTargetFormats } from '@/lib/registry';
 import UrlImportModal from './UrlImportModal';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
@@ -8,8 +9,8 @@ import HeroDropzoneCard from './workbench/HeroDropzoneCard';
 import {
   computeHeroSubtitle,
   computeHeroTitle,
-  QueueSummaryInput,
-  resolveQueueSummary,
+  describeQueueSummary,
+  type QueueSummary,
 } from './workbench/hero-copy';
 
 export interface HeroProps {
@@ -21,7 +22,7 @@ export interface HeroProps {
   initialTargetFormat?: string;
   categoryTitle?: string;
   categoryDescription?: string;
-  activeQueueSummary?: QueueSummaryInput;
+  activeQueueSummary?: QueueSummary;
 }
 
 function getEffectiveTargetFormat(chosen?: string, fallback?: string): string | undefined {
@@ -41,6 +42,7 @@ export default function Hero({
   categoryDescription,
   activeQueueSummary,
 }: Readonly<HeroProps>) {
+  const t = useTranslations('hero');
   const seedSource = activeSourceFormat ?? initialSourceFormat;
   const seedTarget = activeTargetFormat ?? initialTargetFormat;
   const [sourceFormat, setSourceFormat] = useState(seedSource ? seedSource.toLowerCase() : 'any');
@@ -142,7 +144,7 @@ export default function Hero({
     setUserChangedTiles(true);
   };
 
-  const title = computeHeroTitle({
+  const title = computeHeroTitle(t, {
     categoryTitle,
     hasActiveQueue,
     activeSourceFormat: seedSource,
@@ -152,13 +154,14 @@ export default function Hero({
     userChangedTiles,
   });
   const subtitle = computeHeroSubtitle(
+    t,
     categoryDescription,
     hasActiveQueue,
     sourceFormat,
     targetFormat,
     userChangedTiles
   );
-  const queueSummaryText = resolveQueueSummary(activeQueueSummary);
+  const queueSummaryText = describeQueueSummary(t, activeQueueSummary);
 
   return (
     <>
@@ -168,7 +171,7 @@ export default function Hero({
         type="file"
         multiple
         className="sr-only"
-        aria-label="Select files to convert"
+        aria-label={t('fileInputLabel')}
         onChange={handleFileChange}
       />
 
@@ -177,8 +180,8 @@ export default function Hero({
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{title}</h1>
-              {queueSummaryText?.includes('files') && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-mono font-medium tabular-nums text-ink-2 border border-rule">
+              {queueSummaryText && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-medium tabular-nums text-ink-2 border border-rule">
                   {queueSummaryText}
                 </span>
               )}
@@ -192,7 +195,7 @@ export default function Hero({
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="lg:grid lg:grid-cols-12 lg:items-center lg:gap-10">
                 <div className="lg:col-span-7 text-center lg:text-left">
-                  <h1 className="text-5xl sm:text-6xl lg:text-7xl text-ink leading-[1.02]">
+                  <h1 className="text-4xl sm:text-5xl text-ink leading-none">
                     {title}
                   </h1>
                   <p className="mt-4 text-base text-ink-2 max-w-xl mx-auto lg:mx-0 leading-relaxed">

@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
+import { warnBrowserFailure } from '@/lib/browser-failure';
 import { getViewerMaxFileBytes } from '@/lib/viewer-plan';
 import { useRefreshViewerPlan, useViewerPlan } from './useViewerPlan';
 import {
@@ -102,9 +103,7 @@ function patchIdleItem(item: ConversionQueueItem, patch: IdleItemPatch): Convers
     ...patch,
     progress: 0,
   };
-  return optionError !== null
-    ? { ...base, status: 'error', error: optionError }
-    : { ...base, status: 'ready' };
+  return optionError !== null ? { ...base, status: 'error' } : { ...base, status: 'ready' };
 }
 
 function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>): string {
@@ -238,7 +237,7 @@ export interface QueueMutationContext {
   syncInFlight: () => void;
   setIsBatchRunning: React.Dispatch<React.SetStateAction<boolean>>;
   setInFlightCount: React.Dispatch<React.SetStateAction<number>>;
-  setZipError: React.Dispatch<React.SetStateAction<string | null>>;
+  setZipError: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 export function createQueueMutators(ctx: QueueMutationContext) {
@@ -290,7 +289,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
     ctx.inFlightIdsRef.current.clear();
     ctx.setIsBatchRunning(false);
     ctx.setInFlightCount(0);
-    ctx.setZipError(null);
+    ctx.setZipError(false);
     ctx.updateQueue([]);
   };
 
@@ -343,7 +342,7 @@ function createDownloadAllZipHandler(ctx: QueueMutationContext) {
   return async () => {
     const done = ctx.queueRef.current.filter((i) => i.status === 'completed' && i.resultUrl);
     if (done.length === 0) return;
-    ctx.setZipError(null);
+    ctx.setZipError(false);
     try {
       const zipUrl = await downloadCompletedBundle(done, ctx.bundlePrefix || 'easyconvert_bundle');
       if (!ctx.mountedRef.current) {
@@ -356,9 +355,10 @@ function createDownloadAllZipHandler(ctx: QueueMutationContext) {
         ctx.revokeBlobUrl(zipUrl);
       }, ZIP_REVOKE_DELAY_MS);
       ctx.timersRef.current.add(timer);
-    } catch (err: unknown) {
+    } catch (error) {
+      warnBrowserFailure('Bundling the converted files into a ZIP failed', error);
       if (ctx.mountedRef.current) {
-        ctx.setZipError(`Could not build ZIP archive. ${err instanceof Error ? err.message : 'Unknown error'}`);
+        ctx.setZipError(true);
       }
     }
   };
@@ -387,7 +387,7 @@ function failInvalidItemOptions(current: ConversionQueueItem, ctx: QueueMutation
   ctx.updateQueue((prev) =>
     prev.map((i) =>
       i.id === current.id
-        ? { ...i, status: 'error', error: optionError, progress: 0, resultUrl: undefined }
+        ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined }
         : i
     )
   );
@@ -423,8 +423,8 @@ export function createConversionRunners(ctx: QueueMutationContext) {
           if (resultUrl.startsWith('blob:')) ctx.blobUrlsRef.current.add(resultUrl);
           ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize, edgeProcessed, edgeTier } : i)));
         },
-        onError: (msg) => {
-          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: msg, progress: 0 } : i)));
+        onError: (failure) => {
+          if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: failure, progress: 0 } : i)));
         },
       }, aborter.signal);
     } finally {
@@ -490,7 +490,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [inFlightCount, setInFlightCount] = useState(0);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
-  const [zipError, setZipError] = useState<string | null>(null);
+  const [zipError, setZipError] = useState(false);
   const queueRef = useRef<ConversionQueueItem[]>(queue);
   const generationRef = useRef<Map<string, number>>(new Map());
   const inFlightIdsRef = useRef<Set<string>>(new Set());
@@ -529,7 +529,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
 
   return {
     queue, setQueue: updateQueue, isConverting: inFlightCount > 0 || isBatchRunning, zipError,
-    clearZipError: () => setZipError(null), handleFilesSelected, ...mutators,
+    clearZipError: () => setZipError(false), handleFilesSelected, ...mutators,
     ...runners, handleDownloadAllZip,
   };
 }

@@ -3,8 +3,8 @@ import { tryProcessClientEdgeOcr } from './edge-ocr';
 import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } from './edge/tier-router';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
-import { formatBytes } from './format-bytes';
-import { getViewerMaxFileBytes } from './viewer-plan';
+import { warnBrowserFailure } from './browser-failure';
+import { conversionFailureOf, type ConversionFailure } from './conversion-failure';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { canvasToBlob } from './edge/pipelines/canvas-blob';
 import { assertEncodedBlob, BMP_MIME_TYPE, canvasMimeType } from './edge/canvas-encoding';
@@ -39,7 +39,7 @@ export interface ConvertItemCallbacks {
     edgeTier?: string,
     fallback?: EdgeTierFallback
   ) => void;
-  onError: (errorMessage: string) => void;
+  onError: (failure: ConversionFailure) => void;
 }
 
 export interface ClientEdgeResult {
@@ -595,24 +595,23 @@ export async function executeItemConversion(
   } catch (err: any) {
     if (err instanceof ClientEdgeEscalationError) {
       escalation = { fallbackFrom: err.fallbackFrom, escalationReason: err.message };
-    } else if (item.options.clientEdgeMode === true) {
-      // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
-      callbacks.onError(err.message || 'Client edge conversion failed.');
-      return;
+    } else {
+      warnBrowserFailure('Client edge conversion failed', err);
+      if (item.options.clientEdgeMode === true) {
+        // Fail-closed on client edge conversion errors: do not silently upload corrupted files to server
+        callbacks.onError({ code: 'clientEdgeFailed' });
+        return;
+      }
+      // Otherwise cascade to cloud fallback
     }
-    // Otherwise cascade to cloud fallback
   }
 
   // 2. Fail-closed check: if user strictly mandated client-only execution, block cloud upload
   if (item.options.clientEdgeMode === true) {
-    const blockedMessage = `Conversion from ${item.sourceFormat.toUpperCase()} to ${item.targetFormat.toUpperCase()} requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.`;
-    if (escalation) {
-      callbacks.onError(
-        `${blockedMessage} Edge tier ${escalation.fallbackFrom} failed: ${escalation.escalationReason}`
-      );
-      return;
-    }
-    callbacks.onError(blockedMessage);
+    const blocked = { code: 'clientOnlyBlocked', source: item.sourceFormat.toUpperCase(), target: item.targetFormat.toUpperCase() } as const;
+    callbacks.onError(
+      escalation ? { ...blocked, edgeFailed: true } : blocked
+    );
     return;
   }
 
@@ -628,66 +627,8 @@ export async function executeItemConversion(
         })
       : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress, signal);
     callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (signal?.aborted) return;
-    callbacks.onError(err.message || 'Conversion failed. Please try another format.');
+    callbacks.onError(conversionFailureOf(err));
   }
-}
-
-/**
- * Factory creating the stateful single-item converter callback for React queue components.
- */
-export function createItemConverter(
-  setQueue: (action: (prev: ConversionQueueItem[]) => ConversionQueueItem[]) => void,
-  maxFileSize?: number
-) {
-  return async (item: ConversionQueueItem): Promise<void> => {
-    const effectiveLimit = maxFileSize !== undefined ? maxFileSize : getViewerMaxFileBytes();
-    if (item.file.size > effectiveLimit) {
-      setQueue((prev) =>
-        prev.map((i) =>
-          i.id === item.id
-            ? { ...i, status: 'error', error: `File size exceeds the ${formatBytes(effectiveLimit)} limit.` }
-            : i
-        )
-      );
-      return;
-    }
-
-    setQueue((prev) =>
-      prev.map((i) =>
-        i.id === item.id ? { ...i, status: 'converting', progress: 15, error: undefined } : i
-      )
-    );
-
-    await executeItemConversion(item, {
-      onProgress: (progress) => {
-        setQueue((prev) =>
-          prev.map((i) => (i.id === item.id && i.status === 'converting' ? { ...i, progress } : i))
-        );
-      },
-      onSuccess: (resultUrl, resultSize, edgeProcessed, edgeTier) => {
-        setQueue((prev) =>
-          prev.map((i) =>
-            i.id === item.id
-              ? {
-                  ...i,
-                  status: 'completed',
-                  progress: 100,
-                  resultUrl,
-                  resultSize,
-                  edgeProcessed,
-                  edgeTier,
-                }
-              : i
-          )
-        );
-      },
-      onError: (msg) => {
-        setQueue((prev) =>
-          prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: msg, progress: 0 } : i))
-        );
-      },
-    });
-  };
 }

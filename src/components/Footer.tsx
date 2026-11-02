@@ -1,124 +1,36 @@
 'use client';
 
 import React from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import { Moon, Sun, ShieldCheck } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
-
-interface DirectoryCategory {
-  title: string;
-  links: { label: string; href: string }[];
-}
-
-const DIRECTORY_CATEGORIES: readonly DirectoryCategory[] = [
-  {
-    title: 'Video Converter',
-    links: [
-      { label: 'MP4 Converter', href: '/mp4-converter' },
-      { label: 'Video to GIF', href: '/video-to-gif' },
-      { label: 'MOV to MP4', href: '/mov-to-mp4' },
-      { label: 'Video Converter', href: '/video-converter' },
-    ],
-  },
-  {
-    title: 'Audio Converter',
-    links: [
-      { label: 'MP3 Converter', href: '/mp3-converter' },
-      { label: 'MP4 to MP3', href: '/mp4-to-mp3' },
-      { label: 'Video to MP3', href: '/video-to-mp3' },
-      { label: 'Audio Converter', href: '/audio-converter' },
-    ],
-  },
-  {
-    title: 'Image Converter',
-    links: [
-      { label: 'JPG to PDF', href: '/jpg-to-pdf' },
-      { label: 'PDF to JPG', href: '/pdf-to-jpg' },
-      { label: 'HEIC to JPG', href: '/heic-to-jpg' },
-      { label: 'Image to PDF', href: '/image-to-pdf' },
-      { label: 'Image Converter', href: '/image-converter' },
-    ],
-  },
-  {
-    title: 'Document & Ebook',
-    links: [
-      { label: 'PDF to Word', href: '/pdf-to-docx' },
-      { label: 'EPUB to PDF', href: '/epub-to-pdf' },
-      { label: 'Document Converter', href: '/document-converter' },
-    ],
-  },
-  {
-    title: 'Archive & Compression',
-    links: [
-      { label: 'RAR to ZIP', href: '/rar-to-zip' },
-      { label: '7Z to ZIP', href: '/7z-to-zip' },
-      { label: 'Compress PDF', href: '/compress-pdf' },
-      { label: 'Archive Converter', href: '/archive-converter' },
-    ],
-  },
-  {
-    title: 'Data & Unit Tools',
-    links: [
-      { label: 'CSV to JSON', href: '/csv-to-json' },
-      { label: 'JSON to CSV', href: '/json-to-csv' },
-      { label: 'Lbs to Kg', href: '/lbs-to-kg' },
-      { label: 'Unit Converter', href: '/unit-converter' },
-    ],
-  },
-  {
-    title: 'Web Apps',
-    links: [
-      { label: 'Save Website as PDF', href: '/save-website-as-pdf' },
-      { label: 'Image Resizer', href: '/image-converter' },
-      { label: 'Website Screenshot', href: '/website-png-screenshot' },
-      { label: 'PDF OCR', href: '/pdf-ocr' },
-    ],
-  },
-  {
-    title: 'Client & Edge Tools',
-    links: [
-      { label: 'MP4 Remuxer', href: '/mp4-converter' },
-      { label: 'Lossless PNG', href: '/compress-png' },
-      { label: 'Vector Converter', href: '/vector-converter' },
-      { label: 'Security Architecture', href: '/security' },
-    ],
-  },
-];
-
-const SECONDARY_LINKS: readonly { label: string; href: string }[] = [
-  { label: 'About Us', href: '/about' },
-  { label: 'How It Works', href: '/#how-it-works' },
-  { label: 'Formats', href: '/#format-catalog' },
-  { label: 'API Docs', href: '/api-docs' },
-  { label: 'Privacy', href: '/privacy' },
-  { label: 'Terms', href: '/terms' },
-  { label: 'Security', href: '/security' },
-  { label: 'Accessibility', href: '/accessibility' },
-  { label: 'Contact', href: '/contact' },
-  { label: 'Status', href: '/status' },
-];
+import { DIRECTORY_CATEGORIES, SECONDARY_LINKS } from './site-links';
 
 export default function Footer() {
+  const t = useTranslations('footer');
+  const tLinks = useTranslations('siteLinks');
+  const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
 
   return (
-    <footer className="text-ink-2 border-t border-rule mt-auto">
+    <footer className="bg-sunken text-ink-2 border-t border-rule mt-auto">
       <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-8">
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-x-6 gap-y-8">
           {DIRECTORY_CATEGORIES.map((category) => (
-            <div key={category.title} className="flex flex-col min-w-0">
+            <div key={category.key} className="flex flex-col min-w-0">
               <h2 className="text-ink font-semibold text-sm mb-3 tracking-tight font-sans">
-                {category.title}
+                {t(`categories.${category.key}`)}
               </h2>
               <ul className="space-y-1 sm:space-y-2">
                 {category.links.map((link) => (
-                  <li key={`${category.title}-${link.label}`}>
+                  <li key={`${category.key}-${link.key}`}>
                     <Link
                       href={link.href}
                       className="min-h-[44px] sm:min-h-0 inline-flex items-center text-ink-2 hover:text-accent-ink text-[13px] transition-colors leading-snug py-0.5"
                     >
-                      {link.label}
+                      {tLinks(link.key)}
                     </Link>
                   </li>
                 ))}
@@ -128,14 +40,14 @@ export default function Footer() {
         </div>
 
         <div className="pt-8 mt-10 border-t border-rule">
-          <nav aria-label="Footer secondary" className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px]">
+          <nav aria-label={t('secondaryNavLabel')} className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px]">
             {SECONDARY_LINKS.map((item) => (
               <Link
-                key={item.href}
+                key={item.key}
                 href={item.href}
                 className="min-h-[44px] sm:min-h-[36px] inline-flex items-center text-ink-2 hover:text-ink transition-colors font-medium"
               >
-                {item.label}
+                {tLinks(item.key)}
               </Link>
             ))}
           </nav>
@@ -147,17 +59,17 @@ export default function Footer() {
           </Link>
 
           <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-ink-3">
-            <span>© 2026 EasyConvert.com</span>
+            <span>{t('copyright')}</span>
             <div className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-2">
               <ShieldCheck className="w-3.5 h-3.5 text-accent-ink shrink-0" />
-              <span>Encrypted Transfer &amp; Ephemeral Processing</span>
+              <span>{t('assurance')}</span>
             </div>
           </div>
 
           <button
             type="button"
             onClick={toggleDarkMode}
-            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={isDark ? tTheme('toLight') : tTheme('toDark')}
             className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
           >
             {isDark ? (

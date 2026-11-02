@@ -144,7 +144,7 @@ export function attachJobLifecycleListeners(
               event: 'job.failed',
               payload: {
                 jobId: job.id,
-                error: err instanceof Error ? err.message : String(err),
+                error: job.failedReason,
                 originalFilename: job.data.originalFilename,
               },
               secret: '',
@@ -162,7 +162,7 @@ export function attachJobLifecycleListeners(
               'job.failed',
               {
                 jobId: job.id,
-                error: err instanceof Error ? err.message : String(err),
+                error: job.failedReason,
                 originalFilename: job.data.originalFilename,
               },
               job.data.webhookSecret,

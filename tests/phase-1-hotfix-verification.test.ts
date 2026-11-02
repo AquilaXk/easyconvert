@@ -683,20 +683,13 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       (globalThis as any).window = {};
 
       const fetchSpy = vi.spyOn(globalThis, 'fetch');
-      let errorMessage = '';
+      const onError = vi.fn();
 
-      await executeItemConversion(item, {
-        onProgress: () => {},
-        onSuccess: () => {},
-        onError: (err) => {
-          errorMessage = err;
-        },
-      });
+      await executeItemConversion(item, { onProgress: () => {}, onSuccess: () => {}, onError });
 
       // Fetch should never be called when client-only edge mode is strictly enabled
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect(errorMessage).toContain('requires cloud serverless processing');
-      expect(errorMessage).toContain('client-only edge mode is strictly enabled');
+      expect(onError).toHaveBeenCalledWith({ code: 'clientOnlyBlocked', source: 'HWP', target: 'PDF' });
     });
   });
 

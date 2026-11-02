@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import { useFormatter } from 'next-intl';
 import {
   UNIT_CATEGORIES,
   convertValue,
@@ -17,6 +18,7 @@ import {
   QuickReferenceSection,
 } from '@/components/converter/UnitConverterPanels';
 import { useCopyFeedback } from '@/hooks/useCopyFeedback';
+import { useUnitCopy } from '@/components/converter/unit-copy';
 
 export { UNIT_CATEGORIES, convertValue };
 export type { UnitCategory, UnitDefinition } from '@/lib/unit-catalog';
@@ -39,6 +41,8 @@ export default function UnitConverter({
     [initialCategory, initialSrc, initialTgt]
   );
 
+  const format = useFormatter();
+  const { categoryName, unitName } = useUnitCopy();
   const [activeCategoryKey, setActiveCategoryKey] = useState<string>(resolvedCategory);
   const currentCategory = UNIT_CATEGORIES[activeCategoryKey] || UNIT_CATEGORIES.weight;
   const [inputStr, setInputStr] = useState<string>('1');
@@ -84,11 +88,11 @@ export default function UnitConverter({
   const formattedResult = useMemo(
     () => {
       if (!Number.isFinite(calculatedResult)) return '0';
-      return Number.parseFloat(calculatedResult.toFixed(precision)).toLocaleString(undefined, {
+      return format.number(Number.parseFloat(calculatedResult.toFixed(precision)), {
         maximumFractionDigits: precision,
       });
     },
-    [calculatedResult, precision]
+    [calculatedResult, precision, format]
   );
 
   const rawCopyValue = useMemo(
@@ -117,11 +121,11 @@ export default function UnitConverter({
     () =>
       Object.entries(currentCategory.units).map(([key, def]) => ({
         key,
-        name: def.name,
+        name: unitName(currentCategory, def),
         symbol: def.symbol,
         value: convertValue(inputVal, fromDef, def),
       })),
-    [inputVal, fromDef, currentCategory]
+    [inputVal, fromDef, currentCategory, unitName]
   );
 
   const formulaText = useMemo(() => {
@@ -129,8 +133,8 @@ export default function UnitConverter({
       return currentCategory.formulaDescription(fromUnitKey, toUnitKey, inputVal, calculatedResult);
     }
     const unitRatio = convertValue(1, fromDef, toDef);
-    return `1 ${fromDef.symbol} = ${unitRatio.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${toDef.symbol}`;
-  }, [currentCategory, fromDef, toDef, fromUnitKey, toUnitKey, inputVal, calculatedResult]);
+    return `1 ${fromDef.symbol} = ${format.number(unitRatio, { maximumFractionDigits: 6 })} ${toDef.symbol}`;
+  }, [currentCategory, fromDef, toDef, fromUnitKey, toUnitKey, inputVal, calculatedResult, format]);
 
   return (
     <div className="w-full space-y-8">
@@ -154,8 +158,8 @@ export default function UnitConverter({
 
       <CategoryBreakdownSection
         inputVal={inputVal}
-        fromName={fromDef.name}
-        categoryName={currentCategory.name}
+        fromName={unitName(currentCategory, fromDef)}
+        categoryName={categoryName(currentCategory)}
         rows={allCategoryConversions}
         fromUnitKey={fromUnitKey}
         toUnitKey={toUnitKey}
@@ -164,7 +168,11 @@ export default function UnitConverter({
         onCopyRow={handleCopy}
       />
 
-      <QuickReferenceSection fromDef={fromDef} toDef={toDef} precision={precision} />
+      <QuickReferenceSection
+        from={{ def: fromDef, name: unitName(currentCategory, fromDef) }}
+        to={{ def: toDef, name: unitName(currentCategory, toDef) }}
+        precision={precision}
+      />
 
       <PopularConversionsSection
         onSelectPreset={(category, from, to) => {

@@ -189,7 +189,7 @@ describe('scrubError reach', () => {
   it('masks the errors of an AggregateError', () => {
     const inner = new Error('agg https://u:p@h/x?sig=1 token=zzz1');
     const agg = new AggregateError([inner], 'agg');
-    scrubError(agg);
+    scrubError(agg, []);
     expect(inner.message).toBe('agg https://***@h/x?*** token=***');
   });
 
@@ -200,7 +200,7 @@ describe('scrubError reach', () => {
       config: { headers: { Authorization: 'Bearer abcdefghij' }, url: 'https://u:p@h.example/?sig=1' },
       status: 403,
     };
-    scrubError(err);
+    scrubError(err, []);
     expect(err.code).toBe('E_HTTP');
     expect(err.response).toEqual({ config: { headers: '***', url: 'https://***@h.example/?***' }, status: 403 });
   });
@@ -210,7 +210,7 @@ describe('scrubError reach', () => {
     const b = new Error('b password=two') as Error & { peer?: Error };
     a.peer = b;
     b.peer = a;
-    scrubError(a);
+    scrubError(a, []);
     expect([a.message, b.message]).toEqual(['a password=***', 'b password=***']);
   });
 });

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { PdfAValidationError, type EngineUnavailableError, type PdfPostprocessError } from '../types';
+import { PROBLEM_TYPE_BASE } from '../refusal-codes';
 
 /**
  * RFC 9457 Problem Details for HTTP APIs (supersedes RFC 7807).
@@ -89,15 +90,15 @@ const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
 };
 
 /** Problem type for a conversion whose native engine (for example LibreOffice) is not installed. */
-export const ENGINE_UNAVAILABLE_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
+export const ENGINE_UNAVAILABLE_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}engine-unavailable`;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const HTTP_UNPROCESSABLE_ENTITY = 422;
 
 /** Problem type for a PDF/A output that veraPDF rejected. */
-export const PDFA_VALIDATION_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdfa-validation-failed';
+export const PDFA_VALIDATION_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}pdfa-validation-failed`;
 
 /** Problem type for a short-lived per-key burst rejection (retry after seconds), distinct from the daily quota. */
-export const RATE_LIMITED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
+export const RATE_LIMITED_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}rate-limited`;
 
 /**
  * Formats and returns an RFC 9457 compliant problem details JSON response with Content-Type: application/problem+json.
@@ -158,7 +159,7 @@ export function createEngineUnavailableResponse(
 }
 
 /** Problem type for a PDF post-processing step (PDF/A, watermark, protection) the document made fail. */
-export const PDF_POSTPROCESS_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdf-postprocess-failed';
+export const PDF_POSTPROCESS_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}pdf-postprocess-failed`;
 
 /**
  * Maps a PdfPostprocessError to HTTP 422: the document converted, but a post-processing step
@@ -190,4 +191,29 @@ export function createPdfPostprocessResponse(
     PDF_POSTPROCESS_PROBLEM_TYPE,
     extraHeaders
   );
+}
+
+/**
+ * A `{ success: false, code, error }` refusal of a route of the web application: the English `error` for API callers, and
+ * one stable `code` per cause (src/lib/refusal-codes.ts) with the numbers it names in `extras`, which the interface words.
+ */
+export function codedRefusal<Code extends string>(
+  status: number,
+  code: Code | undefined,
+  error: string,
+  extras: Record<string, unknown> = {},
+  headers?: Record<string, string>
+): NextResponse {
+  return NextResponse.json({ success: false, ...(code ? { code } : {}), error, ...extras }, { status, headers });
+}
+
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+
+/**
+ * The 500 for an error a route did not classify. Its text can name a path or a program's output, which RFC 9457 section 5
+ * keeps out of an answer, so the answer is the fixed `sentence` and the error goes to the server log under `context`.
+ */
+export function serverFault<Code extends string>(context: string, error: unknown, sentence: string, code?: Code): NextResponse {
+  console.error(`[${context}]`, error);
+  return codedRefusal(HTTP_INTERNAL_SERVER_ERROR, code, sentence);
 }

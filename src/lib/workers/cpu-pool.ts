@@ -14,6 +14,8 @@ import {
   PayloadLimitError,
   UnsupportedOptionError,
 } from '../types';
+import { Woff2LimitError } from '../conversions/font-woff2-primitives';
+import { CONVERSION_REFUSAL_CODES, isCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 
 /**
  * A bounded pool of worker threads for CPU-bound encoders, so that one large conversion cannot stall the event loop of
@@ -70,6 +72,7 @@ interface WorkerFailure {
   name: string;
   message: string;
   status?: number;
+  refusalCode?: string;
 }
 
 interface WorkerReply {
@@ -106,6 +109,7 @@ const REHYDRATED_ERRORS: ReadonlyMap<string, new (message: string) => Error> = n
   ['PayloadLimitError', PayloadLimitError],
   ['DecompressionLimitError', DecompressionLimitError],
   ['ConversionFailedError', ConversionFailedError],
+  ['Woff2LimitError', Woff2LimitError],
 ]);
 
 function rehydrate(failure: WorkerFailure): Error {
@@ -114,6 +118,7 @@ function rehydrate(failure: WorkerFailure): Error {
   const error = new ConversionFailedError(failure.message);
   error.name = failure.name;
   if (failure.status !== undefined) (error as ConversionFailedError & { status?: number }).status = failure.status;
+  if (isCodeOf(CONVERSION_REFUSAL_CODES, failure.refusalCode)) (error as { refusalCode: ConversionRefusalCode }).refusalCode = failure.refusalCode;
   return error;
 }
 

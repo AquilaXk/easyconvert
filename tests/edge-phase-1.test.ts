@@ -23,7 +23,6 @@ import {
 } from '@/lib/edge/tier-router';
 import {
   tryProcessClientEdge,
-  createItemConverter,
   executeItemConversion,
 } from '@/lib/client-converter';
 import { ConversionQueueItem } from '@/lib/types';
@@ -591,48 +590,12 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
         options: { clientEdgeMode: true },
       };
 
-      let capturedError = '';
-      await executeItemConversion(queueItem, {
-        onProgress: vi.fn(),
-        onSuccess: vi.fn(),
-        onError: (err) => {
-          capturedError = err;
-        },
-      });
+      const onError = vi.fn();
+      await executeItemConversion(queueItem, { onProgress: vi.fn(), onSuccess: vi.fn(), onError });
 
-      expect(capturedError).toBe(
-        'Conversion from JSON to CSV requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.'
-      );
+      expect(onError).toHaveBeenCalledWith({ code: 'clientOnlyBlocked', source: 'JSON', target: 'CSV' });
       // Crucial: Must NEVER make an unconsented network fetch to server when the client edge cannot convert!
       expect(fetchSpy).not.toHaveBeenCalled();
-    });
-
-    it('rejects oversized files in createItemConverter', async () => {
-      let queue: ConversionQueueItem[] = [];
-      const setQueue = (action: any) => {
-        queue = typeof action === 'function' ? action(queue) : action;
-      };
-
-      const converter = createItemConverter(setQueue, 50 * 1024 * 1024); // 50MB ceiling
-      const bigFile = new File([new Uint8Array(60 * 1024 * 1024)], 'giant.csv');
-
-      const queueItem: ConversionQueueItem = {
-        id: 'item-big',
-        file: bigFile,
-        name: 'giant.csv',
-        size: bigFile.size,
-        sourceFormat: 'csv',
-        targetFormat: 'json',
-        status: 'ready',
-        progress: 0,
-        options: {},
-      };
-      queue = [queueItem];
-
-      await converter(queueItem);
-
-      expect(queue[0].status).toBe('error');
-      expect(queue[0].error).toContain('File size exceeds the 50 MiB limit.');
     });
   });
 });

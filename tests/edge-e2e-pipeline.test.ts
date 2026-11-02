@@ -108,7 +108,7 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(onSuccessSpy).not.toHaveBeenCalled();
       expect(onErrorSpy).toHaveBeenCalledTimes(1);
-      expect(onErrorSpy.mock.calls[0][0]).toMatch(/requires cloud serverless processing/);
+      expect(onErrorSpy.mock.calls[0][0]).toMatchObject({ code: 'clientOnlyBlocked' });
     });
   });
 

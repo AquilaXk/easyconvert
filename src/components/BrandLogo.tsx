@@ -42,7 +42,7 @@ export function BrandIcon({
     >
       <circle cx="60" cy="60" r="50" stroke="currentColor" strokeWidth="3.75" style={{ fill: 'rgb(var(--c-accent-soft))' }} />
       <g transform="translate(60, 60) scale(0.00743, -0.00743) translate(-7200, -7200)">
-        <path d={LAVENDER_ACCENT_AND_ARROW_PATH} style={{ fill: 'rgb(var(--sheen-1))' }} />
+        <path d={LAVENDER_ACCENT_AND_ARROW_PATH} style={{ fill: 'rgb(var(--c-accent))' }} />
         <path fill="currentColor" d={EC_MONOGRAM_PATH} />
       </g>
     </svg>

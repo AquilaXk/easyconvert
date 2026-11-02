@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
 import { ArrowRight, ChevronDown, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
 import { getAvailableTargetFormats } from '@/lib/registry';
@@ -24,13 +25,11 @@ export interface ConversionQueueProps {
   onAddMoreFiles: () => void;
   onDownloadAllZip: () => void;
   isConverting: boolean;
-  zipError?: string | null;
+  zipError?: boolean;
   onDismissZipError?: () => void;
 }
 
-function pluralizeFiles(count: number): string {
-  return count === 1 ? '1 file' : `${count} files`;
-}
+type QueueTranslator = ReturnType<typeof useTranslations<'queue'>>;
 
 function hasItemOptionError(item: ConversionQueueItem): boolean {
   if (
@@ -45,32 +44,25 @@ function hasItemOptionError(item: ConversionQueueItem): boolean {
 }
 
 function getQueueStatusSummary(
+  t: QueueTranslator,
   items: ConversionQueueItem[],
   convertibleItems: ConversionQueueItem[],
   isBusy: boolean
 ): string {
-  if (isBusy) return 'Converting queued files...';
+  if (isBusy) return t('status.converting');
   if (convertibleItems.length === 0) {
-    if (items.length === 0) return 'No files in queue';
-    return items.length === 1
-      ? '1 file exceeds the conversion size limit. Remove it to continue.'
-      : `${items.length} files exceed the conversion size limit. Remove them to continue.`;
+    if (items.length === 0) return t('status.empty');
+    return t('status.oversize', { count: items.length });
   }
-  if (convertibleItems.some((i) => !i.targetFormat?.trim())) {
-    return 'Please select an output format to continue';
-  }
-  if (convertibleItems.some(hasItemOptionError)) {
-    return 'Update password options or output format to continue.';
-  }
+  if (convertibleItems.some((i) => !i.targetFormat?.trim())) return t('status.chooseFormat');
+  if (convertibleItems.some(hasItemOptionError)) return t('status.fixOptions');
   if (convertibleItems.every((i) => i.status === 'completed')) {
-    return `Conversion complete for ${pluralizeFiles(convertibleItems.length)}`;
+    return t('status.complete', { count: convertibleItems.length });
   }
   const errorCount = convertibleItems.filter((i) => i.status === 'error').length;
-  if (errorCount > 0) {
-    return `${pluralizeFiles(errorCount)} failed conversion. Retry or remove to continue.`;
-  }
+  if (errorCount > 0) return t('status.failed', { count: errorCount });
   const readyCount = convertibleItems.filter((i) => i.status === 'ready').length;
-  return `Ready to convert ${pluralizeFiles(readyCount)}`;
+  return t('status.ready', { count: readyCount });
 }
 
 function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefinition[] {
@@ -94,42 +86,43 @@ function QueueBatchHeader({
   itemCount, canBatchSelect, effectiveBusy, isBatchSelectorOpen, batchTargetLabel, batchAvailableFormats,
   onUpdateAllTargets, onToggleBatchSelector, onCloseBatchSelector, onSelectBatchTarget, onClearAll,
 }: Readonly<QueueBatchHeaderProps>) {
+  const t = useTranslations('queue');
   return (
     <div className="px-4 sm:px-5 py-3 border-b border-rule flex flex-wrap items-center justify-between gap-3">
       {onUpdateAllTargets && canBatchSelect ? (
         <div className="flex items-center flex-wrap gap-2.5">
-          <span className="text-xs font-medium text-ink-2">Convert all to</span>
+          <span className="text-xs font-medium text-ink-2">{t('convertAllTo')}</span>
           <div className="relative">
             <button
               type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border border-rule-strong text-xs font-mono font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-xs border border-rule bg-sunken text-sm font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : 'Choose format'}</span>
+              <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
               <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
             </button>
             {isBatchSelectorOpen && (
               <FormatSelector
                 availableFormats={batchAvailableFormats} selectedFormatId={batchTargetLabel}
-                onSelect={onSelectBatchTarget} onClose={onCloseBatchSelector} title="Convert all compatible files to"
+                onSelect={onSelectBatchTarget} onClose={onCloseBatchSelector} title={t('convertAllTitle')}
               />
             )}
           </div>
         </div>
       ) : (
-        <span className="text-xs font-medium text-ink-2">{itemCount} files in queue</span>
+        <span className="text-xs font-medium text-ink-2">{t('filesInQueue', { count: itemCount })}</span>
       )}
       <button
         type="button" disabled={effectiveBusy} onClick={onClearAll}
         className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-sm text-xs font-medium text-ink-2 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        <Trash2 className="w-3.5 h-3.5" /><span>Clear all</span>
+        <Trash2 className="w-3.5 h-3.5" /><span>{t('clearAll')}</span>
       </button>
     </div>
   );
 }
 
 interface QueueFooterBarProps {
-  statusSummary: string; zipError?: string | null; onDismissZipError?: () => void;
+  statusSummary: string; zipError?: boolean; onDismissZipError?: () => void;
   effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean;
   onAddMoreFiles: () => void; onDownloadAllZip: () => void; onConvertAll: () => void;
 }
@@ -138,16 +131,18 @@ function QueueFooterBar({
   statusSummary, zipError, onDismissZipError, effectiveBusy, completedCount,
   allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
 }: Readonly<QueueFooterBarProps>) {
+  const t = useTranslations('queue');
+  const zipFailed = useTranslations('errors.queue')('zipFailed');
   return (
-    <div className="bg-sunken/50 border-t border-rule rounded-b-md px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
+    <div className="bg-surface border-t border-rule px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
       <div className="min-w-0">
         <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
         {zipError && (
-          <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <span>{zipError}</span>
+          <div className="mt-1 flex items-center gap-2 text-xs text-danger">
+            <p role="alert" className="min-w-0">{zipFailed}</p>
             {onDismissZipError && (
               <button
-                type="button" aria-label="Dismiss archive error" onClick={onDismissZipError}
+                type="button" aria-label={t('dismissZipError')} onClick={onDismissZipError}
                 className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm hover:bg-danger-soft cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
@@ -159,27 +154,27 @@ function QueueFooterBar({
       <div className="flex items-center flex-wrap sm:flex-nowrap gap-2.5 w-full sm:w-auto justify-end">
         <button
           type="button" disabled={effectiveBusy} onClick={onAddMoreFiles}
-          className="transition-colors min-h-[48px] px-4 rounded-sm text-ink border border-rule-strong hover:border-ink-3 text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors min-h-[48px] px-4 rounded-xs text-ink border border-rule bg-sunken hover:border-ink-3 text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <span>+ Add more files</span>
+          <span>{t('addMore')}</span>
         </button>
         {completedCount > 1 && (
           <button
             type="button" onClick={onDownloadAllZip}
-            className="transition-colors min-h-[48px] px-4 rounded-sm bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+            className="transition-colors min-h-[48px] px-4 rounded-xs bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            <Package className="w-4 h-4" /><span>Download All (.zip)</span>
+            <Package className="w-4 h-4" /><span>{t('downloadAll')}</span>
           </button>
         )}
         {!allDone && (
           <button
             type="button" disabled={!canConvert} onClick={onConvertAll}
-            className="lift bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent min-h-[48px] px-6 rounded-sm text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="btn-primary min-h-[48px] px-6 rounded-xs text-lg font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {effectiveBusy ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /><span>Converting...</span></>
+              <><Loader2 className="w-4 h-4 animate-spin" /><span>{t('converting')}</span></>
             ) : (
-              <><span>Convert</span><ArrowRight className="w-4 h-4" /></>
+              <><span>{t('convert')}</span><ArrowRight className="w-4 h-4" /></>
             )}
           </button>
         )}
@@ -189,6 +184,7 @@ function QueueFooterBar({
 }
 
 function deriveQueueViewState(
+  t: QueueTranslator,
   items: ConversionQueueItem[],
   convertibleItems: ConversionQueueItem[],
   isConverting: boolean
@@ -203,7 +199,7 @@ function deriveQueueViewState(
   const hasPending = convertibleItems.some((i) => i.status === 'ready' || i.status === 'error');
   const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
   const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
-  const statusSummary = getQueueStatusSummary(items, convertibleItems, effectiveBusy);
+  const statusSummary = getQueueStatusSummary(t, items, convertibleItems, effectiveBusy);
   return { effectiveBusy, completedCount, allDone, canConvert, statusSummary };
 }
 
@@ -212,6 +208,7 @@ export default function ConversionQueue({
   onUpdateOptions, onConvertAll, onConvertSingle, onAddMoreFiles, onDownloadAllZip,
   isConverting, zipError, onDismissZipError,
 }: Readonly<ConversionQueueProps>) {
+  const t = useTranslations('queue');
   const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
   const [isBatchSelectorOpen, setIsBatchSelectorOpen] = useState(false);
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
@@ -223,7 +220,7 @@ export default function ConversionQueue({
     () => items.filter((item) => item.size <= maxLimit),
     [items, maxLimit]
   );
-  const view = deriveQueueViewState(items, convertibleItems, isConverting);
+  const view = deriveQueueViewState(t, items, convertibleItems, isConverting);
   const batchAvailableFormats = useMemo(
     () => collectBatchTargetFormats(convertibleItems),
     [convertibleItems]
@@ -232,7 +229,7 @@ export default function ConversionQueue({
 
   return (
     <>
-      <div className="glass w-full rounded-md border border-rule overflow-visible">
+      <div className="bg-surface/50 w-full rounded-none border border-rule overflow-visible">
         {items.length > 1 && (
           <QueueBatchHeader
             itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}

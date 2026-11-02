@@ -93,8 +93,12 @@ jobs:
           platforms: linux/arm64
           push: true
           provenance: false
+          # The public origin is the host of deploy/oci/nginx-easyconvert.conf (tests/oci-deploy.test.ts holds the two together): the
+          # prerendered pages name it in their canonical and hreflang links. It is no secret, and the push build has no access to
+          # the environment secret that holds APP_URL for the running server.
           build-args: |
             WORKER_IMAGE=${{ env.WORKER_REPO }}@${{ steps.worker.outputs.digest }}
+            APP_ORIGIN=https://convert.aquilaxk.site
           tags: |
             ${{ env.WEB_REPO }}:sha-${{ github.sha }}
             ${{ env.WEB_REPO }}:main

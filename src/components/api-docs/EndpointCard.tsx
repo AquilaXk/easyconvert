@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import { Check, ChevronDown, ChevronRight, Copy, Shield, Terminal } from 'lucide-react';
 import { buildCurlSnippet } from './curl-builder';
 import { ParametersTable, RequestBodySection, ResponsesGrid } from './EndpointSchemaTables';
@@ -25,11 +26,12 @@ function getMethodBadgeClass(method: string): string {
 function SecurityBadges({
   security,
 }: Readonly<{ security: Array<Record<string, string[]>> }>) {
+  const t = useTranslations('apiDocs.endpoint');
   return (
     <div>
       <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider mb-2 flex items-center gap-1.5">
         <Shield className="w-3.5 h-3.5 text-accent-ink" aria-hidden="true" />
-        <span>Security &amp; Scopes</span>
+        <span>{t('security')}</span>
       </h3>
       <div className="flex flex-wrap gap-2">
         {security.flatMap((sec) =>
@@ -63,34 +65,35 @@ function ExecutableCurlSection({
   isCopied: boolean;
   onCopy: (text: string, id: string) => void;
 }>) {
+  const t = useTranslations('apiDocs.endpoint');
   const upperMethod = method.toUpperCase();
   return (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-2 mb-2">
         <h3 className="text-xs font-bold text-ink-2 uppercase tracking-wider flex items-center gap-1.5">
           <Terminal className="w-3.5 h-3.5 text-accent-ink" aria-hidden="true" />
-          <span>Executable cURL</span>
+          <span>{t('curl')}</span>
         </h3>
         <button
           type="button"
           onClick={() => onCopy(curlSnippet, copyId)}
-          aria-label={`Copy cURL command for ${upperMethod} ${path}`}
+          aria-label={t('copyLabel', { method: upperMethod, path })}
           className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-sm bg-sunken hover:bg-accent-soft border border-rule text-ink text-xs font-semibold transition-colors"
         >
           {isCopied ? (
             <>
               <Check className="w-3.5 h-3.5 text-success" />
-              <span>Copied</span>
+              <span>{t('copied')}</span>
             </>
           ) : (
             <>
               <Copy className="w-3.5 h-3.5" />
-              <span>Copy cURL</span>
+              <span>{t('copy')}</span>
             </>
           )}
         </button>
         <output aria-live="polite" className="sr-only">
-          {isCopied ? `Copied cURL command for ${upperMethod} ${path}` : ''}
+          {isCopied ? t('copiedAnnouncement', { method: upperMethod, path }) : ''}
         </output>
       </div>
       <pre className="p-3.5 rounded-md border border-rule text-xs font-mono text-ink-3 overflow-x-auto max-w-full leading-relaxed">

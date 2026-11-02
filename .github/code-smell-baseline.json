@@ -17,7 +17,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 52
+    "maxValue": 35
   },
   {
     "file": "src/app/api/fetch-url/route.ts",
@@ -30,7 +30,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 54
+    "maxValue": 47
   },
   {
     "file": "src/app/api/keys/[id]/route.ts",
@@ -250,7 +250,7 @@
     "file": "src/lib/client-converter.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "executeItemConversion",
-    "count": 2
+    "count": 1
   },
   {
     "file": "src/lib/client-converter.ts",
@@ -2267,7 +2267,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2768
+    "maxValue": 2376
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",
@@ -2310,14 +2310,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 113
+    "maxValue": 112
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 515
+    "maxValue": 514
   },
   {
     "file": "src/lib/queue/node-processor.ts",

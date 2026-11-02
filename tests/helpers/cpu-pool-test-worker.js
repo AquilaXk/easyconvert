@@ -23,6 +23,7 @@ const handlers = {
   typedFailure: (payload) => {
     const error = new Error(payload.message);
     error.name = payload.name;
+    error.refusalCode = payload.refusalCode;
     throw error;
   },
   exit: () => {
@@ -40,6 +41,6 @@ parentPort.on('message', (message) => {
     const { result, transfer } = handler(message.payload);
     parentPort.postMessage({ id: message.id, ok: true, result }, transfer || []);
   } catch (error) {
-    parentPort.postMessage({ id: message.id, ok: false, error: { name: error.name, message: error.message } });
+    parentPort.postMessage({ id: message.id, ok: false, error: { name: error.name, message: error.message, refusalCode: error.refusalCode } });
   }
 });

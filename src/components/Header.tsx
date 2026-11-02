@@ -1,40 +1,19 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import { Sun, Moon, ChevronDown, Menu, X } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
-
-interface ToolRoute {
-  label: string;
-  href: string;
-}
-
-const TOOL_ROUTES: readonly ToolRoute[] = [
-  { label: 'PDF Converter', href: '/pdf-converter' },
-  { label: 'Image Converter', href: '/image-converter' },
-  { label: 'Video Converter', href: '/video-converter' },
-  { label: 'Audio Converter', href: '/audio-converter' },
-  { label: 'Archive Converter', href: '/archive-converter' },
-  { label: 'Spreadsheet Converter', href: '/spreadsheet-converter' },
-  { label: 'Unit Converter', href: '/unit-converter' },
-  { label: 'PDF OCR', href: '/pdf-ocr' },
-  { label: 'Compress PDF', href: '/compress-pdf' },
-  { label: 'Merge PDF', href: '/merge-pdf' },
-  { label: 'System Status', href: '/status' },
-];
-
-const PRIMARY_LINKS: readonly ToolRoute[] = [
-  { label: 'Formats', href: '/#format-catalog' },
-  { label: 'How It Works', href: '/#how-it-works' },
-  { label: 'API Docs', href: '/api-docs' },
-  { label: 'Dashboard', href: '/dashboard' },
-];
+import LanguageSwitcher from './LanguageSwitcher';
+import { PRIMARY_LINKS, TOOL_ROUTES } from './site-links';
 
 function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
+  const t = useTranslations('header');
+  const tLinks = useTranslations('siteLinks');
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, true, onClose);
@@ -42,15 +21,15 @@ function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
   return (
     <dialog
       ref={dialogRef}
-      aria-label="Navigation menu"
-      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2"
+      aria-label={t('menuLabel')}
+      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2"
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-rule">
         <BrandLogo size="sm" />
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close menu"
+          aria-label={t('closeMenu')}
           className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
         >
           <X className="w-5 h-5" />
@@ -58,35 +37,39 @@ function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
       </div>
 
       <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(100dvh-6rem)]">
-        <nav aria-label="Mobile primary" className="flex flex-col gap-1">
+        <nav aria-label={t('mobileNavLabel')} className="flex flex-col gap-1">
           {PRIMARY_LINKS.map((item) => (
             <Link
-              key={item.href}
+              key={item.key}
               href={item.href}
               onClick={onClose}
               className="min-h-[44px] px-3 inline-flex items-center rounded-sm text-sm font-semibold text-ink hover:bg-sunken transition-colors"
             >
-              {item.label}
+              {tLinks(item.key)}
             </Link>
           ))}
         </nav>
 
         <div className="pt-3 border-t border-rule">
           <p className="px-3 pb-1.5 text-xs font-semibold uppercase tracking-wider text-ink-3">
-            Tools
+            {t('tools')}
           </p>
           <div className="grid grid-cols-1 gap-0.5">
             {TOOL_ROUTES.map((tool) => (
               <Link
-                key={tool.href}
+                key={tool.key}
                 href={tool.href}
                 onClick={onClose}
                 className="min-h-[44px] px-3 inline-flex items-center rounded-sm text-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors"
               >
-                {tool.label}
+                {tLinks(tool.key)}
               </Link>
             ))}
           </div>
+        </div>
+
+        <div className="pt-3 border-t border-rule">
+          <LanguageSwitcher />
         </div>
 
         <div className="pt-3 border-t border-rule">
@@ -98,6 +81,9 @@ function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
 }
 
 export default function Header() {
+  const t = useTranslations('header');
+  const tLinks = useTranslations('siteLinks');
+  const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -124,18 +110,18 @@ export default function Header() {
   }, [isToolsOpen]);
 
   return (
-    <header className="glass glass-frost text-ink border-b border-rule sticky top-0 z-40 h-16">
+    <header className="bg-surface/80 backdrop-blur-xl text-ink border-b border-rule sticky top-0 z-40 h-16">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
         <div className="flex items-center gap-6 min-w-0">
           <Link
             href="/"
-            aria-label="EasyConvert Home"
+            aria-label={t('homeLabel')}
             className="min-h-[44px] inline-flex items-center shrink-0 rounded-sm"
           >
             <BrandLogo size="md" />
           </Link>
 
-          <nav aria-label="Primary" className="hidden lg:flex items-center gap-1 whitespace-nowrap">
+          <nav aria-label={t('primaryNavLabel')} className="hidden lg:flex items-center gap-1 whitespace-nowrap">
             <div className="relative" ref={toolsContainerRef}>
               <button
                 type="button"
@@ -148,7 +134,7 @@ export default function Header() {
                     : 'text-ink-2 hover:text-ink'
                 }`}
               >
-                <span>Tools</span>
+                <span>{t('tools')}</span>
                 <ChevronDown
                   className={`w-3.5 h-3.5 transition-transform duration-150 ${
                     isToolsOpen ? 'rotate-180' : ''
@@ -161,12 +147,12 @@ export default function Header() {
                   <div className="grid grid-cols-2 gap-1">
                     {TOOL_ROUTES.map((tool) => (
                       <Link
-                        key={tool.href}
+                        key={tool.key}
                         href={tool.href}
                         onClick={() => setIsToolsOpen(false)}
                         className="min-h-[44px] sm:min-h-[40px] px-2.5 py-2 rounded-sm text-xs font-medium text-ink-2 hover:text-ink hover:bg-sunken inline-flex items-center transition-colors"
                       >
-                        {tool.label}
+                        {tLinks(tool.key)}
                       </Link>
                     ))}
                   </div>
@@ -176,21 +162,23 @@ export default function Header() {
 
             {PRIMARY_LINKS.map((item) => (
               <Link
-                key={item.href}
+                key={item.key}
                 href={item.href}
                 className="min-h-[44px] px-3 inline-flex items-center text-sm font-medium text-ink-2 hover:text-ink rounded-sm transition-colors"
               >
-                {item.label}
+                {tLinks(item.key)}
               </Link>
             ))}
           </nav>
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          <LanguageSwitcher className="hidden lg:block" />
+
           <button
             type="button"
             onClick={toggleDarkMode}
-            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={isDark ? tTheme('toLight') : tTheme('toDark')}
             className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
           >
             {isDark ? (
@@ -207,7 +195,7 @@ export default function Header() {
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen(true)}
-            aria-label="Open menu"
+            aria-label={t('openMenu')}
             aria-expanded={isMobileMenuOpen}
             className="lg:hidden min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
           >

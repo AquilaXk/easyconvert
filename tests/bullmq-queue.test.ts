@@ -120,4 +120,47 @@ describe('BullMQ Distributed Task Queue Tests', () => {
     await worker.close();
     await queue.close();
   });
+
+  it('masks credentials and server paths in the rows a job logs', async () => {
+    const queue = new Queue<{ num: number }, number>('test-log-masking-queue');
+    const worker = new Worker(
+      queue,
+      async (job) => {
+        await job.log('Engine fallback: spawn /usr/bin/magick ENOENT, password=hunter2');
+        return job.data.num;
+      },
+      { concurrency: 1 }
+    );
+    const completed = new Promise((resolve) => worker.on('completed', resolve));
+    const job = await queue.add('calc', { num: 1 });
+    await completed;
+
+    expect(job.logs).toHaveLength(1);
+    expect(job.logs[0]).toMatch(/^\[[^\]]+\] Engine fallback: spawn \*\*\* ENOENT, password=\*\*\*$/);
+
+    await worker.close();
+    await queue.close();
+  });
+
+  it('keeps the file names of the stack a failed job stores and masks its credentials', async () => {
+    const queue = new Queue<{ num: number }, number>('test-stack-masking-queue');
+    const worker = new Worker(
+      queue,
+      async () => {
+        throw new Error('spawn /usr/bin/magick ENOENT, password=hunter2');
+      },
+      { concurrency: 1 }
+    );
+    const failed = new Promise((resolve) => worker.on('failed', resolve));
+    const job = await queue.add('calc', { num: 1 }, { attempts: 1 });
+    await failed;
+
+    expect(job.failedReason).toBe('spawn *** ENOENT, password=***');
+    expect(job.stacktrace).toHaveLength(1);
+    expect(job.stacktrace[0]).toContain('bullmq-queue.test');
+    expect(job.stacktrace[0]).not.toContain('hunter2');
+
+    await worker.close();
+    await queue.close();
+  });
 });

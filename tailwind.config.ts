@@ -1,7 +1,6 @@
 import type { Config } from "tailwindcss";
 
 const token = (name: string) => `rgb(var(--c-${name}) / <alpha-value>)`;
-const radius = (steps: number) => `calc(var(--radius-unit) * ${steps})`;
 
 const config: Config = {
   darkMode: "class",
@@ -24,7 +23,6 @@ const config: Config = {
       accent: {
         DEFAULT: token("accent"),
         hover: token("accent-hover"),
-        press: token("accent-press"),
         ink: token("accent-ink"),
         soft: token("accent-soft"),
         edge: token("accent-edge"),
@@ -36,29 +34,23 @@ const config: Config = {
     },
     borderRadius: {
       none: "0",
-      xs: radius(0.5),
-      sm: radius(1),
-      md: radius(1.5),
-      xl: radius(3),
+      xs: "var(--radius-xs)",
+      sm: "var(--radius-sm)",
+      md: "var(--radius-md)",
+      xl: "var(--radius-xl)",
       full: "9999px",
     },
     boxShadow: {
       none: "none",
       "elev-1": "var(--elev-1)",
       "elev-2": "var(--elev-2)",
-      glow: "var(--glow)",
-      float: "var(--elev-2), var(--glow)",
     },
     extend: {
       maxWidth: {
         "8xl": "90rem",
       },
       fontFamily: {
-        sans: ["var(--font-ui)", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: ["var(--font-display)", "ui-serif", "Georgia", "serif"],
-      },
-      transitionTimingFunction: {
-        spring: "var(--ease-spring)",
+        sans: ["var(--font-ui)", "var(--font-ui-hangul)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
     },
   },

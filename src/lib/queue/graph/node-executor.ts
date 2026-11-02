@@ -12,7 +12,8 @@ import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
-import { redactText, redactUrl, scrubError } from '../../security/redact';
+import { redactUrl } from '../../security/redact';
+import { maskFailure } from '../../security/server-paths';
 import { graphNodeJobId } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
@@ -809,8 +810,6 @@ export async function processGraphNodeJob(
       ...(optimizations.length > 0 ? { optimizations } : {}),
     };
   } catch (err: any) {
-    // Whatever an SDK or a remote quoted into the error, it leaves this node run masked.
-    scrubError(err);
     // A retry may still succeed, and a cancelled attempt is not a failure: only the last
     // failed attempt fails the node (and, under fail_fast, the graph). A failure that cannot be
     // retried is the last one.
@@ -818,9 +817,10 @@ export async function processGraphNodeJob(
     // continue skips what depends on the node). Only a cancel or a takeover leaves the node to its own path.
     const pastDeadline = attemptSignal.reason instanceof JobTimeoutError;
     const failure: unknown = pastDeadline ? attemptSignal.reason : err;
+    // Whatever an SDK, a remote or an engine quoted into the error, it leaves this node run masked.
+    const reason = maskFailure(failure);
     if ((!attemptSignal.aborted || pastDeadline) && isFinalFailure({ attemptsMade: job.attemptsMade, opts: { attempts: job.opts?.attempts ?? 1 } }, failure)) {
-      const errorMsg = redactText(failure instanceof Error ? failure.message : String(failure));
-      await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
+      await graphScheduler.onNodeFailed(graphId, nodeId, reason);
     }
     throw failure;
   } finally {

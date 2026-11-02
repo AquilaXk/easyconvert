@@ -399,7 +399,11 @@ describe('a file over a single request is converted through parts and a job', ()
     installFetch(() => json({ type: 'https://api.easyconvert.io/problems/upload-budget-exceeded', detail: 'Without an account, uploads may total 2 GiB a day.' }, 429));
     const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
 
-    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('2 GiB a day');
+    const conversion = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
+    await expect(conversion).rejects.toThrow('2 GiB a day');
+    await expect(conversion).rejects.toMatchObject({
+      failure: { code: 'server', problem: { type: 'https://api.easyconvert.io/problems/upload-budget-exceeded', status: 429 } },
+    });
     expect(calls).toHaveLength(1);
   });
 
@@ -491,9 +495,9 @@ describe('a refusal or a failure is shown as the server worded it and leaves not
     installFetch(happyServer([{ id: 'job_1', state: 'failed', progress: 10, failedReason: 'The file is encrypted.' }]));
     const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
 
-    await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow(
-      'The file is encrypted.'
-    );
+    const conversion = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
+    await expect(conversion).rejects.toThrow('The file is encrypted.');
+    await expect(conversion).rejects.toHaveProperty('failure', { code: 'jobFailed', refusalCode: undefined });
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
     expect(calls.some((c) => c.url.includes('action=abort'))).toBe(false);
   });
@@ -605,9 +609,9 @@ describe('a refusal or a failure is shown as the server worded it and leaves not
     installFetch(happyServer([{ id: 'job_1', state: 'active', progress: 10 }]));
     const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
 
-    await expect(
-      executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, { ...NO_WAIT, maxWaitMs: 0 })
-    ).rejects.toThrow('did not finish in time');
+    const conversion = executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, { ...NO_WAIT, maxWaitMs: 0 });
+    await expect(conversion).rejects.toThrow('did not finish in time');
+    await expect(conversion).rejects.toMatchObject({ failure: { code: 'jobTimedOut' } });
     expect(calls.at(-1)).toMatchObject({ method: 'DELETE', url: '/api/queue/jobs/job_1' });
   });
 });
@@ -827,7 +831,10 @@ describe('the browser picks the way to the server by the size of the file', () =
 
     await executeItemConversion(itemOfSize(SINGLE_REQUEST_FILE_MAX_BYTES + 1), cb);
 
-    expect(cb.onError).toHaveBeenCalledWith('The server is out of disk space for new files. Retry the request shortly.');
+    expect(cb.onError).toHaveBeenCalledWith({
+      code: 'server',
+      problem: { detail: 'The server is out of disk space for new files. Retry the request shortly.', status: 503 },
+    });
   });
 
   it('reports nothing for a conversion that was cancelled', async () => {

@@ -5,7 +5,8 @@
 # built on, shares every other layer with it on disk and in the registry, and starts the server instead of the worker. Build the worker
 # image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE:
 #
-#   docker build -f Dockerfile.web --build-arg WORKER_IMAGE=ghcr.io/<owner>/easyconvert-worker@sha256:<digest> .
+#   docker build -f Dockerfile.web --build-arg WORKER_IMAGE=ghcr.io/<owner>/easyconvert-worker@sha256:<digest> \
+#     --build-arg APP_ORIGIN=https://<public host> .
 #
 # Next.js standalone output is not used: next.config.mjs turns output file tracing off, and the worker image already carries the
 # production node_modules (with the libvips build the worker pins), which `next start` reads.
@@ -31,12 +32,20 @@ COPY package*.json ./
 RUN npm ci --include=dev --ignore-scripts
 
 COPY tsconfig.json next.config.mjs postcss.config.mjs tailwind.config.ts ./
+COPY messages/ ./messages/
 COPY public/ ./public/
 COPY src/ ./src/
+COPY scripts/check-built-alternates.mjs ./scripts/
+
+# The public origin (https://<host>) the prerendered pages name in their canonical and hreflang links. Search engines read hreflang
+# only as absolute URLs, so the build fails without it, and the check after the build fails an image whose pages name another one.
+ARG APP_ORIGIN
+ENV APP_ORIGIN=${APP_ORIGIN}
+RUN test -n "$APP_ORIGIN" || { echo 'APP_ORIGIN must be set: pass --build-arg APP_ORIGIN=https://<public host>' >&2; exit 1; }
 
 # `next build` has no runtime environment: the production requirements of the configuration are enforced at start-up, not here
 # (NEXT_PHASE=phase-production-build).
-RUN ./node_modules/.bin/next build
+RUN ./node_modules/.bin/next build && node scripts/check-built-alternates.mjs .next/server/app
 
 # ==============================================================================
 # Stage 2: Web runtime on the worker image

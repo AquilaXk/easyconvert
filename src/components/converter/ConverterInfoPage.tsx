@@ -6,17 +6,19 @@ import FaqSection from '@/components/FaqSection';
 import StatusDashboard from '@/components/StatusDashboard';
 import UnitConverter from '@/components/UnitConverter';
 import type { ParsedSlug } from '@/lib/slug-parser';
-import { ContactContent, getPolicySections } from './info-page-sections';
+import { ContactContent, PolicySections } from './info-page-sections';
 
 const ROOT_SHELL_CLASS =
   'flex flex-col min-h-screen';
 
 interface ConverterInfoPageProps {
   parsed: ParsedSlug;
+  /** The page's title and description in the visitor's language. */
+  copy: { title: string; description: string };
   totalFormatCount: number;
 }
 
-export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<ConverterInfoPageProps>) {
+export function ConverterInfoPage({ parsed, copy, totalFormatCount }: Readonly<ConverterInfoPageProps>) {
   if (parsed.infoType === 'status') {
     return (
       <div className={ROOT_SHELL_CLASS}>
@@ -27,10 +29,10 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
         >
           <div className="mb-8">
             <h1 className="text-3xl sm:text-4xl text-ink">
-              {parsed.pageTitle}
+              {copy.title}
             </h1>
             <p className="mt-2 text-sm sm:text-base text-ink-2 max-w-3xl">
-              {parsed.pageDescription}
+              {copy.description}
             </p>
           </div>
           <StatusDashboard />
@@ -50,10 +52,10 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
         >
           <div className="mb-8">
             <h1 className="text-3xl sm:text-4xl text-ink">
-              {parsed.pageTitle}
+              {copy.title}
             </h1>
             <p className="mt-2 text-sm sm:text-base text-ink-2 max-w-2xl">
-              {parsed.pageDescription}
+              {copy.description}
             </p>
           </div>
           <UnitConverter initialSrc={parsed.sourceFormat} initialTgt={parsed.targetFormat} />
@@ -69,8 +71,6 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
     );
   }
 
-  const sections = getPolicySections(parsed.infoType, totalFormatCount);
-
   return (
     <div className={ROOT_SHELL_CLASS}>
       <Header />
@@ -80,26 +80,18 @@ export function ConverterInfoPage({ parsed, totalFormatCount }: Readonly<Convert
       >
         <div className="mb-8">
           <h1 className="text-3xl sm:text-4xl text-ink">
-            {parsed.pageTitle}
+            {copy.title}
           </h1>
           <p className="mt-2 text-sm sm:text-base text-ink-2">
-            {parsed.pageDescription}
+            {copy.description}
           </p>
         </div>
 
-        <div className="border-t border-rule-strong pt-6 sm:pt-8 space-y-6 text-sm text-ink-2 leading-relaxed">
+        <div className="border-t border-rule pt-6 sm:pt-8 space-y-6 text-sm text-ink-2 leading-relaxed">
           {parsed.infoType === 'contact' ? (
             <ContactContent />
           ) : (
-            sections.map((section) => (
-              <section key={section.heading} className="space-y-2">
-                <h2 className="text-xl text-ink">
-                  {section.heading}
-                </h2>
-                <p>{section.body}</p>
-                {section.footer}
-              </section>
-            ))
+            <PolicySections infoType={parsed.infoType} totalFormatCount={totalFormatCount} />
           )}
         </div>
       </main>

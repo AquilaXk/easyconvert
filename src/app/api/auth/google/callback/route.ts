@@ -7,8 +7,15 @@ import {
 } from '@/lib/auth/oauth';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie, getSessionFromRequest } from '@/lib/auth/session';
+import { getPathname } from '@/i18n/navigation';
+import { routing, type AppLocale } from '@/i18n/routing';
 
 export const dynamic = 'force-dynamic';
+
+/** A redirect to `pathname` in `locale` (its prefix, none for the default language), with `search` as it is. */
+function redirectTo(req: NextRequest, locale: AppLocale, pathname: string, search = ''): NextResponse {
+  return NextResponse.redirect(new URL(`${getPathname({ locale, href: pathname })}${search}`, req.url));
+}
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -18,25 +25,27 @@ export async function GET(req: NextRequest) {
   const origin = getAppOrigin(req);
   const redirectUri = `${origin}/api/auth/google/callback`;
 
-  if (!code) {
-    return NextResponse.redirect(new URL('/auth?error=oauth_code_missing', req.url));
-  }
-
+  // Until the state is consumed the language of the sign-in is unknown, so these answers use the default language.
   // 1. Validate state parameter exists
   if (!state) {
-    return NextResponse.redirect(new URL('/auth?error=invalid_oauth_state', req.url));
+    return redirectTo(req, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
   }
 
   // 2. Cookie-to-state binding verification (Login CSRF Defense)
   const stateCookie = req.cookies.get(OAUTH_STATE_COOKIE_NAME)?.value;
   if (stateCookie && stateCookie !== state) {
-    return NextResponse.redirect(new URL('/auth?error=invalid_oauth_state', req.url));
+    return redirectTo(req, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
   }
 
   // 3. Atomically consume OAuth state from Redis or local cache
   const oauthSession = await consumeOAuthSession(state);
   if (!oauthSession) {
-    return NextResponse.redirect(new URL('/auth?error=invalid_oauth_state', req.url));
+    return redirectTo(req, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
+  }
+  const { locale } = oauthSession;
+
+  if (!code) {
+    return redirectTo(req, locale, '/auth', '?error=oauth_code_missing');
   }
 
   try {
@@ -66,9 +75,7 @@ export async function GET(req: NextRequest) {
           provider: 'google',
         })) || userRecord;
       } else {
-        return NextResponse.redirect(
-          new URL(`/auth?error=account_linking_required&email=${encodeURIComponent(googleProfile.email)}`, req.url)
-        );
+        return redirectTo(req, locale, '/auth', `?error=account_linking_required&email=${encodeURIComponent(googleProfile.email)}`);
       }
     }
 
@@ -76,7 +83,7 @@ export async function GET(req: NextRequest) {
     const token = createSessionToken(user);
     const sessionCookieHeader = createSessionCookie(token);
 
-    const redirectResponse = NextResponse.redirect(new URL('/dashboard', req.url));
+    const redirectResponse = redirectTo(req, locale, '/dashboard');
     redirectResponse.headers.append('Set-Cookie', sessionCookieHeader);
 
     // Clear the OAuth state cookie
@@ -87,7 +94,7 @@ export async function GET(req: NextRequest) {
     return redirectResponse;
   } catch (err: unknown) {
     const errorMsg = encodeURIComponent(err instanceof Error ? err.message : 'oauth_exchange_failed');
-    return NextResponse.redirect(new URL(`/auth?error=${errorMsg}`, req.url));
+    return redirectTo(req, locale, '/auth', `?error=${errorMsg}`);
   }
 }
 

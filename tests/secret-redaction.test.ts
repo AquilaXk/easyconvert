@@ -107,7 +107,7 @@ describe('scrubError', () => {
   it('masks the message and stack of an error in place, and of its cause chain', () => {
     const root = new Error('root saw https://u:p@h.example/x?sig=1');
     const outer = new Error('outer: Authorization: Bearer abc.def-ghi_jkl123', { cause: root });
-    const returned = scrubError(outer);
+    const returned = scrubError(outer, []);
     expect(returned).toBe(outer);
     expect(outer.message).toBe('outer: Authorization: ***');
     expect(outer.stack).not.toContain('abc.def');
@@ -116,8 +116,8 @@ describe('scrubError', () => {
   });
 
   it('returns values that are not errors unchanged', () => {
-    expect(scrubError('password=hunter2')).toBe('password=hunter2');
-    expect(scrubError(undefined)).toBeUndefined();
+    expect(scrubError('password=hunter2', [])).toBe('password=hunter2');
+    expect(scrubError(undefined, [])).toBeUndefined();
   });
 
   it('stops following a cause chain at the depth limit', () => {
@@ -128,7 +128,7 @@ describe('scrubError', () => {
       while (current.cause instanceof Error) current = current.cause;
       return current;
     })();
-    scrubError(error);
+    scrubError(error, []);
     expect(leaf.message).toBe('https://u:p@h.example/leaf?sig=1');
   });
 });

@@ -6,6 +6,7 @@
  */
 
 import { ConversionOptions } from '../../types';
+import { ConversionFailureError, jobFailure, serverRefusal } from '../../conversion-failure';
 import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../part-in-flight';
 import { UPLOAD_PART_MAX_BYTES } from '../../plan-limits';
 
@@ -214,8 +215,7 @@ async function sendWithRetry(
 async function readBody(res: Response, action: string): Promise<Body> {
   const body = (await res.json().catch(() => ({}))) as Body;
   if (!res.ok) {
-    const reason = [body.detail, body.error].find((text): text is string => typeof text === 'string');
-    throw new Error(reason ?? `${action} failed (HTTP ${res.status}).`);
+    throw serverRefusal(body, res.status, `${action} failed (HTTP ${res.status}).`);
   }
   return body;
 }
@@ -367,11 +367,13 @@ async function waitForResult(jobId: string, call: CallState, hooks: ResumableHoo
       return { url: readString(result, 'downloadUrl', 'The conversion'), size: typeof result.size === 'number' ? result.size : 0 };
     }
     if (call.stage.kind === 'finished') {
-      throw new Error(typeof job.failedReason === 'string' && job.failedReason ? job.failedReason : 'The conversion failed.');
+      throw jobFailure(job);
     }
     const jobProgress = typeof job.progress === 'number' ? Math.min(Math.max(job.progress, 0), FULL_PROGRESS) : 0;
     hooks.onProgress(Math.round(UPLOAD_PROGRESS_END + (jobProgress / FULL_PROGRESS) * (FULL_PROGRESS - UPLOAD_PROGRESS_END)));
-    if (Date.now() >= giveUpAt) throw new Error('The conversion did not finish in time. Try again.');
+    if (Date.now() >= giveUpAt) {
+      throw new ConversionFailureError('The conversion did not finish in time. Try again.', { code: 'jobTimedOut' });
+    }
     await sleep(timing.pollIntervalMs, hooks.signal);
   }
 }

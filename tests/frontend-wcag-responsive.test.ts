@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
 
-vi.mock('next/navigation', () => ({
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
   useRouter: () => ({
     push: () => undefined,
     replace: () => undefined,
@@ -16,16 +17,16 @@ vi.mock('next/navigation', () => ({
 
 import { CATEGORIES, getAllFormats } from '../src/lib/registry';
 import { CATEGORY_ORDER, REGISTRY_STATS } from '../src/lib/registry-stats';
-import HomePage from '../src/app/page';
-import DynamicConverterPage from '../src/app/[slug]/page';
-import AuthPage from '../src/app/auth/page';
-import { resolveOAuthErrorMessage } from '../src/components/auth/AuthForms';
-import ApiDocsPage from '../src/app/api-docs/page';
+import HomePage from '../src/components/pages/HomePageView';
+import ConverterPageView from '../src/components/pages/ConverterPageView';
+import AuthPage from '../src/components/pages/AuthPageView';
+import { resolveOAuthErrorKey } from '../src/components/auth/AuthForms';
+import ApiDocsPage from '../src/components/pages/ApiDocsPageView';
 import { writeClipboardText } from '../src/hooks/useCopyFeedback';
-import StatusPage from '../src/app/status/page';
+import StatusPage from '../src/components/pages/StatusPageView';
 import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
 import { collectEdgeDiagnostics, probeWasmSimd } from '../src/components/status/status-probes';
-import UnitConverterPage from '../src/app/unit-converter/page';
+import UnitConverterPage from '../src/components/pages/UnitConverterPageView';
 import { formatEditableDecimal } from '../src/lib/unit-catalog';
 import OptionsModal from '../src/components/OptionsModal';
 import {
@@ -54,6 +55,7 @@ import {
   visibleText,
   type DomElement,
 } from './helpers/rendered-dom';
+import { testTranslator } from './helpers/intl';
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -67,17 +69,6 @@ function collectUiFiles(dir: string, acc: string[] = []): string[] {
     }
   }
   return acc;
-}
-
-function slugParams(slug: string): Promise<{ slug: string }> {
-  const value = { slug };
-  const settled = Promise.resolve(value) as Promise<{ slug: string }> & {
-    status: string;
-    value: { slug: string };
-  };
-  settled.status = 'fulfilled';
-  settled.value = value;
-  return settled;
 }
 
 const noop = () => undefined;
@@ -380,7 +371,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(attrOf(progressBars[0], 'value')).toBe('64');
 
     const errorQueue = render(ConversionQueue, {
-      items: [makeQueueItem({ status: 'error', error: 'Corrupt PNG header signature' })],
+      items: [makeQueueItem({ status: 'error', error: { code: 'server', problem: { detail: 'Corrupt PNG header signature', status: 400 } } })],
       onRemoveItem: noop,
       onClearAll: noop,
       onUpdateTargetFormat: noop,
@@ -392,7 +383,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       isConverting: false,
     });
     const alerts = allElements(errorQueue).filter((el) => attrOf(el, 'role') === 'alert');
-    expect(alerts.map((a) => visibleText(a))).toEqual(['Corrupt PNG header signature']);
+    expect(alerts.map((a) => visibleText(a))).toEqual(['The request was refused. Check the file and its settings, then try again.']);
+    expect(visibleText(errorQueue)).not.toContain('Corrupt PNG header signature');
   });
 
   it('handles FormatSelector empty capability arrays, OAuth error allowlists, and unsupported diagnostics', () => {
@@ -412,27 +404,34 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(visibleText(emptyPicker)).toMatch(/No supported output formats for this file/);
     expect(phrasesPresent(visibleText(emptyPicker), ['WEBP', 'DOCX', 'MP4'])).toEqual([]);
 
-    expect(resolveOAuthErrorMessage(null)).toBeNull();
-    expect(resolveOAuthErrorMessage('%')).toBe('Authentication failed. Please try signing in again.');
-    expect(resolveOAuthErrorMessage('100%')).toBe('Authentication failed. Please try signing in again.');
-    expect(resolveOAuthErrorMessage('Call +1-800-PHISH')).toBe('Authentication failed. Please try signing in again.');
-    expect(resolveOAuthErrorMessage('account_linking_required')).toMatch(/Sign in with your password first/);
+    const tOAuth = testTranslator('en', 'auth');
+    const oauthMessage = (code: string | null) => {
+      const key = resolveOAuthErrorKey(code);
+      return key ? tOAuth(`oauthErrors.${key}`) : null;
+    };
+    expect(oauthMessage(null)).toBeNull();
+    expect(oauthMessage('%')).toBe('Authentication failed. Please try signing in again.');
+    expect(oauthMessage('100%')).toBe('Authentication failed. Please try signing in again.');
+    expect(oauthMessage('Call +1-800-PHISH')).toBe('Authentication failed. Please try signing in again.');
+    expect(oauthMessage('account_linking_required')).toMatch(/Sign in with your password first/);
 
     const diagDom = render(DiagnosticResultsCard, {
       results: [
-        { id: 'wasm', name: 'WebAssembly SIMD', details: '128-bit lanes', latencyMs: 1, supported: true },
-        { id: 'opfs', name: 'Origin Private FS', details: 'Blob memory streaming active', latencyMs: 1, supported: false },
+        { id: 'wasm', latencyMs: 1, supported: true },
+        { id: 'opfs', latencyMs: 1, supported: false },
       ],
     });
-    expect(phrasesMissing(visibleText(diagDom), ['1/2 Active', 'Unavailable'])).toEqual([]);
+    expect(
+      phrasesMissing(visibleText(diagDom), ['1/2 Active', 'Unavailable', 'Hardware SIMD enabled', 'Blob memory streaming active'])
+    ).toEqual([]);
   });
 
   it('maintains WCAG 2.1 AA landmarks, single h1, non-skipping heading levels, and labeled 16px controls across routes', () => {
     const routes: ReadonlyArray<{ name: string; dom: DomElement }> = [
       { name: '/', dom: render(HomePage, {}) },
-      { name: '/pdf-to-docx', dom: render(DynamicConverterPage, { params: slugParams('pdf-to-docx') }) },
-      { name: '/accessibility', dom: render(DynamicConverterPage, { params: slugParams('accessibility') }) },
-      { name: '/contact', dom: render(DynamicConverterPage, { params: slugParams('contact') }) },
+      { name: '/pdf-to-docx', dom: render(ConverterPageView, { slug: 'pdf-to-docx' }) },
+      { name: '/accessibility', dom: render(ConverterPageView, { slug: 'accessibility' }) },
+      { name: '/contact', dom: render(ConverterPageView, { slug: 'contact' }) },
       { name: '/auth', dom: render(AuthPage, {}) },
       { name: '/api-docs', dom: render(ApiDocsPage, {}) },
       { name: '/status', dom: render(StatusPage, {}) },
@@ -536,15 +535,19 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(validScopesSubmit).toHaveLength(1);
     expect(attrOf(validScopesSubmit[0], 'disabled')).toBeNull();
 
-    expect(buildKeyCreationRequest('Worker Key', [], '30d', 1730000000000)).toEqual({
+    expect(buildKeyCreationRequest('Worker Key', [], '30d', 1730000000000, 'Production API Key')).toEqual({
       ok: false,
-      error: 'Select at least one permission scope before creating an API key.',
+      error: 'noScopes',
     });
+    expect(testTranslator('en', 'dashboard.errors')('noScopes')).toBe(
+      'Select at least one permission scope before creating an API key.'
+    );
     const validKeyReq = buildKeyCreationRequest(
       'Worker Key',
       ['convert:read'],
       'never',
-      1730000000000
+      1730000000000,
+      'Production API Key'
     );
     expect(validKeyReq).toEqual({
       ok: true,
@@ -623,7 +626,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       const probes = collectEdgeDiagnostics();
       const wasmProbe = probes.find((p) => p.id === 'wasm')!;
       expect(wasmProbe.supported).toBe(false);
-      expect(wasmProbe.details).toBe('WebAssembly 128-bit SIMD unavailable');
+      const probeDom = render(DiagnosticResultsCard, { results: [wasmProbe] });
+      expect(visibleText(probeDom)).toContain('WebAssembly 128-bit SIMD unavailable');
     } finally {
       validateSpy.mockRestore();
     }

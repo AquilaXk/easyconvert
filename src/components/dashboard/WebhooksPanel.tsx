@@ -1,4 +1,5 @@
 import React from 'react';
+import { useFormatter, useTranslations } from 'next-intl';
 import { Eye, Inbox, Loader2, Play, RefreshCw, Trash2, X } from 'lucide-react';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import { DlqPayloadDialog } from './DlqPayloadDialog';
@@ -30,6 +31,8 @@ export function WebhooksPanel({
   onReplay,
   onDelete,
 }: Readonly<WebhooksPanelProps>) {
+  const t = useTranslations('dashboard.dlq');
+  const format = useFormatter();
   return (
     <div
       id="dashboard-panel-dlq"
@@ -37,22 +40,21 @@ export function WebhooksPanel({
       aria-labelledby="dashboard-tab-dlq"
       className="space-y-6"
     >
-      <div className="border-t border-rule-strong pt-6">
+      <div className="border-t border-rule pt-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl text-ink">
-                Webhook Dead Letter Queue (DLQ)
+                {t('heading')}
               </h2>
               {entries.length > 0 && (
                 <span className="px-2.5 py-0.5 rounded-sm text-xs font-bold bg-danger-soft text-danger border border-danger-edge">
-                  {entries.length} Failed
+                  {t('failedCount', { count: entries.length })}
                 </span>
               )}
             </div>
             <p className="text-sm text-ink-2 mt-1">
-              Failed webhook deliveries retained after exhausted backoff retries. Inspect payloads
-              or trigger a replay.
+              {t('intro')}
             </p>
           </div>
 
@@ -64,7 +66,7 @@ export function WebhooksPanel({
               className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-rule text-xs font-semibold hover:bg-sunken transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
+              <span>{t('refresh')}</span>
             </button>
             {entries.length > 0 && (
               <button
@@ -73,37 +75,34 @@ export function WebhooksPanel({
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-danger-edge text-danger text-xs font-semibold hover:bg-danger-soft transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>Clear DLQ</span>
+                <span>{t('clear')}</span>
               </button>
             )}
           </div>
         </div>
 
         {feedback && (
-          <output
-            aria-live="polite"
-            className="mb-4 pl-4 pr-2 py-2 rounded-md bg-accent-soft border border-accent-edge text-xs text-accent-ink flex items-center justify-between gap-2"
-          >
-            <span>{feedback}</span>
+          <div className="mb-4 pl-4 pr-2 py-2 rounded-md bg-accent-soft border border-accent-edge text-xs text-accent-ink flex items-center justify-between gap-2">
+            <output aria-live="polite" className="block min-w-0">{feedback}</output>
             <button
               type="button"
               onClick={onDismissFeedback}
-              aria-label="Dismiss webhook notification"
+              aria-label={t('dismissFeedback')}
               className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm hover:bg-accent-soft"
             >
               <X className="w-4 h-4" />
             </button>
-          </output>
+          </div>
         )}
 
         {entries.length === 0 ? (
-          <div className="text-center py-14 border border-dashed border-rule-strong/60 rounded-sm">
+          <div className="text-center py-14 border border-dashed border-rule rounded-sm">
             <Inbox className="w-10 h-10 text-ink-3 mx-auto mb-2.5" />
             <p className="text-base font-semibold text-ink">
-              Dead Letter Queue is Empty
+              {t('emptyHeading')}
             </p>
             <p className="text-xs text-ink-3 mt-1 max-w-sm mx-auto">
-              All webhook deliveries succeeded or no failed dispatches are pending.
+              {t('emptyBody')}
             </p>
           </div>
         ) : (
@@ -111,12 +110,12 @@ export function WebhooksPanel({
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-rule text-ink-3 text-xs uppercase">
-                  <th className="pb-3 pr-4 font-semibold">Event</th>
-                  <th className="pb-3 pr-4 font-semibold">Target URL</th>
-                  <th className="pb-3 pr-4 font-semibold">Status</th>
-                  <th className="pb-3 pr-4 font-semibold">Failed At</th>
-                  <th className="pb-3 pr-4 font-semibold">Retries</th>
-                  <th className="pb-3 font-semibold text-right">Actions</th>
+                  <th className="pb-3 pr-4 font-semibold">{t('columns.event')}</th>
+                  <th className="pb-3 pr-4 font-semibold">{t('columns.target')}</th>
+                  <th className="pb-3 pr-4 font-semibold">{t('columns.status')}</th>
+                  <th className="pb-3 pr-4 font-semibold">{t('columns.failedAt')}</th>
+                  <th className="pb-3 pr-4 font-semibold">{t('columns.retries')}</th>
+                  <th className="pb-3 font-semibold text-right">{t('columns.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-rule">
@@ -146,21 +145,21 @@ export function WebhooksPanel({
                               : 'bg-danger-soft text-danger border-danger-edge'
                           }`}
                         >
-                          {isReplayed ? 'REPLAYED' : `HTTP ${entry.finalStatusCode ?? 'ERR'}`}
+                          {isReplayed ? t('replayed') : `HTTP ${entry.finalStatusCode ?? 'ERR'}`}
                         </span>
                       </td>
                       <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
-                        {new Date(entry.failedAt).toLocaleString()}
+                        {format.dateTime(new Date(entry.failedAt), { dateStyle: 'medium', timeStyle: 'short' })}
                       </td>
                       <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
-                        {entry.retryCount} attempts
+                        {t('attempts', { count: entry.retryCount })}
                       </td>
                       <td className="py-3.5 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-2">
                           <button
                             type="button"
                             onClick={() => onInspect(entry)}
-                            aria-label={`Inspect payload for ${entry.event}`}
+                            aria-label={t('inspectLabel', { event: entry.event })}
                             className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule hover:bg-sunken text-ink-2 hover:text-ink transition-colors"
                           >
                             <Eye className="w-4 h-4" />
@@ -169,20 +168,20 @@ export function WebhooksPanel({
                             type="button"
                             onClick={() => onReplay(entry.id)}
                             disabled={replayingId === entry.id}
-                            aria-label={`Replay webhook ${entry.id}`}
-                            className="lift min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-xs font-semibold disabled:opacity-60"
+                            aria-label={t('replayLabel', { id: entry.id })}
+                            className="btn-primary min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-sm text-xs font-semibold disabled:opacity-60"
                           >
                             {replayingId === entry.id ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             ) : (
                               <Play className="w-3.5 h-3.5" />
                             )}
-                            <span>Replay</span>
+                            <span>{t('replay')}</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => onDelete(entry.id)}
-                            aria-label={`Delete failed webhook ${entry.id}`}
+                            aria-label={t('deleteLabel', { id: entry.id })}
                             className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule hover:bg-danger-soft text-danger transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />

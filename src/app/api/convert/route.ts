@@ -13,7 +13,6 @@ import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
-  ArchiveEntryCollisionError,
   isUnprocessableInputError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -23,17 +22,86 @@ import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from 
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
+  codedRefusal,
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
   createPdfPostprocessResponse,
+  serverFault,
 } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
+import { refusalCodeOf, type ConversionRefusalCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
+
+const UNCLASSIFIED_FAILURE = 'The conversion failed on the server.';
+
+const refusal = codedRefusal<ConversionRefusalCode>;
+
+const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+const HTTP_UNPROCESSABLE_CONTENT = 422;
+
+/** The archive refusals answered as a coded 422 by the code their class declares: an entry name collision, a missing volume, an encrypted header. */
+const CODED_ARCHIVE_REFUSALS: ReadonlySet<ConversionRefusalCode> = new Set(['archive_entry_collision', 'missing_volume', 'encrypted_input']);
+
+const isMultipartBody = (req: NextRequest): boolean => (req.headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
+
+/** Whether a failed conversion was refused for its input (400) rather than failed on the server (500). */
+function isValidationError(error: unknown, message: string): boolean {
+  return (
+    error instanceof ConversionFailedError ||
+    message.includes('payload is empty') ||
+    message.includes('Cannot convert') ||
+    message.includes('Unsupported') ||
+    message.includes('Failed to parse') ||
+    message.includes('OCR failed') ||
+    message.includes('PDF OCR') ||
+    message.includes('compression') ||
+    message.includes('Fail-Closed')
+  );
+}
+
+/** The answer for an error a conversion threw: its problem type or status, and the code of its cause. */
+function conversionErrorResponse(error: unknown, instanceUri: string): NextResponse {
+  const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+  if (deadlineProblem) return deadlineProblem;
+  if (error instanceof EngineUnavailableError) {
+    return createEngineUnavailableResponse(error, instanceUri);
+  }
+  if (error instanceof PdfPostprocessError) {
+    return createPdfPostprocessResponse(error, instanceUri);
+  }
+  const limitStatus = payloadLimitStatus(error);
+  if (limitStatus !== null) {
+    // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
+    return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
+      code: refusalCodeOf(error),
+    });
+  }
+  if (isUnprocessableInputError(error)) {
+    // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
+    // decode (an archive's password and method errors included), a DWG release or drawing the DWG reader refuses, or a font FontForge
+    // cannot read in full: 422, not the 400 of a malformed input.
+    return createProblemDetailsResponse(error.status, error.message, instanceUri, undefined, undefined, undefined, undefined, {
+      code: error.refusalCode,
+    });
+  }
+  const code = refusalCodeOf(error);
+  if (error instanceof Error && (error as { status?: unknown }).status === HTTP_UNPROCESSABLE_CONTENT && code && CODED_ARCHIVE_REFUSALS.has(code)) {
+    return refusal(HTTP_UNPROCESSABLE_CONTENT, code, error.message);
+  }
+  if (error instanceof WorkerOutputMissingError) {
+    // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+    console.error('[convert] Worker output vanished before it was read:', error);
+    return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
+  }
+  const message = error instanceof Error ? error.message : UNCLASSIFIED_FAILURE;
+  if (isValidationError(error, message)) return refusal(400, code ?? 'conversion_failed', message);
+  return serverFault('convert', error, UNCLASSIFIED_FAILURE);
+}
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
@@ -59,12 +127,16 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
   const reservationId = auth.reservationId;
 
-  const failWithRollback = async (status: number, error: string) => {
+  const failWithRollback = async (status: number, code: ConversionRefusalCode | undefined, error: string) => {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
-    return NextResponse.json({ success: false, error }, { status });
+    return refusal(status, code, error);
   };
+
+  if (!isMultipartBody(req)) {
+    return await failWithRollback(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
+  }
 
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
@@ -81,18 +153,15 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const optionsRaw = formData.get('options') as string | null;
 
     if (!file) {
-      return await failWithRollback(400, 'Missing required "file" in multipart request.');
+      return await failWithRollback(400, 'file_required', 'Missing required "file" in multipart request.');
     }
 
     if (file.size === 0) {
-      return await failWithRollback(400, 'Conversion payload is empty. File buffer has 0 bytes.');
+      return await failWithRollback(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
     }
 
     if (!targetFormat) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required "targetFormat" parameter.' },
-        { status: 400 }
-      );
+      return refusal(400, 'target_required', 'Missing required "targetFormat" parameter.');
     }
 
     const sourceFormatParam = formData.get('sourceFormat') as string | null;
@@ -105,26 +174,16 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     if (!detectedDef) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`,
-        },
-        { status: 400 }
-      );
+      return refusal(400, 'unknown_format', `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`);
     }
 
     const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
     const availableTargets = getAvailableTargetFormats(detectedDef.extension).map((d) => d.extension);
     if (!availableTargets.includes(tgt)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${availableTargets.join(
-            ', '
-          )}`,
-        },
-        { status: 400 }
+      return refusal(
+        400,
+        'unsupported_pair',
+        `Cannot convert from ${detectedDef.name} (.${detectedDef.extension}) to target format .${tgt}. Available targets: ${availableTargets.join(', ')}`
       );
     }
 
@@ -134,13 +193,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       try {
         parsed = JSON.parse(optionsRaw);
       } catch {
-        return NextResponse.json(
-          { success: false, error: 'Invalid JSON format for "options" parameter.' },
-          { status: 400 }
-        );
+        return refusal(400, 'invalid_options', 'Invalid JSON format for "options" parameter.');
       }
       if (!isConversionOptionsObject(parsed)) {
-        return await failWithRollback(400, 'The "options" field must be a JSON object.');
+        return await failWithRollback(400, 'invalid_options', 'The "options" field must be a JSON object.');
       }
       options = parsed;
       const optionsProblem = legacyOptionsProblem(options, instanceUri);
@@ -152,16 +208,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    if (options) {
-      if (!options.pages && options.page) {
-        options.pages = String(options.page);
-      }
-      if (options.pages) {
-        try {
-          validateTierPageLimit(options.pages, auth.user?.tier || 'free');
-        } catch (err: any) {
-          return await failWithRollback(422, err.message);
-        }
+    if (!options.pages && options.page) {
+      options.pages = String(options.page);
+    }
+    if (options.pages) {
+      try {
+        validateTierPageLimit(options.pages, auth.user?.tier || 'free');
+      } catch (err: any) {
+        return await failWithRollback(422, refusalCodeOf(err), err.message);
       }
     }
 
@@ -172,10 +226,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     try {
       assertNotSpoofedFile(inputBuffer, detectedDef.extension, file.name);
     } catch (err: any) {
-      return NextResponse.json(
-        { success: false, error: err.message || 'File spoofing detected.' },
-        { status: spoofCheckStatus(err) }
-      );
+      return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', err.message || 'File spoofing detected.');
     }
 
     // Perform conversion via the shared dispatcher (native engines first, in-process where valid)
@@ -223,48 +274,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
       await rollbackQuota(reservationId);
     }
-    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
-    if (deadlineProblem) return deadlineProblem;
-    if (error instanceof EngineUnavailableError) {
-      return createEngineUnavailableResponse(error, instanceUri);
-    }
-    if (error instanceof PdfPostprocessError) {
-      return createPdfPostprocessResponse(error, instanceUri);
-    }
-    if (error instanceof ArchiveEntryCollisionError) {
-      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
-    }
-    const limitStatus = payloadLimitStatus(error);
-    if (limitStatus !== null) {
-      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
-      return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
-    }
-    if (isUnprocessableInputError(error)) {
-      // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
-      // decode (an archive's password and method errors included), a DWG release or drawing the DWG reader refuses, or a font FontForge
-      // cannot read in full: 422, not the 400 of a malformed input.
-      return createProblemDetailsResponse(error.status, error.message, instanceUri);
-    }
-    if (error instanceof WorkerOutputMissingError) {
-      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
-      console.error('[convert] Worker output vanished before it was read:', error);
-      return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
-    }
-    const message = error instanceof Error ? error.message : 'Internal server error during conversion';
-    const isValidationError =
-      error instanceof ConversionFailedError ||
-      message.includes('payload is empty') ||
-      message.includes('Cannot convert') ||
-      message.includes('Unsupported') ||
-      message.includes('Failed to parse') ||
-      message.includes('OCR failed') ||
-      message.includes('PDF OCR') ||
-      message.includes('compression') ||
-      message.includes('Fail-Closed');
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: isValidationError ? 400 : 500 }
-    );
+    return conversionErrorResponse(error, instanceUri);
   } finally {
     releaseSlot?.();
   }

@@ -1,35 +1,34 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import { ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, User } from 'lucide-react';
 
 export type AuthTab = 'login' | 'register';
 
-const OAUTH_ERROR_MESSAGES: Record<string, string> = {
-  oauth_code_missing: 'Authentication request cancelled or authorization code missing.',
-  oauth_denied: 'Google sign-in was cancelled before completion.',
-  invalid_oauth_callback: 'Invalid OAuth callback parameters. Please try signing in again.',
-  invalid_oauth_state: 'Invalid authentication state. Try signing in again.',
-  oauth_exchange_failed: 'Could not verify Google credentials. Please try signing in again.',
-  account_linking_required:
-    'An account with this email already exists. Sign in with your password first to link Google.',
-};
+/** The `error` codes the OAuth callback redirects with; each is worded as `auth.oauthErrors.<code>`. */
+const OAUTH_ERROR_CODES = [
+  'oauth_code_missing',
+  'oauth_denied',
+  'invalid_oauth_callback',
+  'invalid_oauth_state',
+  'oauth_exchange_failed',
+  'account_linking_required',
+] as const;
 
-export function resolveOAuthErrorMessage(urlError: string | null): string | null {
+export type OAuthErrorKey = (typeof OAUTH_ERROR_CODES)[number] | 'generic';
+
+/** The message key for the callback's `error` parameter: a known code, else the generic failure. */
+export function resolveOAuthErrorKey(urlError: string | null): OAuthErrorKey | null {
   if (!urlError) return null;
-  if (Object.hasOwn(OAUTH_ERROR_MESSAGES, urlError)) {
-    return OAUTH_ERROR_MESSAGES[urlError];
-  }
-  return 'Authentication failed. Please try signing in again.';
+  return (OAUTH_ERROR_CODES as readonly string[]).includes(urlError) ? (urlError as OAuthErrorKey) : 'generic';
 }
 
-export function validateRegistrationInput(password: string, confirmPassword: string): string | null {
-  if (password.length < 8) {
-    return 'Password must be at least 8 characters long.';
-  }
-  if (password !== confirmPassword) {
-    return 'Passwords do not match.';
-  }
+export type RegistrationProblem = 'passwordTooShort' | 'passwordMismatch';
+
+export function validateRegistrationInput(password: string, confirmPassword: string): RegistrationProblem | null {
+  if (password.length < 8) return 'passwordTooShort';
+  if (password !== confirmPassword) return 'passwordMismatch';
   return null;
 }
 
@@ -42,6 +41,7 @@ export function GoogleOAuthButton({
   disabled: boolean;
   onClick: () => void;
 }>) {
+  const t = useTranslations('auth.form');
   return (
     <button
       type="button"
@@ -59,7 +59,7 @@ export function GoogleOAuthButton({
           <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
         </svg>
       )}
-      <span>Continue with Google</span>
+      <span>{t('google')}</span>
     </button>
   );
 }
@@ -97,6 +97,7 @@ export function AuthCredentialsForm({
   onTogglePassword,
   onSubmit,
 }: Readonly<AuthCredentialsFormProps>) {
+  const t = useTranslations('auth.form');
   const inputBaseClass =
     'w-full min-h-[44px] pl-10 pr-4 py-2.5 rounded-sm border border-rule-strong bg-surface/80 text-ink text-base transition-colors';
 
@@ -108,7 +109,7 @@ export function AuthCredentialsForm({
             htmlFor="auth-full-name"
             className="block text-xs font-semibold text-ink mb-1.5"
           >
-            Full Name
+            {t('name')}
           </label>
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
@@ -121,7 +122,7 @@ export function AuthCredentialsForm({
               required
               value={name}
               onChange={(e) => onNameChange(e.target.value)}
-              placeholder="Alex Morgan"
+              placeholder={t('namePlaceholder')}
               className={inputBaseClass}
             />
           </div>
@@ -133,7 +134,7 @@ export function AuthCredentialsForm({
           htmlFor="auth-email"
           className="block text-xs font-semibold text-ink mb-1.5"
         >
-          Email Address
+          {t('email')}
         </label>
         <div className="relative">
           <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
@@ -146,7 +147,7 @@ export function AuthCredentialsForm({
             required
             value={email}
             onChange={(e) => onEmailChange(e.target.value)}
-            placeholder="alex@example.com"
+            placeholder={t('emailPlaceholder')}
             className={inputBaseClass}
           />
         </div>
@@ -157,7 +158,7 @@ export function AuthCredentialsForm({
           htmlFor="auth-password"
           className="block text-xs font-semibold text-ink mb-1.5"
         >
-          Password
+          {t('password')}
         </label>
         <div className="relative">
           <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
@@ -176,7 +177,7 @@ export function AuthCredentialsForm({
           <button
             type="button"
             onClick={onTogglePassword}
-            aria-label={showPassword ? 'Hide password' : 'Show password'}
+            aria-label={showPassword ? t('hidePassword') : t('showPassword')}
             className="min-w-[44px] min-h-[44px] absolute inset-y-0 right-0 flex items-center justify-center rounded-sm text-ink-3 hover:text-ink transition-colors"
           >
             {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -190,7 +191,7 @@ export function AuthCredentialsForm({
             htmlFor="auth-confirm-password"
             className="block text-xs font-semibold text-ink mb-1.5"
           >
-            Confirm Password
+            {t('confirmPassword')}
           </label>
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
@@ -213,13 +214,13 @@ export function AuthCredentialsForm({
       <button
         type="submit"
         disabled={isBusy}
-        className="lift w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent font-semibold text-base disabled:opacity-60"
+        className="btn-primary w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-sm font-semibold text-base disabled:opacity-60"
       >
         {isSubmitting ? (
           <Loader2 className="w-4 h-4 animate-spin" />
         ) : (
           <>
-            <span>{activeTab === 'login' ? 'Sign In' : 'Create Account'}</span>
+            <span>{activeTab === 'login' ? t('signIn') : t('createAccount')}</span>
             <ArrowRight className="w-4 h-4" />
           </>
         )}

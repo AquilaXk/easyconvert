@@ -4,10 +4,12 @@ import {
   UNIT_CONVERTER_INFO_PAGE,
   parseUnitPairSlug,
   parseUtilitySlug,
+  type FormatCopyGroup,
+  type PairCopyGroup,
   type ParsedSlug,
 } from './slug-info-pages';
 
-export type { ParsedSlug } from './slug-info-pages';
+export type { FormatCopyGroup, PairCopyGroup, ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
 
 const CANONICAL_FORMAT_MAP: Record<string, string> = {
   video: 'mp4',
@@ -63,31 +65,16 @@ const FORMAT_ACRONYMS: Record<string, string> = {
   html: 'HTML',
 };
 
-function getPairDescription(srcD: string, tgtD: string, src: string, tgt: string): string {
+function pairCopyGroup(src: string, tgt: string): PairCopyGroup {
   const srcCat = FORMAT_REGISTRY[src]?.category || 'document';
   const tgtCat = FORMAT_REGISTRY[tgt]?.category || 'document';
-
-  if (srcCat === 'video' && tgtCat === 'audio') {
-    return `Convert ${srcD} to ${tgtD} online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.`;
-  }
-  if (srcCat === 'audio' || tgtCat === 'audio' || srcCat === 'video' || tgtCat === 'video') {
-    return `Convert ${srcD} to ${tgtD} online and free. Fast, high-fidelity media transcoding directly in your browser with zero server retention.`;
-  }
-  if (srcCat === 'image' || srcCat === 'vector' || tgtCat === 'image' || tgtCat === 'vector') {
-    return `Convert ${srcD} to ${tgtD} online and free. High-precision rendering and lossless rasterization straight from your browser.`;
-  }
-  if (srcCat === 'archive' || tgtCat === 'archive') {
-    return `Convert and extract ${srcD} to ${tgtD} archives safely in your browser with zero cloud storage.`;
-  }
-  if (
-    srcCat === 'spreadsheet' ||
-    srcCat === 'data' ||
-    tgtCat === 'spreadsheet' ||
-    tgtCat === 'data'
-  ) {
-    return `Convert ${srcD} to ${tgtD} datasets and tables directly in your browser. Clean data structure preserved with zero retention.`;
-  }
-  return `Convert ${srcD} to ${tgtD} online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.`;
+  const either = (...cats: string[]) => cats.includes(srcCat) || cats.includes(tgtCat);
+  if (srcCat === 'video' && tgtCat === 'audio') return 'videoToAudio';
+  if (either('audio', 'video')) return 'media';
+  if (either('image', 'vector')) return 'image';
+  if (either('archive')) return 'archive';
+  if (either('spreadsheet', 'data')) return 'data';
+  return 'document';
 }
 
 function parsePairSlug(cleanSlug: string): ParsedSlug {
@@ -104,37 +91,33 @@ function parsePairSlug(cleanSlug: string): ParsedSlug {
   const tgt = CANONICAL_FORMAT_MAP[rawTgt] || rawTgt;
   const srcDisplay = TITLE_NAME_OVERRIDES[rawSrc] ?? src.toUpperCase();
   const tgtDisplay = TITLE_NAME_OVERRIDES[rawTgt] ?? tgt.toUpperCase();
+  const group = pairCopyGroup(src, tgt);
 
   return {
     isInfoPage: false,
     sourceFormat: src,
     targetFormat: tgt,
-    pageTitle: `${srcDisplay} to ${tgtDisplay} Converter`,
-    pageDescription: getPairDescription(srcDisplay, tgtDisplay, src, tgt),
+    copy: { kind: 'pair', src: { id: rawSrc, display: srcDisplay }, tgt: { id: rawTgt, display: tgtDisplay }, group },
   };
 }
 
-function getFormatDescription(prefix: string, src: string): string {
+function formatCopyGroup(src: string): FormatCopyGroup {
   const cat = FORMAT_REGISTRY[src]?.category || 'document';
   switch (cat) {
     case 'audio':
-      return `Convert ${prefix} audio files online and free to MP3, WAV, AAC, and more. High-fidelity audio encoding with zero server storage.`;
     case 'video':
-      return `Convert ${prefix} video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.`;
+    case 'archive':
+    case 'presentation':
+    case 'ebook':
+      return cat;
     case 'image':
     case 'vector':
-      return `Convert ${prefix} files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.`;
-    case 'archive':
-      return `Convert and extract ${prefix} compressed archives safely in your browser with zero cloud uploads.`;
+      return 'image';
     case 'spreadsheet':
     case 'data':
-      return `Convert ${prefix} spreadsheets and datasets to CSV, Excel, JSON, and other structured formats with high precision.`;
-    case 'presentation':
-      return `Convert ${prefix} presentation slides to PDF, PPTX, images, and other formats with preserved layouts.`;
-    case 'ebook':
-      return `Convert ${prefix} ebooks to EPUB, PDF, MOBI, and other reader formats directly in your browser.`;
+      return 'data';
     default:
-      return `Convert ${prefix} documents online and free to PDF, DOCX, and other formats. Preserves layouts, typography, and tables with zero server storage.`;
+      return 'document';
   }
 }
 
@@ -146,27 +129,86 @@ function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
 
   const src = CANONICAL_FORMAT_MAP[rawFmt] || rawFmt;
   const prefix = FORMAT_ACRONYMS[rawFmt] || `${rawFmt.charAt(0).toUpperCase()}${rawFmt.slice(1)}`;
+  const group = formatCopyGroup(src);
 
   return {
     isInfoPage: false,
     sourceFormat: src,
     targetFormat: 'any',
-    pageTitle: `${prefix} Converter`,
-    pageDescription: getFormatDescription(prefix, src),
+    copy: { kind: 'format', name: { id: rawFmt, display: prefix }, group },
   };
 }
 
+/** A slug as the parser reads it: lowercased, without leading slashes or surrounding space. */
+function normalizeSlug(slug: string): string {
+  return slug.toLowerCase().replace(/^\/+/, '').trim();
+}
+
+/** The one canonical path of a converter slug page, however its slug was cased. */
+export function canonicalSlugPath(slug: string): string {
+  return `/${normalizeSlug(slug)}`;
+}
+
+const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
+
+/**
+ * Whether search engines should index the page of a slug: a site page, or a page of formats the registry has. Any other
+ * slug still opens a converter page, but only names what it converts.
+ */
+export function isIndexableSlug(parsed: ParsedSlug): boolean {
+  const { copy } = parsed;
+  switch (copy.kind) {
+    case 'generic':
+      return false;
+    case 'pair':
+    case 'format':
+      return isRegistered(parsed.sourceFormat) && (parsed.targetFormat === 'any' || isRegistered(parsed.targetFormat));
+    case 'merge':
+    case 'compress':
+    case 'websiteScreenshot':
+      return isRegistered(copy.format);
+    case 'info':
+    case 'ocr':
+    case 'unitPair':
+    case 'saveWebsiteAsPdf':
+      return true;
+    default: {
+      const unhandled: never = copy;
+      return unhandled;
+    }
+  }
+}
+
+const DOTTED_FORMAT_PREFIX = 'tar.';
+
+/**
+ * The suffixes of the registry's dotted format ids (`tar.gz`), the only dots a page path holds. The matcher of
+ * src/middleware.ts lists them as a literal, which tests/i18n-routing.test.ts holds to this list.
+ */
+export const DOTTED_FORMAT_SUFFIXES: readonly string[] = Object.keys(FORMAT_REGISTRY)
+  .filter((id) => id.startsWith(DOTTED_FORMAT_PREFIX))
+  .map((id) => id.slice(DOTTED_FORMAT_PREFIX.length));
+
+/** A dotted format id at the start of a slug or after a dash, and before a dash or the end, as the middleware matcher reads it. */
+const DOTTED_FORMAT_ID = new RegExp(`(?<=^|-)tar\\.(?:${DOTTED_FORMAT_SUFFIXES.join('|')})(?=-|$)`, 'g');
+
+/**
+ * Whether a slug names a file rather than a page: any dot left once the dotted format ids are taken out (`backup.zip`,
+ * `foo-to-bar.php`), the rule by which the middleware matcher leaves a path to the file routes. Such a path is answered 404.
+ */
+export function isFileSlug(slug: string): boolean {
+  return normalizeSlug(slug).replace(DOTTED_FORMAT_ID, '').includes('.');
+}
+
 export function parseConverterSlug(slug: string): ParsedSlug {
-  const cleanSlug = slug.toLowerCase().replace(/^\/+/, '').trim();
+  const cleanSlug = normalizeSlug(slug);
 
   if (OCR_SLUGS.has(cleanSlug)) {
     return {
       isInfoPage: false,
       sourceFormat: 'pdf',
       targetFormat: 'pdf',
-      pageTitle: 'PDF OCR Converter',
-      pageDescription:
-        'Optical character recognition utility producing searchable, selectable documents with zero data retention.',
+      copy: { kind: 'ocr' },
     };
   }
 
@@ -196,7 +238,6 @@ export function parseConverterSlug(slug: string): ParsedSlug {
     isInfoPage: false,
     sourceFormat: 'pdf',
     targetFormat: 'docx',
-    pageTitle: `${title} Converter`,
-    pageDescription: `Convert ${title} files instantly in your browser with zero data retention.`,
+    copy: { kind: 'generic', name: title },
   };
 }

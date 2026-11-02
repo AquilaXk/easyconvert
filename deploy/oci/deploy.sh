@@ -9,7 +9,8 @@
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
 #   deploy.sh sweep                            delete scratch temp files and job staging entries older than two hours, from inside
 #                                              the worker image
-#   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health and one conversion, roll back on failure,
+#   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health, one conversion and the canonical host of the
+#                                              pages, roll back on failure,
 #                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
 #   deploy.sh reconcile                        start the current release again from its pinned images and check it (the repair after an
@@ -31,6 +32,7 @@ WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
 SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/convert}"
+PAGE_URL="${PAGE_URL:-http://127.0.0.1:8090/}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/easysubway-data}"
 MIN_FREE_GB="${MIN_FREE_GB:-15}"
 SCRATCH_WARN_PERCENT="${SCRATCH_WARN_PERCENT:-85}"
@@ -52,15 +54,17 @@ PNG_SIGNATURE='89504e470d0a1a0a'
 
 CHILD=""
 SMOKE_DIR=""
+PAGE_FILE=""
 PENDING_RELEASE=""
 
 log() { printf '[deploy] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# Leaves nothing of an attempt behind however the script ends: the smoke test's directory, and a release directory (with its .env)
-# that never became the current release, also when the rollback after it failed too.
+# Leaves nothing of an attempt behind however the script ends: the smoke test's directory, the home page the canonical check read,
+# and a release directory (with its .env) that never became the current release, also when the rollback after it failed too.
 cleanup_exit() {
   [ -z "$SMOKE_DIR" ] || rm -rf -- "$SMOKE_DIR"
+  [ -z "$PAGE_FILE" ] || rm -f -- "$PAGE_FILE"
   [ -z "$PENDING_RELEASE" ] || rm -rf -- "$PENDING_RELEASE"
 }
 trap cleanup_exit EXIT
@@ -220,6 +224,57 @@ smoke_conversion() {
   return "$ok"
 }
 
+host_of() { # host_of <absolute URL>: its host, lowercased, without user, port or path
+  local rest="${1#*://}"
+  rest="${rest%%[/?#]*}"
+  rest="${rest##*@}"
+  printf '%s' "${rest%:*}" | tr '[:upper:]' '[:lower:]'
+}
+
+# The public origin the web server of a release runs with, as Compose resolves `APP_ORIGIN: ${APP_ORIGIN:-${APP_URL}}` from the
+# env file (quotes and comments as Compose reads them), from indented or compact JSON; empty when Compose names none. Only
+# that key leaves the pipe, and the call fails, with Compose's own error on stderr, when Compose cannot resolve the web service.
+release_origin() { # release_origin <release-dir>
+  local origin
+  origin="$(compose "$1" config --format json web | sed -nE 's/.*"APP_ORIGIN": *"([^"]*)".*/\1/p' | head -n 1)" || return 1
+  printf '%s' "$origin"
+}
+
+# The home page, saved to PAGE_FILE: tried as often as the health check, since the web may still be warming its pages. curl runs
+# through child() without a subshell, so a cancelled job stops it.
+fetch_home_page() {
+  local remaining="$HEALTH_ATTEMPTS"
+  while [ "$remaining" -gt 0 ]; do
+    if child curl --fail --silent --max-time 15 -o "$PAGE_FILE" "$PAGE_URL"; then return 0; fi
+    remaining=$((remaining - 1))
+    [ "$remaining" -eq 0 ] || child sleep "$HEALTH_INTERVAL"
+  done
+  return 1
+}
+
+# The prerendered pages name the public origin the image was built with (APP_ORIGIN, a build argument of the workflow) in their
+# canonical links, and the running server answers for the origin Compose gives it. A release whose two hosts differ would point
+# every page at another site, so a new release is refused (a rollback or a reconcile starts a release that passed it, or one older
+# than the check). Only the two hosts are logged, never the page or the env file.
+canonical_host_matches() { # canonical_host_matches <origin the release runs with>
+  local expected served="" ok=1 pattern='<link rel="canonical" href="([^"]+)"'
+  expected="$(host_of "$1")"
+  PAGE_FILE="$(mktemp)"
+  if ! fetch_home_page; then
+    log "the home page ($PAGE_URL) did not answer"
+  else
+    [[ "$(cat "$PAGE_FILE")" =~ $pattern ]] && served="$(host_of "${BASH_REMATCH[1]}")"
+    if [ -n "$expected" ] && [ "$served" = "$expected" ]; then
+      ok=0
+    else
+      log "the pages name the canonical host '${served:-none}', but the release runs with the origin '${expected:-none}' (APP_ORIGIN, else APP_URL): rebuild the image with that APP_ORIGIN"
+    fi
+  fi
+  rm -f -- "$PAGE_FILE"
+  PAGE_FILE=""
+  return "$ok"
+}
+
 # Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile
 # option dropped) would run under another profile and pass every other check on a host that happens to allow it.
 profiles_applied() { # profiles_applied <release-dir>: every replica; the web needs one, the all-queue worker may have none
@@ -293,7 +348,7 @@ prune_releases() {
 
 deploy() {
   local ref="${1:-}" source_dir="${SOURCE_DIR:?SOURCE_DIR (the checkout)}" raw_env="${ENV_FILE:?ENV_FILE (the filtered env)}"
-  local release worker web previous budget_env
+  local release worker web previous budget_env origin
   [[ "$ref" =~ $IMAGE_REF_PATTERN ]] || die "the image ref must be main or sha-<40 hex characters>"
   guard "$raw_env"
   check_profile
@@ -328,9 +383,10 @@ deploy() {
   chmod 600 "$release/.env"
 
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
+  origin="$(release_origin "$release")" || die "Compose could not resolve the origin of the web service"
   child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
 
-  if start_release "$release"; then
+  if start_release "$release" && canonical_host_matches "$origin"; then
     trap '' INT TERM
     PENDING_RELEASE=""
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"

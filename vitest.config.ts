@@ -25,6 +25,8 @@ export default defineConfig({
     },
     setupFiles: ['tests/helpers/isolated-retention-ledger.ts'],
     include: ['tests/**/*.test.ts'],
+    // next-intl imports `next/navigation` without an extension, which only a bundler resolves; vite resolves it when inlined.
+    server: { deps: { inline: ['next-intl'] } },
     exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**', 'ab-base/**'],
   },
 });

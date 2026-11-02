@@ -50,7 +50,7 @@ describe('routes reject conversion options that are not a JSON object', () => {
       form.append('options', raw);
       const res = await convertRoute(multipart('/api/convert', form));
       expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ success: false, error: ROUTE_ERROR });
+      expect(await res.json()).toEqual({ success: false, code: 'invalid_options', error: ROUTE_ERROR });
     });
 
     it(`POST /api/convert/batch answers 400 for options=${raw}`, async () => {

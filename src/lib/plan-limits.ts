@@ -94,22 +94,34 @@ function nextLargerPlan(plan: Plan, paidPlansOnSale: boolean = PAID_PLANS_ON_SAL
   return PLAN_ORDER.slice(PLAN_ORDER.indexOf(plan) + 1).find((candidate) => PLAN_MAX_FILE_BYTES[candidate] > limit);
 }
 
-/** The line a visitor sees under the drop zone, for example `Up to 1 GiB per file`. */
-export function fileLimitCopy(plan: Plan): string {
-  return `Up to ${formatBytes(PLAN_MAX_FILE_BYTES[plan])} per file`;
+/** The facts a message about a file over its plan's limit names, for the copy of any language to word. */
+export interface FileTooLargeFacts {
+  plan: Plan;
+  sizeBytes: number;
+  /** The size reads in exact bytes, because rounded it would read the same as the limit it is over. */
+  sizeInExactBytes: boolean;
+  limitBytes: number;
+  /** The next plan that allows a larger file and can be bought, with its limit. */
+  next?: { plan: Plan; limitBytes: number };
 }
 
-/** The size of a file for a message, in exact bytes when its rounded size would read the same as the limit it is over. */
-function sizeForMessage(sizeBytes: number, limitBytes: number): string {
-  const rounded = formatBytes(sizeBytes);
-  return rounded === formatBytes(limitBytes) ? `${sizeBytes.toLocaleString('en-US')} bytes` : rounded;
+export function fileTooLargeFacts(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): FileTooLargeFacts {
+  const limitBytes = PLAN_MAX_FILE_BYTES[plan];
+  const next = nextLargerPlan(plan, paidPlansOnSale);
+  return {
+    plan,
+    sizeBytes,
+    sizeInExactBytes: formatBytes(sizeBytes) === formatBytes(limitBytes),
+    limitBytes,
+    ...(next ? { next: { plan: next, limitBytes: PLAN_MAX_FILE_BYTES[next] } } : {}),
+  };
 }
 
 /** What to tell the caller of a file over their limit: the size, the limit, and the next plan's limit when one is on sale. */
 export function fileTooLargeMessage(plan: Plan, sizeBytes: number, paidPlansOnSale: boolean = PAID_PLANS_ON_SALE): string {
-  const limitBytes = PLAN_MAX_FILE_BYTES[plan];
-  const limit = `File size ${sizeForMessage(sizeBytes, limitBytes)} exceeds the ${formatBytes(limitBytes)} limit for ${PLAN_PHRASE[plan]}.`;
-  const next = nextLargerPlan(plan, paidPlansOnSale);
-  if (!next) return limit;
-  return `${limit} ${PLAN_NAME[next]} allows files up to ${formatBytes(PLAN_MAX_FILE_BYTES[next])}.`;
+  const facts = fileTooLargeFacts(plan, sizeBytes, paidPlansOnSale);
+  const size = facts.sizeInExactBytes ? `${sizeBytes.toLocaleString('en-US')} bytes` : formatBytes(sizeBytes);
+  const limit = `File size ${size} exceeds the ${formatBytes(facts.limitBytes)} limit for ${PLAN_PHRASE[plan]}.`;
+  if (!facts.next) return limit;
+  return `${limit} ${PLAN_NAME[facts.next.plan]} allows files up to ${formatBytes(facts.next.limitBytes)}.`;
 }

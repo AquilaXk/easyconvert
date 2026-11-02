@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import Link from 'next/link';
+import { useFormatter, useTranslations, type Messages } from 'next-intl';
 import { ArrowRight } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 import type { FormatCategory } from '@/lib/types';
 import { CategoryRegistryStat, REGISTRY_STATS } from '@/lib/registry-stats';
 import {
@@ -11,72 +12,74 @@ import {
   SecurityDataHandlingCard,
 } from './workbench/HomeEditorialSections';
 
+/** A common pair of a category; its one-line summary is `features.pairs.<from>-<to>` in the messages. */
 interface PopularPair {
   from: string;
   to: string;
-  summary: string;
 }
+
+type PairSummaryKey = `pairs.${keyof Messages['features']['pairs']}`;
 
 const POPULAR_PAIRS_BY_CATEGORY: Record<FormatCategory, ReadonlyArray<PopularPair>> = {
   image: [
-    { from: 'png', to: 'webp', summary: 'Web image compression with alpha support' },
-    { from: 'heic', to: 'jpg', summary: 'Camera photo compatibility across devices' },
-    { from: 'jpg', to: 'pdf', summary: 'Printable single-page document export' },
+    { from: 'png', to: 'webp' },
+    { from: 'heic', to: 'jpg' },
+    { from: 'jpg', to: 'pdf' },
   ],
   document: [
-    { from: 'pdf', to: 'docx', summary: 'Editable Word document output' },
-    { from: 'docx', to: 'pdf', summary: 'Fixed-layout PDF distribution' },
-    { from: 'hwp', to: 'pdf', summary: 'Hangul office document rendering' },
+    { from: 'pdf', to: 'docx' },
+    { from: 'docx', to: 'pdf' },
+    { from: 'hwp', to: 'pdf' },
   ],
   archive: [
-    { from: 'rar', to: 'zip', summary: 'Standard ZIP archive repackaging' },
-    { from: '7z', to: 'zip', summary: 'Cross-platform archive compatibility' },
-    { from: 'tar', to: 'zip', summary: 'Compressed bundle conversion' },
+    { from: 'rar', to: 'zip' },
+    { from: '7z', to: 'zip' },
+    { from: 'tar', to: 'zip' },
   ],
   video: [
-    { from: 'mp4', to: 'mp3', summary: 'Audio track extraction from video' },
-    { from: 'mkv', to: 'mp4', summary: 'Browser and mobile playback container' },
-    { from: 'mov', to: 'mp4', summary: 'Standard H.264 MP4 container export' },
+    { from: 'mp4', to: 'mp3' },
+    { from: 'mkv', to: 'mp4' },
+    { from: 'mov', to: 'mp4' },
   ],
   audio: [
-    { from: 'wav', to: 'mp3', summary: 'Compact MP3 audio encoding' },
-    { from: 'flac', to: 'mp3', summary: 'Lossless source to portable MP3' },
-    { from: 'm4a', to: 'wav', summary: 'Uncompressed PCM waveform output' },
+    { from: 'wav', to: 'mp3' },
+    { from: 'flac', to: 'mp3' },
+    { from: 'm4a', to: 'wav' },
   ],
   ebook: [
-    { from: 'epub', to: 'pdf', summary: 'Paginated PDF layout from e-book' },
-    { from: 'mobi', to: 'epub', summary: 'Open EPUB e-reader format' },
-    { from: 'fb2', to: 'txt', summary: 'Plain UTF-8 text extraction' },
+    { from: 'epub', to: 'pdf' },
+    { from: 'mobi', to: 'epub' },
+    { from: 'fb2', to: 'txt' },
   ],
   spreadsheet: [
-    { from: 'xlsx', to: 'csv', summary: 'Delimited plain-text table export' },
-    { from: 'xlsx', to: 'pdf', summary: 'Formatted spreadsheet printout' },
-    { from: 'ods', to: 'xlsx', summary: 'Excel workbook compatibility' },
+    { from: 'xlsx', to: 'csv' },
+    { from: 'xlsx', to: 'pdf' },
+    { from: 'ods', to: 'xlsx' },
   ],
   presentation: [
-    { from: 'pptx', to: 'pdf', summary: 'Portable slide deck handout' },
-    { from: 'pptx', to: 'html', summary: 'Browser-viewable slide markup' },
-    { from: 'odp', to: 'pptx', summary: 'PowerPoint slide deck export' },
+    { from: 'pptx', to: 'pdf' },
+    { from: 'pptx', to: 'html' },
+    { from: 'odp', to: 'pptx' },
   ],
   data: [
-    { from: 'csv', to: 'json', summary: 'Structured JSON record array' },
-    { from: 'yaml', to: 'json', summary: 'Configuration file normalization' },
-    { from: 'json', to: 'csv', summary: 'Tabular row and column export' },
+    { from: 'csv', to: 'json' },
+    { from: 'yaml', to: 'json' },
+    { from: 'json', to: 'csv' },
   ],
   vector: [
-    { from: 'svg', to: 'png', summary: 'Crisp rasterized PNG graphic' },
-    { from: 'ai', to: 'pdf', summary: 'Vector artwork preservation in PDF' },
-    { from: 'eps', to: 'svg', summary: 'Web-ready scalable SVG vector' },
+    { from: 'svg', to: 'png' },
+    { from: 'ai', to: 'pdf' },
+    { from: 'eps', to: 'svg' },
   ],
   font: [
-    { from: 'ttf', to: 'woff2', summary: 'Compressed WOFF2 web font' },
-    { from: 'otf', to: 'ttf', summary: 'TrueType desktop font binary' },
-    { from: 'woff', to: 'ttf', summary: 'Installable TrueType font output' },
+    { from: 'ttf', to: 'woff2' },
+    { from: 'otf', to: 'ttf' },
+    { from: 'woff', to: 'ttf' },
   ],
   cad: [
-    { from: 'dwg', to: 'pdf', summary: 'Technical drawing PDF sheet' },
-    { from: 'step', to: 'stl', summary: 'Triangle mesh for 3D printing' },
-    { from: 'dxf', to: 'svg', summary: '2D vector CAD plot export' },
+    { from: 'dwg', to: 'pdf' },
+    { from: 'step', to: 'stl' },
+    { from: 'dxf', to: 'svg' },
   ],
 };
 
@@ -87,17 +90,24 @@ function FormatDirectoryCard({
   activeCategory: CategoryRegistryStat;
   onSelectCategory: (id: FormatCategory) => void;
 }>) {
+  const t = useTranslations('features');
+  const tCategory = useTranslations('formatCategories');
+  const format = useFormatter();
   const popularPairs = POPULAR_PAIRS_BY_CATEGORY[activeCategory.id];
+  const activeLabel = tCategory(activeCategory.id);
 
   return (
-    <div className="border-t border-rule-strong lg:col-span-8 min-w-0 pt-6 sm:pt-7">
+    <div className="border-t border-rule lg:col-span-8 min-w-0 pt-6 sm:pt-7">
       <div className="border-b border-rule pb-5">
         <h2 className="text-2xl sm:text-3xl text-ink">
-          Supported Format Directory
+          {t('directoryHeading')}
         </h2>
         <p className="mt-1.5 text-sm text-ink-2">
-          Browse {REGISTRY_STATS.formatCount} formats across {REGISTRY_STATS.categoryCount} categories
-          covering {REGISTRY_STATS.pairCount.toLocaleString('en-US')} registered conversion pairs.
+          {t('directoryIntro', {
+            formats: REGISTRY_STATS.formatCount,
+            categories: REGISTRY_STATS.categoryCount,
+            pairs: format.number(REGISTRY_STATS.pairCount),
+          })}
         </p>
 
         <div className="mt-5 flex flex-wrap gap-2">
@@ -118,8 +128,8 @@ function FormatDirectoryCard({
                 onClick={() => onSelectCategory(cat.id)}
                 className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs transition-colors cursor-pointer ${buttonStyle}`}
               >
-                <span>{cat.label}</span>
-                <span className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] ${badgeStyle}`}>
+                <span>{tCategory(cat.id)}</span>
+                <span className={`px-1.5 py-0.5 rounded-md text-[11px] ${badgeStyle}`}>
                   {cat.count}
                 </span>
               </button>
@@ -132,10 +142,10 @@ function FormatDirectoryCard({
         <div>
           <div className="flex items-center justify-between gap-2 mb-3">
             <h3 className="text-sm font-bold text-ink">
-              {activeCategory.label} Extensions ({activeCategory.count})
+              {t('extensionsHeading', { category: activeLabel, count: activeCategory.count })}
             </h3>
             <span className="text-xs text-ink-3">
-              Select an extension to open its converter
+              {t('extensionsHint')}
             </span>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -143,7 +153,7 @@ function FormatDirectoryCard({
               <Link
                 key={fmt.id}
                 href={`/${fmt.id}-converter`}
-                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-sm hover:bg-accent-soft border border-rule hover:border-accent font-mono text-xs font-semibold uppercase text-ink transition-colors"
+                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-sm hover:bg-accent-soft border border-rule hover:border-accent text-xs font-semibold uppercase text-ink transition-colors"
               >
                 {fmt.extension}
               </Link>
@@ -153,7 +163,7 @@ function FormatDirectoryCard({
 
         <div className="pt-5 border-t border-rule">
           <h3 className="text-sm font-bold text-ink mb-3">
-            Common {activeCategory.label} Pairs
+            {t('pairsHeading', { category: activeLabel })}
           </h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {popularPairs.map((pair) => (
@@ -163,14 +173,14 @@ function FormatDirectoryCard({
                 className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-md border border-rule hover:border-accent transition-colors"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
                     <span>{pair.from}</span>
                     <ArrowRight className="w-3.5 h-3.5 text-ink-3" />
                     <span>{pair.to}</span>
                   </span>
                 </div>
                 <span className="mt-1.5 text-xs text-ink-2 leading-snug">
-                  {pair.summary}
+                  {t(`pairs.${pair.from}-${pair.to}` as PairSummaryKey)}
                 </span>
               </Link>
             ))}

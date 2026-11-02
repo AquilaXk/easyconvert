@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import createIntlMiddleware from 'next-intl/middleware';
+import { routing } from '@/i18n/routing';
 import {
   CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
   ClientIpError,
@@ -19,15 +21,20 @@ import { requestBodyVerdict, type CountedBody } from '@/lib/api/request-body-lim
  * 2. Anonymous IP Edge Rate Limiting: Protective token bucket guard against burst abuse.
  * 3. Request body size: a declared body over what the route takes is refused before the route reads it, and a body sent
  *    without a length is counted as it arrives: a file route refuses its first byte, any other route takes 1 MiB.
+ * 4. Locale routing of pages: English at the unprefixed paths, every other locale under its prefix. A visitor's language
+ *    (cookie, then Accept-Language) is negotiated on the root only, so a shared link opens in the language it names, and
+ *    only the language selector writes the locale cookie, so no page answer carries a Set-Cookie.
  */
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const HTTP_BAD_REQUEST = 400;
+const HTTP_NOT_FOUND = 404;
 const HTTP_LENGTH_REQUIRED = 411;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
+const PROBLEM_NOT_FOUND = 'https://api.easyconvert.io/problems/not-found';
 const PROBLEM_PAYLOAD_TOO_LARGE = 'https://api.easyconvert.io/problems/payload-too-large';
 const PROBLEM_LENGTH_REQUIRED = 'https://api.easyconvert.io/problems/length-required';
 const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
@@ -198,12 +205,41 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
   return false;
 }
 
+const handleRootLocale = createIntlMiddleware(routing);
+const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
+
+/**
+ * The root's answer: the home page in the visitor's language (the cookie the language selector wrote, then
+ * Accept-Language). It differs by those two headers, so it says so and stays out of shared caches. next-intl writes the
+ * cookie it negotiated for a visitor who sent none; only the selector writes it, so that answer carries no cookie.
+ */
+function rootLocaleAnswer(request: NextRequest): NextResponse {
+  const response = handleRootLocale(request);
+  response.headers.delete('set-cookie');
+  response.headers.delete('x-middleware-set-cookie');
+  response.headers.set('Vary', 'Accept-Language, Cookie');
+  response.headers.set('Cache-Control', 'private, no-store');
+  return response;
+}
+
+function isApiPath(pathname: string): boolean {
+  return pathname === '/api' || pathname.startsWith('/api/');
+}
+
+/** `/ko/api/...`: the API has no language, so a locale prefix in front of it names nothing. */
+function isLocalePrefixedApiPath(pathname: string): boolean {
+  const [, first, ...rest] = pathname.split('/');
+  return (routing.locales as readonly string[]).includes(first) && isApiPath(`/${rest.join('/')}`);
+}
+
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
   const pathname = request.nextUrl.pathname;
 
-  // Only protect API routes
-  if (!pathname.startsWith('/api')) {
-    return NextResponse.next();
+  if (isLocalePrefixedApiPath(pathname)) {
+    return problemResponse(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', 'API routes take no language prefix.', pathname);
+  }
+  if (!isApiPath(pathname)) {
+    return pathname === '/' ? rootLocaleAnswer(request) : handlePageLocale(request);
   }
 
   const isHealthProbe = pathname === HEALTH_PATH && HEALTH_METHODS.has(request.method.toUpperCase());
@@ -349,5 +385,14 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 }
 
 export const config = {
-  matcher: ['/api/:path*'],
+  // API routes, and every page path that is not a framework internal or a file. A path with a dot names a file, except the
+  // dot of a dotted format id of the registry (`tar.gz`, only ever `tar.<suffix>`, in any case) at the start of a slug or
+  // after a dash and before a dash or the end (/zip-to-tar.gz, /TAR.GZ-to-zip). Every other dotted path (/wp-login.php,
+  // /.env, /backup.zip) never reaches the locale routing; a path that reaches a page under a locale prefix meets the same
+  // rule there (isFileSlug in src/lib/slug-parser.ts). The matcher must stay a literal for Next.js to read it, so
+  // tests/i18n-routing.test.ts builds it from DOTTED_FORMAT_SUFFIXES and fails when the two differ.
+  matcher: [
+    '/api/:path*',
+    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-][tT][aA][rR])\\.|\\.(?!(?:[bB][zZ]2|[lL][zZ][oO]|[zZ][sS][tT]|7[zZ]|[bB][zZ]|[gG][zZ]|[xX][zZ]|[zZ])(?:-|$)))).*)',
+  ],
 };

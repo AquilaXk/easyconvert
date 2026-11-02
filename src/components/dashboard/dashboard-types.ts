@@ -4,16 +4,11 @@ export type DashboardTab = 'api' | 'files' | 'dlq' | 'usage';
 
 export type KeyExpiryOption = '30d' | '60d' | '90d' | '1y' | 'never';
 
-export const KEY_EXPIRY_OPTIONS: ReadonlyArray<{ value: KeyExpiryOption; label: string }> = [
-  { value: '30d', label: '30 Days' },
-  { value: '60d', label: '60 Days' },
-  { value: '90d', label: '90 Days' },
-  { value: '1y', label: '1 Year' },
-  { value: 'never', label: 'Never (No Expiration)' },
-];
+/** The expiry choices of a new key; each one's label is `dashboard.keys.expiry.<value>` in the messages. */
+export const KEY_EXPIRY_OPTIONS: readonly KeyExpiryOption[] = ['30d', '60d', '90d', '1y', 'never'];
 
 export function isKeyExpiryOption(value: string): value is KeyExpiryOption {
-  return KEY_EXPIRY_OPTIONS.some((opt) => opt.value === value);
+  return (KEY_EXPIRY_OPTIONS as readonly string[]).includes(value);
 }
 
 const EXPIRY_DAYS_BY_OPTION: Record<Exclude<KeyExpiryOption, 'never'>, number> = {
@@ -32,26 +27,4 @@ export function resolveExpiryTimestamp(expiry: KeyExpiryOption, nowMs: number): 
 
 export interface FileWithRemaining extends UserConversionFile {
   remainingSeconds: number;
-}
-
-export function formatCountdown(seconds: number): string {
-  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
-  const minutes = Math.floor(safeSeconds / 60);
-  const secs = safeSeconds % 60;
-  return `${minutes}m ${secs < 10 ? '0' : ''}${secs}s`;
-}
-
-export { formatBytes } from '@/lib/format-bytes';
-
-export function extractApiError(payload: unknown, fallback: string): string {
-  if (payload && typeof payload === 'object') {
-    const record = payload as Record<string, unknown>;
-    if (typeof record.error === 'string' && record.error.trim().length > 0) {
-      return record.error;
-    }
-    if (typeof record.message === 'string' && record.message.trim().length > 0) {
-      return record.message;
-    }
-  }
-  return fallback;
 }

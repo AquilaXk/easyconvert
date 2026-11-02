@@ -373,6 +373,85 @@ export function redactText(text: string): string {
 }
 
 /**
+ * The characters a word or a path goes on with: letters, marks and digits of any script, `_`, `.`, `~`, `/` and `-`. A root
+ * right after one is inside a word (`x/tmp`, `./tmp`, `~/tmp`, `//tmp`, `-I/usr`), not the start of a path.
+ */
+const PATH_BODY_CLASS = '[\\p{L}\\p{M}\\p{N}_.~/-]';
+/** What may follow a root that names the directory: the end, a slash, a backslash, a space, a quote or a closing mark. Not `>`, so `</tmp>` stays an end tag. */
+const ROOT_END = `(?=$|[/\\\\\\s"'\`)\\]},;:])`;
+const FILE_URL_PREFIX = '[Ff][Ii][Ll][Ee]://';
+/** Characters that end a path that is not quoted. */
+const PATH_ENDS: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '`', ')', ']', '}', '<', '>', ',', ';', ':', '=']);
+const PATH_QUOTES: ReadonlySet<string> = new Set(['"', "'", '`']);
+const LINE_BREAKS: ReadonlySet<string> = new Set(['\r', '\n']);
+function escapeRegExp(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
+function withoutTrailingSlashes(root: string): string {
+  let end = root.length;
+  while (end > 0 && root[end - 1] === '/') end--;
+  return root.slice(0, end);
+}
+
+/** The quotes that close a path opened by a quote: itself, and the apostrophe for a backtick (`` `/tmp/a' ``). */
+function closingQuotes(opener: string): string {
+  return opener === '`' ? "`'" : opener;
+}
+
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+/** The quote that closes a quoted path on its line, or -1. A quote followed by a letter or digit is an apostrophe in the name. */
+function closingQuote(text: string, start: number, closers: string): number {
+  for (let cursor = start; cursor < text.length && !LINE_BREAKS.has(text[cursor]); cursor++) {
+    if (closers.includes(text[cursor]) && !LETTER_OR_DIGIT.test(String.fromCodePoint(text.codePointAt(cursor + 1) ?? 0))) return cursor;
+  }
+  return -1;
+}
+
+/**
+ * Masks the paths under `roots` (absolute directories) in free text, written plainly, as a `file://` URL or after any mark
+ * that is not part of a word (`:`, `=`, `>`, `|`, `;`, a quote or a bracket). A quoted path runs to its closing quote, so a
+ * name with spaces is masked whole; any other path ends at its first space, so the words after it stay. The tail of an
+ * unquoted name with spaces stays too: a program's own arguments, its version and a user's name for a file cannot be told
+ * apart. Other slashes stay: a PDF name, an end tag, a JSON pointer, a MIME type or a URL path names what went wrong, not
+ * where the server keeps its files. One forward pass.
+ */
+export function redactPaths(text: string, roots: readonly string[]): string {
+  const directories = [...new Set(roots.map(withoutTrailingSlashes))].filter((root) => root.length > 0);
+  if (directories.length === 0) return text;
+  const alternatives = directories.sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+  const pathStart = new RegExp(`(?<!${PATH_BODY_CLASS})(${FILE_URL_PREFIX})?(?:${alternatives})${ROOT_END}`, 'gu');
+  // Per quote, the end of the line on which it has no closing quote, so a line of unclosed quotes is scanned once.
+  const unclosedUntil = new Map<string, number>();
+  let out = '';
+  let cursor = 0;
+  for (let match = pathStart.exec(text); match; match = pathStart.exec(text)) {
+    const lead = text[match.index - 1];
+    const pathAt = match.index + (match[1]?.length ?? 0);
+    const rootEnd = match.index + match[0].length;
+    let end = -1;
+    if (PATH_QUOTES.has(lead) && (unclosedUntil.get(lead) ?? -1) < rootEnd) {
+      end = closingQuote(text, rootEnd, closingQuotes(lead));
+      if (end < 0) unclosedUntil.set(lead, lineEnd(text, rootEnd));
+    }
+    if (end < 0) {
+      end = rootEnd;
+      while (end < text.length && !PATH_ENDS.has(text[end])) end++;
+    }
+    out += text.slice(cursor, pathAt) + REDACTION_MASK;
+    cursor = end;
+    pathStart.lastIndex = end;
+  }
+  return out + text.slice(cursor);
+}
+
+/** Masks credentials, and the paths under `pathRoots`, in a text a failure carries. */
+export function redactFailureText(text: string, pathRoots: readonly string[]): string {
+  return redactText(redactPaths(text, pathRoots));
+}
+
+/**
  * Keys that hold a link the service itself minted for the job owner, such as a presigned result
  * URL. Its recipient is the owner, so the query string is the point of the link and stays as it is.
  */
@@ -475,7 +554,7 @@ export function redactForOutput<T>(value: T): T {
   return walk(value, 0, { nodes: 0, ancestors: new Set(), lenient: true }) as T;
 }
 
-function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }[], depth: number): void {
+function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }[], depth: number, pathRoots: readonly string[]): void {
   const record = error as unknown as Record<string, unknown>;
   for (const key of Object.keys(error).slice(0, MAX_ERROR_PROPERTIES)) {
     const item = record[key];
@@ -483,7 +562,7 @@ function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }
       if (item instanceof Error) {
         queue.push({ error: item, depth: depth + 1 });
       } else if (typeof item === 'string') {
-        record[key] = redactText(item);
+        record[key] = redactFailureText(item, pathRoots);
       } else if (typeof item === 'object' && item !== null) {
         record[key] = redactForOutput(item);
       }
@@ -497,10 +576,12 @@ function scrubOwnProperties(error: Error, queue: { error: Error; depth: number }
  * Masks an error in place, so that every later reader of the same error (a log line, an event
  * listener, a rethrow) sees the masked text: its message and stack, its `cause` chain, the errors
  * of an AggregateError, and its own enumerable properties such as an HTTP client's request and
- * response. Bounded by MAX_ERROR_CAUSE_DEPTH, MAX_SCRUBBED_ERRORS and MAX_ERROR_PROPERTIES.
+ * response. Credentials are masked in every text; the paths under `pathRoots` are masked in all but the stack, whose frames
+ * name the files of the code and are read by operators only.
+ * Bounded by MAX_ERROR_CAUSE_DEPTH, MAX_SCRUBBED_ERRORS and MAX_ERROR_PROPERTIES.
  * Values that are not errors are returned unchanged.
  */
-export function scrubError<T>(error: T): T {
+export function scrubError<T>(error: T, pathRoots: readonly string[]): T {
   const queue: { error: Error; depth: number }[] = error instanceof Error ? [{ error, depth: 0 }] : [];
   const seen = new Set<Error>();
   for (let next = queue.shift(); next && seen.size < MAX_SCRUBBED_ERRORS; next = queue.shift()) {
@@ -510,7 +591,7 @@ export function scrubError<T>(error: T): T {
     seen.add(next.error);
     const current = next.error;
     try {
-      current.message = redactText(current.message);
+      current.message = redactFailureText(current.message, pathRoots);
       if (current.stack) {
         current.stack = redactText(current.stack);
       }
@@ -530,7 +611,7 @@ export function scrubError<T>(error: T): T {
         }
       }
     }
-    scrubOwnProperties(current, queue, next.depth);
+    scrubOwnProperties(current, queue, next.depth, pathRoots);
   }
   return error;
 }

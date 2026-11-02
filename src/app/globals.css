@@ -2,105 +2,88 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Colour tokens are RGB channels so Tailwind can apply opacity (`bg-surface/60`); `.dark` redefines each one. */
+/* Colour tokens are RGB channels so Tailwind can apply opacity (`bg-surface/60`); `.dark` redefines each one.
+   Every value is measured on a live converter page or is a step of the Tailwind palette those pages use; entry 139 of
+   docs/policy-decisions.md lists each value with its source. */
 :root {
   color-scheme: light;
-  --radius-unit: 0.1rem;
+  --radius-xs: 2.4px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-xl: 20px;
 
-  --c-canvas: 244 244 247;
+  --c-canvas: 248 250 252;
   --c-surface: 255 255 255;
-  --c-sunken: 236 237 242;
-  --c-ink: 26 29 46;
-  --c-ink-2: 70 75 98;
-  --c-ink-3: 91 96 119;
+  --c-sunken: 246 248 251;
+  --c-ink: 17 24 39;
+  --c-ink-2: 52 64 84;
+  --c-ink-3: 102 112 133;
   --c-on-accent: 255 255 255;
-  --c-rule: 220 222 231;
-  --c-rule-strong: 128 133 156;
-  --c-accent: 92 107 192;
-  --c-accent-hover: 74 88 169;
-  --c-accent-press: 59 72 144;
-  --c-accent-ink: 74 88 169;
-  --c-accent-soft: 238 240 252;
-  --c-accent-edge: 201 207 245;
-  --c-success: 10 110 88;
-  --c-success-soft: 233 246 241;
-  --c-success-edge: 169 217 200;
-  --c-warning: 143 80 0;
-  --c-warning-soft: 252 241 222;
-  --c-warning-edge: 235 203 148;
-  --c-danger: 180 45 48;
-  --c-danger-soft: 252 235 235;
-  --c-danger-edge: 237 180 180;
-  --c-info: 33 94 168;
-  --c-info-soft: 234 242 252;
-  --c-info-edge: 178 205 238;
+  --c-rule: 230 234 240;
+  --c-rule-strong: 102 112 133;
+  --c-accent: 37 99 235;
+  --c-accent-hover: 29 78 216;
+  --c-accent-to: 79 70 229;
+  --c-accent-to-hover: 67 56 202;
+  --c-accent-ink: 29 78 216;
+  --c-accent-soft: 239 246 255;
+  --c-accent-edge: 191 219 254;
+  --c-success: 21 128 61;
+  --c-success-soft: 240 253 244;
+  --c-success-edge: 187 247 208;
+  --c-warning: 180 83 9;
+  --c-warning-soft: 255 251 235;
+  --c-warning-edge: 253 230 138;
+  --c-danger: 185 28 28;
+  --c-danger-soft: 254 242 242;
+  --c-danger-edge: 254 202 202;
+  --c-info: 29 78 216;
+  --c-info-soft: 239 246 255;
+  --c-info-edge: 191 219 254;
 
-  /* Iridescent stops: the coloured reflections of a feather, used only as hairline fragments. */
-  --sheen-1: 142 156 230;
-  --sheen-2: 201 169 217;
-  --sheen-3: 140 199 188;
-  --sheen-4: 228 185 162;
+  --scrim: rgb(17 24 39 / 0.36);
 
-  --texture: 60 66 110 / 0.1;
-  --glass-alpha: 0.55;
-  --glass-blur: 14px;
-  --glass-edge: rgb(255 255 255 / 0.9);
-  --scrim: rgb(26 29 46 / 0.36);
-
-  --elev-1: 0 14px 36px -16px rgb(46 52 96 / 0.24), 0 2px 6px -3px rgb(46 52 96 / 0.1);
-  --elev-2: 0 28px 64px -24px rgb(46 52 96 / 0.3), 0 4px 12px -6px rgb(46 52 96 / 0.12);
-  --glow: 0 0 0 3px rgb(var(--c-accent) / 0.16);
-  --focus-glow: none;
-
-  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
-}
-
-@supports (transition-timing-function: linear(0, 1)) {
-  :root {
-    /* A damped spring (damping ratio 0.7) sampled at 25 points: a soft start and a 4.5% overshoot that settles. */
-    --ease-spring: linear(0, 0.061, 0.201, 0.372, 0.543, 0.694, 0.816, 0.908, 0.973, 1.013, 1.036, 1.045, 1.045, 1.04, 1.033, 1.025, 1.018, 1.011, 1.006, 1.003, 1, 0.999, 0.998, 0.998, 1);
-  }
+  --elev-1: 0 12px 34px rgb(17 24 39 / 0.06);
+  --elev-2: 0 24px 70px rgb(17 24 39 / 0.1);
+  --shadow-primary: 0 4px 6px -1px rgb(98 95 255 / 0.2), 0 2px 4px -2px rgb(98 95 255 / 0.2);
+  --shadow-primary-hover: 0 10px 15px -3px rgb(98 95 255 / 0.3), 0 4px 6px -4px rgb(98 95 255 / 0.3);
 }
 
 .dark {
   color-scheme: dark;
-  --c-canvas: 14 17 32;
-  --c-surface: 23 27 44;
-  --c-sunken: 30 35 56;
-  --c-ink: 243 244 250;
-  --c-ink-2: 196 201 221;
-  --c-ink-3: 158 165 192;
+  --c-canvas: 24 24 27;
+  --c-surface: 39 39 42;
+  --c-sunken: 32 32 35;
+  --c-ink: 228 228 231;
+  --c-ink-2: 212 212 216;
+  --c-ink-3: 161 161 170;
   --c-on-accent: 255 255 255;
-  --c-rule: 42 48 73;
-  --c-rule-strong: 106 114 148;
-  --c-accent: 92 107 192;
-  --c-accent-hover: 106 121 207;
-  --c-accent-press: 74 88 169;
-  --c-accent-ink: 170 180 246;
-  --c-accent-soft: 34 40 74;
-  --c-accent-edge: 60 70 119;
-  --c-success: 94 214 172;
-  --c-success-soft: 18 41 31;
-  --c-success-edge: 36 83 63;
-  --c-warning: 240 184 96;
-  --c-warning-soft: 45 35 18;
-  --c-warning-edge: 90 69 32;
-  --c-danger: 245 135 136;
-  --c-danger-soft: 48 26 31;
-  --c-danger-edge: 94 46 52;
-  --c-info: 132 180 242;
-  --c-info-soft: 21 35 58;
-  --c-info-edge: 43 68 105;
+  --c-rule: 63 63 70;
+  --c-rule-strong: 113 113 122;
+  --c-accent: 37 99 235;
+  --c-accent-hover: 29 78 216;
+  --c-accent-to: 79 70 229;
+  --c-accent-to-hover: 67 56 202;
+  --c-accent-ink: 96 165 250;
+  --c-accent-soft: 26 35 58;
+  --c-accent-edge: 29 54 110;
+  --c-success: 74 222 128;
+  --c-success-soft: 32 54 42;
+  --c-success-edge: 44 103 67;
+  --c-warning: 251 191 36;
+  --c-warning-soft: 58 49 28;
+  --c-warning-edge: 115 91 31;
+  --c-danger: 248 113 113;
+  --c-danger-soft: 58 37 40;
+  --c-danger-edge: 114 60 61;
+  --c-info: 96 165 250;
+  --c-info-soft: 26 35 58;
+  --c-info-edge: 29 54 110;
 
-  --texture: 180 188 251 / 0.085;
-  --glass-edge: rgb(226 229 253 / 0.12);
-  --scrim: rgb(5 7 14 / 0.66);
-
-  --elev-1: 0 16px 40px -16px rgb(0 0 0 / 0.65), 0 0 0 1px rgb(226 229 253 / 0.05);
-  --elev-2: 0 30px 70px -24px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(226 229 253 / 0.06);
-  /* Light passing through a feather: a soft halo in the accent's lighter stop. */
-  --glow: 0 0 0 1px rgb(var(--sheen-1) / 0.5), 0 0 22px -4px rgb(var(--sheen-1) / 0.55);
-  --focus-glow: 0 0 0 4px rgb(var(--sheen-1) / 0.16), 0 0 18px rgb(var(--sheen-1) / 0.4);
+  --elev-1: none;
+  --elev-2: none;
+  --shadow-primary: none;
+  --shadow-primary-hover: none;
 }
 
 @layer base {
@@ -116,37 +99,40 @@
     overflow-x: hidden;
   }
 
-  /* The woven ground: warp and weft hairlines, masked so one pattern serves both themes. It drifts slower than the page
-     (WovenGround.tsx), so it extends below the viewport by the furthest it drifts. */
-  .woven-ground {
-    position: fixed;
-    inset: 0 0 -240px 0;
-    z-index: -1;
-    pointer-events: none;
-    background-color: rgb(var(--texture));
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg fill='none' stroke='%23000' stroke-width='.6'%3E%3Cpath d='M1 2h10M1 5h10M1 8h10M13 14h10M13 17h10M13 20h10M14 1v10M17 1v10M20 1v10M2 13v10M5 13v10M8 13v10'/%3E%3C/g%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cg fill='none' stroke='%23000' stroke-width='.6'%3E%3Cpath d='M1 2h10M1 5h10M1 8h10M13 14h10M13 17h10M13 20h10M14 1v10M17 1v10M20 1v10M2 13v10M5 13v10M8 13v10'/%3E%3C/g%3E%3C/svg%3E");
-    -webkit-mask-size: 24px 24px;
-    mask-size: 24px 24px;
-    will-change: transform;
+  /* Page titles are 700 and section headings 600, both at -0.025em; the size classes of each heading set the scale. */
+  h1 {
+    font-weight: 700;
+    letter-spacing: -0.025em;
   }
 
-  h1,
   h2 {
-    font-family: var(--font-display), ui-serif, Georgia, serif;
-    font-weight: 400;
-    letter-spacing: -0.01em;
+    font-weight: 600;
+    letter-spacing: -0.025em;
   }
 
+  /* Korean breaks between words, not between syllables (no syllable left alone on a line); a word wider than its line
+     still wraps. */
+  :lang(ko) body {
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  /* Keyboard focus: a 2px outline, 2px off the control, on every focusable element. The accent clears 3:1 on the light
+     surfaces; on the dark ones only its lighter ink does (the accent is 2.88:1 on a dark card). */
   :focus-visible {
     outline: 2px solid rgb(var(--c-accent));
     outline-offset: 2px;
-    box-shadow: var(--focus-glow);
   }
 
-  /* Icons are drawn as hairlines, like the threads of the ground. */
-  svg.lucide {
-    stroke-width: 1.5;
+  .dark :focus-visible {
+    outline-color: rgb(var(--c-accent-ink));
+  }
+
+  /* Preflight colours a placeholder with a fixed grey (2.54:1 on a white field); the tertiary ink is 4.5:1 or more on every surface. */
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--c-ink-3));
+    opacity: 1;
   }
 
   ::selection {
@@ -156,67 +142,20 @@
 }
 
 @layer components {
-  /* Translucent surface over the woven ground, like a perforated lace panel: the threads show through unblurred. A
-     blur would only erase the hairlines, so resting panels have none. */
-  .glass {
-    background-color: rgb(var(--c-surface) / var(--glass-alpha));
-    background-image: linear-gradient(var(--glass-edge), var(--glass-edge));
-    background-size: 100% 1px;
-    background-repeat: no-repeat;
+  /* Primary action: a blue-600 to indigo-600 gradient with a soft indigo shadow. On hover the gradient steps to blue-700 and
+     indigo-700 at once (a gradient does not animate) and the shadow grows over 0.15s on the Tailwind default curve. */
+  .btn-primary {
+    color: rgb(var(--c-on-accent));
+    background-image: linear-gradient(to right, rgb(var(--c-accent)), rgb(var(--c-accent-to)));
+    box-shadow: var(--shadow-primary);
+    transition: box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .btn-primary:not(:disabled):hover {
+    background-image: linear-gradient(to right, rgb(var(--c-accent-hover)), rgb(var(--c-accent-to-hover)));
+    box-shadow: var(--shadow-primary-hover);
   }
 
-  /* Frosted: for a surface that page content moves under (the sticky header), where the blur is what shows. */
-  .glass-frost,
-  .glass-raised {
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
-  }
-
-  /* Floating layers sit over busy content, so they keep more of their surface under a stronger blur. */
-  .glass-raised {
-    --glass-alpha: 0.86;
-    --glass-blur: 18px;
-  }
-
-  /* An iridescent hairline: colour appears only as a fragment of reflected light. */
-  .sheen-edge {
-    position: relative;
-  }
-  .sheen-edge::after {
-    content: "";
-    position: absolute;
-    inset: -1px -1px auto -1px;
-    height: 1px;
-    pointer-events: none;
-    background: linear-gradient(90deg, rgb(var(--sheen-1)), rgb(var(--sheen-2)) 35%, rgb(var(--sheen-3)) 65%, rgb(var(--sheen-4)));
-    opacity: 0.85;
-    border-radius: inherit;
-  }
-
-  /* Feather-light response: the control lifts on hover and settles with a spring, pressing is immediate. */
-  .lift {
-    transition:
-      transform 0.52s var(--ease-spring),
-      background-color 0.2s ease,
-      border-color 0.2s ease,
-      color 0.2s ease,
-      box-shadow 0.32s ease;
-  }
-  .lift:not(:disabled):hover {
-    transform: translateY(-2px);
-  }
-  .lift:not(:disabled):active {
-    transform: translateY(0) scale(0.98);
-    transition-duration: 0.1s;
-  }
-
-  /* Backwards fill only: once settled, the element's own transform (a hover lift) applies again. */
-  .settle {
-    animation: settle 0.6s var(--ease-spring) backwards;
-  }
-
-  /* The progress thread: a 3px strand whose filled part carries a slowly flowing sheen. Nothing clips it, so the dark
-     theme's halo can spread past the strand. */
+  /* The progress strand: a track in the rule colour and a fill in the accent. */
   .thread {
     -webkit-appearance: none;
     appearance: none;
@@ -234,21 +173,13 @@
   }
   .thread::-webkit-progress-value {
     border-radius: 9999px;
-    background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--sheen-2)), rgb(var(--sheen-3)), rgb(var(--c-accent))) 0 0 / 200% 100%;
-    animation: thread-flow 1.8s linear infinite;
-    transition: width 0.5s var(--ease-spring);
-  }
-  .thread::-moz-progress-bar {
-    border-radius: 9999px;
-    background: linear-gradient(90deg, rgb(var(--c-accent)), rgb(var(--sheen-2)), rgb(var(--sheen-3)), rgb(var(--c-accent))) 0 0 / 200% 100%;
-    animation: thread-flow 1.8s linear infinite;
+    background: rgb(var(--c-accent));
+    transition: width 0.2s ease;
   }
   /* Vendor pseudo-elements stay in separate rules: a browser drops a whole selector list it cannot parse. */
-  .dark .thread::-webkit-progress-value {
-    box-shadow: 0 0 8px rgb(var(--sheen-1) / 0.6);
-  }
-  .dark .thread::-moz-progress-bar {
-    box-shadow: 0 0 8px rgb(var(--sheen-1) / 0.6);
+  .thread::-moz-progress-bar {
+    border-radius: 9999px;
+    background: rgb(var(--c-accent));
   }
 
   /* Native range: a 3px track filled to the thumb (`--range-ratio` from 0 to 1, set by the field) and a ringed thumb. */
@@ -288,7 +219,6 @@
     border-radius: 9999px;
     border: 2px solid rgb(var(--c-accent));
     background: rgb(var(--c-surface));
-    box-shadow: var(--elev-1);
   }
   .range::-moz-range-thumb {
     width: 18px;
@@ -297,10 +227,9 @@
     border-radius: 9999px;
     border: 2px solid rgb(var(--c-accent));
     background: rgb(var(--c-surface));
-    box-shadow: var(--elev-1);
   }
 
-  /* Native select without the platform arrow: a hairline chevron in the secondary ink, drawn as two diagonal strokes. */
+  /* Native select without the platform arrow: a chevron in the secondary ink, drawn as two diagonal strokes. */
   .select-chevron {
     -webkit-appearance: none;
     appearance: none;
@@ -337,61 +266,12 @@
       forced-color-adjust: none;
       border-color: ButtonText;
       background: Canvas;
-      box-shadow: none;
     }
     .range::-moz-range-thumb {
       forced-color-adjust: none;
       border-color: ButtonText;
       background: Canvas;
-      box-shadow: none;
     }
-  }
-}
-
-@keyframes settle {
-  0% {
-    opacity: 0;
-    transform: translateY(3px) scale(0.92);
-  }
-  100% {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes thread-flow {
-  to {
-    background-position: -200% 0;
-  }
-}
-
-@keyframes ground-drift {
-  to {
-    transform: translate3d(0, -240px, 0);
-  }
-}
-
-/* The same drift as WovenGround.tsx: a fifth of the scroll until 240px, reached at 1200px of scroll. */
-@supports (animation-timeline: scroll()) {
-  .woven-ground {
-    animation: ground-drift linear both;
-    animation-timeline: scroll(root);
-    animation-range: 0 1200px;
-  }
-}
-
-@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .glass-frost,
-  .glass-raised {
-    background-color: rgb(var(--c-surface));
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  .glass {
-    background-color: rgb(var(--c-surface));
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
   }
 }
 
@@ -423,7 +303,7 @@ html:has(dialog:modal) {
 
 ::-webkit-scrollbar-thumb {
   background: rgb(var(--c-rule));
-  border-radius: var(--radius-unit);
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -441,22 +321,8 @@ html:has(dialog:modal) {
     scroll-behavior: auto;
   }
 
-  .woven-ground {
-    animation: none;
-    transform: none;
-  }
-
   /* Pseudo-elements the universal selectors above do not reach, one rule per vendor. */
   .thread::-webkit-progress-value {
-    animation: none;
     transition: none;
-  }
-  .thread::-moz-progress-bar {
-    animation: none;
-  }
-
-  .lift:not(:disabled):hover,
-  .lift:not(:disabled):active {
-    transform: none;
   }
 }

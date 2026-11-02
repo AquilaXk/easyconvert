@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import Link from 'next/link';
+import { useTranslations } from 'next-intl';
 import { ChevronDown, Upload, HardDrive, Globe } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
 import { PlumeMark } from './PlumeMark';
-import { fileLimitCopy } from '@/lib/plan-limits';
+import { useFileLimitCopy } from '../i18n/format';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 
@@ -17,14 +18,14 @@ interface HeroDropzoneCardProps {
   onOpenUrlModal: () => void;
 }
 
-const POPULAR_PAIRS: readonly { label: string; href: string }[] = [
-  { label: 'PDF to Word', href: '/pdf-to-docx' },
-  { label: 'Word to PDF', href: '/docx-to-pdf' },
-  { label: 'Image to WebP', href: '/png-to-webp' },
-  { label: 'Video to MP3', href: '/mp4-to-mp3' },
-  { label: 'HEIC to JPG', href: '/heic-to-jpg' },
-  { label: 'EPUB to PDF', href: '/epub-to-pdf' },
-];
+const POPULAR_PAIRS = [
+  { key: 'pdfToWord', href: '/pdf-to-docx' },
+  { key: 'wordToPdf', href: '/docx-to-pdf' },
+  { key: 'imageToWebp', href: '/png-to-webp' },
+  { key: 'videoToMp3', href: '/mp4-to-mp3' },
+  { key: 'heicToJpg', href: '/heic-to-jpg' },
+  { key: 'epubToPdf', href: '/epub-to-pdf' },
+] as const;
 
 export default function HeroDropzoneCard({
   isDragOver,
@@ -34,6 +35,9 @@ export default function HeroDropzoneCard({
   onOpenFileDialog,
   onOpenUrlModal,
 }: Readonly<HeroDropzoneCardProps>) {
+  const t = useTranslations('hero.dropzone');
+  const tPairs = useTranslations('hero.popularPairs');
+  const fileLimitCopy = useFileLimitCopy();
   const [showSourceMenu, setShowSourceMenu] = useState(false);
   const plan = useViewerPlan();
   const splitButtonRef = useRef<HTMLDivElement>(null);
@@ -64,23 +68,17 @@ export default function HeroDropzoneCard({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className={`glass relative rounded-md border border-rule p-6 sm:p-8 text-center transition-[transform,box-shadow] duration-500 ease-spring ${
-          isDragOver ? '-translate-y-[3px] shadow-float' : ''
+        className={`relative rounded-md border-2 border-dashed p-6 sm:p-8 text-center transition-colors duration-200 ${
+          isDragOver ? 'border-accent bg-accent-soft' : 'border-accent-edge bg-surface shadow-elev-2'
         }`}
       >
-        <span
-          aria-hidden="true"
-          className={`pointer-events-none absolute rounded-sm border border-accent transition-[inset,opacity] duration-500 ease-spring ${
-            isDragOver ? 'inset-1.5 opacity-100' : 'inset-3 opacity-0'
-          }`}
-        />
-        <PlumeMark className={`size-11 mx-auto mb-2 text-accent-ink transition-transform duration-500 ease-spring ${isDragOver ? '-translate-y-1 -rotate-6' : ''}`} />
+        <PlumeMark className="size-11 mx-auto mb-2 text-accent-ink" />
 
-        <p className="font-display text-2xl sm:text-3xl text-ink">
-          Select your file to convert
+        <p className="text-2xl font-semibold tracking-tight text-ink">
+          {t('heading')}
         </p>
         <p className="text-sm text-ink-2 mt-1.5">
-          Drop files here, or paste from clipboard
+          {t('hint')}
         </p>
 
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
@@ -88,29 +86,29 @@ export default function HeroDropzoneCard({
             <button
               type="button"
               onClick={onOpenFileDialog}
-              className="lift min-h-[48px] px-6 bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent font-semibold text-sm sm:text-base rounded-l-sm flex items-center gap-2 cursor-pointer"
+              className="btn-primary min-h-[48px] px-6 font-semibold text-sm sm:text-base rounded-l-sm flex items-center gap-2 cursor-pointer"
             >
               <Upload className="w-4 h-4 shrink-0" />
-              <span>Select File</span>
+              <span>{t('selectFile')}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setShowSourceMenu((v) => !v)}
-              aria-label="More file sources"
+              aria-label={t('moreSources')}
               aria-haspopup="menu"
               aria-expanded={showSourceMenu}
-              className="lift min-h-[48px] w-12 bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent border-l border-on-accent/25 rounded-r-sm flex items-center justify-center cursor-pointer"
+              className="btn-primary min-h-[48px] w-12 border-l border-on-accent/25 rounded-r-sm flex items-center justify-center cursor-pointer"
             >
               <ChevronDown
-                className={`w-4 h-4 transition-transform duration-300 ease-spring ${showSourceMenu ? 'rotate-180' : ''}`}
+                className={`w-4 h-4 transition-transform duration-200 ${showSourceMenu ? 'rotate-180' : ''}`}
               />
             </button>
 
             {showSourceMenu && (
               <div
                 role="menu"
-                aria-label="File sources"
+                aria-label={t('sourcesMenu')}
                 className="absolute top-full right-0 mt-2 w-52 max-w-[calc(100dvw-2rem)] rounded-md bg-surface border border-rule shadow-elev-1 p-1.5 z-40 text-left"
               >
                 <button
@@ -123,7 +121,7 @@ export default function HeroDropzoneCard({
                   className="min-h-[44px] w-full px-3 rounded-sm text-sm font-medium text-ink hover:bg-sunken flex items-center gap-2.5 transition-colors cursor-pointer"
                 >
                   <HardDrive className="w-4 h-4 text-ink-3 shrink-0" />
-                  <span>From Device</span>
+                  <span>{t('fromDevice')}</span>
                 </button>
                 <button
                   type="button"
@@ -135,7 +133,7 @@ export default function HeroDropzoneCard({
                   className="min-h-[44px] w-full px-3 rounded-sm text-sm font-medium text-ink hover:bg-sunken flex items-center gap-2.5 transition-colors cursor-pointer"
                 >
                   <Globe className="w-4 h-4 text-ink-3 shrink-0" />
-                  <span>From URL</span>
+                  <span>{t('fromUrl')}</span>
                 </button>
               </div>
             )}
@@ -147,22 +145,22 @@ export default function HeroDropzoneCard({
             className="transition-colors min-h-[44px] sm:min-h-[36px] px-3.5 rounded-sm text-xs font-medium text-ink-2 hover:text-ink border border-rule hover:border-rule-strong inline-flex items-center gap-1.5 cursor-pointer"
           >
             <Globe className="w-3.5 h-3.5 shrink-0" />
-            <span>Add from URL</span>
+            <span>{t('addFromUrl')}</span>
           </button>
         </div>
 
         <div className="mt-6 pt-4 border-t border-rule text-xs text-ink-3 tabular-nums flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-          <span>{REGISTRY_STATS.formatCount} Formats Supported</span>
+          <span>{t('formatsSupported', { count: REGISTRY_STATS.formatCount })}</span>
           <span aria-hidden="true">&middot;</span>
           <span>{fileLimitCopy(plan)}</span>
           <span aria-hidden="true">&middot;</span>
-          <span>Encrypted &amp; Ephemeral</span>
+          <span>{t('assurance')}</span>
         </div>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
         <span className="text-xs font-medium uppercase tracking-widest text-ink-3 mr-1">
-          Popular
+          {t('popular')}
         </span>
         {POPULAR_PAIRS.map((pair) => (
           <Link
@@ -170,7 +168,7 @@ export default function HeroDropzoneCard({
             href={pair.href}
             className="transition-colors min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-sm text-xs font-medium text-ink-2 border border-rule hover:border-accent hover:text-accent-ink inline-flex items-center"
           >
-            {pair.label}
+            {tPairs(pair.key)}
           </Link>
         ))}
       </div>

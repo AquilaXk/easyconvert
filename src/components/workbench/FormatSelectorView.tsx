@@ -1,9 +1,10 @@
 'use client';
 
 import React from 'react';
+import { useTranslations } from 'next-intl';
 import { Search, X } from 'lucide-react';
 import type { FormatCategory, FormatDefinition } from '@/lib/types';
-import { CATEGORY_LABELS } from '@/lib/registry-stats';
+import { CATEGORY_ORDER } from '@/lib/registry-stats';
 
 export interface FormatSelectorBodyProps {
   inputId: string;
@@ -24,33 +25,47 @@ export interface MobileFormatDialogHeaderProps {
   onClose: () => void;
 }
 
-function formatCategoryLabel(category: string): string {
-  const key = category.toLowerCase() as FormatCategory;
-  if (key in CATEGORY_LABELS) {
-    return CATEGORY_LABELS[key];
-  }
+type CategoryTranslator = ReturnType<typeof useTranslations<'formatCategories'>>;
+
+function isFormatCategory(value: string): value is FormatCategory {
+  return (CATEGORY_ORDER as readonly string[]).includes(value);
+}
+
+function formatCategoryLabel(tCategory: CategoryTranslator, category: string): string {
+  const key = category.toLowerCase();
+  if (isFormatCategory(key)) return tCategory(key);
   return category.charAt(0).toUpperCase() + category.slice(1).toLowerCase();
 }
 
-function renderFormatList(
-  hasNoSupportedFormats: boolean,
-  displayedFormats: FormatDefinition[],
-  showAnyOption: boolean,
-  search: string,
-  normalizedSelected: string | undefined,
-  onChoose: (id: string) => void
-): React.ReactNode {
+interface FormatListProps {
+  hasNoSupportedFormats: boolean;
+  displayedFormats: FormatDefinition[];
+  showAnyOption: boolean;
+  search: string;
+  normalizedSelected: string | undefined;
+  onChoose: (id: string) => void;
+}
+
+function FormatList({
+  hasNoSupportedFormats,
+  displayedFormats,
+  showAnyOption,
+  search,
+  normalizedSelected,
+  onChoose,
+}: Readonly<FormatListProps>) {
+  const t = useTranslations('formatSelector');
   if (hasNoSupportedFormats) {
     return (
       <div className="flex items-center justify-center h-full text-ink-3 text-xs text-center py-6">
-        No supported output formats for this file.
+        {t('noTargets')}
       </div>
     );
   }
   if (displayedFormats.length === 0 && !showAnyOption) {
     return (
       <div className="flex items-center justify-center h-full text-ink-3 text-xs text-center py-6">
-        No formats matching &quot;{search}&quot;
+        {t('noMatches', { search })}
       </div>
     );
   }
@@ -63,7 +78,7 @@ function renderFormatList(
             key={fmt.id}
             type="button"
             onClick={() => onChoose(fmt.id)}
-            className={`min-h-[44px] sm:min-h-[40px] px-2 rounded-sm text-xs font-mono font-semibold uppercase text-center border transition-colors cursor-pointer truncate ${
+            className={`min-h-[44px] sm:min-h-[40px] px-2 rounded-sm text-[13px] font-bold tracking-[0.02em] uppercase text-center border transition-colors cursor-pointer truncate ${
               isSelected
                 ? 'bg-accent border-accent text-on-accent'
                 : 'hover:bg-accent-soft text-ink border-rule hover:border-accent'
@@ -81,15 +96,16 @@ export function MobileFormatDialogHeader({
   title,
   onClose,
 }: Readonly<MobileFormatDialogHeaderProps>) {
+  const t = useTranslations('formatSelector');
   return (
     <div className="flex items-center justify-between px-4 py-2.5 border-b border-rule">
       <span className="text-sm font-semibold text-ink">
-        {title || 'Select Format'}
+        {title || t('defaultTitle')}
       </span>
       <button
         type="button"
         onClick={onClose}
-        aria-label="Close format selector"
+        aria-label={t('close')}
         className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
       >
         <X className="w-4 h-4" />
@@ -111,16 +127,19 @@ export function FormatSelectorBody({
   allowAny,
   onChoose,
 }: Readonly<FormatSelectorBodyProps>) {
+  const t = useTranslations('formatSelector');
+  const tCategory = useTranslations('formatCategories');
   const normalizedSelected = selectedFormatId?.toLowerCase();
+  const anyLabel = t('anyFormat');
   const showAnyOption =
-    Boolean(allowAny) && (!search.trim() || 'any format'.includes(search.trim().toLowerCase()));
+    Boolean(allowAny) && (!search.trim() || anyLabel.toLowerCase().includes(search.trim().toLowerCase()));
 
   return (
     <>
       <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-rule bg-sunken/60 shrink-0">
         <Search className="w-4 h-4 text-ink-3 shrink-0" />
         <label htmlFor={inputId} className="sr-only">
-          Search format
+          {t('searchLabel')}
         </label>
         <input
           id={inputId}
@@ -133,7 +152,7 @@ export function FormatSelectorBody({
               onChoose(displayedFormats[0].id);
             }
           }}
-          placeholder="Search format..."
+          placeholder={t('searchPlaceholder')}
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
@@ -146,7 +165,7 @@ export function FormatSelectorBody({
             onClick={() => onSearchChange('')}
             className="min-h-[44px] min-w-[44px] sm:min-h-[32px] sm:min-w-0 px-2 inline-flex items-center justify-center text-xs font-medium text-ink-3 hover:text-ink rounded-sm cursor-pointer"
           >
-            Clear
+            {t('clear')}
           </button>
         )}
       </div>
@@ -167,7 +186,7 @@ export function FormatSelectorBody({
                       : 'text-ink-2 hover:bg-sunken hover:text-ink'
                   }`}
                 >
-                  <span className="truncate">{formatCategoryLabel(cat)}</span>
+                  <span className="truncate">{formatCategoryLabel(tCategory, cat)}</span>
                 </button>
               );
             })}
@@ -179,24 +198,24 @@ export function FormatSelectorBody({
             <button
               type="button"
               onClick={() => onChoose('any')}
-              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-sm text-xs font-mono font-semibold uppercase border transition-colors cursor-pointer ${
+              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-sm text-[13px] font-bold tracking-[0.02em] uppercase border transition-colors cursor-pointer ${
                 normalizedSelected === 'any' || !normalizedSelected
                   ? 'bg-accent border-accent text-on-accent'
                   : 'bg-sunken/70 border-rule text-ink hover:border-accent'
               }`}
             >
-              ANY FORMAT
+              {anyLabel}
             </button>
           )}
           <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-            {renderFormatList(
-              hasNoSupportedFormats,
-              displayedFormats,
-              showAnyOption,
-              search,
-              normalizedSelected,
-              onChoose
-            )}
+            <FormatList
+              hasNoSupportedFormats={hasNoSupportedFormats}
+              displayedFormats={displayedFormats}
+              showAnyOption={showAnyOption}
+              search={search}
+              normalizedSelected={normalizedSelected}
+              onChoose={onChoose}
+            />
           </div>
         </div>
       </div>

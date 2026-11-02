@@ -1,4 +1,17 @@
 import { PIPELINE_OPERATIONS } from './api/contracts/enums';
+import type { ConversionFailure } from './conversion-failure';
+import type { ConversionRefusalCode } from './refusal-codes';
+import type {
+  AspectRatioOptions,
+  AudioEncodingOptions,
+  MediaPackagingOptions,
+  MediaTrimOptions,
+  SubtitleOptions,
+  ThumbnailOptions,
+  VideoEncodingOptions,
+} from './media-options';
+
+export type * from './media-options';
 
 export type FormatCategory =
   | 'image'
@@ -270,144 +283,6 @@ export interface ConversionOptions {
   optimize?: PdfOptimizeOptions;
 }
 
-export interface AspectRatioOptions {
-  /** "W:H", whole numbers, e.g. "4:3". */
-  ratio: string;
-  /** `dar` sets the display ratio only (default), `pad` adds bars, `crop` removes picture. */
-  mode?: 'dar' | 'pad' | 'crop';
-}
-
-export interface VideoRateControlCrf {
-  mode: 'crf';
-  crf: number;
-  /**
-   * Caps the peak bitrate of the constant-quality encode (capped CRF): `-maxrate` with a `-bufsize` of twice
-   * that. Left unset, quality alone decides the rate and no bitrate is invented.
-   */
-  maxBitrateK?: number;
-}
-
-export interface VideoRateControlVbr {
-  mode: 'vbr';
-  bitrateK: number;
-  maxrateK?: number;
-  bufsizeK?: number;
-  /** Run the encode in two passes (h264, hevc, vp9): the second reaches the target bitrate more exactly. */
-  twoPass?: boolean;
-}
-
-export interface VideoRateControlCbr {
-  mode: 'cbr';
-  bitrateK: number;
-}
-
-export type VideoRateControl = VideoRateControlCrf | VideoRateControlVbr | VideoRateControlCbr;
-
-export interface VideoCropOptions {
-  w: number;
-  h: number;
-  x: number;
-  y: number;
-}
-
-export interface VideoScaleOptions {
-  width?: number;
-  height?: number;
-  fit?: 'contain' | 'cover' | 'stretch';
-}
-
-export interface VideoEncodingOptions {
-  codec?: 'h264' | 'hevc' | 'vp9' | 'av1' | 'prores';
-  profile?: string;
-  level?: string;
-  rateControl?: VideoRateControl;
-  preset?: string;
-  fps?: number;
-  crop?: VideoCropOptions;
-  rotate?: 0 | 90 | 180 | 270;
-  deinterlace?: boolean;
-  scale?: VideoScaleOptions;
-}
-
-export interface MediaTrimOptions {
-  start?: string;
-  end?: string;
-}
-
-export type AudioCodec = 'aac' | 'mp3' | 'opus' | 'flac' | 'vorbis' | 'pcm_s16le';
-
-/** Named EBU R128 / ITU-R BS.1770-4 loudness targets. */
-export type LoudnessPreset = 'ebu-r128' | 'streaming' | 'podcast';
-
-export interface LoudnessOptions {
-  /** Starting values: `ebu-r128` (-23 LUFS, the default), `streaming` (-14 LUFS) or `podcast` (-16 LUFS). */
-  preset?: LoudnessPreset;
-  /** Integrated loudness target in LUFS (-70 to -5). */
-  integrated?: number;
-  /** Maximum true peak in dBTP (-9 to 0). */
-  truePeak?: number;
-  /** Loudness range target in LU (1 to 50). */
-  lra?: number;
-}
-
-export type AudioResampler = 'soxr' | 'swr';
-export type AudioDither = 'none' | 'rectangular' | 'triangular' | 'triangular_hp';
-
-export interface AudioEncodingOptions {
-  codec?: AudioCodec;
-  /** Opt-in two-pass loudness normalisation (a measuring pass, then a linear gain). */
-  loudness?: LoudnessOptions;
-  /** Resampler for rate changes: soxr when the ffmpeg build has it (the default), otherwise swr. */
-  resampler?: AudioResampler;
-  /** Dither for the reduction to 16-bit PCM; defaults to triangular_hp. */
-  dither?: AudioDither;
-  bitrateK?: number;
-  channels?: 1 | 2 | 6 | 8;
-  sampleRate?: number;
-  volume?: number;
-  downmix?: 'itu-r-bs775';
-  track?: number | 'all';
-}
-
-export type SubtitleMode = 'burn' | 'soft' | 'extract';
-export type SubtitleFormat = 'srt' | 'vtt' | 'ass';
-
-export interface SubtitleOptions {
-  mode: SubtitleMode;
-  input?: string;
-  streamIndex?: number;
-  format?: SubtitleFormat;
-}
-
-export interface ThumbnailOptions {
-  at?: string[];
-  format?: 'jpg' | 'png';
-  width?: number;
-  accurate?: boolean;
-}
-
-export interface MediaLadderRung {
-  height: number;
-  bitrateK: number;
-  fps?: number;
-  audioBitrateK?: number;
-}
-
-export type MediaPackagingFormat = 'hls' | 'dash';
-
-/** HLS segment container: MPEG-2 transport stream, or fragmented MP4 (CMAF). MPEG-DASH always uses fmp4. */
-export type MediaPackagingSegmentType = 'ts' | 'fmp4';
-
-export interface MediaPackagingOptions {
-  format: MediaPackagingFormat;
-  segmentSeconds?: number;
-  segmentType?: MediaPackagingSegmentType;
-  ladder?: MediaLadderRung[];
-  masterPlaylistName?: string;
-  audioCodec?: 'aac' | 'opus';
-  videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
-}
-
 export type QueueItemStatus =
   | 'ready'
   | 'uploading'
@@ -426,7 +301,7 @@ export interface ConversionQueueItem {
   progress: number;
   resultUrl?: string;
   resultSize?: number;
-  error?: string;
+  error?: ConversionFailure;
   options: ConversionOptions;
   edgeProcessed?: boolean;
   edgeTier?: string;
@@ -574,6 +449,7 @@ export interface ConversionJobResult {
 }
 
 export class ConversionFailedError extends Error {
+  readonly refusalCode: ConversionRefusalCode = 'conversion_failed';
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'ConversionFailedError';
@@ -586,6 +462,7 @@ export class ConversionFailedError extends Error {
  * worker. Every error class named like a missing tool must extend it; a test scans the source tree for that.
  */
 export class EngineMissingError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'engine_unavailable';
   constructor(message: string) {
     super(message);
     this.name = 'EngineMissingError';
@@ -593,6 +470,7 @@ export class EngineMissingError extends ConversionFailedError {
 }
 
 export class FileExtensionSpoofError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'spoofed_file';
   constructor(message: string) {
     super(message);
     this.name = 'FileExtensionSpoofError';
@@ -615,6 +493,7 @@ export class OcrPreprocessError extends ConversionFailedError {
 }
 
 export class UnsupportedTargetError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'unsupported_pair';
   constructor(message: string) {
     super(message);
     this.name = 'UnsupportedTargetError';
@@ -642,6 +521,7 @@ export class ArchiveNotEncryptedError extends ConversionFailedError {
  * HTTP 422 (through `status`) like the password errors of a PDF, not the 400 of a malformed input.
  */
 export class ArchiveInputUnprocessableError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'unsupported_input';
   readonly status = 422;
   constructor(message: string) {
     super(message);
@@ -651,6 +531,7 @@ export class ArchiveInputUnprocessableError extends ConversionFailedError {
 
 /** The archive is encrypted and the request carried no password. */
 export class ArchivePasswordRequiredError extends ArchiveInputUnprocessableError {
+  readonly refusalCode: ConversionRefusalCode = 'password_required';
   constructor(message: string) {
     super(message);
     this.name = 'ArchivePasswordRequiredError';
@@ -659,6 +540,7 @@ export class ArchivePasswordRequiredError extends ArchiveInputUnprocessableError
 
 /** The request carried a password that does not decrypt the archive. */
 export class InvalidArchivePasswordError extends ArchiveInputUnprocessableError {
+  readonly refusalCode: ConversionRefusalCode = 'invalid_password';
   constructor(message: string) {
     super(message);
     this.name = 'InvalidArchivePasswordError';
@@ -670,6 +552,7 @@ export class InvalidArchivePasswordError extends ArchiveInputUnprocessableError 
  * than it accepts. The archive is intact, so the routes answer HTTP 422; the bytes are never passed on undecoded.
  */
 export class UnsupportedArchiveMethodError extends ArchiveInputUnprocessableError {
+  readonly refusalCode: ConversionRefusalCode = 'unsupported_method';
   constructor(message: string) {
     super(message);
     this.name = 'UnsupportedArchiveMethodError';
@@ -677,6 +560,7 @@ export class UnsupportedArchiveMethodError extends ArchiveInputUnprocessableErro
 }
 
 export class UnsupportedOptionError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'option_not_supported';
   constructor(message: string) {
     super(message);
     this.name = 'UnsupportedOptionError';
@@ -685,6 +569,7 @@ export class UnsupportedOptionError extends ConversionFailedError {
 
 /** Input bytes that are not valid text in the detected or requested character encoding. */
 export class DataEncodingError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
   constructor(message: string) {
     super(message);
     this.name = 'DataEncodingError';
@@ -702,6 +587,7 @@ export interface DataErrorLocation {
 
 /** Structured-data input (CSV, JSON, NDJSON, YAML, TOML, XML) that does not parse. */
 export class DataParseError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
   readonly line?: number;
   readonly column?: number;
   readonly row?: number;
@@ -717,6 +603,7 @@ export class DataParseError extends ConversionFailedError {
 
 /** Structured-data input that exceeds a safety cap: entity or alias expansion, expanded size, nesting depth. */
 export class DataLimitExceededError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
   constructor(message: string) {
     super(message);
     this.name = 'DataLimitExceededError';
@@ -773,6 +660,7 @@ export class CadGeometryError extends ConversionFailedError {
  * would visit more entities, strokes, points or text than the budget. Maps to HTTP 422.
  */
 export class CadExpansionLimitError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
   readonly status = 422;
   constructor(message: string) {
     super(message);
@@ -787,6 +675,7 @@ export class CadExpansionLimitError extends ConversionFailedError {
  * refuse the same file, so the queue does not retry it.
  */
 export class UnprocessableCadInputError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'unsupported_input';
   readonly status = 422;
   constructor(message: string) {
     super(message);
@@ -800,6 +689,7 @@ export class UnprocessableCadInputError extends ConversionFailedError {
  * malformed container, and not an `EngineMissingError`, so the queue does not retry it on another worker.
  */
 export class UnprocessableFontInputError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
   readonly status = 422;
   constructor(message: string) {
     super(message);
@@ -922,6 +812,7 @@ export class CpuPoolOverloadedError extends EngineUnavailableError {
 
 /** A task on the CPU worker pool ran past its time limit and its thread was terminated. */
 export class CpuTaskTimeoutError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'timeout';
   readonly status = 422;
 
   constructor(kind: string, limitMs: number, message?: string) {
@@ -941,6 +832,7 @@ export const JOB_TIMEOUT_STATUS = 504;
  * problem type `https://api.easyconvert.io/problems/job-timeout`.
  */
 export class JobTimeoutError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'timeout';
   readonly status = JOB_TIMEOUT_STATUS;
   readonly timeoutMs: number;
 
@@ -1010,6 +902,7 @@ export class GraphExportError extends ConversionFailedError {
  * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
  */
 export class PayloadLimitError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
   readonly status = 413;
   constructor(message: string) {
     super(message);
@@ -1042,6 +935,7 @@ export class DecompressionLimitError extends PayloadLimitError {
  * (through `status`) instead of the generic 400 for a malformed input.
  */
 export class EncryptedOfficeDocumentError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'encrypted_input';
   readonly status = 422;
   constructor(message: string) {
     super(message);
@@ -1054,6 +948,7 @@ export class EncryptedOfficeDocumentError extends ConversionFailedError {
  * like every typed conversion failure, is never retried by the queue.
  */
 export class PdfPasswordRequiredError extends EncryptedOfficeDocumentError {
+  readonly refusalCode: ConversionRefusalCode = 'password_required';
   constructor(message: string) {
     super(message);
     this.name = 'PdfPasswordRequiredError';
@@ -1084,6 +979,7 @@ export class PdfPermissionDeniedError extends EncryptedOfficeDocumentError {
 
 /** A compressed stream or a font container is malformed, truncated, or disagrees with the size it declares. Maps to HTTP 400. */
 export class CorruptStreamError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
   readonly status = 400;
   constructor(message: string) {
     super(message);
@@ -1108,6 +1004,7 @@ export class CompoundFileStructureError extends CorruptStreamError {
 }
 
 export class InvalidPageRangeError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'invalid_pages';
   constructor(message: string) {
     super(message);
     this.name = 'InvalidPageRangeError';
@@ -1213,6 +1110,7 @@ export class TooManyMediaStreamsError extends ConversionFailedError {
 
 /** ffprobe output that cannot be parsed or lacks a required field; the input is not described reliably. */
 export class MediaProbeError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'malformed_input';
   constructor(message: string) {
     super(message);
     this.name = 'MediaProbeError';
@@ -1225,6 +1123,7 @@ export class MediaProbeError extends ConversionFailedError {
  * the same file, so it is not an `EngineMissingError` and the queue does not retry it.
  */
 export class UnprocessableMediaInputError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'unsupported_input';
   constructor(message: string) {
     super(message);
     this.name = 'UnprocessableMediaInputError';
@@ -1238,6 +1137,7 @@ export class UnprocessableMediaInputError extends ConversionFailedError {
  * 422 (through `status`); another worker would refuse it too.
  */
 export class EmptyAudioInputError extends UnprocessableMediaInputError {
+  readonly refusalCode: ConversionRefusalCode = 'empty_file';
   readonly status = 422;
   constructor(target: string) {
     super(`The audio file holds no audio samples, so there is nothing to write as a .${target} file that a player or reader can open.`);
@@ -1307,6 +1207,7 @@ export interface ArchiveInspectResponse {
 }
 
 export class MissingVolumeError extends Error {
+  readonly refusalCode: ConversionRefusalCode = 'missing_volume';
   readonly status = 422;
   constructor(missingVolume: string, message?: string) {
     super(message || `Missing archive volume part: "${missingVolume}".`);
@@ -1315,6 +1216,7 @@ export class MissingVolumeError extends Error {
 }
 
 export class ArchiveEntryCollisionError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'archive_entry_collision';
   readonly status = 422;
   readonly entryName: string;
   constructor(entryName: string, message?: string) {
@@ -1325,6 +1227,7 @@ export class ArchiveEntryCollisionError extends ConversionFailedError {
 }
 
 export class ArchiveEncryptedHeaderError extends Error {
+  readonly refusalCode: ConversionRefusalCode = 'encrypted_input';
   readonly status = 422;
   constructor(message?: string) {
     super(message || 'Archive header is encrypted and requires a password to inspect entries.');

@@ -1,0 +1,1665 @@
+{
+  "ads": {
+    "label": "Advertisement",
+    "leaderboard": "728 × 90 Leaderboard",
+    "responsive": "728 × 90 / 970 × 90 Responsive Banner",
+    "inFeed": "728 × 90 In-Feed Placement",
+    "display": "728 × 90 Display Placement",
+    "rectangle": "300 × 250 Medium Rectangle"
+  },
+  "apiDocs": {
+    "masthead": {
+      "fallbackTitle": "EasyConvert Developer API",
+      "fallbackDescription": "REST API for asynchronous conversion queues, multipart uploads, and webhook delivery. Operations marked <code>x-internal</code> serve the web application and are excluded from external client contracts.",
+      "version": "OpenAPI {openapi} | v{version}",
+      "auth": "Auth: Bearer API Key",
+      "base": "Base:",
+      "download": "Download OpenAPI JSON",
+      "dashboard": "API Key Dashboard",
+      "previewKey": "cURL Preview Key",
+      "previewKeyPlaceholder": "Paste an ec_live_... key to populate cURL snippets locally"
+    },
+    "toolbar": {
+      "heading": "Endpoints Reference",
+      "intro": "Inspect request parameters, RBAC scopes, and executable cURL commands.",
+      "searchLabel": "Search API endpoints",
+      "searchPlaceholder": "Search endpoints (convert, jobs, uploads)...",
+      "methodLegend": "Filter endpoints by HTTP method",
+      "allMethods": "all"
+    },
+    "page": {
+      "loading": "Loading OpenAPI specification...",
+      "loadFailedHeading": "Could not load the OpenAPI specification",
+      "loadFailedBody": "Try again in a moment.",
+      "retry": "Try again",
+      "noMatches": "No matching API endpoints found."
+    },
+    "endpoint": {
+      "security": "Security & Scopes",
+      "curl": "Executable cURL",
+      "copyLabel": "Copy cURL command for {method} {path}",
+      "copied": "Copied",
+      "copy": "Copy cURL",
+      "copiedAnnouncement": "Copied cURL command for {method} {path}"
+    },
+    "schema": {
+      "parameters": "Parameters",
+      "columns": {
+        "name": "Name",
+        "in": "In",
+        "type": "Type",
+        "required": "Required",
+        "description": "Description"
+      },
+      "yes": "Yes",
+      "no": "No",
+      "optionalParameter": "Optional parameter",
+      "requestBody": "Request Body",
+      "binaryPayload": "Binary stream or structured schema payload.",
+      "responses": "Responses",
+      "responsePayload": "Response payload"
+    }
+  },
+  "auth": {
+    "loginHeading": "Sign in to EasyConvert",
+    "registerHeading": "Create an EasyConvert account",
+    "intro": "Manage developer API keys, webhooks, and conversion history.",
+    "modeLabel": "Sign in or sign up",
+    "tabs": {
+      "login": "Sign In",
+      "register": "Sign Up"
+    },
+    "emailDivider": "or continue with email",
+    "loading": "Loading authentication form",
+    "form": {
+      "google": "Continue with Google",
+      "name": "Full Name",
+      "namePlaceholder": "Alex Morgan",
+      "email": "Email Address",
+      "emailPlaceholder": "alex@example.com",
+      "password": "Password",
+      "hidePassword": "Hide password",
+      "showPassword": "Show password",
+      "confirmPassword": "Confirm Password",
+      "signIn": "Sign In",
+      "createAccount": "Create Account"
+    },
+    "oauthErrors": {
+      "oauth_code_missing": "Authentication request cancelled or authorization code missing.",
+      "oauth_denied": "Google sign-in was cancelled before completion.",
+      "invalid_oauth_callback": "The sign-in request is not valid. Sign in again.",
+      "invalid_oauth_state": "Invalid authentication state. Try signing in again.",
+      "oauth_exchange_failed": "Could not verify your Google account. Sign in again.",
+      "account_linking_required": "An account with this email already exists. Sign in with your password first to link Google.",
+      "generic": "Authentication failed. Please try signing in again."
+    },
+    "messages": {
+      "googleFailed": "Could not start Google sign-in. Try again.",
+      "googleNetwork": "The connection dropped and Google sign-in did not start. Try again.",
+      "missingFields": "Fill in all required fields.",
+      "passwordTooShort": "Password must be at least 8 characters long.",
+      "passwordMismatch": "Passwords do not match.",
+      "created": "Account created. Redirecting...",
+      "signedIn": "Signed in. Redirecting...",
+      "connection": "The connection dropped. Try again."
+    }
+  },
+  "converterPage": {
+    "breadcrumb": {
+      "label": "Breadcrumb",
+      "home": "Home",
+      "converter": "{format} Converter",
+      "pair": "{src} to {tgt}"
+    },
+    "dossier": {
+      "fullName": "Full Name",
+      "developer": "Developer",
+      "mimeType": "MIME Type",
+      "category": "Category",
+      "source": "SOURCE FORMAT",
+      "target": "TARGET FORMAT",
+      "capabilities": "Key Capabilities"
+    },
+    "specs": {
+      "pairHeading": "{src} vs {tgt} Specifications",
+      "heading": "{format} Format Specification",
+      "intro": "Technical Specifications covering container standards, MIME types, specification maintainers, and format capabilities."
+    },
+    "guarantee": {
+      "pipeline": "Browser Edge & Isolated Worker Pipeline",
+      "free": "100% Free & Unlimited",
+      "ephemeral": "Encrypted Ephemeral Processing",
+      "private": "Private & Secure"
+    },
+    "steps": {
+      "heading": {
+        "pair": "How to Convert {src} to {tgt}",
+        "single": "How to Convert {src} Files"
+      },
+      "intro": "Step-by-Step Guide for converting and downloading your files in three steps.",
+      "upload": {
+        "heading": "Upload {src} File(s)",
+        "body": "Click 'Select File' or drag and drop {src} files into the workbench. You can also import a public link."
+      },
+      "choose": {
+        "pair": {
+          "heading": "Choose to {tgt}",
+          "body": "Confirm {tgt} as the output format, or pick another target and adjust optional conversion settings."
+        },
+        "single": {
+          "heading": "Select Destination Format",
+          "body": "Pick a target format from {count} supported audio, video, image, document, CAD, and archive formats."
+        }
+      },
+      "download": {
+        "pair": {
+          "heading": "Download Your {tgt}"
+        },
+        "single": {
+          "heading": "Download Converted Files"
+        },
+        "body": "Click 'Convert' to run the conversion and save each output file directly, or download a batch as one ZIP archive."
+      }
+    },
+    "crossLinks": {
+      "from": {
+        "heading": "Convert from {format}",
+        "body": "Pick a target format to start a {format} conversion."
+      },
+      "to": {
+        "heading": "Convert to {format}",
+        "body": "Pick a source format to convert into {format}."
+      },
+      "pair": "{src} to {tgt}"
+    },
+    "faq": {
+      "pairTitle": "{src} to {tgt} Frequently Asked Questions",
+      "singleTitle": "{src} Converter Frequently Asked Questions",
+      "subtitle": "Common questions about {src} conversion fidelity, privacy, and batch downloads.",
+      "howTo": {
+        "pair": {
+          "q": "How do I convert {src} to {tgt} for free?",
+          "a": "Drop your {src} file into the workbench above or click 'Select File', confirm {tgt} as the output format, and click Convert. Download the converted {tgt} file right away with no watermarks or account requirement."
+        },
+        "single": {
+          "q": "How do I convert {src} files online for free?",
+          "a": "Add your {src} file to the workbench above, pick an output format from {count} supported formats, and click Convert. Conversions are free and carry no watermark."
+        }
+      },
+      "privacy": {
+        "pair": {
+          "q": "How are {src} to {tgt} files handled for privacy?"
+        },
+        "single": {
+          "q": "How are {src} files handled for privacy?"
+        },
+        "a": "Formats the browser supports run inside your browser with WebAssembly. Anything that needs a server is sent over TLS 1.3 to an isolated worker, and the temporary output is deleted after you download it or after a short retention time."
+      },
+      "quality": {
+        "pair": {
+          "q": "Does converting {src} to {tgt} preserve layout and quality?"
+        },
+        "single": {
+          "q": "Does {src} conversion preserve formatting and quality?"
+        },
+        "a": "Yes. Dedicated format engines translate vector paths, embedded fonts, tables, colour profiles, and media streams to match the source structure."
+      },
+      "batch": {
+        "q": "Can I batch-convert multiple {src} files at once?",
+        "a": "Yes. Drop multiple files into the queue to convert them in parallel, then save each output individually or download a single consolidated ZIP archive."
+      },
+      "install": {
+        "q": "Do I need to install desktop software or browser extensions?",
+        "a": "No installation is needed. EasyConvert runs in standard web browsers across macOS, Windows, Linux, iOS, and Android."
+      }
+    }
+  },
+  "dashboard": {
+    "loading": "Loading account session...",
+    "dismissError": "Dismiss dashboard error",
+    "header": {
+      "heading": "Developer Dashboard",
+      "tier": "{tier} plan",
+      "provider": "Signed in with <strong>{provider}</strong>",
+      "providers": {
+        "email": "Email",
+        "google": "Google"
+      },
+      "memberSince": "Member since {date}",
+      "signOut": "Sign Out",
+      "sectionsLabel": "Dashboard sections",
+      "tabs": {
+        "api": "Developer API Keys",
+        "files": "My Converted Files",
+        "dlq": "Failed webhooks",
+        "usage": "Usage & Rate Limits"
+      }
+    },
+    "files": {
+      "heading": "Recent Conversion Files",
+      "intro": "Temporary output files are deleted after download or when their retention timer expires.",
+      "refresh": "Refresh",
+      "emptyHeading": "No active conversion files",
+      "emptyBody": "Files converted via your account or API keys appear here with a live automatic expiration countdown.",
+      "openWorkbench": "Open the converter",
+      "columns": {
+        "name": "File Name",
+        "format": "Format",
+        "size": "Size",
+        "ttl": "Retention",
+        "actions": "Actions"
+      },
+      "pair": "{src} to {tgt}",
+      "downloadLabel": "Download {name}",
+      "expiresIn": "Deleted {when}",
+      "expiresSoon": "Deleted soon",
+      "deleteLabel": "Delete {name}"
+    },
+    "quota": {
+      "used": "Daily API Requests Used",
+      "allowed": "/ {limit, number} allowed",
+      "remaining": "Remaining Quota",
+      "callsLeft": "calls left",
+      "remainingNote": "Counts authenticated REST requests. Output files are deleted automatically.",
+      "reset": "Daily Reset",
+      "resetNote": "Daily API counters reset automatically at midnight UTC."
+    },
+    "keys": {
+      "heading": "API Secret Keys",
+      "intro": "Create and revoke scoped keys for backend scripts and webhook pipelines.",
+      "generate": "Generate New Key",
+      "defaultName": "Production API Key",
+      "createHeading": "Create New API Key",
+      "name": "Key Name",
+      "namePlaceholder": "Production Backend Worker",
+      "scopesLegend": "Scopes",
+      "scopes": {
+        "convertWrite": "{scope} (Upload & Convert)",
+        "convertRead": "{scope} (Job Status & Polling)",
+        "storageDownload": "{scope} (Output Artifacts)"
+      },
+      "scopesRequired": "Select at least one scope to generate a key.",
+      "expiry": "Key Expiration",
+      "expiryChoices": {
+        "30d": "30 Days",
+        "60d": "60 Days",
+        "90d": "90 Days",
+        "1y": "1 Year",
+        "never": "Never (No Expiration)"
+      },
+      "expiryNote": "A <code>key.expiring_soon</code> webhook fires 7 days before expiration.",
+      "create": "Create API Key",
+      "cancel": "Cancel",
+      "generated": {
+        "label": "Generated API key",
+        "copiedAnnouncement": "API secret key copied to clipboard.",
+        "generatedAnnouncement": "API key generated.",
+        "heading": "API Key Generated",
+        "body": "Copy this secret key now. Only the key hash is stored and the secret is not shown again.",
+        "inputLabel": "Generated API secret key",
+        "copyLabel": "Copy generated API key",
+        "copied": "Copied",
+        "copy": "Copy Key",
+        "dismiss": "Dismiss"
+      },
+      "table": {
+        "noExpiry": "Never",
+        "neverUsed": "Never",
+        "expired": "Expired",
+        "expiringIn": "Expiring in {days}d",
+        "emptyHeading": "No API keys created yet",
+        "emptyBody": "Generate an API key to authenticate programmatic conversion requests.",
+        "columns": {
+          "name": "Name & Scopes",
+          "prefix": "Key Prefix",
+          "created": "Created",
+          "expires": "Expires",
+          "lastUsed": "Last Used",
+          "status": "Status",
+          "actions": "Actions"
+        },
+        "allScopes": "all scopes (*)",
+        "status": {
+          "active": "ACTIVE",
+          "revoked": "REVOKED"
+        },
+        "revoked": "Revoked",
+        "confirmLabel": "Confirm revoking API key {name}",
+        "confirm": "Confirm",
+        "cancelLabel": "Cancel revoking API key {name}",
+        "cancel": "Cancel",
+        "revokeLabel": "Revoke API key {name}",
+        "revoke": "Revoke"
+      }
+    },
+    "dlq": {
+      "heading": "Failed webhooks",
+      "failedCount": "{count} Failed",
+      "intro": "Webhooks that could not be delivered after every retry. Inspect a payload or send it again.",
+      "refresh": "Refresh",
+      "clear": "Clear all",
+      "dismissFeedback": "Dismiss webhook notification",
+      "emptyHeading": "No failed webhooks",
+      "emptyBody": "Every webhook was delivered.",
+      "columns": {
+        "event": "Event",
+        "target": "Target URL",
+        "status": "Status",
+        "failedAt": "Failed At",
+        "retries": "Retries",
+        "actions": "Actions"
+      },
+      "replayed": "REPLAYED",
+      "attempts": "{count} attempts",
+      "inspectLabel": "Inspect payload for {event}",
+      "replayLabel": "Replay webhook {id}",
+      "replay": "Replay",
+      "deleteLabel": "Delete failed webhook {id}",
+      "dialog": {
+        "heading": "Inspect Webhook Payload",
+        "close": "Close payload viewer",
+        "target": "Target URL",
+        "error": "Delivery Error",
+        "payload": "Payload JSON",
+        "copyLabel": "Copy webhook payload JSON",
+        "copied": "Copied",
+        "copy": "Copy Payload",
+        "copiedAnnouncement": "Webhook payload JSON copied to clipboard",
+        "replay": "Replay Now",
+        "closeButton": "Close"
+      }
+    },
+    "usage": {
+      "heading": "Usage & Rate Limits",
+      "intro": "Your plan, your API request allowance, and the retention rules.",
+      "tier": "Active Tier: {tier}",
+      "quota": "Daily API Quota",
+      "remaining": "{count, number} programmatic requests remaining today",
+      "activeKeys": "Active API Keys",
+      "activeKeysNote": "Keys with scopes that work on this account",
+      "reset": "Quota Window Reset",
+      "nextReset": "Next reset at {date}",
+      "resetDaily": "Counters reset daily at midnight UTC",
+      "workbench": {
+        "heading": "Web converter",
+        "free": "Free interactive browser conversions without daily paywalls or watermarks",
+        "local": "Local WebAssembly execution for supported client-side formats"
+      },
+      "api": {
+        "heading": "Programmatic REST API Policy",
+        "scopes": "Scopes per key (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
+        "isolation": "Runs in an isolated worker, and output files are deleted automatically after a short retention time"
+      },
+      "reference": "View OpenAPI Reference"
+    },
+    "guide": {
+      "heading": "Programmatic Integration Guide",
+      "intro": "Submit multipart conversion requests with your scoped API key.",
+      "languageLabel": "SDK language",
+      "copyLabel": "Copy {language} integration snippet",
+      "copied": "Copied",
+      "copy": "Copy",
+      "copiedAnnouncement": "Copied {language} integration snippet"
+    },
+    "errors": {
+      "loadFiles": "Could not load your converted files. Try again in a moment.",
+      "loadFilesNetwork": "The connection dropped and your converted files did not load. Try again.",
+      "loadDlq": "Could not load the failed webhooks. Try again in a moment.",
+      "loadDlqNetwork": "The connection dropped and the failed webhooks did not load. Try again.",
+      "deleteFile": "Could not delete the file. Try again in a moment.",
+      "deleteFileGone": "The file was already deleted.",
+      "deleteFileNetwork": "The connection dropped and the file was not deleted. Try again.",
+      "replaySucceeded": "The webhook was sent again.",
+      "replayFailed": "Could not send the webhook again.",
+      "replayRequestFailed": "Could not ask for the webhook to be sent again. Check your connection.",
+      "deleteDlq": "Could not delete the webhook. Try again in a moment.",
+      "deleteDlqGone": "The webhook was already deleted.",
+      "deleteDlqNetwork": "The connection dropped and the webhook was not deleted. Try again.",
+      "clearDlq": "Could not clear the failed webhooks. Try again in a moment.",
+      "dlqCleared": "All failed webhooks were cleared.",
+      "clearDlqNetwork": "The connection dropped and the failed webhooks were not cleared. Try again.",
+      "loadKeys": "Could not load your API keys. Try again in a moment.",
+      "loadKeysNetwork": "The connection dropped and your API keys did not load. Try again.",
+      "noScopes": "Select at least one permission scope before creating an API key.",
+      "createKey": "Could not create the API key. Try again in a moment.",
+      "createKeyNetwork": "The connection dropped and the API key was not created. Try again.",
+      "revokeKey": "Could not revoke the API key. Try again in a moment.",
+      "revokeKeyGone": "The API key was already revoked.",
+      "revokeKeyNetwork": "The connection dropped and the API key was not revoked. Try again.",
+      "signOutNetwork": "The connection dropped and you were not signed out. Try again."
+    }
+  },
+  "faq": {
+    "title": "Frequently Asked Questions",
+    "subtitle": "Answers about format support, execution boundaries, and batch limits.",
+    "paidLimits": "The Pro plan raises it to {pro} and the Enterprise plan to {enterprise}.",
+    "items": {
+      "free": {
+        "q": "Is EasyConvert free to use?",
+        "a": "Yes. You can convert without an account, up to {limit} per file and within a daily conversion limit.{paidLimits}"
+      },
+      "handling": {
+        "q": "How are my files handled during conversion?",
+        "a": "Image, audio, and data conversions the browser supports run in your browser's memory on your device. Formats that need native codecs or document engines are sent over TLS 1.3 to isolated workers and deleted automatically after a short retention time."
+      },
+      "maxSize": {
+        "q": "What is the maximum file size limit?",
+        "a": "EasyConvert takes files of up to {limit} each, with or without an account.{paidLimits} Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled."
+      },
+      "batch": {
+        "q": "Can I convert multiple files in one batch?",
+        "a": "Yes. Drop or select multiple files to queue them together, assign a shared or per-file output format, tune optional parameters, and download finished files individually or as one ZIP archive."
+      },
+      "install": {
+        "q": "Do I need to install desktop software or browser plugins?",
+        "a": "No installation is needed. EasyConvert runs in modern web browsers across macOS, Windows, Linux, iOS, and Android."
+      }
+    }
+  },
+  "features": {
+    "directoryHeading": "Supported Format Directory",
+    "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
+    "extensionsHeading": "{category} Extensions ({count})",
+    "extensionsHint": "Select an extension to open its converter",
+    "pairsHeading": "Common {category} Pairs",
+    "pairs": {
+      "png-webp": "Web image compression with alpha support",
+      "heic-jpg": "Camera photo compatibility across devices",
+      "jpg-pdf": "Printable single-page document export",
+      "pdf-docx": "Editable Word document output",
+      "docx-pdf": "Fixed-layout PDF distribution",
+      "hwp-pdf": "Hangul office document rendering",
+      "rar-zip": "Standard ZIP archive repackaging",
+      "7z-zip": "Cross-platform archive compatibility",
+      "tar-zip": "Compressed bundle conversion",
+      "mp4-mp3": "Audio track extraction from video",
+      "mkv-mp4": "Browser and mobile playback container",
+      "mov-mp4": "Standard H.264 MP4 container export",
+      "wav-mp3": "Compact MP3 audio encoding",
+      "flac-mp3": "Lossless source to portable MP3",
+      "m4a-wav": "Uncompressed PCM waveform output",
+      "epub-pdf": "Paginated PDF layout from e-book",
+      "mobi-epub": "Open EPUB e-reader format",
+      "fb2-txt": "Plain UTF-8 text extraction",
+      "xlsx-csv": "Delimited plain-text table export",
+      "xlsx-pdf": "Formatted spreadsheet printout",
+      "ods-xlsx": "Excel workbook compatibility",
+      "pptx-pdf": "Portable slide deck handout",
+      "pptx-html": "Browser-viewable slide markup",
+      "odp-pptx": "PowerPoint slide deck export",
+      "csv-json": "Structured JSON record array",
+      "yaml-json": "Configuration file normalization",
+      "json-csv": "Tabular row and column export",
+      "svg-png": "Crisp rasterized PNG graphic",
+      "ai-pdf": "Vector artwork preservation in PDF",
+      "eps-svg": "Web-ready scalable SVG vector",
+      "ttf-woff2": "Compressed WOFF2 web font",
+      "otf-ttf": "TrueType desktop font binary",
+      "woff-ttf": "Installable TrueType font output",
+      "dwg-pdf": "Technical drawing PDF sheet",
+      "step-stl": "Triangle mesh for 3D printing",
+      "dxf-svg": "2D vector CAD plot export"
+    }
+  },
+  "footer": {
+    "categories": {
+      "video": "Video Converter",
+      "audio": "Audio Converter",
+      "image": "Image Converter",
+      "documentEbook": "Document & Ebook",
+      "archive": "Archive & Compression",
+      "dataUnits": "Data & Unit Tools",
+      "webApps": "Web Apps",
+      "clientEdge": "Client & Edge Tools"
+    },
+    "secondaryNavLabel": "Footer secondary",
+    "copyright": "© 2026 EasyConvert.com",
+    "assurance": "Encrypted Transfer & Ephemeral Processing"
+  },
+  "formatDetail": {
+    "categories": {
+      "audio": "Audio Media",
+      "video": "Video Media",
+      "image": "Raster Image",
+      "vector": "Vector Graphic",
+      "document": "Document",
+      "spreadsheet": "Spreadsheet",
+      "presentation": "Slide Deck",
+      "archive": "Archive Package",
+      "ebook": "Digital E-Book",
+      "font": "Vector Font",
+      "cad": "CAD Drawing",
+      "data": "Structured Data",
+      "fallback": "File Format"
+    },
+    "developers": {
+      "audio": "Audio Engineering Standard",
+      "video": "Moving Picture Standard",
+      "image": "Digital Imaging Standard",
+      "document": "Open Document Standard",
+      "archive": "Archive Compression Standard",
+      "spreadsheet": "Tabular Data Standard",
+      "ebook": "Digital Publishing Standard",
+      "cad": "Engineering CAD Standard",
+      "font": "Digital Typography Standard",
+      "fallback": "Standard Specification"
+    },
+    "fallbackName": "{ext} Format",
+    "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows.",
+    "advantages": {
+      "structure": "Accurate {category} structure translation",
+      "sandbox": "Sandboxed execution with automatic zero-retention cleanup",
+      "container": "Preserves container layout, streams, and metadata"
+    }
+  },
+  "formatSelector": {
+    "defaultTitle": "Select Format",
+    "close": "Close format selector",
+    "noTargets": "No supported output formats for this file.",
+    "noMatches": "No formats matching \"{search}\"",
+    "anyFormat": "ANY FORMAT",
+    "searchLabel": "Search format",
+    "searchPlaceholder": "Search format...",
+    "clear": "Clear"
+  },
+  "formatSpecs": {
+    "pdf": {
+      "desc": "PDF is an open ISO standard format for electronic document exchange. It encapsulates formatted text, vector graphics, raster images, and embedded fonts independent of operating system or viewer hardware.",
+      "adv1": "Preserves vector typography, pagination, and visual layout",
+      "adv2": "Cross-platform document viewing standard",
+      "adv3": "Supports digital signatures, interactive forms, and metadata"
+    },
+    "docx": {
+      "desc": "DOCX is an XML-based document container used by Microsoft Word. It packages formatted text, tables, charts, embedded media, and styles inside a compressed ZIP archive.",
+      "adv1": "Editable typography, headers, footers, and tables",
+      "adv2": "Compact XML compression structure with broad interoperability",
+      "adv3": "Native compatibility across desktop and mobile word processors"
+    },
+    "doc": {
+      "desc": "DOC is a binary document format developed by Microsoft for Word 97 through 2003. It stores styled text, inline graphics, tables, and formatting inside an OLE compound file container.",
+      "adv1": "Compatibility across legacy word processing workflows",
+      "adv2": "Supports embedded OLE objects, drawing shapes, and font metrics",
+      "adv3": "Direct migration source for modern open standards such as DOCX and PDF"
+    },
+    "csv": {
+      "desc": "CSV stores two-dimensional tabular records as plain UTF-8 text lines with delimiter-separated fields and RFC 4180 quoting rules.",
+      "adv1": "Plain-text tabular layout readable in any editor or script",
+      "adv2": "Direct import and export across SQL databases, spreadsheets, and dataframe tools",
+      "adv3": "Low byte overhead well suited for streaming line-by-line parsers"
+    },
+    "json": {
+      "desc": "JSON is a text data-interchange format encoding key-value objects, arrays, numbers, booleans, and UTF-8 strings per RFC 8259 and ECMA-404.",
+      "adv1": "Primary wire format for HTTP APIs and configuration schemas",
+      "adv2": "Built-in parsers across JavaScript, TypeScript, Python, Go, and Rust",
+      "adv3": "Represents nested hierarchical records cleanly"
+    },
+    "xlsx": {
+      "desc": "XLSX packages multi-sheet workbooks, typed cell values, shared string tables, formulas, and number formats inside a ZIP-compressed OpenXML archive.",
+      "adv1": "Supports up to 1,048,576 rows and 16,384 columns per worksheet",
+      "adv2": "Multi-sheet workbooks with typed cells, formulas, and number formatting",
+      "adv3": "Standard workbook interchange format across spreadsheet suites"
+    },
+    "xls": {
+      "desc": "XLS is the BIFF8 binary workbook format used by Excel 97 through 2003, storing worksheets, cell records, and formulas in a Compound File Binary stream.",
+      "adv1": "Interoperates with legacy accounting and reporting exports",
+      "adv2": "Converts cleanly to XLSX, CSV, JSON, and PDF",
+      "adv3": "Retains cell types, worksheet names, and numeric formatting"
+    },
+    "pptx": {
+      "desc": "PPTX stores presentation slides, master layouts, DrawingML vector shapes, embedded images, and speaker notes inside an OpenXML ZIP package.",
+      "adv1": "Structured slide masters, vector shapes, and embedded media assets",
+      "adv2": "Clean XML part layout for slide rendering and PDF export",
+      "adv3": "Supported across desktop, web, and mobile presentation tools"
+    },
+    "mp4": {
+      "desc": "MP4 is a digital multimedia container used to store video, audio, and subtitle streams. Derived from the ISO Base Media File Format, it combines high compression efficiency with native browser and hardware playback.",
+      "adv1": "Playback support across modern devices, TVs, and web browsers",
+      "adv2": "High compression efficiency preserving resolution and colour fidelity",
+      "adv3": "Supports progressive streaming and fast-start web playback"
+    },
+    "mp3": {
+      "desc": "MP3 is a lossy digital audio compression format. Psychoacoustic perceptual coding attenuates masked frequency components to reduce file size while retaining clear audio playback.",
+      "adv1": "Compact file size at roughly 10% of uncompressed PCM audio",
+      "adv2": "Native playback across digital audio players and web browsers",
+      "adv3": "Low bandwidth footprint suited for streaming and portable storage"
+    },
+    "wav": {
+      "desc": "WAV is an uncompressed audio container storing linear pulse-code modulation (LPCM) samples. It records acoustic waveforms sample-for-sample without lossy compression artifacts.",
+      "adv1": "Uncompressed PCM audio fidelity without encoding artifacts",
+      "adv2": "Minimal decoding overhead for low-latency audio editing",
+      "adv3": "Standard master exchange format for studio production and mastering"
+    },
+    "aac": {
+      "desc": "AAC is a perceptual audio coding standard designed as the successor to MP3. At matching bitrates, AAC delivers cleaner high-frequency detail across stereo and multichannel layouts.",
+      "adv1": "Higher coding efficiency than MP3 at matching bitrates",
+      "adv2": "Default audio codec across MP4 streaming and mobile platforms",
+      "adv3": "Supports up to 48 full-bandwidth channels and high sample rates"
+    },
+    "flac": {
+      "desc": "FLAC is an open, royalty-free lossless audio codec. Compressed FLAC streams decode back to an exact bit-for-bit match of the source PCM audio.",
+      "adv1": "Bit-exact audio reconstruction with 30 to 50% size reduction",
+      "adv2": "Open-source, royalty-free specification with embedded CRC checksums",
+      "adv3": "Supports sample depths up to 32 bits and sample rates up to 655 kHz"
+    },
+    "ogg": {
+      "desc": "OGG is an open multimedia bitstream container commonly paired with the Vorbis or Opus audio codecs for patent-free streaming and game asset delivery.",
+      "adv1": "Open-source and patent-free container and codec standard",
+      "adv2": "Variable bitrate encoding with low framing overhead",
+      "adv3": "Broad support in game engines and desktop web browsers"
+    },
+    "m4a": {
+      "desc": "M4A is an audio-only MPEG-4 container carrying AAC or Apple Lossless (ALAC) streams alongside structured chapter and cover-art metadata.",
+      "adv1": "Compact AAC or lossless ALAC audio inside an ISO MP4 container",
+      "adv2": "Native playback and metadata tagging on macOS, iOS, and web browsers",
+      "adv3": "Supports chapter markers, cover art, and gapless playback"
+    },
+    "png": {
+      "desc": "PNG is a raster graphics file format using lossless DEFLATE compression. It supports indexed palettes, greyscale, and full RGBA alpha transparency up to 16 bits per channel.",
+      "adv1": "Lossless compression with zero generation loss across repeated saves",
+      "adv2": "Full 8-bit and 16-bit alpha channel transparency",
+      "adv3": "Preferred raster format for UI graphics, diagrams, logos, and screenshots"
+    },
+    "jpg": {
+      "desc": "JPG is the ISO standard for continuous-tone photographic images, applying Discrete Cosine Transform (DCT) compression tuned for natural colour gradients.",
+      "adv1": "Adjustable quality factor balancing visual detail and byte size",
+      "adv2": "Native support across every web browser, operating system, and camera",
+      "adv3": "Small payload size for web publishing and messaging"
+    },
+    "jpeg": {
+      "desc": "JPEG is the standard continuous-tone photographic format identical in bitstream structure to JPG, using DCT block compression for natural imagery.",
+      "adv1": "Universal hardware and software decoding support",
+      "adv2": "Configurable chroma subsampling and quantization quality",
+      "adv3": "Default output format across digital cameras and scanners"
+    },
+    "webp": {
+      "desc": "WebP provides both lossy VP8 intra-frame coding and lossless dictionary compression for web imagery, supporting alpha transparency, ICC profiles, and animation.",
+      "adv1": "26% smaller lossless payloads than PNG with full alpha transparency",
+      "adv2": "25 to 34% smaller lossy files than JPEG at equivalent SSIM",
+      "adv3": "Supports multi-frame animation, ICC colour profiles, and EXIF/XMP metadata"
+    },
+    "avif": {
+      "desc": "AVIF stores AV1 intra-coded still images inside an ISO HEIF container, supporting 8-bit, 10-bit, and 12-bit colour depths alongside HDR transfer functions.",
+      "adv1": "Up to 50% smaller byte size than JPEG at matching perceptual quality",
+      "adv2": "Supports High Dynamic Range (PQ / HLG) and wide colour gamuts",
+      "adv3": "Decoded natively by current desktop and mobile browsers"
+    },
+    "heic": {
+      "desc": "HEIC stores HEVC (H.265) intra-coded photographs inside an ISO Base Media container, cutting storage size roughly in half relative to baseline JPEG.",
+      "adv1": "Roughly half the byte size of equivalent JPEG photographs",
+      "adv2": "Stores 10-bit colour, auxiliary depth maps, and burst sequences",
+      "adv3": "Default camera capture container on iOS and iPadOS devices"
+    },
+    "svg": {
+      "desc": "SVG is an XML vector graphics specification describing two-dimensional paths, shapes, text, and gradients mathematically so artwork renders sharply at any DPI.",
+      "adv1": "Resolution-independent scaling from small UI icons to print layouts",
+      "adv2": "Compact text-based XML structure that compresses well with GZIP or Brotli",
+      "adv3": "Directly scriptable and styleable with CSS in web documents"
+    },
+    "gif": {
+      "desc": "GIF is an indexed-palette bitmap format using lossless LZW compression for up to 256 colours per frame and looping frame sequences.",
+      "adv1": "Autoplay looping animation support across browsers and chat clients",
+      "adv2": "1-bit index transparency and frame disposal timing control",
+      "adv3": "Convenient target for short screen-capture clips"
+    },
+    "epub": {
+      "desc": "EPUB packages XHTML content documents, CSS stylesheets, fonts, and navigation manifests in a ZIP container for reflowable digital books.",
+      "adv1": "Reflowable typography that adapts to screen width and reader font settings",
+      "adv2": "Open W3C publishing standard supported across dedicated e-readers",
+      "adv3": "Structured table of contents, landmarks, and OPF publication metadata"
+    },
+    "mobi": {
+      "desc": "MOBI is a binary PalmDOC-derived e-book container developed by Mobipocket for portable e-ink readers, bundling HTML markup, images, and chapter offsets.",
+      "adv1": "Compatible with older Kindle e-ink hardware and desktop reader apps",
+      "adv2": "Compact PalmDOC or Huff/CDIC compressed text records",
+      "adv3": "Supports embedded chapter navigation and dictionary lookup tables"
+    },
+    "zip": {
+      "desc": "ZIP bundles one or more files and directory trees with independent per-entry DEFLATE compression and a central directory index.",
+      "adv1": "Built-in extraction on macOS, Windows, Linux, iOS, and Android",
+      "adv2": "Random-access central directory allows extracting single entries quickly",
+      "adv3": "CRC-32 integrity checksums for every archived entry"
+    },
+    "rar": {
+      "desc": "RAR is a compressed archive container supporting solid dictionary compression, Reed-Solomon recovery records, and multi-volume split archives.",
+      "adv1": "Optional recovery records for reconstructing damaged archive sectors",
+      "adv2": "Multi-volume splitting and solid compression across similar files",
+      "adv3": "AES-256 payload and filename encryption support"
+    },
+    "7z": {
+      "desc": "7Z is an open modular archive container using LZMA and LZMA2 dictionary compression with large solid blocks and optional AES-256 encryption.",
+      "adv1": "High LZMA and LZMA2 compression ratios on large file sets",
+      "adv2": "Solid block compression reduces redundancy across related files",
+      "adv3": "AES-256 payload and header encryption support"
+    },
+    "tar": {
+      "desc": "TAR serializes files and directory hierarchies sequentially in 512-byte blocks while preserving POSIX permissions, ownership, and modification timestamps.",
+      "adv1": "Preserves POSIX permissions, timestamps, and directory structure",
+      "adv2": "Standard source distribution container across Unix and Linux toolchains",
+      "adv3": "Pairs cleanly with GZIP, BZip2, XZ, or Zstandard stream compressors"
+    },
+    "dxf": {
+      "desc": "DXF is a tagged CAD data exchange format representing 2D and 3D entities, layers, blocks, arcs, polylines, and splines for CAD/CAM interoperability.",
+      "adv1": "Vector CAD exchange format supported across drafting and CAM software",
+      "adv2": "Preserves named layers, coordinate geometry, arcs, and spline entities",
+      "adv3": "Common input format for laser cutting, plotting, and CNC workflows"
+    },
+    "ttf": {
+      "desc": "TTF defines quadratic Bézier glyph outlines, character-to-glyph cmap tables, kerning metrics, and hinting instructions in a single binary font file.",
+      "adv1": "Sharp outline glyph rendering across desktop and mobile displays",
+      "adv2": "Grid-fitting hinting tables keep small body text legible",
+      "adv3": "Installed natively on macOS, Windows, Linux, iOS, and Android"
+    },
+    "woff2": {
+      "desc": "WOFF2 wraps TrueType or OpenType glyph tables with font-specific preprocessing and Brotli compression for `@font-face` delivery on the web.",
+      "adv1": "Brotli-compressed font payloads roughly 30% smaller than WOFF 1.0",
+      "adv2": "Faster webfont network transfer reduces layout shift during page load",
+      "adv3": "Supported natively across all evergreen desktop and mobile browsers"
+    }
+  },
+  "header": {
+    "homeLabel": "EasyConvert Home",
+    "primaryNavLabel": "Primary",
+    "mobileNavLabel": "Mobile primary",
+    "tools": "Tools",
+    "menuLabel": "Navigation menu",
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu"
+  },
+  "hero": {
+    "fileInputLabel": "Select files to convert",
+    "queueSummary": "{count, plural, one {# file} other {# files}} ({sources})",
+    "queueSummaryWithTargets": "{count, plural, one {# file} other {# files}} ({sources} to {targets})",
+    "title": {
+      "pair": "{src} to {tgt} Converter",
+      "source": "{src} Converter",
+      "target": "Convert to {tgt}",
+      "default": "File Converter"
+    },
+    "subtitle": {
+      "queue": "Choose an output format, adjust the options, and convert.",
+      "pair": "Convert {src} files to {tgt} online.",
+      "source": "Convert {src} files to any format online.",
+      "default": "Convert documents, images, audio, video, and archives to the format you need, online."
+    },
+    "dropzone": {
+      "heading": "Select your file to convert",
+      "hint": "Drop files here, or paste from clipboard",
+      "selectFile": "Select File",
+      "moreSources": "More file sources",
+      "sourcesMenu": "File sources",
+      "fromDevice": "From Device",
+      "fromUrl": "From URL",
+      "addFromUrl": "Add from URL",
+      "formatsSupported": "{count} Formats Supported",
+      "assurance": "Encrypted & Ephemeral",
+      "popular": "Popular"
+    },
+    "popularPairs": {
+      "pdfToWord": "PDF to Word",
+      "wordToPdf": "Word to PDF",
+      "imageToWebp": "Image to WebP",
+      "videoToMp3": "Video to MP3",
+      "heicToJpg": "HEIC to JPG",
+      "epubToPdf": "EPUB to PDF"
+    },
+    "tiles": {
+      "convert": "Convert",
+      "from": "FROM",
+      "to": "TO",
+      "joiner": "to",
+      "any": "ANY",
+      "sourceLabel": "Source format {format}",
+      "targetLabel": "Target format {format}",
+      "anyFormat": "any",
+      "fromTitle": "Convert from format",
+      "toTitle": "Convert to format"
+    }
+  },
+  "home": {
+    "security": {
+      "heading": "Security & Data Handling",
+      "intro": "Built around isolated execution and short-lived storage boundaries.",
+      "tls": {
+        "heading": "TLS 1.3 Transport Encryption",
+        "body": "Uploads, signed storage transfers, and result downloads run strictly over encrypted HTTPS channels."
+      },
+      "sandbox": {
+        "heading": "Sandboxed Browser & Worker Execution",
+        "body": "Supported pairs run locally in browser memory, while complex formats execute inside isolated worker sandboxes."
+      },
+      "cleanup": {
+        "heading": "Automatic File Cleanup",
+        "body": "Temporary job inputs and converted outputs expire automatically after short retention windows."
+      }
+    },
+    "api": {
+      "heading": "REST API & Batch Workflows",
+      "intro": "Automate single-file conversions via <code>POST /api/v1/convert</code> or submit multi-step DAG pipelines to <code>POST /api/v1/jobs</code> with signed webhook delivery.",
+      "copiedAnnouncement": "Copied API example to clipboard",
+      "copyLabel": "Copy API example",
+      "copied": "Copied",
+      "copy": "Copy",
+      "reference": "OpenAPI 3.1 Reference",
+      "manageKeys": "Manage API Keys"
+    },
+    "howItWorks": {
+      "heading": "How Conversion Works",
+      "intro": "Three direct steps without account walls or watermarks.",
+      "add": {
+        "heading": "1. Add source files",
+        "body": "Select files from your device, drag them onto the workbench, paste from clipboard, or import from a public link."
+      },
+      "pick": {
+        "heading": "2. Pick format & options",
+        "body": "Choose any compatible target extension and optionally tune codecs, dimensions, page ranges, or delimiters."
+      },
+      "download": {
+        "heading": "3. Convert & download",
+        "body": "Download converted files individually as soon as they finish, or bundle multi-file batches into one ZIP archive."
+      }
+    }
+  },
+  "infoPages": {
+    "privacy": {
+      "retention": {
+        "heading": "Zero Permanent Retention",
+        "body": "EasyConvert processes supported client-side conversions directly in your browser memory without uploading source files to external storage."
+      },
+      "isolation": {
+        "heading": "Isolated Workers & Automatic Cleanup",
+        "body": "When a format pair needs server processing, or you use the REST API, requests travel over TLS 1.3 to isolated, temporary worker containers. Output files are deleted after you download them or after a short retention time."
+      },
+      "noResale": {
+        "heading": "No Content Resale or Inspection",
+        "body": "We do not sell, rent, or train models on your files. Uploaded bytes exist only to complete the conversion you requested."
+      }
+    },
+    "terms": {
+      "acceptance": {
+        "heading": "1. Acceptance of Terms",
+        "body": "By accessing or using EasyConvert, you agree to these Terms of Service. If you do not agree, discontinue use of the service."
+      },
+      "acceptableUse": {
+        "heading": "2. Acceptable Use",
+        "body": "You agree not to convert content that you lack permission to process, and not to submit malicious binaries, exploit payloads, or unlawful material."
+      },
+      "availability": {
+        "heading": "3. Service Availability & Free Use",
+        "body": "EasyConvert is 100% free with unlimited conversions in the web application. Interactive browser conversions require no subscription, credit pack, or paid account."
+      }
+    },
+    "about": {
+      "purpose": {
+        "heading": "Purpose-Built File Conversion Utility",
+        "body": "EasyConvert provides fast, accurate file conversions across {count} registered formats spanning documents, spreadsheets, presentations, raster and RAW images, vector graphics, CAD drawings, audio, video, fonts, ebooks, and archives."
+      },
+      "architecture": {
+        "heading": "Hybrid Browser & Ephemeral Sandbox Architecture",
+        "body": "Formats the browser supports run on your device through WebAssembly and WebCodecs. Heavy or specialized formats run in isolated workers over TLS 1.3 and are deleted automatically after a short retention time."
+      }
+    },
+    "security": {
+      "transport": {
+        "heading": "TLS 1.3 Transport Encryption",
+        "body": "All HTTPS traffic uses TLS 1.3 with strict HSTS headers, CSRF validation on cookie-authenticated routes, and scoped bearer keys for programmatic API calls across {count} supported formats."
+      },
+      "isolation": {
+        "heading": "Sandboxed Browser & Worker Isolation",
+        "body": "Browser conversions stay inside the browser's origin sandbox. Server conversions run in resource-limited worker processes with strict input validation, archive decompression limits, and automatic deletion of output files."
+      }
+    },
+    "accessibility": {
+      "conformance": {
+        "heading": "Conformance Target",
+        "body": "EasyConvert targets Web Content Accessibility Guidelines (WCAG) 2.1 Level AA conformance across desktop, tablet, and mobile viewports in both light and dark themes."
+      },
+      "keyboard": {
+        "heading": "Keyboard Navigation & Shortcuts",
+        "body": "Every interactive control is operable with a keyboard alone. A skip link jumps directly to <code>#main-content</code>, focus indicators remain visible on all interactive elements, format selectors and tabs support arrow and tab key navigation, and modal dialogs use native HTML <code>'<'dialog></code> focus containment with <code>Escape</code> dismissal."
+      },
+      "landmarks": {
+        "heading": "Screen Reader Landmarks & Live Announcements",
+        "body": "Pages expose semantic <code>'<'header></code>, <code>'<'nav></code>, <code>'<'main></code>, and <code>'<'footer></code> landmarks, sequential heading levels from <code>h1</code> through <code>h3</code>, explicit <code>'<'label htmlFor></code> associations on every text input and selector, descriptive <code>aria-label</code> names on icon-only controls, and polite status regions for conversion progress and clipboard confirmation."
+      },
+      "contrast": {
+        "heading": "Visual Contrast, Motion & Zoom",
+        "body": "Text keeps at least a 4.5:1 contrast ratio and the borders of text fields keep at least 3:1 across light and dark palettes, and buttons are identified by their labels rather than by their outlines. Form controls use a minimum 16px text size to prevent forced viewport zoom on mobile browsers, primary and icon buttons provide 44px touch targets, layouts reflow cleanly at 390px width and 200% browser zoom without horizontal page scroll, and non-essential motion honours <code>prefers-reduced-motion</code>."
+      },
+      "feedback": {
+        "heading": "Feedback & Assistance",
+        "body": "If you encounter an accessibility barrier on any EasyConvert page or API tool, contact our team so we can reproduce and resolve the issue promptly.",
+        "link": "support@easyconvert.com (Accessibility Feedback)"
+      }
+    },
+    "contact": {
+      "heading": "Get in Touch",
+      "intro": "Send questions about format support, conversion fidelity, or API integration directly to our engineering team.",
+      "email": {
+        "heading": "Direct Support Email",
+        "body": "Contact our engineering team for technical questions, API inquiries, or general feedback."
+      },
+      "bugs": {
+        "heading": "Bug Reports & Issues",
+        "body": "Found an edge case or rendering discrepancy? Email reproduction steps and a non-sensitive sample file.",
+        "link": "Report an Issue"
+      }
+    }
+  },
+  "languageSwitcher": {
+    "label": "Language"
+  },
+  "layout": {
+    "skipToContent": "Skip to main content"
+  },
+  "meta": {
+    "site": {
+      "title": "EasyConvert | Online File Converter",
+      "description": "Convert documents, images, audio, video, spreadsheets, structured data, and archives online with encrypted ephemeral processing."
+    },
+    "home": {
+      "title": "EasyConvert | Online File Converter",
+      "description": "Convert documents, images, audio, video, spreadsheets, structured data, and archives online with encrypted ephemeral processing."
+    },
+    "auth": {
+      "title": "Sign In | EasyConvert",
+      "description": "Sign in or create an EasyConvert account to manage developer API keys, webhooks, and conversion history."
+    },
+    "dashboard": {
+      "title": "Developer Dashboard | EasyConvert",
+      "description": "Manage API keys, converted files, webhook deliveries, and usage quotas for your EasyConvert account."
+    },
+    "apiDocs": {
+      "title": "API Reference | EasyConvert",
+      "description": "OpenAPI 3.1 reference for the EasyConvert REST API: endpoints, schemas, and ready-to-run cURL requests."
+    },
+    "status": {
+      "title": "Browser Edge Engine Status | EasyConvert",
+      "description": "Live operational status, browser engine diagnostics, and capability probes for EasyConvert WebAssembly, WebCodecs, and OPFS conversion pipelines."
+    },
+    "unitConverter": {
+      "title": "Free Online Unit Converter | EasyConvert",
+      "description": "Convert length, weight, temperature, volume, area, speed, time, digital storage, energy, and pressure units directly in your browser."
+    },
+    "converter": {
+      "title": "{title} | EasyConvert"
+    }
+  },
+  "options": {
+    "modal": {
+      "heading": "Conversion Options",
+      "subtitle": "{filename} ({src} to {tgt})",
+      "targetFallback": "TARGET",
+      "close": "Close options",
+      "noOptions": "Standard lossless conversion parameters apply for this format pair.",
+      "reset": "Reset",
+      "apply": "Apply Options"
+    },
+    "trim": {
+      "start": "Trim Start (HH:MM:SS)",
+      "end": "Trim End (HH:MM:SS)"
+    },
+    "image": {
+      "heading": "Image & Raster Parameters",
+      "width": "Width (px)",
+      "height": "Height (px)",
+      "original": "Original",
+      "fit": "Resize Fit",
+      "fitAuto": "Automatic (contain when resized)",
+      "fitChoices": {
+        "contain": "Contain",
+        "cover": "Cover",
+        "fill": "Stretch to Fill",
+        "inside": "Fit Inside"
+      },
+      "quality": "Compression Quality",
+      "stripMetadata": "Strip EXIF, GPS, and camera metadata"
+    },
+    "video": {
+      "heading": "Video Stream Parameters",
+      "codec": "Video Codec",
+      "codecAuto": "Automatic (format default)",
+      "codecs": {
+        "h264": "H.264 (AVC)",
+        "hevc": "H.265 (HEVC)",
+        "vp9": "VP9",
+        "av1": "AV1",
+        "prores": "Apple ProRes"
+      },
+      "fps": "Frame Rate (FPS)",
+      "fpsKeep": "Keep Source FPS",
+      "fpsValue": "{fps} fps",
+      "maxWidth": "Max Width (px)",
+      "maxHeight": "Max Height (px)",
+      "original": "Original"
+    },
+    "audio": {
+      "heading": "Audio Stream Parameters",
+      "codec": "Audio Codec",
+      "codecAuto": "Automatic for Format",
+      "codecs": {
+        "aac": "AAC",
+        "mp3": "MP3",
+        "opus": "Opus",
+        "flac": "FLAC (Lossless)",
+        "vorbis": "Vorbis",
+        "pcm": "PCM 16-bit"
+      },
+      "bitrate": "Audio Bitrate",
+      "bitrateAuto": "Automatic (format default)",
+      "kbps": "{value} kbps",
+      "sampleRate": "Sample Rate",
+      "sampleRateKeep": "Keep Source Rate",
+      "hertz": "{value} Hz",
+      "channels": "Channels",
+      "channelsKeep": "Keep Source Channels",
+      "channelChoices": {
+        "mono": "Mono (1.0)",
+        "stereo": "Stereo (2.0)",
+        "surround51": "Surround (5.1)",
+        "surround71": "Surround (7.1)"
+      },
+      "gain": "Output Gain"
+    },
+    "document": {
+      "heading": "Document & Page Layout",
+      "pages": "Page Range",
+      "pagesPlaceholder": "All pages (e.g. 1-5)",
+      "orientation": "Orientation",
+      "orientationAuto": "Auto (match source)",
+      "portrait": "Portrait",
+      "landscape": "Landscape",
+      "ocrAutomatic": "OCR runs automatically for searchable structured XML output.",
+      "ocrEnable": "Enable OCR text recognition",
+      "ocrLanguage": "OCR Language",
+      "ocrLanguages": {
+        "eng": "English",
+        "auto": "Automatic Detection",
+        "kor": "Korean",
+        "jpn": "Japanese",
+        "chi_sim": "Chinese (Simplified)",
+        "deu": "German",
+        "fra": "French",
+        "spa": "Spanish"
+      }
+    },
+    "password": {
+      "zipConstraint": "ZIP passwords support up to 99 printable ASCII characters.",
+      "placeholder": "Leave blank if no password is needed",
+      "encrypt": {
+        "heading": "Archive Encryption",
+        "label": "Output Archive Password ({tgt})",
+        "helper": "Optional AES-256 password to protect the generated archive."
+      },
+      "reencrypt": {
+        "heading": "Archive Password & Re-encryption",
+        "label": "Archive Password ({src} to {tgt})",
+        "sourceFallback": "Source",
+        "helper": "Unlocks an encrypted {src} archive and encrypts the output {tgt} archive with this password."
+      },
+      "decrypt": {
+        "heading": "PDF Decryption",
+        "label": "Open Password (PDF)",
+        "helper": "Enter the document open password if the source PDF is encrypted."
+      },
+      "errors": {
+        "zipCharset": "ZIP passwords support 1 to 99 printable ASCII characters only.",
+        "forbiddenChars": "Passwords cannot contain line breaks, null bytes, or invalid Unicode.",
+        "tooLong": "Passwords must be 256 characters or fewer."
+      }
+    },
+    "data": {
+      "heading": "Tabular & Structured Data",
+      "delimiter": "Field Delimiter",
+      "delimiterAuto": "Auto (match format)",
+      "delimiters": {
+        "comma": "Comma (,)",
+        "semicolon": "Semicolon (;)",
+        "tab": "Tab (\\t)",
+        "pipe": "Pipe (|)"
+      },
+      "sheetIndex": "Worksheet Index (0-based)",
+      "sheetIndexPlaceholder": "0 (first sheet)"
+    },
+    "archive": {
+      "heading": "Archive Compression",
+      "level": "Compression Level",
+      "levelValue": "Level {level}"
+    }
+  },
+  "plans": {
+    "fileLimit": "Up to {size} per file",
+    "exactBytes": "{count, number} bytes",
+    "tooLarge": "File size {size} exceeds the {limit} limit for {plan, select, anonymous {anonymous use} free {the free plan} pro {the Pro plan} other {the Enterprise plan}}.",
+    "nextPlanAllows": "{plan, select, anonymous {Anonymous} free {Free} pro {Pro} other {Enterprise}} allows files up to {limit}.",
+    "tier": {
+      "free": "Free",
+      "pro": "Pro",
+      "enterprise": "Enterprise"
+    }
+  },
+  "queue": {
+    "status": {
+      "converting": "Converting queued files...",
+      "empty": "No files in queue",
+      "oversize": "{count, plural, one {# file exceeds the conversion size limit. Remove it to continue.} other {# files exceed the conversion size limit. Remove them to continue.}}",
+      "chooseFormat": "Please select an output format to continue",
+      "fixOptions": "Update password options or output format to continue.",
+      "complete": "Conversion complete for {count, plural, one {# file} other {# files}}",
+      "failed": "{count, plural, one {# file} other {# files}} failed conversion. Retry or remove to continue.",
+      "ready": "Ready to convert {count, plural, one {# file} other {# files}}"
+    },
+    "convertAllTo": "Convert all to",
+    "chooseFormat": "Choose format",
+    "convertAllTitle": "Convert all compatible files to",
+    "filesInQueue": "{count} files in queue",
+    "clearAll": "Clear all",
+    "dismissZipError": "Dismiss archive error",
+    "addMore": "+ Add more files",
+    "downloadAll": "Download All (.zip)",
+    "converting": "Converting...",
+    "convert": "Convert",
+    "row": {
+      "uploadingLabel": "Uploading {name}",
+      "convertingLabel": "Converting {name}",
+      "done": "Done",
+      "download": "Download",
+      "failed": "Failed",
+      "retry": "Retry",
+      "ready": "Ready",
+      "to": "to",
+      "selectFormatLabel": "Select output format for {name}",
+      "selectFormat": "Select format",
+      "selectorTitle": "Convert {format} to",
+      "optionsLabel": "Conversion options for {name}",
+      "cancelLabel": "Cancel {name}",
+      "removeLabel": "Remove {name}"
+    }
+  },
+  "siteLinks": {
+    "pdfConverter": "PDF Converter",
+    "imageConverter": "Image Converter",
+    "videoConverter": "Video Converter",
+    "audioConverter": "Audio Converter",
+    "archiveConverter": "Archive Converter",
+    "spreadsheetConverter": "Spreadsheet Converter",
+    "unitConverter": "Unit Converter",
+    "pdfOcr": "PDF OCR",
+    "compressPdf": "Compress PDF",
+    "mergePdf": "Merge PDF",
+    "systemStatus": "System Status",
+    "formats": "Formats",
+    "howItWorks": "How It Works",
+    "apiDocs": "API Docs",
+    "dashboard": "Dashboard",
+    "mp4Converter": "MP4 Converter",
+    "videoToGif": "Video to GIF",
+    "movToMp4": "MOV to MP4",
+    "mp3Converter": "MP3 Converter",
+    "mp4ToMp3": "MP4 to MP3",
+    "videoToMp3": "Video to MP3",
+    "jpgToPdf": "JPG to PDF",
+    "pdfToJpg": "PDF to JPG",
+    "heicToJpg": "HEIC to JPG",
+    "imageToPdf": "Image to PDF",
+    "pdfToWord": "PDF to Word",
+    "epubToPdf": "EPUB to PDF",
+    "documentConverter": "Document Converter",
+    "rarToZip": "RAR to ZIP",
+    "sevenZipToZip": "7Z to ZIP",
+    "csvToJson": "CSV to JSON",
+    "jsonToCsv": "JSON to CSV",
+    "lbsToKg": "Lbs to Kg",
+    "saveWebsiteAsPdf": "Save Website as PDF",
+    "imageResizer": "Image Resizer",
+    "websiteScreenshot": "Website Screenshot",
+    "mp4Remuxer": "MP4 Remuxer",
+    "losslessPng": "Lossless PNG",
+    "vectorConverter": "Vector Converter",
+    "securityArchitecture": "Security Architecture",
+    "aboutUs": "About Us",
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "security": "Security",
+    "accessibility": "Accessibility",
+    "contact": "Contact",
+    "status": "Status"
+  },
+  "slugPages": {
+    "info": {
+      "terms": {
+        "title": "Terms of Service",
+        "description": "Review the terms and conditions governing your use of EasyConvert."
+      },
+      "privacy": {
+        "title": "Privacy Policy",
+        "description": "Learn about our strict zero data retention policy and transient in-memory processing."
+      },
+      "contact": {
+        "title": "Contact Us",
+        "description": "Get in touch with our team for questions, feedback, or open-source issues."
+      },
+      "about": {
+        "title": "About Us",
+        "description": "EasyConvert provides free, private, client-side file and data conversions directly in your browser."
+      },
+      "security": {
+        "title": "Security Overview",
+        "description": "Explore our volatile memory pipeline, TLS encryption, and zero-storage architecture."
+      },
+      "status": {
+        "title": "System Status",
+        "description": "Real-time operational status and diagnostics of EasyConvert browser-edge conversion pipelines."
+      },
+      "accessibility": {
+        "title": "Accessibility Statement",
+        "description": "Keyboard navigation, screen reader landmarks, colour contrast, and WCAG 2.1 AA conformance details for EasyConvert."
+      },
+      "unit": {
+        "title": "Unit Converter",
+        "description": "Convert weight, length, volume, and data units in real time with instant calculation precision."
+      }
+    },
+    "ocr": {
+      "title": "PDF OCR Converter",
+      "description": "Optical character recognition utility producing searchable, selectable documents with zero data retention."
+    },
+    "unitPair": {
+      "title": "{src} to {tgt} Unit Converter",
+      "description": "Convert {src} to {tgt} in real time with instant calculation precision."
+    },
+    "units": {
+      "lbs": "Pounds (lbs)",
+      "kg": "Kilograms (kg)",
+      "feet": "Feet (ft)",
+      "meters": "Meters (m)"
+    },
+    "pair": {
+      "title": "{src} to {tgt} Converter",
+      "description": {
+        "videoToAudio": "Convert {src} to {tgt} online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.",
+        "media": "Convert {src} to {tgt} online and free. Fast, high-fidelity media transcoding directly in your browser with zero server retention.",
+        "image": "Convert {src} to {tgt} online and free. High-precision rendering and lossless rasterization straight from your browser.",
+        "archive": "Convert and extract {src} to {tgt} archives safely in your browser with zero cloud storage.",
+        "data": "Convert {src} to {tgt} datasets and tables directly in your browser. Clean data structure preserved with zero retention.",
+        "document": "Convert {src} to {tgt} online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage."
+      }
+    },
+    "format": {
+      "title": "{name} Converter",
+      "description": {
+        "audio": "Convert {name} audio files online and free to MP3, WAV, AAC, and more. High-fidelity audio encoding with zero server storage.",
+        "video": "Convert {name} video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.",
+        "image": "Convert {name} files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.",
+        "archive": "Convert and extract {name} compressed archives safely in your browser with zero cloud uploads.",
+        "data": "Convert {name} spreadsheets and datasets to CSV, Excel, JSON, and other structured formats with high precision.",
+        "presentation": "Convert {name} presentation slides to PDF, PPTX, images, and other formats with preserved layouts.",
+        "ebook": "Convert {name} ebooks to EPUB, PDF, MOBI, and other reader formats directly in your browser.",
+        "document": "Convert {name} documents online and free to PDF, DOCX, and other formats. Preserves layouts, typography, and tables with zero server storage."
+      }
+    },
+    "merge": {
+      "title": "Merge {format}",
+      "description": "Merge multiple {format} files into a single unified document in seconds. Zero data retention guaranteed."
+    },
+    "compress": {
+      "title": "Compress {format}",
+      "description": "Reduce {format} file size while preserving optimum visual fidelity and text sharpness."
+    },
+    "saveWebsiteAsPdf": {
+      "title": "Save Website as PDF",
+      "description": "Capture high-resolution PDF printouts of any public website URL with CSS and vector graphics intact."
+    },
+    "websiteScreenshot": {
+      "title": "Website {format} Screenshot",
+      "description": "Render full-page or viewport snapshots of websites in lossless {format} format."
+    },
+    "generic": {
+      "title": "{name} Converter",
+      "description": "Convert {name} files instantly in your browser with zero data retention."
+    },
+    "names": {
+      "Video": "Video",
+      "Audio": "Audio",
+      "Image": "Image",
+      "Vector": "Vector",
+      "Word": "Word",
+      "Excel": "Excel",
+      "PowerPoint": "PowerPoint",
+      "Document": "Document",
+      "Spreadsheet": "Spreadsheet",
+      "Archive": "Archive",
+      "Presentation": "Presentation",
+      "Ebook": "Ebook",
+      "Data": "Data",
+      "Font": "Font",
+      "Photo": "Photo",
+      "Picture": "Picture",
+      "Music": "Music",
+      "Images": "Images",
+      "Videos": "Videos",
+      "Documents": "Documents",
+      "Archives": "Archives",
+      "Spreadsheets": "Spreadsheets",
+      "Presentations": "Presentations",
+      "Ebooks": "Ebooks",
+      "Fonts": "Fonts",
+      "Vectors": "Vectors"
+    }
+  },
+  "status": {
+    "componentsHeading": "Engine & Pipeline Components",
+    "operationalReady": "Operational & Ready",
+    "categoriesLabel": "Component categories",
+    "operational": "Operational",
+    "categories": {
+      "all": "All Components ({count})",
+      "core": "Compute Core ({count})",
+      "pipeline": "Pipelines ({count})",
+      "privacy": "Privacy & Retention ({count})"
+    },
+    "components": {
+      "wasm-simd": {
+        "name": "SIMD WebAssembly Core Engine",
+        "description": "128-bit vector-accelerated transformations for documents and binary streams"
+      },
+      "webcodecs-vpu": {
+        "name": "WebCodecs VPU Transcoding Accelerator",
+        "description": "Direct GPU/VPU hardware acceleration for H.264, VP9, and audio codecs"
+      },
+      "opfs-storage": {
+        "name": "Origin Private File System (OPFS) Streaming Storage",
+        "description": "Low-overhead virtual disk streaming for large multi-hundred-megabyte files"
+      },
+      "workers-pool": {
+        "name": "Multithreaded Web Worker Thread Pool",
+        "description": "Non-blocking concurrent worker isolation matching CPU core topology"
+      },
+      "pipeline-document": {
+        "name": "Document & Office Pipeline (PDF, DOCX, XLSX, PPTX)",
+        "description": "Document rendering, vector text layout, and structured table reconstruction"
+      },
+      "pipeline-imaging": {
+        "name": "Raster & Vector Imaging Pipeline (PNG, JPG, WEBP, SVG, HEIC)",
+        "description": "Color-calibrated resampling and vector geometry rasterization"
+      },
+      "pipeline-audio": {
+        "name": "Audio DSP Pipeline (MP3, WAV, FLAC, AAC, OGG)",
+        "description": "32-bit floating-point audio processing, resampling, and lossless codecs"
+      },
+      "pipeline-video": {
+        "name": "Video Container Remuxing & Transmuxing (MP4, MKV, WEBM)",
+        "description": "Container repackaging, codec transcoding, and timestamp synchronization"
+      },
+      "pipeline-ocr": {
+        "name": "OCR Engine (Tesseract Wasm LSTM Core)",
+        "description": "Optical character recognition with searchable PDF text layer synthesis"
+      },
+      "pipeline-archive": {
+        "name": "Stream Archive & Compression Engine (ZIP, 7Z, TAR, GZ)",
+        "description": "Deflate, LZMA2, and BZip2 streaming archive packing and extraction"
+      },
+      "pipeline-cad": {
+        "name": "CAD & Geometric Engine (DXF, SVG)",
+        "description": "Spline tessellation, IEEE 754 coordinate precision, and vector export"
+      },
+      "privacy-zero-retention": {
+        "name": "Zero Data Retention Ephemeral Memory Sandbox",
+        "description": "Volatile client memory allocation with zero permanent disk retention"
+      },
+      "privacy-scrubbing": {
+        "name": "Volatile Buffer Scrubbing & Memory Zeroing",
+        "description": "Immediate buffer release upon conversion download or queue clearance"
+      },
+      "privacy-crypto": {
+        "name": "Client-Side SHA-256 Cryptographic Hash Verification",
+        "description": "Local bitstream integrity checks using the Web Crypto API"
+      }
+    },
+    "sandbox": {
+      "heading": "Local Browser Sandbox Execution",
+      "body": "Supported client-side codecs compile to WebAssembly and run inside an isolated browser worker sandbox. Local execution avoids upload wait times, keeps memory buffers ephemeral, and releases temporary storage handles as soon as conversion finishes.",
+      "zeroRetention": "Zero-Retention Sandboxing",
+      "simd": "Hardware SIMD & WebCodecs Support",
+      "unlimited": "Unlimited Free Conversions"
+    },
+    "announcements": {
+      "running": "Running browser edge diagnostics...",
+      "complete": "Edge diagnostics complete. {active} of {total} capabilities active."
+    },
+    "checkedAt": "Browser status checked at {time}",
+    "telemetryActive": "Checking status in the browser sandbox",
+    "overview": {
+      "heading": "All Client-Side Conversion Engines Operational",
+      "ready": "Ready",
+      "intro": "Verified directly within your browser execution sandbox.",
+      "running": "Testing Edge Engines...",
+      "run": "Run Edge Diagnostics",
+      "inBrowser": "100% In-Browser Execution"
+    },
+    "diagnostics": {
+      "heading": "Live Browser Edge Diagnostic Results",
+      "activeCount": "{active}/{total} Active",
+      "unavailable": "Unavailable",
+      "probes": {
+        "wasm": {
+          "name": "WebAssembly SIMD Vector Acceleration",
+          "supported": "Hardware SIMD enabled (128-bit vectorization)",
+          "unsupported": "WebAssembly 128-bit SIMD unavailable"
+        },
+        "webcodecs": {
+          "name": "WebCodecs GPU Hardware Pipeline",
+          "supported": "Hardware video and audio codec VPU available",
+          "unsupported": "CPU software transmuxer active"
+        },
+        "opfs": {
+          "name": "Origin Private File System (OPFS)",
+          "supported": "Native streaming storage supported",
+          "unsupported": "Blob memory streaming active"
+        },
+        "workers": {
+          "name": "Multithreaded Web Workers",
+          "supported": "{cores} CPU logical execution threads detected",
+          "unsupported": "{cores} CPU logical execution threads detected"
+        },
+        "memory-sandbox": {
+          "name": "Ephemeral Memory Buffer Sandbox",
+          "supported": "Transient memory allocation and zeroing verified",
+          "unsupported": "Transient memory allocation failed"
+        }
+      }
+    },
+    "metrics": {
+      "execution": {
+        "label": "Execution Model",
+        "value": "100% In-Browser",
+        "caption": "WebAssembly & WebCodecs"
+      },
+      "storage": {
+        "label": "Persistent Storage",
+        "value": "0 Bytes",
+        "caption": "Zero permanent retention"
+      },
+      "concurrency": {
+        "label": "Hardware Concurrency",
+        "value": "{cores} Threads",
+        "caption": "Detected CPU execution units"
+      },
+      "privacy": {
+        "label": "Privacy Sandbox",
+        "value": "Active",
+        "caption": "Ephemeral volatile buffer"
+      }
+    }
+  },
+  "statusPage": {
+    "heading": "System Operational Status",
+    "intro": "Real-time capability checks, latency probes, and component status for in-browser WebAssembly, WebCodecs, and OPFS conversion pipelines."
+  },
+  "theme": {
+    "toLight": "Switch to light mode",
+    "toDark": "Switch to dark mode"
+  },
+  "unitConverter": {
+    "categoriesLegend": "Unit categories",
+    "heading": "{from} to {to} Converter",
+    "intro": "High-precision client calculation with zero network round-trips.",
+    "decimals": "Decimals",
+    "decimalsValue": "{digits} decimals",
+    "fromValue": "From Value",
+    "sourceUnit": "Source Unit",
+    "swap": "Swap source and target units",
+    "result": "Converted Result ({symbol})",
+    "copyLabel": "Copy converted result",
+    "copied": "Copied",
+    "copy": "Copy",
+    "copiedAnnouncement": "Copied converted result to clipboard.",
+    "targetUnit": "Target Unit",
+    "formula": "Formula",
+    "private": "100% In-Browser & Private",
+    "breakdownHeading": "{value} {from} Converted to All {category} Units",
+    "unitCount": "{count} units",
+    "rowCopied": "Copied {name} value to clipboard.",
+    "rowCopyLabel": "Copy {name} value",
+    "referenceHeading": "{from} to {to} Quick Reference Table",
+    "popularHeading": "Popular Unit Conversions",
+    "popular": {
+      "lbs-kg": "Pounds to Kilograms",
+      "kg-lbs": "Kilograms to Pounds",
+      "feet-meters": "Feet to Meters",
+      "meters-feet": "Meters to Feet",
+      "celsius-fahrenheit": "Celsius to Fahrenheit",
+      "fahrenheit-celsius": "Fahrenheit to Celsius",
+      "mb-gb": "Megabytes to Gigabytes",
+      "miles-km": "Miles to Kilometers",
+      "inches-cm": "Inches to Centimeters",
+      "bar-psi": "Bar to PSI"
+    }
+  },
+  "unitConverterPage": {
+    "heading": "Universal Unit Converter",
+    "intro": "Convert measurements across 10 physical and digital categories with bidirectional calculations and multi-unit reference tables."
+  },
+  "urlImport": {
+    "heading": "Add File from URL",
+    "intro": "Enter a direct HTTP or HTTPS link to a file of up to {size}",
+    "close": "Close dialog",
+    "label": "File URL",
+    "cancel": "Cancel",
+    "fetching": "Fetching...",
+    "submit": "Load File",
+    "invalidUrl": "Enter a full link that starts with http:// or https://.",
+    "networkError": "Invalid URL or network error"
+  },
+  "userNav": {
+    "dashboard": "Dashboard",
+    "logIn": "Log In",
+    "signUp": "Sign Up"
+  },
+  "errors": {
+    "generic": {
+      "client": "The request was refused. Check the file and its settings, then try again.",
+      "server": "Something went wrong on our side. Try again."
+    },
+    "problems": {
+      "bad-request": "The request could not be read. Check the values and try again.",
+      "unauthorized": "Sign in to continue.",
+      "forbidden": "This action is not allowed for your account.",
+      "not-found": "This item no longer exists.",
+      "method-not-allowed": "This request cannot be sent this way.",
+      "payload-too-large": "The file is larger than this request can take.",
+      "length-required": "The upload did not report its size. Try again.",
+      "unsupported-media-type": "This file type cannot be sent here.",
+      "rate-limited": "Too many requests in a short time. Wait a moment and try again.",
+      "concurrency-limit": "Too many conversions are running at once. Try again when one finishes.",
+      "quota-exceeded": "You have used today's conversion limit. Try again tomorrow.",
+      "upload-budget-exceeded": "You have used today's upload limit. Try again tomorrow.",
+      "storage-full": "Storage is full right now. Try again later.",
+      "service-unavailable": "The service is temporarily unavailable. Try again shortly.",
+      "internal-server-error": "Something went wrong on our side. Try again.",
+      "unprocessable-entity": "This file cannot be converted with these settings.",
+      "engine-unavailable": "The program this conversion needs is not available right now. Try again later.",
+      "job-timeout": "The conversion did not finish in time. Try again.",
+      "client-closed-request": "The conversion stopped because the connection closed. Try again.",
+      "pdf-postprocess-failed": "The document converted, but the PDF step you chose could not be applied to it.",
+      "pdfa-validation-failed": "The PDF could not be made to meet the PDF/A profile you chose.",
+      "option-not-supported": "One of the chosen settings does not apply to this conversion.",
+      "unknown-format": "The format of this file could not be recognized.",
+      "invalid-archive": "The archive is damaged or in a form that cannot be read.",
+      "missing-archive-volume": "A part of this multi-part archive is missing. Add every part.",
+      "archive-encrypted-header": "The archive is protected with a password, so its contents cannot be listed.",
+      "job-state-corrupt": "The conversion record could not be read. Start the conversion again.",
+      "part-in-flight": "A part of this upload is still being received. Try again in a moment.",
+      "idempotency-key-reused": "This is the same request with different contents. Start again.",
+      "idempotency-key-in-flight": "The same request is still being processed. Try again in a moment.",
+      "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly.",
+      "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
+      "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider."
+    },
+    "limits": {
+      "payload-too-large": "One request can carry at most {limit}.",
+      "concurrency-limit": "{limit} conversions are already running, the most at once. Try again when one finishes.",
+      "quota-exceeded": "You have used today's limit of {limit} conversions. Try again tomorrow.",
+      "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
+      "daily-bytes": "Without an account, uploads may total {limit} a day. Try again tomorrow."
+    },
+    "conversion": {
+      "file_required": "Choose a file to convert.",
+      "multipart_required": "The file was not sent in a form the converter can read. Reload the page and try again.",
+      "empty_file": "The file is empty.",
+      "target_required": "Choose a format to convert to.",
+      "unknown_format": "The format of this file could not be told from its name. Check its extension.",
+      "invalid_options": "The conversion settings could not be read. Reset them and try again.",
+      "spoofed_file": "The file's content does not match its extension. Check that the file is what its name says.",
+      "unsupported_pair": "This file cannot be converted to the chosen format. Choose another format.",
+      "option_not_supported": "One of the chosen settings does not apply to this conversion.",
+      "invalid_pages": "The page range cannot be used. Check the pages and your plan limit.",
+      "password_required": "The file is protected with a password. Enter its password in the settings.",
+      "invalid_password": "The password does not open this file.",
+      "unsupported_method": "The archive is compressed with a method that cannot be read.",
+      "encrypted_input": "The file is encrypted or protected, so its content cannot be read.",
+      "missing_volume": "A part of this multi-part archive is missing. Add every part.",
+      "archive_entry_collision": "The archive holds two entries with the same name.",
+      "unsafe_archive": "The archive holds entries that cannot be extracted safely.",
+      "malformed_input": "The file is damaged or incomplete, so it cannot be read.",
+      "unsupported_input": "This kind of file cannot be converted, although it appears intact.",
+      "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
+      "timeout": "The conversion did not finish in time. Try again.",
+      "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
+      "conversion_failed": "Conversion failed. Try another format or try again."
+    },
+    "queue": {
+      "conversionFailed": "Conversion failed. Try another format or try again.",
+      "jobFailed": "The conversion failed on the server. Try again, or try another format.",
+      "clientEdgeFailed": "The browser could not convert this file. It stays on your device, because it is set to convert in the browser only.",
+      "clientOnlyBlocked": "{source} → {target} can only be converted on the server, and this file is set to convert in the browser only.",
+      "edgeFailedFirst": "The browser tried first and could not convert it.",
+      "zipFailed": "Could not build the ZIP archive."
+    },
+    "urlImport": {
+      "url_required": "Enter the link of a file.",
+      "invalid_json": "The link request could not be read. Reload the page and try again.",
+      "invalid_url": "This link cannot be read. Enter a full link that starts with http:// or https://.",
+      "unsupported_scheme": "Only links that start with http:// or https:// can be imported.",
+      "address_blocked": "Links to private or local network addresses cannot be imported.",
+      "redirect_without_location": "The link redirected without naming where to. Try the file's direct link.",
+      "too_many_redirects": "The link redirected too many times. Try the file's direct link.",
+      "invalid_redirect": "The link redirected to an address that cannot be read. Try the file's direct link.",
+      "remote_error": "The site of the link did not send the file. Check that the link opens the file in a browser.",
+      "empty_body": "The site of the link sent an empty file.",
+      "file_too_large": "A file imported from a link may be at most {limit}. Download it and add it from your device to convert a file of up to {planLimit}.",
+      "fetch_failed": "The file could not be fetched from the link. Try again."
+    },
+    "auth": {
+      "failed": "Authentication failed. Try again.",
+      "invalid_json": "The sign-in request could not be read. Reload the page and try again.",
+      "missing_fields": "Enter your email address and password.",
+      "invalid_credentials": "The email address or password is incorrect.",
+      "login_locked": "Too many failed sign-in attempts. Try again in {seconds, plural, one {# second} other {# seconds}}.",
+      "client_address_unknown": "Your connection could not be identified. Try again from another network.",
+      "client_ip_unconfigured": "Sign-in is unavailable while the server is being configured. Try again later.",
+      "invalid_email": "Enter a valid email address.",
+      "password_length": "The password must be 8 to 1024 characters long.",
+      "account_exists": "An account with this email address already exists. Sign in instead."
+    }
+  }
+}

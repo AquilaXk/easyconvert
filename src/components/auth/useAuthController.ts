@@ -1,20 +1,30 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
+import { useLocale, useTranslations } from 'next-intl';
+import { useRouter } from '@/i18n/navigation';
+import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
+import { useAuthErrorWording } from '../i18n/error-wording';
 import {
-  resolveOAuthErrorMessage,
+  resolveOAuthErrorKey,
   validateRegistrationInput,
   type AuthTab,
 } from './AuthForms';
-import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
 
 export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 
-/** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else an error. */
-type AuthAnswer = { success: true; user: SessionUser } | { success: false; error?: string };
+/** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else a refusal with its `code`. */
+type AuthAnswer = { success: true; user: SessionUser } | { success: false; code?: string; error?: string };
 
 export function useAuthController() {
+  const t = useTranslations('auth');
+  const locale = useLocale();
+  const authErrorWording = useAuthErrorWording();
+  const oauthErrorMessage = (urlError: string | null): string | null => {
+    const key = resolveOAuthErrorKey(urlError);
+    return key ? t(`oauthErrors.${key}`) : null;
+  };
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
@@ -30,9 +40,7 @@ export function useAuthController() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(() =>
-    resolveOAuthErrorMessage(urlError)
-  );
+  const [error, setError] = useState<string | null>(() => oauthErrorMessage(urlError));
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const tabRefs = useRef<Record<AuthTab, HTMLButtonElement | null>>({
     login: null,
@@ -44,12 +52,13 @@ export function useAuthController() {
   }, [tabParam]);
 
   useEffect(() => {
-    setErrorMessage(resolveOAuthErrorMessage(urlError));
-  }, [urlError]);
+    const key = resolveOAuthErrorKey(urlError);
+    setError(key ? t(`oauthErrors.${key}`) : null);
+  }, [urlError, t]);
 
   const handleTabSwitch = (tab: AuthTab) => {
     setActiveTab(tab);
-    setErrorMessage(null);
+    setError(null);
     setSuccessMessage(null);
   };
 
@@ -76,36 +85,36 @@ export function useAuthController() {
 
   const handleGoogleLogin = async () => {
     setIsGoogleLoading(true);
-    setErrorMessage(null);
+    setError(null);
     try {
-      const res = await fetch('/api/auth/google/url');
+      const res = await fetch(`/api/auth/google/url?locale=${encodeURIComponent(locale)}`);
       const data = await res.json();
       if (data.success && data.url) {
         window.location.href = data.url;
         return;
       }
-      setErrorMessage('Failed to initiate Google authentication.');
+      setError(t('messages.googleFailed'));
       setIsGoogleLoading(false);
     } catch {
-      setErrorMessage('Network error initiating Google authentication.');
+      setError(t('messages.googleNetwork'));
       setIsGoogleLoading(false);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorMessage(null);
+    setError(null);
     setSuccessMessage(null);
 
     if (!email || !password) {
-      setErrorMessage('Fill in all required fields.');
+      setError(t('messages.missingFields'));
       return;
     }
 
     if (activeTab === 'register') {
-      const regError = validateRegistrationInput(password, confirmPassword);
-      if (regError) {
-        setErrorMessage(regError);
+      const regProblem = validateRegistrationInput(password, confirmPassword);
+      if (regProblem) {
+        setError(t(`messages.${regProblem}`));
         return;
       }
     }
@@ -125,24 +134,20 @@ export function useAuthController() {
       const data = (await res.json()) as AuthAnswer;
 
       if (!res.ok || !data.success) {
-        setErrorMessage(
-          (!data.success && data.error) || 'Authentication failed. Check your credentials and try again.'
-        );
+        setError(authErrorWording(data, res.status));
         setIsLoading(false);
         return;
       }
 
       // The header and the queue keep their plan across the client-side navigation; the answer names the new session.
       applySessionChange(data.user);
-      setSuccessMessage(
-        activeTab === 'register' ? 'Account created. Redirecting...' : 'Signed in. Redirecting...'
-      );
+      setSuccessMessage(activeTab === 'register' ? t('messages.created') : t('messages.signedIn'));
       setTimeout(() => {
         router.push('/dashboard');
         router.refresh();
       }, 500);
     } catch {
-      setErrorMessage('Connection error while signing in. Try again.');
+      setError(t('messages.connection'));
       setIsLoading(false);
     }
   };
@@ -156,7 +161,7 @@ export function useAuthController() {
     showPassword,
     isLoading,
     isGoogleLoading,
-    errorMessage,
+    error,
     successMessage,
     tabRefs,
     setEmail,
