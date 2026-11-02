@@ -115,18 +115,6 @@ describe('the input of a single job', () => {
     await queue.close();
   });
 
-  it('fails a job whose upload was deleted before a worker took it as a missing input', async () => {
-    const key = storeUpload('gone-at-pickup');
-    expect(await holdResultForJob(key, 'job-refused')).toBe(true);
-    await releaseResultHold(key, 'job-refused');
-    expect(await sweepAfterGrace()).toBe(1);
-    const queue = new Queue<ConversionJobData, ConversionJobResult>('input-deletion-gone');
-    const job = await queue.add('convert', jobData(key), { attempts: 1 });
-
-    await expect(processConversionJob(job)).rejects.toBeInstanceOf(StorageNotFoundError);
-    await queue.close();
-  });
-
   it('keeps an owner\'s earlier output that was chained as the input of a cancelled job', async () => {
     const key = `conversions/user-1/${Date.now()}_chained.csv`;
     s3Storage.saveObject(key, Buffer.from(CSV_INPUT, 'utf-8'), 'text/csv', 'chained.csv');
@@ -307,6 +295,16 @@ describe('the hold on an owner\'s earlier output chained as a job input', () => 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
     expect(await sweepRetention(storage, afterUndelivered())).toBe(1);
+  });
+
+  it('fails a job whose hand-off gave the hold up as a missing input when the output it reads was deleted before a worker took it', async () => {
+    const key = await deliveredResult();
+    expect(await sweepRetention(storage, afterUndelivered())).toBe(1);
+    const queue = new Queue<ConversionJobData, ConversionJobResult>('input-hold-gone');
+    const job = await queue.add('convert', jobData(key), { attempts: 1 });
+
+    await expect(processConversionJob(job)).rejects.toBeInstanceOf(StorageNotFoundError);
+    await queue.close();
   });
 
   it('is given up when the job cannot be queued, and refuses an input deleted before the job was queued', async () => {
