@@ -582,15 +582,28 @@ function keepLeaseAlive(reservationId: string): () => void {
 }
 
 /**
- * Moves the reservation `reservationId` back to the provisional lease after a start whose outcome is unknown: work stored
- * late finds it live and ends it, and the lease gives the units back when none does. When the lease cannot be moved, the
- * reservation keeps the lease of handed-off work, which ends it in a day at the latest.
+ * Moves the lease of the live reservation `reservationId` to end `leaseMs` from now, when that is later; false when it is
+ * gone. A store that fails is a store the request cannot use now, answered with a retry.
  */
-async function leaveToProvisionalLease(reservationId: string): Promise<void> {
+async function renewLease(reservationId: string, leaseMs: number): Promise<boolean> {
   try {
-    await redisKeyStore.setReservationLease(reservationId, RESERVATION_LEASE.provisionalMs);
+    return await redisKeyStore.renewReservation(reservationId, leaseMs);
   } catch (err) {
-    console.error(`[Guard] The lease of reservation ${reservationId}, whose work may have been stored, could not go back to the provisional lease:`, err);
+    console.error(`[Guard] The lease of reservation ${reservationId} could not be renewed:`, err);
+    throw new QueueUnavailableError(RESERVATION_ENGINE, `the lease of reservation ${reservationId} could not be renewed`);
+  }
+}
+
+/**
+ * Gives the reservation `reservationId` the lease of handed-off work once its work is known to be stored. The work already
+ * runs, so a renewal that fails is logged: the provisional lease stays, and the worker that takes the work renews it.
+ */
+async function leaseToHandedOffWork(reservationId: string): Promise<void> {
+  try {
+    if (await redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.handedOffMs)) return;
+    console.error(`[Guard] Reservation ${reservationId} ended while its work was stored, so that work is not charged.`);
+  } catch (err) {
+    console.error(`[Guard] The lease of reservation ${reservationId}, whose work is stored, could not be extended:`, err);
   }
 }
 
@@ -598,8 +611,11 @@ async function leaveToProvisionalLease(reservationId: string): Promise<void> {
  * Runs `run` while `reservationId` is reserved, and gives the reservation back when `run` ends, by an answer or a throw,
  * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md, entry 15),
  * so no early return of a route has to remember the reservation. While `run` holds the reservation its lease is renewed, so
- * the unit of a process that dies comes back when the lease ends. A hand-off starts nothing once the lease is lost: the
- * renewal to the lease of handed-off work is the proof that the reservation still counts, as a fencing token proves a lock.
+ * the unit of a process that dies comes back when the lease ends. A hand-off starts nothing once the lease is lost: a renewal
+ * just before the start is the proof that the reservation still counts, as a fencing token proves a lock. The reservation
+ * keeps the provisional lease through the start, and takes the lease of handed-off work only once its work is known to be
+ * stored, as a lease holder extends a lease after the work it covers is confirmed; a start whose outcome is unknown then
+ * needs no further write to the store that failed.
  */
 export async function withReservedUnit<T>(reservationId: string | undefined, run: (unit: ReservedUnit) => Promise<T>): Promise<T> {
   if (reservationId === undefined) return run(NO_RESERVATION);
@@ -617,30 +633,23 @@ export async function withReservedUnit<T>(reservationId: string | undefined, run
     },
     handOff: async (work) => {
       if (!held) return work.start(undefined);
-      stopRenewing();
-      if (!(await redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.handedOffMs))) {
+      if (!(await renewLease(reservationId, RESERVATION_LEASE.provisionalMs))) {
         release();
         throw new QueueUnavailableError(RESERVATION_ENGINE, `the lease of reservation ${reservationId} ended before its work was queued`);
       }
-      try {
-        const started = await work.start(reservationId);
-        release();
-        return started;
-      } catch (error) {
+      const started = await work.start(reservationId).catch(async (error: unknown) => {
         const recovery = await work.recover().catch((lookupErr: unknown): Recovery<never> => {
           console.error(`[Guard] Work that may hold reservation ${reservationId} could not be looked up:`, lookupErr);
           return RECOVERY_UNKNOWN;
         });
-        if (recovery.status === 'started') {
-          release();
-          return recovery.work;
-        }
-        if (recovery.status === 'unknown') {
-          release();
-          await leaveToProvisionalLease(reservationId);
-        }
-        throw error;
-      }
+        if (recovery.status === 'not-started') throw error;
+        release();
+        if (recovery.status === 'unknown') throw error;
+        return recovery.work;
+      });
+      release();
+      await leaseToHandedOffWork(reservationId);
+      return started;
     },
   };
   try {

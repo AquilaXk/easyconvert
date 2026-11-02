@@ -323,16 +323,7 @@ export class RedisKeyStore extends KeyStore {
    * Answers false when the reservation is gone. A failure in Redis throws.
    */
   public async renewReservation(reservationId: string, leaseMs: number): Promise<boolean> {
-    return this.ledger().renew(reservationId, leaseMs, 'extend');
-  }
-
-  /**
-   * Sets the lease of the live reservation `reservationId` to end `leaseMs` from now, also when that is sooner than it is:
-   * a hand-off whose work may not have started goes back to the provisional lease. Answers false when the reservation is
-   * gone. A failure in Redis throws.
-   */
-  public async setReservationLease(reservationId: string, leaseMs: number): Promise<boolean> {
-    return this.ledger().renew(reservationId, leaseMs, 'set');
+    return this.ledger().renew(reservationId, leaseMs);
   }
 
   /**

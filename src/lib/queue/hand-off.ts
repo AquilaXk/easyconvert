@@ -31,10 +31,10 @@ export interface ReservedUnit {
   commit(): Promise<void>;
   /**
    * Starts the queued work that will end the reservation itself (a job or a graph commits it or gives it back), with the
-   * reservation id, once the reservation holds the lease of handed-off work. The request stops owning the reservation once
-   * the work started, or once `recover` finds it after `start` threw. When `recover` is sure nothing started, the request
-   * gives the units back; when it cannot tell, the reservation goes back to the provisional lease, which gives them back
-   * unless work that was stored late ends it first.
+   * reservation id. The request stops owning the reservation once the work started, or once `recover` finds it after `start`
+   * threw, and the reservation then takes the lease of handed-off work. When `recover` is sure nothing started, the request
+   * gives the units back; when it cannot tell, the reservation keeps the provisional lease, which gives them back unless work
+   * that was stored late renews it first.
    */
   handOff<T>(work: HandOff<T>): Promise<T>;
 }

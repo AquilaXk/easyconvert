@@ -31,6 +31,8 @@ import {
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { graphScheduler } from '@/lib/queue/graph';
+import { graphNodeJobId } from '@/lib/queue/graph/node-jobs';
+import { sealJobGraph } from '@/lib/queue/graph/sealed-nodes';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
@@ -743,10 +745,12 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
   if (graph) {
     graph.nodes = storageKey ? withInlineInputStored(normalizeGraphNodes(graph), storageKey) : normalizeGraphNodes(graph);
     const graphId = generateJobId();
+    // Sealed before the hand-off, so a secret that cannot be sealed gives the unit back at once.
+    const sealedGraph = sealJobGraph(graph as unknown as SchedulerJobGraph, (nodeId) => graphNodeJobId(graphId, nodeId));
     const graphState = await withGraphInputsHeld(graphId, graph.nodes, () =>
       unit.handOff({
         start: (reservationId) =>
-          graphScheduler.initGraph(graphId, graph as unknown as SchedulerJobGraph, {
+          graphScheduler.initGraph(graphId, sealedGraph, {
             ownerUserId: user.id,
             reservationId,
             webhookUrl: submission.webhookUrl,

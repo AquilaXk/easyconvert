@@ -78,19 +78,19 @@ return {1, limit - (current + units)}
 `;
 
 /**
- * Moves the lease of a live reservation to end ARGV[2] milliseconds from now: when that is later, or also when it is sooner
- * with ARGV[3] = 'set'. The extensions of the reservation (KEYS[4]) live as long as its lease. 0 when it is gone.
+ * Moves the lease of a live reservation to end ARGV[2] milliseconds from now, when that is later. The extensions of the
+ * reservation (KEYS[4]) live as long as its lease. 0 when it is gone.
  */
 export const RENEW_QUOTA_LUA_SCRIPT = `
 -- KEYS[4]: the extensions of the reservation
--- ARGV[1]: reservation id  ARGV[2]: lease in ms  ARGV[3]: 'extend' or 'set'
+-- ARGV[1]: reservation id  ARGV[2]: lease in ms
 ${LEASE_FUNCTIONS}
 local leaseEnd = redis.call('ZSCORE', KEYS[2], ARGV[1])
 if not leaseEnd then
   return 0
 end
 local newEnd = now + tonumber(ARGV[2])
-if newEnd > tonumber(leaseEnd) or ARGV[3] == 'set' then
+if newEnd > tonumber(leaseEnd) then
   redis.call('ZADD', KEYS[2], newEnd, ARGV[1])
   keepDay(newEnd)
   if redis.call('EXISTS', KEYS[4]) == 1 then

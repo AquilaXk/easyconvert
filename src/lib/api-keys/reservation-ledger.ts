@@ -41,9 +41,6 @@ export const RESERVATION_LEASE = {
 /** What `extend` did: held the units, refused them because they do not fit in the day (with the conversions left), or found no reservation. */
 export type QuotaExtension = { status: 'extended' } | { status: 'does-not-fit'; remaining: number } | { status: 'no-reservation' };
 
-/** How `renew` moves a lease: only to a later end (`extend`), or to the end it names, sooner or later (`set`). */
-export type LeaseChange = 'extend' | 'set';
-
 /**
  * The steps on reservations. Every lease is given as a duration from now, and each ledger reads now from one clock: the
  * clock of the Redis server, or this process's clock for the ledger of this process.
@@ -59,8 +56,8 @@ export interface ReservationLedger {
   settle(reservationId: string, units: number): Promise<{ success: boolean; difference: number }>;
   /** Holds what the extension `extensionId` holds in all, `units`, in a live reservation, under `limit`. */
   extend(reservationId: string, extensionId: string, units: number, limit: number): Promise<QuotaExtension>;
-  /** Moves the lease of a live reservation to end `leaseMs` from now, as `change` says; false when it is gone. */
-  renew(reservationId: string, leaseMs: number, change: LeaseChange): Promise<boolean>;
+  /** Moves the lease of a live reservation to end `leaseMs` from now, when that is later; false when it is gone. */
+  renew(reservationId: string, leaseMs: number): Promise<boolean>;
   /** The units counted on `owner`'s `day`, once the leases that ended gave theirs back. */
   used(owner: string, day: string): Promise<number>;
 }
@@ -142,8 +139,8 @@ export class RedisReservationLedger implements ReservationLedger {
     return outcome === 'does-not-fit' ? { status: outcome, remaining: Math.max(0, Number(reply[1])) } : { status: outcome };
   }
 
-  async renew(reservationId: string, leaseMs: number, change: LeaseChange): Promise<boolean> {
-    return Number(await this.onReservation(RENEW_QUOTA_LUA_SCRIPT, reservationId, 'extensions', leaseMs, change)) === 1;
+  async renew(reservationId: string, leaseMs: number): Promise<boolean> {
+    return Number(await this.onReservation(RENEW_QUOTA_LUA_SCRIPT, reservationId, 'extensions', leaseMs)) === 1;
   }
 
   async used(owner: string, day: string): Promise<number> {
@@ -255,11 +252,10 @@ export class MemoryReservationLedger implements ReservationLedger {
     return { status: 'extended' };
   }
 
-  async renew(reservationId: string, leaseMs: number, change: LeaseChange): Promise<boolean> {
+  async renew(reservationId: string, leaseMs: number): Promise<boolean> {
     const reservation = this.live(reservationId);
     if (!reservation) return false;
-    const leaseUntil = Date.now() + leaseMs;
-    reservation.leaseUntil = change === 'set' ? leaseUntil : Math.max(reservation.leaseUntil, leaseUntil);
+    reservation.leaseUntil = Math.max(reservation.leaseUntil, Date.now() + leaseMs);
     return true;
   }
 

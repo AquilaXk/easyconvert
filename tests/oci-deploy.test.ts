@@ -538,7 +538,7 @@ esac
     const runSteps = (indexes: number[]) =>
       spawnSync('bash', ['-c', indexes.map((index) => `(set -euo pipefail\n${steps[index].run})`).join(' && ')], {
         encoding: 'utf-8',
-        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_REGISTRY: registry, WORKER_REPO, WORKER_DIGEST },
+        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_REGISTRY: registry, WORKER_REPO, WORKER_DIGEST } as unknown as NodeJS.ProcessEnv,
         timeout: 10_000,
       });
     const mainDigest = (): string => readFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), 'utf-8').trim();
