@@ -6,22 +6,25 @@ import { useTranslations } from 'next-intl';
 import type { FormatDefinition } from '@/lib/types';
 import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
 import { CATEGORY_ORDER } from '@/lib/registry-stats';
-import { useModalDialog } from '@/hooks/useModalDialog';
-import { FormatSelectorBody, MobileFormatDialogHeader } from './workbench/FormatSelectorView';
+import { canonicalFormat } from '@/lib/format-aliases';
+import { FormatSelectorBody } from './workbench/FormatSelectorView';
 
 export interface FormatSelectorProps {
   availableFormats?: FormatDefinition[]; selectedFormatId?: string; sourceFormat?: string;
-  allowAny?: boolean; onSelect: (formatId: string) => void; onClose: () => void; title?: string;
+  onSelect: (formatId: string) => void; onClose: () => void; title?: string;
 }
 
-const NATURAL_PANEL_HEIGHT = 368;
+/** The reference popover: 352 px wide, 321 px tall (a 33 px search over a 288 px body), 2 px under its trigger. */
+const PANEL_WIDTH = 352;
+const PANEL_HEIGHT = 321;
+const PANEL_GAP = 2;
+const VIEWPORT_GUTTER = 8;
+const MIN_PANEL_HEIGHT = 180;
+/** The sticky header covers the top 64 px; a trigger scrolled under it closes the popover. */
+const HEADER_BOTTOM = 64;
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
-const DESKTOP_PANEL_CLASS = 'm-0 p-0 right-auto w-[min(440px,calc(100dvw-2rem))] rounded-md bg-surface border border-rule shadow-elev-1 overflow-hidden flex flex-col text-ink text-left select-none';
+const PANEL_CLASS = 'fixed z-[60] m-0 p-0 rounded-xs bg-surface border border-rule shadow-elev-1 overflow-hidden flex flex-col text-ink text-left select-none';
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-function readInitialMobileState(): boolean {
-  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 639px)').matches : false;
-}
 
 function sortFormatCategories(keys: Iterable<string>): string[] {
   const orderList = CATEGORY_ORDER as readonly string[];
@@ -34,22 +37,22 @@ function sortFormatCategories(keys: Iterable<string>): string[] {
   });
 }
 
-function pickValidCategory(cat: string | undefined, categories: string[]): string | null {
-  return cat && categories.includes(cat) ? cat : null;
+/** Each format once, by its own name: an alias whose format is also offered folds into it, as the reference lists JPG alone. */
+function collapseAliases(formats: FormatDefinition[]): FormatDefinition[] {
+  const offered = new Set(formats.map((f) => f.id));
+  return formats.filter((f) => canonicalFormat(f.id) === f.id || !offered.has(canonicalFormat(f.id)));
 }
 
 function resolveInitialCategory(selectedFormatId: string | undefined, sourceFormat: string | undefined, allFormats: FormatDefinition[], categories: string[]): string {
-  const sel = selectedFormatId?.toLowerCase();
-  if (sel && sel !== 'any') {
-    const matched = pickValidCategory(allFormats.find((f) => f.id.toLowerCase() === sel)?.category, categories);
-    if (matched) return matched;
-  }
-  const src = sourceFormat?.toLowerCase();
-  if (src && src !== 'any') {
-    const matched = pickValidCategory(FORMAT_REGISTRY[src]?.category, categories);
-    if (matched) return matched;
-  }
-  return categories[0] || 'document';
+  const valid = (cat: string | undefined) => (cat && categories.includes(cat) ? cat : null);
+  const selected = selectedFormatId ? canonicalFormat(selectedFormatId.toLowerCase()) : undefined;
+  const source = sourceFormat?.toLowerCase();
+  return (
+    valid(allFormats.find((f) => f.id === selected)?.category) ??
+    valid(source ? FORMAT_REGISTRY[source]?.category : undefined) ??
+    categories[0] ??
+    'document'
+  );
 }
 
 function groupFormatsByCategory(allFormats: FormatDefinition[]): Map<string, FormatDefinition[]> {
@@ -66,7 +69,8 @@ function groupFormatsByCategory(allFormats: FormatDefinition[]): Map<string, For
 function filterDisplayedFormats(allFormats: FormatDefinition[], byCategory: Map<string, FormatDefinition[]>, activeCategory: string, search: string): FormatDefinition[] {
   const q = search.trim().toLowerCase();
   if (!q) return byCategory.get(activeCategory) || [];
-  return allFormats.filter((f) => f.id.toLowerCase().includes(q) || f.name.toLowerCase().includes(q) || f.extension.toLowerCase().includes(q));
+  const named = canonicalFormat(q);
+  return allFormats.filter((f) => f.id === named || f.id.includes(q) || f.name.toLowerCase().includes(q) || f.extension.toLowerCase().includes(q));
 }
 
 function resolveTriggerElement(anchor: HTMLSpanElement | null): HTMLElement | null {
@@ -84,72 +88,66 @@ function shouldCloseOnTab(e: KeyboardEvent, popover: HTMLElement | null): boolea
   return document.activeElement === (e.shiftKey ? focusables[0] : focusables.at(-1));
 }
 
-export function computeDesktopPortalPosition(
-  triggerRect: DOMRect,
-  viewportW: number,
-  viewportH: number
-): React.CSSProperties | null {
-  if (triggerRect.bottom <= 64 || triggerRect.top >= viewportH) return null;
-  const panelWidth = Math.min(440, viewportW - 32);
-  const left = Math.min(Math.max(12, triggerRect.left), Math.max(12, viewportW - panelWidth - 12));
-  const spaceBelow = viewportH - triggerRect.bottom - 16;
-  const spaceAbove = triggerRect.top - 72;
-  if (spaceBelow >= NATURAL_PANEL_HEIGHT || spaceBelow >= spaceAbove) {
-    return {
-      top: triggerRect.bottom + 8,
-      bottom: 'auto',
-      left,
-      maxHeight: Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceBelow)),
-    };
-  }
-  const effectiveHeight = Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceAbove));
-  return {
-    top: 'auto',
-    bottom: viewportH - triggerRect.top + 8,
-    left,
-    maxHeight: effectiveHeight,
-  };
+/**
+ * Where the popover sits for a trigger at `triggerRect`: under it, start-aligned and kept inside the viewport, or above it
+ * when there is more room there; null once the trigger has left the screen.
+ */
+export function computePopoverPosition(triggerRect: DOMRect, viewportW: number, viewportH: number): React.CSSProperties | null {
+  if (triggerRect.bottom <= HEADER_BOTTOM || triggerRect.top >= viewportH) return null;
+  const width = Math.min(PANEL_WIDTH, viewportW - 2 * VIEWPORT_GUTTER);
+  const left = Math.min(Math.max(VIEWPORT_GUTTER, triggerRect.left), Math.max(VIEWPORT_GUTTER, viewportW - width - VIEWPORT_GUTTER));
+  const spaceBelow = viewportH - triggerRect.bottom - PANEL_GAP - VIEWPORT_GUTTER;
+  const spaceAbove = triggerRect.top - HEADER_BOTTOM - PANEL_GAP;
+  const below = spaceBelow >= PANEL_HEIGHT || spaceBelow >= spaceAbove;
+  const maxHeight = Math.max(MIN_PANEL_HEIGHT, Math.min(PANEL_HEIGHT, below ? spaceBelow : spaceAbove));
+  return below
+    ? { top: triggerRect.bottom + PANEL_GAP, bottom: 'auto', left, width, maxHeight }
+    : { top: 'auto', bottom: viewportH - triggerRect.top + PANEL_GAP, left, width, maxHeight };
 }
 
-interface DesktopPopoverRefs {
+/** The height left above an on-screen keyboard, which the visual viewport reports and the layout viewport does not. */
+function visibleViewportHeight(): number {
+  return window.visualViewport?.height ?? window.innerHeight;
+}
+
+interface PopoverRefs {
   anchorRef: React.RefObject<HTMLSpanElement | null>;
   popoverRef: React.RefObject<HTMLDialogElement | null>;
   triggerRef: React.MutableRefObject<HTMLElement | null>;
   onCloseRef: React.MutableRefObject<() => void>;
 }
 
-function useDesktopPopoverEffects(
-  isMobile: boolean,
-  inputId: string,
-  refs: DesktopPopoverRefs,
-  setPortalStyle: React.Dispatch<React.SetStateAction<React.CSSProperties>>
-): void {
+/**
+ * Focus, dismissal and placement of the popover. It never closes on a blur, since WebKit blurs the search on a mouse press
+ * without focusing what was pressed; Escape, Tab out of it, a pointer press outside it, or its trigger leaving the screen
+ * close it.
+ */
+function usePopoverEffects(inputId: string, refs: PopoverRefs, setPortalStyle: React.Dispatch<React.SetStateAction<React.CSSProperties>>): void {
   const { anchorRef, popoverRef, triggerRef, onCloseRef } = refs;
 
   useEffect(() => {
-    if (isMobile || typeof document === 'undefined') return;
     triggerRef.current = resolveTriggerElement(anchorRef.current);
     document.getElementById(inputId)?.focus({ preventScroll: true });
 
+    const closeToTrigger = () => {
+      const trigger = triggerRef.current;
+      onCloseRef.current();
+      trigger?.focus({ preventScroll: true });
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        const trigger = triggerRef.current;
-        onCloseRef.current();
-        trigger?.focus({ preventScroll: true });
+        closeToTrigger();
         return;
       }
-      if (shouldCloseOnTab(e, popoverRef.current)) {
-        if (e.shiftKey) {
-          e.preventDefault();
-          const trigger = triggerRef.current;
-          onCloseRef.current();
-          trigger?.focus({ preventScroll: true });
-          return;
-        }
-        triggerRef.current?.focus({ preventScroll: true });
-        onCloseRef.current();
+      if (!shouldCloseOnTab(e, popoverRef.current)) return;
+      if (e.shiftKey) {
+        e.preventDefault();
+        closeToTrigger();
+        return;
       }
+      triggerRef.current?.focus({ preventScroll: true });
+      onCloseRef.current();
     };
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
@@ -162,58 +160,46 @@ function useDesktopPopoverEffects(
       window.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('pointerdown', handlePointerDown);
     };
-  }, [isMobile, inputId, anchorRef, popoverRef, triggerRef, onCloseRef]);
+  }, [inputId, anchorRef, popoverRef, triggerRef, onCloseRef]);
 
   useIsomorphicLayoutEffect(() => {
-    if (isMobile || typeof window === 'undefined') return;
     const updatePosition = () => {
       const anchorEl = anchorRef.current?.parentElement;
       if (!anchorEl) return;
-      const next = computeDesktopPortalPosition(anchorEl.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+      const next = computePopoverPosition(anchorEl.getBoundingClientRect(), window.innerWidth, visibleViewportHeight());
       if (!next) onCloseRef.current();
       else setPortalStyle(next);
     };
     updatePosition();
     window.addEventListener('resize', updatePosition);
     window.addEventListener('scroll', updatePosition, true);
+    window.visualViewport?.addEventListener('resize', updatePosition);
     return () => {
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
+      window.visualViewport?.removeEventListener('resize', updatePosition);
     };
-  }, [isMobile, anchorRef, onCloseRef, setPortalStyle]);
+  }, [anchorRef, onCloseRef, setPortalStyle]);
 }
 
-function useMobileBreakpoint(): boolean {
-  const [isMobile, setIsMobile] = useState(readInitialMobileState);
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(max-width: 639px)');
-    const sync = () => setIsMobile(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
-  return isMobile;
-}
-
+/**
+ * The format picker, as the reference converter draws it at every width: a popover anchored under its trigger with a
+ * search field, a column of categories and a grid of formats, the current one filled with the primary colour.
+ */
 export default function FormatSelector({
-  availableFormats, selectedFormatId, sourceFormat, allowAny = false, onSelect, onClose, title,
+  availableFormats, selectedFormatId, sourceFormat, onSelect, onClose, title,
 }: Readonly<FormatSelectorProps>) {
   const t = useTranslations('formatSelector');
   const inputId = useId();
   const [search, setSearch] = useState('');
-  const isMobile = useMobileBreakpoint();
-  const [portalStyle, setPortalStyle] = useState<React.CSSProperties>({ top: 0, bottom: 'auto', left: 12 });
+  const [portalStyle, setPortalStyle] = useState<React.CSSProperties>({ top: 0, bottom: 'auto', left: VIEWPORT_GUTTER });
   const anchorRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLDialogElement>(null);
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  useModalDialog(dialogRef, isMobile, onClose);
-
-  const allFormats = useMemo(() => availableFormats ?? getAllFormats(), [availableFormats]);
+  const allFormats = useMemo(() => collapseAliases(availableFormats ?? getAllFormats()), [availableFormats]);
   const categoriesWithFormats = useMemo(() => groupFormatsByCategory(allFormats), [allFormats]);
   const categories = useMemo(() => sortFormatCategories(categoriesWithFormats.keys()), [categoriesWithFormats]);
   const initialCategory = useMemo(
@@ -224,7 +210,7 @@ export default function FormatSelector({
 
   useEffect(() => { setActiveCategory(initialCategory); }, [initialCategory]);
 
-  useDesktopPopoverEffects(isMobile, inputId, { anchorRef, popoverRef, triggerRef, onCloseRef }, setPortalStyle);
+  usePopoverEffects(inputId, { anchorRef, popoverRef, triggerRef, onCloseRef }, setPortalStyle);
 
   const displayedFormats = useMemo(
     () => filterDisplayedFormats(allFormats, categoriesWithFormats, activeCategory, search),
@@ -235,48 +221,32 @@ export default function FormatSelector({
     const trigger = triggerRef.current;
     onSelect(formatId);
     onCloseRef.current();
-    if (!isMobile) trigger?.focus({ preventScroll: true });
+    trigger?.focus({ preventScroll: true });
   };
 
-  const dialogLabel = title || t('defaultTitle');
-  const body = (
-    <FormatSelectorBody
-      inputId={inputId} search={search} onSearchChange={setSearch} categories={categories}
-      activeCategory={activeCategory} onSelectCategory={setActiveCategory} displayedFormats={displayedFormats}
-      hasNoSupportedFormats={allFormats.length === 0} selectedFormatId={selectedFormatId}
-      allowAny={allowAny} onChoose={handleSelect}
-    />
+  const panel = (
+    <dialog
+      open ref={popoverRef} aria-label={title || t('defaultTitle')} style={portalStyle} className={PANEL_CLASS}
+      onMouseDown={(event) => {
+        // WebKit moves focus nowhere on a press, so keep it where it is; the search itself still takes a press.
+        if ((event.target as HTMLElement).id !== inputId) event.preventDefault();
+      }}
+    >
+      <FormatSelectorBody
+        inputId={inputId} search={search} onSearchChange={setSearch} categories={categories}
+        activeCategory={activeCategory} onSelectCategory={setActiveCategory} displayedFormats={displayedFormats}
+        hasNoSupportedFormats={allFormats.length === 0}
+        currentFormatId={selectedFormatId ? canonicalFormat(selectedFormatId.toLowerCase()) : undefined}
+        onChoose={handleSelect}
+      />
+    </dialog>
   );
 
-  if (isMobile) {
-    return (
-      <dialog
-        ref={dialogRef} aria-label={dialogLabel}
-        className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2 overflow-hidden text-left select-none"
-      >
-        <MobileFormatDialogHeader title={title} onClose={onClose} />
-        {body}
-      </dialog>
-    );
-  }
-
-  if (typeof document === 'undefined') {
-    return (
-      <dialog open ref={popoverRef} aria-label={dialogLabel} className={`relative ${DESKTOP_PANEL_CLASS}`}>
-        {body}
-      </dialog>
-    );
-  }
-
+  if (typeof document === 'undefined') return panel;
   return (
     <>
       <span ref={anchorRef} className="hidden" aria-hidden="true" />
-      {createPortal(
-        <dialog open ref={popoverRef} aria-label={dialogLabel} style={portalStyle} className={`fixed z-[60] ${DESKTOP_PANEL_CLASS}`}>
-          {body}
-        </dialog>,
-        document.body
-      )}
+      {createPortal(panel, document.body)}
     </>
   );
 }

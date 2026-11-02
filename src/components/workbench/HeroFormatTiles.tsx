@@ -81,7 +81,6 @@ export default function HeroFormatTiles({
       >
         {openPicker === 'source' && (
           <FormatSelector
-            allowAny
             selectedFormatId={normalizedSource}
             onSelect={(fmt) => {
               onSourceChange(fmt);
@@ -105,7 +104,6 @@ export default function HeroFormatTiles({
       >
         {openPicker === 'target' && (
           <FormatSelector
-            allowAny
             availableFormats={isAnySource ? undefined : getAvailableTargetFormats(normalizedSource)}
             sourceFormat={isAnySource ? undefined : normalizedSource}
             selectedFormatId={normalizedTarget}

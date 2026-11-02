@@ -135,11 +135,11 @@ describe('the format picker popover', () => {
   it('sends a letter typed on a format to the search', () => {
     mount();
     press(search(), 'ArrowDown');
-    press(document.activeElement!, 'g');
+    press(document.activeElement!, 'f');
     expect(document.activeElement).toBe(search());
-    expect(search().value).toBe('g');
+    expect(search().value).toBe('f');
     expect(formatNames()).toContain('GIF');
-    expect(formatNames()).not.toContain('WEBP');
+    expect(formatNames()).not.toContain('JPG');
   });
 
   it('closes on Escape and hands focus back to its trigger', () => {
