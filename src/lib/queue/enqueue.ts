@@ -71,7 +71,8 @@ function preparedConversionJob(
  * its deadline first, so a refusal there gives the unit back at once and only the queue write can have an unknown outcome.
  * The job id is chosen before the job is queued, so a job that an enqueue stored before it failed is found by that id, and
  * the request answers it instead of giving its unit back while it runs. The input is held for the job across the enqueue and
- * that lookup, so a job found there keeps its hold.
+ * that lookup, so a job found there keeps its hold, and once the write was tried the hold stays when the lookup cannot tell,
+ * for a job that was stored late.
  */
 export async function handOffConversionJob(
   unit: ReservedUnit,
@@ -82,11 +83,19 @@ export async function handOffConversionJob(
 ): Promise<Job<ConversionJobData, ConversionJobResult>> {
   const jobId = opts.jobId ?? generateJobId();
   const job = preparedConversionJob(data, { ...opts, jobId }, owner);
-  return withInputHeld(data.storageKey, jobId, () =>
-    unit.handOff({
-      start: (reservationId) => queue.add('convert', { ...job.data, reservationId }, job.opts),
-      recover: async () => foundOrUnknown(await queue.getJob(jobId)),
-    })
+  let addTried = false;
+  return withInputHeld(
+    data.storageKey,
+    jobId,
+    () =>
+      unit.handOff({
+        start: (reservationId) => {
+          addTried = true;
+          return queue.add('convert', { ...job.data, reservationId }, job.opts);
+        },
+        recover: async () => foundOrUnknown(await queue.getJob(jobId)),
+      }),
+    () => addTried
   );
 }
 

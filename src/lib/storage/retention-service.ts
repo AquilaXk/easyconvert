@@ -333,15 +333,16 @@ const RETENTION_PROVIDER = 'retention';
  * early deletion for space removes a result the job reads, and no other job's end deletes an upload it reads, before
  * it ends (its end calls `releaseResultHold`). When the input was deleted after it was authorized, nothing is queued
  * and a StorageNotFoundError is thrown, which the routes answer like a missing object. A failed `start` gives the
- * hold up again and leaves the file as it was.
+ * hold up again and leaves the file as it was, unless `mayBeQueued` says the job may have been stored anyway: the hold
+ * then stays under the job's id, for the job to end when it ends, and lapses after JOB_INPUT_HOLD_MAX_MS otherwise.
  */
-export async function withInputHeld<T>(key: string | undefined, holder: string, start: () => Promise<T>): Promise<T> {
+export async function withInputHeld<T>(key: string | undefined, holder: string, start: () => Promise<T>, mayBeQueued: () => boolean = () => false): Promise<T> {
   if (key === undefined) return start();
   if (!(await holdResultForJob(key, holder))) throw new StorageNotFoundError(key, RETENTION_PROVIDER);
   try {
     return await start();
   } catch (error) {
-    await giveUpHold(key, holder);
+    if (!mayBeQueued()) await giveUpHold(key, holder);
     throw error;
   }
 }
