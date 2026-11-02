@@ -109,7 +109,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
   async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
     const data = this.graphs.get(graphId);
-    // This process stores a graph before its start can fail, and no write of it can land later: a graph not here never started.
+    // In this process no write lands after its start returned or threw, so a graph that is not here never started.
     if (!data) return { status: 'not-started' };
     return queueReadyNodesOrCancel(JSON.parse(JSON.stringify(data.state)), () => this.enqueueWaitingNodes(data.state), (reason) => this.cancelGraph(graphId, reason));
   }
