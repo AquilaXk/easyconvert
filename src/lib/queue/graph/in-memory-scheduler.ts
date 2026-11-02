@@ -11,7 +11,8 @@ import type {
   NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
+import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
+import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { finishGraph, type EndedGraph, type GraphEnd } from './graph-end';
@@ -198,14 +199,11 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
     if (data.state.policy === 'fail_fast') {
       recordEnd(data.state, 'failed', error);
+      const stopped = cancelUnended(data.state, ['completed', 'failed', 'cancelled']);
       const cancelledJobIds = await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } }, async () => {
         const cancelled: string[] = [];
-        for (const [nid, ns] of Object.entries(data.state.nodes)) {
-          if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
-            ns.status = 'cancelled';
-            await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
-            cancelled.push(graphNodeJobId(graphId, nid));
-          }
+        for (const nid of stopped) {
+          if (await cancelGraphNodeJobOrLog(graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`)) cancelled.push(graphNodeJobId(graphId, nid));
         }
         return cancelled;
       });
@@ -239,13 +237,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
             ) {
               childState.status = 'skipped';
               skippedNodeIds.push(childId);
-              await cancelGraphNodeJobOrLog(
-                cancelGraphNodeJob,
-                graphId,
-                childId,
-                data.state.graph.nodes[childId],
-                `Skipped because upstream node ${nodeId} failed`
-              );
+              await cancelGraphNodeJobOrLog(graphId, childId, data.state.graph.nodes[childId], `Skipped because upstream node ${nodeId} failed`);
             }
           }
         }
@@ -272,13 +264,9 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const data = this.graphs.get(graphId);
     if (!data || !recordEnd(data.state, 'cancelled', reason)) return false;
+    const stopped = cancelUnended(data.state, ['completed', 'failed', 'skipped']);
     await finishGraph(endedGraph(data), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
-      for (const [nid, ns] of Object.entries(data.state.nodes)) {
-        if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
-          ns.status = 'cancelled';
-          await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], reason);
-        }
-      }
+      for (const nid of stopped) await cancelGraphNodeJobOrLog(graphId, nid, data.state.graph.nodes[nid], reason);
     });
     return true;
   }
@@ -304,7 +292,19 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
 /** The graph of `data` whose end its scheduler recorded. */
 function endedGraph(data: InternalGraphData): EndedGraph {
-  return { graphId: data.state.graphId, reservationId: data.state.reservationId, readState: async () => data.state };
+  return {
+    graphId: data.state.graphId,
+    reservationId: data.state.reservationId,
+    inputKeys: graphInputKeys(data.state.graph.nodes),
+    readState: async () => data.state,
+  };
+}
+
+/** Marks every node of the ended `state` whose status is not in `ended` cancelled, and answers their ids. */
+function cancelUnended(state: GraphExecutionState, ended: readonly NodeExecutionStatus[]): NodeId[] {
+  const stopped = Object.values(state.nodes).filter((node) => !ended.includes(node.status));
+  for (const node of stopped) node.status = 'cancelled';
+  return stopped.map((node) => node.id);
 }
 
 /** The end of the completed graph of `data`, settled to the units its nodes charged. */

@@ -14,7 +14,7 @@ export function graphInputKeys(nodes: Readonly<Record<string, object>>): string[
 
 /**
  * Starts the graph `graphId` while every file its `import.upload` nodes read, an upload or an earlier result, is held
- * for it (see `withInputHeld`), so that no deletion removes one before a node reads it; `releaseGraphInputHolds` ends
+ * for it (see `withInputHeld`), so that no deletion removes one before a node reads it; `releaseInputHolds` ends
  * the holds when the graph ends.
  */
 export function initGraphHoldingInputs(
@@ -31,9 +31,9 @@ export function initGraphHoldingInputs(
 }
 
 /**
- * Ends the holds the graph `graphId` took on the files it read as inputs, once it has ended (completed, failed or
- * cancelled). An upload no other job or graph holds is then deleted after the grace period.
+ * Ends the holds the graph `graphId` took on `inputKeys`, the files it read as inputs (`graphInputKeys`), once it has
+ * ended (completed, failed or cancelled). An upload no other job or graph holds is then deleted after the grace period.
  */
-export async function releaseGraphInputHolds(graphId: string, graph: JobGraph): Promise<void> {
-  for (const key of graphInputKeys(graph.nodes)) await releaseResultHold(key, graphId);
+export async function releaseInputHolds(graphId: string, inputKeys: readonly string[]): Promise<void> {
+  for (const key of inputKeys) await releaseResultHold(key, graphId);
 }

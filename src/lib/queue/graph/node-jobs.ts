@@ -100,19 +100,21 @@ export async function cancelGraphNodeJob(
 
 /**
  * Cancels the queue job of node `nodeId` with `cancel`, and logs a cancel that fails, so one node job that cannot be
- * cancelled never leaves the others of its graph running.
+ * cancelled never leaves the others of its graph running. Answers false when the cancel failed.
  */
 export async function cancelGraphNodeJobOrLog(
-  cancel: typeof cancelGraphNodeJob,
   graphId: string,
   nodeId: NodeId,
   node: GraphNode | undefined,
-  reason: string
-): Promise<void> {
+  reason: string,
+  cancel: typeof cancelGraphNodeJob = cancelGraphNodeJob
+): Promise<boolean> {
   try {
     await cancel(graphId, nodeId, node, reason);
+    return true;
   } catch (err) {
     console.error(`[GraphScheduler] The job of node ${nodeId} of graph ${graphId} could not be cancelled:`, err);
+    return false;
   }
 }
 
