@@ -18,7 +18,7 @@ import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { hashPassword } from '../src/lib/auth/crypto';
 import { concurrencyLimitResponse } from '../src/lib/queue/concurrency-limit';
 import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
-import { uploadBudgetRefusalResponse } from '../src/lib/api/upload-budget-response';
+import { importLargerThanLeftResponse, uploadBudgetRefusalResponse } from '../src/lib/api/upload-budget-response';
 import { conversionRefusalResponse } from '../src/lib/api/conversion-refusal-response';
 import { AUTH_ERROR_CODES, URL_IMPORT_ERROR_CODES } from '../src/lib/refusal-codes';
 import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
@@ -127,6 +127,16 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   it('words a job refused once the day has no conversion left by the daily limit', async () => {
     const { status, body } = await conversionsShort(1, 0);
     expect(worded(useProblemWording, 'ko', body, status)).toBe('오늘 변환 한도 25회를 모두 썼어요. 내일 다시 시도해 주세요.');
+  });
+
+  it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {
+    const { status, body } = await bodyOf(importLargerThanLeftResponse(30 * 1024 ** 2, '/api/fetch-url', 'free'));
+    expect(body).toMatchObject({ refusal: 'larger-than-left', leftBytes: 30 * 1024 ** 2, plan: 'free' });
+    expect(worded(useProblemWording, 'en', body, status)).toContain('30 MiB');
+    const korean = worded(useProblemWording, 'ko', body, status);
+    expectKorean(korean, 'larger than left');
+    expect(korean).toContain('30 MiB');
+    expect(korean).not.toContain('모두 썼어요');
   });
 
   it('words a link import refused while other imports hold the rest of the day, without saying the day is spent', async () => {

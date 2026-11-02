@@ -11,7 +11,9 @@ import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { bytesBroughtInToday, dailyBudgetBytes, reserveLinkImport } from '../../src/lib/api-keys/anonymous-upload-budget';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
 import { anonymousUserId } from '../../src/lib/auth/anonymous-identity';
+import { formatBytes } from '../../src/lib/format-bytes';
 import { getAnonymousDailyLimit } from '../../src/lib/plan-limits';
+import { dispatchEngine } from '../../src/lib/queue/dispatch-engine';
 import { Worker } from '../../src/lib/queue/bullmq-engine';
 import { allConversionQueues, attachJobLifecycleListeners, cancelJobAcrossQueues, getJobAcrossQueues, processConversionJob } from '../../src/lib/queue/conversion-queue';
 import { graphScheduler, type GraphMetadata, type JobGraph } from '../../src/lib/queue/graph';
@@ -377,7 +379,16 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('completes two import.url nodes and a convert node over both for a free account, each import holding one file', async () => {
-    remoteCsv();
+    // Neither remote answers until both imports have fetched, so both holds are taken before either import ends.
+    let fetched = 0;
+    let answerBoth: () => void = () => undefined;
+    const bothFetched = new Promise<void>((resolve) => (answerBoth = resolve));
+    vi.mocked(undiciFetch).mockImplementation(async () => {
+      fetched += 1;
+      if (fetched === 2) answerBoth();
+      await bothFetched;
+      return new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
+    });
     const account = await apiAccount();
     const queued = await queueGraph(
       {
@@ -392,6 +403,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
       { owner: account.userId }
     );
     await queued.ended('completed');
+    expect(fetched).toBe(2);
     expect(await bytesBroughtInToday(account.userId)).toBe(2 * Buffer.byteLength(CSV));
   }, GRAPH_TIMEOUT_MS + 10_000);
 
@@ -423,6 +435,75 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
   }, GRAPH_TIMEOUT_MS + 10_000);
 
+  const importThenConvert = (): SubmittedGraph => ({
+    failurePolicy: 'fail_fast',
+    nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } },
+  });
+
+  /** An anonymous owner whose day has `received` bytes received and a sibling import that holds the rest until it ends. */
+  async function ownerWithSiblingImport(receivedBytes: number) {
+    const owner = anonymousOwner();
+    const earlier = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
+    if ('refusal' in earlier) throw new Error('a fresh owner has its whole day');
+    await earlier.reservation.settle(receivedBytes);
+    const sibling = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS, dailyBudgetBytes('anonymous') - receivedBytes, 'sibling-import');
+    if ('refusal' in sibling) throw new Error('the sibling import was refused');
+    return { owner, sibling: sibling.reservation };
+  }
+
+  /** The rows of the log of the node job `jobId` that say it waits for the holds of other imports. */
+  async function waitsLogged(jobId: string): Promise<number> {
+    return ((await getJobAcrossQueues(jobId))?.logs ?? []).filter((row) => row.includes('waits')).length;
+  }
+
+  it('lets an import.url node wait while a sibling import holds the rest of the day, and complete once it ends', async () => {
+    remoteCsv();
+    const receivedBytes = dailyBudgetBytes('anonymous') - 1024 ** 3 / 2;
+    const { owner, sibling } = await ownerWithSiblingImport(receivedBytes);
+    const queued = await queueGraph(importThenConvert(), 1, { owner });
+
+    await vi.waitFor(async () => expect(await waitsLogged(`${queued.graphId}:link`)).toBeGreaterThanOrEqual(2), { timeout: 15_000, interval: 100 });
+    expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
+    await sibling.settle(0);
+
+    await queued.ended('completed');
+    expect(await bytesBroughtInToday(owner)).toBe(receivedBytes + Buffer.byteLength(CSV));
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('fails an import.url node with import_budget_held when a sibling import holds the rest of the day until the node deadline', async () => {
+    remoteCsv();
+    const deadlineSettings = { JOB_DEADLINE_BASE_MS_FREE: '1000', JOB_DEADLINE_MAX_MS_FREE: '4000' };
+    const before = Object.fromEntries(Object.keys(deadlineSettings).map((name) => [name, process.env[name] ?? '']));
+    for (const [name, value] of Object.entries(deadlineSettings)) vi.stubEnv(name, value);
+    try {
+      const { owner } = await ownerWithSiblingImport(dailyBudgetBytes('anonymous') / 2);
+      const queued = await queueGraph(importThenConvert(), 0, { owner });
+      await queued.ended('failed');
+      expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_held');
+      expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
+    } finally {
+      for (const [name, value] of Object.entries(before)) vi.stubEnv(name, value);
+    }
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('fails an import.url node whose file declares more than its owner has left today, before reading it, and names what is left', async () => {
+    const bytesLeft = Buffer.byteLength(CSV) - 1;
+    vi.mocked(undiciFetch).mockImplementation(
+      async () => new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv', 'content-length': String(Buffer.byteLength(CSV)) } }) as never
+    );
+    const owner = anonymousOwner();
+    const spent = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
+    if ('refusal' in spent) throw new Error('a fresh owner has its whole day');
+    await spent.reservation.settle(dailyBudgetBytes('anonymous') - bytesLeft);
+
+    const queued = await queueGraph(importThenConvert(), 0, { owner });
+    await queued.ended('failed');
+    const job = await getJobAcrossQueues(`${queued.graphId}:link`);
+    expect(job?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect(job?.failedReason).toContain(formatBytes(bytesLeft));
+    expect(await bytesBroughtInToday(owner)).toBe(dailyBudgetBytes('anonymous') - bytesLeft);
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
   /** An owner with `left` conversions left today, the rest of the day used by a conversion that was committed. */
   async function ownerWithUnitsLeft(left: number) {
     const owner = anonymousOwner();
@@ -442,16 +523,20 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   }
 
   it('fails a convert node that receives five files with three conversions left, before any work, and charges nothing', async () => {
+    const converted = vi.spyOn(dispatchEngine, 'convert');
     const { owner, used } = await ownerWithUnitsLeft(3);
     const queued = await queueGraph(await fiveFilesIntoConvert(), used, { owner, reservedUnits: 2 });
     await queued.ended('failed');
     expect((await getJobAcrossQueues(`${queued.graphId}:conv`))?.failedRefusalCode).toBe('quota_exceeded');
+    expect(converted).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('charges a convert node that receives five files five units, beside the unpacking, with ten conversions left', async () => {
+    const converted = vi.spyOn(dispatchEngine, 'convert');
     const { owner, used } = await ownerWithUnitsLeft(10);
     const queued = await queueGraph(await fiveFilesIntoConvert(), used + 1 + 5, { owner, reservedUnits: 2 });
     await queued.ended('completed');
+    expect(converted).toHaveBeenCalledTimes(5);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   const { endDay } = controls;

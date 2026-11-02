@@ -320,6 +320,62 @@ describe('what a request is charged', () => {
       expect((await first).status).toBe(200);
     });
 
+    /** A remote that sends `mebibytes` of body a mebibyte at a time, declaring its length when asked; it records a cancel. */
+    function remoteOfMebibytes(mebibytes: number, options: { declared?: boolean } = {}) {
+      const sent = { chunks: 0, cancelled: false };
+      vi.mocked(undiciFetch).mockImplementation(async () => {
+        const body = new ReadableStream<Uint8Array>({
+          pull: (controller) => {
+            if (sent.chunks++ < mebibytes) controller.enqueue(new Uint8Array(MIB));
+            else controller.close();
+          },
+          cancel: () => {
+            sent.cancelled = true;
+          },
+        });
+        const headers = options.declared ? { 'content-length': String(mebibytes * MIB) } : undefined;
+        return new Response(body, { status: 200, headers }) as never;
+      });
+      return sent;
+    }
+
+    /** A visitor whose day has `leftMebibytes` left after what it received, with `heldMebibytes` of that held by another import still running. */
+    async function visitorWithDayLeft(leftMebibytes: number, heldMebibytes = 0) {
+      const client = visitor();
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - leftMebibytes * MIB);
+      if (heldMebibytes > 0) {
+        const other = await reserveLinkImport(client.userId, 'anonymous', IMPORT_DEADLINE_MS, heldMebibytes * MIB, 'another-import');
+        if ('refusal' in other) throw new Error('the other import was refused');
+      }
+      return client;
+    }
+
+    it.each([
+      ['whose length it learns as it reads', false],
+      ['whose declared length fits once the other import ends', true],
+    ])('is told to wait for another import, not for tomorrow, when it holds part of a file %s', async (_label, declared) => {
+      const client = await visitorWithDayLeft(150, 100);
+      remoteOfMebibytes(60, { declared });
+
+      const res = await fetchUrlRoute(importRequest(client));
+
+      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(res.headers.get('retry-after')).toBe('2');
+      expect(await res.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'held' });
+    });
+
+    it('refuses a file that declares more than the day has left before reading a byte, and names what is left', async () => {
+      const client = await visitorWithDayLeft(30);
+      const remote = remoteOfMebibytes(40, { declared: true });
+
+      const res = await fetchUrlRoute(importRequest(client));
+
+      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await res.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'larger-than-left', leftBytes: 30 * MIB });
+      expect(remote.cancelled).toBe(true);
+      expect(await bytesBroughtInToday(client.userId)).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES - 30 * MIB);
+    });
+
     it('holds its bytes for the synchronous deadline and the grace after it, so an import that never stops reading gives them back then', async () => {
       const deadlineMs = 200;
       vi.stubEnv('SYNC_DEADLINE_MAX_MS', String(deadlineMs));
