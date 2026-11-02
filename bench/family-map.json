@@ -15,6 +15,7 @@
     "cad": { "bench": "cad" },
     "raw": { "bench": "raw" },
     "vector": { "bench": "vector" },
+    "vectorize": { "bench": "vectorize" },
     "hdr-image": { "bench": null }
   },
   "rules": [
@@ -53,7 +54,7 @@
       "match": "^bench/bd-rate\\.ts$"
     },
     {
-      "families": ["image", "video", "audio", "compression", "document", "pdf-ops", "ebook", "font", "cad", "raw", "vector", "data"],
+      "families": ["image", "video", "audio", "compression", "document", "pdf-ops", "ebook", "font", "cad", "raw", "vector", "data", "vectorize"],
       "match": "^bench/(corpora|class-rows|http-retry)\\.ts$|^bench/corpus/(remote-manifest\\.json|PROVENANCE\\.md)$"
     },
     {
@@ -62,7 +63,7 @@
     },
     {
       "families": ["vector"],
-      "match": "^bench/families/vector[^/]*\\.ts$|^bench/metafile-check\\.ts$"
+      "match": "^bench/families/vector(-[^/]*)?\\.ts$|^bench/metafile-check\\.ts$"
     },
     {
       "families": ["cad", "vector"],
@@ -141,8 +142,12 @@
       "match": "^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$"
     },
     {
-      "families": ["image", "vector"],
+      "families": ["image", "vector", "vectorize"],
       "match": "^src/lib/security/svg-sanitizer\\.ts$"
+    },
+    {
+      "families": ["vectorize"],
+      "match": "^bench/families/vectorize\\.ts$|^src/lib/conversions/raster-vectorize[^/]*\\.ts$"
     },
     {
       "families": ["pdf-ops"],

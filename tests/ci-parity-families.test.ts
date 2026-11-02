@@ -27,7 +27,7 @@ import {
 const ROOT = path.resolve(__dirname, '..');
 const MAP = loadFamilyMap();
 const classify = (...paths: string[]): ReturnType<typeof classifyPaths> => classifyPaths(paths, MAP);
-const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector'];
+const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize'];
 const benchEntries = Object.fromEntries(BENCH_FAMILIES.map((name) => [name, { bench: name }]));
 
 describe('the map', () => {
@@ -164,8 +164,15 @@ describe('classifying changed paths', () => {
     expect(classify('Dockerfile.web')).toEqual({ benchmarked: [], unmapped: [], unclassified: [] });
   });
 
-  it('sends the SVG sanitizer to the image family that renders through it', () => {
-    expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image', 'vector'], unmapped: [], unclassified: [] });
+  it('sends the SVG sanitizer to the families whose SVG passes through it', () => {
+    expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image', 'vector', 'vectorize'], unmapped: [], unclassified: [] });
+  });
+
+  it('sends the tracer, its options and its runner to the vectorize family alone', () => {
+    for (const file of ['src/lib/conversions/raster-vectorize.ts', 'src/lib/conversions/raster-vectorize-options.ts', 'bench/families/vectorize.ts']) {
+      expect(classify(file), file).toEqual({ benchmarked: ['vectorize'], unmapped: [], unclassified: [] });
+    }
+    expect(classify('bench/families/vector-public.ts')).toEqual({ benchmarked: ['vector'], unmapped: [], unclassified: [] });
   });
 
   it('puts the new media modules under their families', () => {
@@ -314,8 +321,8 @@ describe('the files of the benchmark itself', () => {
     ['the structure scoring of documents and ebooks', 'bench/structure-metrics.ts', ['document', 'ebook']],
     ['the reference server of the data, font, CAD and document families', 'bench/reference-server.py', ['document', 'data', 'font', 'cad']],
     ['the client of the reference server', 'bench/reference-server.ts', ['document', 'data', 'font', 'cad']],
-        ['the sample fetcher and the manifest of the public samples', 'bench/corpora.ts', ['image', 'video', 'audio', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector']],
-    ['the manifest of the public samples', 'bench/corpus/remote-manifest.json', ['image', 'video', 'audio', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector']],
+        ['the sample fetcher and the manifest of the public samples', 'bench/corpora.ts', ['image', 'video', 'audio', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize']],
+    ['the manifest of the public samples', 'bench/corpus/remote-manifest.json', ['image', 'video', 'audio', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize']],
     ['the refusal helper of the further families', 'bench/public-support.ts', ['document', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector']],
     ['the text readers of the public office documents', 'bench/office-words.ts', ['document']],
     ['the archive runner of the compression family', 'bench/families/compression-archives.ts', ['compression']],

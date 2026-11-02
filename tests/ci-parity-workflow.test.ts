@@ -376,7 +376,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('measures every family when the dispatcher changes', () => {
-    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector');
+    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector,vectorize');
   });
 
   only('fails the job on a conversion file that no rule classifies', () => {
@@ -510,7 +510,7 @@ describe('the nightly run', () => {
     expect(speedJob.if).toBe("inputs.ab_base_ref == ''");
     const ab = nightly.jobs['bench-ab-speed'];
     expect(ab.if).toBe("inputs.ab_base_ref != ''");
-    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector']);
+    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector', 'vectorize']);
     expect(stepNamed(ab, 'Check out the commit to compare with').run).toContain('bash scripts/ab-base-dependencies.sh false');
     const measure = stepNamed(ab, 'Measure the speed rows against that commit');
     expect(measure.env).toMatchObject({ ORACLE_STRICT_MODE: '1', BENCH_BASE_ROOT: 'ab-base', FAMILY: '${{ matrix.family }}' });
