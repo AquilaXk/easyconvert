@@ -419,3 +419,27 @@ for _, jobId in ipairs(activeIds) do
 end
 return { requeued, failed }
 `;
+
+/** Empties the dead-letter list and answers how many entries it held, in one step, so an entry added meanwhile is never lost uncounted. */
+export const PURGE_DEAD_LETTERS_LUA_SCRIPT = `
+-- KEYS[1]: dead-letter list
+local count = redis.call('LLEN', KEYS[1])
+redis.call('DEL', KEYS[1])
+return count
+`;
+
+/**
+ * Removes from a user's job index the ids whose job hash is gone, checking each one again inside the step, so an id that a
+ * new job took after a listing read it as gone stays listed.
+ */
+export const REMOVE_GONE_USER_JOBS_LUA_SCRIPT = `
+-- KEYS[1]: the user's job index  KEYS[2]: job key prefix (e.g. prefix:{queue}:job:)
+-- ARGV: the ids the listing found without a job
+local removed = 0
+for _, id in ipairs(ARGV) do
+  if redis.call('EXISTS', KEYS[2] .. id) == 0 then
+    removed = removed + redis.call('ZREM', KEYS[1], id)
+  end
+end
+return removed
+`;

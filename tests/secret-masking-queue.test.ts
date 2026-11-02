@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Dispatcher } from 'undici';
 import { Queue, Worker, type Job } from '../src/lib/queue/bullmq-engine';
 import { graphScheduler, InMemoryGraphScheduler, type JobGraph } from '../src/lib/queue/graph';
-import { graphNodeJobId } from '../src/lib/queue/graph/node-jobs';
+import { graphNodeJobId, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
 import type { GraphNode } from '../src/lib/queue/graph/types';
@@ -137,7 +137,7 @@ describe('graph scheduler failures', () => {
       },
     };
     const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({} as never);
-    await scheduler.initGraph(graphId, graph, {
+    await scheduler.initGraph(graphId, sealGraph(graphId, graph), {
       ownerUserId: 'user-mask',
       webhookUrl: 'https://hooks.example/h',
       webhookSecret: WEBHOOK_SECRET,

@@ -7,7 +7,7 @@ import {
 } from '../../security/job-secret-seal';
 import { ConversionFailedError } from '../../types';
 import { sealPasswordOption } from '../option-secrets';
-import type { GraphNode, JobGraph, NodeId } from './types';
+import type { GraphNode } from './types';
 
 /** Operations whose `url` and `headers` are bearer secrets of customer storage. */
 const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url']);
@@ -52,15 +52,6 @@ function sealNodePasswords<N extends GraphNode>(node: N, jobId: string): N {
   const options = (node as { options?: unknown }).options;
   const sealed = sealPasswordOption(options, jobId);
   return sealed === options ? node : ({ ...node, options: sealed } as N);
-}
-
-/** A copy of `graph` in which every node's secrets are sealed under the job id `jobIdOf` gives that node. */
-export function sealJobGraph(graph: JobGraph, jobIdOf: (nodeId: NodeId) => string): JobGraph {
-  const nodes: Record<NodeId, GraphNode> = {};
-  for (const [nodeId, node] of Object.entries(graph.nodes)) {
-    nodes[nodeId] = sealGraphNode(node, jobIdOf(nodeId));
-  }
-  return { ...graph, nodes };
 }
 
 /**

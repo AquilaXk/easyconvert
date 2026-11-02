@@ -15,7 +15,7 @@ import { convertFile } from '../conversions';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
 import { resolveRetentionPolicy } from '../storage/result-retention';
-import { registerStoredResult, releaseResultHold } from '../storage/retention-service';
+import { registerStoredResult, releaseResultHold, takeInputHold } from '../storage/retention-service';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
@@ -164,6 +164,7 @@ export async function processNodeJob(
   try {
     // 1. Fetch input from Storage backend or Base64 payload
     if (job.data.storageKey) {
+      await takeInputHold(job.data.storageKey, job.id);
       const stored = await storage.getObject(job.data.storageKey);
       if (!stored) {
         throw new Error(`Storage object not found for key: "${job.data.storageKey}"`);

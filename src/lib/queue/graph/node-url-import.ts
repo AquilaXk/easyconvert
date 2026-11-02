@@ -9,14 +9,15 @@ import {
   budgetRefusalDetail,
   dailyLimitReachedDetail,
   declaredBodyBytes,
-  declaredOverflow,
   largerThanLeftDetail,
   withLinkImportMeter,
   type DeclaredOverflow,
   type LinkImportMeter,
+  type MeterVerdict,
 } from '../../api-keys/anonymous-upload-budget';
 import { maxFileBytes, planOfCaller, type Plan } from '../../plan-limits';
 import { tierForOwner } from '../page-cap';
+import { tierMaxDeadlineMs } from '../job-deadline';
 import { nodeOutputKey } from './node-jobs';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -45,9 +46,11 @@ export async function importUrlWithinBudget(
   if (!graphId || !nodeId || !owner) {
     throw new ConversionFailedError(`Import node "${nodeId}" has no owner, so its bytes cannot be charged to a daily budget.`);
   }
-  const plan = planOfCaller({ id: owner, tier: await tierForOwner(owner) });
+  const tier = await tierForOwner(owner);
+  const plan = planOfCaller({ id: owner, tier });
   const limitBytes = Math.min(urlImportMaxBytes(), maxFileBytes(plan));
-  const imported = await withLinkImportMeter({ owner, plan }, (meter) =>
+  const deadlineMs = job.opts.timeout ?? tierMaxDeadlineMs(tier);
+  const imported = await withLinkImportMeter({ owner, plan, limitBytes, deadlineMs }, (meter) =>
     importUrlArtifact({ storage, graphId, nodeId, url, headers, signal: job.signal, meter, limitBytes, plan })
   );
   if ('refusal' in imported) throw new ImportBudgetExceededError(budgetRefusalDetail(imported.refusal, plan));
@@ -88,7 +91,7 @@ async function importUrlArtifact(request: {
     throw new ConversionFailedError(`Failed to fetch URL ${redactUrl(url)}: HTTP ${response.status}`);
   }
   const declared = declaredBodyBytes(response.headers);
-  const overflow = declaredOverflow(declared, { limitBytes, leftBytes: meter.leftBytes });
+  const overflow = meter.declared(declared);
   if (overflow) {
     await response.body.cancel();
     throw declaredFailure(url, overflow, limitBytes, declared);
@@ -99,17 +102,14 @@ async function importUrlArtifact(request: {
     stop = error;
     done(error);
   };
-  const dayReached = () => new ImportBudgetExceededError(dailyLimitReachedDetail(plan));
+  const stopped = (verdict: Exclude<MeterVerdict, 'ok'>): Error =>
+    verdict === 'too-large' ? tooLarge(url, limitBytes) : new ImportBudgetExceededError(dailyLimitReachedDetail(plan));
   const metered = new Transform({
     transform(chunk: Buffer, _enc, done) {
-      meter.count(chunk.length).then((withinDay) => {
-        if (meter.receivedBytes > limitBytes) stopWith(tooLarge(url, limitBytes), done);
-        else if (!withinDay) stopWith(dayReached(), done);
-        else done(null, chunk);
-      }, done);
+      meter.count(chunk.length).then((verdict) => (verdict === 'ok' ? done(null, chunk) : stopWith(stopped(verdict), done)), done);
     },
     flush(done) {
-      meter.charge().then((withinDay) => (withinDay ? done() : stopWith(dayReached(), done)), done);
+      meter.charge().then((verdict) => (verdict === 'ok' ? done() : stopWith(stopped(verdict), done)), done);
     },
   });
   // pipeline forwards a source error (remote reset, abort) to the meter that storage consumes, and destroys the source,

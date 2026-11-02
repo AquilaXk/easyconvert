@@ -1,5 +1,5 @@
 import Redis, { ReplyError } from 'ioredis';
-import type { GraphNode, JobGraph, NodeId } from './types';
+import type { GraphNode, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
@@ -7,6 +7,7 @@ import type {
   IGraphScheduler,
   NodeCompletionResult,
   NodeFailureResult,
+  SealedJobGraph,
 } from './scheduler-types';
 import {
   INIT_GRAPH_LUA_SCRIPT,
@@ -15,13 +16,15 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
-import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
+import { assertSealedFor, cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
+import { graphInputKeys } from './input-cleanup';
+import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { finishGraph, type EndedGraph, type GraphEnd, type ReservationEnd } from './graph-end';
 import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredCount, parseStoredList } from './redis-state-parsers';
+import { leaseToHandedOffWork, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;
@@ -60,11 +63,11 @@ function failClosedRedis(client: Redis): Redis {
   });
 }
 
-export class RedisGraphScheduler implements IGraphScheduler {
+export class RedisGraphScheduler implements IGraphScheduler, StartingGraphScheduler {
   private readonly redisClient: Redis;
   private readonly keyPrefix: string;
   private readonly enqueueNode: typeof enqueueGraphNodeJob;
-  private readonly cancelNode: typeof cancelGraphNodeJob;
+  readonly cancelNode: typeof cancelGraphNodeJob;
 
   constructor(options: RedisGraphSchedulerOptions) {
     this.redisClient = failClosedRedis(options.redisClient);
@@ -86,11 +89,10 @@ export class RedisGraphScheduler implements IGraphScheduler {
     };
   }
 
-  async initGraph(graphId: string, graph: JobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
+  async initGraph(graphId: string, graph: SealedJobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
+    assertSealedFor(graphId, graph);
     const k = this.graphKeys(graphId);
-    // Bearer secrets are sealed before anything reaches Redis or a queue; the caller's graph is untouched.
-    const sealedGraph = sealJobGraph(graph, (nodeId) => graphNodeJobId(graphId, nodeId));
-    const entries = Object.entries(sealedGraph.nodes);
+    const entries = Object.entries(graph.nodes);
     const children = new Map<NodeId, NodeId[]>(entries.map(([id]) => [id, []]));
     for (const [id, node] of entries) {
       for (const input of getNodeInputs(node)) children.get(input)?.push(id);
@@ -113,9 +115,10 @@ export class RedisGraphScheduler implements IGraphScheduler {
       sourceFormat: meta.sourceFormat || '',
       targetFormat: meta.targetFormat || '',
       tasks: meta.tasks ? JSON.stringify(maskTaskRecords(meta.tasks)) : '',
+      inputKeys: JSON.stringify(graphInputKeys(graph.nodes)),
       createdAt: String(createdAt),
       totalNodes: String(entries.length),
-      graph: JSON.stringify(sealedGraph),
+      graph: JSON.stringify(graph),
     };
 
     await this.redisClient.eval(
@@ -133,12 +136,18 @@ export class RedisGraphScheduler implements IGraphScheduler {
       String(createdAt)
     );
     await this.drainOutbox(graphId);
-
     const state = await this.getGraphState(graphId);
     if (!state) {
       throw new Error(`Failed to retrieve newly initialized graph: ${graphId}`);
     }
+    // Renewed after the last step, so a start that throws leaves the reservation on the provisional lease.
+    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId);
     return state;
+  }
+
+  /** Queues the ready nodes of graph `graphId` by draining its outbox. */
+  async queueReadyNodes(graphId: string): Promise<number> {
+    return this.drainOutbox(graphId);
   }
 
   /**
@@ -193,7 +202,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
       JSON.stringify(outputs),
       String(Date.now()),
       String(actualUnits)
-    )) as [number, string, string, string, string?];
+    )) as [number, string, string, string, string?, string?];
 
     const graphCompleted = Number(raw[0]) === 1 && raw[1] === 'completed';
     const proceed = async (): Promise<NodeCompletionResult> => {
@@ -207,12 +216,12 @@ export class RedisGraphScheduler implements IGraphScheduler {
     // fails with it, so the node job is tried again and the outbox drained then.
     if (!graphCompleted) return proceed();
     const end: GraphEnd = { outcome: { status: 'completed' }, reservation: reservationEnd(graphId, raw[3]) };
-    return (await finishGraph(this.endedGraph(graphId, raw[4]), end, proceed)) ?? { graphCompleted, graphStatus: 'completed', readyNodeIds: [] };
+    return (await finishGraph(this.endedGraph(graphId, raw[4], raw[5]), end, proceed)) ?? { graphCompleted, graphStatus: 'completed', readyNodeIds: [] };
   }
 
-  /** The graph `graphId` whose end a script recorded, with the reservation id the script returned. */
-  private endedGraph(graphId: string, reservationId: string | undefined): EndedGraph {
-    return { graphId, reservationId: reservationId || undefined, readState: () => this.getGraphState(graphId) };
+  /** The graph `graphId` whose end a script recorded, with the reservation id and the input keys the script returned. */
+  private endedGraph(graphId: string, reservationId: string | undefined, inputKeys: string | undefined): EndedGraph {
+    return { graphId, reservationId: reservationId || undefined, inputKeys: endedInputKeys(graphId, inputKeys), readState: () => this.getGraphState(graphId) };
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
@@ -229,27 +238,26 @@ export class RedisGraphScheduler implements IGraphScheduler {
       nodeId,
       error,
       String(Date.now())
-    )) as [number, string, string, string, string?, string?];
+    )) as [number, string, string, string, string?, string?, string?];
 
-    /** Cancels the node jobs the script cancelled or skipped, and answers what it did. */
-    const stopNodes = async (): Promise<Omit<NodeFailureResult, 'graphFailed'>> => {
-      const graphStatus = parseGraphStatus(graphId, raw[1]);
-      const cancelledNodeIds = parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2]);
-      const skippedNodeIds = parseStoredList<NodeId>(graphId, 'the skipped node list', raw[3]);
-      const stopped = [...cancelledNodeIds, ...skippedNodeIds];
-      if (stopped.length > 0) {
-        const state = await this.getGraphState(graphId);
-        const reason = `Graph failed due to node ${nodeId}`;
-        for (const nid of stopped) {
-          await cancelGraphNodeJobOrLog(this.cancelNode, graphId, nid, state?.graph.nodes[nid], reason);
-        }
+    const graphStatus = parseGraphStatus(graphId, raw[1]);
+    const cancelledNodeIds = parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2]);
+    const skippedNodeIds = parseStoredList<NodeId>(graphId, 'the skipped node list', raw[3]);
+    const stoppedNodeIds = [...cancelledNodeIds, ...skippedNodeIds];
+    /** Cancels the node jobs the script cancelled or skipped, with their nodes read from `state`, and answers what it did. */
+    const stopNodes = async (state: GraphExecutionState | undefined): Promise<Omit<NodeFailureResult, 'graphFailed'>> => {
+      const reason = `Graph failed due to node ${nodeId}`;
+      const cancelledJobIds: string[] = [];
+      for (const nid of stoppedNodeIds) {
+        const cancelled = await cancelGraphNodeJobOrLog(graphId, nid, state?.graph.nodes[nid], reason, this.cancelNode);
+        if (cancelled && cancelledNodeIds.includes(nid)) cancelledJobIds.push(graphNodeJobId(graphId, nid));
       }
-      return { graphStatus, cancelledJobIds: cancelledNodeIds.map((nid) => `${graphId}:${nid}`), skippedNodeIds };
+      return { graphStatus, cancelledJobIds, skippedNodeIds };
     };
     const end = recordedFailureEnd(graphId, raw, error);
-    if (!end) return { graphFailed: false, ...(await stopNodes()) };
+    if (!end) return { graphFailed: false, ...(await stopNodes(stoppedNodeIds.length > 0 ? await this.getGraphState(graphId) : undefined)) };
     // A graph whose end this call recorded has no stopped nodes to report when stopping them failed (`finishGraph` logs it).
-    const stopped = await finishGraph(this.endedGraph(graphId, raw[5]), end, stopNodes);
+    const stopped = await finishGraph(this.endedGraph(graphId, raw[5], raw[6]), end, stopNodes);
     return { graphFailed: end.outcome.status === 'failed', ...(stopped ?? { graphStatus: end.outcome.status, cancelledJobIds: [], skippedNodeIds: [] }) };
   }
 
@@ -265,6 +273,12 @@ export class RedisGraphScheduler implements IGraphScheduler {
     return { ...meta, nodes };
   }
 
+  async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
+    const state = await this.getGraphState(graphId);
+    if (!state) return RECOVERY_UNKNOWN;
+    return queueReadyNodesOrCancel(state, this);
+  }
+
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const k = this.graphKeys(graphId);
     const raw = (await this.redisClient.eval(
@@ -275,15 +289,14 @@ export class RedisGraphScheduler implements IGraphScheduler {
       k.outbox,
       reason,
       String(Date.now())
-    )) as [number, string, string, string?];
+    )) as [number, string, string, string?, string?];
 
     if (Number(raw[0]) !== 1) {
       return false;
     }
-    await finishGraph(this.endedGraph(graphId, raw[3]), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
-      const state = await this.getGraphState(graphId);
+    await finishGraph(this.endedGraph(graphId, raw[3], raw[4]), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async (state) => {
       for (const nid of parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2])) {
-        await cancelGraphNodeJobOrLog(this.cancelNode, graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason);
+        await cancelGraphNodeJobOrLog(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason, this.cancelNode);
       }
     });
     return true;
@@ -296,6 +309,16 @@ export class RedisGraphScheduler implements IGraphScheduler {
     return [...new Set(values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : [])))];
   }
 
+}
+
+/** The input keys a script returned for an ended graph; a corrupt list is logged and none are released. */
+function endedInputKeys(graphId: string, raw: string | undefined): string[] {
+  try {
+    return parseStoredList<string>(graphId, 'the input key list', raw ?? '[]');
+  } catch (err) {
+    console.error(`[GraphScheduler] Graph ${graphId} ended with a corrupt input key list, so the holds on its inputs end by themselves:`, err);
+    return [];
+  }
 }
 
 /**

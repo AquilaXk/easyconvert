@@ -16,6 +16,7 @@ import {
   startCustomerStorage,
   type CustomerStorage,
 } from './helpers/byos-customer-storage';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * The same guarantees as byos-secret-sealing.test.ts, checked on the bytes a real Redis server
@@ -167,7 +168,7 @@ describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
     const tasks = [{ name: 'upload', operation: 'export/url', url: `${exportAuth.url}?token=${QUERY_TOKEN}` }];
 
     // The display-only task record carries a URL token; the signed headers authenticate the real nodes.
-    await graphScheduler.initGraph(graphId, graph, { ownerUserId: 'user-byos-redis', tasks });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: 'user-byos-redis', tasks });
 
     const beforeRun = await dumpKeyspace(redis);
     const graphKeys = [...beforeRun].filter(([key]) => key.includes(graphId));
@@ -204,7 +205,7 @@ describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
       throw new Error(leaky);
     });
     workers.push(new Worker([...allConversionQueues], processConversionJob, { concurrency: 2 }));
-    await graphScheduler.initGraph(graphId, graph, { ownerUserId: 'user-byos-redis' });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: 'user-byos-redis' });
 
     const state = await waitForTerminal(graphId);
     expect(state.status).toBe('failed');

@@ -15,6 +15,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { User } from '../src/lib/auth/types';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * Anything the API accepts must be storable and showable: structures beyond the redaction limits
@@ -176,13 +177,13 @@ describe('output paths never throw on oversized structures', () => {
     // Reaches the scheduler without the API's checks, as a graph stored by an older version would.
     await graphScheduler.initGraph(
       graphId,
-      {
+      sealGraph(graphId, {
         nodes: {
           up: { op: 'import.upload', storageKey: `uploads/${user.id}/x.csv` },
           conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { extra: nested(MAX_REDACTION_DEPTH + 8) } as never },
           out: { op: 'export.internal', input: 'conv' },
         },
-      },
+      }),
       { ownerUserId: user.id, tasks: [{ name: 'c', options: nested(MAX_REDACTION_DEPTH + 8) }] }
     );
 

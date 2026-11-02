@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
@@ -369,29 +370,26 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
   }
 
   const inputBytes = await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider);
-  const job = await unit.handOff((reservationId) =>
-    enqueueConversionJob(
-      conversionQueue,
-      'convert',
-      {
-        jobId: '',
-        originalFilename: file.name,
-        sourceFormat: sourceDef.id,
-        targetFormat: targetDef.id,
-        fileSize: file.size,
-        storageKey: uploadedStorageKey,
-        options: stripEngineControls(options),
-        webhookUrl: c.webhookUrl,
-        webhookSecret: c.webhookSecret,
-        userId: user.id,
-        reservationId,
-      },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 1000 },
-      },
-      { tier: user.tier, inputBytes }
-    )
+  const job = await handOffConversionJob(
+    unit,
+    conversionQueue,
+    {
+      jobId: '',
+      originalFilename: file.name,
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      fileSize: file.size,
+      storageKey: uploadedStorageKey,
+      options: stripEngineControls(options),
+      webhookUrl: c.webhookUrl,
+      webhookSecret: c.webhookSecret,
+      userId: user.id,
+    },
+    {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1000 },
+    },
+    { tier: user.tier, inputBytes }
   );
 
   return reply(NextResponse.json(

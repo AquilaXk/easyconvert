@@ -12,6 +12,7 @@ import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits'
 import { FAIL_JOB_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
 import type { IStorageBackend } from '../src/lib/storage/oci-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * The failure transition is a Lua script, which only a real Redis server runs: this suite follows the other
@@ -167,10 +168,10 @@ describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
   it('stores and reads back the masked reason of a failed graph node', async () => {
     const scheduler = new RedisGraphScheduler({ redisClient: admin, keyPrefix });
     const graphId = `masked_${crypto.randomBytes(6).toString('hex')}`;
-    await scheduler.initGraph(graphId, {
+    await scheduler.initGraph(graphId, sealGraph(graphId, {
       failurePolicy: 'fail_fast',
       nodes: { a: { op: 'import.upload', storageKey: 'in.bin' }, b: { op: 'convert', input: 'a', targetFormat: 'png' } },
-    });
+    }));
     await scheduler.onNodeCompleted(graphId, 'a', ['in.bin']);
     await scheduler.onNodeStarted(graphId, 'b');
 

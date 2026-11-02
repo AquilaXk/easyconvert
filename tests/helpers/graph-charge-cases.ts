@@ -8,7 +8,7 @@ import { POST as v1JobsRoute } from '../../src/app/api/v1/jobs/route';
 import { DELETE as cancelQueueJobRoute } from '../../src/app/api/queue/jobs/[id]/route';
 import { DELETE as cancelV1JobRoute } from '../../src/app/api/v1/jobs/[id]/route';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
-import { LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, dailyBudgetBytes, withLinkImportMeter } from '../../src/lib/api-keys/anonymous-upload-budget';
+import { LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, dailyBudgetBytes } from '../../src/lib/api-keys/anonymous-upload-budget';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
 import { anonymousUserId } from '../../src/lib/auth/anonymous-identity';
 import { formatBytes } from '../../src/lib/format-bytes';
@@ -21,8 +21,11 @@ import { userStore } from '../../src/lib/auth/user-store';
 import { storageProvider } from '../../src/lib/storage';
 import { s3Storage } from '../../src/lib/storage/s3-storage';
 import { StorageServiceError } from '../../src/lib/storage/adapters/adapter-interface';
-import { ConversionFailedError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
+import { ConversionFailedError, QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
+import { SecretSealError, unsealJobSecret } from '../../src/lib/security/job-secret-seal';
 import { gzipRemote } from './gzip-remote';
+import { spendImportBytes } from './import-budget';
+import { sealGraph } from '../../src/lib/queue/graph/node-jobs';
 
 /**
  * What a queued graph is charged, run through real queue workers with the lifecycle listeners attached, as the worker
@@ -36,6 +39,8 @@ import { gzipRemote } from './gzip-remote';
 
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
+/** A sealed password that fails the format check of a sealed blob (no `sealed:v1:` prefix), so it never opens under any key. */
+const MALFORMED_SEALED_BLOB = 'not-a-sealed-blob';
 const GRAPH_TIMEOUT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const HTTP_CONFLICT = 409;
@@ -96,15 +101,21 @@ async function csvArchiveUpload(count: number) {
   return { op: 'import.upload', storageKey: saveUpload('parts.zip', await zip.generateAsync({ type: 'nodebuffer' }), 'application/zip') } as const;
 }
 
+/** The seal error `open` throws; fails when it throws none or another error. */
+function sealFailureOf(open: () => unknown): SecretSealError {
+  try {
+    open();
+  } catch (error) {
+    if (error instanceof SecretSealError) return error;
+    throw error;
+  }
+  throw new Error('the sealed value opened');
+}
+
 function anonymousOwner(): string {
   return anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
 }
 
-/** Uses `bytes` of the day's import budget of `owner`, as an import that received them would. */
-async function spendImportBytes(owner: string, plan: 'anonymous' | 'free', bytes: number): Promise<void> {
-  const spent = await withLinkImportMeter({ owner, plan }, (meter) => meter.count(bytes));
-  if ('refusal' in spent) throw new Error(`the import budget of ${owner} is already spent`);
-}
 
 /** What a suite can do to the quota store besides what every store does. */
 interface StoreControls {
@@ -156,7 +167,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     if (options.startWorkers !== false) startWorker();
     const graphId = options.graphId ?? newGraphId();
-    await graphScheduler.initGraph(graphId, graph as unknown as JobGraph, { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph as unknown as JobGraph), { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
 
     /** Waits for the graph to end with `expectedStatus` and its owner to be charged `expectedUnits`. */
     async function ended(expectedStatus: 'completed' | 'failed'): Promise<void> {
@@ -168,6 +179,21 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
       await vi.waitFor(async () => expect(await usedToday()).toBe(expectedUnits), { timeout: 5_000, interval: 50 });
     }
     return { graphId, owner, ended };
+  }
+
+  /**
+   * The job of node `nodeId` of graph `graphId` once its queue recorded its failure, which comes after the node reported
+   * the failure to the scheduler and so may come after the graph ended.
+   */
+  async function failedNodeJob(graphId: string, nodeId: string) {
+    return vi.waitFor(
+      async () => {
+        const job = await getJobAcrossQueues(`${graphId}:${nodeId}`);
+        expect(job?.state).toBe('failed');
+        return job;
+      },
+      { timeout: 5_000, interval: 20 }
+    );
   }
 
   async function runGraph(graph: SubmittedGraph, expectedStatus: 'completed' | 'failed', expectedUnits: number): Promise<void> {
@@ -283,17 +309,18 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     await runGraph(importAndConvert(), 'failed', 0);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
-  const UNSEALABLE_BLOB = ['not', 'a', 'sealed', 'blob'].join('-');
-
-  it('gives the units back when the password of a convert node cannot be opened, before the node starts its work', async () => {
-    await runGraph(
+  it('gives the units back when the password of a convert node is malformed, before the node starts its work', async () => {
+    const formatCheck = sealFailureOf(() => unsealJobSecret(MALFORMED_SEALED_BLOB, 'any-job'));
+    expect(formatCheck.code).toBe('MALFORMED_BLOB');
+    const queued = await queueGraph(
       {
         failurePolicy: 'fail_fast',
-        nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { sealedPassword: UNSEALABLE_BLOB } } },
+        nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { sealedPassword: MALFORMED_SEALED_BLOB } } },
       },
-      'failed',
       0
     );
+    await queued.ended('failed');
+    expect((await graphScheduler.getGraphState(queued.graphId))?.nodes.conv.error).toBe(formatCheck.message);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('gives the units back when the worker fails a node job without running the node', async () => {
@@ -381,7 +408,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
     await queued.ended('failed');
-    expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect((await failedNodeJob(queued.graphId, 'link'))?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(await bytesBroughtInToday(owner)).toBe(dailyBudgetBytes('anonymous'));
     expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
@@ -434,7 +461,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
     await queued.ended('failed');
-    expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect((await failedNodeJob(queued.graphId, 'link'))?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(cancelled).toBe(true);
     const charged = await bytesBroughtInToday(owner);
     expect(charged).toBeGreaterThan(dailyBudgetBytes('anonymous'));
@@ -479,7 +506,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph(importThenConvert(), 0, { owner });
     await queued.ended('failed');
-    const link = await getJobAcrossQueues(`${queued.graphId}:link`);
+    const link = await failedNodeJob(queued.graphId, 'link');
     expect(link?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(link?.attemptsMade).toBe(1);
   }, GRAPH_TIMEOUT_MS + 10_000);
@@ -517,7 +544,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph(importThenConvert(), 0, { owner });
     await queued.ended('failed');
-    const job = await getJobAcrossQueues(`${queued.graphId}:link`);
+    const job = await failedNodeJob(queued.graphId, 'link');
     expect(job?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(job?.failedReason).toContain(formatBytes(bytesLeft));
     expect(await bytesBroughtInToday(owner)).toBe(dailyBudgetBytes('anonymous') - bytesLeft);
@@ -546,7 +573,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     const { owner, used } = await ownerWithUnitsLeft(3);
     const queued = await queueGraph(await fiveFilesIntoConvert(), used, { owner, reservedUnits: 2 });
     await queued.ended('failed');
-    expect((await getJobAcrossQueues(`${queued.graphId}:conv`))?.failedRefusalCode).toBe('quota_exceeded');
+    expect((await failedNodeJob(queued.graphId, 'conv'))?.failedRefusalCode).toBe('quota_exceeded');
     expect(converted).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
 
@@ -638,5 +665,58 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     );
     expect((await graphScheduler.getGraphState(jobId))?.status).toBe('failed');
     await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(account.userId)).usedToday).toBe(0), { timeout: 5_000, interval: 50 });
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  /** Makes the queues refuse the job of a graph node `times` times, before storing it, as a queue whose Redis is down does. */
+  function refuseNodeJobs(times: number): void {
+    let refused = 0;
+    for (const queue of allConversionQueues) {
+      const add = queue.add.bind(queue);
+      vi.spyOn(queue, 'add').mockImplementation(async (name, data, opts) => {
+        if (data.graphId && refused < times) {
+          refused += 1;
+          throw new QueueUnavailableError(queue.name, 'the node job could not be stored');
+        }
+        return add(name, data, opts);
+      });
+    }
+  }
+
+  const importConvertExport = (): SubmittedGraph => ({
+    failurePolicy: 'fail_fast',
+    nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json' }, out: { op: 'export.internal', input: 'conv' } },
+  });
+
+  async function submitGraph(authorization: string, graph: SubmittedGraph) {
+    return v1JobsRoute(
+      new NextRequest('http://localhost/api/v1/jobs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization },
+        body: JSON.stringify({ graph, targetFormat: 'json' }),
+      })
+    );
+  }
+
+  it('answers 202 and runs a graph whose first node could not be queued after its state was stored, once its outbox drains', async () => {
+    const account = await apiAccount();
+    startWorker();
+    refuseNodeJobs(1);
+
+    const submitted = await submitGraph(account.authorization, importConvertExport());
+    expect(submitted.status, await submitted.clone().text()).toBe(202);
+    const { jobId } = (await submitted.json()) as { jobId: string };
+
+    await vi.waitFor(async () => expect((await graphScheduler.getGraphState(jobId))?.status).toBe('completed'), { timeout: GRAPH_TIMEOUT_MS, interval: 100 });
+    await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(account.userId)).usedToday).toBe(1), { timeout: 5_000, interval: 50 });
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('answers 503 and charges nothing for a graph whose stored outbox cannot be drained either', async () => {
+    const account = await apiAccount();
+    refuseNodeJobs(Number.POSITIVE_INFINITY);
+
+    const submitted = await submitGraph(account.authorization, importConvertExport());
+
+    expect(submitted.status, await submitted.clone().text()).toBe(503);
+    expect((await redisKeyStore.getQuotaUsage(account.userId)).usedToday).toBe(0);
   }, GRAPH_TIMEOUT_MS + 10_000);
 }

@@ -5,6 +5,7 @@ import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './b
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
 import { tierForOwner } from './page-cap';
+import { foundOrUnknown, type ReservedUnit } from '../api-keys/hand-off';
 
 /**
  * The one way a conversion job reaches a queue. The job's wall-clock deadline is computed here from the owner's
@@ -40,19 +41,52 @@ export async function enqueueConversionJob(
   opts: ConversionJobOptions,
   owner: JobDeadlineOwner
 ): Promise<Job<ConversionJobData, ConversionJobResult>> {
+  const jobId = opts.jobId ?? generateJobId();
+  return withInputHeld(data.storageKey, jobId, () => {
+    const job = preparedConversionJob(data, { ...opts, jobId }, owner);
+    return queue.add(name, job.data, job.opts);
+  });
+}
+
+/** The job `opts.jobId` as the queue stores it: its password sealed, and the deadline of its tier and input as its timeout. */
+function preparedConversionJob(
+  data: Omit<ConversionJobData, 'reservationId'>,
+  opts: ConversionJobOptions & { jobId: string },
+  owner: JobDeadlineOwner
+): { data: ConversionJobData; opts: JobOptions } {
   const timeout = conversionDeadlineMs({
     tier: owner.tier,
     sourceFormat: data.sourceFormat,
     targetFormat: data.targetFormat,
     inputBytes: owner.inputBytes,
   });
+  return {
+    data: sealJobDataSecrets(data, opts.jobId),
+    opts: { ...opts, timeout, ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }) },
+  };
+}
+
+/**
+ * Queues a conversion job that takes over the reservation of `unit` (`ReservedUnit.handOff`). The job is sealed and given
+ * its deadline first, so a refusal there gives the unit back at once and only the queue write can have an unknown outcome.
+ * The job id is chosen before the job is queued, so a job that an enqueue stored before it failed is found by that id, and
+ * the request answers it instead of giving its unit back while it runs. The input is held for the job across the enqueue and
+ * that lookup, so a job found there keeps its hold; any other failure gives the hold up, and a job stored late takes it
+ * again when a worker takes the job.
+ */
+export async function handOffConversionJob(
+  unit: ReservedUnit,
+  queue: IQueueEngine<ConversionJobData, ConversionJobResult>,
+  data: Omit<ConversionJobData, 'reservationId'>,
+  opts: ConversionJobOptions,
+  owner: JobDeadlineOwner
+): Promise<Job<ConversionJobData, ConversionJobResult>> {
   const jobId = opts.jobId ?? generateJobId();
+  const job = preparedConversionJob(data, { ...opts, jobId }, owner);
   return withInputHeld(data.storageKey, jobId, () =>
-    queue.add(name, sealJobDataSecrets(data, jobId), {
-      ...opts,
-      timeout,
-      jobId,
-      ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
+    unit.handOff({
+      start: (reservationId) => queue.add('convert', { ...job.data, reservationId }, job.opts),
+      recover: async () => foundOrUnknown(await queue.getJob(jobId)),
     })
   );
 }

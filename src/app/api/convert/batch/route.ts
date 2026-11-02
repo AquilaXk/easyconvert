@@ -20,7 +20,8 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
+import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import {

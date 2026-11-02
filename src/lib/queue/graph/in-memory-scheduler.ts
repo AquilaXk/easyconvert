@@ -1,4 +1,4 @@
-import type { JobGraph, NodeId } from './types';
+import type { NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
@@ -10,9 +10,12 @@ import type {
   NodeCompletionResult,
   NodeExecutionStatus,
   NodeFailureResult,
+  SealedJobGraph,
 } from './scheduler-types';
-import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
-import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
+import { assertSealedFor, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
+import { leaseToHandedOffWork, type Recovery } from '../../api-keys/hand-off';
+import { graphInputKeys } from './input-cleanup';
+import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { finishGraph, type EndedGraph, type GraphEnd } from './graph-end';
 
@@ -26,20 +29,19 @@ interface InternalGraphData {
   accumulatedUnits: number;
 }
 
-export class InMemoryGraphScheduler implements IGraphScheduler {
+export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphScheduler {
   private readonly graphs = new Map<string, InternalGraphData>();
 
   async initGraph(
     graphId: string,
-    submittedGraph: JobGraph,
+    graph: SealedJobGraph,
     meta: GraphMetadata = {}
   ): Promise<GraphExecutionState> {
+    assertSealedFor(graphId, graph);
     if (this.graphs.has(graphId)) {
       throw new Error(`Graph already exists: ${graphId}`);
     }
 
-    // Bearer secrets are sealed before anything is stored or queued; the caller's graph is untouched.
-    const graph = sealJobGraph(submittedGraph, (nodeId) => graphNodeJobId(graphId, nodeId));
     const nodeEntries = Object.entries(graph.nodes);
     const totalNodes = nodeEntries.length;
     const policy = graph.failurePolicy || 'fail_fast';
@@ -92,16 +94,27 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     };
 
     this.graphs.set(graphId, { state, remainingDeps, children, accumulatedUnits: 0 });
+    await this.queueReadyNodes(graphId);
+    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId);
+    return JSON.parse(JSON.stringify(state));
+  }
 
-    // Enqueue initial ready nodes (in-degree == 0)
-    for (const [nodeId, nodeState] of Object.entries(nodesRecord)) {
+  /** Queues the job of every node of graph `graphId` that waits for one; the queue keeps one job per id, so a repeat adds none. */
+  async queueReadyNodes(graphId: string): Promise<void> {
+    const state = this.graphs.get(graphId)?.state;
+    if (!state) return;
+    for (const nodeState of Object.values(state.nodes)) {
       if (nodeState.status === 'waiting') {
-        const node = graph.nodes[nodeId];
-        await this.enqueueNodeJob(graphId, nodeId, node, graphNodeJobMetadata(state));
+        await this.enqueueNodeJob(graphId, nodeState.id, state.graph.nodes[nodeState.id], graphNodeJobMetadata(state));
       }
     }
+  }
 
-    return JSON.parse(JSON.stringify(state));
+  async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
+    const state = await this.getGraphState(graphId);
+    // In this process no write lands after its start returned or threw, so a graph that is not here never started.
+    if (!state) return { status: 'not-started' };
+    return queueReadyNodesOrCancel(state, this);
   }
 
   async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {
@@ -198,14 +211,11 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
     if (data.state.policy === 'fail_fast') {
       recordEnd(data.state, 'failed', error);
+      const stopped = cancelUnended(data.state, ['completed', 'failed', 'cancelled']);
       const cancelledJobIds = await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } }, async () => {
         const cancelled: string[] = [];
-        for (const [nid, ns] of Object.entries(data.state.nodes)) {
-          if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
-            ns.status = 'cancelled';
-            await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
-            cancelled.push(graphNodeJobId(graphId, nid));
-          }
+        for (const nid of stopped) {
+          if (await cancelGraphNodeJobOrLog(graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`)) cancelled.push(graphNodeJobId(graphId, nid));
         }
         return cancelled;
       });
@@ -239,13 +249,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
             ) {
               childState.status = 'skipped';
               skippedNodeIds.push(childId);
-              await cancelGraphNodeJobOrLog(
-                cancelGraphNodeJob,
-                graphId,
-                childId,
-                data.state.graph.nodes[childId],
-                `Skipped because upstream node ${nodeId} failed`
-              );
+              await cancelGraphNodeJobOrLog(graphId, childId, data.state.graph.nodes[childId], `Skipped because upstream node ${nodeId} failed`);
             }
           }
         }
@@ -272,13 +276,9 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const data = this.graphs.get(graphId);
     if (!data || !recordEnd(data.state, 'cancelled', reason)) return false;
+    const stopped = cancelUnended(data.state, ['completed', 'failed', 'skipped']);
     await finishGraph(endedGraph(data), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
-      for (const [nid, ns] of Object.entries(data.state.nodes)) {
-        if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
-          ns.status = 'cancelled';
-          await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], reason);
-        }
-      }
+      for (const nid of stopped) await cancelGraphNodeJobOrLog(graphId, nid, data.state.graph.nodes[nid], reason);
     });
     return true;
   }
@@ -304,7 +304,19 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
 /** The graph of `data` whose end its scheduler recorded. */
 function endedGraph(data: InternalGraphData): EndedGraph {
-  return { graphId: data.state.graphId, reservationId: data.state.reservationId, readState: async () => data.state };
+  return {
+    graphId: data.state.graphId,
+    reservationId: data.state.reservationId,
+    inputKeys: graphInputKeys(data.state.graph.nodes),
+    readState: async () => data.state,
+  };
+}
+
+/** Marks every node of the ended `state` whose status is not in `ended` cancelled, and answers their ids. */
+function cancelUnended(state: GraphExecutionState, ended: readonly NodeExecutionStatus[]): NodeId[] {
+  const stopped = Object.values(state.nodes).filter((node) => !ended.includes(node.status));
+  for (const node of stopped) node.status = 'cancelled';
+  return stopped.map((node) => node.id);
 }
 
 /** The end of the completed graph of `data`, settled to the units its nodes charged. */

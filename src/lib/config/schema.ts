@@ -1337,12 +1337,13 @@ const SCHEMA_ENTRIES = [
   {
     name: 'ANONYMOUS_DAILY_LIMIT',
     area: 'limits',
-    description: 'Conversions per day for an anonymous caller.',
+    description:
+      'Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the web image build and the deploy both read (the deploy refuses an image built with another value).',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
     default: ANONYMOUS_DAILY_CONVERSIONS,
     requiredInProduction: false,
     secret: false,
-    roles: WEB,
+    roles: BOTH,
   },
   {
     name: 'ANONYMOUS_BURST_CAPACITY',

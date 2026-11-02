@@ -16,6 +16,7 @@ import { POST as createJobHandler } from '../src/app/api/v1/jobs/route';
 import { GET as getJobHandler, DELETE as cancelJobHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { isStrictMode } from './helpers/strict-skip';
+import { GraphNotSealedError, sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 
@@ -114,7 +115,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         },
       };
 
-      const initState = await scheduler.initGraph(graphId, diamondGraph, {
+      const initState = await scheduler.initGraph(graphId, sealGraph(graphId, diamondGraph), {
         ownerUserId: 'user-diamond-1',
       });
       expect(initState.status).toBe('running');
@@ -201,7 +202,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
           },
         };
 
-        await scheduler.initGraph(gid, testGraph);
+        await scheduler.initGraph(gid, sealGraph(gid, testGraph));
         await scheduler.onNodeCompleted(gid, 'in', ['in.dat']);
 
         // Concurrently complete B and C
@@ -222,6 +223,30 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
       }
     });
 
+    describe('a graph that was not sealed for its own id', () => {
+      const plainGraph: JobGraph = {
+        failurePolicy: 'fail_fast',
+        nodes: { a: { op: 'import.url', url: 'https://bucket.example/obj?sig=open-secret', headers: { Authorization: 'Bearer open-secret' } } },
+      };
+      const newId = (label: string) => `${label}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+      it('is refused unsealed, and nothing is stored', async () => {
+        const graphId = newId('unsealed');
+
+        await expect(scheduler.initGraph(graphId, plainGraph as never)).rejects.toBeInstanceOf(GraphNotSealedError);
+
+        expect(await scheduler.getGraphState(graphId)).toBeUndefined();
+      });
+
+      it('is refused when it was sealed for another graph id, and nothing is stored', async () => {
+        const graphId = newId('g_B');
+
+        await expect(scheduler.initGraph(graphId, sealGraph(newId('g_A'), plainGraph))).rejects.toBeInstanceOf(GraphNotSealedError);
+
+        expect(await scheduler.getGraphState(graphId)).toBeUndefined();
+      });
+    });
+
     it('enforces fail_fast policy: node failure cancels all pending and active downstream nodes immediately', async () => {
       const graphId = `failfast_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       const testGraph: JobGraph = {
@@ -235,7 +260,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         },
       };
 
-      await scheduler.initGraph(graphId, testGraph);
+      await scheduler.initGraph(graphId, sealGraph(graphId, testGraph));
       await scheduler.onNodeCompleted(graphId, 'a', ['in.bin']);
 
       await scheduler.onNodeStarted(graphId, 'b');
@@ -274,7 +299,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         },
       };
 
-      await scheduler.initGraph(graphId, testGraph);
+      await scheduler.initGraph(graphId, sealGraph(graphId, testGraph));
       await scheduler.onNodeCompleted(graphId, 'a', ['in.bin']);
 
       await scheduler.onNodeStarted(graphId, 'b');
@@ -334,7 +359,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         },
       };
 
-      await scheduler.initGraph(graphId, testGraph);
+      await scheduler.initGraph(graphId, sealGraph(graphId, testGraph));
       await scheduler.onNodeCompleted(graphId, 'in', [intermediateKey1]);
       await scheduler.onNodeCompleted(graphId, 'out', [permanentResultKey]);
 
@@ -362,7 +387,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         },
       };
 
-      await scheduler.initGraph(graphId, testGraph, {
+      await scheduler.initGraph(graphId, sealGraph(graphId, testGraph), {
         ownerUserId: userId,
         reservationId: reservation.reservationId,
       });
@@ -378,7 +403,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
       // Now test cancellation refund on another graph
       const res2 = await redisKeyStore.reserveQuota(userId, 4);
       const graphId2 = `cancel_graph_${Date.now()}`;
-      await scheduler.initGraph(graphId2, testGraph, {
+      await scheduler.initGraph(graphId2, sealGraph(graphId2, testGraph), {
         ownerUserId: userId,
         reservationId: res2.reservationId,
       });
@@ -479,10 +504,10 @@ describe('InMemoryGraphScheduler masks the reason of a failed node', () => {
   it('stores and reads back the reason without the server path', async () => {
     const scheduler = new InMemoryGraphScheduler();
     const graphId = `masked_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    await scheduler.initGraph(graphId, {
+    await scheduler.initGraph(graphId, sealGraph(graphId, {
       failurePolicy: 'fail_fast',
       nodes: { a: { op: 'import.upload', storageKey: 'in.bin' }, b: { op: 'convert', input: 'a', targetFormat: 'png' } },
-    });
+    }));
     await scheduler.onNodeCompleted(graphId, 'a', ['in.bin']);
     await scheduler.onNodeStarted(graphId, 'b');
 

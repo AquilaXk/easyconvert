@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import { fetch as undiciFetch } from 'undici';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { gzipServer } from './helpers/gzip-remote';
+import { spendImportBytes } from './helpers/import-budget';
 import {
   ANONYMOUS_DAILY_UPLOAD_BYTES,
   LINK_IMPORT_METER_BATCH_BYTES,
@@ -11,7 +12,10 @@ import {
   declaredOverflow,
   reserveAnonymousUpload,
   withLinkImportMeter,
+  type MeterVerdict,
 } from '../src/lib/api-keys/anonymous-upload-budget';
+import { MemoryBudgetStore } from '../src/lib/api-keys/upload-budget-store';
+import { URL_IMPORT_MAX_BYTES } from '../src/lib/plan-limits';
 
 /**
  * How a link import is metered against the day's bytes of its caller (docs/policy-decisions.md, entry 15): which declared
@@ -23,14 +27,16 @@ import {
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
+const HOUR_MS = 60 * 60 * 1000;
+/** The deadline of an import in these cases: the default of the synchronous route. */
+const IMPORT_DEADLINE_MS = 120_000;
 
 const freshCaller = () => anonymousUserId(`198.51.100.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
 
-/** Uses `bytes` of the day of `caller`, as an import that received them would. */
-async function spend(caller: string, bytes: number): Promise<void> {
-  const spent = await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, (meter) => meter.count(bytes));
-  if ('refusal' in spent) throw new Error(`the day of ${caller} is already spent`);
-}
+const spend = (caller: string, bytes: number) => spendImportBytes(caller, 'anonymous', bytes);
+
+/** An anonymous link import of `owner` reading at most the route's limit. */
+const anonymousImport = (owner: string) => ({ owner, plan: 'anonymous' as const, limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: IMPORT_DEADLINE_MS });
 
 describe('the declared length of a body', () => {
   const headers = (fields: Record<string, string>) => new Headers(fields);
@@ -82,7 +88,7 @@ describe('the meter of a link import', () => {
     await spend(caller, ANONYMOUS_DAILY_UPLOAD_BYTES);
     let ran = false;
 
-    const refused = await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async () => {
+    const refused = await withLinkImportMeter(anonymousImport(caller), async () => {
       ran = true;
     });
 
@@ -96,16 +102,16 @@ describe('the meter of a link import', () => {
     const upload = await reserveAnonymousUpload(caller, GIB, Date.now() + 60_000);
     if ('refusal' in upload) throw new Error(`refused: ${upload.refusal}`);
 
-    expect(await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async () => undefined)).toEqual({ refusal: 'daily-bytes' });
+    expect(await withLinkImportMeter(anonymousImport(caller), async () => undefined)).toEqual({ refusal: 'daily-bytes' });
     await upload.reservation.release();
-    expect(await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async (meter) => meter.leftBytes)).toEqual({ result: GIB });
+    expect(await withLinkImportMeter(anonymousImport(caller), async (meter) => meter.leftBytes)).toEqual({ result: GIB });
   });
 
   it('charges each full batch as it arrives and the rest once the import ends', async () => {
     const caller = freshCaller();
     const seen: number[] = [];
 
-    await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async (meter) => {
+    await withLinkImportMeter(anonymousImport(caller), async (meter) => {
       await meter.count(LINK_IMPORT_METER_BATCH_BYTES - 1);
       seen.push(await bytesBroughtInToday(caller));
       await meter.count(1);
@@ -120,13 +126,13 @@ describe('the meter of a link import', () => {
   it('answers that the day passed its budget at the batch that took it past, at most one batch over', async () => {
     const caller = freshCaller();
     await spend(caller, ANONYMOUS_DAILY_UPLOAD_BYTES - MIB);
-    const answers: boolean[] = [];
+    const answers: MeterVerdict[] = [];
 
-    await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async (meter) => {
-      while (answers.at(-1) !== false) answers.push(await meter.count(MIB));
+    await withLinkImportMeter(anonymousImport(caller), async (meter) => {
+      while (answers.at(-1) !== 'day-reached') answers.push(await meter.count(MIB));
     });
 
-    expect(answers).toEqual([true, true, true, false]);
+    expect(answers).toEqual(['ok', 'ok', 'ok', 'day-reached']);
     const charged = await bytesBroughtInToday(caller);
     expect(charged).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES - MIB + LINK_IMPORT_METER_BATCH_BYTES);
     expect(charged).toBeLessThanOrEqual(ANONYMOUS_DAILY_UPLOAD_BYTES + LINK_IMPORT_METER_BATCH_BYTES);
@@ -136,26 +142,26 @@ describe('the meter of a link import', () => {
     const caller = freshCaller();
     await spend(caller, ANONYMOUS_DAILY_UPLOAD_BYTES - MIB);
 
-    const fits = await withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async (meter) => {
+    const fits = await withLinkImportMeter(anonymousImport(caller), async (meter) => {
       await meter.count(MIB);
       return meter.charge();
     });
-    expect(fits).toEqual({ result: true });
+    expect(fits).toEqual({ result: 'ok' });
 
     const other = freshCaller();
     await spend(other, ANONYMOUS_DAILY_UPLOAD_BYTES - MIB);
-    const passes = await withLinkImportMeter({ owner: other, plan: 'anonymous' }, async (meter) => {
+    const passes = await withLinkImportMeter(anonymousImport(other), async (meter) => {
       await meter.count(MIB + 1);
       return meter.charge();
     });
-    expect(passes).toEqual({ result: false });
+    expect(passes).toEqual({ result: 'day-reached' });
   });
 
   it('charges what an import received when it fails', async () => {
     const caller = freshCaller();
 
     await expect(
-      withLinkImportMeter({ owner: caller, plan: 'anonymous' }, async (meter) => {
+      withLinkImportMeter(anonymousImport(caller), async (meter) => {
         await meter.count(5 * MIB + 7);
         throw new Error('the remote reset the connection');
       })
@@ -164,8 +170,119 @@ describe('the meter of a link import', () => {
     expect(await bytesBroughtInToday(caller)).toBe(5 * MIB + 7);
   });
 
+  it('answers too-large for a batch that passes both the read limit and the day, as the route and a graph node both read it', async () => {
+    const caller = freshCaller();
+    await spend(caller, ANONYMOUS_DAILY_UPLOAD_BYTES - MIB);
+
+    const answer = await withLinkImportMeter({ owner: caller, plan: 'anonymous', limitBytes: 3 * MIB, deadlineMs: IMPORT_DEADLINE_MS }, (meter) => meter.count(LINK_IMPORT_METER_BATCH_BYTES));
+
+    expect(answer).toEqual({ result: 'too-large' });
+    expect(await bytesBroughtInToday(caller)).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES - MIB + LINK_IMPORT_METER_BATCH_BYTES);
+  });
+
+  it('charges a batch whose charge failed with the last charge, so nothing it received goes uncharged', async () => {
+    const caller = freshCaller();
+    const update = MemoryBudgetStore.prototype.update;
+    let writes = 0;
+    vi.spyOn(MemoryBudgetStore.prototype, 'update').mockImplementation(async function (this: MemoryBudgetStore, ...args) {
+      writes += 1;
+      if (writes === 1) throw new Error('the store did not answer');
+      return update.apply(this, args);
+    });
+    try {
+      await expect(withLinkImportMeter(anonymousImport(caller), (meter) => meter.count(LINK_IMPORT_METER_BATCH_BYTES))).rejects.toThrow('the store did not answer');
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(await bytesBroughtInToday(caller)).toBe(LINK_IMPORT_METER_BATCH_BYTES);
+  });
+
+  it('charges a batch once when its write landed but its answer was lost and the last charge writes it again', async () => {
+    const caller = freshCaller();
+    const update = MemoryBudgetStore.prototype.update;
+    let writes = 0;
+    vi.spyOn(MemoryBudgetStore.prototype, 'update').mockImplementation(async function (this: MemoryBudgetStore, ...args) {
+      await update.apply(this, args);
+      writes += 1;
+      if (writes === 1) throw new Error('the answer was lost');
+    });
+    try {
+      await expect(
+        withLinkImportMeter(anonymousImport(caller), async (meter) => {
+          await meter.count(LINK_IMPORT_METER_BATCH_BYTES);
+        })
+      ).rejects.toThrow('the answer was lost');
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(await bytesBroughtInToday(caller)).toBe(LINK_IMPORT_METER_BATCH_BYTES);
+  });
+
+  it('charges once when the import charged its end itself before the meter closes', async () => {
+    const caller = freshCaller();
+
+    await withLinkImportMeter(anonymousImport(caller), async (meter) => {
+      await meter.count(3 * MIB);
+      return meter.charge();
+    });
+
+    expect(await bytesBroughtInToday(caller)).toBe(3 * MIB);
+  });
+
+  it('charges an import once when its closing write landed but its answer was lost and the meter writes it again', async () => {
+    const caller = freshCaller();
+    const update = MemoryBudgetStore.prototype.update;
+    let writes = 0;
+    vi.spyOn(MemoryBudgetStore.prototype, 'update').mockImplementation(async function (this: MemoryBudgetStore, ...args) {
+      await update.apply(this, args);
+      writes += 1;
+      if (writes === 1) throw new Error('the answer was lost');
+    });
+    try {
+      await expect(
+        withLinkImportMeter(anonymousImport(caller), async (meter) => {
+          await meter.count(3 * MIB);
+          return meter.charge();
+        })
+      ).rejects.toThrow('the answer was lost');
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(await bytesBroughtInToday(caller)).toBe(3 * MIB);
+  });
+
+  it('charges once an import whose last write comes more than an hour after the one before, within its deadline', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.parse('2026-11-02T08:00:00.000Z') });
+    try {
+      const caller = freshCaller();
+
+      await withLinkImportMeter({ ...anonymousImport(caller), deadlineMs: 2 * HOUR_MS }, async (meter) => {
+        await meter.count(LINK_IMPORT_METER_BATCH_BYTES);
+        vi.setSystemTime(Date.now() + HOUR_MS + 60_000);
+      });
+
+      expect(await bytesBroughtInToday(caller)).toBe(LINK_IMPORT_METER_BATCH_BYTES);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('writes nothing to the store for an import that received no bytes', async () => {
+    const caller = freshCaller();
+    const writes = vi.spyOn(MemoryBudgetStore.prototype, 'update');
+    try {
+      expect(await withLinkImportMeter(anonymousImport(caller), async () => 'nothing read')).toEqual({ result: 'nothing read' });
+      expect(writes).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it('meters an account against its plan, in a budget of its own', async () => {
     const account = `user_meter_${crypto.randomBytes(4).toString('hex')}`;
-    expect(await withLinkImportMeter({ owner: account, plan: 'pro' }, async (meter) => meter.leftBytes)).toEqual({ result: 10 * GIB });
+    expect(await withLinkImportMeter({ owner: account, plan: 'pro', limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: IMPORT_DEADLINE_MS }, async (meter) => meter.leftBytes)).toEqual({ result: 10 * GIB });
   });
 });
