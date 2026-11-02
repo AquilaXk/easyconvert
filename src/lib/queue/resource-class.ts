@@ -1,6 +1,7 @@
 import type { ConversionOptions, ResourceClass } from '../types';
 import { getFormatByExtension } from '../registry';
 import { RAW_CAMERA_FORMATS } from '../conversions/raw-formats';
+import { isVectorizePair } from '../conversions/raster-vectorize-options';
 
 export type { ResourceClass };
 export const RESOURCE_CLASSES: readonly ResourceClass[] = ['light', 'cpu', 'memory', 'gpu'] as const;
@@ -117,6 +118,11 @@ export function resolveResourceClass(
   }
   if (RAW_CAMERA_FORMATS.has(src)) {
     return 'memory';
+  }
+  // Raster to SVG: the tracer may run for 120 s in 2 GB whatever the file size (a compressible 16 MP PNG is small and traces for 18 s
+  // in 660 MB). The CPU lane gives three such jobs 10 GB (docker-compose.prod.yml); the light lane puts six in 4 GB.
+  if (isVectorizePair(src, tgt)) {
+    return 'cpu';
   }
   if (sizeBytes !== undefined && sizeBytes > MEMORY_SIZE_THRESHOLD_BYTES) {
     return 'memory';
