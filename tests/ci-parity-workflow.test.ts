@@ -366,7 +366,7 @@ describe('the step that maps changed paths to families', () => {
 
   only('measures the family of a changed conversion file, and nothing for a change outside the conversion code', () => {
     expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video,raw', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video,raw,vectorize', unmapped: '', changed: 'true' });
     expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
   });
 
