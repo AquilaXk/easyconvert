@@ -1,10 +1,6 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
 import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
-/**
- * Every format by its id. The table has no prototype, so a lookup by a name that every object has (`constructor`,
- * `__proto__`) finds nothing, as for any other id the registry does not know.
- */
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
   // ==========================================
   // 1. AUDIO (24 formats)
