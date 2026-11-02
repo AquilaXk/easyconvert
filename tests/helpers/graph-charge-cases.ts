@@ -20,7 +20,9 @@ import { graphScheduler, type GraphMetadata, type JobGraph } from '../../src/lib
 import { userStore } from '../../src/lib/auth/user-store';
 import { storageProvider } from '../../src/lib/storage';
 import { s3Storage } from '../../src/lib/storage/s3-storage';
+import { StorageServiceError } from '../../src/lib/storage/adapters/adapter-interface';
 import { ConversionFailedError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
+import { gzipRemote } from './gzip-remote';
 
 /**
  * What a queued graph is charged, run through real queue workers with the lifecycle listeners attached, as the worker
@@ -96,6 +98,13 @@ async function csvArchiveUpload(count: number) {
 
 function anonymousOwner(): string {
   return anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
+}
+
+/** Uses `bytes` of the day's import budget of `owner`, as an import that received them would. */
+async function spendImportBytes(owner: string, plan: 'anonymous' | 'free', bytes: number): Promise<void> {
+  const spent = await reserveLinkImport(owner, plan, GRAPH_TIMEOUT_MS);
+  if ('refusal' in spent) throw new Error(`the import budget of ${owner} is already spent`);
+  await spent.reservation.settle(bytes);
 }
 
 /** What a suite can do to the quota store besides what every store does. */
@@ -378,8 +387,8 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
 
-  it('completes two import.url nodes and a convert node over both for a free account, each import holding one file', async () => {
-    // Neither remote answers until both imports have fetched, so both holds are taken before either import ends.
+  it('completes two import.url nodes that read at once and a convert node over both, for a free account with one file of its day left', async () => {
+    // Neither remote answers until both imports have fetched, so both are reading before either ends.
     let fetched = 0;
     let answerBoth: () => void = () => undefined;
     const bothFetched = new Promise<void>((resolve) => (answerBoth = resolve));
@@ -390,6 +399,8 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
       return new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
     });
     const account = await apiAccount();
+    const receivedEarlier = dailyBudgetBytes('free') / 2;
+    await spendImportBytes(account.userId, 'free', receivedEarlier);
     const queued = await queueGraph(
       {
         failurePolicy: 'fail_fast',
@@ -404,7 +415,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     );
     await queued.ended('completed');
     expect(fetched).toBe(2);
-    expect(await bytesBroughtInToday(account.userId)).toBe(2 * Buffer.byteLength(CSV));
+    expect(await bytesBroughtInToday(account.userId)).toBe(receivedEarlier + 2 * Buffer.byteLength(CSV));
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   it('completes the retry of an import.url node whose crashed attempt left its hold, and charges its bytes once', async () => {
@@ -439,6 +450,67 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     failurePolicy: 'fail_fast',
     nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } },
   });
+
+  it('imports a gzipped file whose Content-Length is its compressed size whole, and charges the bytes it decoded', async () => {
+    vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
+    const rows = 2000;
+    const csv = `name,score\n${'Alice,100\n'.repeat(rows)}`;
+    const remote = await gzipRemote(csv);
+    try {
+      const queued = await queueGraph(importThenConvert(), 1);
+      await queued.ended('completed');
+
+      const [converted] = await storedOutputs(queued.graphId, 'conv');
+      expect(JSON.parse(converted.buffer.toString('utf-8'))).toHaveLength(rows);
+      expect(remote.compressedBytes).toBeLessThan(Buffer.byteLength(csv));
+      expect(await bytesBroughtInToday(queued.owner)).toBe(Buffer.byteLength(csv));
+    } finally {
+      await remote.close();
+    }
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('fails an import.url node with import_budget_exceeded when its owner reaches the day while it reads, through a store that wraps the errors of the stream it saves', async () => {
+    remoteCsv();
+    const saveObjectFromStream = storageProvider.saveObjectFromStream.bind(storageProvider);
+    vi.spyOn(storageProvider, 'saveObjectFromStream').mockImplementation(async (...args) => {
+      try {
+        return await saveObjectFromStream(...args);
+      } catch (err) {
+        throw new StorageServiceError('The object store could not take the upload', 's3', { statusCode: 500, retryable: false }, err);
+      }
+    });
+    const owner = anonymousOwner();
+    await spendImportBytes(owner, 'anonymous', dailyBudgetBytes('anonymous') - Buffer.byteLength(CSV) + 1);
+
+    const queued = await queueGraph(importThenConvert(), 0, { owner });
+    await queued.ended('failed');
+    const link = await getJobAcrossQueues(`${queued.graphId}:link`);
+    expect(link?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect(link?.attemptsMade).toBe(1);
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('keeps the results of two export.internal nodes apart when their outputs share a name', async () => {
+    const queued = await queueGraph(
+      {
+        failurePolicy: 'fail_fast',
+        nodes: {
+          monday: csvUpload('scores.csv', 'name,score\nAlice,100\n'),
+          tuesday: csvUpload('scores.csv', 'name,score\nBob,95\n'),
+          mondayJson: { op: 'convert', input: 'monday', targetFormat: 'json' },
+          tuesdayJson: { op: 'convert', input: 'tuesday', targetFormat: 'json' },
+          mondayResult: { op: 'export.internal', input: 'mondayJson' },
+          tuesdayResult: { op: 'export.internal', input: 'tuesdayJson' },
+        },
+      },
+      2
+    );
+    await queued.ended('completed');
+
+    const exported = async (nodeId: string) =>
+      (await storedOutputs(queued.graphId, nodeId)).map((stored) => [stored.filename, JSON.parse(stored.buffer.toString('utf-8'))[0].name]);
+    expect(await exported('mondayResult')).toEqual([['scores.json', 'Alice']]);
+    expect(await exported('tuesdayResult')).toEqual([['scores.json', 'Bob']]);
+  }, GRAPH_TIMEOUT_MS + 10_000);
 
   /** An anonymous owner whose day has `received` bytes received and a sibling import that holds the rest until it ends. */
   async function ownerWithSiblingImport(receivedBytes: number) {

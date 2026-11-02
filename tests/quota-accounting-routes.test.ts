@@ -41,6 +41,7 @@ import { storageProvider } from '../src/lib/storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
+import { gzipRemote } from './helpers/gzip-remote';
 
 /**
  * Only a successful conversion is charged (QA decision of 2026-11-02): a refusal, a failure and a link import leave the
@@ -374,6 +375,36 @@ describe('what a request is charged', () => {
       expect(await res.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'larger-than-left', leftBytes: 30 * MIB });
       expect(remote.cancelled).toBe(true);
       expect(await bytesBroughtInToday(client.userId)).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES - 30 * MIB);
+    });
+
+    it('stops reading once the day passes its budget while it reads, refuses the file as spent for the day, and is charged at most one batch past the budget', async () => {
+      const client = await visitorWithDayLeft(1);
+      const remote = remoteOfMebibytes(64);
+
+      const res = await fetchUrlRoute(importRequest(client));
+
+      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await res.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes' });
+      expect(remote.cancelled).toBe(true);
+      const charged = await bytesBroughtInToday(client.userId);
+      expect(charged).toBeGreaterThan(ANONYMOUS_DAILY_UPLOAD_BYTES);
+      expect(charged).toBeLessThanOrEqual(ANONYMOUS_DAILY_UPLOAD_BYTES + 4 * MIB);
+    });
+
+    it('imports a gzipped file whose Content-Length is its compressed size whole, and is charged the bytes it decoded', async () => {
+      const client = visitor();
+      const csv = `name,score\n${'Alice,100\n'.repeat(2000)}`;
+      const remote = await gzipRemote(csv);
+      try {
+        const res = await fetchUrlRoute(importRequest(client));
+
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe(csv);
+        expect(remote.compressedBytes).toBeLessThan(Buffer.byteLength(csv));
+        expect(await bytesBroughtInToday(client.userId)).toBe(Buffer.byteLength(csv));
+      } finally {
+        await remote.close();
+      }
     });
 
     it('holds its bytes for the synchronous deadline and the grace after it, so an import that never stops reading gives them back then', async () => {
