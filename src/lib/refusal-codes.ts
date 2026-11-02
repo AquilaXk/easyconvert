@@ -62,6 +62,7 @@ export const CONVERSION_REFUSAL_CODES = [
   'malformed_input',
   'unsupported_input',
   'input_over_limit',
+  'import_budget_exceeded',
   'timeout',
   'engine_unavailable',
   'conversion_failed',

@@ -18,7 +18,8 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -108,9 +109,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/convert';
 
-  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit, then reserve the conversion
   const auth = await validateApiAccess(req, {
-    requiredUnits: 1,
+    requiredUnits: 0,
     requiredScope: 'convert:write',
     allowAnonymous: true,
   });
@@ -127,7 +128,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   }
 
   const caller = auth.user;
-  return withReservedUnit(auth.reservationId, (unit) => convertFile(req, caller, unit, instanceUri, startTime));
+  const unit = await reserveConversionUnit(caller);
+  if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
+  return withReservedUnit(unit.reservationId, (reserved) => convertFile(req, caller, reserved, instanceUri, startTime));
 }));
 
 /** Converts the file of an authenticated request whose unit is reserved; the unit is charged only once the conversion succeeded. */

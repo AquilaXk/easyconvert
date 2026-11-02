@@ -62,7 +62,14 @@ function missingUpload() {
 
 /** Every fetch of a link answers the CSV, a new response each time. */
 function remoteCsv(): void {
+  vi.mocked(undiciFetch).mockClear();
   vi.mocked(undiciFetch).mockImplementation(async () => new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv' } }) as never);
+}
+
+/** A graph as `/api/v1/jobs` accepts it, where any node may name several inputs; the scheduler stores it as it is. */
+interface SubmittedGraph {
+  failurePolicy: 'fail_fast' | 'continue';
+  nodes: Record<string, Record<string, unknown> & { op: string }>;
 }
 
 function anonymousOwner(): string {
@@ -96,7 +103,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
    * Queues `graph` for `owner` with one unit more reserved than `expectedUnits`, and answers how to wait for its end.
    * `startWorkers` is false for a case that acts on the queued node jobs before any worker takes them.
    */
-  async function queueGraph(graph: JobGraph, expectedUnits: number, options: { owner?: string; meta?: GraphMetadata; startWorkers?: boolean } = {}) {
+  async function queueGraph(graph: SubmittedGraph, expectedUnits: number, options: { owner?: string; meta?: GraphMetadata; startWorkers?: boolean } = {}) {
     const owner = options.owner ?? anonymousOwner();
     track(owner);
     const usedToday = async () => (await redisKeyStore.getQuotaUsage(owner)).usedToday;
@@ -107,7 +114,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     if (options.startWorkers !== false) startWorker();
     const graphId = `graph_charge_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    await graphScheduler.initGraph(graphId, graph, { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
+    await graphScheduler.initGraph(graphId, graph as unknown as JobGraph, { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
 
     /** Waits for the graph to end with `expectedStatus` and its owner to be charged `expectedUnits`. */
     async function ended(expectedStatus: 'completed' | 'failed'): Promise<void> {
@@ -121,12 +128,12 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     return { graphId, owner, ended };
   }
 
-  async function runGraph(graph: JobGraph, expectedStatus: 'completed' | 'failed', expectedUnits: number): Promise<void> {
+  async function runGraph(graph: SubmittedGraph, expectedStatus: 'completed' | 'failed', expectedUnits: number): Promise<void> {
     const queued = await queueGraph(graph, expectedUnits);
     await queued.ended(expectedStatus);
   }
 
-  const importAndConvert = (): JobGraph => ({ failurePolicy: 'fail_fast', nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json' } } });
+  const importAndConvert = (): SubmittedGraph => ({ failurePolicy: 'fail_fast', nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json' } } });
 
   it('charges nothing for a graph whose conversion fails after its import completed', async () => {
     await runGraph({ failurePolicy: 'fail_fast', nodes: { up: notAPngUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'jpg' } } }, 'failed', 0);

@@ -15,6 +15,11 @@ export function graphNodeJobId(graphId: string, nodeId: NodeId): string {
   return `${graphId}:${nodeId}`;
 }
 
+/** The metadata the node jobs of a graph carry: exactly the fields a node job reads, so nothing else reaches the queue. */
+export function graphNodeJobMetadata(graph: GraphNodeJobMetadata): GraphNodeJobMetadata {
+  return { ownerUserId: graph.ownerUserId, originalFilename: graph.originalFilename, createdAt: graph.createdAt };
+}
+
 /**
  * Enqueues a ready graph node on the queue of its resource class. The engine ignores a second
  * add with the same job ID, so replaying an outbox entry after a crash never runs a node twice.
@@ -53,6 +58,19 @@ export async function enqueueGraphNodeJob(
     // bounded by the tier maximum, not by its node count times it.
     await graphDeadlineOwner(meta)
   );
+}
+
+/**
+ * Why the job of a graph node is not cancelled on its own, or undefined for any other job. A graph is run, charged and
+ * cancelled as one job: cancelling one node would leave its graph to the node's failure policy, so its owner cancels the
+ * graph by its id instead.
+ */
+export function nodeJobCancelRefusal(data: { graphId?: string; graphNodeId?: string } | undefined): { graphId: string; detail: string } | undefined {
+  if (!data?.graphId || !data.graphNodeId) return undefined;
+  return {
+    graphId: data.graphId,
+    detail: `This job is node "${data.graphNodeId}" of the graph job "${data.graphId}", which is cancelled as a whole. Cancel "${data.graphId}" instead.`,
+  };
 }
 
 /** Cancels the queue job of a graph node on the queue it was routed to. */

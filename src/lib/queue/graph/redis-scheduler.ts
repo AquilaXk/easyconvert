@@ -4,8 +4,7 @@ import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
   GraphMetadata,
-  GraphNodeJobMetadata,
-  GraphNodeState,
+  GraphStatus,
   IGraphScheduler,
   NodeCompletionResult,
   NodeFailureResult,
@@ -17,16 +16,13 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
+import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
-import { storageProvider } from '../../storage';
-import { releaseGraphInputHolds } from './input-cleanup';
-import { redisKeyStore } from '../../api-keys/redis-key-store';
-import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
-import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredList } from './redis-state-parsers';
+import { finishGraph, type GraphOutcome } from './graph-end';
+import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredCount, parseStoredList } from './redis-state-parsers';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;
@@ -159,12 +155,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
     // A damaged record fails the graph here; a ready node is never skipped or dropped from the outbox.
     const record = parseGraphMeta(graphId, await this.redisClient.hgetall(k.graph));
     const graph = record.graph;
-    const graphMeta: GraphNodeJobMetadata = {
-      ownerUserId: record.ownerUserId,
-      originalFilename: record.originalFilename,
-      sourceStorageKey: record.sourceStorageKey,
-      createdAt: record.createdAt,
-    };
+    const graphMeta = graphNodeJobMetadata(record);
 
     for (const nodeId of ready) {
       const node = Object.hasOwn(graph.nodes, nodeId) ? graph.nodes[nodeId] : undefined;
@@ -210,35 +201,15 @@ export class RedisGraphScheduler implements IGraphScheduler {
     const readyNodeIds = parseStoredList<NodeId>(graphId, 'the ready node list', raw[2]);
     await this.drainOutbox(graphId);
 
+    // Only the call whose script recorded the completion gets here, so the graph is finished once.
     const graphCompleted = applied && graphStatus === 'completed';
     if (graphCompleted) {
-      await this.finishCompletedGraph(graphId, Number(raw[3]));
+      const units = parseStoredCount(graphId, 'the charged units', raw[3]);
+      const state = await this.getGraphState(graphId);
+      if (state) await finishGraph(state, { status: 'completed', units });
     }
 
     return { graphCompleted, graphStatus, readyNodeIds };
-  }
-
-  /**
-   * Ends a graph that completed, by its last node completing or failing: its intermediates go, its reservation is settled
-   * to the units its nodes charged, and its webhook is told.
-   */
-  private async finishCompletedGraph(graphId: string, chargedUnits: number): Promise<void> {
-    await this.cleanupIntermediates(graphId);
-    const state = await this.getGraphState(graphId);
-    if (state?.reservationId) {
-      await redisKeyStore.settleQuota(state.reservationId, chargedUnits).catch(() => {});
-    }
-    if (state?.webhookUrl && state.webhookSecret) {
-      await webhookDispatcher
-        .dispatch(
-          state.webhookUrl,
-          'graph.completed',
-          { jobId: graphId, status: 'completed', graphId, nodes: state.nodes },
-          state.webhookSecret,
-          { ownerUserId: state.ownerUserId }
-        )
-        .catch(() => {});
-    }
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
@@ -261,35 +232,16 @@ export class RedisGraphScheduler implements IGraphScheduler {
     const graphStatus = parseGraphStatus(graphId, raw[1]);
     const cancelledNodeIds = parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2]);
     const skippedNodeIds = parseStoredList<NodeId>(graphId, 'the skipped node list', raw[3]);
+    const outcome = failureOutcome(graphId, applied, graphStatus, error, raw[4]);
     const state = await this.getGraphState(graphId);
     const reason = `Graph failed due to node ${nodeId}`;
     for (const nid of [...cancelledNodeIds, ...skippedNodeIds]) {
       await this.cancelNode(graphId, nid, state?.graph.nodes[nid], reason).catch(() => false);
     }
-
-    const graphFailed = applied && graphStatus === 'failed';
-    if (graphFailed) {
-      await this.cleanupIntermediates(graphId);
-      if (state?.reservationId) {
-        await redisKeyStore.rollbackQuota(state.reservationId).catch(() => {});
-      }
-      if (state?.webhookUrl && state.webhookSecret) {
-        await webhookDispatcher
-          .dispatch(
-            state.webhookUrl,
-            'graph.failed',
-            { jobId: graphId, status: 'failed', error, graphId, nodes: state.nodes },
-            state.webhookSecret,
-            { ownerUserId: state.ownerUserId }
-          )
-          .catch(() => {});
-      }
-    } else if (applied && graphStatus === 'completed') {
-      await this.finishCompletedGraph(graphId, Number(raw[4]));
-    }
+    if (state && outcome) await finishGraph(state, outcome);
 
     return {
-      graphFailed,
+      graphFailed: outcome?.status === 'failed',
       graphStatus,
       cancelledJobIds: cancelledNodeIds.map((nid) => `${graphId}:${nid}`),
       skippedNodeIds,
@@ -327,10 +279,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
     for (const nid of parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2])) {
       await this.cancelNode(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason).catch(() => false);
     }
-    await this.cleanupIntermediates(graphId);
-    if (state?.reservationId) {
-      await redisKeyStore.rollbackQuota(state.reservationId).catch(() => {});
-    }
+    if (state) await finishGraph(state, { status: 'cancelled' });
     return true;
   }
 
@@ -341,13 +290,15 @@ export class RedisGraphScheduler implements IGraphScheduler {
     return values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : []));
   }
 
-  async cleanupIntermediates(graphId: string): Promise<number> {
-    const prefix = `intermediate/${graphId}/`;
-    const graph = (await this.getGraphState(graphId))?.graph;
-    if (graph) await releaseGraphInputHolds(graphId, graph);
-    if (typeof storageProvider.deleteByPrefix === 'function') {
-      return storageProvider.deleteByPrefix(prefix);
-    }
-    return 0;
-  }
+}
+
+/**
+ * How the graph ended when the failure script of a call recorded its end: failed (fail_fast), or completed (continue, its
+ * last node failing) with the units its nodes charged. Undefined when the script recorded no end.
+ */
+function failureOutcome(graphId: string, applied: boolean, graphStatus: GraphStatus, error: string, units: unknown): GraphOutcome | undefined {
+  if (!applied) return undefined;
+  if (graphStatus === 'failed') return { status: 'failed', error };
+  if (graphStatus === 'completed') return { status: 'completed', units: parseStoredCount(graphId, 'the charged units', units) };
+  return undefined;
 }

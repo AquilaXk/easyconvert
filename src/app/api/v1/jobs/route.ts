@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, conversionUnitRefusal, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import type { FormatDefinition } from '@/lib/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
@@ -27,7 +28,8 @@ import {
   normalizeGraphNodes,
   JobGraphValidationError,
 } from '@/lib/jobs';
-import { chargingNodeCount } from '@/lib/jobs/graph-operations';
+import { graphReservationUnits } from '@/lib/jobs/graph-operations';
+import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { graphScheduler } from '@/lib/queue/graph';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
@@ -38,7 +40,6 @@ import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOf
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
-import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
   validateOrProblem,
   JobCreateRequestSchema,
@@ -51,6 +52,9 @@ import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
 
 export const dynamic = 'force-dynamic';
+
+/** The problem of a graph whose nodes only import and export files (`graph-without-conversion`). */
+const GRAPH_WITHOUT_CONVERSION_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}graph-without-conversion`;
 
 /** The refusal of a job whose stored files the caller may not use, or that a graph reads over the limit of the caller's plan; undefined when every stored file passes. */
 async function storedInputRefusal(
@@ -116,19 +120,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   };
 
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
-  if (quota.remaining <= 0) {
-    const exhaustedQuota = { ...quota, remaining: 0 };
-    return reply(
-      createProblemDetailsResponse(
-        429,
-        tierQuotaExceeded(auth.user.tier),
-        instanceUri,
-        'Daily Quota Exceeded',
-        'https://api.easyconvert.io/problems/quota-exceeded',
-        buildRateLimitHeaders(exhaustedQuota)
-      )
-    );
-  }
+  if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
 
   const fail = async (
     status: number,
@@ -443,21 +435,26 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
+    // A graph is charged only for its conversions (docs/policy-decisions.md, entry 15), so one that only moves files would
+    // cost nothing while it fetched and stored them; it is refused before anything is reserved or fetched.
+    if (graph && unitsToReserve(graph) === 0) {
+      return reply(
+        createProblemDetailsResponse(
+          422,
+          'The graph has no conversion: a job needs at least one node that converts, between its imports and its exports.',
+          instanceUri,
+          'Unprocessable Entity',
+          GRAPH_WITHOUT_CONVERSION_PROBLEM_TYPE
+        )
+      );
+    }
+
     if (tasks && tasks.length > 0 && !targetFormat) {
       targetFormat = (tasks[tasks.length - 1].targetFormat || '').trim();
     }
 
     if (graph && !targetFormat) {
-      const graphNodes = normalizeGraphNodes(graph);
-      const convertNodes = Object.values(graphNodes).filter((n) => n.op === 'convert') as { targetFormat?: string }[];
-      if (convertNodes.length > 0 && convertNodes[convertNodes.length - 1].targetFormat) {
-        targetFormat = convertNodes[convertNodes.length - 1].targetFormat!;
-      } else {
-        const archiveNodes = Object.values(graphNodes).filter((n) => n.op === 'archive.create') as { targetFormat?: string }[];
-        if (archiveNodes.length > 0 && archiveNodes[0].targetFormat) {
-          targetFormat = archiveNodes[0].targetFormat!;
-        }
-      }
+      targetFormat = graphTargetFormat(graph);
     }
 
     if (!storageKey && graph && !inputBufferBase64 && !uploadedBuffer) {
@@ -618,7 +615,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     // Phase 1: Atomically reserve quota BEFORE enqueueing to BullMQ
     const unit = await reserveConversionUnit(auth.user, unitsToReserve(graph));
-    if (!unit.reserved) return reply(conversionUnitRefusal(unit, auth.user, quota, instanceUri));
+    if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
     const submission: ReservedSubmission = {
       user: auth.user,
@@ -669,6 +666,18 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   }
 }));
 
+/**
+ * The output format of a graph that names none at the top level: the format of its last convert node, else that of its
+ * first archive.create node, else none ('').
+ */
+function graphTargetFormat(graph: JobGraph): string {
+  const nodes = Object.values(normalizeGraphNodes(graph));
+  const convertNodes = nodes.filter((n) => n.op === 'convert');
+  const lastConvertFormat = convertNodes[convertNodes.length - 1]?.targetFormat;
+  if (lastConvertFormat) return lastConvertFormat;
+  return nodes.find((n) => n.op === 'archive.create')?.targetFormat ?? '';
+}
+
 /** The graph the scheduler runs; the request's graph is the same document under the job-graph type. */
 type SchedulerJobGraph = Parameters<typeof initGraphHoldingInputs>[2];
 
@@ -689,11 +698,12 @@ interface ReservedSubmission {
 }
 
 /**
- * The units a submission reserves: one for a job, one for each charging node of a graph, so a graph is admitted only when
- * the caller has a unit for every conversion in it; its settle refunds the units of conversions that produced nothing.
+ * The units a submission reserves: one for a job, and for a graph what its conversions are charged by the same rule
+ * (`graphReservationUnits`), so a graph is admitted only when the caller has a unit for every conversion in it; its settle
+ * charges what the conversions produced and refunds the rest.
  */
 function unitsToReserve(graph: JobGraph | undefined): number {
-  return graph ? chargingNodeCount(normalizeGraphNodes(graph)) : 1;
+  return graph ? graphReservationUnits(normalizeGraphNodes(graph)) : 1;
 }
 
 /**

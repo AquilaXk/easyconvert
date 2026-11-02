@@ -492,7 +492,7 @@ export const internalPaths = {
       responses: {
         '200': createJsonResponse('Job cancelled.', { success: { type: 'boolean' }, message: { type: 'string' } }),
         '404': createErrorResponse('Job not found or owned by another user.'),
-        '409': createErrorResponse('Job can no longer be cancelled.'),
+        '409': createErrorResponse('Job can no longer be cancelled, or it is one node of a graph job (`graphId` names the graph, which is cancelled as a whole).'),
       },
     },
   },

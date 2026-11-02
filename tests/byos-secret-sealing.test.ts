@@ -21,6 +21,9 @@ import {
   type CustomerStorage,
 } from './helpers/byos-customer-storage';
 
+/** The deadline a queued node job carries; an import holds its bytes against its owner's daily budget until then. */
+const NODE_DEADLINE_MS = 60_000;
+
 /**
  * Graph nodes that import from or export to customer storage carry bearer secrets: signed URLs,
  * URL userinfo and request headers. They must reach the worker, but never sit in plaintext in
@@ -109,15 +112,15 @@ async function enqueueAllNodes(graphId: string, graph: JobGraph, tasks?: unknown
   return { scheduler, initial };
 }
 
-/** A job as a worker sees it, carrying `graphNode` in place of the queued one. */
+/** A job as a worker sees it, carrying `graphNode` in place of the queued one, with the owner and deadline a queued node has. */
 function workerJob(
   queued: Job<ConversionJobData, ConversionJobResult>,
   graphNode: object
 ): Job<ConversionJobData, ConversionJobResult> {
   return {
     id: queued.id,
-    data: { ...queued.data, graphNode },
-    opts: { attempts: 1 },
+    data: { ...queued.data, userId: 'user_byos_import_owner', graphNode },
+    opts: { attempts: 1, timeout: NODE_DEADLINE_MS },
     attemptsMade: 1,
     signal: new AbortController().signal,
     log: async () => {},

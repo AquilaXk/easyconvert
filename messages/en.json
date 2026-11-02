@@ -1593,7 +1593,8 @@
       "idempotency-key-in-flight": "The same request is still being processed. Try again in a moment.",
       "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly.",
       "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
-      "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider."
+      "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider.",
+      "graph-without-conversion": "A job needs at least one conversion. Add a conversion step between the import and the export."
     },
     "limits": {
       "payload-too-large": "One request can carry at most {limit}.",
@@ -1624,6 +1625,7 @@
       "malformed_input": "The file is damaged or incomplete, so it cannot be read.",
       "unsupported_input": "This kind of file cannot be converted, although it appears intact.",
       "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
+      "import_budget_exceeded": "You have used today's limit for link imports. Try again tomorrow.",
       "timeout": "The conversion did not finish in time. Try again.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",
       "conversion_failed": "Conversion failed. Try another format or try again."

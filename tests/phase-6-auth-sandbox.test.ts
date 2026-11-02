@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -406,24 +406,20 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
     });
 
     it('executes 2-phase quota transactions (reserve -> commit)', async () => {
-      const initialActive = keyStore.getActiveReservationsCount();
-      expect(initialActive).toBe(0);
+      expect((await keyStore.getQuotaUsage(testUserId)).usedToday).toBe(0);
 
       // Phase 1: Reserve 5 units
       const res = await keyStore.reserveQuota(testUserId, 5);
       expect(res.allowed).toBe(true);
       expect(res.reservationId).toBeDefined();
       expect(res.remaining).toBe(20);
+      expect((await keyStore.getQuotaUsage(testUserId)).usedToday).toBe(5);
 
-      expect(keyStore.getActiveReservationsCount()).toBe(1);
-      const reservation = keyStore.getReservation(res.reservationId!);
-      expect(reservation?.units).toBe(5);
-      expect(reservation?.status).toBe('reserved');
-
-      // Phase 2a: Commit reservation
+      // Phase 2a: Commit reservation; the units stay charged and a rollback after it gives nothing back
       const committed = await keyStore.commitQuota(res.reservationId!);
       expect(committed).toBe(true);
-      expect(keyStore.getActiveReservationsCount()).toBe(0);
+      expect(await keyStore.rollbackQuota(res.reservationId!)).toBe(false);
+      expect((await keyStore.getQuotaUsage(testUserId)).usedToday).toBe(5);
 
       // Trying to commit twice returns false
       expect(await keyStore.commitQuota(res.reservationId!)).toBe(false);
@@ -438,32 +434,66 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       // Rollback reservation
       const rolledBack = await keyStore.rollbackQuota(res.reservationId!);
       expect(rolledBack).toBe(true);
-      expect(keyStore.getActiveReservationsCount()).toBe(0);
+      expect(await keyStore.rollbackQuota(res.reservationId!)).toBe(false);
 
       // Remaining should be restored to 25
       const probe = await keyStore.reserveQuota(testUserId, 0);
       expect(probe.remaining).toBe(25);
     });
 
-    it('cleans up and refunds expired reservations automatically', async () => {
-      const res = await keyStore.reserveQuota(testUserId, 10);
-      expect(res.allowed).toBe(true);
+    describe('a reservation that outlives its UTC day', () => {
+      const LAST_SECOND_OF_DAY = Date.parse('2026-11-01T23:59:59.000Z');
+      const NEXT_DAY = Date.parse('2026-11-02T00:00:01.000Z');
 
-      const reservation = keyStore.getReservation(res.reservationId!);
-      expect(reservation).toBeDefined();
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'], now: LAST_SECOND_OF_DAY });
+      });
 
-      // Simulate reservation expiration
-      if (reservation) {
-        reservation.expiresAt = Date.now() - 1000; // 1 second ago
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /** The units charged to the day the reservations were made on, read on that day. */
+      async function usedOnTheDayItWasMade(): Promise<number> {
+        const now = Date.now();
+        vi.setSystemTime(LAST_SECOND_OF_DAY + 500);
+        const used = (await keyStore.getQuotaUsage(testUserId)).usedToday;
+        vi.setSystemTime(now);
+        return used;
       }
 
-      const cleaned = keyStore.cleanExpiredReservations();
-      expect(cleaned).toBe(1);
-      expect(keyStore.getActiveReservationsCount()).toBe(0);
+      it('cleans up and refunds expired reservations to that day automatically', async () => {
+        const res = await keyStore.reserveQuota(testUserId, 10);
+        expect(res.allowed).toBe(true);
+        vi.setSystemTime(NEXT_DAY);
 
-      // Quota should be restored to full 25
-      const probe = await keyStore.reserveQuota(testUserId, 0);
-      expect(probe.remaining).toBe(25);
+        expect(keyStore.cleanExpiredReservations()).toBe(1);
+        expect(await usedOnTheDayItWasMade()).toBe(0);
+        expect((await keyStore.getQuotaUsage(testUserId)).remaining).toBe(25);
+      });
+
+      it('refunds an expired reservation to the day it was made on, never to the day it expired on', async () => {
+        const res = await keyStore.reserveQuota(testUserId, 5);
+        expect(res.allowed).toBe(true);
+        vi.setSystemTime(NEXT_DAY);
+        expect((await keyStore.reserveQuota(testUserId, 3)).allowed).toBe(true);
+
+        expect(await keyStore.rollbackQuota(res.reservationId!)).toBe(false);
+        expect((await keyStore.getQuotaUsage(testUserId)).usedToday).toBe(3);
+        expect(await usedOnTheDayItWasMade()).toBe(0);
+      });
+
+      it('is cleaned by the next reserveQuota without a manual clean', async () => {
+        const fullRes = await keyStore.reserveQuota(testUserId, 25);
+        expect(fullRes.allowed).toBe(true);
+        expect((await keyStore.reserveQuota(testUserId, 1)).allowed).toBe(false);
+        vi.setSystemTime(NEXT_DAY);
+
+        const afterExpiry = await keyStore.reserveQuota(testUserId, 5);
+        expect(afterExpiry.allowed).toBe(true);
+        expect(afterExpiry.remaining).toBe(20);
+        expect(await usedOnTheDayItWasMade()).toBe(0);
+      });
     });
 
     it('unifies keyStore and redisKeyStore state and eliminates decoupled disk overwrites', async () => {
@@ -489,47 +519,6 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       const diskStore = new KeyStore();
       const diskUsage = await diskStore.getQuotaUsage(testUserId);
       expect(diskUsage.usedToday).toBe(15);
-    });
-
-    it('refunds expired or rolled back reservations to original reservation date across UTC midnight', async () => {
-      const res = await keyStore.reserveQuota(testUserId, 5);
-      expect(res.allowed).toBe(true);
-
-      const reservation = keyStore.getReservation(res.reservationId!);
-      expect(reservation).toBeDefined();
-
-      // Simulate reservation made on a different date (e.g. 2026-09-01)
-      const fakePastDateKey = `${testUserId}:2026-09-01`;
-      (keyStore as any).dailyUsage.set(fakePastDateKey, 5);
-      reservation!.dateKey = fakePastDateKey;
-      reservation!.expiresAt = Date.now() - 1000;
-
-      // Clean expired reservations
-      const cleaned = keyStore.cleanExpiredReservations();
-      expect(cleaned).toBe(1);
-
-      // The past date usage must be refunded to 0
-      expect((keyStore as any).dailyUsage.get(fakePastDateKey)).toBe(0);
-    });
-
-    it('automatically cleans expired reservations on reserveQuota without requiring manual query', async () => {
-      // Consume all 25 units
-      const fullRes = await keyStore.reserveQuota(testUserId, 25);
-      expect(fullRes.allowed).toBe(true);
-
-      // Further reservation is blocked
-      const blocked = await keyStore.reserveQuota(testUserId, 1);
-      expect(blocked.allowed).toBe(false);
-
-      // Simulate expiration
-      const reservation = keyStore.getReservation(fullRes.reservationId!);
-      expect(reservation).toBeDefined();
-      reservation!.expiresAt = Date.now() - 1000;
-
-      // Directly attempt reserveQuota without calling getActiveReservationsCount()
-      const afterExpiry = await keyStore.reserveQuota(testUserId, 5);
-      expect(afterExpiry.allowed).toBe(true);
-      expect(afterExpiry.remaining).toBe(20);
     });
 
     it('executes atomic RESERVE_QUOTA_LUA_SCRIPT, COMMIT_QUOTA_LUA_SCRIPT and DEDUCT_QUOTA_LUA_SCRIPT via redis.eval', async () => {

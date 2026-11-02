@@ -473,8 +473,8 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   _requeue(job: Job<T, R>, delayMs: number = 0): boolean {
-    // Only an attempt that is still active may be retried; a cancel during the failure path wins.
-    if (job.state !== 'active') {
+    // Only an active attempt of a job this queue holds may be retried (a cancel wins; a delegated pop retries in its queue).
+    if (job.state !== 'active' || this.jobs.get(job.id) !== job) {
       return false;
     }
     if (delayMs > 0) {

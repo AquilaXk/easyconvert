@@ -43,6 +43,7 @@ import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
   ConversionFailedError,
   GraphExportError,
+  ImportBudgetExceededError,
   InvalidPageRangeError,
   JobTimeoutError,
   MediaPackagingOptions,
@@ -58,10 +59,13 @@ import {
   MERGE_FORMATS,
   PDF_SPLIT_OUTPUT_FORMAT,
   THUMBNAIL_FORMATS,
-  chargesConversionUnit,
+  graphNodeCharge,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
-import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
+import { pageCappedEngine, pageLimitForOwner, tierForOwner } from '../page-cap';
+import { dailyBudgetBytes, reserveLinkImport } from '../../api-keys/anonymous-upload-budget';
+import { planOfCaller } from '../../plan-limits';
+import { formatBytes } from '../../format-bytes';
 import { saveRetainedResult } from '../../storage/retention-service';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
@@ -257,12 +261,13 @@ function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean }
 }
 
 /**
- * The units a node of `op` that produced a result charges: one for a conversion, none for an import, an export or an
- * optimize node that gained nothing (docs/policy-decisions.md, entry 15).
+ * The node a job carries, ready to run. Its options come from the request body, so they cannot carry the signal, a
+ * timeout or a deadline into an engine; passwords sealed for the queue are opened here, in memory, and never stored back.
  */
-function chargedUnitsOf(op: string, optimizations: NonNullable<ConversionJobResult['optimizations']>): number {
-  const gainedNothing = optimizations.length > 0 && optimizations.every((o) => !o.optimized);
-  return chargesConversionUnit(op) && !gainedNothing ? 1 : 0;
+function openedNode(submitted: unknown, jobId: string): unknown {
+  const options = (submitted as { options?: unknown } | undefined)?.options;
+  if (!options || typeof options !== 'object') return submitted;
+  return { ...(submitted as object), options: openPasswordOption(stripEngineControls(options), jobId) };
 }
 
 export async function processGraphNodeJob(
@@ -271,23 +276,21 @@ export async function processGraphNodeJob(
   storage?: IStorageBackend,
   optimizers: OptimizerRegistry = OPTIMIZERS
 ): Promise<ConversionJobResult> {
-  // Scratch files a remote backend stages for this node's inputs are removed when the node ends.
-  const scope = scopeStorageObjects(storage || storageProvider);
   const startTime = Date.now();
   const attemptSignal = job.signal;
   const graphId = job.data.graphId!;
   const nodeId = job.data.graphNodeId!;
-  const submittedNode = job.data.graphNode as any;
-  // Node options come from the request body: they cannot carry the signal, a timeout or a deadline into an engine.
-  // Passwords sealed for the queue are opened here, in memory, and never stored back anywhere.
-  const node = submittedNode?.options && typeof submittedNode.options === 'object'
-    ? { ...submittedNode, options: openPasswordOption(stripEngineControls(submittedNode.options), graphNodeJobId(graphId, nodeId)) }
-    : submittedNode;
-  const effectiveStorage: IStorageBackend = scope.storage;
-  let outputKeys: string[] = [];
-  const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
+  let scope: ReturnType<typeof scopeStorageObjects> | undefined;
 
+  // Everything the node does, from opening its options on, runs inside this try, so whatever ends the attempt reaches the
+  // scheduler through the catch; the job listeners report the ends that never reach it (a stalled or cancelled job).
   try {
+    // Scratch files a remote backend stages for this node's inputs are removed when the node ends.
+    scope = scopeStorageObjects(storage || storageProvider);
+    const node: any = openedNode(job.data.graphNode, graphNodeJobId(graphId, nodeId));
+    const effectiveStorage: IStorageBackend = scope.storage;
+    let outputKeys: string[] = [];
+    const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
     const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
       pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId)),
       job
@@ -307,7 +310,7 @@ export async function processGraphNodeJob(
       case 'import.url': {
         // Secrets are opened here, at the point of use, and never stored back anywhere.
         const { url, headers } = openUrlNodeSecrets(node, graphNodeJobId(graphId, nodeId));
-        outputKeys = [await importUrlArtifact(effectiveStorage, graphId, nodeId, url, headers, attemptSignal)];
+        outputKeys = [await importUrlWithinBudget(job, effectiveStorage, url, headers)];
         await job.log(`Node "${nodeId}" imported from URL: ${outputKeys[0]}`);
         break;
       }
@@ -802,7 +805,7 @@ export async function processGraphNodeJob(
     // An engine that ignored the abort and returned late has no say: the queue already failed this attempt (deadline,
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, chargedUnitsOf(node.op, optimizations));
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, graphNodeCharge(node.op, { outputs: outputKeys.length, optimizations }));
 
     return {
       jobId: job.id,
@@ -830,7 +833,7 @@ export async function processGraphNodeJob(
     }
     throw failure;
   } finally {
-    await scope.releaseAll();
+    await scope?.releaseAll();
   }
 }
 
@@ -855,33 +858,69 @@ function urlImportMaxBytes(): number {
   return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_URL_IMPORT_MAX_BYTES;
 }
 
-/** Streams a public URL into intermediate storage, refusing internal targets and oversized bodies. */
-async function importUrlArtifact(
+/**
+ * Imports the link of an import.url node under the daily byte budget of the graph's owner, as `/api/fetch-url` imports one
+ * (docs/policy-decisions.md, entry 15): it holds the bytes it may still read until the node's deadline, is refused once
+ * the day has none left, and is charged the bytes it received however it ends.
+ */
+async function importUrlWithinBudget(
+  job: Job<ConversionJobData, ConversionJobResult>,
   storage: IStorageBackend,
-  graphId: string,
-  nodeId: string,
   url: string,
-  headers: Record<string, string> | undefined,
-  signal: AbortSignal
+  headers: Record<string, string> | undefined
 ): Promise<string> {
+  const { graphId, graphNodeId: nodeId, userId: owner } = job.data;
+  const deadlineAt = jobDeadlineAt(job);
+  if (!graphId || !nodeId || !owner || deadlineAt === undefined) {
+    throw new ConversionFailedError(`Import node "${nodeId}" has no owner and deadline, so its bytes cannot be held against a daily budget.`);
+  }
+  const plan = planOfCaller({ id: owner, tier: await tierForOwner(owner) });
+  const maxBytes = urlImportMaxBytes();
+  const held = await reserveLinkImport(owner, plan, deadlineAt - Date.now(), maxBytes);
+  if ('refusal' in held) {
+    throw new ImportBudgetExceededError(
+      `The link imports of this account may total ${formatBytes(dailyBudgetBytes(plan))} a day, and today's are used up. The limit resets at midnight UTC.`
+    );
+  }
+  const received = { bytes: 0 };
+  try {
+    return await importUrlArtifact({ storage, graphId, nodeId, url, headers, signal: job.signal, maxBytes, received });
+  } finally {
+    // A charge that fails is logged and never replaces the outcome of the import.
+    await held.reservation.settle(received.bytes).catch((err: unknown) => {
+      console.error(`[GraphNode] The bytes of import node "${nodeId}" could not be charged to the daily budget:`, err);
+    });
+  }
+}
+
+/** Streams a public URL into intermediate storage, refusing internal targets and bodies over `maxBytes`, counting what it read. */
+async function importUrlArtifact(request: {
+  storage: IStorageBackend;
+  graphId: string;
+  nodeId: string;
+  url: string;
+  headers: Record<string, string> | undefined;
+  signal: AbortSignal;
+  maxBytes: number;
+  received: { bytes: number };
+}): Promise<string> {
+  const { storage, graphId, nodeId, url, headers, signal, maxBytes, received } = request;
   const response = await safeFetch(url, { headers, signal });
   if (!response.ok || !response.body) {
     await response.body?.cancel();
     throw new ConversionFailedError(`Failed to fetch URL ${redactUrl(url)}: HTTP ${response.status}`);
   }
-  const maxBytes = urlImportMaxBytes();
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
     await response.body.cancel();
     throw new ConversionFailedError(`Remote file at ${redactUrl(url)} is ${declared} bytes, above the ${maxBytes}-byte import limit`);
   }
 
-  let received = 0;
   const source = Readable.fromWeb(response.body as import('node:stream/web').ReadableStream);
   const limiter = new Transform({
     transform(chunk: Buffer, _enc, done) {
-      received += chunk.length;
-      if (received > maxBytes) {
+      received.bytes += chunk.length;
+      if (received.bytes > maxBytes) {
         done(new ConversionFailedError(`Remote file at ${redactUrl(url)} exceeds the ${maxBytes}-byte import limit`));
         return;
       }

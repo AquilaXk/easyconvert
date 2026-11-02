@@ -8,6 +8,7 @@ import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -84,7 +85,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 /** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */
 async function startJob(req: NextRequest, user: User, instanceUri: string): Promise<Response> {
   const unit = await reserveConversionUnit(user);
-  if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
+  if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
   return withReservedUnit(unit.reservationId, (reserved) => queueJob(req, user, reserved, instanceUri));
 }
 

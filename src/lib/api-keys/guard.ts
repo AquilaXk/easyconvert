@@ -8,8 +8,7 @@ import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
 import { CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS, ClientIpConfigError, ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
-import { RATE_LIMITED_PROBLEM_TYPE, createProblemDetailsResponse } from '../api/problem-details';
-import { buildRateLimitHeaders } from '../api/rate-limit';
+import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
 
@@ -61,7 +60,7 @@ function anonymousQuotaExceeded(): string {
   return `Daily conversion quota exceeded for anonymous usage (${getAnonymousDailyLimit()} conversions per day). Please sign in or use an API key.`;
 }
 
-export function tierQuotaExceeded(tier: string): string {
+function tierQuotaExceeded(tier: string): string {
   return `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`;
 }
 
@@ -521,8 +520,29 @@ export async function getQuotaUsage(userId: string): Promise<QuotaUsage> {
   return redisKeyStore.getQuotaUsage(userId);
 }
 
+/**
+ * Why the conversions a request needs were refused, as data for the route layer to answer (`conversionRefusalResponse`):
+ * the quota store is offline, or the day has fewer conversions left than the request needs. `usage` is the day's count
+ * with `remaining` as the refusal found it.
+ */
+export type ConversionRefusal =
+  | { reason: 'offline'; error: string }
+  | { reason: 'used-up'; error: string; usage: QuotaUsage; requiredUnits: number };
+
 /** Conversion units of a caller, reserved after the request was authenticated with none; or why they were refused. */
-export type ConversionUnit = { reserved: true; reservationId?: string } | ({ reserved: false } & QuotaRefusal);
+export type ConversionUnit = { reserved: true; reservationId?: string } | { reserved: false; refusal: ConversionRefusal };
+
+function conversionsNeeded(units: number): string {
+  return units === 1 ? '1 conversion' : `${units} conversions`;
+}
+
+/** The refusal of a request of `user` that needs `requiredUnits` conversions on a day with `usage.remaining` left. */
+export function conversionsUsedUp(user: User, usage: QuotaUsage, requiredUnits: number): ConversionRefusal {
+  const allowance = isAnonymousUserId(user.id) ? anonymousQuotaExceeded() : tierQuotaExceeded(user.tier);
+  const left = Math.max(0, usage.remaining);
+  const error = `${allowance} This request needs ${conversionsNeeded(requiredUnits)} and ${left} ${left === 1 ? 'is' : 'are'} left today.`;
+  return { reason: 'used-up', error, usage: { ...usage, remaining: left }, requiredUnits };
+}
 
 /**
  * Reserves `units` conversion units for `user`, whose request was authenticated with none so that a repeat answered from
@@ -532,30 +552,10 @@ export type ConversionUnit = { reserved: true; reservationId?: string } | ({ res
 export async function reserveConversionUnit(user: User, units: number = 1): Promise<ConversionUnit> {
   if (isUnattributedAnonymous(user.id)) return { reserved: true };
   const quota = await checkQuotaAndReserve(user.id, user.tier, units);
-  return quota.allowed ? { reserved: true, reservationId: quota.reservationId } : { reserved: false, ...quotaRefusal(quota, user.id) };
-}
-
-/**
- * The answer of an `/api/v1` route whose conversion units were refused: 429 with the day's `quota` in its headers when the
- * conversions of the day are used up, else the refusal as it is (503 while the quota store is offline).
- */
-export function conversionUnitRefusal(
-  refusal: Extract<ConversionUnit, { reserved: false }>,
-  user: User,
-  quota: QuotaUsage,
-  instanceUri: string
-): Response {
-  if (refusal.status !== HTTP_TOO_MANY_REQUESTS) {
-    return createProblemDetailsResponse(refusal.status, refusal.error, instanceUri, undefined, refusal.problemType);
-  }
-  return createProblemDetailsResponse(
-    HTTP_TOO_MANY_REQUESTS,
-    tierQuotaExceeded(user.tier),
-    instanceUri,
-    'Too Many Requests',
-    undefined,
-    buildRateLimitHeaders({ ...quota, remaining: 0 })
-  );
+  if (quota.allowed) return { reserved: true, reservationId: quota.reservationId };
+  if (quota.serviceUnavailable) return { reserved: false, refusal: { reason: 'offline', error: quotaRefusal(quota, user.id).error } };
+  const usage = await redisKeyStore.getQuotaUsage(user.id);
+  return { reserved: false, refusal: conversionsUsedUp(user, { ...usage, remaining: quota.remaining ?? 0 }, units) };
 }
 
 /** A reservation while its request runs. Each way of ending it acts once; after one, the others do nothing. */

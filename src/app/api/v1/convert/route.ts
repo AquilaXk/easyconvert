@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, conversionUnitRefusal, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -192,17 +193,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   const rateLimitHeaders = buildRateLimitHeaders(quota);
 
-  const quotaExceededDetail = tierQuotaExceeded(auth.user.tier);
-  const quotaExhausted = () =>
-    reply(createProblemDetailsResponse(
-      429,
-      quotaExceededDetail,
-      instanceUri,
-      'Too Many Requests',
-      undefined,
-      buildRateLimitHeaders({ ...quota, remaining: 0 })
-    ));
-  if (quota.remaining <= 0) return quotaExhausted();
+  if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
 
   // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
   // the request ends; an asynchronous handoff stays counted through the job it queues.
@@ -258,7 +249,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
     const unit = await reserveConversionUnit(auth.user);
-    if (!unit.reserved) return reply(conversionUnitRefusal(unit, auth.user, quota, instanceUri));
+    if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 
     const conversion: ReservedConversion = {
       req,

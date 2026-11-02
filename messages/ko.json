@@ -2002,7 +2002,8 @@
       "idempotency-key-in-flight": "같은 요청을 아직 처리하는 중이에요. 잠시 후 다시 시도해 주세요.",
       "client-ip-trust-unconfigured": "서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.",
       "byos-invalid-endpoint": "저장소 주소를 쓸 수 없어요. 주소를 확인한 뒤 다시 시도해 주세요.",
-      "byos-provider-unavailable": "이 저장소는 아직 연결할 수 없어요. 다른 저장소를 선택해 주세요."
+      "byos-provider-unavailable": "이 저장소는 아직 연결할 수 없어요. 다른 저장소를 선택해 주세요.",
+      "graph-without-conversion": "작업에는 변환이 하나 이상 있어야 해요. 가져오기와 내보내기 사이에 변환 단계를 추가해 주세요."
     },
     "limits": {
       "payload-too-large": "한 번에 보낼 수 있는 크기는 최대 {limit}예요.",
@@ -2033,6 +2034,7 @@
       "malformed_input": "파일이 손상됐거나 일부가 없어서 읽을 수 없어요.",
       "unsupported_input": "손상된 파일은 아니지만 이런 종류의 파일은 변환할 수 없어요.",
       "input_over_limit": "파일 내용이 변환할 수 있는 양보다 많아요. 예를 들어 픽셀이 너무 많거나 압축을 풀면 너무 커져요.",
+      "import_budget_exceeded": "오늘 링크 가져오기 한도를 모두 썼어요. 내일 다시 시도해 주세요.",
       "timeout": "변환이 제한 시간 안에 끝나지 않았어요. 다시 시도해 주세요.",
       "engine_unavailable": "이 변환에 필요한 엔진을 지금 쓸 수 없어요. 나중에 다시 시도해 주세요.",
       "conversion_failed": "변환하지 못했어요. 다른 형식을 고르거나 다시 시도해 주세요."

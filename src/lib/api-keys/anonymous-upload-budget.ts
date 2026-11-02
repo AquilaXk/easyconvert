@@ -251,14 +251,16 @@ export interface LinkImportReservation {
 }
 
 /**
- * Takes the hold of a link import of `callerUserId` on the day's bytes of `plan`: the import limit, or the bytes left
- * when fewer, so imports running at once cannot pass the budget together. Refused once the day has no byte left. The
- * hold lasts the import's `deadlineMs` and LINK_IMPORT_HOLD_GRACE_MS more; one whose process died returns its bytes then.
+ * Takes the hold of a link import of `callerUserId` on the day's bytes of `plan`: the most the import may read
+ * (`importLimitBytes`), or the bytes left when fewer, so imports running at once cannot pass the budget together. Refused
+ * once the day has no byte left. The hold lasts the import's `deadlineMs` and LINK_IMPORT_HOLD_GRACE_MS more; one whose
+ * process died returns its bytes then.
  */
 export async function reserveLinkImport(
   callerUserId: string,
   plan: Plan,
-  deadlineMs: number
+  deadlineMs: number,
+  importLimitBytes: number = URL_IMPORT_MAX_BYTES
 ): Promise<{ reservation: LinkImportReservation } | { refusal: BudgetRefusal }> {
   const store = activeStore();
   const id = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex');
@@ -269,7 +271,7 @@ export async function reserveLinkImport(
     const left = dailyBudgetBytes(plan) - currentRecord(current, day, now).bytes;
     refusal = left > 0 ? undefined : 'daily-bytes';
     if (refusal) return undefined;
-    return holdImport(current, { id, bytes: Math.min(URL_IMPORT_MAX_BYTES, left), day, now, expiresAt: now + deadlineMs + LINK_IMPORT_HOLD_GRACE_MS });
+    return holdImport(current, { id, bytes: Math.min(importLimitBytes, left), day, now, expiresAt: now + deadlineMs + LINK_IMPORT_HOLD_GRACE_MS });
   });
   if (refusal) return { refusal };
   let settled = false;

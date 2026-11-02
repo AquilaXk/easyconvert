@@ -70,7 +70,8 @@ describe('submission limits', () => {
       graph: {
         nodes: {
           in: { op: 'import.url', ...node },
-          out: { op: 'export.internal', input: 'in' },
+          conv: { op: 'convert', input: 'in', targetFormat: 'json' },
+          out: { op: 'export.internal', input: 'conv' },
         },
       },
       targetFormat: 'csv',

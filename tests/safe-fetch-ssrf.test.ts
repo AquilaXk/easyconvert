@@ -214,11 +214,12 @@ describe('graph URL nodes', () => {
         options: {},
         graphId: 'g_ssrf',
         graphNodeId: 'n1',
+        userId: 'user_ssrf_import_owner',
         // The scheduler seals URL nodes before they are queued; the worker refuses plaintext.
         graphNode: sealGraphNode(graphNode as unknown as GraphNode, 'g_ssrf:n1'),
         inputArtifacts: [],
       },
-      opts: { attempts: 1 },
+      opts: { attempts: 1, timeout: 60_000 },
       attemptsMade: 1,
       signal: new AbortController().signal,
       log: async () => {},

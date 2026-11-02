@@ -315,11 +315,17 @@ describe('the units a scheduler script reports for a completed graph', () => {
 
   it('fails a graph that completed through a failed node when the script reports units that are not an integer', async () => {
     const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '[]', 'not-a-number']), keyPrefix: 'units:' });
-    await expect(scheduler.onNodeFailed('g_units', 'src', 'the node failed')).rejects.toBeInstanceOf(GraphStateCorruptError);
+    await expect(scheduler.onNodeFailed('g_units', 'src', 'the node failed')).rejects.toMatchObject({
+      name: 'GraphStateCorruptError',
+      message: expect.stringContaining('the charged units is not a non-negative integer'),
+    });
   });
 
   it('fails a graph that completed through its last node when the script reports units that are not an integer', async () => {
     const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '1.5']), keyPrefix: 'units:' });
-    await expect(scheduler.onNodeCompleted('g_units', 'out', [], 1)).rejects.toBeInstanceOf(GraphStateCorruptError);
+    await expect(scheduler.onNodeCompleted('g_units', 'out', [], 1)).rejects.toMatchObject({
+      name: 'GraphStateCorruptError',
+      message: expect.stringContaining('the charged units is not a non-negative integer'),
+    });
   });
 });

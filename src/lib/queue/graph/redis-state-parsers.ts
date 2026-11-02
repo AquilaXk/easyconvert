@@ -92,6 +92,15 @@ function parseJson(graphId: string, what: string, text: string): unknown {
   }
 }
 
+/** A count a script reports (the units a graph charged); anything but a non-negative integer is corrupt, never 0. */
+export function parseStoredCount(graphId: string, what: string, raw: unknown): number {
+  const text = typeof raw === 'number' ? String(raw) : raw;
+  if (typeof text !== 'string' || !NON_NEGATIVE_INTEGER.test(text) || !Number.isSafeInteger(Number(text))) {
+    throw corrupt(graphId, `${what} is not a non-negative integer`);
+  }
+  return Number(text);
+}
+
 /** The status string a script or a hash reports; anything outside the known statuses is corrupt. */
 export function parseGraphStatus(graphId: string, value: unknown): GraphStatus {
   if (typeof value !== 'string' || !GRAPH_STATUSES.has(value)) {

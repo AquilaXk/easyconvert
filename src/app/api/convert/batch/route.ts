@@ -21,6 +21,7 @@ import {
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
 import {
   createProblemDetailsResponse,
@@ -131,9 +132,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
 
     const unit = await reserveConversionUnit(auth.user, planned.length);
-    if (!unit.reserved) {
-      return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
-    }
+    if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
     const caller = auth.user;
     return await withReservedUnit(unit.reservationId, (reserved) => convertPlanned(req, caller, planned, defaultOptions, reserved));
   } catch (error: unknown) {

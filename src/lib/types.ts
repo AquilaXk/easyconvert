@@ -601,6 +601,19 @@ export class DataParseError extends ConversionFailedError {
   }
 }
 
+/**
+ * A graph `import.url` node whose owner has no bytes left today for link imports (docs/policy-decisions.md, entry 15). A
+ * retry finds the same budget, so the node fails at once.
+ */
+export class ImportBudgetExceededError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'import_budget_exceeded';
+  readonly status = 429;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ImportBudgetExceededError';
+  }
+}
+
 /** Structured-data input that exceeds a safety cap: entity or alias expansion, expanded size, nesting depth. */
 export class DataLimitExceededError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
