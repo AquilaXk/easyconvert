@@ -21,6 +21,8 @@ import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { RedisGraphScheduler } from '../src/lib/queue/graph/redis-scheduler';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { storageProvider } from '../src/lib/storage';
 import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -494,15 +496,17 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   });
 
   describe('the end of a graph', () => {
-    it('settles the reservation to the charge when draining the outbox fails after the completion was recorded', async () => {
-      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
-      let failNextListRead = false;
+    const WEBHOOK = { webhookUrl: 'https://hooks.example.com/graph', webhookSecret: 'whsec_graph_end' };
+
+    /** A scheduler whose next `lrange` fails once `failNextListRead` is set, as a dropped connection would. */
+    function schedulerWithFlakyListRead(connection: Redis) {
+      const control = { failNextListRead: false };
       const flaky = new Proxy(connection, {
         get(target, prop) {
           if (prop === 'lrange') {
             return async (...args: Parameters<Redis['lrange']>) => {
-              if (failNextListRead) {
-                failNextListRead = false;
+              if (control.failNextListRead) {
+                control.failNextListRead = false;
                 throw new Error('the connection dropped');
               }
               return target.lrange(...args);
@@ -512,19 +516,52 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
           return typeof value === 'function' ? value.bind(target) : value;
         },
       });
+      return { scheduler: new RedisGraphScheduler({ redisClient: flaky, keyPrefix, enqueueNode: async () => undefined }), control };
+    }
+
+    it('settles the reservation, sends graph.completed once and removes the files when draining the outbox fails after the completion was recorded', async () => {
+      const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const removed = vi.spyOn(storageProvider, 'deleteByPrefix').mockResolvedValue(undefined as never);
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
       try {
-        const scheduler = new RedisGraphScheduler({ redisClient: flaky, keyPrefix, enqueueNode: async () => undefined });
+        const { scheduler, control } = schedulerWithFlakyListRead(connection);
         const unit = await redisKeyStore.reserveQuota(client.userId, 2);
         const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
         const graph = { failurePolicy: 'fail_fast' as const, nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' } } };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId });
+        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
         expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
 
-        failNextListRead = true;
-        await expect(scheduler.onNodeCompleted(graphId, 'up', ['uploads/graph-end/a.csv'], 1)).rejects.toThrow();
+        control.failNextListRead = true;
+        expect(await scheduler.onNodeCompleted(graphId, 'up', ['uploads/graph-end/a.csv'], 1)).toMatchObject({ graphCompleted: true, graphStatus: 'completed' });
 
         expect((await scheduler.getGraphState(graphId))?.status).toBe('completed');
         expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+        expect(dispatched.mock.calls.map((call) => call[1])).toEqual(['graph.completed']);
+        expect(removed).toHaveBeenCalledWith(`intermediate/${graphId}/`);
+      } finally {
+        await connection.quit();
+      }
+    });
+
+    it('fails the completion of a node that does not end its graph when draining the outbox fails, so the node is tried again', async () => {
+      const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      try {
+        const { scheduler, control } = schedulerWithFlakyListRead(connection);
+        const unit = await redisKeyStore.reserveQuota(client.userId, 2);
+        const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+        const graph = {
+          failurePolicy: 'fail_fast' as const,
+          nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' }, conv: { op: 'convert' as const, input: 'up', targetFormat: 'json' } },
+        };
+        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
+
+        control.failNextListRead = true;
+        await expect(scheduler.onNodeCompleted(graphId, 'up', ['uploads/graph-end/a.csv'], 0)).rejects.toThrow('the connection dropped');
+
+        expect((await scheduler.getGraphState(graphId))?.status).toBe('running');
+        expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
+        expect(dispatched).not.toHaveBeenCalled();
       } finally {
         await connection.quit();
       }
