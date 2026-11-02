@@ -8,9 +8,13 @@ import { codedRefusal } from './problem-details';
 
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
 
 /** A refusal of a dashboard route, with a code of its closed list where the status cannot say the cause. */
 export const dashboardRefusal = codedRefusal<DashboardRefusalCode>;
+
+/** A dashboard route's answer for an id it does not know for the caller, which the status words without a code. */
+export const notFoundRefusal = (message: string) => dashboardRefusal(HTTP_NOT_FOUND, undefined, message);
 
 export interface DashboardAccess {
   /** What the caller does, as the English refusals of the route name it ("revoke API keys"). */

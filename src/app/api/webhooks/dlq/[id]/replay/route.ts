@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
+import { notFoundRefusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
 import { redactUrl } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
-
-const HTTP_NOT_FOUND = 404;
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -18,7 +16,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
 
   const result = await webhookDispatcher.replayDlq(id, caller.user.id);
   if (!result) {
-    return refusal(HTTP_NOT_FOUND, undefined, `DLQ entry "${id}" not found.`);
+    return notFoundRefusal(`DLQ entry "${id}" not found.`);
   }
 
   return NextResponse.json({

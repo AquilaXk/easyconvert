@@ -21,11 +21,11 @@ export function useFilesAndDlqController(
   const [inspectingDlq, setInspectingDlq] = useState<WebhookDlqEntry | null>(null);
   const [replayingDlqId, setReplayingDlqId] = useState<string | null>(null);
   const [dlqFeedback, setDlqFeedback] = useState<string | null>(null);
-  const beginFilesRead = useReadSequence();
-  const beginDlqRead = useReadSequence();
+  const filesReads = useReadSequence();
+  const dlqReads = useReadSequence();
 
   const fetchUserFiles = useCallback(async () => {
-    const isLatest = beginFilesRead();
+    const isLatest = filesReads.begin();
     setFilesLoading(true);
     try {
       const res = await fetch('/api/account/files');
@@ -44,10 +44,10 @@ export function useFilesAndDlqController(
     } finally {
       if (isLatest()) setFilesLoading(false);
     }
-  }, [beginFilesRead, onReportError, readWording, t]);
+  }, [filesReads, onReportError, readWording, t]);
 
   const fetchDlqEntries = useCallback(async () => {
-    const isLatest = beginDlqRead();
+    const isLatest = dlqReads.begin();
     setDlqLoading(true);
     try {
       const res = await fetch('/api/webhooks/dlq');
@@ -66,7 +66,7 @@ export function useFilesAndDlqController(
     } finally {
       if (isLatest()) setDlqLoading(false);
     }
-  }, [beginDlqRead, onReportError, readWording, t]);
+  }, [dlqReads, onReportError, readWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const readersRef = useRef({ fetchUserFiles, fetchDlqEntries });

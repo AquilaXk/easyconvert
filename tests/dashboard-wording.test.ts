@@ -236,7 +236,7 @@ describe('a refused dashboard request', () => {
 
     it.each([
       ['an untyped 401 (the proxy, an older server)', () => untyped(401, 'Unauthorized: Sign in or valid API key required.')],
-      ['the route\'s coded 401', () => coded(401, 'sign_in_required', 'Unauthorized: Sign in or valid API key required.')],
+      ['a 401 with a code outside the closed list', () => coded(401, 'sign_in_required', 'Unauthorized: Sign in or valid API key required.')],
     ])('says to sign in when the key list is answered with %s', async (_label, answer) => {
       let reported: string | null = null;
       const report = (error: string | null) => { reported = error; };

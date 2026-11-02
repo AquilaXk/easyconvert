@@ -99,10 +99,10 @@ export function useApiKeysController(
   ]);
   const [keyExpiry, setKeyExpiry] = useState<KeyExpiryOption>('30d');
   const { copiedKey, copyToClipboard } = useClipboardCopyStatus();
-  const beginKeysRead = useReadSequence();
+  const keysReads = useReadSequence();
 
   const fetchKeysAndQuota = useCallback(async () => {
-    const isLatest = beginKeysRead();
+    const isLatest = keysReads.begin();
     try {
       const [keysRes, quotaRes] = await Promise.all([
         fetch('/api/keys'),
@@ -120,7 +120,7 @@ export function useApiKeysController(
       warnBrowserFailure('Reading the API keys failed', error);
       if (isLatest()) onReportError(t('loadKeysNetwork'));
     }
-  }, [beginKeysRead, onReportError, readWording, t]);
+  }, [keysReads, onReportError, readWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const fetchKeysAndQuotaRef = useRef(fetchKeysAndQuota);

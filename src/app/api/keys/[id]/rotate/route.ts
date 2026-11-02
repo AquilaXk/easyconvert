@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
+import { dashboardRefusal as refusal, notFoundRefusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 
 export const dynamic = 'force-dynamic';
-
-const HTTP_NOT_FOUND = 404;
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -36,7 +34,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
 
   const result = await redisKeyStore.rotateApiKey(user.id, keyId, { gracePeriodSeconds });
   if (!result) {
-    return refusal(HTTP_NOT_FOUND, undefined, 'API key not found, inactive, or not owned by the current user.');
+    return notFoundRefusal('API key not found, inactive, or not owned by the current user.');
   }
 
   return NextResponse.json({

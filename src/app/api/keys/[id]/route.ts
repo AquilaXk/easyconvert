@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
+import { dashboardRefusal as refusal, notFoundRefusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope, ApiKeyUpdateOptions } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 
 export const dynamic = 'force-dynamic';
-
-const HTTP_NOT_FOUND = 404;
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -20,7 +18,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
   const revoked = await redisKeyStore.revokeApiKey(user.id, keyId);
   if (!revoked) {
-    return refusal(HTTP_NOT_FOUND, undefined, 'API key not found or not owned by the current user.');
+    return notFoundRefusal('API key not found or not owned by the current user.');
   }
 
   return NextResponse.json({
@@ -87,7 +85,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
   const updatedKey = await redisKeyStore.updateApiKey(user.id, keyId, updates);
   if (!updatedKey) {
-    return refusal(HTTP_NOT_FOUND, undefined, 'API key not found, inactive, or not owned by the current user.');
+    return notFoundRefusal('API key not found, inactive, or not owned by the current user.');
   }
 
   return NextResponse.json({

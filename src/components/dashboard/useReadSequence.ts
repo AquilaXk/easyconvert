@@ -1,13 +1,21 @@
-import { useCallback, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 
-/**
- * The order of the reads of one list: each read takes the next number, and only the latest may apply its answer, so an
- * older read that answers after a newer one is dropped (a newer request supersedes an older one).
- */
-export function useReadSequence(): () => () => boolean {
+/** The reads of one list, of which only the latest may apply its answer. */
+export interface ReadSequence {
+  /** Starts a read and returns whether it is still the latest when its answer comes, so an older answer is dropped. */
+  begin: () => () => boolean;
+}
+
+/** The order of the reads of one list: a newer read supersedes an older one that answers after it. */
+export function useReadSequence(): ReadSequence {
   const latest = useRef(0);
-  return useCallback(() => {
-    const read = ++latest.current;
-    return () => read === latest.current;
-  }, []);
+  return useMemo(
+    () => ({
+      begin: () => {
+        const read = ++latest.current;
+        return () => read === latest.current;
+      },
+    }),
+    []
+  );
 }
