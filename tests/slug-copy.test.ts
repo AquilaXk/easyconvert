@@ -78,6 +78,18 @@ describe('the intro of a converter page', () => {
     expect(misnamed).toEqual([]);
   });
 
+  it.each([
+    ['constructor-to-pdf', 'Convert CONSTRUCTOR files to PDF online.'],
+    ['__proto__-converter', 'Convert __PROTO__ files online.'],
+    ['pdf-to-constructor', 'Convert PDF files to CONSTRUCTOR online.'],
+  ])('of %s, which names a property of every object, reads as any unregistered format does', (slug, lead) => {
+    expect(firstSentence(slugPageCopy(slug, 'en').description)).toBe(lead);
+  });
+
+  it('finds no targets for a name that is a property of every object', () => {
+    expect(['constructor', '__proto__'].map((name) => getAvailableTargetFormats(name))).toEqual([[], []]);
+  });
+
   it.each(LOCALES)('in %s names no options on a format page, whose options depend on the target', (locale) => {
     const word = locale === 'en' ? /option/i : /옵션/;
     const naming = [...formatPages, ...categoryPages].filter((slug) => word.test(slugPageCopy(slug, locale).description));
