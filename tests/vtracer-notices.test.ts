@@ -115,8 +115,9 @@ describe('the third-party notices of the tracer program', () => {
       expect(texts.length, name).toBeGreaterThan(0);
       expect(texts.some((text) => /^\s*Copyright\b.*\S/im.test(text)), name).toBe(true);
     }
-    expect(textsShippedBy('gimli 0.32.3').join('\n')).toContain('The gimli Developers');
-    expect(textsShippedBy('hashbrown 0.17.1').join('\n')).toContain("Amanieu d'Antras");
+    expect(textsShippedBy('addr2line 0.25.1').join('\n')).toContain('Copyright (c) 2016-2018 The gimli Developers');
+    expect(textsShippedBy('object 0.37.3').join('\n')).toContain('Copyright (c) 2015 The Gimli Developers');
+    expect(textsShippedBy('hashbrown 0.17.1').join('\n')).toContain("Copyright (c) 2016 Amanieu d'Antras");
     expect(textsShippedBy('compiler_builtins 0.1.160').join('\n')).toContain('contributors listed in CREDITS.TXT');
   });
 
@@ -126,16 +127,16 @@ describe('the third-party notices of the tracer program', () => {
     expect(noticesText).toMatch(heading);
     const rule = '='.repeat(80);
     const at = noticesText.search(heading);
-    const text = noticesText.slice(at).split(`${rule}\n`)[2].replaceAll('\r\n', '\n');
+    const text = noticesText.slice(at).split(`${rule}\n`)[1].replaceAll('\r\n', '\n');
     expect(text).toContain('Apache License');
     expect(text).toContain('LLVM Exceptions to the Apache 2.0 License');
     expect(text).toContain('Copyright (c) 2009-2019 by the contributors listed in CREDITS.TXT');
   });
 
   it('state the licence elected for each crate offered under several, and that the MIT text and its copyright line are included', () => {
-    const lines = noticesText.split('\n').filter((line) => / \(.* OR .*\)$/.test(line) || /\(MIT\/Apache-2\.0\)$/.test(line));
-    expect(lines.length).toBeGreaterThan(0);
-    for (const line of lines.filter((candidate) => /^[A-Za-z0-9_.-]+ \d/.test(candidate))) expect(line, line).toMatch(/; elected (MIT|Apache-2\.0)\)$/);
+    const offered = noticesText.split('\n').filter((line) => /^[A-Za-z0-9_.-]+ \d.* \((.* OR .*|\S+\/\S+)\)$/.test(line) && !line.includes(' AND '));
+    expect(offered.length).toBeGreaterThan(60);
+    for (const line of offered) expect(line, line).toMatch(/; elected (MIT|Apache-2\.0)\)$/);
     expect(noticesText).toMatch(/where a crate is offered under several licences, the one elected is MIT/i);
     expect(listedStdCrates().length).toBe(STD_CRATES.length);
   });
@@ -189,7 +190,7 @@ function crateArchive(files: Record<string, string | { symlinkTo: string }>, nam
   }
 }
 
-const read = (archive: Buffer, name = 'demo', version = '1.0.0') => readCrateLicence({ name, version, checksum: '' }, archive);
+const read = (archive: Buffer, name = 'demo', version = '1.0.0') => readCrateLicence({ name, version }, archive);
 
 describe('electing one licence of an expression', () => {
   const mitText = { text: 'MIT License\n\nCopyright (c) 2015 Someone\n\nPermission is hereby granted, free of charge, to any person\n' };

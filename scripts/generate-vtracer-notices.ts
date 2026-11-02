@@ -18,9 +18,12 @@ import { parse } from 'smol-toml';
  *   without shipping it.
  *
  * No lockfile lists the rest of the binary, so its texts are pinned below: the release programs are built for the musl targets, which
- * link musl libc statically, and every Rust program carries the standard library with the crates it vendors. Those notices are musl's
- * COPYRIGHT and the Rust project's COPYRIGHT, LICENSE-MIT and LICENSE-APACHE, as distributions that ship static musl Rust programs
- * install them.
+ * link musl libc and LLVM libunwind statically, and every Rust program carries the standard library with the crates it vendors. Those
+ * notices are musl's COPYRIGHT, the Rust project's COPYRIGHT, LICENSE-MIT and LICENSE-APACHE, and what that COPYRIGHT leaves to the
+ * files of each part: the LICENSE*, COPYING* and UNLICENSE files of the vendored crates the programs carry, read from the rust-src
+ * component of the release built from RUST_COMMIT (the official dist archive, checked against the digest its `.sha256` file and the
+ * channel manifest publish), and libunwind/LICENSE.TXT of the llvm-project commit that RUST_COMMIT pins as src/llvm-project. The
+ * archive digest pins every text in it.
  *
  * The upstream manifests are fetched from the tagged commit, checked against the digests below and kept in
  * scripts/vtracer-notices/upstream, so tests/worker-vtracer-packaging.test.ts can check the notices against the graph offline.
@@ -52,6 +55,14 @@ const RUST_COMMIT = '88d9e12ae178fab0fb5cc050a94da85685d449ea';
 /** The musl release the Rust musl targets link at RUST_COMMIT: `MUSL=musl-1.2.5` in src/ci/docker/scripts/musl.sh of that commit. */
 const MUSL_VERSION = '1.2.5';
 const RUST_RAW_URL = `https://raw.githubusercontent.com/rust-lang/rust/${RUST_COMMIT}`;
+const RUST_VERSION = '1.98.0';
+/** The rust-src component of RUST_VERSION: `[pkg.rust-src]` of its channel manifest names RUST_COMMIT, and its `.sha256` file and `xz_hash` there give this digest. */
+const RUST_SRC_URL = `https://static.rust-lang.org/dist/rust-src-${RUST_VERSION}.tar.xz`;
+export const RUST_SRC_SHA256 = '0e977492aed5ff137815bf9b4b796e8a85b80fb2367ed64e82d5c5839870f2bf';
+const MAX_RUST_SRC_BYTES = 16 * 1024 * 1024;
+const STD_LIBRARY_DIR = `rust-src-${RUST_VERSION}/rust-src/lib/rustlib/src/rust/library/`;
+/** The rust-lang/llvm-project commit that src/llvm-project is at in RUST_COMMIT (the submodule pointer of the rust-lang/rust tree). */
+export const LIBUNWIND_COMMIT = '52ed14fcd56afc30f9cccd8ca8ce237c2eef7e04';
 
 interface PinnedText {
   readonly heading: string;
@@ -75,6 +86,11 @@ const TOOLCHAIN_TEXTS: readonly PinnedText[] = [
     url: `${RUST_RAW_URL}/${file}`,
     sha256,
   })),
+  {
+    heading: `LLVM libunwind (Apache-2.0 WITH LLVM-exception, or the legacy MIT and University of Illinois licences), the unwinder the musl builds link statically: libunwind/LICENSE.TXT at rust-lang/llvm-project commit ${LIBUNWIND_COMMIT}`,
+    url: `https://raw.githubusercontent.com/rust-lang/llvm-project/${LIBUNWIND_COMMIT}/libunwind/LICENSE.TXT`,
+    sha256: 'b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d',
+  },
 ];
 const APACHE_LICENSE_URL = 'https://www.apache.org/licenses/LICENSE-2.0.txt';
 const APACHE_LICENSE_SHA256 = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30';
@@ -86,7 +102,7 @@ const CRATES_IO_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 const MAX_LICENSE_FILE_BYTES = 1024 * 1024;
 const MAX_LICENSE_FILES_PER_PACKAGE = 16;
 /** A licence file at the root of the crate, or a text of a REUSE `LICENSES` directory. */
-const LICENSE_FILE_PATTERN = /^((licen[cs]e|copying|notice)([-._][^/]*)?|LICENSES\/[^/]+)$/i;
+const LICENSE_FILE_PATTERN = /^((licen[cs]e|copying|notice|unlicen[cs]e)([-._][^/]*)?|LICENSES\/[^/]+)$/i;
 /** Characters that make a member name a pattern to tar; a name without them selects exactly that member. */
 const TAR_PATTERN_CHARACTERS = /[*?[\]\\]/;
 /** The crates whose crates.io archive ships no licence text; any other crate without one stops the generator. */
@@ -108,10 +124,13 @@ export interface LockedPackage {
   readonly dependencies: readonly string[];
 }
 
-/** A crate of the program: a crates.io package of the graph. */
-export interface LinkedCrate {
+export interface CrateId {
   readonly name: string;
   readonly version: string;
+}
+
+/** A crate of the program: a crates.io package of the graph. */
+export interface LinkedCrate extends CrateId {
   readonly checksum: string;
 }
 
@@ -221,7 +240,7 @@ export function pinnedLinkedCrates(): LinkedCrate[] {
 }
 
 /** How the notices name a crate and its licence expression. */
-const crateLine = (crate: Pick<LinkedCrate, 'name' | 'version'>, license: string): string => `${crate.name} ${crate.version} (${license})`;
+const crateLine = (crate: CrateId, license: string, elected?: string): string => `${crate.name} ${crate.version} (${license}${elected === undefined ? '' : `; elected ${elected}`})`;
 
 async function download(url: string, maxBytes: number): Promise<Buffer> {
   const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -238,21 +257,36 @@ async function downloadChecked(url: string, digest: string, maxBytes: number): P
   return bytes;
 }
 
-function readMember(archive: Buffer, member: string, maxBytes: number): string {
+/** The compression of an archive, as the letter tar takes: gzip for a crates.io archive, xz for a rust-src component. */
+type Compression = 'z' | 'J';
+
+function readMember(archive: Buffer, member: string, maxBytes: number, compression: Compression): string {
   if (TAR_PATTERN_CHARACTERS.test(member)) throw new Error(`${member} is not a name tar reads literally`);
-  return execFileSync('tar', ['-xzO', '-f', '-', '--', member], { input: archive, maxBuffer: maxBytes }).toString('utf8');
+  return execFileSync('tar', [`-x${compression}O`, '-f', '-', '--', member], { input: archive, maxBuffer: maxBytes }).toString('utf8');
 }
 
-const listing = (archive: Buffer, flags: string): string[] =>
-  execFileSync('tar', [flags, '-f', '-'], { input: archive, maxBuffer: MAX_TAR_LISTING_BYTES }).toString('utf8').split('\n').filter(Boolean);
+const listing = (archive: Buffer, flags: string, selected: readonly string[]): string[] =>
+  execFileSync('tar', [flags, '-f', '-', '--', ...selected], { input: archive, maxBuffer: MAX_TAR_LISTING_BYTES }).toString('utf8').split('\n').filter(Boolean);
 
-/** Each member of the archive and whether it is a regular file (the type letter that starts its `tar -tv` line). */
-function listMembers(archive: Buffer): Map<string, boolean> {
-  const names = listing(archive, '-tz');
-  const modes = listing(archive, '-tvz');
+/** Each member of the archive under the selected names and whether it is a regular file (the type letter that starts its `tar -tv` line). */
+function listMembers(archive: Buffer, compression: Compression, selected: readonly string[]): Map<string, boolean> {
+  if (selected.some((name) => TAR_PATTERN_CHARACTERS.test(name))) throw new Error(`${selected.join(', ')} is not a name tar reads literally`);
+  const names = listing(archive, `-t${compression}`, selected);
+  const modes = listing(archive, `-tv${compression}`, selected);
   if (names.length !== modes.length) throw new Error('the archive listing and its verbose listing differ in length');
   return new Map(names.map((name, index) => [name, modes[index].startsWith('-')]));
 }
+
+/** Where the licence texts of a crate are in the archive that holds it. */
+interface ArchiveLayout {
+  readonly compression: Compression;
+  /** The directory of the crate's own files, with its trailing slash. */
+  readonly prefix: string;
+  /** Licence files kept outside that directory: the member name, and how the notices name the file. */
+  readonly elsewhere?: ReadonlyArray<{ readonly member: string; readonly label: string }>;
+}
+
+const cratesIoLayout = (crate: CrateId): ArchiveLayout => ({ compression: 'z', prefix: `${crate.name}-${crate.version}/` });
 
 interface ProgramInfo {
   readonly version: string;
@@ -260,31 +294,33 @@ interface ProgramInfo {
 }
 
 export interface CrateLicence {
-  readonly crate: LinkedCrate;
+  readonly crate: CrateId;
   readonly license: string;
   readonly authors: readonly string[];
   readonly texts: ReadonlyArray<{ file: string; text: string }>;
 }
 
-/** The licence fields and texts of a crate, read from its crates.io archive as data. */
-export function readCrateLicence(crate: LinkedCrate, archive: Buffer): CrateLicence {
-  const prefix = `${crate.name}-${crate.version}/`;
-  const members = listMembers(archive);
-  const manifest = parse(readMember(archive, `${prefix}Cargo.toml`, MAX_LICENSE_FILE_BYTES)) as Manifest;
+/** The licence fields and texts of a crate, read from the archive that holds it as data (by default its crates.io archive). */
+export function readCrateLicence(crate: CrateId, archive: Buffer, layout: ArchiveLayout = cratesIoLayout(crate)): CrateLicence {
+  const { compression, prefix, elsewhere = [] } = layout;
+  const members = listMembers(archive, compression, [prefix.slice(0, -1), ...elsewhere.map(({ member }) => member)]);
+  const manifest = parse(readMember(archive, `${prefix}Cargo.toml`, MAX_LICENSE_FILE_BYTES, compression)) as Manifest;
   const info = manifest.package as Record<string, unknown>;
   const licenseFile = typeof info['license-file'] === 'string' ? `${prefix}${info['license-file']}` : undefined;
-  const files = [...members.keys()]
+  const own = [...members.keys()]
     .filter((member) => member === licenseFile || (member.startsWith(prefix) && LICENSE_FILE_PATTERN.test(member.slice(prefix.length))))
-    .sort();
+    .sort()
+    .map((member) => ({ member, label: member.slice(prefix.length) }));
+  const files = [...own, ...elsewhere];
   if (files.length > MAX_LICENSE_FILES_PER_PACKAGE) throw new Error(`${prefix} ships ${files.length} licence files, over ${MAX_LICENSE_FILES_PER_PACKAGE}`);
-  const texts = files.map((file) => {
-    if (!members.get(file)) throw new Error(`${file} is not a regular file`);
-    const text = readMember(archive, file, MAX_LICENSE_FILE_BYTES);
-    if (text.trim() === '') throw new Error(`${file} is empty`);
-    return { file: file.slice(prefix.length), text };
+  const texts = files.map(({ member, label }) => {
+    if (!members.get(member)) throw new Error(`${member} is not a regular file`);
+    const text = readMember(archive, member, MAX_LICENSE_FILE_BYTES, compression);
+    if (text.trim() === '') throw new Error(`${member} is empty`);
+    return { file: label, text };
   });
-  const label = `${crate.name} ${crate.version}`;
-  if (texts.length === 0 && !CRATES_WITHOUT_TEXT.has(label)) throw new Error(`${label} ships no licence text`);
+  const name = `${crate.name} ${crate.version}`;
+  if (texts.length === 0 && !CRATES_WITHOUT_TEXT.has(name)) throw new Error(`${name} ships no licence text`);
   return {
     crate,
     license: typeof info.license === 'string' ? info.license : `see ${String(info['license-file'])}`,
@@ -293,28 +329,94 @@ export function readCrateLicence(crate: LinkedCrate, archive: Buffer): CrateLice
   };
 }
 
+/** The MIT text, and a line that names its copyright holder. */
+const MIT_TEXT = /Permission is hereby granted, free of charge/;
+const COPYRIGHT_LINE = /^\s*Copyright\b.*\S/im;
+
+/**
+ * The licence a crate offered under several is used under: MIT when it ships an MIT text with a copyright line, otherwise
+ * Apache-2.0. A single licence, and an expression that combines licences (AND), elect nothing; an expression that offers neither
+ * option stops the generator, so that the choice is made by a person.
+ */
+export function electedLicence(expression: string, texts: ReadonlyArray<{ readonly text: string }>): string | undefined {
+  if (/\sAND\s|\(/.test(expression)) return undefined;
+  const offered = expression.split(/\s+OR\s+|\//).map((option) => option.trim());
+  if (offered.length < 2) return undefined;
+  if (offered.includes('MIT') && texts.some(({ text }) => MIT_TEXT.test(text) && COPYRIGHT_LINE.test(text))) return 'MIT';
+  if (offered.includes('Apache-2.0')) return 'Apache-2.0';
+  throw new Error(`${expression} offers neither an MIT text with a copyright line nor Apache-2.0`);
+}
+
+/**
+ * The crates of the Rust standard library the programs carry, with where their licence texts are in the rust-src component. The
+ * source paths in the programs' panic strings name addr2line, gimli, hashbrown, miniz_oxide and rustc-demangle; compiler_builtins
+ * is named by its symbols. Its dependencies (adler2 of miniz_oxide, object and memchr of the backtrace support, libc and cfg-if of
+ * std) are linked through std in the same build: they are the closure of std's dependencies for a linux target in
+ * library/Cargo.lock, without the crates only other targets or the development dependencies need.
+ */
+export interface StdCrate {
+  readonly id: CrateId;
+  readonly layout: ArchiveLayout;
+}
+
+const vendored = (name: string, version: string): StdCrate => ({
+  id: { name, version },
+  layout: { compression: 'J', prefix: `${STD_LIBRARY_DIR}vendor/${name}-${version}/` },
+});
+
+export const STD_CRATES: readonly StdCrate[] = [
+  vendored('addr2line', '0.25.1'),
+  vendored('adler2', '2.0.1'),
+  vendored('cfg-if', '1.0.4'),
+  {
+    id: { name: 'compiler_builtins', version: '0.1.160' },
+    layout: {
+      compression: 'J',
+      prefix: `${STD_LIBRARY_DIR}compiler-builtins/compiler-builtins/`,
+      elsewhere: ['LICENSE.txt', 'libm/LICENSE.txt'].map((file) => ({ member: `${STD_LIBRARY_DIR}compiler-builtins/${file}`, label: `compiler-builtins/${file}` })),
+    },
+  },
+  vendored('gimli', '0.32.3'),
+  vendored('hashbrown', '0.17.1'),
+  vendored('libc', '0.2.185'),
+  vendored('memchr', '2.7.6'),
+  vendored('miniz_oxide', '0.8.9'),
+  vendored('object', '0.37.3'),
+  vendored('rustc-demangle', '0.1.27'),
+];
+
 const withFinalNewline = (text: string): string => (text.endsWith('\n') ? text : `${text}\n`);
 
 const block = (heading: string, text: string): string => `${RULE}\n${heading}\n${RULE}\n${withFinalNewline(text)}`;
 
-/** One block per distinct text, in the order of the first crate that ships it, naming every crate that ships the same text. */
+/**
+ * One block per distinct text, in the order of the first crate that ships it, naming every crate that ships the same text (once: a
+ * crate of the lockfile that the standard library vendors too, at the same version, is the same crate).
+ */
 function textBlocks(licences: readonly CrateLicence[]): string[] {
   const users = new Map<string, string[]>();
   for (const licence of licences) {
     for (const { file, text } of licence.texts) {
       const label = `${licence.crate.name} ${licence.crate.version} (${file})`;
-      users.set(text, [...(users.get(text) ?? []), label]);
+      const labels = users.get(text) ?? [];
+      if (!labels.includes(label)) users.set(text, [...labels, label]);
     }
   }
   return [...users].map(([text, labels]) => block(`Shipped by: ${labels.join(', ')}`, text));
 }
 
-function render(licences: readonly CrateLicence[], program: ProgramInfo, toolchain: ReadonlyArray<{ heading: string; text: string }>, apache: string): string {
+const licenceLine = (licence: CrateLicence): string => crateLine(licence.crate, licence.license, electedLicence(licence.license, licence.texts));
+
+function render(
+  licences: readonly CrateLicence[],
+  std: readonly CrateLicence[],
+  program: ProgramInfo,
+  toolchain: ReadonlyArray<{ heading: string; text: string }>,
+  apache: string
+): string {
   const withoutText = licences.filter((licence) => licence.texts.length === 0);
-  const apacheFor = [
-    `vtracer ${program.version}`,
-    ...licences.filter((licence) => APACHE_ID.test(licence.license) && !licence.texts.some(({ text }) => APACHE_TEXT.test(text))).map((licence) => `${licence.crate.name} ${licence.crate.version}`),
-  ];
+  const offersApache = (licence: CrateLicence) => APACHE_ID.test(licence.license) && !licence.texts.some(({ text }) => APACHE_TEXT.test(text));
+  const apacheFor = [`vtracer ${program.version}`, ...[...licences, ...std].filter(offersApache).map((licence) => `${licence.crate.name} ${licence.crate.version}`)];
   return [
     `vtracer ${program.version}: third-party notices`,
     '',
@@ -326,17 +428,28 @@ function render(licences: readonly CrateLicence[], program: ProgramInfo, toolcha
     'checksum. Generated by scripts/generate-vtracer-notices.ts.',
     '',
     `The release programs are built by rustc at commit ${RUST_COMMIT} for the musl targets, so they`,
-    `also carry code no lockfile lists: musl libc ${MUSL_VERSION}, linked statically, and the Rust standard library with the crates it vendors`,
-    '(among them addr2line, gimli, hashbrown, object, memchr, miniz_oxide, adler2, rustc-demangle and compiler_builtins). Their',
-    'notices follow the crate texts, copied unmodified from the musl release tag and the Rust commit named in each heading.',
+    `also carry code no lockfile lists: musl libc ${MUSL_VERSION}, linked statically; LLVM libunwind, which the musl builds link statically;`,
+    'and the Rust standard library with the crates it vendors, listed after the crates above. The texts of these crates are copied',
+    `unmodified from the rust-src component ${RUST_VERSION} (SHA-256 ${RUST_SRC_SHA256}), the release built from that`,
+    `commit; the libunwind text is libunwind/LICENSE.TXT of rust-lang/llvm-project commit ${LIBUNWIND_COMMIT}, the one`,
+    'that commit pins as src/llvm-project. The notices of musl and of the Rust project follow the crate texts, copied unmodified from',
+    'the musl release tag and the Rust commit named in each heading.',
+    '',
+    'Where a crate is offered under several licences, the one elected is MIT, whose text and copyright line the crate ships and the',
+    'notices include (Apache-2.0 for a crate that ships no MIT text with a copyright line). The lists mark the election of each such',
+    'crate. compiler_builtins is MIT AND Apache-2.0 WITH LLVM-exception: the texts of both are included, with the one of the libm',
+    'code of its math module.',
     '',
     `Crates (${licences.length}):`,
-    ...licences.map((licence) => crateLine(licence.crate, licence.license)),
+    ...licences.map(licenceLine),
+    '',
+    `Rust standard library crates (${std.length}):`,
+    ...std.map(licenceLine),
     '',
     ...(withoutText.length === 0
       ? []
       : ['Crates whose archive ships no licence text, with the authors their manifest names:', ...withoutText.map((licence) => `${crateLine(licence.crate, licence.license)}: ${licence.authors.join('; ') || 'no authors listed'}`), '']),
-    ...textBlocks(licences),
+    ...textBlocks([...licences, ...std]),
     ...toolchain.map(({ heading, text }) => block(heading, text)),
     block(`Apache License 2.0, the text offered without a copy by: ${apacheFor.join(', ')}`, apache),
   ].join('\n');
@@ -360,12 +473,14 @@ async function main(): Promise<void> {
     const archive = await downloadChecked(`${CRATE_URL}/${crate.name}/${crate.name}-${crate.version}.crate`, crate.checksum, MAX_CRATE_BYTES);
     licences.push(readCrateLicence(crate, archive));
   }
+  const rustSrc = await downloadChecked(RUST_SRC_URL, RUST_SRC_SHA256, MAX_RUST_SRC_BYTES);
+  const std = STD_CRATES.map(({ id, layout }) => readCrateLicence(id, rustSrc, layout));
   const toolchain: Array<{ heading: string; text: string }> = [];
   for (const { heading, url, sha256: digest } of TOOLCHAIN_TEXTS) {
     toolchain.push({ heading, text: (await downloadChecked(url, digest, MAX_LICENSE_FILE_BYTES)).toString('utf8') });
   }
   const apache = (await downloadChecked(APACHE_LICENSE_URL, APACHE_LICENSE_SHA256, MAX_LICENSE_FILE_BYTES)).toString('utf8');
-  fs.writeFileSync(NOTICES_FILE, render(licences, program, toolchain, apache), 'utf8');
+  fs.writeFileSync(NOTICES_FILE, render(licences, std, program, toolchain, apache), 'utf8');
   console.log(`wrote ${path.relative(process.cwd(), NOTICES_FILE)}: ${licences.length} crates, SHA-256 ${sha256(fs.readFileSync(NOTICES_FILE))}`);
 }
 

@@ -21,9 +21,9 @@ VTRACER_COMMIT="2500df76b5aea0ac22d15296b22722442f825c5b"
 VTRACER_SHA256_AARCH64="92bcd69792d4ba981c0c37db4bb681df4e1eae6c56b0817c73164656664ec5a8"
 VTRACER_SHA256_X86_64="2058f611b48ed49497f78883bde47435531e9e17e3a79428432d1528bdb12e2a"
 VTRACER_LICENSE_SHA256="81ee739f355765c110fc89feff14ffffce829901f96ba811fd0b65a41a8636c7"
-VTRACER_NOTICES_SHA256="64159ded28dec2ebb9852fab469e91d4442c8d64c8cac64716897505116d9554"
-# The release archive is about 1.3 MB. curl refuses a download whose announced size is larger; one sent without a size is bounded
-# only by the digest check that follows it.
+VTRACER_NOTICES_SHA256="015162b4edb08893ddcc4b383d5509bbb30a201d224b7d257f41216729dec6af"
+# The release archive is about 1.3 MB. curl refuses a download whose announced size is larger, and fetch stops reading at the bound
+# plus one byte whatever the server announces, so that nothing larger than the bound is written before its digest is checked.
 MAX_DOWNLOAD_BYTES=$((16 * 1024 * 1024))
 INSTALL_DIR="${1:-/opt/vtracer}"
 notices="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vtracer-notices/THIRD-PARTY-NOTICES"
@@ -55,7 +55,17 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 fetch() {
-  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-filesize "$MAX_DOWNLOAD_BYTES" --fail --silent --show-error --location --retry 3 -o "$1" "$2"
+  local status=0
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-filesize "$MAX_DOWNLOAD_BYTES" --fail --silent --show-error --location --retry 3 -o - "$2" \
+    | head -c "$((MAX_DOWNLOAD_BYTES + 1))" > "$1" || status=$?
+  if [ "$(wc -c < "$1")" -gt "$MAX_DOWNLOAD_BYTES" ]; then
+    echo "install-vtracer.sh: $2 is larger than $MAX_DOWNLOAD_BYTES bytes" >&2
+    exit 1
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "install-vtracer.sh: the download of $2 failed (status $status)" >&2
+    exit 1
+  fi
 }
 
 fetch "$work/vtracer.tar.gz" "$VTRACER_URL"
