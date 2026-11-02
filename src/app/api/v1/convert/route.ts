@@ -400,11 +400,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
     await saveRetainedResult(storageProvider, storageKey, outputBuffer, conversionResult.mimeType, outFileName);
 
-    // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
-    if (reservation?.reservationId) {
-      await redisKeyStore.commitQuota(reservation.reservationId);
-    }
-
     // Record in user's file conversion history
     const stored = { storageKey, downloadUrl: `/api/storage/file/${encodeURIComponent(storageKey)}` };
 
@@ -416,6 +411,12 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       size: outputBuffer.length,
       ...stored,
     });
+
+    // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion, once the request has nothing left to fail at:
+    // a failure after the commit would answer an error for a unit already charged.
+    if (reservation?.reservationId) {
+      await redisKeyStore.commitQuota(reservation.reservationId);
+    }
 
     // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
     const wantsRaw = req.headers.get('accept') === 'application/octet-stream' || req.nextUrl.searchParams.get('raw') === 'true';

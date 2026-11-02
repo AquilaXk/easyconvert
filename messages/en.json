@@ -127,7 +127,7 @@
     },
     "guarantee": {
       "pipeline": "Browser Edge & Isolated Worker Pipeline",
-      "free": "100% Free & Unlimited",
+      "free": "Free, {count} server conversions a day",
       "ephemeral": "Encrypted Ephemeral Processing",
       "private": "Private & Secure"
     },
@@ -436,7 +436,7 @@
     "items": {
       "free": {
         "q": "Is EasyConvert free to use?",
-        "a": "Yes. You can convert without an account, up to {limit} per file and within a daily conversion limit.{paidLimits}"
+        "a": "Yes. Without an account you can run up to {count} conversions a day on our servers, each file up to {limit}. Conversions that run in your browser have no daily limit.{paidLimits}"
       },
       "handling": {
         "q": "How are my files handled during conversion?",
@@ -885,7 +885,7 @@
       },
       "availability": {
         "heading": "3. Service Availability & Free Use",
-        "body": "EasyConvert is 100% free with unlimited conversions in the web application. Interactive browser conversions require no subscription, credit pack, or paid account."
+        "body": "EasyConvert is free to use in the web application. Conversions that run in your browser have no daily limit, and conversions that run on our servers are free for up to {limit} a day without an account. No subscription, credit pack, or paid account is required."
       }
     },
     "about": {
@@ -1420,7 +1420,7 @@
       "body": "Supported client-side codecs compile to WebAssembly and run inside an isolated browser worker sandbox. Local execution avoids upload wait times, keeps memory buffers ephemeral, and releases temporary storage handles as soon as conversion finishes.",
       "zeroRetention": "Zero-Retention Sandboxing",
       "simd": "Hardware SIMD & WebCodecs Support",
-      "unlimited": "Unlimited Free Conversions"
+      "unlimited": "No daily limit in the browser"
     },
     "announcements": {
       "running": "Running browser edge diagnostics...",

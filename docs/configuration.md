@@ -227,7 +227,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
 | `EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
 | `EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES` | integer, at least 1 | `1073741824` | no | web, worker |
-| `ANONYMOUS_DAILY_LIMIT` | integer, 1 to 2147483647 | `10` | no | web |
+| `ANONYMOUS_DAILY_LIMIT` | integer, 1 to 2147483647 | `25` | no | web |
 | `ANONYMOUS_BURST_CAPACITY` | integer, 1 to 2147483647 | `10` | no | web |
 | `ANONYMOUS_BURST_REFILL_RATE` | integer, 1 to 2147483647 | `1` | no | web |
 | `ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY` | integer, 1 to 2147483647 | `600` | no | web |

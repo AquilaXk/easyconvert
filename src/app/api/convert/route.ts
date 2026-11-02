@@ -126,24 +126,17 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   }
 
   const reservationId = auth.reservationId;
-
-  const failWithRollback = async (status: number, code: ConversionRefusalCode | undefined, error: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return refusal(status, code, error);
-  };
-
-  if (!isMultipartBody(req)) {
-    return await failWithRollback(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
-  }
+  let charged = false;
 
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
   try {
+    if (!isMultipartBody(req)) {
+      return refusal(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
+    }
+
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
-      if (reservationId) await rollbackQuota(reservationId);
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
@@ -153,11 +146,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const optionsRaw = formData.get('options') as string | null;
 
     if (!file) {
-      return await failWithRollback(400, 'file_required', 'Missing required "file" in multipart request.');
+      return refusal(400, 'file_required', 'Missing required "file" in multipart request.');
     }
 
     if (file.size === 0) {
-      return await failWithRollback(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
+      return refusal(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
     }
 
     if (!targetFormat) {
@@ -196,14 +189,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         return refusal(400, 'invalid_options', 'Invalid JSON format for "options" parameter.');
       }
       if (!isConversionOptionsObject(parsed)) {
-        return await failWithRollback(400, 'invalid_options', 'The "options" field must be a JSON object.');
+        return refusal(400, 'invalid_options', 'The "options" field must be a JSON object.');
       }
       options = parsed;
       const optionsProblem = legacyOptionsProblem(options, instanceUri);
       if (optionsProblem) {
-        if (reservationId) {
-          await rollbackQuota(reservationId);
-        }
         return optionsProblem;
       }
     }
@@ -215,7 +205,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       try {
         validateTierPageLimit(options.pages, auth.user?.tier || 'free');
       } catch (err: any) {
-        return await failWithRollback(422, refusalCodeOf(err), err.message);
+        return refusal(422, refusalCodeOf(err), err.message);
       }
     }
 
@@ -252,6 +242,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     if (reservationId) {
       await commitQuota(reservationId);
+      charged = true;
     }
 
     return new NextResponse(new Uint8Array(result.buffer), {
@@ -270,12 +261,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       },
     });
   } catch (error: unknown) {
-    if (reservationId) {
-      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
-      await rollbackQuota(reservationId);
-    }
     return conversionErrorResponse(error, instanceUri);
   } finally {
     releaseSlot?.();
+    // Only a successful conversion is charged: every other end, a refusal, a deadline or a departed client included,
+    // gives the unit back here, so no return above has to remember to.
+    if (reservationId && !charged) await rollbackQuota(reservationId);
   }
 }));

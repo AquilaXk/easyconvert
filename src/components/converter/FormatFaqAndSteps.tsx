@@ -1,6 +1,7 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Download, Settings2, UploadCloud } from 'lucide-react';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '@/lib/plan-limits';
 import type { FormatSpecification } from './format-specs';
 
 export function ConverterGuaranteeBar() {
@@ -16,7 +17,7 @@ export function ConverterGuaranteeBar() {
         </div>
         <div className="flex items-center flex-wrap gap-3 font-medium">
           <span className="text-success font-semibold">
-            {t('free')}
+            {t('free', { count: ANONYMOUS_DAILY_CONVERSIONS })}
           </span>
           <span className="text-ink-2" aria-hidden="true">
             &bull;

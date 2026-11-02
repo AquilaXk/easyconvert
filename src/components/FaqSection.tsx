@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
 import { useFormatBytes } from './i18n/format';
 
 export interface FaqItem {
@@ -29,7 +29,7 @@ function useDefaultFaqs(): FaqItem[] {
     : '';
   return DEFAULT_FAQ_KEYS.map((key) => ({
     q: t(`items.${key}.q`),
-    a: t(`items.${key}.a`, { limit, paidLimits }),
+    a: t(`items.${key}.a`, { limit, paidLimits, count: ANONYMOUS_DAILY_CONVERSIONS }),
   }));
 }
 

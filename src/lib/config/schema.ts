@@ -1339,7 +1339,7 @@ const SCHEMA_ENTRIES = [
     area: 'limits',
     description: 'Conversions per day for an anonymous caller.',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 10,
+    default: 25,
     requiredInProduction: false,
     secret: false,
     roles: WEB,

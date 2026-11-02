@@ -6,7 +6,7 @@ import {
   validateUrlForSsrf,
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
-import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { formatBytes } from '@/lib/format-bytes';
@@ -48,9 +48,11 @@ function linkImportTooLarge(caller: PlanCaller | undefined): NextResponse {
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/fetch-url';
 
-  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit. An import costs no conversion
+  // (QA decision of 2026-11-02): it only needs one left for the conversion that follows, and reserves none.
   const auth = await validateApiAccess(req, {
-    requiredUnits: 1,
+    requiredUnits: 0,
+    requireUnitLeft: true,
     requiredScope: 'convert:write',
     allowAnonymous: true,
   });
@@ -66,41 +68,27 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     );
   }
 
-  const reservationId = auth.reservationId;
-
-  const failWithRollback = async (status: number, code: UrlImportErrorCode, error: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return refusal(status, code, error);
-  };
-
-  const refuseTooLarge = async () => {
-    if (reservationId) await rollbackQuota(reservationId);
-    return linkImportTooLarge(auth.user);
-  };
-
   const ssrfAgent = createSsrfSafeAgent();
   try {
     const body = await readJsonObject(req);
     if (!body) {
-      return await failWithRollback(400, 'invalid_json', 'Invalid JSON request payload.');
+      return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
     }
     const { url } = body;
 
     if (!url || typeof url !== 'string') {
-      return await failWithRollback(400, 'url_required', 'URL is required.');
+      return refusal(400, 'url_required', 'URL is required.');
     }
 
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
     } catch {
-      return await failWithRollback(400, 'invalid_url', 'Invalid URL format provided.');
+      return refusal(400, 'invalid_url', 'Invalid URL format provided.');
     }
 
     if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-      return await failWithRollback(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
+      return refusal(400, 'unsupported_scheme', 'Only HTTP and HTTPS URLs are permitted.');
     }
 
     let currentUrl = parsedUrl;
@@ -176,7 +164,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (contentLengthHeader) {
       const contentLength = parseInt(contentLengthHeader, 10);
       if (!isNaN(contentLength) && contentLength > URL_IMPORT_MAX_BYTES) {
-        return await refuseTooLarge();
+        return linkImportTooLarge(auth.user);
       }
     }
 
@@ -197,7 +185,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
           totalBytes += value.length;
           if (totalBytes > URL_IMPORT_MAX_BYTES) {
             await reader.cancel();
-            return await refuseTooLarge();
+            return linkImportTooLarge(auth.user);
           }
           chunks.push(value);
         }
@@ -227,10 +215,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const contentType = res.headers.get('content-type') || 'application/octet-stream';
     filename = withExtension(filename, contentType);
 
-    if (reservationId) {
-      await commitQuota(reservationId);
-    }
-
     return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
@@ -241,9 +225,6 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       },
     });
   } catch (err: unknown) {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
     return serverFault<UrlImportErrorCode>('fetch-url', err, 'Failed to fetch remote URL', 'fetch_failed');
   } finally {
     ssrfAgent.close().catch(() => {});

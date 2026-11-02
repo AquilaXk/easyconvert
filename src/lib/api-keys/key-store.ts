@@ -7,6 +7,7 @@ import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../plan-limits';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { encryptSecret, decryptSecret } from './secret-encryption';
@@ -28,7 +29,7 @@ export function getAnonymousDailyLimit(): number {
     const parsed = parseInt(process.env.ANONYMOUS_DAILY_LIMIT, 10);
     if (!isNaN(parsed) && parsed > 0) return parsed;
   }
-  return 10;
+  return ANONYMOUS_DAILY_CONVERSIONS;
 }
 
 export const ANONYMOUS_DAILY_LIMIT = getAnonymousDailyLimit();

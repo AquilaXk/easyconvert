@@ -446,15 +446,27 @@ Interface
 
 ## 15. Usage is charged for successful conversions only
 
-- **Status**: Implemented (#690).
+- **Status**: Implemented (#690); extended on 2026-11-02 (QA decision: the anonymous allowance is 25 conversions a day, a link import is never charged, and every end that is not a success gives the unit back; closes three rows of #671).
 - **Decision**:
   - Only a conversion that produces output consumes quota.
   - A conversion that times out (504) or is cancelled by the client (499) is refunded.
-- **Why**: users should not pay for failures they did not cause. Charging only success also gives the service an incentive to fail less.
-- **Trade-offs**: repeated failing requests cost compute without consuming quota. Processing-time caps, concurrency caps and rate limits bound that cost.
-- **Alternatives rejected**: charging on submission.
-- **Verified by**: the usage ledger tests.
-- **Revisit when**: abuse through deliberately failing jobs appears in metrics.
+  - **A caller without an account has 25 conversions a day on the server** (`ANONYMOUS_DAILY_CONVERSIONS` in `src/lib/plan-limits.ts`, which the key store uses as the default of `ANONYMOUS_DAILY_LIMIT`; it was 10). The count is per client address as the proxy reports it (`docs/client-ip-trust.md`). Conversions that run in the browser use no server and have no daily limit. The refusal sentence, the FAQ, the terms page, the guarantee bar of the converter pages and the status page all state this allowance in both languages; the refusal sentence reads `ANONYMOUS_DAILY_LIMIT` when an operator sets another number, and the page copy reads the default.
+  - **A link import (`/api/fetch-url`) is never charged.** It reserves no unit and commits none, so a file brought by link and converted costs one conversion, not two. It still answers 429 with the quota problem type before it fetches anything when the caller has no conversion left (`requireUnitLeft` in `validateApiAccess`, a check of the remaining count that reserves nothing), and the burst limit of the anonymous caller still applies.
+  - **A request ends with its unit given back unless it was charged.** `/api/convert` and `/api/convert/batch` hold the reservation until one `finally`, which rolls it back unless the conversion succeeded and was committed. Before, each refusal after the reservation had to roll back by hand, and five did not: a file that is not what its extension says (spoof check), no target format, an unknown source extension, a pair no engine converts, and `targetFormats` that was not JSON in a batch. `/api/v1/convert` commits after the result is stored and recorded, not before, so an error after the commit does not leave a charge.
+  - **A batch is charged for the files it converted.** A file of an unknown format is skipped and was charged anyway; the reservation is settled to the number of files in the archive (`settleQuota`).
+  - **A reservation made by an anonymous caller is rolled back and settled against the right day.** The date was read from the reservation as the second part of `<userId>:<date>`; an anonymous id holds a colon (`anon:<address>`), so the rollback decremented a key of the address (`usage:{anon:<address>}:<address>`, left at -1) and the real count stayed charged. This applied wherever the process that rolled back was the process that reserved (the web routes, and a worker started in the same process); a worker process that reads only the reservation id was not affected. The date is now the part after the last colon.
+- **Why**: users should not pay for failures they did not cause. Charging only success also gives the service an incentive to fail less. A link import is a step toward a conversion, not a conversion; charging both made the common path of the web interface cost two units from an allowance of ten. The 25 conversions are the allowance QA set on 2026-11-02, equal to the published free allowance of the converter the product is measured against, and equal to the allowance of a free account (`TIER_LIMITS.free`).
+- **Trade-offs**:
+  - Repeated failing requests cost compute without consuming quota. Processing-time caps, concurrency caps and rate limits bound that cost.
+  - **A link import is limited only by the burst limit** (10 requests, then 1 a second, per client address; the edge bucket in front of it), where it was limited by the allowance. Each import can read up to 100 MiB (`URL_IMPORT_MAX_BYTES`). A daily byte budget for imports, like the upload budget of entry 137, would close this; it is a row of #671.
+  - **A Redis reservation that expires keeps its charge.** A reservation lives 15 minutes and nothing renews it (`renewReservation` has no caller), so a queued job that fails more than 15 minutes after it was reserved finds no reservation and is not refunded, and a web process that dies in the middle of a request leaves its unit charged until midnight UTC. The in-memory store refunds an expired reservation; the Redis store does not. A job that is cancelled, times out, or is failed by the stalled sweep inside the 15 minutes is refunded (`tests/quota-accounting-redis.test.ts`). Row of #671.
+- **Alternatives rejected**:
+  - Charging on submission.
+  - Charging a link import and refunding it when the conversion is charged: the remaining count would show a unit that is not spent, and an import that never reaches a conversion would stay charged.
+  - Keeping 10: a visitor who imports one file and converts it uses 2 of 10 units, and 25 is the allowance QA set.
+  - A rollback in each early return: five of them were missing, and the next route would miss one again.
+- **Verified by**: the usage ledger tests; `tests/quota-accounting-routes.test.ts` (the allowance, a link import and the refusals of `/api/convert` and the batch leave the remaining count where it was, a batch is charged per converted file, the production proxy configuration counts per client address); `tests/quota-accounting-redis.test.ts` on a real Redis server (a link import then a conversion costs one, a failed conversion, a spoofed file, a job past its deadline and a stalled job cost none, the 26th conversion is refused and the 25th is not, a reservation is rolled back by a process that has only its id).
+- **Revisit when**: abuse through deliberately failing jobs appears in metrics, link imports are used for bulk download, or a queued job is seen to fail after its reservation expired.
 
 ## 16. Free and anonymous limits
 
@@ -464,7 +476,8 @@ Interface
     - files up to 1 GB;
     - no page limit;
     - up to 5 minutes of processing per conversion;
-    - at most 5 concurrent conversions.
+    - at most 5 concurrent conversions;
+    - **a caller without an account has 25 conversions a day on the server** (entry 15).
   - **Output files**: kept for 24 hours, with immediate deletion on request.
 - **Why**:
   - These are the limits users meet at the common free tiers, so a free user can do the same work here.

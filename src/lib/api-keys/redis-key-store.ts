@@ -19,7 +19,7 @@ import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
 
-export { isIpInCidr, isIpAllowed };
+export { isIpInCidr, isIpAllowed, getAnonymousDailyLimit };
 
 export interface QuotaReservation {
   reservationId: string;
@@ -221,6 +221,12 @@ function connectFromEnvironment(endpoint: RedisEndpoint): Redis | undefined {
     if (host) return readyGatedRedis(new Redis({ host, port, ...failFast }));
   } catch {}
   return undefined;
+}
+
+/** The UTC date a reservation was made on, from its `dateKey` (`<userId>:<YYYY-MM-DD>`); an anonymous user id holds colons itself. */
+function utcDateOfReservation(reservation: QuotaReservation | undefined): string | undefined {
+  const dateKey = reservation?.dateKey;
+  return dateKey ? dateKey.slice(dateKey.lastIndexOf(':') + 1) : undefined;
 }
 
 /**
@@ -613,7 +619,7 @@ export class RedisKeyStore extends KeyStore {
       try {
         const res = this.reservations.get(reservationId);
         let userId = res?.userId;
-        let dateKey = res?.dateKey ? res.dateKey.split(':')[1] : undefined;
+        let dateKey = utcDateOfReservation(res);
         if (!userId || !dateKey) {
           const parts = reservationId.split('_');
           if (parts.length >= 5 && parts[0] === 'res') {
@@ -672,7 +678,7 @@ export class RedisKeyStore extends KeyStore {
       try {
         const res = this.reservations.get(reservationId);
         let userId = res?.userId;
-        let dateKey = res?.dateKey ? res.dateKey.split(':')[1] : undefined;
+        let dateKey = utcDateOfReservation(res);
         if (!userId || !dateKey) {
           const parts = reservationId.split('_');
           if (parts.length >= 5 && parts[0] === 'res') {

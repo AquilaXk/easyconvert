@@ -20,7 +20,7 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, settleQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
@@ -53,23 +53,9 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   let reservationId: string | undefined;
+  let settled = false;
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
-
-  /** The 429 of a caller over its concurrency limit, after releasing the quota reservation. */
-  const failWithRollbackProblem = async (limit: number) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return concurrencyLimitResponse(limit, instanceUri);
-  };
-
-  const failWithRollback = async (status: number, error: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return NextResponse.json({ success: false, error }, { status });
-  };
 
   try {
     const formData = await req.formData();
@@ -106,13 +92,16 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
-      return await failWithRollbackProblem(slot.limit);
+      return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
 
     for (const f of files) {
       if (f.size === 0) {
-        return await failWithRollback(400, `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.`);
+        return NextResponse.json(
+          { success: false, error: `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.` },
+          { status: 400 }
+        );
       }
     }
 
@@ -130,9 +119,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     const parsedOptions = parseBatchOptions(optionsRaw, instanceUri);
     if ('problem' in parsedOptions) {
-      if (reservationId) {
-        await rollbackQuota(reservationId);
-      }
       return parsedOptions.problem;
     }
     const defaultOptions = parsedOptions.options;
@@ -198,9 +184,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     });
 
     if (convertedFiles.length === 0) {
-      if (reservationId) {
-        await rollbackQuota(reservationId);
-      }
       return NextResponse.json(
         { success: false, error: 'No files were successfully converted in batch.' },
         { status: 400 }
@@ -209,8 +192,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
 
+    // One conversion for each file in the archive: a file of an unknown format was skipped and is not charged.
     if (reservationId) {
-      await commitQuota(reservationId);
+      await settleQuota(reservationId, convertedFiles.length);
+      settled = true;
     }
 
     return new NextResponse(new Uint8Array(zipResult.buffer), {
@@ -224,10 +209,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       },
     });
   } catch (error: unknown) {
-    if (reservationId) {
-      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
-      await rollbackQuota(reservationId);
-    }
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;
     if (error instanceof EngineUnavailableError) {
@@ -263,5 +244,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   } finally {
     releaseSlot?.();
+    // Only a successful conversion is charged: every other end, a refusal, a deadline or a departed client included,
+    // gives the reservation back here.
+    if (reservationId && !settled) await rollbackQuota(reservationId);
   }
 }));

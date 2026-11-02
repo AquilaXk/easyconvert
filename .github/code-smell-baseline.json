@@ -4,7 +4,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 35
+    "maxValue": 34
   },
   {
     "file": "src/app/api/convert/route.ts",
@@ -17,7 +17,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 35
+    "maxValue": 34
   },
   {
     "file": "src/app/api/fetch-url/route.ts",
@@ -30,7 +30,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 47
+    "maxValue": 45
   },
   {
     "file": "src/app/api/keys/[id]/route.ts",

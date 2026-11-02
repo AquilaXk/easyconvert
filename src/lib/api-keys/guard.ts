@@ -1,4 +1,4 @@
-import { redisKeyStore } from './redis-key-store';
+import { redisKeyStore, getAnonymousDailyLimit } from './redis-key-store';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getSessionFromRequest } from '../auth/session';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
@@ -37,6 +37,11 @@ export interface ValidateApiAccessOptions {
   requiredScope?: string;
   scope?: string;
   allowAnonymous?: boolean;
+  /**
+   * Refuses (429, the quota problem) a caller who has no conversion left today, without reserving one: for a request that
+   * costs no conversion but only makes sense while the caller can still convert, such as a link import.
+   */
+  requireUnitLeft?: boolean;
 }
 
 const WILDCARD_SCOPE = '*';
@@ -46,8 +51,15 @@ const HTTP_SERVICE_UNAVAILABLE = 503;
 const QUOTA_EXCEEDED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
 const SERVICE_UNAVAILABLE_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/service-unavailable';
 const QUOTA_ENGINE_OFFLINE = 'Service Unavailable: distributed quota engine is temporarily offline';
-const ANONYMOUS_QUOTA_EXCEEDED =
-  'Daily conversion quota exceeded for anonymous usage (10 conversions per day). Please sign in or use an API key.';
+
+/** The refusal text of an anonymous caller, naming the allowance the key store enforces (`ANONYMOUS_DAILY_LIMIT`). */
+function anonymousQuotaExceeded(): string {
+  return `Daily conversion quota exceeded for anonymous usage (${getAnonymousDailyLimit()} conversions per day). Please sign in or use an API key.`;
+}
+
+function tierQuotaExceeded(tier: string): string {
+  return `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`;
+}
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
 
@@ -207,7 +219,7 @@ function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
     };
   }
   return {
-    error: anonymous ? ANONYMOUS_QUOTA_EXCEEDED : quota.error ?? '',
+    error: anonymous ? anonymousQuotaExceeded() : quota.error ?? '',
     status: HTTP_TOO_MANY_REQUESTS,
     remaining: quota.remaining,
     problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
@@ -228,7 +240,7 @@ async function checkQuotaAndReserve(userId: string, tier: string, requiredUnits:
       }
       return {
         allowed: false,
-        error: `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`,
+        error: tierQuotaExceeded(tier),
         remaining: reservation.remaining,
       };
     }
@@ -444,6 +456,19 @@ export async function validateApiAccess(
   request: Request,
   optionsOrUnits: number | ValidateApiAccessOptions = 1,
   legacyScope?: string
+): Promise<ApiAuthResult> {
+  const auth = await authenticate(request, optionsOrUnits, legacyScope);
+  const requireUnitLeft = typeof optionsOrUnits === 'object' && optionsOrUnits?.requireUnitLeft === true;
+  // `remaining` is absent for the shared identity of requests no proxy attributes, which has no daily quota.
+  if (!requireUnitLeft || !auth.authorized || !auth.user || auth.remaining === undefined || auth.remaining >= 1) return auth;
+  const refusal = quotaRefusal({ allowed: false, error: tierQuotaExceeded(auth.user.tier), remaining: 0 }, auth.user.id);
+  return { authorized: false, user: auth.user, apiKey: auth.apiKey, ...refusal };
+}
+
+async function authenticate(
+  request: Request,
+  optionsOrUnits: number | ValidateApiAccessOptions,
+  legacyScope: string | undefined
 ): Promise<ApiAuthResult> {
   let requiredUnits = 1;
   let requiredScope: string | undefined = legacyScope;

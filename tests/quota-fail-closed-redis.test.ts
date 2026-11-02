@@ -168,11 +168,11 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
   });
 
   describe('Anonymous Client Daily Quota & IP Rate Limiting', () => {
-    it('verifies anonymous daily limit defaults to 10 conversions per day when unconfigured', () => {
+    it('verifies anonymous daily limit defaults to 25 conversions per day when unconfigured', () => {
       const original = process.env.ANONYMOUS_DAILY_LIMIT;
       try {
         delete process.env.ANONYMOUS_DAILY_LIMIT;
-        expect(getAnonymousDailyLimit()).toBe(10);
+        expect(getAnonymousDailyLimit()).toBe(25);
       } finally {
         if (original) process.env.ANONYMOUS_DAILY_LIMIT = original;
       }

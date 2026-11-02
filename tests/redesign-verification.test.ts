@@ -160,7 +160,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       '3. Service Availability & Free Use',
     ]);
     expect(phrasesPresent(text, ['10 daily conversions', 'credits with prioritized throughput'])).toEqual([]);
-    expect(phrasesMissing(text, ['100% free with unlimited conversions'])).toEqual([]);
+    expect(phrasesPresent(text, ['unlimited conversions'])).toEqual([]);
+    expect(phrasesMissing(text, ['free for up to 25 a day without an account'])).toEqual([]);
   });
 
   it('verifies Hero synchronizes target format on paste, file selection, drop, and URL import', () => {
@@ -383,7 +384,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // Genuine verifiable architecture guarantees must be present
-    expect(phrasesMissing(text, ['100% Free & Unlimited', 'Encrypted Ephemeral Processing', 'Private & Secure', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
+    expect(phrasesMissing(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Private & Secure', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
   it('verifies AdBanner implements industry-standard publisher units and eliminates wireframe slop', () => {
@@ -476,7 +477,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
     const regions = select(faq, 'div', 'role', 'region');
     expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
-    expect(visibleText(regions[0])).toMatch(/^Yes\. You can convert without an account, up to 1 GiB per file/);
+    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 25 conversions a day on our servers, each file up to 1 GiB\./);
     expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
   });
 

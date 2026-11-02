@@ -23,6 +23,13 @@ export interface PlanCaller {
  */
 export const PAID_PLANS_ON_SALE = false;
 
+/**
+ * Conversions a caller without an account may run on the server each UTC day, the number the copy states and the key
+ * store enforces unless `ANONYMOUS_DAILY_LIMIT` sets another (docs/policy-decisions.md, entry 16). Browser-side
+ * conversions use no server and are not counted.
+ */
+export const ANONYMOUS_DAILY_CONVERSIONS = 25;
+
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
