@@ -2,11 +2,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import tailwindConfig from '../tailwind.config';
-import { GROUND_DRIFT_MAX_PX, GROUND_DRIFT_RATE, groundOffset } from '../src/components/WovenGround';
 
 /**
- * The visual language lives in tokens: colours are CSS variables each theme defines, the radius scale is a multiple
- * of one unit, and shadows are a short elevation scale. These checks read every page and component source and fail when
+ * The visual language lives in tokens: colours are CSS variables each theme defines, the radius scale is four fixed
+ * steps, and shadows are a short elevation scale. These checks read every page and component source and fail when
  * a class reaches past the tokens (a raw palette colour, an arbitrary radius, an ad-hoc shadow or a per-theme colour
  * override), so the language cannot drift one component at a time.
  */
@@ -74,21 +73,16 @@ describe('design tokens', () => {
       const name = cls.slice(cls.lastIndexOf(':') + 1).replace(/^!?shadow-?/, '');
       return !allowed.has(name);
     });
-    expect(allowed).toEqual(new Set(['none', 'elev-1', 'elev-2', 'glow', 'float']));
+    expect(allowed).toEqual(new Set(['none', 'elev-1', 'elev-2']));
     expect(outside).toEqual([]);
   });
 
-  it('maps every radius step to a multiple of the 0.1rem unit, with xl the largest component radius', () => {
+  it('maps the radius steps to the measured values: 2.4px, 12px, 16px and 20px, with xl the largest component radius', () => {
     const steps = Object.entries(tailwindConfig.theme?.borderRadius ?? {}) as [string, string][];
-    const units = Object.fromEntries(
-      steps
-        .filter(([name]) => name !== 'none' && name !== 'full')
-        .map(([name, value]) => [name, Number(/^calc\(var\(--radius-unit\) \* ([\d.]+)\)$/.exec(value)?.[1])]),
-    );
-    expect(units).toEqual({ xs: 0.5, sm: 1, md: 1.5, xl: 3 });
-    const largest = Object.entries(units).reduce((max, step) => (step[1] > max[1] ? step : max));
-    expect(largest[0]).toBe('xl');
-    expect(globalsCss).toMatch(/--radius-unit:\s*0\.1rem;/);
+    const variables = Object.fromEntries(steps.filter(([name]) => name !== 'none' && name !== 'full'));
+    expect(variables).toEqual({ xs: 'var(--radius-xs)', sm: 'var(--radius-sm)', md: 'var(--radius-md)', xl: 'var(--radius-xl)' });
+    const px = (name: string) => Number(new RegExp(String.raw`--radius-${name}:\s*([\d.]+)px;`).exec(globalsCss)?.[1]);
+    expect(['xs', 'sm', 'md', 'xl'].map(px)).toEqual([2.4, 12, 16, 20]);
   });
 
   it('rejects the retired radius and shadow steps, a bare rounded class and raw hex colours', () => {
@@ -123,21 +117,20 @@ describe('design tokens', () => {
     expect(noOps).toEqual([]);
   });
 
-  it('keeps the signature accent #5C6BC0 in both themes, the colour of the static brand files', () => {
+  it('keeps one blue primary, #2563EB, in both themes', () => {
     const accent = (selector: string) => {
       const start = globalsCss.indexOf(`${selector} {`);
       return /--c-accent:\s*([\d ]+);/.exec(globalsCss.slice(start, globalsCss.indexOf('\n}', start)))?.[1];
     };
-    expect([accent(':root'), accent('.dark')]).toEqual(['92 107 192', '92 107 192']);
+    expect([accent(':root'), accent('.dark')]).toEqual(['37 99 235', '37 99 235']);
   });
 
-  it('drifts the woven ground no further than the layer extends below the viewport, on both scroll paths', () => {
-    expect([0, 600, 1200, 5000, 40000].map(groundOffset)).toEqual([0, 120, 240, 240, 240]);
-    expect(groundOffset(-80)).toBe(0);
-    const ground = /\.woven-ground \{[^}]*inset: 0 0 -(\d+)px 0;/.exec(globalsCss)?.[1];
-    const drift = /@keyframes ground-drift \{\s*to \{\s*transform: translate3d\(0, -(\d+)px, 0\);/.exec(globalsCss)?.[1];
-    const range = /animation-range: 0 (\d+)px;/.exec(globalsCss)?.[1];
-    expect([Number(ground), Number(drift), Number(range)]).toEqual([GROUND_DRIFT_MAX_PX, GROUND_DRIFT_MAX_PX, GROUND_DRIFT_MAX_PX / GROUND_DRIFT_RATE]);
+  it('draws one sans family: no display or serif font in the tokens, the stylesheet or the sources', () => {
+    expect(Object.keys(tailwindConfig.theme?.extend?.fontFamily ?? {})).toEqual(['sans']);
+    expect(globalsCss).not.toMatch(/serif|--font-display/);
+    expect(findAll(/\bfont-display\b|WovenGround|woven-ground/g)).toEqual([]);
+    const layout = fs.readFileSync(path.join(rootDir, 'src', 'app', '[locale]', 'layout.tsx'), 'utf8');
+    expect(layout.match(/localFont\(/g)).toHaveLength(1);
   });
 
   it('defines every colour token for both themes', () => {
@@ -152,5 +145,49 @@ describe('design tokens', () => {
     expect(tokenNames.length).toBeGreaterThan(20);
     expect(tokenNames.filter((name) => !declared(block(':root')).has(name))).toEqual([]);
     expect(tokenNames.filter((name) => !declared(block('.dark')).has(name))).toEqual([]);
+  });
+  it('keeps text on every surface at WCAG AA (4.5:1) in both themes, and control borders at 3:1', () => {
+    const block = (selector: string) => {
+      const start = globalsCss.indexOf(`${selector} {`);
+      return globalsCss.slice(start, globalsCss.indexOf('\n}', start));
+    };
+    const channels = (text: string) =>
+      Object.fromEntries([...text.matchAll(/--c-([a-z0-9-]+):\s*(\d+) (\d+) (\d+);/g)].map((m) => [m[1], [Number(m[2]), Number(m[3]), Number(m[4])]]));
+    const luminance = ([r, g, b]: number[]) => {
+      const lin = (v: number) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    };
+    const ratio = (a: number[], b: number[]) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const textOnSurface: ReadonlyArray<[string, string]> = [
+      ...['ink', 'ink-2', 'ink-3', 'accent-ink', 'success', 'warning', 'danger', 'info'].flatMap((fg) =>
+        ['canvas', 'surface', 'sunken'].map((bg): [string, string] => [fg, bg]),
+      ),
+      ['on-accent', 'accent'],
+      ['on-accent', 'accent-hover'],
+      ['on-accent', 'accent-to'],
+      ['on-accent', 'accent-to-hover'],
+      ['accent-ink', 'accent-soft'],
+      ['success', 'success-soft'],
+      ['warning', 'warning-soft'],
+      ['danger', 'danger-soft'],
+      ['info', 'info-soft'],
+    ];
+    const below: string[] = [];
+    for (const [theme, selector] of [['light', ':root'], ['dark', '.dark']] as const) {
+      const tokens = channels(block(selector));
+      for (const [fg, bg] of textOnSurface) {
+        if (!tokens[fg] || !tokens[bg]) continue;
+        const value = ratio(tokens[fg], tokens[bg]);
+        if (value < 4.5) below.push(`${theme} ${fg} on ${bg}: ${value.toFixed(2)}`);
+      }
+      for (const bg of ['canvas', 'surface']) {
+        const value = ratio(tokens['rule-strong'], tokens[bg]);
+        if (value < 3) below.push(`${theme} rule-strong on ${bg}: ${value.toFixed(2)}`);
+      }
+    }
+    expect(below).toEqual([]);
   });
 });

@@ -40,7 +40,7 @@ export function WebhooksPanel({
       aria-labelledby="dashboard-tab-dlq"
       className="space-y-6"
     >
-      <div className="border-t border-rule-strong pt-6">
+      <div className="border-t border-rule pt-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -96,7 +96,7 @@ export function WebhooksPanel({
         )}
 
         {entries.length === 0 ? (
-          <div className="text-center py-14 border border-dashed border-rule-strong/60 rounded-sm">
+          <div className="text-center py-14 border border-dashed border-rule rounded-sm">
             <Inbox className="w-10 h-10 text-ink-3 mx-auto mb-2.5" />
             <p className="text-base font-semibold text-ink">
               {t('emptyHeading')}
@@ -169,7 +169,7 @@ export function WebhooksPanel({
                             onClick={() => onReplay(entry.id)}
                             disabled={replayingId === entry.id}
                             aria-label={t('replayLabel', { id: entry.id })}
-                            className="lift min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-xs font-semibold disabled:opacity-60"
+                            className="btn-primary min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-sm text-xs font-semibold disabled:opacity-60"
                           >
                             {replayingId === entry.id ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />

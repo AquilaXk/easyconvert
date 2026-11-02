@@ -181,7 +181,7 @@ export default function Hero({
             <div className="flex flex-wrap items-center gap-2.5">
               <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{title}</h1>
               {queueSummaryText && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-mono font-medium tabular-nums text-ink-2 border border-rule">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-medium tabular-nums text-ink-2 border border-rule">
                   {queueSummaryText}
                 </span>
               )}
@@ -195,7 +195,7 @@ export default function Hero({
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
               <div className="lg:grid lg:grid-cols-12 lg:items-center lg:gap-10">
                 <div className="lg:col-span-7 text-center lg:text-left">
-                  <h1 className="text-5xl sm:text-6xl lg:text-7xl text-ink leading-[1.02]">
+                  <h1 className="text-4xl sm:text-5xl text-ink leading-none">
                     {title}
                   </h1>
                   <p className="mt-4 text-base text-ink-2 max-w-xl mx-auto lg:mx-0 leading-relaxed">

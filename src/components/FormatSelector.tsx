@@ -16,7 +16,7 @@ export interface FormatSelectorProps {
 
 const NATURAL_PANEL_HEIGHT = 368;
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
-const DESKTOP_PANEL_CLASS = 'm-0 p-0 right-auto w-[min(440px,calc(100dvw-2rem))] rounded-md glass glass-raised border border-rule shadow-elev-1 overflow-hidden flex flex-col text-ink text-left select-none';
+const DESKTOP_PANEL_CLASS = 'm-0 p-0 right-auto w-[min(440px,calc(100dvw-2rem))] rounded-md bg-surface border border-rule shadow-elev-1 overflow-hidden flex flex-col text-ink text-left select-none';
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function readInitialMobileState(): boolean {
@@ -252,7 +252,7 @@ export default function FormatSelector({
     return (
       <dialog
         ref={dialogRef} aria-label={dialogLabel}
-        className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2 overflow-hidden text-left select-none"
+        className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2 overflow-hidden text-left select-none"
       >
         <MobileFormatDialogHeader title={title} onClose={onClose} />
         {body}

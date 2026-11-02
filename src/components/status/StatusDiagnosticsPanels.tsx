@@ -26,7 +26,7 @@ export function StatusOverviewCard({
 }>) {
   const t = useTranslations('status.overview');
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8">
+    <section className="border-t border-rule pt-6 sm:pt-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="flex items-start sm:items-center gap-4">
           <div className="flex items-center justify-center size-12 text-success shrink-0">
@@ -52,7 +52,7 @@ export function StatusOverviewCard({
             type="button"
             onClick={onRunDiagnostics}
             disabled={isRunning}
-            className="lift inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-sm font-semibold text-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent active:bg-accent-press disabled:opacity-50 cursor-pointer"
+            className="btn-primary inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-sm font-semibold text-sm disabled:opacity-50 cursor-pointer"
           >
             <Zap className="w-4 h-4" aria-hidden="true" />
             <span>{isRunning ? t('running') : t('run')}</span>
@@ -81,7 +81,7 @@ export function DiagnosticResultsCard({ results }: Readonly<{ results: Diagnosti
   const allSupported = verifiedCount === results.length;
 
   return (
-    <section className="border-t border-rule-strong pt-6">
+    <section className="border-t border-rule pt-6">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <h2 className="text-lg sm:text-xl text-ink">
           {t('heading')}
@@ -171,7 +171,7 @@ export function EnvironmentMetricsGrid({ detectedCores }: Readonly<{ detectedCor
         return (
           <div
             key={card.label}
-            className="border-t border-rule-strong pt-5 space-y-1"
+            className="border-t border-rule pt-5 space-y-1"
           >
             <div className="flex items-center justify-between text-xs text-ink-3">
               <span>{card.label}</span>

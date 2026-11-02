@@ -63,7 +63,7 @@ export function ConverterWorkflowSteps({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <div className="border-t border-rule-strong pt-6">
+        <div className="border-t border-rule pt-6">
           <div className="flex items-center justify-between mb-4">
             <span className="size-8 rounded-sm bg-accent text-on-accent font-bold text-xs flex items-center justify-center">
               01
@@ -80,7 +80,7 @@ export function ConverterWorkflowSteps({
           </p>
         </div>
 
-        <div className="border-t border-rule-strong pt-6">
+        <div className="border-t border-rule pt-6">
           <div className="flex items-center justify-between mb-4">
             <span className="size-8 rounded-sm bg-accent text-on-accent font-bold text-xs flex items-center justify-center">
               02
@@ -97,7 +97,7 @@ export function ConverterWorkflowSteps({
           </p>
         </div>
 
-        <div className="border-t border-rule-strong pt-6">
+        <div className="border-t border-rule pt-6">
           <div className="flex items-center justify-between mb-4">
             <span className="size-8 rounded-sm bg-accent text-on-accent font-bold text-xs flex items-center justify-center">
               03

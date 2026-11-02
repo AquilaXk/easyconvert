@@ -97,7 +97,7 @@ function FormatDirectoryCard({
   const activeLabel = tCategory(activeCategory.id);
 
   return (
-    <div className="border-t border-rule-strong lg:col-span-8 min-w-0 pt-6 sm:pt-7">
+    <div className="border-t border-rule lg:col-span-8 min-w-0 pt-6 sm:pt-7">
       <div className="border-b border-rule pb-5">
         <h2 className="text-2xl sm:text-3xl text-ink">
           {t('directoryHeading')}
@@ -129,7 +129,7 @@ function FormatDirectoryCard({
                 className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs transition-colors cursor-pointer ${buttonStyle}`}
               >
                 <span>{tCategory(cat.id)}</span>
-                <span className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] ${badgeStyle}`}>
+                <span className={`px-1.5 py-0.5 rounded-md text-[11px] ${badgeStyle}`}>
                   {cat.count}
                 </span>
               </button>
@@ -153,7 +153,7 @@ function FormatDirectoryCard({
               <Link
                 key={fmt.id}
                 href={`/${fmt.id}-converter`}
-                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-sm hover:bg-accent-soft border border-rule hover:border-accent font-mono text-xs font-semibold uppercase text-ink transition-colors"
+                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-sm hover:bg-accent-soft border border-rule hover:border-accent text-xs font-semibold uppercase text-ink transition-colors"
               >
                 {fmt.extension}
               </Link>
@@ -173,7 +173,7 @@ function FormatDirectoryCard({
                 className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-md border border-rule hover:border-accent transition-colors"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 font-mono text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
                     <span>{pair.from}</span>
                     <ArrowRight className="w-3.5 h-3.5 text-ink-3" />
                     <span>{pair.to}</span>

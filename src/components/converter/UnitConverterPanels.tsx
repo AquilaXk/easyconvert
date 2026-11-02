@@ -56,7 +56,7 @@ export function CategoryBreakdownSection({
   const copiedRow = copiedKey ? rows.find((item) => item.key === copiedKey) : undefined;
 
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg sm:text-xl text-ink">
           {t('breakdownHeading', { value: format.number(inputVal), from: fromName, category: categoryName })}
@@ -133,7 +133,7 @@ export function QuickReferenceSection({
   const fromDef = from.def;
   const toDef = to.def;
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-4">
       <h2 className="text-lg sm:text-xl text-ink">
         {t('referenceHeading', { from: from.name, to: to.name })}
       </h2>
@@ -184,7 +184,7 @@ export function PopularConversionsSection({
 }: Readonly<PopularConversionsSectionProps>) {
   const t = useTranslations('unitConverter');
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-4">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-4">
       <div className="flex items-center gap-2">
         <TrendingUp className="w-4 h-4 text-accent-ink" aria-hidden="true" />
         <h2 className="text-lg sm:text-xl text-ink">

@@ -19,7 +19,7 @@ function ConversionGridCard({
   const upperName = formatName.toUpperCase();
 
   return (
-    <div className="border-t border-rule-strong pt-6">
+    <div className="border-t border-rule pt-6">
       <h2 className="text-xl sm:text-2xl text-ink mb-1">
         {t(`${direction}.heading`, { format: upperName })}
       </h2>

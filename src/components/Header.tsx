@@ -22,7 +22,7 @@ function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
     <dialog
       ref={dialogRef}
       aria-label={t('menuLabel')}
-      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2"
+      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2"
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-rule">
         <BrandLogo size="sm" />
@@ -110,7 +110,7 @@ export default function Header() {
   }, [isToolsOpen]);
 
   return (
-    <header className="glass glass-frost text-ink border-b border-rule sticky top-0 z-40 h-16">
+    <header className="bg-surface/80 backdrop-blur-xl text-ink border-b border-rule sticky top-0 z-40 h-16">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between gap-4">
         <div className="flex items-center gap-6 min-w-0">
           <Link

@@ -61,7 +61,7 @@ export function ApiDocsMasthead({
             <a
               href="/api/v1/openapi.json"
               download="openapi.json"
-              className="lift min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent font-semibold text-sm"
+              className="btn-primary min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-sm font-semibold text-sm"
             >
               <Download className="w-4 h-4" aria-hidden="true" />
               <span>{t('download')}</span>

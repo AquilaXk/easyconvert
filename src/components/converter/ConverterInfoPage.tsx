@@ -87,7 +87,7 @@ export function ConverterInfoPage({ parsed, copy, totalFormatCount }: Readonly<C
           </p>
         </div>
 
-        <div className="border-t border-rule-strong pt-6 sm:pt-8 space-y-6 text-sm text-ink-2 leading-relaxed">
+        <div className="border-t border-rule pt-6 sm:pt-8 space-y-6 text-sm text-ink-2 leading-relaxed">
           {parsed.infoType === 'contact' ? (
             <ContactContent />
           ) : (

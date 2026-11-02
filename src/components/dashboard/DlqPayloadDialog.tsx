@@ -63,7 +63,7 @@ export function DlqPayloadDialog({
     <dialog
       ref={dialogRef}
       aria-labelledby="dlq-payload-dialog-title"
-      className="glass glass-raised rounded-md border border-rule shadow-elev-2 text-ink max-w-2xl w-[calc(100%-2rem)] p-0"
+      className="bg-surface rounded-md border border-rule shadow-elev-2 text-ink max-w-2xl w-[calc(100%-2rem)] p-0"
     >
       <div className="p-6 space-y-4">
         <div className="flex items-start justify-between gap-3">
@@ -152,7 +152,7 @@ export function DlqPayloadDialog({
               onReplay(entry.id);
               onClose();
             }}
-            className="lift min-h-[44px] px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent font-semibold text-xs inline-flex items-center gap-1.5"
+            className="btn-primary min-h-[44px] px-4 py-2 rounded-sm font-semibold text-xs inline-flex items-center gap-1.5"
           >
             <Play className="w-3.5 h-3.5" />
             <span>{t('replay')}</span>

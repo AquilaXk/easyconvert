@@ -78,7 +78,7 @@ function FormatList({
             key={fmt.id}
             type="button"
             onClick={() => onChoose(fmt.id)}
-            className={`min-h-[44px] sm:min-h-[40px] px-2 rounded-sm text-xs font-mono font-semibold uppercase text-center border transition-colors cursor-pointer truncate ${
+            className={`min-h-[44px] sm:min-h-[40px] px-2 rounded-sm text-[13px] font-bold tracking-[0.02em] uppercase text-center border transition-colors cursor-pointer truncate ${
               isSelected
                 ? 'bg-accent border-accent text-on-accent'
                 : 'hover:bg-accent-soft text-ink border-rule hover:border-accent'
@@ -198,7 +198,7 @@ export function FormatSelectorBody({
             <button
               type="button"
               onClick={() => onChoose('any')}
-              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-sm text-xs font-mono font-semibold uppercase border transition-colors cursor-pointer ${
+              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-sm text-[13px] font-bold tracking-[0.02em] uppercase border transition-colors cursor-pointer ${
                 normalizedSelected === 'any' || !normalizedSelected
                   ? 'bg-accent border-accent text-on-accent'
                   : 'bg-sunken/70 border-rule text-ink hover:border-accent'

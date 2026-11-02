@@ -16,30 +16,20 @@ const LICENSE_SECTIONS = ['PREAMBLE', 'DEFINITIONS', 'PERMISSION & CONDITIONS', 
 
 const FONTS = [
   {
-    family: 'InstrumentSans',
-    file: 'InstrumentSans-latin.woff2',
-    project: 'Instrument Sans',
-    copyright: 'Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans)',
-  },
-  {
-    family: 'InstrumentSerif',
-    file: 'InstrumentSerif-latin.woff2',
-    project: 'Instrument Serif',
-    copyright: 'Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif)',
-  },
-  {
-    family: 'NotoSerifKR',
-    file: 'NotoSerifKR-hangul-display.woff2',
-    project: 'Noto Serif KR',
-    copyright: 'Copyright 2012 Google Inc. All Rights Reserved.',
+    licence: 'Pretendard-OFL.txt',
+    file: 'EasyConvertSans-subset.woff2',
+    project: 'Pretendard',
+    copyright: 'Copyright (c) 2021, Kil Hyung-jin (https://github.com/orioncactus/pretendard)',
   },
 ];
+/** The one font file the interface ships; a fixed budget keeps a page's first paint light (113 KB on 2026-11-02). */
+const FONT_BUDGET_BYTES = 128 * 1024;
 
 describe('Served web fonts carry their OFL text', () => {
-  for (const { family, file, project, copyright } of FONTS) {
+  for (const { licence, file, project, copyright } of FONTS) {
     it(`ships the ${project} licence beside the served font`, () => {
       expect(node_fs.existsSync(node_path.join(FONT_DIR, file)), 'font file').toBe(true);
-      const licencePath = node_path.join(LICENSE_DIR, `${family}-OFL.txt`);
+      const licencePath = node_path.join(LICENSE_DIR, licence);
       expect(node_fs.existsSync(licencePath), licencePath).toBe(true);
       const text = node_fs.readFileSync(licencePath, 'utf8');
       expect(text.startsWith(copyright)).toBe(true);
@@ -53,11 +43,24 @@ describe('Served web fonts carry their OFL text', () => {
     expect(dockerfile).toMatch(/COPY --from=webbuilder [^\n]*\/app\/public \.\/public/);
   });
 
-  it('covers every Hangul syllable the Korean messages use, so no heading mixes two faces', () => {
-    const koreanMessages = node_fs.readFileSync(node_path.join(REPO_ROOT, 'messages', 'ko.json'), 'utf8');
-    const covered = new Set(node_fs.readFileSync(node_path.join(FONT_DIR, 'NotoSerifKR-hangul-display.txt'), 'utf8'));
-    const used = new Set(koreanMessages.match(/[\uac00-\ud7a3]/g) ?? []);
-    const missing = [...used].filter((syllable) => !covered.has(syllable));
-    expect(missing, 'rerun scripts/subset-hangul-display-font.py').toEqual([]);
+  it('covers every character the messages use, so no heading mixes two faces', () => {
+    const covered = new Set(node_fs.readFileSync(node_path.join(FONT_DIR, 'EasyConvertSans-subset.txt'), 'utf8'));
+    const used = new Set(
+      ['ko', 'en'].flatMap((locale) => {
+        const messages = node_fs.readFileSync(node_path.join(REPO_ROOT, 'messages', `${locale}.json`), 'utf8');
+        return messages.match(/[^\u0000-\u007f]/g) ?? [];
+      }),
+    );
+    const missing = [...used].filter((character) => !covered.has(character));
+    expect(missing, 'rerun scripts/subset-web-font.py').toEqual([]);
+  });
+
+  it('ships one font file within the size budget', () => {
+    const files = node_fs.readdirSync(FONT_DIR).filter((name) => name.endsWith('.woff2'));
+    expect(files).toEqual(['EasyConvertSans-subset.woff2']);
+    const bytes = node_fs.statSync(node_path.join(FONT_DIR, files[0])).size;
+    expect(bytes).toBeLessThanOrEqual(FONT_BUDGET_BYTES);
+    const font = node_fs.readFileSync(node_path.join(FONT_DIR, files[0]));
+    expect(font.subarray(0, 4).toString('latin1')).toBe('wOF2');
   });
 });

@@ -97,7 +97,7 @@ function ComponentStatusSection({
         {components.map((component) => (
           <div
             key={component.id}
-            className="border-t border-rule-strong pt-5 flex flex-col justify-between"
+            className="border-t border-rule pt-5 flex flex-col justify-between"
           >
             <div>
               <div className="flex items-start justify-between gap-3 mb-1.5">
@@ -123,7 +123,7 @@ function ComponentStatusSection({
 function SandboxArchitectureCard() {
   const t = useTranslations('status.sandbox');
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 flex flex-col md:flex-row items-start gap-5">
+    <section className="border-t border-rule pt-6 sm:pt-8 flex flex-col md:flex-row items-start gap-5">
       <div className="text-accent-ink shrink-0">
         <Cpu className="w-6 h-6" aria-hidden="true" />
       </div>

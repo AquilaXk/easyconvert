@@ -34,7 +34,7 @@ function LoginFormContent() {
   } = useAuthController();
 
   return (
-    <div className="glass sheen-edge max-w-md w-full rounded-md border border-rule p-6 sm:p-8">
+    <div className="bg-surface max-w-md w-full rounded-md border border-rule shadow-elev-1 p-6 sm:p-8">
       <div className="mb-6">
         <h1 className="text-3xl text-ink">
           {activeTab === 'login' ? t('loginHeading') : t('registerHeading')}

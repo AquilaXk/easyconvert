@@ -22,7 +22,7 @@ const CODE_TAG = {
 export function SecurityDataHandlingCard() {
   const t = useTranslations('home.security');
   return (
-    <div className="border-t border-rule-strong lg:col-span-4 min-w-0 pt-6 sm:pt-7">
+    <div className="border-t border-rule lg:col-span-4 min-w-0 pt-6 sm:pt-7">
       <h2 className="text-2xl text-ink">
         {t('heading')}
       </h2>
@@ -82,7 +82,7 @@ export function RestApiWorkflowCard() {
   };
 
   return (
-    <div className="border-t border-rule-strong lg:col-span-8 min-w-0 pt-6 sm:pt-7">
+    <div className="border-t border-rule lg:col-span-8 min-w-0 pt-6 sm:pt-7">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="max-w-2xl">
           <h2 className="text-2xl sm:text-3xl text-ink">
@@ -134,7 +134,7 @@ export function RestApiWorkflowCard() {
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <Link
           href="/api-docs"
-          className="lift inline-flex items-center justify-center gap-2 min-h-[44px] px-4 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-sm font-semibold"
+          className="btn-primary inline-flex items-center justify-center gap-2 min-h-[44px] px-4 rounded-sm text-sm font-semibold"
         >
           <span>{t('reference')}</span>
           <ArrowRight className="w-4 h-4" />
@@ -153,7 +153,7 @@ export function RestApiWorkflowCard() {
 export function HowConversionWorksCard() {
   const t = useTranslations('home.howItWorks');
   return (
-    <div className="border-t border-rule-strong lg:col-span-4 min-w-0 pt-6 sm:pt-7">
+    <div className="border-t border-rule lg:col-span-4 min-w-0 pt-6 sm:pt-7">
       <h2 className="text-2xl text-ink">
         {t('heading')}
       </h2>

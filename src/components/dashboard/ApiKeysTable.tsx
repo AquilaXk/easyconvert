@@ -51,7 +51,7 @@ export function ApiKeysTable({
   const format = useFormatter();
   if (apiKeys.length === 0) {
     return (
-      <div className="text-center py-12 border border-dashed border-rule-strong/60 rounded-sm">
+      <div className="text-center py-12 border border-dashed border-rule rounded-sm">
         <Key
           className="w-9 h-9 text-ink-3 mx-auto mb-2.5"
           aria-hidden="true"
@@ -110,13 +110,13 @@ export function ApiKeysTable({
                       key.scopes.map((scope) => (
                         <span
                           key={scope}
-                          className="px-1.5 py-0.5 rounded-md text-[11px] font-mono bg-sunken text-ink-2 border border-rule"
+                          className="px-1.5 py-0.5 rounded-md text-[11px] bg-sunken text-ink-2 border border-rule"
                         >
                           {scope}
                         </span>
                       ))
                     ) : (
-                      <span className="px-1.5 py-0.5 rounded-md text-[11px] font-mono bg-sunken text-ink-2 border border-rule">
+                      <span className="px-1.5 py-0.5 rounded-md text-[11px] bg-sunken text-ink-2 border border-rule">
                         {t('allScopes')}
                       </span>
                     )}

@@ -290,22 +290,22 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     const selectFile = select(hero, 'button').filter((b) => visibleText(b) === 'Select File');
     expect(selectFile).toHaveLength(1);
-    expect(classAttr(selectFile[0])).toMatch(/\bbg-accent\b/);
+    expect(classAttr(selectFile[0])).toMatch(/\bbtn-primary\b/);
     expect(phrasesMissing(text, ['Select your file to convert', `${REGISTRY_STATS.formatCount} Formats Supported`, 'Popular'])).toEqual([]);
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(1);
     expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(1);
 
     expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
-    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast', 'border-dashed'])).toEqual([]);
+    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
   });
 
   it('verifies semantic design token alignment across FormatSelector and Features', () => {
-    // The selector floats as a glass layer with the menu elevation; the directory rests on hairline rules without a box.
+    // The selector floats as a solid surface with the menu elevation; the directory rests on hairline rules without a box.
     const selector = classTokens(render(FormatSelector, {} as never));
-    expect(missingFrom(selector, ['glass', 'border-rule', 'shadow-elev-1'])).toEqual([]);
+    expect(missingFrom(selector, ['bg-surface', 'border-rule', 'shadow-elev-1'])).toEqual([]);
 
     const features = classTokens(render(Features, {} as never));
-    expect(missingFrom(features, ['border-rule', 'border-rule-strong'])).toEqual([]);
+    expect(missingFrom(features, ['border-rule'])).toEqual([]);
     expect(presentIn(features, ['bg-surface', 'shadow-elev-1', 'shadow-elev-2'])).toEqual([]);
   });
 
@@ -538,18 +538,21 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // Must NOT have jarring dark navy background in light mode
     expect(presentIn(tokens, ['bg-[#1F2340]'])).toEqual([]);
 
-    // The dock: a translucent sunken strip under the glass queue, a rounded bottom edge and a top rule
-    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-sunken/50'));
-    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['rounded-b-md', 'border-t', 'border-rule'])).toEqual([]);
+    // The dock: the surface under the queue rows, divided from them by a top rule
+    const dock = allElements(queue).find((e) => {
+      const classes = (attrOf(e, 'class') ?? '').split(/\s+/);
+      return classes.includes('border-t') && classes.includes('bg-surface');
+    });
+    expect(missingFrom((classAttr(dock) ?? '').split(/\s+/), ['bg-surface', 'border-t', 'border-rule'])).toEqual([]);
 
-    // "Add more files" is a hairline control with a 3:1 boundary, the helper text uses the secondary ink
+    // "Add more files" is a sunken control with a hairline border, the helper text uses the secondary ink
     const addMore = select(queue, 'button').find((b) => visibleText(b) === '+ Add more files');
-    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule-strong'])).toEqual([]);
+    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-rule', 'bg-sunken'])).toEqual([]);
     expect(missingFrom(tokens, ['text-ink-2'])).toEqual([]);
 
-    // The accent Convert CTA with its hover and press states, and responsive layout classes preventing mobile overflow
+    // The primary Convert CTA, and responsive layout classes preventing mobile overflow
     const convert = select(queue, 'button').find((b) => visibleText(b) === 'Convert');
-    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['bg-accent', 'hover:bg-accent-hover', 'active:bg-accent-press'])).toEqual([]);
+    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['btn-primary'])).toEqual([]);
     expect(missingFrom(tokens, ['flex-wrap', 'sm:flex-nowrap'])).toEqual([]);
   });
 });

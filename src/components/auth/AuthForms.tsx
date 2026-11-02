@@ -214,7 +214,7 @@ export function AuthCredentialsForm({
       <button
         type="submit"
         disabled={isBusy}
-        className="lift w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent font-semibold text-base disabled:opacity-60"
+        className="btn-primary w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-sm font-semibold text-base disabled:opacity-60"
       >
         {isSubmitting ? (
           <Loader2 className="w-4 h-4 animate-spin" />

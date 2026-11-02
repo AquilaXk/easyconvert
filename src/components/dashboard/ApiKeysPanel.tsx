@@ -13,7 +13,7 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
   const pct = quota.dailyLimit > 0 ? Math.min(100, (quota.usedToday / quota.dailyLimit) * 100) : 0;
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-      <div className="border-t border-rule-strong pt-5">
+      <div className="border-t border-rule pt-5">
         <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
           {t('used')}
         </div>
@@ -33,7 +33,7 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
         </div>
       </div>
 
-      <div className="border-t border-rule-strong pt-5">
+      <div className="border-t border-rule pt-5">
         <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
           {t('remaining')}
         </div>
@@ -46,7 +46,7 @@ function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
         </p>
       </div>
 
-      <div className="border-t border-rule-strong pt-5">
+      <div className="border-t border-rule pt-5">
         <div className="text-xs font-semibold text-ink-3 uppercase tracking-wider">
           {t('reset')}
         </div>
@@ -127,7 +127,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
         />
       )}
 
-      <div className="border-t border-rule-strong pt-6">
+      <div className="border-t border-rule pt-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
             <h2 className="text-xl text-ink">{t('heading')}</h2>
@@ -139,7 +139,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
           <button
             type="button"
             onClick={actions.onOpenGenerateForm}
-            className="lift min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent font-semibold text-sm self-start sm:self-auto"
+            className="btn-primary min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm font-semibold text-sm self-start sm:self-auto"
           >
             <Plus className="w-4 h-4" aria-hidden="true" />
             <span>{t('generate')}</span>

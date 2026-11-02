@@ -15,7 +15,7 @@ export default function Footer() {
   const { isDark, toggleDarkMode } = useThemeToggle();
 
   return (
-    <footer className="text-ink-2 border-t border-rule mt-auto">
+    <footer className="bg-sunken text-ink-2 border-t border-rule mt-auto">
       <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-8">
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-x-6 gap-y-8">
           {DIRECTORY_CATEGORIES.map((category) => (

@@ -98,7 +98,7 @@ print(response.json())`,
   const activeTabId = `sdk-guide-tab-${codeTab}`;
 
   return (
-    <div className="border-t border-rule-strong pt-6 min-w-0">
+    <div className="border-t border-rule pt-6 min-w-0">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-start gap-3">
           <div className="text-accent-ink shrink-0">

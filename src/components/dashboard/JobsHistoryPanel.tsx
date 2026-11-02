@@ -27,7 +27,7 @@ export function JobsHistoryPanel({
       id="dashboard-panel-files"
       role="tabpanel"
       aria-labelledby="dashboard-tab-files"
-      className="border-t border-rule-strong pt-6"
+      className="border-t border-rule pt-6"
     >
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
@@ -49,7 +49,7 @@ export function JobsHistoryPanel({
       </div>
 
       {files.length === 0 ? (
-        <div className="text-center py-14 border border-dashed border-rule-strong/60 rounded-sm">
+        <div className="text-center py-14 border border-dashed border-rule rounded-sm">
           <FileText className="w-10 h-10 text-ink-3 mx-auto mb-2.5" />
           <p className="text-base font-semibold text-ink">{t('emptyHeading')}</p>
           <p className="text-xs text-ink-3 mt-1 max-w-sm mx-auto">
@@ -57,7 +57,7 @@ export function JobsHistoryPanel({
           </p>
           <Link
             href="/"
-            className="lift min-h-[44px] inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-xs font-semibold"
+            className="btn-primary min-h-[44px] inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-sm text-xs font-semibold"
           >
             <span>{t('openWorkbench')}</span>
           </Link>
@@ -81,7 +81,7 @@ export function JobsHistoryPanel({
                     {file.fileName}
                   </td>
                   <td className="py-3.5 pr-4 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-accent-soft text-accent-ink border border-accent-edge">
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-accent-soft text-accent-ink border border-accent-edge">
                       {t('pair', { src: file.fromFormat.toUpperCase(), tgt: file.toFormat.toUpperCase() })}
                     </span>
                   </td>
@@ -100,7 +100,7 @@ export function JobsHistoryPanel({
                         href={file.downloadUrl}
                         download={file.fileName}
                         aria-label={t('downloadLabel', { name: file.fileName })}
-                        className="lift min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm bg-accent text-on-accent hover:bg-accent-hover hover:shadow-glow"
+                        className="btn-primary min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm"
                       >
                         <Download className="w-4 h-4" />
                       </a>

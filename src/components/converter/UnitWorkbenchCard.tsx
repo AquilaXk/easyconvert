@@ -106,7 +106,7 @@ export function UnitWorkbenchCard({
   const unitEntries = Object.entries(currentCategory.units);
 
   return (
-    <section className="border-t border-rule-strong pt-6 sm:pt-8 space-y-6">
+    <section className="border-t border-rule pt-6 sm:pt-8 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-rule pb-5">
         <div>
           <h2 className="text-2xl sm:text-3xl text-ink">

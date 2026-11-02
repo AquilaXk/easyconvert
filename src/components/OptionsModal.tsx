@@ -124,7 +124,7 @@ export default function OptionsModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="options-modal-title"
-      className="w-full max-w-2xl rounded-md p-0 glass glass-raised text-ink border border-rule shadow-elev-2"
+      className="w-full max-w-2xl rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2"
     >
       <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-start justify-between gap-4">
         <div className="min-w-0">
@@ -159,7 +159,7 @@ export default function OptionsModal({
         <button
           type="button"
           onClick={() => setOptions({ ...DEFAULT_OPTIONS })}
-          className="transition-colors min-h-[44px] px-4 rounded-sm border border-rule-strong text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
+          className="transition-colors min-h-[44px] px-4 rounded-sm border border-rule text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
         >
           {t('reset')}
         </button>
@@ -167,7 +167,7 @@ export default function OptionsModal({
           type="button"
           disabled={hasInvalidPassword}
           onClick={handleApply}
-          className="lift min-h-[44px] px-5 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="btn-primary min-h-[44px] px-5 rounded-sm text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {t('apply')}
         </button>

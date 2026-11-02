@@ -95,7 +95,7 @@ function QueueBatchHeader({
           <div className="relative">
             <button
               type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border border-rule-strong text-xs font-mono font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-xs border border-rule bg-sunken text-sm font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
               <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
@@ -134,7 +134,7 @@ function QueueFooterBar({
   const t = useTranslations('queue');
   const tErrors = useTranslations('errors.queue');
   return (
-    <div className="bg-sunken/50 border-t border-rule rounded-b-md px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
+    <div className="bg-surface border-t border-rule px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
       <div className="min-w-0">
         <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
         {zipError && (
@@ -154,14 +154,14 @@ function QueueFooterBar({
       <div className="flex items-center flex-wrap sm:flex-nowrap gap-2.5 w-full sm:w-auto justify-end">
         <button
           type="button" disabled={effectiveBusy} onClick={onAddMoreFiles}
-          className="transition-colors min-h-[48px] px-4 rounded-sm text-ink border border-rule-strong hover:border-ink-3 text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors min-h-[48px] px-4 rounded-xs text-ink border border-rule bg-sunken hover:border-ink-3 text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span>{t('addMore')}</span>
         </button>
         {completedCount > 1 && (
           <button
             type="button" onClick={onDownloadAllZip}
-            className="transition-colors min-h-[48px] px-4 rounded-sm bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer"
+            className="transition-colors min-h-[48px] px-4 rounded-xs bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer"
           >
             <Package className="w-4 h-4" /><span>{t('downloadAll')}</span>
           </button>
@@ -169,7 +169,7 @@ function QueueFooterBar({
         {!allDone && (
           <button
             type="button" disabled={!canConvert} onClick={onConvertAll}
-            className="lift bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent min-h-[48px] px-6 rounded-sm text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="btn-primary min-h-[48px] px-6 rounded-xs text-lg font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {effectiveBusy ? (
               <><Loader2 className="w-4 h-4 animate-spin" /><span>{t('converting')}</span></>
@@ -229,7 +229,7 @@ export default function ConversionQueue({
 
   return (
     <>
-      <div className="glass w-full rounded-md border border-rule overflow-visible">
+      <div className="bg-surface/50 w-full rounded-none border border-rule overflow-visible">
         {items.length > 1 && (
           <QueueBatchHeader
             itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}

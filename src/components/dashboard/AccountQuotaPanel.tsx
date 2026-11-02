@@ -28,7 +28,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
       aria-labelledby="dashboard-tab-usage"
       className="space-y-6"
     >
-      <div className="border-t border-rule-strong pt-6 sm:pt-8 space-y-6">
+      <div className="border-t border-rule pt-6 sm:pt-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-rule pb-5">
           <div>
             <h2 className="text-xl sm:text-2xl text-ink">
@@ -125,7 +125,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
         <div className="pt-2 flex flex-wrap items-center gap-3">
           <Link
             href="/api-docs"
-            className="lift min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-accent hover:bg-accent-hover hover:shadow-glow text-on-accent text-sm font-semibold"
+            className="btn-primary min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm text-sm font-semibold"
           >
             <Code2 className="w-4 h-4" />
             <span>{t('reference')}</span>

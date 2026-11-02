@@ -68,19 +68,13 @@ export default function HeroDropzoneCard({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className={`glass relative rounded-md border border-rule p-6 sm:p-8 text-center transition-[transform,box-shadow] duration-500 ease-spring ${
-          isDragOver ? '-translate-y-[3px] shadow-float' : ''
+        className={`relative rounded-md border-2 border-dashed p-6 sm:p-8 text-center transition-colors duration-200 ${
+          isDragOver ? 'border-accent bg-accent-soft' : 'border-accent-edge bg-surface shadow-elev-2'
         }`}
       >
-        <span
-          aria-hidden="true"
-          className={`pointer-events-none absolute rounded-sm border border-accent transition-[inset,opacity] duration-500 ease-spring ${
-            isDragOver ? 'inset-1.5 opacity-100' : 'inset-3 opacity-0'
-          }`}
-        />
-        <PlumeMark className={`size-11 mx-auto mb-2 text-accent-ink transition-transform duration-500 ease-spring ${isDragOver ? '-translate-y-1 -rotate-6' : ''}`} />
+        <PlumeMark className="size-11 mx-auto mb-2 text-accent-ink" />
 
-        <p className="font-display text-2xl sm:text-3xl text-ink">
+        <p className="text-2xl font-semibold tracking-tight text-ink">
           {t('heading')}
         </p>
         <p className="text-sm text-ink-2 mt-1.5">
@@ -92,7 +86,7 @@ export default function HeroDropzoneCard({
             <button
               type="button"
               onClick={onOpenFileDialog}
-              className="lift min-h-[48px] px-6 bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent font-semibold text-sm sm:text-base rounded-l-sm flex items-center gap-2 cursor-pointer"
+              className="btn-primary min-h-[48px] px-6 font-semibold text-sm sm:text-base rounded-l-sm flex items-center gap-2 cursor-pointer"
             >
               <Upload className="w-4 h-4 shrink-0" />
               <span>{t('selectFile')}</span>
@@ -104,10 +98,10 @@ export default function HeroDropzoneCard({
               aria-label={t('moreSources')}
               aria-haspopup="menu"
               aria-expanded={showSourceMenu}
-              className="lift min-h-[48px] w-12 bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent border-l border-on-accent/25 rounded-r-sm flex items-center justify-center cursor-pointer"
+              className="btn-primary min-h-[48px] w-12 border-l border-on-accent/25 rounded-r-sm flex items-center justify-center cursor-pointer"
             >
               <ChevronDown
-                className={`w-4 h-4 transition-transform duration-300 ease-spring ${showSourceMenu ? 'rotate-180' : ''}`}
+                className={`w-4 h-4 transition-transform duration-200 ${showSourceMenu ? 'rotate-180' : ''}`}
               />
             </button>
 

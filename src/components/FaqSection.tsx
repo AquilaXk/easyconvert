@@ -51,7 +51,7 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
           </p>
         </div>
 
-        <div className="border-y border-rule-strong divide-y divide-rule">
+        <div className="border-y border-rule divide-y divide-rule">
           {faqs.map((faq, idx) => {
             const isOpen = openIndex === idx;
             const questionId = `faq-question-${idx}`;
@@ -71,7 +71,7 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                     {faq.q}
                   </span>
                   <ChevronDown
-                    className={`w-4 h-4 text-accent-ink shrink-0 transition-transform duration-500 ease-spring ${
+                    className={`w-4 h-4 text-accent-ink shrink-0 transition-transform duration-200 ${
                       isOpen ? 'rotate-180' : ''
                     }`}
                   />
@@ -81,7 +81,7 @@ export default function FaqSection({ customFaqs, title, subtitle }: FaqSectionPr
                     id={answerId}
                     role="region"
                     aria-labelledby={questionId}
-                    className="settle px-1 pb-5 max-w-3xl text-sm text-ink-2 leading-relaxed"
+                    className="px-1 pb-5 max-w-3xl text-sm text-ink-2 leading-relaxed"
                   >
                     {faq.a}
                   </div>

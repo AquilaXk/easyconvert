@@ -73,7 +73,7 @@ export function DashboardHeader({
 
   return (
     <>
-      <div className="border-t border-rule-strong pt-6 mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
+      <div className="border-t border-rule pt-6 mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
         <div className="flex items-center gap-4 min-w-0">
           <div className="w-14 h-14 rounded-md bg-accent text-on-accent flex items-center justify-center text-xl font-bold shrink-0 overflow-hidden">
             {user.avatarUrl ? (

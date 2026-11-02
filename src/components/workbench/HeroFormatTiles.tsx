@@ -48,15 +48,15 @@ export default function HeroFormatTiles({
           aria-expanded={openPicker === 'source'}
           aria-label={t('sourceLabel', { format: sourceDisplay })}
           onClick={() => setOpenPicker((cur) => (cur === 'source' ? null : 'source'))}
-          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
+          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-md border border-rule bg-surface shadow-elev-1 hover:border-accent-edge px-3 pt-2.5 pb-2 text-ink flex flex-col items-start justify-between cursor-pointer"
         >
           <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
             {t('from')}
           </span>
-          <span className="w-full flex items-center justify-between gap-2 font-display text-3xl uppercase">
+          <span className="w-full flex items-center justify-between gap-2 text-3xl font-bold uppercase">
             <span>{sourceDisplay}</span>
             <ChevronDown
-              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-300 ease-spring ${
+              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-200 ${
                 openPicker === 'source' ? 'rotate-180' : ''
               }`}
             />
@@ -87,15 +87,15 @@ export default function HeroFormatTiles({
           aria-expanded={openPicker === 'target'}
           aria-label={t('targetLabel', { format: isAnyTarget ? t('anyFormat') : targetDisplay })}
           onClick={() => setOpenPicker((cur) => (cur === 'target' ? null : 'target'))}
-          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-xs border-t border-rule-strong hover:border-accent px-1 pt-2.5 pb-1 text-ink flex flex-col items-start justify-between cursor-pointer"
+          className="transition-colors min-w-[116px] sm:min-w-[132px] min-h-[84px] rounded-md border border-rule bg-surface shadow-elev-1 hover:border-accent-edge px-3 pt-2.5 pb-2 text-ink flex flex-col items-start justify-between cursor-pointer"
         >
           <span className="text-xs font-medium uppercase tracking-widest text-ink-3">
             {t('to')}
           </span>
-          <span className="w-full flex items-center justify-between gap-2 font-display text-3xl uppercase">
+          <span className="w-full flex items-center justify-between gap-2 text-3xl font-bold uppercase">
             <span>{targetDisplay}</span>
             <ChevronDown
-              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-300 ease-spring ${
+              className={`w-4 h-4 text-ink-3 shrink-0 transition-transform duration-200 ${
                 openPicker === 'target' ? 'rotate-180' : ''
               }`}
             />

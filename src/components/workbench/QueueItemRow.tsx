@@ -45,7 +45,7 @@ type PasswordErrorTranslator = ReturnType<typeof useTranslations<'options.passwo
 function renderCategoryIcon(ext: string): React.ReactNode {
   const clean = ext.toLowerCase();
   const Icon = (clean !== 'pdf' && CATEGORY_ICONS[FORMAT_REGISTRY[clean]?.category || 'document']) || FileText;
-  return <Icon className="w-5 h-5 text-accent-ink" />;
+  return <Icon className="w-5 h-5 text-ink-3" />;
 }
 
 function resolveOptionError(tPassword: PasswordErrorTranslator, item: ConversionQueueItem): string | null {
@@ -101,11 +101,11 @@ function RowStatusDisplay({
     const baseName = item.name.replace(/\.[^/.]+$/, '') || item.name;
     return (
       <div className="flex items-center gap-2">
-        <span className="settle inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-success"><span aria-hidden="true" className="size-1.5 rounded-full bg-success" />{t('done')}</span>
+        <span className="inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-success"><span aria-hidden="true" className="size-1.5 rounded-full bg-success" />{t('done')}</span>
         {item.resultUrl && (
           <a
             href={item.resultUrl} download={`${baseName}.${item.targetFormat}`}
-            className="settle lift bg-accent hover:bg-accent-hover hover:shadow-glow active:bg-accent-press text-on-accent inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-sm text-xs font-semibold"
+            className="btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-xs text-xs font-semibold"
           >
             <Download className="w-4 h-4" /><span>{t('download')}</span>
           </a>
@@ -119,7 +119,7 @@ function RowStatusDisplay({
         <span className="inline-flex items-center gap-1.5 px-1 text-xs font-semibold text-danger"><span aria-hidden="true" className="size-1.5 rounded-full bg-danger" />{t('failed')}</span>
         <button
           type="button" disabled={isRetryDisabled(item, isBusy, isOversize, optionError)} onClick={onRetry}
-          className="transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-sm border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-xs border border-danger-edge text-xs font-semibold text-danger hover:bg-danger-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {t('retry')}
         </button>
@@ -159,20 +159,20 @@ export default function QueueItemRow({
     : null;
 
   const targetButtonClass = hasTarget
-    ? 'border-rule-strong text-ink hover:border-accent font-mono font-semibold uppercase'
+    ? 'border-rule bg-sunken text-ink hover:border-accent font-semibold uppercase'
     : 'border-warning-edge bg-warning-soft text-warning hover:border-accent font-medium';
 
   return (
-    <div className="grid grid-cols-[2rem_minmax(0,1fr)_auto] sm:grid-cols-[2rem_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-3 p-4 min-w-0">
-      <div className="h-5 self-start flex items-center justify-center">
+    <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] sm:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-3 p-4 min-w-0">
+      <div className="size-11 self-start flex items-center justify-center rounded-xs bg-surface ring-1 ring-inset ring-rule">
         {renderCategoryIcon(item.sourceFormat)}
       </div>
       <div className="self-start min-w-0">
-        <p className="text-sm font-semibold text-ink truncate" title={item.name}>
+        <p className="text-[15px] font-semibold text-ink truncate" title={item.name}>
           {item.name}
         </p>
-        <p className="text-xs text-ink-2 flex items-center flex-wrap gap-1.5 mt-0.5">
-          <span className="font-mono tabular-nums">{formatBytes(item.size)}</span>
+        <p className="text-xs text-ink-3 flex items-center flex-wrap gap-1.5 mt-0.5">
+          <span className="tabular-nums">{formatBytes(item.size)}</span>
           <span aria-hidden="true">&bull;</span>
           <span>{item.sourceFormat.toUpperCase()}</span>
         </p>
@@ -195,7 +195,7 @@ export default function QueueItemRow({
             aria-expanded={isFormatSelectorOpen}
             disabled={isBusy || isOversize}
             onClick={onToggleFormatSelector}
-            className={`transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
+            className={`transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-xs border text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${targetButtonClass}`}
           >
             <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
             <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
@@ -219,7 +219,7 @@ export default function QueueItemRow({
           aria-label={t('optionsLabel', { name: item.name })}
           disabled={!item.targetFormat || isBusy || isOversize}
           onClick={onOpenOptions}
-          className="transition-colors inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-sm border border-rule text-ink-2 hover:border-accent hover:text-ink cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="transition-colors inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-xs border border-rule bg-sunken text-ink-2 hover:border-accent hover:text-ink cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Sliders className="w-4 h-4" />
         </button>
@@ -237,7 +237,7 @@ export default function QueueItemRow({
         type="button"
         aria-label={t(isBusy ? 'cancelLabel' : 'removeLabel', { name: item.name })}
         onClick={onRemove}
-        className="col-start-3 row-start-1 sm:col-start-4 self-start sm:self-center -mt-3 -mr-3 sm:m-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
+        className="col-start-3 row-start-1 sm:col-start-4 self-start sm:self-center -mt-3 -mr-3 sm:m-0 inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-xs text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer"
       >
         <X className="w-4 h-4" />
       </button>

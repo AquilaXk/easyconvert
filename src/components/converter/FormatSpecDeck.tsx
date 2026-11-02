@@ -127,7 +127,7 @@ function FormatDossierCard({
   ];
 
   return (
-    <div className="border-t border-rule-strong pt-6 flex flex-col justify-between min-w-0">
+    <div className="border-t border-rule pt-6 flex flex-col justify-between min-w-0">
       <div>
         <div className="flex items-start justify-between gap-3 pb-4 mb-4 border-b border-rule">
           <div className="flex items-start gap-3 min-w-0">
@@ -143,7 +143,7 @@ function FormatDossierCard({
               </h3>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-sm text-xs font-mono font-bold bg-sunken border border-rule uppercase text-ink shrink-0">
+          <span className="px-2.5 py-1 rounded-sm text-xs font-bold bg-sunken border border-rule uppercase text-ink shrink-0">
             .{meta.extension}
           </span>
         </div>

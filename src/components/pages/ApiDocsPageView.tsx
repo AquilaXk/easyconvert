@@ -134,7 +134,7 @@ export default function ApiDocsPageView() {
           {loading && (
             <output
               aria-live="polite"
-              className="block py-16 text-center border-t border-rule-strong"
+              className="block py-16 text-center border-t border-rule"
             >
               <span
                 className="inline-block w-7 h-7 border-2 border-accent border-t-transparent rounded-full animate-spin mb-3"
@@ -160,7 +160,7 @@ export default function ApiDocsPageView() {
           )}
 
           {!loading && !failed && (
-            <div className="border-t border-rule-strong">
+            <div className="border-t border-rule">
               {filteredEndpoints.length === 0 ? (
                 <div className="py-14 text-center">
                   <FileCode className="w-8 h-8 text-ink-3 mx-auto mb-2.5" />
