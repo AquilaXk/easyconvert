@@ -65,8 +65,8 @@ async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobRes
 export function attachJobLifecycleListeners(
   worker: Worker<ConversionJobData, ConversionJobResult>
 ): void {
-  // A worker that takes a job renews its reservation to the lease of handed-off work, so a job stored while its request
-  // could not tell whether it was is charged however long it then runs.
+  // A worker that takes a job renews its reservation to the lease of handed-off work, so a job whose request could not tell
+  // that it was stored is still charged however long it runs, when a worker takes it within the provisional lease.
   worker.on('active', async (job: Job<ConversionJobData, ConversionJobResult>) => {
     if (job.data?.reservationId) await leaseToHandedOffWork(job.data.reservationId, `job ${job.id}`);
   });
