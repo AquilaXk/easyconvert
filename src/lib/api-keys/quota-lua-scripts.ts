@@ -36,29 +36,6 @@ end
 reclaim()
 `;
 
-/**
- * How commit, settle and rollback take a reservation out of its day: KEYS[4] is the key the release before leases kept a
- * reservation under, its units as a string, which lives until the end of its day. A reservation made before the deploy is
- * ended from that key, so the units of work still running then are charged or given back like any other; after that day no
- * such key is left (docs/policy-decisions.md, entry 15).
- */
-const END_FUNCTIONS = `
-local function take(id)
-  local units = redis.call('HGET', KEYS[3], id)
-  if units then
-    redis.call('HDEL', KEYS[3], id)
-    redis.call('ZREM', KEYS[2], id)
-    return tonumber(units)
-  end
-  units = redis.call('GET', KEYS[4])
-  if units then
-    redis.call('DEL', KEYS[4])
-    return tonumber(units)
-  end
-  return nil
-end
-`;
-
 /** Reserves units under the daily limit, leased for ARGV[4] milliseconds. */
 export const RESERVE_QUOTA_LUA_SCRIPT = `
 -- ARGV[1]: units  ARGV[2]: daily limit  ARGV[3]: reservation id  ARGV[4]: lease in ms  ARGV[5]: ms until the day ends
@@ -100,46 +77,36 @@ end
 return 1
 `;
 
-/** Ends a live reservation and keeps its units charged; 0 when it is gone (committed, ended or its lease over). */
-export const COMMIT_QUOTA_LUA_SCRIPT = `
--- KEYS[4]: the key of a reservation made before leases
--- ARGV[1]: reservation id
+/**
+ * Ends a live reservation once, charging ARGV[2] units in place of those it held, or keeping them with ARGV[2] = 'held': a
+ * commit keeps them, a rollback charges 0, and a settle charges what was used. A count that is gone is not made again. The
+ * extensions of the reservation (KEYS[4]) end with it. KEYS[5] is the key the release before leases kept a reservation under,
+ * its units as a string, which lives until the end of its day: a reservation made before the deploy is ended from that key,
+ * so the units of work still running then are charged or given back like any other; after that day no such key is left
+ * (docs/policy-decisions.md, entry 15).
+ */
+export const SETTLE_TO_QUOTA_LUA_SCRIPT = `
+-- KEYS[4]: the extensions of the reservation  KEYS[5]: the key of a reservation made before leases
+-- ARGV[1]: reservation id  ARGV[2]: units charged in its place, or 'held'
+-- Returns {1 ended | 0 no live reservation, units charged more (fewer when negative)}
 ${LEASE_FUNCTIONS}
-${END_FUNCTIONS}
-if take(ARGV[1]) == nil then
-  return 0
+local reserved = redis.call('HGET', KEYS[3], ARGV[1])
+if reserved then
+  redis.call('HDEL', KEYS[3], ARGV[1])
+  redis.call('ZREM', KEYS[2], ARGV[1])
+else
+  reserved = redis.call('GET', KEYS[5])
+  if not reserved then
+    return {0, 0}
+  end
+  redis.call('DEL', KEYS[5])
 end
-return 1
-`;
-
-/** Gives the units of a live reservation back to its day once; a count that is gone is not made again. */
-export const ROLLBACK_QUOTA_LUA_SCRIPT = `
--- KEYS[4]: the key of a reservation made before leases
--- ARGV[1]: reservation id
-${LEASE_FUNCTIONS}
-${END_FUNCTIONS}
-local units = take(ARGV[1])
-if units == nil then
-  return 0
+redis.call('DEL', KEYS[4])
+reserved = tonumber(reserved)
+local diff = 0
+if ARGV[2] ~= 'held' then
+  diff = tonumber(ARGV[2]) - reserved
 end
-if units > 0 and redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('DECRBY', KEYS[1], units)
-end
-return 1
-`;
-
-/** Charges the units a request used in place of those it reserved, once, under the same rules as the rollback. */
-export const SETTLE_QUOTA_LUA_SCRIPT = `
--- KEYS[4]: the key of a reservation made before leases
--- ARGV[1]: reservation id  ARGV[2]: units used
--- Returns {1 settled | 0 no live reservation, units charged more (fewer when negative)}
-${LEASE_FUNCTIONS}
-${END_FUNCTIONS}
-local reserved = take(ARGV[1])
-if reserved == nil then
-  return {0, 0}
-end
-local diff = tonumber(ARGV[2]) - reserved
 if diff ~= 0 and redis.call('EXISTS', KEYS[1]) == 1 then
   redis.call('INCRBY', KEYS[1], diff)
 end

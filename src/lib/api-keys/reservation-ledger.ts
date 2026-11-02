@@ -1,15 +1,6 @@
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
-import {
-  COMMIT_QUOTA_LUA_SCRIPT,
-  EXTEND_QUOTA_LUA_SCRIPT,
-  RENEW_QUOTA_LUA_SCRIPT,
-  RESERVE_QUOTA_LUA_SCRIPT,
-  ROLLBACK_QUOTA_LUA_SCRIPT,
-  SETTLE_QUOTA_LUA_SCRIPT,
-  USED_QUOTA_LUA_SCRIPT,
-} from './quota-lua-scripts';
-import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
+import { EXTEND_QUOTA_LUA_SCRIPT, RENEW_QUOTA_LUA_SCRIPT, RESERVE_QUOTA_LUA_SCRIPT, SETTLE_TO_QUOTA_LUA_SCRIPT, USED_QUOTA_LUA_SCRIPT } from './quota-lua-scripts';
 
 /**
  * Where the conversion units of a day are reserved, charged and given back (docs/policy-decisions.md, entry 15): in Redis
@@ -28,14 +19,14 @@ const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * The lifetimes of a reservation's lease. The holder renews a provisional lease every third of its length, as a lease client
- * keeps a lease alive (etcd's client sends a keep-alive every TTL/3), so one missed renewal does not end it. A handed-off
- * lease outlasts the longest queued work: a day, and at least an hour past the longest deadline a job may be given
- * (JOB_DEADLINE_CEILING_MS, the bound of every deadline setting); it is the backstop for work whose end is never reported.
+ * sends a keep-alive every third of the lease's time to live, so one missed renewal does not end it. A handed-off lease is a
+ * day, at least an hour past the longest deadline a job may be given (JOB_DEADLINE_CEILING_MS, the bound of every deadline
+ * setting, which a test holds to 23 hours at most); it is the backstop for work whose end is never reported.
  */
 export const RESERVATION_LEASE = {
   provisionalMs: 90_000,
   heartbeatMs: 30_000,
-  handedOffMs: Math.max(24 * HOUR_MS, JOB_DEADLINE_CEILING_MS + HOUR_MS),
+  handedOffMs: 24 * HOUR_MS,
 } as const;
 
 /** What `extend` did: held the units, refused them because they do not fit in the day (with the conversions left), or found no reservation. */
@@ -77,12 +68,8 @@ export function parseReservationId(reservationId: string): { userId: string; day
 
 const EXTENSION_STATUS: Readonly<Record<string, QuotaExtension['status']>> = { '1': 'extended', '0': 'does-not-fit', '-1': 'no-reservation' };
 
-/** The keys a step on one reservation reads: those of its day, its extensions, and its key from before leases. */
-interface ReservationKeys {
-  day: [string, string, string];
-  extensions: string;
-  beforeLeases: string;
-}
+/** The keys every step on one reservation is given: those of its day, its extensions, and its key from before leases. */
+type ReservationKeys = [usage: string, leases: string, held: string, extensions: string, beforeLeases: string];
 
 /** The ledger every web and worker instance shares: one Lua script per step (quota-lua-scripts.ts). */
 export class RedisReservationLedger implements ReservationLedger {
@@ -100,15 +87,22 @@ export class RedisReservationLedger implements ReservationLedger {
   private keysOf(reservationId: string): ReservationKeys | undefined {
     const named = parseReservationId(reservationId);
     if (!named) return undefined;
-    const reservationKey = `${this.prefix}res:{${named.userId}}:${reservationId}`;
-    return { day: this.dayKeys(named.userId, named.day), extensions: `${reservationKey}:ext`, beforeLeases: reservationKey };
+    const beforeLeases = `${this.prefix}res:{${named.userId}}:${reservationId}`;
+    return [...this.dayKeys(named.userId, named.day), `${beforeLeases}:ext`, beforeLeases];
   }
 
-  /** Runs `script` on the keys of the day of `reservationId` and `fourth`; undefined for an id of another form. */
-  private async onReservation(script: string, reservationId: string, fourth: keyof Omit<ReservationKeys, 'day'>, ...args: Array<string | number>): Promise<unknown> {
+  /** Runs `script` on the keys of `reservationId`; undefined for an id of another form. */
+  private async onReservation(script: string, reservationId: string, ...args: Array<string | number>): Promise<unknown> {
     const keys = this.keysOf(reservationId);
     if (!keys) return undefined;
-    return this.redis.eval(script, 4, ...keys.day, keys[fourth], reservationId, ...args);
+    return this.redis.eval(script, keys.length, ...keys, reservationId, ...args);
+  }
+
+  /** Ends `reservationId`, charging `units` in its place or keeping what it held (`SETTLE_TO_QUOTA_LUA_SCRIPT`). */
+  private async settleTo(reservationId: string, units: number | 'held'): Promise<{ success: boolean; difference: number }> {
+    const reply = (await this.onReservation(SETTLE_TO_QUOTA_LUA_SCRIPT, reservationId, units)) as [number, number] | undefined;
+    if (!reply) return { success: false, difference: 0 };
+    return { success: Number(reply[0]) === 1, difference: Number(reply[1]) };
   }
 
   async reserve(request: Parameters<ReservationLedger['reserve']>[0]) {
@@ -118,21 +112,19 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async commit(reservationId: string): Promise<boolean> {
-    return Number(await this.onReservation(COMMIT_QUOTA_LUA_SCRIPT, reservationId, 'beforeLeases')) === 1;
+    return (await this.settleTo(reservationId, 'held')).success;
   }
 
   async rollback(reservationId: string): Promise<boolean> {
-    return Number(await this.onReservation(ROLLBACK_QUOTA_LUA_SCRIPT, reservationId, 'beforeLeases')) === 1;
+    return (await this.settleTo(reservationId, 0)).success;
   }
 
   async settle(reservationId: string, units: number) {
-    const reply = (await this.onReservation(SETTLE_QUOTA_LUA_SCRIPT, reservationId, 'beforeLeases', units)) as [number, number] | undefined;
-    if (!reply) return { success: false, difference: 0 };
-    return { success: Number(reply[0]) === 1, difference: Number(reply[1]) };
+    return this.settleTo(reservationId, units);
   }
 
   async extend(reservationId: string, extensionId: string, units: number, limit: number): Promise<QuotaExtension> {
-    const reply = (await this.onReservation(EXTEND_QUOTA_LUA_SCRIPT, reservationId, 'extensions', extensionId, units, limit)) as [number, number] | undefined;
+    const reply = (await this.onReservation(EXTEND_QUOTA_LUA_SCRIPT, reservationId, extensionId, units, limit)) as [number, number] | undefined;
     if (!reply) return { status: 'no-reservation' };
     const outcome = EXTENSION_STATUS[String(reply[0])];
     if (outcome === undefined) throw new Error(`The extension script of reservation ${reservationId} answered the unknown status ${String(reply[0])}.`);
@@ -140,7 +132,7 @@ export class RedisReservationLedger implements ReservationLedger {
   }
 
   async renew(reservationId: string, leaseMs: number): Promise<boolean> {
-    return Number(await this.onReservation(RENEW_QUOTA_LUA_SCRIPT, reservationId, 'extensions', leaseMs)) === 1;
+    return Number(await this.onReservation(RENEW_QUOTA_LUA_SCRIPT, reservationId, leaseMs)) === 1;
   }
 
   async used(owner: string, day: string): Promise<number> {

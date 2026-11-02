@@ -217,9 +217,10 @@ describe('a reservation a request hands to queued work', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('gives handed-off work a lease longer than the longest job deadline the settings accept, by an hour', () => {
-    expect(() => jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_ENTERPRISE: String(25 * HOUR_MS) })).toThrow(JobDeadlineError);
-    expect(RESERVATION_LEASE.handedOffMs).toBeGreaterThanOrEqual(Math.max(24 * HOUR_MS, JOB_DEADLINE_CEILING_MS + HOUR_MS));
+  it('gives handed-off work a lease of a day, at least an hour longer than the longest job deadline the settings accept', () => {
+    expect(() => jobDeadlineSettings({ JOB_DEADLINE_MAX_MS_ENTERPRISE: String(JOB_DEADLINE_CEILING_MS + 1) })).toThrow(JobDeadlineError);
+    expect(RESERVATION_LEASE.handedOffMs).toBe(24 * HOUR_MS);
+    expect(JOB_DEADLINE_CEILING_MS).toBeLessThanOrEqual(23 * HOUR_MS);
   });
 
   it('renews the lease while the request runs, so a long conversion is still charged', async () => {

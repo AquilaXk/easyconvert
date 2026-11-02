@@ -553,6 +553,22 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
       expect(await remaining()).toBe(DAY_ALLOWANCE - 3);
     });
+
+    it.each([
+      ['committed', (id: string) => redisKeyStore.commitQuota(id)],
+      ['given back', (id: string) => redisKeyStore.rollbackQuota(id)],
+      ['settled', (id: string) => redisKeyStore.settleQuota(id, 1)],
+    ])('removes what the extensions of a reservation hold once it is %s', async (_label, end) => {
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      const reservationId = unit.reservationId as string;
+      expect(await redisKeyStore.extendQuota(reservationId, 'conv', 2)).toEqual({ status: 'extended' });
+      const extensions = `${redisKeyStore.getPrefix()}res:{${client.userId}}:${reservationId}:ext`;
+      expect(await admin.exists(extensions)).toBe(1);
+
+      await end(reservationId);
+
+      expect(await admin.exists(extensions)).toBe(0);
+    });
   });
 
   describe('a reservation made before leases, during the day after the deploy', () => {

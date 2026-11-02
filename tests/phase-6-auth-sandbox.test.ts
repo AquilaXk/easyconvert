@@ -19,8 +19,7 @@ import { RedisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import {
   DEDUCT_QUOTA_LUA_SCRIPT,
   RESERVE_QUOTA_LUA_SCRIPT,
-  COMMIT_QUOTA_LUA_SCRIPT,
-  ROLLBACK_QUOTA_LUA_SCRIPT,
+  SETTLE_TO_QUOTA_LUA_SCRIPT,
 } from '../src/lib/api-keys/quota-lua-scripts';
 import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { userStore } from '../src/lib/auth/user-store';
@@ -370,8 +369,8 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
 
     it('exposes well-formed atomic Lua scripts for quota operations', () => {
       expect(RESERVE_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
-      expect(COMMIT_QUOTA_LUA_SCRIPT).toContain("redis.call('HDEL'");
-      expect(ROLLBACK_QUOTA_LUA_SCRIPT).toContain("redis.call('DECRBY'");
+      expect(SETTLE_TO_QUOTA_LUA_SCRIPT).toContain("redis.call('HDEL'");
+      expect(SETTLE_TO_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
       expect(DEDUCT_QUOTA_LUA_SCRIPT).toContain("redis.call('INCRBY'");
       expect(keyStore.getPrefix()).toBe('test:keystore:');
     });
@@ -522,14 +521,13 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       expect(diskUsage.usedToday).toBe(15);
     });
 
-    it('executes atomic RESERVE_QUOTA_LUA_SCRIPT, COMMIT_QUOTA_LUA_SCRIPT and DEDUCT_QUOTA_LUA_SCRIPT via redis.eval', async () => {
+    it('executes atomic RESERVE_QUOTA_LUA_SCRIPT, SETTLE_TO_QUOTA_LUA_SCRIPT and DEDUCT_QUOTA_LUA_SCRIPT via redis.eval', async () => {
       const evalCalls: any[] = [];
       const mockRedis = {
         eval: async (script: string, numKeys: number, ...args: any[]) => {
           evalCalls.push({ script, numKeys, args });
           if (script === RESERVE_QUOTA_LUA_SCRIPT) return [1, 20];
-          if (script === COMMIT_QUOTA_LUA_SCRIPT) return 1;
-          if (script === ROLLBACK_QUOTA_LUA_SCRIPT) return 1;
+          if (script === SETTLE_TO_QUOTA_LUA_SCRIPT) return [1, 0];
           if (script === DEDUCT_QUOTA_LUA_SCRIPT) return [1, 15];
           return 1;
         },
@@ -552,7 +550,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       // Commit
       const committed = await redisStore.commitQuota(reserved.reservationId!);
       expect(committed).toBe(true);
-      expect(evalCalls.some((c) => c.script === COMMIT_QUOTA_LUA_SCRIPT)).toBe(true);
+      expect(evalCalls.some((c) => c.script === SETTLE_TO_QUOTA_LUA_SCRIPT)).toBe(true);
     });
 
     it('recovers userId and dateKey from reservationId on cross-server replica rollback without local memory', async () => {
@@ -561,7 +559,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
         eval: async (script: string, numKeys: number, ...args: any[]) => {
           evalCalls.push({ script, numKeys, args });
           if (script === RESERVE_QUOTA_LUA_SCRIPT) return [1, 20];
-          if (script === ROLLBACK_QUOTA_LUA_SCRIPT) return 1;
+          if (script === SETTLE_TO_QUOTA_LUA_SCRIPT) return [1, -5];
           return 1;
         },
       } as any;
@@ -578,8 +576,8 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       const rolledBack = await serverB.rollbackQuota(resId);
       expect(rolledBack).toBe(true);
 
-      // Verify that ROLLBACK_QUOTA_LUA_SCRIPT was called with testUserId, NOT 'unknown'
-      const rollbackCall = evalCalls.find((c) => c.script === ROLLBACK_QUOTA_LUA_SCRIPT);
+      // Verify that SETTLE_TO_QUOTA_LUA_SCRIPT was called with testUserId, NOT 'unknown'
+      const rollbackCall = evalCalls.find((c) => c.script === SETTLE_TO_QUOTA_LUA_SCRIPT);
       expect(rollbackCall).toBeDefined();
       expect(rollbackCall.args[0]).toContain(`cluster:quota:usage:{${testUserId}}:`);
       expect(rollbackCall.args[1]).toContain(`cluster:quota:leases:{${testUserId}}:`);

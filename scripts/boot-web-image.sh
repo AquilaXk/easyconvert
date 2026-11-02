@@ -49,7 +49,7 @@ docker run --detach --name "$NAME" \
   --env "STORAGE_SIGNING_SECRET=$(secret)" \
   --env "JOB_SECRET_KEK=$(secret)" \
   "$IMAGE" > /dev/null
-published="$(docker port "$NAME" 3000/tcp | head -n 1)"
+published="$(docker port "$NAME" 3000/tcp | head -n 1 || true)"
 PORT="${published##*:}"
 
 for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do

@@ -1556,7 +1556,7 @@ describe('boot-web-image.sh against stand-ins for docker and curl', { timeout: 3
       `echo "docker $*" >> "$STUB_LOG"
 case "$1" in
   run) [ -n "\${STUB_RUN_FAIL:-}" ] && exit 125; exit 0 ;;
-  port) echo "127.0.0.1:${HOST_PORT}" ;;
+  port) [ -n "\${STUB_EXITED:-}" ] && { echo "Error: No public port '3000/tcp' published" >&2; exit 1; }; echo "127.0.0.1:${HOST_PORT}" ;;
   inspect) case "$*" in *State.Running*) [ -n "\${STUB_EXITED:-}" ] && echo false || echo true ;; *ExitCode*) echo 137 ;; esac ;;
   logs) echo 'the log of the container' ;;
   rm) exit 0 ;;
@@ -1597,6 +1597,14 @@ esac`
 
     expect(result.status).not.toBe(0);
     expect(removed()).toBe(true);
+  });
+
+  it('reports the exit code and the log of a container that exited before Docker could name its port', () => {
+    const result = boot({ STUB_EXITED: '1' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('exited before it answered (exit code 137)');
+    expect(result.stderr).toContain('the log of the container');
   });
 
   it.each(['0', 'many'])('refuses %j attempts before it starts anything', (attempts) => {
