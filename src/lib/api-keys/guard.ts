@@ -1,6 +1,6 @@
 import { redisKeyStore } from './redis-key-store';
 import { RESERVATION_LEASE } from './reservation-ledger';
-import { RECOVERY_UNKNOWN, type Recovery, type ReservedUnit } from './hand-off';
+import { leaseToHandedOffWork, RECOVERY_UNKNOWN, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getAnonymousDailyLimit } from '../plan-limits';
@@ -594,19 +594,6 @@ async function renewLease(reservationId: string, leaseMs: number): Promise<boole
 }
 
 /**
- * Gives the reservation `reservationId` the lease of handed-off work once its work is known to be stored. The work already
- * runs, so a renewal that fails is logged: the provisional lease stays, and the worker that takes the work renews it.
- */
-async function leaseToHandedOffWork(reservationId: string): Promise<void> {
-  try {
-    if (await redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.handedOffMs)) return;
-    console.error(`[Guard] Reservation ${reservationId} ended while its work was stored, so that work is not charged.`);
-  } catch (err) {
-    console.error(`[Guard] The lease of reservation ${reservationId}, whose work is stored, could not be extended:`, err);
-  }
-}
-
-/**
  * Runs `run` while `reservationId` is reserved, and gives the reservation back when `run` ends, by an answer or a throw,
  * unless `run` committed it or handed it off. Only a successful conversion is charged (docs/policy-decisions.md, entry 15),
  * so no early return of a route has to remember the reservation. While `run` holds the reservation its lease is renewed, so
@@ -647,7 +634,7 @@ export async function withReservedUnit<T>(reservationId: string | undefined, run
         return recovery.work;
       });
       release();
-      await leaseToHandedOffWork(reservationId);
+      await leaseToHandedOffWork(reservationId, 'the work of its request');
       return started;
     },
   };

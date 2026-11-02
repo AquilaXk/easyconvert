@@ -1,3 +1,6 @@
+import { redisKeyStore } from './redis-key-store';
+import { RESERVATION_LEASE } from './reservation-ledger';
+
 /**
  * How a request hands its reserved conversion units to queued work (docs/policy-decisions.md, entry 15). The queue layer
  * builds the work, and the reservation layer (`withReservedUnit` in guard.ts) decides who owns the units.
@@ -37,4 +40,18 @@ export interface ReservedUnit {
    * that was stored late renews it first.
    */
   handOff<T>(work: HandOff<T>): Promise<T>;
+}
+
+/**
+ * Gives the reservation `reservationId` the lease of handed-off work for `holder`, once that work is known to be stored or a
+ * worker took it, as a consumer extends its hold on the work it takes. The work runs either way, so a renewal that fails is
+ * logged, and the reservation keeps the lease it had.
+ */
+export async function leaseToHandedOffWork(reservationId: string, holder: string): Promise<void> {
+  try {
+    if (await redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.handedOffMs)) return;
+    console.error(`[Reservation] Reservation ${reservationId} of ${holder} had ended, so ${holder} is not charged.`);
+  } catch (err) {
+    console.error(`[Reservation] The lease of reservation ${reservationId} of ${holder} could not be extended:`, err);
+  }
 }

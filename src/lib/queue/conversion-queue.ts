@@ -3,6 +3,7 @@ import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../t
 import { storageProvider } from '../storage';
 import { releaseResultHold } from '../storage/retention-service';
 import { redisKeyStore } from '../api-keys/redis-key-store';
+import { leaseToHandedOffWork } from '../api-keys/hand-off';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob } from './node-processor';
 import { isFinalFailure } from './job-failure';
@@ -64,6 +65,12 @@ async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobRes
 export function attachJobLifecycleListeners(
   worker: Worker<ConversionJobData, ConversionJobResult>
 ): void {
+  // A worker that takes a job renews its reservation to the lease of handed-off work, so a job stored while its request
+  // could not tell whether it was is charged however long it then runs.
+  worker.on('active', async (job: Job<ConversionJobData, ConversionJobResult>) => {
+    if (job.data?.reservationId) await leaseToHandedOffWork(job.data.reservationId, `job ${job.id}`);
+  });
+
   worker.on(
     'completed',
     async (job: Job<ConversionJobData, ConversionJobResult>, result: ConversionJobResult) => {

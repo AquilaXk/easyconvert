@@ -12,7 +12,7 @@ import type {
   NodeFailureResult,
 } from './scheduler-types';
 import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel } from './node-jobs';
-import type { Recovery } from '../../api-keys/hand-off';
+import { leaseToHandedOffWork, type Recovery } from '../../api-keys/hand-off';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
@@ -95,6 +95,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
     this.graphs.set(graphId, { state, remainingDeps, children, accumulatedUnits: 0 });
     await this.enqueueWaitingNodes(state);
+    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId, `graph ${graphId}`);
     return JSON.parse(JSON.stringify(state));
   }
 
