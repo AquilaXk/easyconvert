@@ -118,19 +118,29 @@ function subjectsTheDialogRenders(source: string, target: string): string[] {
     .map(([, subject]) => subject);
 }
 
+/** The intro's options sentence for `subjects` in English, as the dialog of the pair would be described. */
+function optionsSentence(subjects: string[]): string {
+  if (subjects.length === 1) return `Options include the ${subjects[0]}.`;
+  return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
+}
+
 describe('the options a pair page names', () => {
+  it('are the first options its dialog renders, in the dialog order, on every registered pair', () => {
+    const differing = registeredPairs.flatMap((slug) => {
+      const [source, target] = slug.split('-to-');
+      const rendered = subjectsTheDialogRenders(source, target).slice(0, 3);
+      const { description } = slugPageCopy(slug, 'en');
+      const named = rendered.length === 0 ? !/option/i.test(description) : description.endsWith(` ${optionsSentence(rendered)}`);
+      return named ? [] : [`${slug}: dialog ${rendered.join(', ')} | intro ${description}`];
+    });
+    expect(differing).toEqual([]);
+  });
+
   it.each([
-    ['png', 'jpg'], ['jpg', 'pdf'], ['pdf', 'jpg'], ['pdf', 'docx'], ['tiff', 'pdf'], ['mp4', 'mp3'], ['mp4', 'wav'],
-    ['wav', 'flac'], ['mov', 'mp4'], ['mp4', 'avi'], ['mp4', 'gif'], ['csv', 'xlsx'], ['xlsx', 'csv'], ['docx', 'zip'],
-    ['zip', '7z'], ['pdf', 'pdf'], ['txt', 'pdf'], ['docx', 'pdf'], ['ttf', 'woff'],
-  ])('%s to %s are the first options its dialog renders, in the dialog order', (source, target) => {
-    const rendered = subjectsTheDialogRenders(source, target);
-    const { description } = slugPageCopy(`${source}-to-${target}`, 'en');
-    if (rendered.length === 0) {
-      expect(description).not.toMatch(/option/i);
-      return;
-    }
-    const named = new Intl.ListFormat('en', { type: 'conjunction' }).format(rendered.slice(0, 3));
-    expect(description.endsWith(`Options include ${named}.`), description).toBe(true);
+    ['csv-to-xlsx', 'en', 'Options include the delimiter.'],
+    ['csv-to-xlsx', 'ko', '구분 기호 옵션을 정할 수 있어요.'],
+    ['png-to-jpg', 'ko', '옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
+  ] as const)('of %s in %s reads naturally with one subject or several', (slug, locale, sentence) => {
+    expect(slugPageCopy(slug, locale).description.endsWith(sentence), slugPageCopy(slug, locale).description).toBe(true);
   });
 });
