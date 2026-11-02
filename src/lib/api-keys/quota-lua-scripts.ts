@@ -149,9 +149,9 @@ end
 export const EXTEND_QUOTA_LUA_SCRIPT = `
 -- KEYS[1]: usage key  KEYS[2]: reservation key  KEYS[3]: extension key (the reservation key and the extension id)
 -- ARGV[1]: units the extension holds in all  ARGV[2]: max daily limit
--- Returns { 1 added or already held | 0 does not fit | -1 no such reservation, units left today }
-local reserved = redis.call('GET', KEYS[2])
-if not reserved then
+-- Returns { 1 added or already held | 0 does not fit | -1 the reservation or the count of its day is gone, units left today }
+-- A count that is gone (its day over) is never made again, as in the settle and the rollback.
+if redis.call('EXISTS', KEYS[2]) == 0 or redis.call('EXISTS', KEYS[1]) == 0 then
   return {-1, 0}
 end
 local current = tonumber(redis.call('GET', KEYS[1]) or '0')

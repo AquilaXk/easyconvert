@@ -42,6 +42,14 @@ export interface QuotaReservation {
   extensions?: Record<string, number>;
 }
 
+/**
+ * What `extendQuota` did: held the units, refused them because they do not fit in the day (with the conversions left), or
+ * found no reservation to extend, because it ended or the day it was charged to is over.
+ */
+export type QuotaExtension = { status: 'extended' } | { status: 'does-not-fit'; remaining: number } | { status: 'no-reservation' };
+
+const EXTENSION_STATUS: Readonly<Record<string, QuotaExtension['status']>> = { '1': 'extended', '0': 'does-not-fit', '-1': 'no-reservation' };
+
 export interface RedisKeyStoreOptions {
   keyPrefix?: string;
   isolated?: boolean;
@@ -383,12 +391,12 @@ export class RedisKeyStore extends KeyStore {
 
   /**
    * Holds `units` more in the live reservation `reservationId` for the extension `extensionId`, when they fit under the
-   * owner's daily limit: what the extension holds in all, so a repeated call adds only the difference. Answers whether
-   * the reservation holds them now, and the conversions left today; a reservation that ended holds nothing more.
+   * owner's daily limit: what the extension holds in all, so a repeated call adds only the difference. A reservation that
+   * ended, or whose day is over, is not extended and no count is written for it.
    */
-  public async extendQuota(reservationId: string, extensionId: string, units: number): Promise<{ extended: boolean; remaining: number }> {
+  public async extendQuota(reservationId: string, extensionId: string, units: number): Promise<QuotaExtension> {
     const named = parseReservationId(reservationId);
-    if (!named?.userId) return { extended: false, remaining: 0 };
+    if (!named?.userId) return { status: 'no-reservation' };
     const dailyLimit = await this.dailyLimitOf(named.userId);
     const keys = this.resolveReservation(reservationId);
     if (this.redisClient && keys) {
@@ -401,23 +409,25 @@ export class RedisKeyStore extends KeyStore {
         units,
         dailyLimit
       )) as [number, number];
-      return { extended: Number(status) === 1, remaining: Math.max(0, Number(remaining)) };
+      const outcome = EXTENSION_STATUS[String(status)];
+      if (outcome === undefined) throw new Error(`The extension script of reservation ${reservationId} answered the unknown status ${String(status)}.`);
+      return outcome === 'does-not-fit' ? { status: outcome, remaining: Math.max(0, Number(remaining)) } : { status: outcome };
     }
     return this.extendReservationInMemory(reservationId, extensionId, units, dailyLimit);
   }
 
-  private extendReservationInMemory(reservationId: string, extensionId: string, units: number, dailyLimit: number): { extended: boolean; remaining: number } {
+  private extendReservationInMemory(reservationId: string, extensionId: string, units: number, dailyLimit: number): QuotaExtension {
     const reservation = this.reservations.get(reservationId);
-    if (!reservation || reservation.status !== 'reserved') return { extended: false, remaining: 0 };
+    if (!reservation || reservation.status !== 'reserved') return { status: 'no-reservation' };
     const used = this.dailyUsage.get(reservation.dateKey) ?? 0;
     const added = units - (reservation.extensions?.[extensionId] ?? 0);
-    if (added <= 0) return { extended: true, remaining: Math.max(0, dailyLimit - used) };
-    if (used + added > dailyLimit) return { extended: false, remaining: Math.max(0, dailyLimit - used) };
+    if (added <= 0) return { status: 'extended' };
+    if (used + added > dailyLimit) return { status: 'does-not-fit', remaining: Math.max(0, dailyLimit - used) };
     this.dailyUsage.set(reservation.dateKey, used + added);
     reservation.units += added;
     reservation.extensions = { ...reservation.extensions, [extensionId]: units };
     this.persist();
-    return { extended: true, remaining: dailyLimit - used - added };
+    return { status: 'extended' };
   }
 
   /** The keys of a reservation in Redis, from the owner and day its id names; undefined for an id of another form. */

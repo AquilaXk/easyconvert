@@ -37,7 +37,9 @@ export async function holdUnitsForInputs(
   const reservationId = (await graphScheduler.getGraphState(graphId))?.reservationId;
   if (!reservationId) return;
   const held = await redisKeyStore.extendQuota(reservationId, nodeId, extra);
-  if (!held.extended) {
+  // `no-reservation`: the day the graph was charged to is over, so its reservation and count are gone and nothing is left
+  // to extend; the node runs on (docs/policy-decisions.md, entry 15, the trade-off of a graph that runs past midnight).
+  if (held.status === 'does-not-fit') {
     throw new NodeQuotaExceededError(
       `Node "${nodeId}" received ${files} files, ${extra} more than its job reserved conversions for, and ${held.remaining} ${held.remaining === 1 ? 'is' : 'are'} left today.`
     );
