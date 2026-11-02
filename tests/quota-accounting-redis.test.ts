@@ -39,10 +39,11 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 import { URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
-import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
 import { itLeasesReservations } from './helpers/reservation-lease-cases';
+import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
 
 /**
  * The quota is Lua scripts over real keys, so what a request is charged is checked on a real Redis server, through the
@@ -598,6 +599,20 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       endDay: async (owner) => {
         for (const key of await admin.keys(`*usage*${owner}*`)) await admin.del(key);
       },
+    });
+  });
+
+  describe('the start of a graph that failed', () => {
+    itRecoversAGraphStart({
+      scheduler: () => {
+        let refusing = false;
+        const enqueueNode = async () => {
+          if (refusing) throw new QueueUnavailableError('light', 'the node job could not be stored');
+        };
+        return { scheduler: new RedisGraphScheduler({ redisClient: admin, keyPrefix, enqueueNode, cancelNode: async () => true }), refuseNodeJobs: (refuse) => (refusing = refuse) };
+      },
+      owner: () => client.userId,
+      neverStored: 'unknown',
     });
   });
 

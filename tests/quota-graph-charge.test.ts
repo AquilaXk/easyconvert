@@ -1,5 +1,9 @@
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import crypto from 'node:crypto';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
+import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
+import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { QueueUnavailableError } from '../src/lib/types';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
 import { finishGraph } from '../src/lib/queue/graph/graph-end';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
@@ -33,6 +37,28 @@ afterAll(() => {
 
 describe('what a queued graph is charged, with the in-memory scheduler and store', () => {
   itChargesAGraphOnlyThroughItsScheduler();
+});
+
+describe('the start of a graph that failed, with the in-memory scheduler and store', () => {
+  let owner = '';
+  beforeEach(() => {
+    owner = anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
+  });
+  itRecoversAGraphStart({
+    scheduler: () => {
+      let refusing = false;
+      for (const queue of allConversionQueues) {
+        const add = queue.add.bind(queue);
+        vi.spyOn(queue, 'add').mockImplementation(async (name, data, opts) => {
+          if (refusing && data.graphId) throw new QueueUnavailableError(queue.name, 'the node job could not be stored');
+          return add(name, data, opts);
+        });
+      }
+      return { scheduler: new InMemoryGraphScheduler(), refuseNodeJobs: (refuse) => (refusing = refuse) };
+    },
+    owner: () => owner,
+    neverStored: 'not-started',
+  });
 });
 
 describe('the in-memory graph scheduler', () => {
