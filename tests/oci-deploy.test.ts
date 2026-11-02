@@ -489,7 +489,74 @@ describe('deploy workflow', () => {
     const tagMain = steps.findIndex((step) => (step.run ?? '').includes('"$WORKER_REPO:main"'));
     expect(steps[worker].with?.tags).not.toContain(':main');
     expect(boot).toBeLessThan(tagMain);
-    expect(steps[tagMain].run).toContain('docker buildx imagetools create --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"');
+  });
+
+  describe('the worker main tag against a registry that keeps digests', () => {
+    const WORKER_REPO = 'ghcr.io/aquilaxk/easyconvert-worker';
+    const WORKER_DIGEST = `sha256:${'a'.repeat(64)}`;
+    const steps = workflow.jobs.build.steps;
+    const tagMain = steps.findIndex((step) => /imagetools create\b/.test(step.run ?? ''));
+    const checkMain = steps.findIndex((step) => /imagetools inspect\b[^\n]*"\$WORKER_REPO:main"/.test(step.run ?? ''));
+    const sandboxes: string[] = [];
+    let registry: string;
+    let bin: string;
+
+    afterAll(() => {
+      for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
+    });
+
+    beforeEach(() => {
+      const sandbox = mkdtempSync(path.join(tmpdir(), 'worker-main-tag-'));
+      sandboxes.push(sandbox);
+      registry = path.join(sandbox, 'registry');
+      bin = path.join(sandbox, 'bin');
+      mkdirSync(registry);
+      mkdirSync(bin);
+      // buildx wraps a single-platform manifest in a new index unless --prefer-index=false, so the tag then names another digest.
+      writeFileSync(
+        path.join(bin, 'docker'),
+        `#!/usr/bin/env bash
+tag_file() { printf '%s/%s' "$STUB_REGISTRY" "$(printf '%s' "$1" | tr '/:@' '___')"; }
+[ "$1 $2" = "buildx imagetools" ] || exit 64
+shift 2
+case "$1" in
+  create)
+    shift; single=""; tag=""
+    while [ $# -gt 1 ]; do case "$1" in --prefer-index=false) single=1 ;; --tag) tag="$2"; shift ;; *) exit 64 ;; esac; shift; done
+    source_digest="\${1##*@}"
+    if [ -n "$single" ]; then echo "$source_digest" > "$(tag_file "$tag")"; else echo "sha256:$(printf 'index of %s' "$source_digest" | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-64)" > "$(tag_file "$tag")"; fi ;;
+  inspect)
+    [ "$2 $3" = "--format {{json .Manifest.Digest}}" ] || exit 64
+    printf '"%s"\\n' "$(cat "$(tag_file "$4")")" ;;
+  *) exit 64 ;;
+esac
+`
+      );
+      chmodSync(path.join(bin, 'docker'), 0o755);
+    });
+
+    const runSteps = (indexes: number[]) =>
+      spawnSync('bash', ['-c', indexes.map((index) => `(set -euo pipefail\n${steps[index].run})`).join(' && ')], {
+        encoding: 'utf-8',
+        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_REGISTRY: registry, WORKER_REPO, WORKER_DIGEST },
+        timeout: 10_000,
+      });
+    const mainDigest = (): string => readFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), 'utf-8').trim();
+
+    it('points main at the digest of the worker image the web image was built on, and checks it right after', () => {
+      expect(checkMain).toBe(tagMain + 1);
+      const result = runSteps([tagMain, checkMain]);
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(mainDigest()).toBe(WORKER_DIGEST);
+    });
+
+    it('fails the build when main names another digest after the tag', () => {
+      writeFileSync(path.join(registry, `${WORKER_REPO}:main`.replace(/[/:@]/g, '_')), `sha256:${'b'.repeat(64)}\n`);
+      expect(checkMain).toBeGreaterThan(tagMain);
+      const result = runSteps([checkMain]);
+      expect(result.status).not.toBe(0);
+    });
   });
 
   it('starts the web image with the hardening of the web service in the production compose file', () => {
