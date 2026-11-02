@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, CircleCheck, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
@@ -130,6 +130,21 @@ interface QueueFileBarProps {
   onAddMoreFiles: () => void; onImportFile: (file: File) => void; onDownloadAllZip: () => void; onConvertAll: () => void;
 }
 
+/** Publishes the height of `ref`'s element as the root property `property` while it is mounted, as it changes. */
+function usePublishedHeight(ref: React.RefObject<HTMLElement | null>, property: string) {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => root.style.setProperty(property, `${element.offsetHeight}px`));
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty(property);
+    };
+  }, [ref, property]);
+}
+
 /** The bar pinned to the bottom of the viewport while the queue is on screen: the status, add more files, and convert. */
 function QueueFileBar({
   statusSummary, zipError, onDismissZipError, effectiveBusy, completedCount,
@@ -137,8 +152,10 @@ function QueueFileBar({
 }: Readonly<QueueFileBarProps>) {
   const t = useTranslations('queue');
   const zipFailed = useTranslations('errors.queue')('zipFailed');
+  const barRef = useRef<HTMLDivElement>(null);
+  usePublishedHeight(barRef, '--queue-bar-height');
   return (
-    <div data-queue-bar className="sticky bottom-0 z-30 border-t border-rule bg-surface">
+    <div ref={barRef} data-queue-bar className="sticky bottom-0 z-30 border-t border-rule bg-surface">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row md:items-center gap-3">
         <div className="min-w-0 md:flex-1 flex flex-col items-center md:items-start">
           <p className="flex items-center gap-2 text-sm text-ink-3">
@@ -244,7 +261,7 @@ export default function ConversionQueue({
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
-    <section aria-label={t('label')} className="min-h-[calc(100dvh-4rem)] flex flex-col">
+    <section aria-label={t('label')} className="min-h-[calc(100dvh-var(--header-height))] flex flex-col">
       <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {items.length > 1 && (
           <QueueBatchHeader
