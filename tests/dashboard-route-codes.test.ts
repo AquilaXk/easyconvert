@@ -148,6 +148,13 @@ describe('a dashboard route', () => {
     else expect(status).toBe(200);
   });
 
+  it.each(ROUTES)('%s refuses a key it does not know with a 401, and does not fall back to the session cookie sent with it', async (_route, call) => {
+    const { status, body } = await answer(await call({ cookie: await sessionCookie(), authorization: 'Bearer ec_live_unknownkey0000000000000000' }));
+    expect(status).toBe(401);
+    expect(body).toMatchObject({ success: false });
+    expect(body).not.toHaveProperty('code');
+  });
+
   it('acts for the signed-in person on a scoped read when no key comes with the cookie', async () => {
     const { status } = await listFiles(request('/api/account/files', { cookie: await sessionCookie() }));
     expect(status).toBe(200);

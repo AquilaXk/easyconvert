@@ -47,6 +47,9 @@ describe('the target select of a file row', () => {
   });
 });
 
+/** A button that would retry the row itself, in either language. */
+const RETRY_NAME = /retry|try again|다시 시도|재시도/i;
+
 const alertOf = (row: DomElement) => allElements(row).filter((element) => attrOf(element, 'role') === 'alert').map(visibleText);
 
 describe('a file row that cannot start', () => {
@@ -60,7 +63,7 @@ describe('a file row that cannot start', () => {
     expect(select).toMatch(state);
     expect(alertOf(row)).toEqual([expect.stringMatching(reason)]);
     expect(visibleText(row)).not.toMatch(/Failed|실패/);
-    expect(buttonNames(row).filter((name) => /Retry|다시 시도/.test(name))).toEqual([]);
+    expect(buttonNames(row).filter((name) => RETRY_NAME.test(name))).toEqual([]);
   });
 });
 
@@ -69,7 +72,7 @@ describe('a file row whose conversion ran and failed', () => {
     const row = rowOf({ status: 'error', error: { code: 'conversionFailed' } }, 'en');
     expect(buttonNames(row)).toContain('photo.png: convert PNG to JPG, failed');
     expect(visibleText(row)).toContain('Failed');
-    expect(alertOf(row)).toEqual(['Conversion failed. Try another format or try again.']);
-    expect(buttonNames(row).filter((name) => /Retry/.test(name))).toEqual([]);
+    expect(alertOf(row)).toEqual(['Conversion failed. Try another format, or select Convert to try again.']);
+    expect(buttonNames(row).filter((name) => RETRY_NAME.test(name))).toEqual([]);
   });
 });

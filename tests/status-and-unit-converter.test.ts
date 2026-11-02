@@ -5,10 +5,17 @@ import { parseConverterSlug } from '../src/lib/slug-parser';
 import { slugPageCopy } from './helpers/intl';
 import { UNIT_CATEGORIES, convertValue } from '../src/components/UnitConverter';
 import sharp from 'sharp';
+import { createElement } from 'react';
+import { parse as parseHtml } from 'parse5';
+import { BrandIcon } from '../src/components/BrandLogo';
+import { allElements, attrOf, renderDom, type DomElement } from './helpers/rendered-dom';
 import { oracleTest } from './helpers/oracle-test';
 import { xmlWellFormed, xpathAttributes, xpathCount, xpathString } from './helpers/xml-oracle';
 
 const appFile = (name: string) => fs.readFileSync(path.join(process.cwd(), 'src', 'app', name));
+
+/** Parses a file's markup with the same HTML parser the rendered components are read with. */
+const parse5 = (markup: string) => parseHtml(markup) as unknown as DomElement;
 
 /** The browser icons: QA's mark, its small form (tile to the edge, no glow, rim or shadow) up to 32 px, the full form above. */
 describe('the brand icon files', () => {
@@ -20,6 +27,25 @@ describe('the brand icon files', () => {
     expect(xpathCount(svg, "//*[local-name()='path']")).toBe(4);
     expect(xpathCount(svg, "//*[local-name()='filter' or local-name()='radialGradient']")).toBe(0);
     expect(xpathCount(svg, "//*[@stroke]")).toBe(0);
+  });
+
+  it('draw the same small mark in the header as in the tab icon: the same viewBox, shapes and colours', () => {
+    const svgFile = parse5(appFile('icon.svg').toString('utf8'));
+    const header = renderDom(createElement(BrandIcon, { size: 32 }));
+    const shapes = (root: DomElement) => {
+      const elements = allElements(root);
+      const svg = elements.find((element) => element.tagName === 'svg')!;
+      return {
+        viewBox: attrOf(svg, 'viewbox') ?? attrOf(svg, 'viewBox'),
+        rect: ['x', 'y', 'width', 'height', 'rx'].map((name) => attrOf(elements.find((element) => element.tagName === 'rect')!, name)),
+        paths: elements.filter((element) => element.tagName === 'path').map((path) => attrOf(path, 'd')),
+        stops: elements.filter((element) => element.tagName === 'stop').map((stop) => `${attrOf(stop, 'offset')} ${attrOf(stop, 'stop-color')}`),
+        solidFills: elements.filter((element) => element.tagName === 'path').map((path) => attrOf(path, 'fill')).filter((fill) => !fill?.startsWith('url(')),
+      };
+    };
+    const tab = shapes(svgFile);
+    expect(tab.paths).toHaveLength(4);
+    expect(shapes(header)).toEqual(tab);
   });
 
   it('keep three bars apart at 32 px and the tile to the edge, with only the rounded corner left clear', async () => {

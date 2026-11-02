@@ -87,13 +87,18 @@ describe('the menu of more file sources', () => {
     expect(onPickDevice).toHaveBeenCalledTimes(1);
   });
 
-  it.each([['Tab', false], ['Shift+Tab', true]] as const)('closes on %s and leaves focus to move on', async (_keys, shiftKey) => {
+  it.each([
+    ['Tab', 'leaves the browser to move focus on from the button', false],
+    ['Shift+Tab', 'keeps focus on the button, the element before the menu', true],
+  ] as const)('closes on %s with focus on the button first, and %s', async (_keys, _outcome, shiftKey) => {
     const { host, toggle } = await mount();
     await open(host, toggle);
     const tab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
     document.activeElement!.dispatchEvent(tab);
+    expect(document.activeElement).toBe(toggle);
     await vi.waitFor(() => expect(items(host)).toEqual([]));
-    expect(tab.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+    expect(tab.defaultPrevented).toBe(shiftKey);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 

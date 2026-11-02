@@ -105,11 +105,13 @@ const rowTargets = (host: HTMLElement) =>
 const png = (name: string) => new File(['x'], name, { type: 'image/png' });
 
 describe('the format tiles of a converter page', () => {
-  it('reset the target when the new source cannot convert to it', async () => {
+  it('reset the target when the new source cannot convert to it, and a dropped file then takes no target, as the tile shows', async () => {
     const host = await mountPage('png-to-jpg');
     await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'mp3');
     await vi.waitFor(() => expect(tileLabel(host, 'source')).toBe('Source format MP3'));
     expect(tileLabel(host, 'target')).toBe('Target format ANY');
+    drop(host, [png('first.png')]);
+    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['Select format']));
   });
 
   async function withTarget(target: string) {

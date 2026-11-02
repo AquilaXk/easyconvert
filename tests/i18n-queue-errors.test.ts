@@ -149,8 +149,8 @@ describe('the failures the client decides read in the page language', () => {
 describe('a job that failed on the worker reads as one sentence', () => {
   it('shows the generic job sentence and no HTTP status', () => {
     const failure: ConversionFailure = { code: 'jobFailed' };
-    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했어요. 다시 시도하거나 다른 형식을 골라 주세요.');
-    expect(renderedFailure(failure, 'en').alert).toBe('The conversion failed on the server. Try again, or try another format.');
+    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했어요. 변환을 눌러 다시 시도하거나 다른 형식을 골라 주세요.');
+    expect(renderedFailure(failure, 'en').alert).toBe('The conversion failed on the server. Select Convert to try again, or try another format.');
   });
 
   it('words a job that hit its time limit by the code the worker recorded', () => {
