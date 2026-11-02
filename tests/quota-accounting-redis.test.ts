@@ -21,7 +21,8 @@ import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { RedisGraphScheduler } from '../src/lib/queue/graph/redis-scheduler';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
+import { RESERVATION_LEASE, reservationIdOf } from '../src/lib/api-keys/reservation-ledger';
+import { getUtcDateKey } from '../src/lib/api-keys/key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { storageProvider } from '../src/lib/storage';
 import {
@@ -124,11 +125,16 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   }
 
   /**
-   * The keys of the client as Redis sees them `ms` later: each key's time to live shrinks by `ms`, and a key whose time
-   * runs out is gone. Redis has no clock to move, so this stands in for waiting.
+   * The keys of the client as Redis sees them `ms` later: each lease ends `ms` sooner, each key's time to live shrinks by
+   * `ms`, and a key whose time runs out is gone. The scripts read the time of the Redis server, which no test can move, so
+   * this stands in for waiting.
    */
   async function advanceKeyClock(ms: number) {
     for (const key of await admin.keys(`*${client.userId}*`)) {
+      if ((await admin.type(key)) === 'zset') {
+        const leases = await admin.zrange(key, 0, -1, 'WITHSCORES');
+        for (let i = 0; i < leases.length; i += 2) await admin.zadd(key, Number(leases[i + 1]) - ms, leases[i]);
+      }
       const left = await admin.pttl(key);
       if (left < 0) continue;
       if (left <= ms) await admin.del(key);
@@ -521,6 +527,64 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       owner: () => client.userId,
       advance: advanceQuotaClock,
     });
+
+    it('counts a live lease for a caller whose clock runs two minutes ahead, as the clock of Redis decides when it ends', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+
+      vi.setSystemTime(Date.now() + 120_000);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+      vi.setSystemTime(Date.now() - 120_000);
+      expect(await redisKeyStore.commitQuota(unit.reservationId as string)).toBe(true);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
+
+    it('keeps what an extension holds for as long as the renewed lease, so the same extension never holds twice', async () => {
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
+      expect(await redisKeyStore.renewReservation(unit.reservationId as string, RESERVATION_LEASE.handedOffMs)).toBe(true);
+
+      await advanceQuotaClock(RESERVATION_LEASE.provisionalMs + 60_000);
+
+      expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 3);
+    });
+  });
+
+  describe('a reservation made before leases, during the day after the deploy', () => {
+    /** Reserves `units` as the release before leases did: the count of the day and one key that holds the units. */
+    async function reservedTheOldWay(units: number): Promise<string> {
+      const reservationId = reservationIdOf(client.userId, getUtcDateKey());
+      const prefix = redisKeyStore.getPrefix();
+      await admin.incrby(`${prefix}usage:{${client.userId}}:${getUtcDateKey()}`, units);
+      await admin.set(`${prefix}res:{${client.userId}}:${reservationId}`, String(units), 'EX', 3600);
+      return reservationId;
+    }
+
+    it('is given back once by a rollback', async () => {
+      const reservationId = await reservedTheOldWay(2);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
+
+      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(true);
+      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(false);
+      expect(await remaining()).toBe(DAY_ALLOWANCE);
+    });
+
+    it('stays charged once committed, and changes nothing when rolled back after', async () => {
+      const reservationId = await reservedTheOldWay(1);
+
+      expect(await redisKeyStore.commitQuota(reservationId)).toBe(true);
+      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(false);
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
+
+    it('settles to the units used', async () => {
+      const reservationId = await reservedTheOldWay(3);
+
+      expect(await redisKeyStore.settleQuota(reservationId, 1)).toEqual({ success: true, difference: -2 });
+      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
+    });
   });
 
   describe('a request that needs a conversion left but reserves none', () => {
@@ -616,6 +680,36 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
         await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
 
         expect(cancelNode).toHaveBeenCalledWith(graphId, 'conv', expect.objectContaining({ op: 'convert' }), 'Graph failed due to node up');
+      } finally {
+        await connection.quit();
+      }
+    });
+
+    it('reports as cancelled only the node jobs whose cancel succeeded when a node fails its graph', async () => {
+      vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      const cancelNode = vi.fn(async (_graphId: string, nodeId: string) => {
+        if (nodeId === 'left') throw new Error('the queue did not answer');
+        return true;
+      });
+      try {
+        const scheduler = new RedisGraphScheduler({ redisClient: connection, keyPrefix, enqueueNode: async () => undefined, cancelNode });
+        const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+        const graph = {
+          failurePolicy: 'fail_fast' as const,
+          nodes: {
+            up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' },
+            left: { op: 'convert' as const, input: 'up', targetFormat: 'json' },
+            right: { op: 'convert' as const, input: 'up', targetFormat: 'xml' },
+          },
+        };
+        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, ...WEBHOOK });
+
+        const failure = await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
+
+        expect(failure.graphFailed).toBe(true);
+        expect(cancelNode).toHaveBeenCalledTimes(2);
+        expect(failure.cancelledJobIds).toEqual([`${graphId}:right`]);
       } finally {
         await connection.quit();
       }

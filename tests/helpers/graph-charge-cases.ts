@@ -21,7 +21,7 @@ import { userStore } from '../../src/lib/auth/user-store';
 import { storageProvider } from '../../src/lib/storage';
 import { s3Storage } from '../../src/lib/storage/s3-storage';
 import { StorageServiceError } from '../../src/lib/storage/adapters/adapter-interface';
-import { ConversionFailedError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
+import { ConversionFailedError, QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
 import { SecretSealError, unsealJobSecret } from '../../src/lib/security/job-secret-seal';
 import { gzipRemote } from './gzip-remote';
 import { spendImportBytes } from './import-budget';
@@ -649,5 +649,58 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     );
     expect((await graphScheduler.getGraphState(jobId))?.status).toBe('failed');
     await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(account.userId)).usedToday).toBe(0), { timeout: 5_000, interval: 50 });
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  /** Makes the queues refuse the job of a graph node `times` times, before storing it, as a queue whose Redis is down does. */
+  function refuseNodeJobs(times: number): void {
+    let refused = 0;
+    for (const queue of allConversionQueues) {
+      const add = queue.add.bind(queue);
+      vi.spyOn(queue, 'add').mockImplementation(async (name, data, opts) => {
+        if (data.graphId && refused < times) {
+          refused += 1;
+          throw new QueueUnavailableError(queue.name, 'the node job could not be stored');
+        }
+        return add(name, data, opts);
+      });
+    }
+  }
+
+  const importConvertExport = (): SubmittedGraph => ({
+    failurePolicy: 'fail_fast',
+    nodes: { up: csvUpload(), conv: { op: 'convert', input: 'up', targetFormat: 'json' }, out: { op: 'export.internal', input: 'conv' } },
+  });
+
+  async function submitGraph(authorization: string, graph: SubmittedGraph) {
+    return v1JobsRoute(
+      new NextRequest('http://localhost/api/v1/jobs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization },
+        body: JSON.stringify({ graph, targetFormat: 'json' }),
+      })
+    );
+  }
+
+  it('answers 202 and runs a graph whose first node could not be queued after its state was stored, once its outbox drains', async () => {
+    const account = await apiAccount();
+    startWorker();
+    refuseNodeJobs(1);
+
+    const submitted = await submitGraph(account.authorization, importConvertExport());
+    expect(submitted.status, await submitted.clone().text()).toBe(202);
+    const { jobId } = (await submitted.json()) as { jobId: string };
+
+    await vi.waitFor(async () => expect((await graphScheduler.getGraphState(jobId))?.status).toBe('completed'), { timeout: GRAPH_TIMEOUT_MS, interval: 100 });
+    await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(account.userId)).usedToday).toBe(1), { timeout: 5_000, interval: 50 });
+  }, GRAPH_TIMEOUT_MS + 10_000);
+
+  it('answers 503 and charges nothing for a graph whose stored outbox cannot be drained either', async () => {
+    const account = await apiAccount();
+    refuseNodeJobs(Number.POSITIVE_INFINITY);
+
+    const submitted = await submitGraph(account.authorization, importConvertExport());
+
+    expect(submitted.status, await submitted.clone().text()).toBe(503);
+    expect((await redisKeyStore.getQuotaUsage(account.userId)).usedToday).toBe(0);
   }, GRAPH_TIMEOUT_MS + 10_000);
 }

@@ -482,6 +482,16 @@ describe('deploy workflow', () => {
     expect(steps[push].run).toContain('docker push --quiet "$WEB_REPO:main"');
   });
 
+  it('tags the worker image main only after the web image built on it started', () => {
+    const steps = workflow.jobs.build.steps;
+    const worker = steps.findIndex((step) => step.with?.file === 'Dockerfile.worker');
+    const boot = steps.findIndex((step) => step.run?.includes('scripts/boot-web-image.sh'));
+    const tagMain = steps.findIndex((step) => (step.run ?? '').includes('"$WORKER_REPO:main"'));
+    expect(steps[worker].with?.tags).not.toContain(':main');
+    expect(boot).toBeLessThan(tagMain);
+    expect(steps[tagMain].run).toContain('docker buildx imagetools create --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"');
+  });
+
   it('starts the web image with the hardening of the web service in the production compose file', () => {
     const boot = read('scripts/boot-web-image.sh');
     const webService = compose.services.web;
@@ -748,7 +758,7 @@ case "$1" in
       inspect)
         ref="\${@: -1}"
         case "$*" in
-          *anonymous-daily-limit*) echo "\${STUB_WEB_ALLOWANCE:-}" ;;
+          *anonymous-daily-limit*) [ -n "\${STUB_WEB_INSPECT_FAIL:-}" ] && exit 1; echo "\${STUB_WEB_ALLOWANCE:-}" ;;
           *Labels*)
             case "$ref" in *@sha256:*) tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")" ;; *) tag="\${ref##*:}" ;; esac
             echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:$tag")}" ;;
@@ -1178,6 +1188,22 @@ exit 0`
     expect(calls().some((call) => call.includes(' up '))).toBe(false);
   });
 
+  it('refuses a web image whose recorded allowance cannot be read, also when the deploy step passes none', () => {
+    const result = run(['deploy', ref('a')], { env: hostEnv({ STUB_WEB_INSPECT_FAIL: '1' }) });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('could not be read');
+    expect(calls().some((call) => call.includes(' up '))).toBe(false);
+  });
+
+  it.each(['25\nREDIS_URL=redis://elsewhere', '2 5', '-1'])('refuses the allowance %j, which is not a count, before it writes the env file', (allowance) => {
+    const result = run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: allowance, STUB_WEB_ALLOWANCE: allowance }) });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ANONYMOUS_DAILY_LIMIT must be digits only');
+    expect(releases()).toEqual([]);
+  });
+
   it('runs the release with the anonymous allowance of the deploy step, the one the web image was built with', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '30', STUB_WEB_ALLOWANCE: '30' }) }).status).toBe(0);
 
@@ -1438,5 +1464,79 @@ describe('operations document and policy entry', () => {
   it('records the hosting and storage decision as entry 122', () => {
     expect(policy).toMatch(/^## 122\. /m);
     expect(policy).toMatch(/^122\. \[/m);
+  });
+});
+
+describe('boot-web-image.sh against stand-ins for docker and curl', { timeout: 30_000 }, () => {
+  const HOST_PORT = '49153';
+  const sandboxes: string[] = [];
+  let bin: string;
+  let log: string;
+
+  beforeEach(() => {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'boot-web-image-'));
+    sandboxes.push(sandbox);
+    bin = path.join(sandbox, 'bin');
+    log = path.join(sandbox, 'calls.log');
+    mkdirSync(bin);
+    writeFileSync(log, '');
+    const stub = (name: string, body: string): void => {
+      writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`);
+      chmodSync(path.join(bin, name), 0o755);
+    };
+    stub(
+      'docker',
+      `echo "docker $*" >> "$STUB_LOG"
+case "$1" in
+  run) [ -n "\${STUB_RUN_FAIL:-}" ] && exit 125; exit 0 ;;
+  port) echo "127.0.0.1:${HOST_PORT}" ;;
+  inspect) case "$*" in *State.Running*) [ -n "\${STUB_EXITED:-}" ] && echo false || echo true ;; *ExitCode*) echo 137 ;; esac ;;
+  logs) echo 'the log of the container' ;;
+  rm) exit 0 ;;
+esac`
+    );
+    stub('curl', 'echo "curl $*" >> "$STUB_LOG"; printf \'%s\' "${STUB_STATUS:-200}"');
+    stub('sleep', 'exit 0');
+  });
+
+  afterAll(() => {
+    for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const boot = (env: Record<string, string> = {}) =>
+    spawnSync('bash', [path.join(ROOT, 'scripts', 'boot-web-image.sh'), 'img:tag'], {
+      encoding: 'utf-8',
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STUB_LOG: log, BOOT_CHECK_ATTEMPTS: '3', ...env },
+    });
+  const calls = (): string[] => readFileSync(log, 'utf-8').split('\n').filter(Boolean);
+  const removed = () => calls().some((call) => /^docker rm -f easyconvert-boot-check-\d+$/.test(call));
+
+  it('passes when the home page answers 200 on the port Docker chose on the loopback address, and removes the container', () => {
+    const result = boot();
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls().find((call) => call.startsWith('docker run'))).toContain('--publish 127.0.0.1::3000 ');
+    expect(calls().find((call) => call.startsWith('curl'))).toContain(`http://127.0.0.1:${HOST_PORT}/`);
+    expect(removed()).toBe(true);
+  });
+
+  it.each([
+    ['the home page answers 500', { STUB_STATUS: '500' }],
+    ['the home page answers a redirect', { STUB_STATUS: '301' }],
+    ['the container exited', { STUB_EXITED: '1' }],
+    ['the container could not be started', { STUB_RUN_FAIL: '1' }],
+  ])('fails when %s, and removes the container', (_label, env) => {
+    const result = boot(env);
+
+    expect(result.status).not.toBe(0);
+    expect(removed()).toBe(true);
+  });
+
+  it.each(['0', 'many'])('refuses %j attempts before it starts anything', (attempts) => {
+    const result = boot({ BOOT_CHECK_ATTEMPTS: attempts });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('BOOT_CHECK_ATTEMPTS must be a whole number of at least 1');
+    expect(calls().some((call) => call.startsWith('docker run'))).toBe(false);
   });
 });
