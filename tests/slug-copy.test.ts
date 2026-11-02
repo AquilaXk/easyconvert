@@ -136,6 +136,9 @@ function optionsSentence(subjects: string[]): string {
   return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
 }
 
+/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner. */
+const REGISTRY_WIDE_TIMEOUT_MS = 30_000;
+
 describe('the options a pair page names', () => {
   it('are the first options its dialog renders, in the dialog order, on every registered pair', () => {
     const differing = registeredPairs.flatMap((slug) => {
@@ -146,7 +149,7 @@ describe('the options a pair page names', () => {
       return named ? [] : [`${slug}: dialog ${rendered.join(', ')} | intro ${description}`];
     });
     expect(differing).toEqual([]);
-  });
+  }, REGISTRY_WIDE_TIMEOUT_MS);
 
   it.each([
     ['csv-to-xlsx', 'en', 'Options include the delimiter.'],

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { createElement, type ReactElement, type ReactNode } from 'react';
+import { act, createElement, type ReactElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,18 +20,21 @@ const { usePairTiles } = await import('../src/components/hero/usePairTiles');
 
 let root: Root | undefined;
 afterEach(() => {
-  root?.unmount();
+  act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = '';
 });
 
+/** Renders inside `act`, so the hero's paste listener, which an effect adds, is in place before a test pastes. */
 async function mount(element: ReactElement): Promise<HTMLElement> {
-  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  root.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: element }));
-  await vi.waitFor(() => expect(host.querySelector('input[type=file]')).not.toBeNull());
+  await act(async () => {
+    root!.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: element }));
+  });
+  expect(host.querySelector('input[type=file]')).not.toBeNull();
   return host;
 }
 
