@@ -1455,7 +1455,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Portable Network Graphics - Lossless raster format with alpha transparency support.',
     targetFormats: ['jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpg: {
     id: 'jpg',
@@ -1465,7 +1465,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Joint Photographic Experts Group - Standard lossy image compression for photography.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   jpeg: {
     id: 'jpeg',
@@ -1475,7 +1475,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Joint Photographic Experts Group standard image format.',
     targetFormats: ['png', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'jpg', 'odd', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   webp: {
     id: 'webp',
@@ -1485,7 +1485,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Modern web image format providing superior lossless and lossy compression.',
     targetFormats: ['png', 'jpg', 'jpeg', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip', 'eps', 'odd', 'ps', 'psd', 'webp', 'avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'wmv', 'hocr', 'alto', 'svg'],
-    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { quality: true, dimensions: true, fit: true, background: true, stripMetadata: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   avif: {
     id: 'avif',
@@ -1505,7 +1505,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Tagged Image File Format - High-depth raster format favored in publishing and printing.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   tif: {
     id: 'tif',
@@ -1515,7 +1515,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Short extension for Tagged Image File Format.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { background: true, quality: true, dimensions: true, dpi: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   gif: {
     id: 'gif',
@@ -1525,7 +1525,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Graphics Interchange Format with animated frame and transparency support.',
     targetFormats: ['png', 'webp', 'jpg', 'mp4', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'avi', 'flv', 'mkv', 'mov', 'webm', 'wmv', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { background: true, dimensions: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   bmp: {
     id: 'bmp',
@@ -1535,7 +1535,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'image',
     description: 'Bitmap Image File - Uncompressed standard raster image.',
     targetFormats: ['png', 'jpg', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'hocr', 'alto', 'svg'],
-    optionsSchema: { background: true, dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true, vectorize: true },
+    optionsSchema: { background: true, dimensions: true, colorDepth: true, dither: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   svg: {
     id: 'svg',

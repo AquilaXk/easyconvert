@@ -1144,9 +1144,11 @@
       "filterSpeckleHint": "Discards patches smaller than this size. Raise it to remove noise from scans and JPEG artifacts.",
       "colorPrecision": "Color Precision (bits)",
       "colorPrecisionHint": "Significant bits per RGB channel. Lower values give fewer colors and flatter shapes.",
+      "colorPrecisionNotApplied": "The black and white preset traces two colors, so this does not apply.",
       "simplify": "Simplify (px)",
       "simplifyOff": "Off",
-      "simplifyHint": "Fits curves within this distance with as few nodes as possible. Try 1 to 2.5 for a smaller file."
+      "simplifyHint": "Fits curves within this distance with as few nodes as possible. Try 1 to 2.5 for a smaller file.",
+      "simplifyNotApplied": "Applies only to the Spline mode."
     }
   },
   "plans": {

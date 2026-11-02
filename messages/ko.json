@@ -1144,9 +1144,11 @@
       "filterSpeckleHint": "이 크기보다 작은 조각은 버려요. 스캔이나 JPEG 노이즈를 없애려면 값을 올려요.",
       "colorPrecision": "색 정밀도(비트)",
       "colorPrecisionHint": "RGB 채널마다 쓰는 유효 비트 수예요. 값을 낮추면 색이 줄고 면이 단순해져요.",
+      "colorPrecisionNotApplied": "흑백 선화 프리셋은 두 색으로만 그려서 적용되지 않아요.",
       "simplify": "단순화(px)",
       "simplifyOff": "사용 안 함",
-      "simplifyHint": "이 거리 안에서 곡선을 가장 적은 점으로 맞춰요. 1에서 2.5 사이로 넣으면 파일이 작아져요."
+      "simplifyHint": "이 거리 안에서 곡선을 가장 적은 점으로 맞춰요. 1에서 2.5 사이로 넣으면 파일이 작아져요.",
+      "simplifyNotApplied": "스플라인 곡선 방식에만 적용돼요."
     }
   },
   "plans": {

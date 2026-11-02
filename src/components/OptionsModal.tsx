@@ -9,10 +9,9 @@ import {
   computeVisibleSections,
   DEFAULT_OPTIONS,
   getPasswordValidationError,
+  sanitizeOptionsForPair,
   type VisibleOptionsSections,
 } from './workbench/options/options-capabilities';
-import { isVectorizePair } from '@/lib/conversions/raster-vectorize-options';
-import { sanitizeOptionsForPair } from './vectorize/pair-options';
 import { VectorizeOptionsSection } from './vectorize/VectorizeOptionsSection';
 import {
   ArchiveOptionsSection,
@@ -42,6 +41,7 @@ interface ModalSectionGroupProps {
 function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<ModalSectionGroupProps>) {
   return (
     <>
+      {visible.showVectorize && <VectorizeOptionsSection options={options} onChange={onChange} />}
       {visible.showImage && (
         <ImageOptionsSection options={options} onChange={onChange} targetFormat={visible.tgt} />
       )}
@@ -148,14 +148,8 @@ export default function OptionsModal({
       </div>
 
       <div className="px-5 sm:px-6 py-5 space-y-6 max-h-[70dvh] overflow-y-auto divide-y divide-rule [&>section:not(:first-child)]:pt-5">
-        {isVectorizePair(sourceFormat, targetFormat) ? (
-          <VectorizeOptionsSection options={options} onChange={setOptions} />
-        ) : (
-          <>
-            <DocumentAndSecurityGroup visible={visible} options={options} onChange={setOptions} />
-            <MediaAndDataGroup visible={visible} options={options} onChange={setOptions} />
-          </>
-        )}
+        <DocumentAndSecurityGroup visible={visible} options={options} onChange={setOptions} />
+        <MediaAndDataGroup visible={visible} options={options} onChange={setOptions} />
         {!visible.hasAny && (
           <p className="text-sm text-ink-2">
             {t('noOptions')}

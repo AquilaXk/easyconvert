@@ -150,12 +150,10 @@ const near = (hex: string, colour: { r: number; g: number; b: number }, within: 
 };
 
 describe('the raster to SVG pairs', () => {
-  it('are offered for exactly the raster inputs the reference serves with the same engine, with the tracer options', () => {
+  it('are offered for exactly the raster inputs the reference serves with the same engine', () => {
     const traced = ['bmp', 'gif', 'jpeg', 'jpg', 'png', 'tif', 'tiff', 'webp'];
     expect([...VECTORIZE_SOURCES].sort()).toEqual(traced);
     for (const source of traced) expect(FORMAT_REGISTRY[source].targetFormats).toContain('svg');
-    const withTracerOptions = Object.values(FORMAT_REGISTRY).filter((format) => format.optionsSchema?.vectorize).map((format) => format.id).sort();
-    expect(withTracerOptions).toEqual(traced);
   });
 
   it('run on the CPU lane whatever the file size, since a small compressible picture can trace for seconds with gigabytes', () => {

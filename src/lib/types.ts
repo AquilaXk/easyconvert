@@ -76,8 +76,6 @@ export interface FormatOptionsSchema {
   demosaicMethod?: boolean;
   targetColorSpace?: boolean;
   highlightReconstruction?: boolean;
-  // Raster to SVG tracing
-  vectorize?: boolean;
 }
 
 export type ResourceClass = 'light' | 'cpu' | 'memory' | 'gpu';

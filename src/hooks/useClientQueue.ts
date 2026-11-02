@@ -11,8 +11,8 @@ import { useRefreshViewerPlan, useViewerPlan } from './useViewerPlan';
 import {
   DEFAULT_OPTIONS,
   getPasswordValidationError,
+  sanitizeOptionsForPair,
 } from '@/components/workbench/options/options-capabilities';
-import { sanitizeOptionsForPair } from '@/components/vectorize/pair-options';
 
 declare global {
   interface Window {

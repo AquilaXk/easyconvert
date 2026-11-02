@@ -135,6 +135,11 @@ describe('the options a queue item keeps', () => {
     expect(sanitizeOptionsForPair({ quality: 80 }, 'png', 'svg')).toEqual({});
   });
 
+  it('drops the options the engine ignores for the chosen mode or preset', () => {
+    expect(sanitizeOptionsForPair({ vectorize: { mode: 'polygon', simplify: 1.5 } }, 'png', 'svg')).toEqual({ vectorize: { mode: 'polygon' } });
+    expect(sanitizeOptionsForPair({ vectorize: { preset: 'bw', colorPrecision: 3, filterSpeckle: 8 } }, 'gif', 'svg')).toEqual({ vectorize: { preset: 'bw', filterSpeckle: 8 } });
+  });
+
   it('drops the tracer options for any other pair', () => {
     expect(sanitizeOptionsForPair({ quality: 80, vectorize: { preset: 'bw' } }, 'png', 'webp')).toEqual({ quality: 80 });
   });
