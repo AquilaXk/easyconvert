@@ -24,7 +24,8 @@ function isPolicyPage(infoType: string | undefined): infoType is PolicyPage {
 export function PolicySections({
   infoType,
   totalFormatCount,
-}: Readonly<{ infoType: string | undefined; totalFormatCount: number }>) {
+  dailyLimit,
+}: Readonly<{ infoType: string | undefined; totalFormatCount: number; dailyLimit: number }>) {
   const t = useTranslations('infoPages');
   if (!isPolicyPage(infoType)) return null;
   const keys = POLICY_SECTIONS[infoType].map((section: string) => `${infoType}.${section}` as PolicySectionKey);
@@ -35,7 +36,7 @@ export function PolicySections({
         return (
           <section key={key} className="space-y-2">
             <h2 className="text-xl text-ink">{t(`${key}.heading`)}</h2>
-            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount })}</p>
+            <p>{t.rich(`${key}.body`, { ...RICH_TAGS, count: totalFormatCount, dailyLimit })}</p>
             {key === 'accessibility.feedback' && (
               <div>
                 <a

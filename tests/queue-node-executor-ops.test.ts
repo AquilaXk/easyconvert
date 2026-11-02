@@ -80,7 +80,7 @@ describe('queue node executor operations', () => {
         s3Storage
       );
 
-      expect(result.resultKey).toMatch(/\/n1\/merged\.pdf$/);
+      expect(result.resultKey).toMatch(/\/n1\/0\/merged\.pdf$/);
       const merged = storedOutput(result.resultKey);
       expect(merged.subarray(0, 5).toString('latin1')).toBe('%PDF-');
       const doc = await PDFDocument.load(merged);
@@ -127,7 +127,7 @@ describe('queue node executor operations', () => {
         s3Storage
       );
 
-      expect(result.resultKey).toMatch(/\/n1\/thumbnail\.jpg$/);
+      expect(result.filename).toBe('thumbnail.jpg');
       const thumb = storedOutput(result.resultKey);
       expect([...thumb.subarray(0, JPEG_SOI.length)]).toEqual(JPEG_SOI);
       const meta = await sharp(thumb).metadata();
@@ -153,7 +153,7 @@ describe('queue node executor operations', () => {
 
       const result = await processGraphNodeJob(nodeJob({ op: 'metadata' }, [png]), undefined, s3Storage);
 
-      expect(result.resultKey).toMatch(/\/n1\/metadata\.json$/);
+      expect(result.resultKey).toMatch(/\/n1\/0\/metadata\.json$/);
       const parsed = JSON.parse(storedOutput(result.resultKey).toString('utf-8'));
       expect(parsed).toMatchObject({
         format: 'png',

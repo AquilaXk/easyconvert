@@ -176,8 +176,8 @@ describe('graph node worker', () => {
     const node = sealGraphNode({ op: 'import.url', url: auth.url, headers: auth.headers } as GraphNode, jobId);
     const job = {
       id: jobId,
-      data: { graphId: 'g_mask_worker', graphNodeId: 'in', graphNode: node, inputArtifacts: [], options: {} },
-      opts: { attempts: 1 },
+      data: { graphId: 'g_mask_worker', graphNodeId: 'in', userId: 'user_mask_import_owner', graphNode: node, inputArtifacts: [], options: {} },
+      opts: { attempts: 1, timeout: 60_000 },
       attemptsMade: 1,
       signal: new AbortController().signal,
       log: async () => {},

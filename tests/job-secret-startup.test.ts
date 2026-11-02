@@ -69,7 +69,8 @@ describe('graph submission without a sealing key', () => {
   const graph = {
     nodes: {
       in: { op: 'import.url', url: `https://files.example.org/in/data.csv?X-Amz-Signature=${SECRET_QUERY}` },
-      out: { op: 'export.internal', input: 'in' },
+      conv: { op: 'convert', input: 'in', targetFormat: 'json' },
+      out: { op: 'export.internal', input: 'conv' },
     },
   };
 

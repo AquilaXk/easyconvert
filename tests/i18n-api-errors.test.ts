@@ -18,6 +18,8 @@ import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { hashPassword } from '../src/lib/auth/crypto';
 import { concurrencyLimitResponse } from '../src/lib/queue/concurrency-limit';
 import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
+import { importLargerThanLeftResponse, uploadBudgetRefusalResponse } from '../src/lib/api/upload-budget-response';
+import { conversionRefusalResponse } from '../src/lib/api/conversion-refusal-response';
 import { AUTH_ERROR_CODES, URL_IMPORT_ERROR_CODES } from '../src/lib/refusal-codes';
 import { PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_BODY_MAX_BYTES } from '../src/lib/plan-limits';
 import type { TestLocale } from './helpers/intl';
@@ -96,6 +98,47 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     }
   });
 
+  it("words an account's spent link import budget with its plan's allowance, not the anonymous one", async () => {
+    const { status, body } = await bodyOf(uploadBudgetRefusalResponse('daily-bytes', '/api/fetch-url', 'pro'));
+    expect(body).toMatchObject({ refusal: 'daily-bytes', limitBytes: 10 * 1024 ** 3, plan: 'pro' });
+
+    const korean = worded(useProblemWording, 'ko', body, status);
+    expect(korean).toContain('10 GiB');
+    expect(korean).toContain('링크 가져오기');
+    expect(korean).not.toContain('계정 없이');
+  });
+
+  /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of the day's 25 are left. */
+  async function conversionsShort(requiredUnits: number, remaining: number) {
+    const usage = { tier: 'free' as const, dailyLimit: 25, usedToday: 25 - remaining, remaining, resetAt: Date.now() };
+    const refusal = { reason: 'used-up' as const, error: 'Daily conversion quota exceeded.', usage, requiredUnits };
+    return bodyOf(conversionRefusalResponse(refusal, '/api/v1/jobs'));
+  }
+
+  it('words a job that needs more conversions than are left by both numbers, in both locales', async () => {
+    const { status, body } = await conversionsShort(3, 2);
+    expect(worded(useProblemWording, 'en', body, status)).toBe('This job needs 3 conversions, and 2 are left today.');
+    const korean = worded(useProblemWording, 'ko', body, status);
+    expect(korean).toBe('이 작업에는 변환이 3회 필요한데 오늘 남은 횟수는 2회예요.');
+    expectKorean(korean, 'conversions short');
+    expect(worded(useProblemWording, 'en', (await conversionsShort(5, 1)).body, status)).toBe('This job needs 5 conversions, and 1 is left today.');
+  });
+
+  it('words a job refused once the day has no conversion left by the daily limit', async () => {
+    const { status, body } = await conversionsShort(1, 0);
+    expect(worded(useProblemWording, 'ko', body, status)).toBe('오늘 변환 한도 25회를 모두 썼어요. 내일 다시 시도해 주세요.');
+  });
+
+  it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {
+    const { status, body } = await bodyOf(importLargerThanLeftResponse(30 * 1024 ** 2, '/api/fetch-url', 'free'));
+    expect(body).toMatchObject({ refusal: 'larger-than-left', leftBytes: 30 * 1024 ** 2, plan: 'free' });
+    expect(worded(useProblemWording, 'en', body, status)).toContain('30 MiB');
+    const korean = worded(useProblemWording, 'ko', body, status);
+    expectKorean(korean, 'larger than left');
+    expect(korean).toContain('30 MiB');
+    expect(korean).not.toContain('모두 썼어요');
+  });
+
   it('words an answer it does not know by its status class, and never shows the server text of either', () => {
     const unknown = { type: `${PROBLEM}retired-problem`, detail: 'The endpoint is not reachable.' };
     const korean = worded(useProblemWording, 'ko', unknown, 400);
@@ -171,12 +214,20 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 });
 
 describe('link import refusals', () => {
+  // A visitor a declared proxy attributes: one no proxy attributes is refused every import, as every upload.
+  const VISITOR = { 'x-forwarded-for': '203.0.113.77' };
+
+  beforeEach(() => {
+    vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   async function urlImportAnswer(url: unknown) {
-    return bodyOf(await fetchUrl(jsonRequest('/api/fetch-url', { url })));
+    return bodyOf(await fetchUrl(jsonRequest('/api/fetch-url', { url }, VISITOR)));
   }
 
   it('names each refusal with a stable code and keeps the English error for API callers', async () => {
@@ -197,7 +248,7 @@ describe('link import refusals', () => {
     ['a JSON array', '["https://example.com/a.png"]'],
   ])('answers %s 400 with the code invalid_json, and logs nothing', async (_, body) => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const { status, body: answer } = await bodyOf(await fetchUrl(jsonRequest('/api/fetch-url', body)));
+    const { status, body: answer } = await bodyOf(await fetchUrl(jsonRequest('/api/fetch-url', body, VISITOR)));
     expect({ status, code: answer.code }).toEqual({ status: 400, code: 'invalid_json' });
     expect(logged).not.toHaveBeenCalled();
   });

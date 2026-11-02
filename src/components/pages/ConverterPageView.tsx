@@ -24,7 +24,8 @@ import {
 import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
-export default function ConverterPageView({ slug }: Readonly<{ slug: string }>) {
+/** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
+export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
   const t = useTranslations('converterPage');
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
@@ -59,7 +60,7 @@ export default function ConverterPageView({ slug }: Readonly<{ slug: string }>) 
   });
 
   if (parsed.isInfoPage) {
-    return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} />;
+    return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />;
   }
 
   const srcKey = parsed.sourceFormat.toLowerCase();
@@ -157,7 +158,7 @@ export default function ConverterPageView({ slug }: Readonly<{ slug: string }>) 
               <AdBanner slot="top-leaderboard" className="py-0" />
             </div>
 
-            <ConverterGuaranteeBar />
+            <ConverterGuaranteeBar dailyLimit={dailyLimit} />
 
             <ConverterWorkflowSteps
               srcMeta={srcMeta}
@@ -178,6 +179,7 @@ export default function ConverterPageView({ slug }: Readonly<{ slug: string }>) 
             />
 
             <FaqSection
+              dailyLimit={dailyLimit}
               customFaqs={contextualFaqs}
               title={faqTitle}
               subtitle={t('faq.subtitle', { src: srcUpper })}

@@ -1,4 +1,4 @@
-import { beforeAll, describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { isBlockedIp, isBlockedIpv4, isBlockedIpv6, validateUrlForSsrf } from '../src/lib/security/ssrf';
@@ -105,15 +105,22 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
         'http://localhost/metrics',
       ];
 
-      for (const url of maliciousUrls) {
-        const req = new NextRequest('http://localhost/api/fetch-url', {
-          method: 'POST',
-          body: JSON.stringify({ url }),
-        });
-        const res = await fetchUrl(req);
-        expect(res.status).toBe(403);
-        const data = await res.json();
-        expect(data.error).toContain('Requests to internal/private addresses are blocked');
+      // A visitor a declared proxy attributes: one no proxy attributes is refused every link import, as every upload.
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+      try {
+        for (const url of maliciousUrls) {
+          const req = new NextRequest('http://localhost/api/fetch-url', {
+            method: 'POST',
+            headers: { 'x-forwarded-for': '203.0.113.41' },
+            body: JSON.stringify({ url }),
+          });
+          const res = await fetchUrl(req);
+          expect(res.status).toBe(403);
+          const data = await res.json();
+          expect(data.error).toContain('Requests to internal/private addresses are blocked');
+        }
+      } finally {
+        vi.unstubAllEnvs();
       }
     });
 

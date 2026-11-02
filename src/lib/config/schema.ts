@@ -1,5 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 import path from 'node:path';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../plan-limits';
 
 /**
  * The configuration schema: every environment variable the application reads, with its parser, default,
@@ -1339,7 +1340,7 @@ const SCHEMA_ENTRIES = [
     area: 'limits',
     description: 'Conversions per day for an anonymous caller.',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 10,
+    default: ANONYMOUS_DAILY_CONVERSIONS,
     requiredInProduction: false,
     secret: false,
     roles: WEB,

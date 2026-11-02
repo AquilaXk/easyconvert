@@ -65,14 +65,12 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(res.reservationId).toBeDefined();
       expect(res.remaining).toBe(490);
 
-      const reservation = redisKeyStore.getReservation(res.reservationId!);
-      expect(reservation?.status).toBe('reserved');
-      expect(reservation?.units).toBe(10);
+      expect((await redisKeyStore.getQuotaUsage(testUser.id)).usedToday).toBe(10);
 
-      // Phase 2a: Commit reservation
+      // Phase 2a: Commit reservation; a rollback after it gives nothing back
       const committed = await redisKeyStore.commitQuota(res.reservationId!);
       expect(committed).toBe(true);
-      expect(redisKeyStore.getReservation(res.reservationId!)).toBeUndefined();
+      expect(await redisKeyStore.rollbackQuota(res.reservationId!)).toBe(false);
 
       const quotaAfterCommit = await redisKeyStore.getQuotaUsage(testUser.id);
       expect(quotaAfterCommit.remaining).toBe(490);

@@ -16,9 +16,11 @@ interface ConverterInfoPageProps {
   /** The page's title and description in the visitor's language. */
   copy: { title: string; description: string };
   totalFormatCount: number;
+  /** The anonymous daily allowance the server enforces. */
+  dailyLimit: number;
 }
 
-export function ConverterInfoPage({ parsed, copy, totalFormatCount }: Readonly<ConverterInfoPageProps>) {
+export function ConverterInfoPage({ parsed, copy, totalFormatCount, dailyLimit }: Readonly<ConverterInfoPageProps>) {
   if (parsed.infoType === 'status') {
     return (
       <div className={ROOT_SHELL_CLASS}>
@@ -63,7 +65,7 @@ export function ConverterInfoPage({ parsed, copy, totalFormatCount }: Readonly<C
             <AdBanner slot="mid-content" />
           </div>
           <div className="mt-10">
-            <FaqSection />
+            <FaqSection dailyLimit={dailyLimit} />
           </div>
         </main>
         <Footer />
@@ -91,7 +93,7 @@ export function ConverterInfoPage({ parsed, copy, totalFormatCount }: Readonly<C
           {parsed.infoType === 'contact' ? (
             <ContactContent />
           ) : (
-            <PolicySections infoType={parsed.infoType} totalFormatCount={totalFormatCount} />
+            <PolicySections infoType={parsed.infoType} totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />
           )}
         </div>
       </main>

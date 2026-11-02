@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
@@ -33,6 +33,7 @@ import {
 } from './helpers/rendered-dom';
 import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
 import { englishSlugCopy } from './helpers/intl';
+import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
 /**
  * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
@@ -44,7 +45,7 @@ import { englishSlugCopy } from './helpers/intl';
 const rootDir = path.resolve(__dirname, '..');
 const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
-const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug }));
+const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -160,7 +161,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       '3. Service Availability & Free Use',
     ]);
     expect(phrasesPresent(text, ['10 daily conversions', 'credits with prioritized throughput'])).toEqual([]);
-    expect(phrasesMissing(text, ['100% free with unlimited conversions'])).toEqual([]);
+    expect(phrasesPresent(text, ['unlimited conversions'])).toEqual([]);
+    expect(phrasesMissing(text, ['free for up to 25 a day without an account'])).toEqual([]);
   });
 
   it('verifies Hero synchronizes target format on paste, file selection, drop, and URL import', () => {
@@ -383,7 +385,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // Genuine verifiable architecture guarantees must be present
-    expect(phrasesMissing(text, ['100% Free & Unlimited', 'Encrypted Ephemeral Processing', 'Private & Secure', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
+    expect(phrasesMissing(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Private & Secure', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
   it('verifies AdBanner implements industry-standard publisher units and eliminates wireframe slop', () => {
@@ -468,7 +470,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
-    const faq = render(FaqSection, {} as never);
+    const faq = render(FaqSection, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
     const triggers = select(faq, 'button').filter((b) => attrOf(b, 'aria-controls') !== null);
 
     // Five questions, each a button that controls its own answer region; only the open one is in the markup.
@@ -476,8 +478,18 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
     const regions = select(faq, 'div', 'role', 'region');
     expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
-    expect(visibleText(regions[0])).toMatch(/^Yes\. You can convert without an account, up to 1 GiB per file/);
+    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 25 conversions a day on our servers, each file up to 1 GiB\./);
     expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
+  });
+
+  it('states the allowance the server reads, so an operator override reads the same on the page as in the refusal', () => {
+    vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '7');
+    try {
+      const faq = render(FaqSection, { dailyLimit: getAnonymousDailyLimit() });
+      expect(visibleText(select(faq, 'div', 'role', 'region')[0])).toMatch(/run up to 7 conversions a day/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {

@@ -250,9 +250,12 @@ export const conversionPaths = {
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '422': createProblemResponse(
-          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), or an idempotency key was reused with a different request payload.'
+          'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), an idempotency key was reused with a different request payload, or the graph has no conversion (problem type `https://api.easyconvert.io/problems/graph-without-conversion`): a graph that only imports and exports files is refused before anything is reserved.'
         ),
-        '429': createProblemResponse('Daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
+        '429': createProblemResponse(
+          'The day has fewer conversions left than the job needs (problem type `https://api.easyconvert.io/problems/quota-exceeded`, with `dailyLimit`, `remaining` and `requiredUnits`). A graph needs one unit for each input declared by a node that makes one output of each input (`convert`, `ocr`, `optimize`, `thumbnail`, `media.package`, `watermark` and the `pdf.*` page operations) and one for each `merge`, `metadata`, `archive.create` or `archive.extract` node. A node whose inputs hold more files than it declares (an unpacked archive) takes the rest of its units when it starts, and fails with the refusal code `quota_exceeded` when the day has too few left.' +
+            CONCURRENCY_LIMIT_NOTE
+        ),
         '500': createProblemResponse('Job enqueue failure.'),
       },
     },
@@ -353,7 +356,7 @@ export const conversionPaths = {
         '401': createProblemResponse('Unauthorized.'),
         '403': createProblemResponse('Access denied.'),
         '404': createProblemResponse('Job not found.'),
-        '409': createProblemResponse('Job has already completed, failed, or cannot be cancelled.'),
+        '409': createProblemResponse('Job has already completed, failed, or cannot be cancelled, or it is one node of a graph job (`graphId` names the graph, which is cancelled as a whole).'),
       },
     },
   },

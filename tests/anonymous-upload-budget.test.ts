@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
@@ -32,6 +32,10 @@ const DAY = '2026-11-01';
 const NOW = Date.UTC(2026, 10, 1, 12);
 
 installUploadFlowHooks();
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('the upload budget of an address bucket', () => {
   const policy = { maxOpenUploads: 2, dailyBytes: 2 * GIB, idleMs: HOUR };
@@ -187,7 +191,7 @@ describe('a visitor opens at most two uploads at once and declares at most 2 GiB
 
     const over = await initiate(visitor, MIB);
     expect(over.status).toBe(429);
-    expect((await over.json()).detail).toBe('Without an account, uploads may total 2 GiB a day. The limit resets at midnight UTC.');
+    expect((await over.json()).detail).toBe('Without an account, uploads and link imports may total 2 GiB a day. The limit resets at midnight UTC.');
 
     const { uploadId } = await first.json();
     await multipartPost(multipart('abort', { uploadId }, visitor));

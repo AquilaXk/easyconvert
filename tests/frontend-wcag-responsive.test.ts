@@ -56,6 +56,7 @@ import {
   type DomElement,
 } from './helpers/rendered-dom';
 import { testTranslator } from './helpers/intl';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -428,14 +429,14 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
   it('maintains WCAG 2.1 AA landmarks, single h1, non-skipping heading levels, and labeled 16px controls across routes', () => {
     const routes: ReadonlyArray<{ name: string; dom: DomElement }> = [
-      { name: '/', dom: render(HomePage, {}) },
-      { name: '/pdf-to-docx', dom: render(ConverterPageView, { slug: 'pdf-to-docx' }) },
-      { name: '/accessibility', dom: render(ConverterPageView, { slug: 'accessibility' }) },
-      { name: '/contact', dom: render(ConverterPageView, { slug: 'contact' }) },
+      { name: '/', dom: render(HomePage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+      { name: '/pdf-to-docx', dom: render(ConverterPageView, { slug: 'pdf-to-docx', dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+      { name: '/accessibility', dom: render(ConverterPageView, { slug: 'accessibility', dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+      { name: '/contact', dom: render(ConverterPageView, { slug: 'contact', dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/auth', dom: render(AuthPage, {}) },
       { name: '/api-docs', dom: render(ApiDocsPage, {}) },
       { name: '/status', dom: render(StatusPage, {}) },
-      { name: '/unit-converter', dom: render(UnitConverterPage, {}) },
+      { name: '/unit-converter', dom: render(UnitConverterPage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
     ];
 
     for (const route of routes) {

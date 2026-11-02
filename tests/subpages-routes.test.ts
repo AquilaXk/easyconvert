@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/fetch-url/route';
 import { TIERS, calculateBaseCredits } from '../src/lib/pricing';
@@ -121,6 +121,17 @@ describe('Subpages & Routes Verification', () => {
   });
 
   describe('Url Import Endpoint Security & SSRF Protection', () => {
+    // A visitor a declared proxy attributes: one no proxy attributes is refused every link import, as every upload.
+    const VISITOR = { 'x-forwarded-for': '203.0.113.42' };
+
+    beforeEach(() => {
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
     it('blocks internal loopback and private IPv4 ranges', async () => {
       const privateUrls = [
         'http://localhost:8080/secret.txt',
@@ -133,6 +144,7 @@ describe('Subpages & Routes Verification', () => {
       for (const url of privateUrls) {
         const req = new NextRequest('http://localhost:3000/api/fetch-url', {
           method: 'POST',
+          headers: VISITOR,
           body: JSON.stringify({ url }),
         });
         const res = await POST(req);
@@ -145,6 +157,7 @@ describe('Subpages & Routes Verification', () => {
     it('rejects unsupported protocols like file:// or ftp://', async () => {
       const req = new NextRequest('http://localhost:3000/api/fetch-url', {
         method: 'POST',
+        headers: VISITOR,
         body: JSON.stringify({ url: 'file:///etc/passwd' }),
       });
       const res = await POST(req);
@@ -156,6 +169,7 @@ describe('Subpages & Routes Verification', () => {
     it('rejects malformed URLs', async () => {
       const req = new NextRequest('http://localhost:3000/api/fetch-url', {
         method: 'POST',
+        headers: VISITOR,
         body: JSON.stringify({ url: 'not-a-valid-url' }),
       });
       const res = await POST(req);

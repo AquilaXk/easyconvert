@@ -16,20 +16,18 @@ import { respondOnce } from '@/lib/api/with-idempotency';
 import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
 import { isAnonymousUserId, isUnattributedAnonymous, mayUseUploadSession, uploadOwnerOf } from '@/lib/auth/anonymous-identity';
 import {
-  ANONYMOUS_DAILY_UPLOAD_BYTES,
-  ANONYMOUS_OPEN_UPLOADS_MAX,
   OPEN_UPLOAD_IDLE_MS,
   endUploadReservation,
   reserveAnonymousUpload,
   resumeUploadReservation,
-  type BudgetRefusal,
 } from '@/lib/api-keys/anonymous-upload-budget';
+import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
+import { HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE } from '@/lib/refusal-codes';
 import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse, uploadErrorResponse, uploadUnavailableResponse } from '@/lib/api/part-response';
 import { isUploadIdShape } from '@/lib/storage/upload-id';
 import { digestOfPartList, recallUploadCompletion, rememberUploadCompletion } from '@/lib/storage/upload-completion';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
-import { formatBytes } from '@/lib/format-bytes';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 
@@ -38,14 +36,7 @@ export const dynamic = 'force-dynamic';
 const MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
 /** The smallest part an object store takes for a part that is not the last (the S3 rule). */
 const MIN_PART_BYTES = 5 * 1024 * 1024;
-const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_FORBIDDEN = 403;
-const HTTP_SERVICE_UNAVAILABLE = 503;
-const QUOTA_EXCEEDED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
-const UPLOAD_BUDGET_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
-const TRUST_UNCONFIGURED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
-const UNATTRIBUTED_UPLOAD_DETAIL =
-  'Uploads without an account are off until this server can tell visitors apart: set TRUSTED_PROXIES to the proxies in front of it. Sign in to upload meanwhile.';
 const ANONYMOUS_PRESIGN_REFUSED =
   'An upload without an account sends its parts through action=chunk, which holds them to the size it declared; it gets no signed part link.';
 
@@ -224,44 +215,12 @@ async function jobStartRefusal(user: User, instanceUri: string): Promise<NextRes
   return room.allowed ? null : concurrencyLimitResponse(room.limit, instanceUri);
 }
 
-const BUDGET_REFUSAL_DETAIL: Readonly<Record<BudgetRefusal, string>> = {
-  'open-uploads': `Up to ${ANONYMOUS_OPEN_UPLOADS_MAX} uploads may be open at once without an account. Finish or cancel one, then try again.`,
-  'daily-bytes': `Without an account, uploads may total ${formatBytes(ANONYMOUS_DAILY_UPLOAD_BYTES)} a day. The limit resets at midnight UTC.`,
-};
-
-/** The limit each budget refusal names, as a field beside the English detail. */
-const BUDGET_REFUSAL_FACTS: Readonly<Record<BudgetRefusal, Record<string, number>>> = {
-  'open-uploads': { limit: ANONYMOUS_OPEN_UPLOADS_MAX },
-  'daily-bytes': { limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES },
-};
-
-function budgetRefusalResponse(refusal: BudgetRefusal, instanceUri: string): NextResponse {
-  return createProblemDetailsResponse(
-    HTTP_TOO_MANY_REQUESTS,
-    BUDGET_REFUSAL_DETAIL[refusal],
-    instanceUri,
-    'Too Many Requests',
-    UPLOAD_BUDGET_PROBLEM_TYPE,
-    undefined,
-    undefined,
-    { refusal, ...BUDGET_REFUSAL_FACTS[refusal] }
-  );
-}
-
-/**
- * The 503 for an anonymous caller while no client can be attributed: every visitor would share one budget, which one
- * of them could use up for all, so anonymous uploads stay off until the proxies are declared (docs/client-ip-trust.md).
- */
-function unattributedUploadRefusal(instanceUri: string): NextResponse {
-  return createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, UNATTRIBUTED_UPLOAD_DETAIL, instanceUri, 'Service Unavailable', TRUST_UNCONFIGURED_PROBLEM_TYPE);
-}
-
 /**
  * Opens an upload session: the declared size is held to the plan limit and the part size to the bounds of a part, a
  * job must be able to start for the caller, and an anonymous caller's budget must have room for the declared size.
  */
 async function openSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
-  if (isUnattributedAnonymous(user.id)) return unattributedUploadRefusal(instanceUri);
+  if (isUnattributedAnonymous(user.id)) return unattributedTransferRefusal(instanceUri);
   const { filename, mimeType, totalSize, partSize } = body;
   if (typeof filename !== 'string' || !filename || typeof totalSize !== 'number' || !Number.isSafeInteger(totalSize)) {
     return badRequest('Missing "filename" or "totalSize" in initiation payload.', instanceUri);
@@ -275,7 +234,7 @@ async function openSession({ storage, user, instanceUri, body }: ActionContext):
   if (blocked) return blocked;
 
   const reserved = await reserveAnonymousUpload(user.id, totalSize, Date.now() + OPEN_UPLOAD_IDLE_MS);
-  if ('refusal' in reserved) return budgetRefusalResponse(reserved.refusal, instanceUri);
+  if ('refusal' in reserved) return uploadBudgetRefusalResponse(reserved.refusal, instanceUri);
   let uploadId: string | undefined;
   try {
     const initResult = await storage.initiateMultipartUpload(
@@ -353,7 +312,7 @@ function unexpectedFailure(error: unknown, action: string, sessionBound: boolean
 async function openSessionRefusal(uploadId: string, instanceUri: string): Promise<NextResponse | null> {
   try {
     const refusal = await resumeUploadReservation(uploadId);
-    return refusal ? budgetRefusalResponse(refusal, instanceUri) : null;
+    return refusal ? uploadBudgetRefusalResponse(refusal, instanceUri) : null;
   } catch (error) {
     console.warn(`[multipart] Could not note the activity of an upload; the part is taken:`, error);
     return null;

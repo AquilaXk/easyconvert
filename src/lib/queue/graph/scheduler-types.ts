@@ -35,6 +35,9 @@ export interface GraphMetadata {
   createdAt?: number;
 }
 
+/** What the node jobs of a graph carry: its owner, file name and start, never its reservation, which only the graph scheduler settles or gives back. */
+export type GraphNodeJobMetadata = Pick<GraphMetadata, 'ownerUserId' | 'originalFilename' | 'createdAt'>;
+
 export interface GraphExecutionState {
   graphId: string;
   status: GraphStatus;
@@ -84,6 +87,6 @@ export interface IGraphScheduler {
   onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult>;
   getGraphState(graphId: string): Promise<GraphExecutionState | undefined>;
   cancelGraph(graphId: string, reason?: string): Promise<boolean>;
+  /** The output keys of the nodes `nodeIds`, each key once. */
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;
-  cleanupIntermediates(graphId: string): Promise<number>;
 }

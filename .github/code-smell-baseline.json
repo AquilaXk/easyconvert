@@ -4,33 +4,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 35
-  },
-  {
-    "file": "src/app/api/convert/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "POST",
-    "count": 2
-  },
-  {
-    "file": "src/app/api/convert/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 35
-  },
-  {
-    "file": "src/app/api/fetch-url/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "POST",
-    "count": 1
-  },
-  {
-    "file": "src/app/api/fetch-url/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 47
+    "maxValue": 31
   },
   {
     "file": "src/app/api/keys/[id]/route.ts",
@@ -60,36 +34,23 @@
   },
   {
     "file": "src/app/api/v1/convert/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 40
+  },
+  {
+    "file": "src/app/api/v1/jobs/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",
     "count": 4
   },
   {
-    "file": "src/app/api/v1/convert/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 59
-  },
-  {
-    "file": "src/app/api/v1/convert/route.ts",
-    "rule": "max-lines-per-function",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 358
-  },
-  {
-    "file": "src/app/api/v1/jobs/route.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "POST",
-    "count": 5
-  },
-  {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 181
+    "maxValue": 178
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -103,7 +64,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 608
+    "maxValue": 509
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -128,12 +89,6 @@
     "file": "src/app/api/v1/uploads/direct/complete/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",
-    "count": 1
-  },
-  {
-    "file": "src/lib/api-keys/guard.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "checkQuotaAndReserve",
     "count": 1
   },
   {
@@ -2297,7 +2252,7 @@
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "processGraphNodeJob",
-    "count": 6
+    "count": 3
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
@@ -2310,14 +2265,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 112
+    "maxValue": 108
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 514
+    "maxValue": 492
   },
   {
     "file": "src/lib/queue/node-processor.ts",

@@ -23,6 +23,24 @@ export interface PlanCaller {
  */
 export const PAID_PLANS_ON_SALE = false;
 
+/**
+ * Conversions a free account may run on the server each UTC day (`TIER_LIMITS.free`). A caller without an account has
+ * the same allowance (QA decision of 2026-11-02), but each number keeps its own name so either can change alone.
+ */
+export const FREE_DAILY_CONVERSIONS = 25;
+
+/**
+ * Conversions a caller without an account may run on the server each UTC day, the default of `ANONYMOUS_DAILY_LIMIT`
+ * (docs/policy-decisions.md, entries 15 and 16). Browser-side conversions use no server and are not counted.
+ */
+export const ANONYMOUS_DAILY_CONVERSIONS = FREE_DAILY_CONVERSIONS;
+
+/** The anonymous allowance the server enforces: `ANONYMOUS_DAILY_LIMIT` when the operator sets a positive integer. */
+export function getAnonymousDailyLimit(): number {
+  const parsed = parseInt(process.env.ANONYMOUS_DAILY_LIMIT ?? '', 10);
+  return parsed > 0 ? parsed : ANONYMOUS_DAILY_CONVERSIONS;
+}
+
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 
@@ -70,7 +88,7 @@ const PLAN_PHRASE: Readonly<Record<Plan, string>> = {
   enterprise: 'the Enterprise plan',
 };
 
-const PLAN_NAME: Readonly<Record<Plan, string>> = {
+export const PLAN_NAME: Readonly<Record<Plan, string>> = {
   anonymous: 'Anonymous',
   free: 'Free',
   pro: 'Pro',

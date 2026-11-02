@@ -11,8 +11,6 @@ import {
 import {
   validateApiAccess,
   isScopeAllowed,
-  commitQuota,
-  rollbackQuota,
 } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import type { ApiKeyScope } from '../src/lib/api-keys/types';
@@ -175,13 +173,13 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
       const reservationId = auth.reservationId!;
 
       // 2. Rollback reserved unit
-      const rolledBack = await rollbackQuota(reservationId);
+      const rolledBack = await redisKeyStore.rollbackQuota(reservationId);
       expect(rolledBack).toBe(true);
 
       // 3. Second reservation and commit
       const auth2 = await validateApiAccess(req, { requiredUnits: 1, requiredScope: 'convert:write' });
       expect(auth2.authorized).toBe(true);
-      const committed = await commitQuota(auth2.reservationId!);
+      const committed = await redisKeyStore.commitQuota(auth2.reservationId!);
       expect(committed).toBe(true);
     });
   });

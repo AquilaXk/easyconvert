@@ -17,6 +17,7 @@ export const URL_IMPORT_ERROR_CODES = [
   'empty_body',
   'file_too_large',
   'fetch_failed',
+  'fetch_timeout',
 ] as const;
 
 export type UrlImportErrorCode = (typeof URL_IMPORT_ERROR_CODES)[number];
@@ -61,6 +62,8 @@ export const CONVERSION_REFUSAL_CODES = [
   'malformed_input',
   'unsupported_input',
   'input_over_limit',
+  'import_budget_exceeded',
+  'quota_exceeded',
   'timeout',
   'engine_unavailable',
   'conversion_failed',
@@ -81,3 +84,10 @@ export function refusalCodeOf(error: unknown): ConversionRefusalCode | undefined
 
 /** The start of every problem `type` URI the API answers with (RFC 9457); the name after it is as stable as a code. */
 export const PROBLEM_TYPE_BASE = 'https://api.easyconvert.io/problems/';
+
+export const HTTP_TOO_MANY_REQUESTS = 429;
+export const HTTP_SERVICE_UNAVAILABLE = 503;
+/** The problem type of a request refused because the day's conversions are used up, or too few are left for it. */
+export const QUOTA_EXCEEDED_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}quota-exceeded`;
+/** The problem type of a request refused because a store it needs (the quota store) is offline. */
+export const SERVICE_UNAVAILABLE_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}service-unavailable`;

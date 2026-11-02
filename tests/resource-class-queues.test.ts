@@ -20,6 +20,7 @@ import { resolveSubscribedQueues } from '../src/worker';
 import { POST as createJobPost } from '../src/app/api/v1/jobs/route';
 import { GET as getJobGet } from '../src/app/api/v1/jobs/[id]/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { graphScheduler } from '../src/lib/queue/graph/scheduler';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { NextRequest } from 'next/server';
 import { s3Storage } from '../src/lib/storage/s3-storage';
@@ -402,8 +403,11 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
         tier: 'pro',
       });
 
+      const usedToday = async () => (await redisKeyStore.getQuotaUsage(testUser.id)).usedToday;
+      const before = await usedToday();
       const reservation = await redisKeyStore.reserveQuota(testUser.id, 1);
       expect(reservation.allowed).toBe(true);
+      expect(await usedToday()).toBe(before + 1);
 
       const job = await resourceQueues.memory.add('test_cad', {
         jobId: '',
@@ -422,8 +426,31 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       expect(cancelled).toBe(true);
       expect(job.state).toBe('cancelled');
 
-      // Check quota reservation is rolled back
-      expect(redisKeyStore.getReservation(reservation.reservationId!)).toBeUndefined();
+      await vi.waitFor(async () => expect(await usedToday()).toBe(before));
+      expect(await redisKeyStore.rollbackQuota(reservation.reservationId!)).toBe(false);
+    });
+
+    it('tells the graph scheduler once that a graph node job cancelled on its resource queue ended', async () => {
+      const reported = vi.spyOn(graphScheduler, 'onNodeFailed').mockResolvedValue({ graphFailed: false, graphStatus: 'running', cancelledJobIds: [], skippedNodeIds: [] });
+      try {
+        const jobId = `graph_cancel_once_${Date.now()}:n1`;
+        await resourceQueues.light.add('graph-node', {
+          jobId,
+          originalFilename: 'a.csv',
+          sourceFormat: 'bin',
+          targetFormat: 'bin',
+          fileSize: 0,
+          options: {},
+          graphId: jobId.split(':')[0],
+          graphNodeId: 'n1',
+          resourceClass: 'light',
+        }, { jobId });
+
+        expect(await conversionQueue.cancelJob(jobId, 'Cancelled by an operator')).toBe(true);
+        expect(reported).toHaveBeenCalledTimes(1);
+      } finally {
+        reported.mockRestore();
+      }
     });
   });
 

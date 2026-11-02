@@ -16,6 +16,7 @@ import { DEFAULT_MAX_INPUT_PIXELS } from '../src/lib/conversions/image-input-lim
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { PDF_TEXT_DEADLINE_MS } from '../src/lib/conversions/pdf-text-types';
 import { DEFAULT_MAX_IN_MEMORY_BYTES } from '../src/lib/storage/errors';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 import {
   DEFAULT_XLSX_MAX_CELL_TEXT_CHARS,
   DEFAULT_XLS_MAX_CELL_TEXT_CHARS,
@@ -492,7 +493,7 @@ describe('schema', () => {
       WORKER_HEARTBEAT_INTERVAL_MS: 5000,
     });
     expect(Object.fromEntries(['ANONYMOUS_DAILY_LIMIT', 'ANONYMOUS_BURST_CAPACITY', 'ANONYMOUS_BURST_REFILL_RATE', 'ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY', 'ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE', 'REDIS_PORT', 'GRAPH_URL_IMPORT_MAX_BYTES', 'LIBREOFFICE_POOL_READINESS_TIMEOUT_MS', 'WORKER_HEARTBEAT_MAX_STALE_MS'].map((name) => [name, defaults.get(name)]))).toEqual({
-      ANONYMOUS_DAILY_LIMIT: 10,
+      ANONYMOUS_DAILY_LIMIT: ANONYMOUS_DAILY_CONVERSIONS,
       ANONYMOUS_BURST_CAPACITY: 10,
       ANONYMOUS_BURST_REFILL_RATE: 1,
       ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY: 600,

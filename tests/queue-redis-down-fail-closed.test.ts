@@ -297,7 +297,8 @@ describe('HTTP routes with an unreachable Redis', () => {
           graph: {
             nodes: {
               in: { op: 'import.url', url: 'https://files.example.org/in/data.csv' },
-              out: { op: 'export.internal', input: 'in' },
+              conv: { op: 'convert', input: 'in', targetFormat: 'json' },
+              out: { op: 'export.internal', input: 'conv' },
             },
           },
         },

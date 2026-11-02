@@ -20,7 +20,9 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
+import type { User } from '@/lib/auth/types';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
@@ -52,24 +54,8 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
 
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
-  let reservationId: string | undefined;
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
-
-  /** The 429 of a caller over its concurrency limit, after releasing the quota reservation. */
-  const failWithRollbackProblem = async (limit: number) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return concurrencyLimitResponse(limit, instanceUri);
-  };
-
-  const failWithRollback = async (status: number, error: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return NextResponse.json({ success: false, error }, { status });
-  };
 
   try {
     const formData = await req.formData();
@@ -84,9 +70,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
-    // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+    // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit. The units are reserved once
+    // the files to convert are known, one for each.
     const auth = await validateApiAccess(req, {
-      requiredUnits: files.length,
+      requiredUnits: 0,
       requiredScope: 'convert:write',
       allowAnonymous: true,
     });
@@ -102,17 +89,18 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
-    reservationId = auth.reservationId;
-
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
-      return await failWithRollbackProblem(slot.limit);
+      return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
 
     for (const f of files) {
       if (f.size === 0) {
-        return await failWithRollback(400, `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.`);
+        return NextResponse.json(
+          { success: false, error: `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.` },
+          { status: 400 }
+        );
       }
     }
 
@@ -130,14 +118,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     const parsedOptions = parseBatchOptions(optionsRaw, instanceUri);
     if ('problem' in parsedOptions) {
-      if (reservationId) {
-        await rollbackQuota(reservationId);
-      }
       return parsedOptions.problem;
     }
     const defaultOptions = parsedOptions.options;
 
-    const planned: Array<{ file: File; extension: string; targetFormat: string }> = [];
+    const planned: PlannedFile[] = [];
     for (const file of files) {
       const detected = detectFormatFromFilename(file.name);
       if (!detected) continue;
@@ -146,88 +131,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       planned.push({ file, extension: detected.extension, targetFormat });
     }
 
-    // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
-    const batchDeadlineMs = syncDeadlineMs(Math.min(
-      planned.reduce(
-        (total, item) =>
-          total +
-          conversionDeadlineMs({
-            tier: auth.user?.tier,
-            sourceFormat: item.extension,
-            targetFormat: item.targetFormat,
-            inputBytes: item.file.size,
-          }),
-        0
-      ),
-      tierMaxDeadlineMs(auth.user.tier)
-    ));
-
-    const convertedFiles: { filename: string; buffer: Buffer }[] = [];
-    const usedNames = new Set<string>();
-
-    // Nothing to convert needs no deadline, and the route answers it below.
-    await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
-      for (const { file, extension, targetFormat } of planned) {
-        limits.signal.throwIfAborted();
-        const arrayBuffer = await file.arrayBuffer();
-        const inputBuffer = Buffer.from(arrayBuffer);
-
-        const result = await dispatchConversion(
-          inputBuffer,
-          extension,
-          targetFormat,
-          bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)), limits),
-          file.name
-        );
-
-        let finalName = result.filename;
-        let counter = 1;
-        while (usedNames.has(finalName)) {
-          const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
-          const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
-          finalName = `${nameWithoutExt} (${counter})${ext}`;
-          counter++;
-        }
-        usedNames.add(finalName);
-
-        convertedFiles.push({
-          filename: finalName,
-          buffer: result.buffer,
-        });
-      }
-    });
-
-    if (convertedFiles.length === 0) {
-      if (reservationId) {
-        await rollbackQuota(reservationId);
-      }
-      return NextResponse.json(
-        { success: false, error: 'No files were successfully converted in batch.' },
-        { status: 400 }
-      );
-    }
-
-    const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
-
-    if (reservationId) {
-      await commitQuota(reservationId);
-    }
-
-    return new NextResponse(new Uint8Array(zipResult.buffer), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
-        'Content-Length': zipResult.size.toString(),
-        'X-Zero-Data-Retention': 'true',
-        'X-Storage-Footprint': '0-bytes',
-      },
-    });
+    const unit = await reserveConversionUnit(auth.user, planned.length);
+    if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
+    const caller = auth.user;
+    return await withReservedUnit(unit.reservationId, (reserved) => convertPlanned(req, caller, planned, defaultOptions, reserved));
   } catch (error: unknown) {
-    if (reservationId) {
-      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
-      await rollbackQuota(reservationId);
-    }
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;
     if (error instanceof EngineUnavailableError) {
@@ -265,3 +173,95 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     releaseSlot?.();
   }
 }));
+
+interface PlannedFile {
+  file: File;
+  extension: string;
+  targetFormat: string;
+}
+
+/**
+ * Converts the planned files under one deadline and answers the archive of the converted ones. The batch is charged one
+ * conversion for each file in the archive; a file of an unknown format was never planned, so it reserved nothing.
+ */
+async function convertPlanned(
+  req: NextRequest,
+  caller: User,
+  planned: PlannedFile[],
+  defaultOptions: ConversionOptions,
+  unit: ReservedUnit
+): Promise<NextResponse> {
+  // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
+  const batchDeadlineMs = syncDeadlineMs(Math.min(
+    planned.reduce(
+      (total, item) =>
+        total +
+        conversionDeadlineMs({
+          tier: caller.tier,
+          sourceFormat: item.extension,
+          targetFormat: item.targetFormat,
+          inputBytes: item.file.size,
+        }),
+      0
+    ),
+    tierMaxDeadlineMs(caller.tier)
+  ));
+
+  const convertedFiles: { filename: string; buffer: Buffer }[] = [];
+  const usedNames = new Set<string>();
+
+  // Nothing to convert needs no deadline, and the route answers it below.
+  await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
+    for (const { file, extension, targetFormat } of planned) {
+      limits.signal.throwIfAborted();
+      const arrayBuffer = await file.arrayBuffer();
+      const inputBuffer = Buffer.from(arrayBuffer);
+
+      const result = await dispatchConversion(
+        inputBuffer,
+        extension,
+        targetFormat,
+        bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(caller.tier)), limits),
+        file.name
+      );
+
+      let finalName = result.filename;
+      let counter = 1;
+      while (usedNames.has(finalName)) {
+        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+        finalName = `${nameWithoutExt} (${counter})${ext}`;
+        counter++;
+      }
+      usedNames.add(finalName);
+
+      convertedFiles.push({
+        filename: finalName,
+        buffer: result.buffer,
+      });
+    }
+  });
+
+  if (convertedFiles.length === 0) {
+    return NextResponse.json(
+      { success: false, error: 'No files were successfully converted in batch.' },
+      { status: 400 }
+    );
+  }
+
+  const zipResult = await createZipArchive(convertedFiles, defaultOptions, 'easyconvert_batch.zip');
+
+  // Every planned file was converted: a file that fails ends the batch, so the reserved units are what it used.
+  await unit.commit();
+
+  return new NextResponse(new Uint8Array(zipResult.buffer), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="easyconvert_batch.zip"',
+      'Content-Length': zipResult.size.toString(),
+      'X-Zero-Data-Retention': 'true',
+      'X-Storage-Footprint': '0-bytes',
+    },
+  });
+}

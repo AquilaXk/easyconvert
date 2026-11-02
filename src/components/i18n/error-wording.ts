@@ -63,6 +63,19 @@ interface LimitWords {
   /** The sentence `key` with the number in `field` of the answer, or undefined when the answer does not carry it. */
   limit: (key: LimitKey, answer: Answer, field: string, unit: 'bytes' | 'count') => string | undefined;
   fileTooLarge: (plan: Plan, sizeBytes: number) => string;
+  /** The sentence of a job that needs `required` conversions when `left` are left today. */
+  conversionsShort: (required: number, left: number) => string;
+}
+
+/**
+ * The daily quota of a refused job: how many it needs and how many are left, when some are left but fewer than it needs,
+ * else the day's limit, which is then used up.
+ */
+function quotaSentence(answer: Answer, { limit, conversionsShort }: LimitWords): string | undefined {
+  const required = numberField(answer, 'requiredUnits');
+  const left = numberField(answer, 'remaining');
+  if (required !== undefined && left !== undefined && left > 0 && required > left) return conversionsShort(required, left);
+  return limit('quota-exceeded', answer, 'dailyLimit', 'count');
 }
 
 /** The sentences that name the numbers a problem's answer carries, by problem name; without the number, the problem's own. */
@@ -73,10 +86,13 @@ const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, wor
     return limit('payload-too-large', answer, 'maxRequestBytes', 'bytes');
   },
   'concurrency-limit': (answer, { limit }) => limit('concurrency-limit', answer, 'limit', 'count'),
-  'quota-exceeded': (answer, { limit }) => limit('quota-exceeded', answer, 'dailyLimit', 'count'),
+  'quota-exceeded': quotaSentence,
   'upload-budget-exceeded': (answer, { limit }) => {
     if (answer.refusal === 'open-uploads') return limit('open-uploads', answer, 'limit', 'count');
-    return answer.refusal === 'daily-bytes' ? limit('daily-bytes', answer, 'limitBytes', 'bytes') : undefined;
+    if (answer.refusal === 'larger-than-left') return limit('imports-larger-than-left', answer, 'leftBytes', 'bytes');
+    if (answer.refusal !== 'daily-bytes') return undefined;
+    const ofAccount = isPlan(answer.plan) && answer.plan !== 'anonymous';
+    return limit(ofAccount ? 'daily-import-bytes' : 'daily-bytes', answer, 'limitBytes', 'bytes');
   },
 };
 
@@ -104,7 +120,8 @@ export function useProblemWording(
           const value = numberField(fields, field);
           return value === undefined ? undefined : t(`limits.${key}`, { limit: unit === 'bytes' ? formatBytes(value) : format.number(value) });
         };
-        const limitSentence = LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge });
+        const conversionsShort: LimitWords['conversionsShort'] = (required, left) => t('limits.quota-short', { required, left });
+        const limitSentence = LIMIT_SENTENCES[name]?.(answer, { limit, fileTooLarge, conversionsShort });
         return limitSentence ?? t(`problems.${name}`);
       }
       return fallback ?? (isRefusal(status) ? t('generic.client') : t('generic.server'));

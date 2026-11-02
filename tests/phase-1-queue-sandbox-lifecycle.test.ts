@@ -527,6 +527,8 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
         testWorker.on('failed', () => resolve());
       });
 
+      // The lifecycle listener is asynchronous: the `failed` event starts it, and its rollback and webhook follow.
+      await vi.waitFor(() => expect(webhookSpy).toHaveBeenCalled());
       expect(rollbackSpy).toHaveBeenCalledWith('res_quota_rollback_456');
       expect(webhookSpy).toHaveBeenCalledWith(
         'https://api.example.com/webhooks/failures',

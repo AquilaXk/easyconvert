@@ -6,7 +6,8 @@ import UnitConverter from '@/components/UnitConverter';
 import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 
-export default function UnitConverterPageView() {
+/** The unit converter page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
+export default function UnitConverterPageView({ dailyLimit }: Readonly<{ dailyLimit: number }>) {
   const t = useTranslations('unitConverterPage');
 
   return (
@@ -30,7 +31,7 @@ export default function UnitConverterPageView() {
         </div>
 
         <div className="mt-12">
-          <FaqSection />
+          <FaqSection dailyLimit={dailyLimit} />
         </div>
       </main>
 

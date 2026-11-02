@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
+import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactForOutput, redactText } from '@/lib/security/redact';
@@ -195,6 +196,11 @@ async function cancelJobRequest(req: NextRequest, context: RouteContext) {
       instanceUri,
       'Forbidden'
     );
+  }
+
+  const nodeRefusal = nodeJobCancelRefusal(job.data);
+  if (nodeRefusal) {
+    return createProblemDetailsResponse(409, nodeRefusal.detail, instanceUri, 'Conflict', undefined, undefined, undefined, { graphId: nodeRefusal.graphId });
   }
 
   if (job.state === 'completed') {

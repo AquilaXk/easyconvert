@@ -137,6 +137,25 @@ const openApiDocumentResponse = {
   },
 };
 
+/** The 429 of `/api/fetch-url`: a problem that names the refusal of the byte budget and the bytes it is about. */
+const linkImportBudgetResponse = (description: string) => {
+  const schema = {
+    allOf: [
+      { $ref: '#/components/schemas/ProblemDetails' },
+      {
+        type: 'object',
+        properties: {
+          refusal: { type: 'string', enum: ['daily-bytes', 'larger-than-left'], description: 'Which bound of the byte budget refused the import.' },
+          limitBytes: { type: 'integer', description: 'The bytes the caller may bring in each UTC day.' },
+          leftBytes: { type: 'integer', description: 'With `larger-than-left`: the bytes the day had left.' },
+          plan: { type: 'string', description: 'The plan of an account.' },
+        },
+      },
+    ],
+  };
+  return { description, content: { 'application/problem+json': { schema }, 'application/json': { schema } } };
+};
+
 export const internalPaths = {
   '/api/account/files': {
     get: {
@@ -352,8 +371,15 @@ export const internalPaths = {
         '401': createProblemResponse('Authentication required.'),
         '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
         '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),
+        '429': linkImportBudgetResponse(
+          'The daily byte budget of the caller refuses the import (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `limitBytes`, and `plan` for an account). `refusal` "daily-bytes": the budget was used up before the import started, or the bytes it read took the day past the budget, which stops it; both last until midnight UTC. `refusal` "larger-than-left": the file declares a length larger than the `leftBytes` the day has left, and is refused before it is read. The bytes an import reads count toward the budget however it ends. A file past the import limit is the 413. Or the caller has no conversion left today (problem type `https://api.easyconvert.io/problems/quota-exceeded`).' +
+            CONCURRENCY_LIMIT_NOTE
+        ),
+        '499': createProblemResponse('The client closed the connection before the import finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The bytes received until the import stopped count toward the daily byte budget.'),
         '502': createCodedErrorResponse('Redirect failure, remote 5xx (its status in `remoteStatus`), or empty body.', URL_IMPORT_CODES[502]),
         '500': createCodedErrorResponse('The file could not be fetched for a reason the server did not classify (fixed `error`).', ['fetch_failed']),
+        '503': createProblemResponse('An anonymous caller while the server cannot tell visitors apart (problem type `https://api.easyconvert.io/problems/client-ip-trust-unconfigured`).'),
+        '504': createCodedErrorResponse('The remote did not send the whole file within the synchronous deadline.', ['fetch_timeout']),
       },
     },
   },
@@ -485,7 +511,7 @@ export const internalPaths = {
       responses: {
         '200': createJsonResponse('Job cancelled.', { success: { type: 'boolean' }, message: { type: 'string' } }),
         '404': createErrorResponse('Job not found or owned by another user.'),
-        '409': createErrorResponse('Job can no longer be cancelled.'),
+        '409': createErrorResponse('Job can no longer be cancelled, or it is one node of a graph job (`graphId` names the graph, which is cancelled as a whole).'),
       },
     },
   },

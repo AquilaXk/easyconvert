@@ -8,7 +8,6 @@ import { processNodeJob } from './node-processor';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
-import { JobTimeoutError } from '../types';
 import { legacyJobTimeoutMs } from './enqueue';
 import { graphScheduler } from './graph/scheduler';
 
@@ -39,6 +38,23 @@ export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
   return processNodeJob(job, dispatchEngine, storageProvider);
+}
+
+/**
+ * Tells the graph scheduler that the job of a graph node ended without a result: its last attempt failed, the stalled
+ * sweep failed it, or it was cancelled. Every end of a node job raises one of those events, so each reaches the scheduler
+ * however the node ended, also when the node never ran its own failure path (a stalled or killed worker, a cancel by an
+ * operator). A node that already ended is ignored by the scheduler, so a second report changes nothing.
+ */
+async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobResult>, reason: string): Promise<void> {
+  const graphId = job.data?.graphId;
+  const nodeId = job.data?.graphNodeId;
+  if (!graphId || !nodeId) return;
+  try {
+    await graphScheduler.onNodeFailed(graphId, nodeId, reason);
+  } catch (graphErr) {
+    console.error(`[ConversionQueue] Failed to fail graph node ${nodeId} of ${graphId}:`, graphErr);
+  }
 }
 
 /**
@@ -107,7 +123,6 @@ export function attachJobLifecycleListeners(
     async (job: Job<ConversionJobData, ConversionJobResult>, err: any) => {
       // Only a successful conversion is charged: every unrecoverable failure, a job past its deadline included, rolls
       // the reservation back (QA decision 2026-10-10).
-      const pastDeadline = err instanceof JobTimeoutError;
       if (job.data?.reservationId) {
         try {
           await redisKeyStore.rollbackQuota(job.data.reservationId);
@@ -119,15 +134,8 @@ export function attachJobLifecycleListeners(
         }
       }
 
-      // A graph node past its deadline is failed in the graph from here as well: a processor that never settles
-      // would otherwise leave the node running and the graph unsettled. The scheduler ignores a second report.
-      if (pastDeadline && job.data?.graphId && job.data.graphNodeId) {
-        try {
-          await graphScheduler.onNodeFailed(job.data.graphId, job.data.graphNodeId, err.message);
-        } catch (graphErr) {
-          console.error(`[ConversionQueue] Failed to fail graph node ${job.data.graphNodeId} of ${job.data.graphId}:`, graphErr);
-        }
-      }
+      // The worker emits `failed` once, for the last attempt of a job, so a graph node is failed in its graph here.
+      await reportGraphNodeEnded(job, err instanceof Error ? err.message : String(err));
 
       // Asynchronous Webhook Failure Notification
       if (job.data?.webhookUrl) {
@@ -199,16 +207,18 @@ export function attachInputCleanupOnCompletion(
 
 /**
  * Owns the quota refund and the release of the input for cancelled jobs. The engine emits `cancelled` once per cancelled
- * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once.
+ * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once. Attach it to one
+ * queue only: the resource queues pass their `cancelled` events on to the default queue, which holds it.
  */
 export function attachJobCancellationListeners(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>
 ): void {
   queue.on('cancelled', async (job: Job<ConversionJobData, ConversionJobResult>) => {
-    // A cancelled job never runs again, so it no longer needs its input.
+    // A cancelled job never runs again, so it no longer needs its input, and a graph node it ran ended without a result.
     if (job.data?.storageKey) {
       await releaseResultHold(job.data.storageKey, job.id);
     }
+    await reportGraphNodeEnded(job, job.failedReason || 'The job was cancelled.');
     if (!job.data?.reservationId) {
       return;
     }
@@ -224,9 +234,6 @@ export function attachJobCancellationListeners(
 }
 
 attachJobCancellationListeners(conversionQueue);
-for (const q of Object.values(resourceQueues)) {
-  attachJobCancellationListeners(q);
-}
 
 /**
  * Returns queue engine designated for the given resource class.

@@ -1,4 +1,4 @@
-import type { GraphMetadata } from './scheduler-types';
+import type { GraphNodeJobMetadata } from './scheduler-types';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { enqueueConversionJob } from '../enqueue';
@@ -15,6 +15,23 @@ export function graphNodeJobId(graphId: string, nodeId: NodeId): string {
   return `${graphId}:${nodeId}`;
 }
 
+/** Where a node's files go: `intermediate` until the graph ends, or `results` for what an `export.internal` node keeps. */
+export type NodeOutputArea = 'intermediate' | 'results';
+
+/**
+ * The key of what node `nodeId` of graph `graphId` made of its input number `index` (0 for a node that makes one file of all
+ * its inputs): each node and each input in a folder of its own, so two outputs that share a file name never overwrite each
+ * other, and each keeps its readable name.
+ */
+export function nodeOutputKey(area: NodeOutputArea, graphId: string, nodeId: NodeId, index: number, filename: string): string {
+  return `${area}/${graphId}/${nodeId}/${index}/${filename}`;
+}
+
+/** The metadata the node jobs of a graph carry: exactly the fields a node job reads, so nothing else reaches the queue. */
+export function graphNodeJobMetadata(graph: GraphNodeJobMetadata): GraphNodeJobMetadata {
+  return { ownerUserId: graph.ownerUserId, originalFilename: graph.originalFilename, createdAt: graph.createdAt };
+}
+
 /**
  * Enqueues a ready graph node on the queue of its resource class. The engine ignores a second
  * add with the same job ID, so replaying an outbox entry after a crash never runs a node twice.
@@ -23,7 +40,7 @@ export async function enqueueGraphNodeJob(
   graphId: string,
   nodeId: NodeId,
   node: GraphNode,
-  meta: GraphMetadata,
+  meta: GraphNodeJobMetadata,
   inputArtifacts: string[]
 ): Promise<void> {
   const resourceClass = resolveNodeResourceClass(node);
@@ -40,7 +57,6 @@ export async function enqueueGraphNodeJob(
       fileSize: 0,
       options: nodeFields.options || {},
       userId: meta.ownerUserId,
-      reservationId: meta.reservationId,
       graphId,
       graphNodeId: nodeId,
       // Fail closed: whatever path got a node here, its secrets are sealed before the queue sees it.
@@ -56,6 +72,19 @@ export async function enqueueGraphNodeJob(
   );
 }
 
+/**
+ * Why the job of a graph node is not cancelled on its own, or undefined for any other job. A graph is run, charged and
+ * cancelled as one job: cancelling one node would leave its graph to the node's failure policy, so its owner cancels the
+ * graph by its id instead.
+ */
+export function nodeJobCancelRefusal(data: { graphId?: string; graphNodeId?: string } | undefined): { graphId: string; detail: string } | undefined {
+  if (!data?.graphId || !data.graphNodeId) return undefined;
+  return {
+    graphId: data.graphId,
+    detail: `This job is node "${data.graphNodeId}" of the graph job "${data.graphId}", which is cancelled as a whole. Cancel "${data.graphId}" instead.`,
+  };
+}
+
 /** Cancels the queue job of a graph node on the queue it was routed to. */
 export async function cancelGraphNodeJob(
   graphId: string,
@@ -69,7 +98,25 @@ export async function cancelGraphNodeJob(
   return getQueueForResourceClass(resolveNodeResourceClass(node)).cancelJob(graphNodeJobId(graphId, nodeId), reason);
 }
 
-async function graphDeadlineOwner(meta: GraphMetadata): Promise<{ tier: string; notAfter?: number }> {
+/**
+ * Cancels the queue job of node `nodeId` with `cancel`, and logs a cancel that fails, so one node job that cannot be
+ * cancelled never leaves the others of its graph running.
+ */
+export async function cancelGraphNodeJobOrLog(
+  cancel: typeof cancelGraphNodeJob,
+  graphId: string,
+  nodeId: NodeId,
+  node: GraphNode | undefined,
+  reason: string
+): Promise<void> {
+  try {
+    await cancel(graphId, nodeId, node, reason);
+  } catch (err) {
+    console.error(`[GraphScheduler] The job of node ${nodeId} of graph ${graphId} could not be cancelled:`, err);
+  }
+}
+
+async function graphDeadlineOwner(meta: GraphNodeJobMetadata): Promise<{ tier: string; notAfter?: number }> {
   const tier = await tierForOwner(meta.ownerUserId);
   return meta.createdAt === undefined ? { tier } : { tier, notAfter: meta.createdAt + tierMaxDeadlineMs(tier) };
 }

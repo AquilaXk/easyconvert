@@ -7,6 +7,7 @@ import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
 import { canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
+import { getAnonymousDailyLimit } from '@/lib/plan-limits';
 
 interface ConverterPageProps {
   params: Promise<{ locale: string; slug: string }>;
@@ -42,7 +43,7 @@ export default async function ConverterPage({ params }: Readonly<ConverterPagePr
 
   return (
     <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
-      <ConverterPageView slug={slug} />
+      <ConverterPageView slug={slug} dailyLimit={getAnonymousDailyLimit()} />
     </PageMessages>
   );
 }

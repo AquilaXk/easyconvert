@@ -18,7 +18,9 @@ import {
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
-import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
+import type { User } from '@/lib/auth/types';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
@@ -107,9 +109,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/convert';
 
-  // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
+  // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit, then reserve the conversion
   const auth = await validateApiAccess(req, {
-    requiredUnits: 1,
+    requiredUnits: 0,
     requiredScope: 'convert:write',
     allowAnonymous: true,
   });
@@ -125,25 +127,23 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     );
   }
 
-  const reservationId = auth.reservationId;
+  const caller = auth.user;
+  const unit = await reserveConversionUnit(caller);
+  if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
+  return withReservedUnit(unit.reservationId, (reserved) => convertFile(req, caller, reserved, instanceUri, startTime));
+}));
 
-  const failWithRollback = async (status: number, code: ConversionRefusalCode | undefined, error: string) => {
-    if (reservationId) {
-      await rollbackQuota(reservationId);
-    }
-    return refusal(status, code, error);
-  };
-
-  if (!isMultipartBody(req)) {
-    return await failWithRollback(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
-  }
-
+/** Converts the file of an authenticated request whose unit is reserved; the unit is charged only once the conversion succeeded. */
+async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, instanceUri: string, startTime: number): Promise<NextResponse> {
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
   try {
-    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!isMultipartBody(req)) {
+      return refusal(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', 'The request body must be multipart/form-data.');
+    }
+
+    const slot = await acquireSyncSlot(caller.id, caller.tier);
     if (!slot.granted) {
-      if (reservationId) await rollbackQuota(reservationId);
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
@@ -153,11 +153,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const optionsRaw = formData.get('options') as string | null;
 
     if (!file) {
-      return await failWithRollback(400, 'file_required', 'Missing required "file" in multipart request.');
+      return refusal(400, 'file_required', 'Missing required "file" in multipart request.');
     }
 
     if (file.size === 0) {
-      return await failWithRollback(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
+      return refusal(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
     }
 
     if (!targetFormat) {
@@ -196,14 +196,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         return refusal(400, 'invalid_options', 'Invalid JSON format for "options" parameter.');
       }
       if (!isConversionOptionsObject(parsed)) {
-        return await failWithRollback(400, 'invalid_options', 'The "options" field must be a JSON object.');
+        return refusal(400, 'invalid_options', 'The "options" field must be a JSON object.');
       }
       options = parsed;
       const optionsProblem = legacyOptionsProblem(options, instanceUri);
       if (optionsProblem) {
-        if (reservationId) {
-          await rollbackQuota(reservationId);
-        }
         return optionsProblem;
       }
     }
@@ -213,9 +210,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     if (options.pages) {
       try {
-        validateTierPageLimit(options.pages, auth.user?.tier || 'free');
-      } catch (err: any) {
-        return await failWithRollback(422, refusalCodeOf(err), err.message);
+        validateTierPageLimit(options.pages, caller.tier);
+      } catch (err: unknown) {
+        return refusal(422, refusalCodeOf(err), err instanceof Error ? err.message : String(err));
       }
     }
 
@@ -225,14 +222,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     // Validate file integrity against spoofed extensions fail-closed
     try {
       assertNotSpoofedFile(inputBuffer, detectedDef.extension, file.name);
-    } catch (err: any) {
-      return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', err.message || 'File spoofing detected.');
+    } catch (err: unknown) {
+      return refusal(spoofCheckStatus(err), refusalCodeOf(err) ?? 'spoofed_file', (err instanceof Error && err.message) || 'File spoofing detected.');
     }
 
     // Perform conversion via the shared dispatcher (native engines first, in-process where valid)
     const deadlineMs = syncDeadlineMs(
       conversionDeadlineMs({
-        tier: auth.user?.tier,
+        tier: caller.tier,
         sourceFormat: detectedDef.extension,
         targetFormat: tgt,
         inputBytes: inputBuffer.length,
@@ -243,16 +240,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         inputBuffer,
         detectedDef.extension,
         tgt,
-        bindJobLimits(withTierPageCap(options, tierMaxPages(auth.user?.tier)), limits),
+        bindJobLimits(withTierPageCap(options, tierMaxPages(caller.tier)), limits),
         file.name
       )
     );
 
     const duration = Date.now() - startTime;
 
-    if (reservationId) {
-      await commitQuota(reservationId);
-    }
+    await unit.commit();
 
     return new NextResponse(new Uint8Array(result.buffer), {
       status: 200,
@@ -270,12 +265,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       },
     });
   } catch (error: unknown) {
-    if (reservationId) {
-      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
-      await rollbackQuota(reservationId);
-    }
     return conversionErrorResponse(error, instanceUri);
   } finally {
     releaseSlot?.();
   }
-}));
+}

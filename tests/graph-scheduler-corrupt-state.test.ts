@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import Redis from 'ioredis';
 import { RedisGraphScheduler } from '../src/lib/queue/graph';
 import {
@@ -9,6 +9,7 @@ import {
   parseStoredList,
 } from '../src/lib/queue/graph/redis-state-parsers';
 import { GraphStateCorruptError } from '../src/lib/types';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 
 /**
  * A scheduler record that is missing a field or holds a value of the wrong type fails its graph with
@@ -303,5 +304,52 @@ describe.skipIf(!REDIS_URL)('RedisGraphScheduler on a record damaged in a real R
 
   it('returns undefined, not an error, for a graph that was never stored', async () => {
     await expect(scheduler.getGraphState('g_never_stored')).resolves.toBeUndefined();
+  });
+});
+
+describe('the units a scheduler script reports for a completed graph', () => {
+  /** A client that answers every script with `reply` and stores no graph record. */
+  function answering(reply: unknown[]): Redis {
+    const client = { eval: async () => reply, hgetall: async () => ({}), hmget: async () => [], lrange: async () => [], lrem: async () => 0 };
+    return client as unknown as Redis;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function watchReservations() {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    return {
+      rolledBack: vi.spyOn(redisKeyStore, 'rollbackQuota').mockResolvedValue(true),
+      settled: vi.spyOn(redisKeyStore, 'settleQuota').mockResolvedValue({ success: true, difference: 0 }),
+    };
+  }
+
+  it('gives the reservation back, without throwing, when a graph completed through a failed node with units that are not an integer', async () => {
+    const { rolledBack, settled } = watchReservations();
+    const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '[]', 'not-a-number', 'res_corrupt']), keyPrefix: 'units:' });
+
+    await expect(scheduler.onNodeFailed('g_units', 'src', 'the node failed')).resolves.toMatchObject({ graphStatus: 'completed' });
+    expect(rolledBack).toHaveBeenCalledWith('res_corrupt');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('gives the reservation back, without throwing, when a graph completed through its last node with units that are not an integer', async () => {
+    const { rolledBack, settled } = watchReservations();
+    const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '1.5', 'res_corrupt']), keyPrefix: 'units:' });
+
+    await expect(scheduler.onNodeCompleted('g_units', 'out', [], 1)).resolves.toMatchObject({ graphCompleted: true });
+    expect(rolledBack).toHaveBeenCalledWith('res_corrupt');
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('settles the reservation to the units a completed graph charged', async () => {
+    const { rolledBack, settled } = watchReservations();
+    const scheduler = new RedisGraphScheduler({ redisClient: answering([1, 'completed', '[]', '3', 'res_counted']), keyPrefix: 'units:' });
+
+    await scheduler.onNodeCompleted('g_units', 'out', [], 1);
+    expect(settled).toHaveBeenCalledWith('res_counted', 3);
+    expect(rolledBack).not.toHaveBeenCalled();
   });
 });

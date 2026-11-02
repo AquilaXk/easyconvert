@@ -213,7 +213,8 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
         tier: 'pro',
       });
 
-      // Reserve 50 quota units for a large job
+      const usedToday = async () => (await redisKeyStore.getQuotaUsage(user.id)).usedToday;
+      const before = await usedToday();
       const reservation = await redisKeyStore.reserveQuota(user.id, 50);
       expect(reservation).not.toBeNull();
       const reservationId = reservation!.reservationId;
@@ -245,10 +246,10 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
         expect(err.message).toMatch(/Native worker required/i);
       }
 
-      // Trigger queue failed event to verify 100% quota rollback
-      await redisKeyStore.rollbackQuota(reservationId!);
-      const postRollbackReservation = await redisKeyStore.getReservation(reservationId!);
-      expect(postRollbackReservation).toBeUndefined();
+      expect(await usedToday()).toBe(before + 50);
+      expect(await redisKeyStore.rollbackQuota(reservationId!)).toBe(true);
+      expect(await usedToday()).toBe(before);
+      expect(await redisKeyStore.rollbackQuota(reservationId!)).toBe(false);
     });
   });
 

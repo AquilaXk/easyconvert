@@ -76,6 +76,9 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
 
   EmptyAudioInputError: 'empty_file',
 
+  ImportBudgetExceededError: 'import_budget_exceeded',
+  NodeQuotaExceededError: 'quota_exceeded',
+
   ArchiveEncryptedHeaderError: 'encrypted_input',
   EncryptedOfficeDocumentError: 'encrypted_input',
   PdfPasswordListError: 'encrypted_input',

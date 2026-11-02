@@ -450,6 +450,8 @@ export interface ConversionJobResult {
 
 export class ConversionFailedError extends Error {
   readonly refusalCode: ConversionRefusalCode = 'conversion_failed';
+  /** Whether another attempt may end otherwise: a verdict on the input is final, so a typed failure is not, unless it says so. */
+  readonly retryable: boolean = false;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'ConversionFailedError';
@@ -463,6 +465,7 @@ export class ConversionFailedError extends Error {
  */
 export class EngineMissingError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'engine_unavailable';
+  readonly retryable: boolean = true;
   constructor(message: string) {
     super(message);
     this.name = 'EngineMissingError';
@@ -598,6 +601,19 @@ export class DataParseError extends ConversionFailedError {
     this.line = location.line;
     this.column = location.column;
     this.row = location.row;
+  }
+}
+
+/**
+ * A graph `import.url` node whose owner has no bytes left today for link imports (docs/policy-decisions.md, entry 15). A
+ * retry finds the same budget, so the node fails at once.
+ */
+export class ImportBudgetExceededError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'import_budget_exceeded';
+  readonly status = 429;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ImportBudgetExceededError';
   }
 }
 

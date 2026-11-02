@@ -1,15 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import type Redis from 'ioredis';
-import {
-  RedisKeyStore,
-  redisKeyStore,
-  DEFAULT_RESERVATION_TTL_SECONDS,
-  TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
-  RENEW_RESERVATION_LUA_SCRIPT,
-} from '../src/lib/api-keys/redis-key-store';
+import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT } from '../src/lib/api-keys/quota-lua-scripts';
 import { validateApiAccess, ANONYMOUS_BURST_LIMIT } from '../src/lib/api-keys/guard';
-import { ANONYMOUS_DAILY_LIMIT, getAnonymousDailyLimit } from '../src/lib/api-keys/key-store';
+import { getAnonymousDailyLimit } from '../src/lib/api-keys/key-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { User } from '../src/lib/auth/types';
@@ -85,6 +80,23 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(result.serviceUnavailable).toBe(true);
     });
 
+    it('reports a failed commit, settle or rollback without changing the counts this process keeps for a store without Redis', async () => {
+      const store = new RedisKeyStore({ isolated: true });
+      store.setRedisClient(null);
+      const units = [];
+      for (let i = 0; i < 3; i++) units.push((await store.reserveQuota('tenant-fallback-user', 1)).reservationId as string);
+      store.setRedisClient(brokenRedisClient);
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      expect(await store.commitQuota(units[0])).toBe(false);
+      expect(await store.settleQuota(units[1], 0)).toEqual({ success: false, difference: 0 });
+      expect(await store.rollbackQuota(units[2])).toBe(false);
+      expect(errors).toHaveBeenCalledTimes(3);
+
+      store.setRedisClient(null);
+      expect((await store.getQuotaUsage('tenant-fallback-user')).usedToday).toBe(3);
+    });
+
     it('enforces boundary conditions and deducts quota correctly in local in-memory fallback', async () => {
       const store = new RedisKeyStore({ isolated: true });
       // Free tier default limit is 25
@@ -124,55 +136,14 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(result.retryAfterMs).toBe(0);
       expect(executedScript).toContain("redis.call, 'TIME'");
     });
-
-    it('executes RENEW_RESERVATION_LUA_SCRIPT and updates reservation TTL atomically', async () => {
-      let evalKey = '';
-      let evalTtl = 0;
-      const redisMock = {
-        eval: async (script: string, numKeys: number, key: string, ttl: number) => {
-          evalKey = key;
-          evalTtl = ttl;
-          return 1;
-        },
-      } as unknown as Redis;
-
-      const store = new RedisKeyStore({ redisClient: redisMock, isolated: true });
-      const success = await store.renewReservation('res_user1_20261004_12345_abcdef', 1200);
-
-      expect(success).toBe(true);
-      expect(evalKey).toBe('easyconvert:res:{user1}:res_user1_20261004_12345_abcdef');
-      expect(evalTtl).toBe(1200);
-    });
-  });
-
-  describe('Reservation TTL & Heartbeat Renewal', () => {
-    it('configures default reservation TTL to 900 seconds (15 minutes) for long conversions', async () => {
-      expect(DEFAULT_RESERVATION_TTL_SECONDS).toBe(900);
-
-      const store = new RedisKeyStore('test-ttl:', true);
-      const res = await store.reserveQuota('user-async-worker', 1);
-
-      expect(res.allowed).toBe(true);
-      expect(res.reservationId).toBeDefined();
-
-      // Verify renewal
-      const renewed = await store.renewReservation(res.reservationId!, 1200);
-      expect(renewed).toBe(true);
-    });
-
-    it('rejects renewal on unknown or non-existent reservationId', async () => {
-      const store = new RedisKeyStore('test-ttl:', true);
-      const renewed = await store.renewReservation('res_non_existent_id', 900);
-      expect(renewed).toBe(false);
-    });
   });
 
   describe('Anonymous Client Daily Quota & IP Rate Limiting', () => {
-    it('verifies anonymous daily limit defaults to 10 conversions per day when unconfigured', () => {
+    it('verifies anonymous daily limit defaults to 25 conversions per day when unconfigured', () => {
       const original = process.env.ANONYMOUS_DAILY_LIMIT;
       try {
         delete process.env.ANONYMOUS_DAILY_LIMIT;
-        expect(getAnonymousDailyLimit()).toBe(10);
+        expect(getAnonymousDailyLimit()).toBe(25);
       } finally {
         if (original) process.env.ANONYMOUS_DAILY_LIMIT = original;
       }

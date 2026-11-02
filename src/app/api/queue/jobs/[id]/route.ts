@@ -8,6 +8,7 @@ import {
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 import { redactText } from '@/lib/security/redact';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
+import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 
 export const dynamic = 'force-dynamic';
 
@@ -145,6 +146,11 @@ async function cancelJobRequest(
   const denied = await denyUnlessOwner(req, job.data?.userId, 'convert:write', notFound);
   if (denied) {
     return denied;
+  }
+
+  const nodeRefusal = nodeJobCancelRefusal(job.data);
+  if (nodeRefusal) {
+    return NextResponse.json({ success: false, error: nodeRefusal.detail, graphId: nodeRefusal.graphId }, { status: 409 });
   }
 
   const cancelled = await conversionQueue.cancelJob(jobId, 'Job was cancelled by client request.');

@@ -11,7 +11,8 @@ import Footer from '@/components/Footer';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import type { QueueSummary } from '@/components/workbench/hero-copy';
 
-export default function HomePageView() {
+/** The home page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
+export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: number }>) {
   const {
     queue,
     isConverting,
@@ -90,7 +91,7 @@ export default function HomePageView() {
           <>
             <Features />
             <AdBanner slot="mid-content" />
-            <FaqSection />
+            <FaqSection dailyLimit={dailyLimit} />
           </>
         )}
       </main>

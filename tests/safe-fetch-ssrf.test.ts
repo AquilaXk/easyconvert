@@ -214,11 +214,12 @@ describe('graph URL nodes', () => {
         options: {},
         graphId: 'g_ssrf',
         graphNodeId: 'n1',
+        userId: 'user_ssrf_import_owner',
         // The scheduler seals URL nodes before they are queued; the worker refuses plaintext.
         graphNode: sealGraphNode(graphNode as unknown as GraphNode, 'g_ssrf:n1'),
         inputArtifacts: [],
       },
-      opts: { attempts: 1 },
+      opts: { attempts: 1, timeout: 60_000 },
       attemptsMade: 1,
       signal: new AbortController().signal,
       log: async () => {},
@@ -297,7 +298,7 @@ describe('graph URL nodes', () => {
     const { storage, saved } = recordingStorage();
     const result = await processGraphNodeJob(nodeJob({ op: 'import.url', url: `${ORIGIN}/data.csv` }), undefined, storage);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
-    expect(saved.get('intermediate/g_ssrf/n1/data.csv')?.toString()).toBe('a,b\n1,2\n');
+    expect(saved.get(result.resultKey)?.toString()).toBe('a,b\n1,2\n');
     expect(result.mimeType).toBe('text/csv');
     expect(result.size).toBe('a,b\n1,2\n'.length);
   });

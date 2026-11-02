@@ -83,7 +83,7 @@ export const NODE_COMPLETED_LUA_SCRIPT = `
 -- KEYS[1]: graphKey    KEYS[2]: depsKey    KEYS[3]: childrenKey
 -- KEYS[4]: nodesKey    KEYS[5]: outputsKey KEYS[6]: outboxKey
 -- ARGV[1]: nodeId  ARGV[2]: outputs JSON array  ARGV[3]: finishedAt ms  ARGV[4]: units
--- Returns { applied(0|1), graphStatus, readyNodeIds JSON, accumulatedUnits }
+-- Returns { applied(0|1), graphStatus, readyNodeIds JSON, accumulatedUnits, reservationId }
 ${COMPLETE_WHEN_ALL_TERMINAL}
 local graphStatus = redis.call('HGET', KEYS[1], 'status')
 if graphStatus ~= 'running' then
@@ -126,13 +126,13 @@ if allTerminal(KEYS[4]) then
   status = 'completed'
   redis.call('HSET', KEYS[1], 'status', status, 'finishedOn', ARGV[3])
 end
-return { 1, status, cjson.encode(ready), tostring(units) }
+return { 1, status, cjson.encode(ready), tostring(units), redis.call('HGET', KEYS[1], 'reservationId') or '' }
 `;
 
 export const NODE_FAILED_LUA_SCRIPT = `
 -- KEYS[1]: graphKey  KEYS[2]: childrenKey  KEYS[3]: nodesKey  KEYS[4]: outboxKey
 -- ARGV[1]: nodeId  ARGV[2]: error message  ARGV[3]: finishedAt ms
--- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON, skippedNodeIds JSON }
+-- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON, skippedNodeIds JSON, accumulatedUnits, reservationId }
 ${COMPLETE_WHEN_ALL_TERMINAL}
 local graphStatus = redis.call('HGET', KEYS[1], 'status')
 if graphStatus ~= 'running' then
@@ -166,7 +166,7 @@ if (redis.call('HGET', KEYS[1], 'policy') or 'fail_fast') == 'fail_fast' then
       table.insert(cancelled, all[i])
     end
   end
-  return { 1, 'failed', cjson.encode(cancelled), '[]' }
+  return { 1, 'failed', cjson.encode(cancelled), '[]', '0', redis.call('HGET', KEYS[1], 'reservationId') or '' }
 end
 
 -- continue policy: skip every descendant that has not run yet.
@@ -195,13 +195,13 @@ if allTerminal(KEYS[3]) then
   status = 'completed'
   redis.call('HSET', KEYS[1], 'status', status, 'finishedOn', ARGV[3])
 end
-return { 1, status, '[]', cjson.encode(skipped) }
+return { 1, status, '[]', cjson.encode(skipped), redis.call('HGET', KEYS[1], 'accumulatedUnits') or '0', redis.call('HGET', KEYS[1], 'reservationId') or '' }
 `;
 
 export const CANCEL_GRAPH_LUA_SCRIPT = `
 -- KEYS[1]: graphKey  KEYS[2]: nodesKey  KEYS[3]: outboxKey
 -- ARGV[1]: reason  ARGV[2]: finishedAt ms
--- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON }
+-- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON, reservationId }
 
 local status = redis.call('HGET', KEYS[1], 'status')
 if status ~= 'running' then
@@ -219,5 +219,5 @@ for i = 1, #all, 2 do
     table.insert(cancelled, all[i])
   end
 end
-return { 1, 'cancelled', cjson.encode(cancelled) }
+return { 1, 'cancelled', cjson.encode(cancelled), redis.call('HGET', KEYS[1], 'reservationId') or '' }
 `;

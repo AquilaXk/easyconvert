@@ -3,19 +3,18 @@ import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
   GraphMetadata,
+  GraphNodeJobMetadata,
   GraphNodeState,
+  GraphStatus,
   IGraphScheduler,
   NodeCompletionResult,
   NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
+import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
-import { storageProvider } from '../../storage';
-import { releaseGraphInputHolds } from './input-cleanup';
-import { redisKeyStore } from '../../api-keys/redis-key-store';
-import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
+import { finishGraph, type EndedGraph, type GraphEnd } from './graph-end';
 
 /** Node states from which a node can still complete or fail. */
 const RUNNABLE_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>(['waiting', 'active']);
@@ -98,7 +97,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     for (const [nodeId, nodeState] of Object.entries(nodesRecord)) {
       if (nodeState.status === 'waiting') {
         const node = graph.nodes[nodeId];
-        await this.enqueueNodeJob(graphId, nodeId, node, { ...meta, createdAt });
+        await this.enqueueNodeJob(graphId, nodeId, node, graphNodeJobMetadata(state));
       }
     }
 
@@ -159,31 +158,16 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
           childState.status = 'waiting';
           readyNodeIds.push(childId);
           const childNode = data.state.graph.nodes[childId];
-          await this.enqueueNodeJob(graphId, childId, childNode, {
-            ownerUserId: data.state.ownerUserId,
-            reservationId: data.state.reservationId,
-            webhookUrl: data.state.webhookUrl,
-            webhookSecret: data.state.webhookSecret,
-            createdAt: data.state.createdAt,
-          });
+          await this.enqueueNodeJob(graphId, childId, childNode, graphNodeJobMetadata(data.state));
         }
       }
     }
 
-    const isComplete =
-      data.state.completedNodes >= data.state.totalNodes ||
-      Object.values(data.state.nodes).every(
-        (n) => n.status === 'completed' || n.status === 'failed' || n.status === 'skipped'
-      );
-    if (isComplete) {
-      data.state.status = 'completed';
-      data.state.finishedAt = Date.now();
-      await this.cleanupIntermediates(graphId);
-      await this.handleGraphCompletionSideEffects(data.state, data.accumulatedUnits);
-    }
+    const graphCompleted = allNodesEnded(data.state) && recordEnd(data.state, 'completed');
+    if (graphCompleted) await finishGraph(endedGraph(data), completedEnd(data));
 
     return {
-      graphCompleted: isComplete,
+      graphCompleted,
       graphStatus: data.state.status,
       readyNodeIds,
     };
@@ -213,27 +197,23 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     data.state.failedNodes++;
 
     if (data.state.policy === 'fail_fast') {
-      data.state.status = 'failed';
-      data.state.failedReason = error;
-      data.state.finishedAt = Date.now();
-
-      const cancelledJobIds: string[] = [];
-      for (const [nid, ns] of Object.entries(data.state.nodes)) {
-        if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
-          ns.status = 'cancelled';
-          const jid = `${graphId}:${nid}`;
-          await cancelGraphNodeJob(graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
-          cancelledJobIds.push(jid);
+      recordEnd(data.state, 'failed', error);
+      const cancelledJobIds = await finishGraph(endedGraph(data), { outcome: { status: 'failed', error }, reservation: { kind: 'rollback' } }, async () => {
+        const cancelled: string[] = [];
+        for (const [nid, ns] of Object.entries(data.state.nodes)) {
+          if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'cancelled') {
+            ns.status = 'cancelled';
+            await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], `Graph failed due to node ${nodeId}`);
+            cancelled.push(graphNodeJobId(graphId, nid));
+          }
         }
-      }
-
-      await this.cleanupIntermediates(graphId);
-      await this.handleGraphFailureSideEffects(data.state, error);
+        return cancelled;
+      });
 
       return {
         graphFailed: true,
         graphStatus: 'failed',
-        cancelledJobIds,
+        cancelledJobIds: cancelledJobIds ?? [],
         skippedNodeIds: [],
       };
     } else {
@@ -259,7 +239,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
             ) {
               childState.status = 'skipped';
               skippedNodeIds.push(childId);
-              await cancelGraphNodeJob(
+              await cancelGraphNodeJobOrLog(
+                cancelGraphNodeJob,
                 graphId,
                 childId,
                 data.state.graph.nodes[childId],
@@ -270,17 +251,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
         }
       }
 
-      // Check if all remaining nodes are terminal
-      const allTerminal = Object.values(data.state.nodes).every(
-        (n) => n.status === 'completed' || n.status === 'failed' || n.status === 'skipped'
-      );
-
-      if (allTerminal) {
-        data.state.status = 'completed';
-        data.state.finishedAt = Date.now();
-        await this.cleanupIntermediates(graphId);
-        await this.handleGraphCompletionSideEffects(data.state, 1);
-      }
+      // The cancels above awaited, so another node may have ended the graph meanwhile: recordEnd acts only on a running graph.
+      if (allNodesEnded(data.state) && recordEnd(data.state, 'completed')) await finishGraph(endedGraph(data), completedEnd(data));
 
       return {
         graphFailed: false,
@@ -299,31 +271,15 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const data = this.graphs.get(graphId);
-    if (!data) return false;
-    if (
-      data.state.status === 'completed' ||
-      data.state.status === 'failed' ||
-      data.state.status === 'cancelled'
-    ) {
-      return false;
-    }
-
-    data.state.status = 'cancelled';
-    data.state.failedReason = reason;
-    data.state.finishedAt = Date.now();
-
-    for (const [nid, ns] of Object.entries(data.state.nodes)) {
-      if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
-        ns.status = 'cancelled';
-        await cancelGraphNodeJob(graphId, nid, data.state.graph.nodes[nid], reason);
+    if (!data || !recordEnd(data.state, 'cancelled', reason)) return false;
+    await finishGraph(endedGraph(data), { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
+      for (const [nid, ns] of Object.entries(data.state.nodes)) {
+        if (ns.status !== 'completed' && ns.status !== 'failed' && ns.status !== 'skipped') {
+          ns.status = 'cancelled';
+          await cancelGraphNodeJobOrLog(cancelGraphNodeJob, graphId, nid, data.state.graph.nodes[nid], reason);
+        }
       }
-    }
-
-    await this.cleanupIntermediates(graphId);
-    if (data.state.reservationId) {
-      await redisKeyStore.rollbackQuota(data.state.reservationId).catch(() => {});
-    }
-
+    });
     return true;
   }
 
@@ -332,85 +288,43 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     if (!data) return [];
 
     const targetIds = Array.isArray(nodeIds) ? nodeIds : [nodeIds];
-    const outputs: string[] = [];
-
-    for (const id of targetIds) {
-      const nodeOutputs = data.state.nodes[id]?.outputs || [];
-      outputs.push(...nodeOutputs);
-    }
-
-    return outputs;
-  }
-
-  async cleanupIntermediates(graphId: string): Promise<number> {
-    const prefix = `intermediate/${graphId}/`;
-    const graph = this.graphs.get(graphId)?.state.graph;
-    if (graph) await releaseGraphInputHolds(graphId, graph);
-    if (typeof storageProvider.deleteByPrefix === 'function') {
-      return storageProvider.deleteByPrefix(prefix);
-    }
-    return 0;
+    return [...new Set(targetIds.flatMap((id) => data.state.nodes[id]?.outputs ?? []))];
   }
 
   private async enqueueNodeJob(
     graphId: string,
     nodeId: NodeId,
     node: any,
-    meta: GraphMetadata
+    meta: GraphNodeJobMetadata
   ): Promise<void> {
     const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
     await enqueueGraphNodeJob(graphId, nodeId, node, meta, inputArtifacts);
   }
+}
 
-  private async handleGraphCompletionSideEffects(
-    state: GraphExecutionState,
-    actualUnits: number
-  ): Promise<void> {
-    if (state.reservationId) {
-      await redisKeyStore.settleQuota(state.reservationId, actualUnits).catch(() => {});
-    }
+/** The graph of `data` whose end its scheduler recorded. */
+function endedGraph(data: InternalGraphData): EndedGraph {
+  return { graphId: data.state.graphId, reservationId: data.state.reservationId, readState: async () => data.state };
+}
 
-    if (state.webhookUrl) {
-      const terminalResult = {
-        jobId: state.graphId,
-        status: 'completed',
-        graphId: state.graphId,
-        nodes: state.nodes,
-      };
-      if (state.webhookSecret) {
-        await webhookDispatcher
-          .dispatch(state.webhookUrl, 'graph.completed', terminalResult, state.webhookSecret, {
-            ownerUserId: state.ownerUserId,
-          })
-          .catch(() => {});
-      }
-    }
-  }
+/** The end of the completed graph of `data`, settled to the units its nodes charged. */
+function completedEnd(data: InternalGraphData): GraphEnd {
+  return { outcome: { status: 'completed' }, reservation: { kind: 'settle', units: data.accumulatedUnits } };
+}
 
-  private async handleGraphFailureSideEffects(
-    state: GraphExecutionState,
-    error: string
-  ): Promise<void> {
-    if (state.reservationId) {
-      await redisKeyStore.rollbackQuota(state.reservationId).catch(() => {});
-    }
+/** Whether every node of `state` ended, by completing, failing or being skipped. */
+function allNodesEnded(state: GraphExecutionState): boolean {
+  return Object.values(state.nodes).every((n) => n.status === 'completed' || n.status === 'failed' || n.status === 'skipped');
+}
 
-    if (state.webhookUrl && state.webhookSecret) {
-      await webhookDispatcher
-        .dispatch(
-          state.webhookUrl,
-          'graph.failed',
-          {
-            jobId: state.graphId,
-            status: 'failed',
-            error,
-            graphId: state.graphId,
-            nodes: state.nodes,
-          },
-          state.webhookSecret,
-          { ownerUserId: state.ownerUserId }
-        )
-        .catch(() => {});
-    }
-  }
+/**
+ * Moves a running graph to the terminal `status`, before any await of the caller, and answers whether it did: a graph that
+ * already ended is left alone, so of two nodes that end it at once, only the first settles its reservation.
+ */
+function recordEnd(state: GraphExecutionState, status: Exclude<GraphStatus, 'running'>, failedReason?: string): boolean {
+  if (state.status !== 'running') return false;
+  state.status = status;
+  state.finishedAt = Date.now();
+  if (failedReason !== undefined) state.failedReason = failedReason;
+  return true;
 }
