@@ -293,7 +293,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
     const targetIds = Array.isArray(nodeIds) ? nodeIds : [nodeIds];
     if (targetIds.length === 0) return [];
     const values = await this.redisClient.hmget(this.graphKeys(graphId).outputs, ...targetIds);
-    return values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : []));
+    return [...new Set(values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : [])))];
   }
 
 }

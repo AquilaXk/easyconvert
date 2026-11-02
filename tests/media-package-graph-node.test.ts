@@ -122,7 +122,7 @@ describe('media.package node execution', () => {
             undefined,
             s3Storage
           );
-          expect(result.resultKey).toMatch(new RegExp(`/n1/clip-${format}\\.zip$`));
+          expect(result.filename).toBe(`clip-${format}.zip`);
           const stored = s3Storage.getObject(result.resultKey);
           if (!stored) throw new Error('the packaged ZIP is missing from storage');
           expect(stored.buffer.subarray(0, 2).toString('latin1')).toBe('PK');

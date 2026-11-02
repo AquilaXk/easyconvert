@@ -296,14 +296,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     if (!data) return [];
 
     const targetIds = Array.isArray(nodeIds) ? nodeIds : [nodeIds];
-    const outputs: string[] = [];
-
-    for (const id of targetIds) {
-      const nodeOutputs = data.state.nodes[id]?.outputs || [];
-      outputs.push(...nodeOutputs);
-    }
-
-    return outputs;
+    return [...new Set(targetIds.flatMap((id) => data.state.nodes[id]?.outputs ?? []))];
   }
 
   private async enqueueNodeJob(

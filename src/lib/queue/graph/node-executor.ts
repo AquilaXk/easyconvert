@@ -139,6 +139,14 @@ async function describePrimaryOutput(
   return { mimeType, size: stat.size };
 }
 
+/**
+ * The key of what node `nodeId` made of its input number `index`: each input's output in a folder of its own, so the outputs
+ * of two inputs that share a file name never overwrite each other, and each keeps its readable name.
+ */
+function nodeOutputKey(graphId: string, nodeId: string, index: number, filename: string): string {
+  return `intermediate/${graphId}/${nodeId}/${index}/${filename}`;
+}
+
 async function processIntermediatePdfArtifacts(
   graphId: string,
   nodeId: string,
@@ -148,7 +156,7 @@ async function processIntermediatePdfArtifacts(
   transformFn: (buf: Buffer) => Promise<Buffer>
 ): Promise<string[]> {
   return Promise.all(
-    inputKeys.map(async (inputKey) => {
+    inputKeys.map(async (inputKey, index) => {
       attemptSignal.throwIfAborted();
       const stored = await storage.getObject(inputKey);
       if (!stored) {
@@ -156,7 +164,7 @@ async function processIntermediatePdfArtifacts(
       }
       const transformedBuf = await transformFn(stored.buffer);
       const outFilename = stored.filename || path.basename(inputKey);
-      const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+      const outKey = nodeOutputKey(graphId, nodeId, index, outFilename);
       await storage.saveObject(outKey, transformedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
       return outKey;
     })
@@ -180,14 +188,14 @@ async function processIntermediatePdfParts(
   transformFn: (buf: Buffer, inputFilename: string) => Promise<PdfNodeOutput>
 ): Promise<string[]> {
   return Promise.all(
-    inputKeys.map(async (inputKey) => {
+    inputKeys.map(async (inputKey, index) => {
       attemptSignal.throwIfAborted();
       const stored = await storage.getObject(inputKey);
       if (!stored) {
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const output = await transformFn(stored.buffer, stored.filename || path.basename(inputKey));
-      const outKey = `intermediate/${graphId}/${nodeId}/${output.filename}`;
+      const outKey = nodeOutputKey(graphId, nodeId, index, output.filename);
       await storage.saveObject(outKey, output.buffer, registryMimeType(output.formatId), output.filename, INTERMEDIATE_TTL_MS);
       return outKey;
     })
@@ -296,7 +304,8 @@ export async function processGraphNodeJob(
     await job.updateProgress(10);
     await graphScheduler.onNodeStarted(graphId, nodeId);
     attemptSignal.throwIfAborted();
-    await holdUnitsForInputs(graphId, nodeId, node, async () => (await resolveInputArtifacts(graphId, 'input' in node ? node.input : undefined, job.data.inputArtifacts)).length);
+    const inputArtifacts = await resolveInputArtifacts(graphId, 'input' in node ? node.input : undefined, job.data.inputArtifacts);
+    await holdUnitsForInputs(graphId, nodeId, node, inputArtifacts.length);
 
     switch (node.op) {
       case 'import.upload': {
@@ -314,12 +323,11 @@ export async function processGraphNodeJob(
       }
 
       case 'convert': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
 
-        for (const inputKey of inputArtifacts) {
+        for (const [index, inputKey] of inputArtifacts.entries()) {
           attemptSignal.throwIfAborted();
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
@@ -328,7 +336,7 @@ export async function processGraphNodeJob(
 
           const srcExt = artifactExtension(stored.filename, inputKey);
           const convRes = await effectiveEngine.convert(stored.buffer, srcExt, node.targetFormat, node.options || {}, stored.filename);
-          const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
+          const outKey = nodeOutputKey(graphId, nodeId, index, convRes.filename);
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -337,8 +345,7 @@ export async function processGraphNodeJob(
       }
 
       case 'ocr': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
-        for (const inputKey of inputArtifacts) {
+        for (const [index, inputKey] of inputArtifacts.entries()) {
           attemptSignal.throwIfAborted();
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
@@ -352,7 +359,7 @@ export async function processGraphNodeJob(
             { ...(node.options || {}), ocrEnabled: true },
             stored.filename
           );
-          const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
+          const outKey = nodeOutputKey(graphId, nodeId, index, convRes.filename);
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -360,8 +367,7 @@ export async function processGraphNodeJob(
       }
 
       case 'optimize': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
-        for (const inputKey of inputArtifacts) {
+        for (const [index, inputKey] of inputArtifacts.entries()) {
           attemptSignal.throwIfAborted();
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
@@ -381,7 +387,7 @@ export async function processGraphNodeJob(
           const gained = optRes.optimized && optRes.buffer.length < stored.buffer.length;
           const outBuffer = gained ? optRes.buffer : stored.buffer;
           const outFilename = stored.filename || path.basename(inputKey);
-          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          const outKey = nodeOutputKey(graphId, nodeId, index, outFilename);
           await effectiveStorage.saveObject(outKey, outBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
           optimizations.push({ key: outKey, optimized: gained, inputBytes: stored.buffer.length, outputBytes: optRes.buffer.length });
@@ -395,11 +401,10 @@ export async function processGraphNodeJob(
       }
 
       case 'thumbnail': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        for (const inputKey of inputArtifacts) {
+        for (const [index, inputKey] of inputArtifacts.entries()) {
           attemptSignal.throwIfAborted();
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
@@ -426,7 +431,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outFilename = `thumbnail.${targetFormat}`;
-          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          const outKey = nodeOutputKey(graphId, nodeId, index, outFilename);
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -434,12 +439,11 @@ export async function processGraphNodeJob(
       }
 
       case 'media.package': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
         const packaging: MediaPackagingOptions = node.options?.packaging ?? { format: DEFAULT_PACKAGING_FORMAT };
-        for (const inputKey of inputArtifacts) {
+        for (const [index, inputKey] of inputArtifacts.entries()) {
           attemptSignal.throwIfAborted();
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
@@ -454,7 +458,7 @@ export async function processGraphNodeJob(
             { ...(node.options || {}), packaging },
             stored.filename
           );
-          const outKey = `intermediate/${graphId}/${nodeId}/${packaged.filename}`;
+          const outKey = nodeOutputKey(graphId, nodeId, index, packaged.filename);
           await effectiveStorage.saveObject(outKey, packaged.buffer, registryMimeType(MEDIA_PACKAGE_OUTPUT_FORMAT), packaged.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -464,7 +468,6 @@ export async function processGraphNodeJob(
 
       case 'watermark':
       case 'pdf.watermark': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -483,7 +486,6 @@ export async function processGraphNodeJob(
       }
 
       case 'pdf.protect': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -502,7 +504,6 @@ export async function processGraphNodeJob(
       }
 
       case 'pdf.unlock': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -520,7 +521,6 @@ export async function processGraphNodeJob(
       }
 
       case 'pdf.split-pages': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -548,7 +548,6 @@ export async function processGraphNodeJob(
       case 'pdf.delete-pages':
       case 'pdf.reorder-pages':
       case 'pdf.rotate-pages': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -573,7 +572,6 @@ export async function processGraphNodeJob(
       }
 
       case 'merge': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -617,7 +615,6 @@ export async function processGraphNodeJob(
       }
 
       case 'metadata': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
@@ -640,7 +637,6 @@ export async function processGraphNodeJob(
       }
 
       case 'archive.create': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`archive.create node "${nodeId}" has no input artifacts to bundle`);
         }
@@ -690,7 +686,6 @@ export async function processGraphNodeJob(
       }
 
       case 'archive.extract': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         if (inputArtifacts.length === 0) {
           throw new Error(`archive.extract node "${nodeId}" has no input artifact`);
         }
@@ -735,9 +730,9 @@ export async function processGraphNodeJob(
           extracted = await extractZipArchive(archiveBuffer, { entries: node.entries });
         }
 
-        for (const f of extracted) {
-          const outKey = `intermediate/${graphId}/${nodeId}/${path.basename(f.filename)}`;
+        for (const [index, f] of extracted.entries()) {
           const entryName = path.basename(f.filename);
+          const outKey = nodeOutputKey(graphId, nodeId, index, entryName);
           await effectiveStorage.saveObject(outKey, f.buffer, archiveEntryMimeType(entryName), entryName, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -748,7 +743,6 @@ export async function processGraphNodeJob(
 
       case 'export.url': {
         const destination = openUrlNodeSecrets(node, graphNodeJobId(graphId, nodeId));
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
           await exportArtifactToUrl(
@@ -765,13 +759,12 @@ export async function processGraphNodeJob(
       }
 
       case 'export.internal': {
-        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
-        for (const inputKey of inputArtifacts) {
+        for (const [index, inputKey] of inputArtifacts.entries()) {
           attemptSignal.throwIfAborted();
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
-          const promotedKey = `results/${graphId}/${stored.filename || path.basename(inputKey)}`;
+          const promotedKey = `results/${graphId}/${index}/${stored.filename || path.basename(inputKey)}`;
           await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, stored.filename || path.basename(inputKey));
           outputKeys.push(promotedKey);
         }
@@ -796,7 +789,8 @@ export async function processGraphNodeJob(
     // An engine that ignored the abort and returned late has no say: the queue already failed this attempt (deadline,
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, graphNodeCharge(node.op, { outputs: outputKeys.length, optimizations }));
+    const outputs = [...new Set(outputKeys)];
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputs, graphNodeCharge(node.op, { outputs: outputs.length, optimizations }));
 
     return {
       jobId: job.id,

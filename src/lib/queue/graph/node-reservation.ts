@@ -28,11 +28,10 @@ export async function holdUnitsForInputs(
   graphId: string,
   nodeId: string,
   node: { op?: string; input?: string | string[] },
-  inputCount: () => Promise<number>
+  files: number
 ): Promise<void> {
   // An operation the executor does not know is refused by the executor itself, as unsupported.
   if (node.op === undefined || !isGraphOperation(node.op) || !isChargedPerOutput(node.op)) return;
-  const files = await inputCount();
   const extra = files - graphNodeReservedUnits(node);
   if (extra <= 0) return;
   const reservationId = (await graphScheduler.getGraphState(graphId))?.reservationId;

@@ -262,7 +262,7 @@ describe('pairs only a native engine converts', () => {
       const key = `tests/conversion-dispatch/${Date.now()}_${graphSeq}_sample.docx`;
       s3Storage.saveObject(key, SAMPLE_DOCX, DOCX_MIME, 'sample.docx', ARTIFACT_TTL_MS);
       const result = await processGraphNodeJob(convertNodeJob(key, { op: 'convert', targetFormat: 'png' }), undefined, s3Storage);
-      expect(result.resultKey).toMatch(/\/n1\/sample\.png$/);
+      expect(result.filename).toBe('sample.png');
       const stored = s3Storage.getObject(result.resultKey);
       if (!stored) throw new Error(`Output artifact "${result.resultKey}" missing from storage`);
       expect(stored.mimeType).toBe('image/png');

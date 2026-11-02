@@ -127,7 +127,7 @@ describe('queue node executor operations', () => {
         s3Storage
       );
 
-      expect(result.resultKey).toMatch(/\/n1\/thumbnail\.jpg$/);
+      expect(result.filename).toBe('thumbnail.jpg');
       const thumb = storedOutput(result.resultKey);
       expect([...thumb.subarray(0, JPEG_SOI.length)]).toEqual(JPEG_SOI);
       const meta = await sharp(thumb).metadata();

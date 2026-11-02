@@ -87,5 +87,6 @@ export interface IGraphScheduler {
   onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult>;
   getGraphState(graphId: string): Promise<GraphExecutionState | undefined>;
   cancelGraph(graphId: string, reason?: string): Promise<boolean>;
+  /** The output keys of the nodes `nodeIds`, each key once. */
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;
 }
