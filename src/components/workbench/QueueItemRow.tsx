@@ -53,6 +53,12 @@ function isRetryDisabled(
   return isBusy || !item.targetFormat || isOversize || optionError !== null;
 }
 
+/** Where a row's conversion stands, as the accessible name of its target select states it. */
+function rowState(item: ConversionQueueItem, isBusy: boolean, hasRowError: boolean): string {
+  if (isBusy || item.status === 'completed') return item.status;
+  return hasRowError ? 'failed' : 'ready';
+}
+
 function RowStatusDisplay({
   item, isBusy, isOversize, optionError, onRetry,
 }: Readonly<{
@@ -173,7 +179,11 @@ export default function QueueItemRow({
           <button
             type="button"
             data-testid="queue-target-format-btn"
-            aria-label={t('selectFormatLabel', { name: item.name })}
+            aria-label={
+              hasTarget
+                ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, rowError !== null) })
+                : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
+            }
             aria-haspopup="dialog"
             aria-expanded={isFormatSelectorOpen}
             disabled={isBusy || isOversize}
