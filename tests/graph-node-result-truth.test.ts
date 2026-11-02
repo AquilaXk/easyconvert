@@ -112,7 +112,7 @@ describe('graph node results report the stored output', () => {
     const result = await processGraphNodeJob(nodeJob({ op: 'archive.create', targetFormat: 'zip' }, [a, b]), undefined, s3Storage);
 
     const output = stored(result.resultKey);
-    expect(result.resultKey).toMatch(/\/n1\/bundle\.zip$/);
+    expect(result.resultKey).toMatch(/\/n1\/0\/bundle\.zip$/);
     expect(result.mimeType).toBe(EXPECTED_MIME.zip);
     expect(output.mimeType).toBe(EXPECTED_MIME.zip);
     expect(result.size).toBe(output.buffer.length);

@@ -23,7 +23,7 @@ import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { storageProvider } from '../src/lib/storage';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, withLinkImportMeter } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
@@ -41,8 +41,6 @@ import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-c
 const REDIS_URL = process.env.REDIS_URL;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const CSV = 'name,score\nAlice,100\nBob,95\n';
-/** The deadline of an import that spends bytes directly; its hold is settled at once. */
-const IMPORT_DEADLINE_MS = 120_000;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JOB_TIMEOUT_MS = 300;
@@ -96,9 +94,8 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
   /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
   async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-    const held = await reserveLinkImport(userId, plan, IMPORT_DEADLINE_MS);
-    if ('refusal' in held) throw new Error(`the import budget of ${userId} is already spent`);
-    await held.reservation.settle(bytes);
+    const spent = await withLinkImportMeter({ owner: userId, plan }, (meter) => meter.count(bytes));
+    if ('refusal' in spent) throw new Error(`the import budget of ${userId} is already spent`);
   }
 
   const convertCsv = () => convertRoute(convertRequest({ name: 'scores.csv', content: CSV, target: 'json' }));
@@ -311,14 +308,15 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await admin.keys(`*upload-budget*${user.id}*`)).toHaveLength(1);
     });
 
-    it('reads no more than the rest of the day when that is less than the file, and is refused as larger than what is left', async () => {
+    it('is refused as spent for the day when the file it reads takes the day past its budget, and is charged what it read', async () => {
       await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
       remoteFile(CSV);
 
       const refused = await fetchUrlRoute(importRequest());
 
       expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
-      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'larger-than-left', leftBytes: 1, limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
+      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
+      expect(await bytesBroughtInToday(client.userId)).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES - 1 + Buffer.byteLength(CSV));
       expect(await remaining()).toBe(DAY_ALLOWANCE);
     });
 

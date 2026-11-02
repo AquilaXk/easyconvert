@@ -139,16 +139,6 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(korean).not.toContain('모두 썼어요');
   });
 
-  it('words a link import refused while other imports hold the rest of the day, without saying the day is spent', async () => {
-    const { status, body } = await bodyOf(uploadBudgetRefusalResponse('held', '/api/fetch-url', 'free'));
-    expect(body).toMatchObject({ refusal: 'held', limitBytes: 2 * 1024 ** 3 });
-    const korean = worded(useProblemWording, 'ko', body, status);
-    expectKorean(korean, 'imports held');
-    expect(korean).toContain('2 GiB');
-    expect(korean).toContain('진행 중인 링크 가져오기');
-    expect(korean).not.toContain('모두 썼어요');
-  });
-
   it('words an answer it does not know by its status class, and never shows the server text of either', () => {
     const unknown = { type: `${PROBLEM}retired-problem`, detail: 'The endpoint is not reachable.' };
     const korean = worded(useProblemWording, 'ko', unknown, 400);

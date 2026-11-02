@@ -8,7 +8,7 @@ import { POST as v1JobsRoute } from '../../src/app/api/v1/jobs/route';
 import { DELETE as cancelQueueJobRoute } from '../../src/app/api/queue/jobs/[id]/route';
 import { DELETE as cancelV1JobRoute } from '../../src/app/api/v1/jobs/[id]/route';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
-import { bytesBroughtInToday, dailyBudgetBytes, reserveLinkImport } from '../../src/lib/api-keys/anonymous-upload-budget';
+import { LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, dailyBudgetBytes, withLinkImportMeter } from '../../src/lib/api-keys/anonymous-upload-budget';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
 import { anonymousUserId } from '../../src/lib/auth/anonymous-identity';
 import { formatBytes } from '../../src/lib/format-bytes';
@@ -102,9 +102,8 @@ function anonymousOwner(): string {
 
 /** Uses `bytes` of the day's import budget of `owner`, as an import that received them would. */
 async function spendImportBytes(owner: string, plan: 'anonymous' | 'free', bytes: number): Promise<void> {
-  const spent = await reserveLinkImport(owner, plan, GRAPH_TIMEOUT_MS);
+  const spent = await withLinkImportMeter({ owner, plan }, (meter) => meter.count(bytes));
   if ('refusal' in spent) throw new Error(`the import budget of ${owner} is already spent`);
-  await spent.reservation.settle(bytes);
 }
 
 /** What a suite can do to the quota store besides what every store does. */
@@ -376,9 +375,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   it('fails an import.url node with import_budget_exceeded, and charges no unit, once the day of the graph owner is spent', async () => {
     remoteCsv();
     const owner = anonymousOwner();
-    const spent = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
-    if ('refusal' in spent) throw new Error('a fresh owner has its whole day');
-    await spent.reservation.settle(dailyBudgetBytes('anonymous'));
+    await spendImportBytes(owner, 'anonymous', dailyBudgetBytes('anonymous'));
 
     const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
     await queued.ended('failed');
@@ -418,32 +415,28 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     expect(await bytesBroughtInToday(account.userId)).toBe(receivedEarlier + 2 * Buffer.byteLength(CSV));
   }, GRAPH_TIMEOUT_MS + 10_000);
 
-  it('completes the retry of an import.url node whose crashed attempt left its hold, and charges its bytes once', async () => {
-    remoteCsv();
-    const owner = anonymousOwner();
-    const graphId = newGraphId();
-    const leftBehind = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS, dailyBudgetBytes('anonymous'), `${graphId}:link`);
-    if ('refusal' in leftBehind) throw new Error('a fresh owner has its whole day');
-
-    const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 1, {
-      owner,
-      graphId,
+  it('stops an import.url node once its owner passes the day while it reads, at most one batch past the budget', async () => {
+    const mebibyte = new Uint8Array(1024 * 1024);
+    let cancelled = false;
+    vi.mocked(undiciFetch).mockImplementation(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull: (controller) => controller.enqueue(mebibyte),
+        cancel: () => {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
     });
-    await queued.ended('completed');
-    expect(await bytesBroughtInToday(owner)).toBe(Buffer.byteLength(CSV));
-  }, GRAPH_TIMEOUT_MS + 10_000);
-
-  it('stops an import.url node at the bytes it holds when the day has less than one file left', async () => {
-    remoteCsv();
     const owner = anonymousOwner();
-    const spent = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
-    if ('refusal' in spent) throw new Error('a fresh owner has its whole day');
-    const bytesLeft = Buffer.byteLength(CSV) - 1;
-    await spent.reservation.settle(dailyBudgetBytes('anonymous') - bytesLeft);
+    await spendImportBytes(owner, 'anonymous', dailyBudgetBytes('anonymous') - mebibyte.length);
 
     const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
     await queued.ended('failed');
     expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect(cancelled).toBe(true);
+    const charged = await bytesBroughtInToday(owner);
+    expect(charged).toBeGreaterThan(dailyBudgetBytes('anonymous'));
+    expect(charged).toBeLessThanOrEqual(dailyBudgetBytes('anonymous') + LINK_IMPORT_METER_BATCH_BYTES);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
   const importThenConvert = (): SubmittedGraph => ({
@@ -512,61 +505,13 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     expect(await exported('tuesdayResult')).toEqual([['scores.json', 'Bob']]);
   }, GRAPH_TIMEOUT_MS + 10_000);
 
-  /** An anonymous owner whose day has `received` bytes received and a sibling import that holds the rest until it ends. */
-  async function ownerWithSiblingImport(receivedBytes: number) {
-    const owner = anonymousOwner();
-    const earlier = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
-    if ('refusal' in earlier) throw new Error('a fresh owner has its whole day');
-    await earlier.reservation.settle(receivedBytes);
-    const sibling = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS, dailyBudgetBytes('anonymous') - receivedBytes, 'sibling-import');
-    if ('refusal' in sibling) throw new Error('the sibling import was refused');
-    return { owner, sibling: sibling.reservation };
-  }
-
-  /** The rows of the log of the node job `jobId` that say it waits for the holds of other imports. */
-  async function waitsLogged(jobId: string): Promise<number> {
-    return ((await getJobAcrossQueues(jobId))?.logs ?? []).filter((row) => row.includes('waits')).length;
-  }
-
-  it('lets an import.url node wait while a sibling import holds the rest of the day, and complete once it ends', async () => {
-    remoteCsv();
-    const receivedBytes = dailyBudgetBytes('anonymous') - 1024 ** 3 / 2;
-    const { owner, sibling } = await ownerWithSiblingImport(receivedBytes);
-    const queued = await queueGraph(importThenConvert(), 1, { owner });
-
-    await vi.waitFor(async () => expect(await waitsLogged(`${queued.graphId}:link`)).toBeGreaterThanOrEqual(2), { timeout: 15_000, interval: 100 });
-    expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
-    await sibling.settle(0);
-
-    await queued.ended('completed');
-    expect(await bytesBroughtInToday(owner)).toBe(receivedBytes + Buffer.byteLength(CSV));
-  }, GRAPH_TIMEOUT_MS + 10_000);
-
-  it('fails an import.url node with import_budget_held when a sibling import holds the rest of the day until the node deadline', async () => {
-    remoteCsv();
-    const deadlineSettings = { JOB_DEADLINE_BASE_MS_FREE: '1000', JOB_DEADLINE_MAX_MS_FREE: '4000' };
-    const before = Object.fromEntries(Object.keys(deadlineSettings).map((name) => [name, process.env[name] ?? '']));
-    for (const [name, value] of Object.entries(deadlineSettings)) vi.stubEnv(name, value);
-    try {
-      const { owner } = await ownerWithSiblingImport(dailyBudgetBytes('anonymous') / 2);
-      const queued = await queueGraph(importThenConvert(), 0, { owner });
-      await queued.ended('failed');
-      expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_held');
-      expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
-    } finally {
-      for (const [name, value] of Object.entries(before)) vi.stubEnv(name, value);
-    }
-  }, GRAPH_TIMEOUT_MS + 10_000);
-
   it('fails an import.url node whose file declares more than its owner has left today, before reading it, and names what is left', async () => {
     const bytesLeft = Buffer.byteLength(CSV) - 1;
     vi.mocked(undiciFetch).mockImplementation(
       async () => new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv', 'content-length': String(Buffer.byteLength(CSV)) } }) as never
     );
     const owner = anonymousOwner();
-    const spent = await reserveLinkImport(owner, 'anonymous', GRAPH_TIMEOUT_MS);
-    if ('refusal' in spent) throw new Error('a fresh owner has its whole day');
-    await spent.reservation.settle(dailyBudgetBytes('anonymous') - bytesLeft);
+    await spendImportBytes(owner, 'anonymous', dailyBudgetBytes('anonymous') - bytesLeft);
 
     const queued = await queueGraph(importThenConvert(), 0, { owner });
     await queued.ended('failed');

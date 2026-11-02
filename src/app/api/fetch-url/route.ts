@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { fetch as undiciFetch } from 'undici';
@@ -8,12 +7,12 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { importOverflow, withLinkImportHold, type LinkImportHold } from '@/lib/api-keys/anonymous-upload-budget';
+import { declaredBodyBytes, declaredOverflow, withLinkImportMeter, type DeclaredOverflow, type LinkImportMeter } from '@/lib/api-keys/anonymous-upload-budget';
 import { isUnattributedAnonymous } from '@/lib/auth/anonymous-identity';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
-import { importLargerThanLeftResponse, unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
+import { importDayReachedResponse, importLargerThanLeftResponse, unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { currentJobDeadlineSettings } from '@/lib/queue/job-deadline';
 import { formatBytes } from '@/lib/format-bytes';
@@ -118,56 +117,45 @@ async function fetchFollowingRedirects(url: URL, ssrfAgent: ReturnType<typeof cr
   return { refusal: refusal(502, 'fetch_failed', 'Failed to fetch remote URL') };
 }
 
-/** Who imports, and under what hold: what the refusal of a body larger than the hold names. */
+/** Who imports: what the refusals of its body name. */
 interface ImportCaller {
   caller: PlanCaller;
   plan: Plan;
   instanceUri: string;
 }
 
-/**
- * The refusal of a body larger than `hold`, by the length it declared or, without one, by the hold it passed
- * (`importOverflow`): past the import limit (413), larger than the day has left (429), or held by other transfers (429,
- * try again when they end).
- */
-function bodyTooLarge(hold: LinkImportHold, importer: ImportCaller, declaredBytes?: number): NextResponse {
-  const overflow = importOverflow(hold, declaredBytes);
-  switch (overflow.kind) {
-    case 'too-large':
-      return linkImportTooLarge(importer.caller);
-    case 'larger-than-left':
-      return importLargerThanLeftResponse(overflow.leftBytes, importer.instanceUri, importer.plan);
-    case 'held':
-      return uploadBudgetRefusalResponse('held', importer.instanceUri, importer.plan);
-  }
+/** The refusal of a body whose declared length is past the import limit (413) or past what the day has left (429). */
+function declaredTooLarge(overflow: DeclaredOverflow, importer: ImportCaller): NextResponse {
+  return overflow.kind === 'too-large'
+    ? linkImportTooLarge(importer.caller)
+    : importLargerThanLeftResponse(overflow.leftBytes, importer.instanceUri, importer.plan);
 }
 
-/** The body of `res`, read up to the bytes `hold` holds with every chunk counted in it, or the refusal. */
-async function readBody(res: Response, hold: LinkImportHold, importer: ImportCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
-  // Check Content-Length upfront if provided
-  const contentLength = parseInt(res.headers.get('content-length') ?? '', 10);
-  if (!isNaN(contentLength) && contentLength > hold.held.bytes) {
+/**
+ * The body of `res`, every chunk counted by `meter`, or the refusal: a declared length past the import limit or the day
+ * before a byte is read, a body that passes the import limit (413), or a day that passes its budget while it is read (429).
+ */
+async function readBody(res: Response, meter: LinkImportMeter, importer: ImportCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
+  const overflow = declaredOverflow(declaredBodyBytes(res.headers), { limitBytes: URL_IMPORT_MAX_BYTES, leftBytes: meter.leftBytes });
+  if (overflow) {
     discardBody(res);
-    return { refusal: bodyTooLarge(hold, importer, contentLength) };
+    return { refusal: declaredTooLarge(overflow, importer) };
   }
 
   if (!res.body) {
     return { refusal: refusal(502, 'empty_body', 'Empty response body from remote server') };
   }
 
-  // Stream chunks with a strict byte counter
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      hold.receivedBytes += value.length;
-      totalBytes += value.length;
-      if (totalBytes > hold.held.bytes) {
+      const withinDay = await meter.count(value.length);
+      if (meter.receivedBytes > URL_IMPORT_MAX_BYTES || !withinDay) {
         await reader.cancel();
-        return { refusal: bodyTooLarge(hold, importer) };
+        return { refusal: withinDay ? linkImportTooLarge(importer.caller) : importDayReachedResponse(importer.instanceUri, importer.plan) };
       }
       chunks.push(value);
     }
@@ -175,6 +163,7 @@ async function readBody(res: Response, hold: LinkImportHold, importer: ImportCal
     await reader.cancel().catch(() => {});
     throw streamErr;
   }
+  if (!(await meter.charge())) return { refusal: importDayReachedResponse(importer.instanceUri, importer.plan) };
   return { buffer: Buffer.concat(chunks) };
 }
 
@@ -214,7 +203,7 @@ async function importFrom(
   url: URL,
   ssrfAgent: ReturnType<typeof createSsrfSafeAgent>,
   signal: AbortSignal,
-  hold: LinkImportHold,
+  meter: LinkImportMeter,
   importer: ImportCaller
 ): Promise<NextResponse> {
   const answer = await fetchFollowingRedirects(url, ssrfAgent, signal);
@@ -229,7 +218,7 @@ async function importFrom(
       { remoteStatus: res.status }
     );
   }
-  const body = await readBody(res, hold, importer);
+  const body = await readBody(res, meter, importer);
   return 'refusal' in body ? body.refusal : importedFile(res, finalUrl, body.buffer);
 }
 
@@ -293,15 +282,11 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const target = await importTarget(req);
     if (!(target instanceof URL)) return target;
     const importer: ImportCaller = { caller, plan: planOfCaller(caller), instanceUri };
-    // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS), and holds its bytes
-    // as long. An import that ended is charged before the answer; one cut off is charged once it has stopped reading,
-    // without holding the answer.
+    // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS). An import that
+    // ended is charged before the answer; one cut off is charged once it has stopped reading, without holding the answer.
     const { syncMaxMs } = currentJobDeadlineSettings();
     const imported = await runUnderDeadline(req, syncMaxMs, (limits) =>
-      withLinkImportHold(
-        { owner: caller.id, plan: importer.plan, deadlineMs: syncMaxMs, limitBytes: URL_IMPORT_MAX_BYTES, holdId: crypto.randomUUID() },
-        (hold) => importFrom(target, ssrfAgent, limits.signal, hold, importer)
-      )
+      withLinkImportMeter({ owner: caller.id, plan: importer.plan }, (meter) => importFrom(target, ssrfAgent, limits.signal, meter, importer))
     );
     return 'refusal' in imported ? uploadBudgetRefusalResponse(imported.refusal, instanceUri, importer.plan) : imported.result;
   } catch (err: unknown) {

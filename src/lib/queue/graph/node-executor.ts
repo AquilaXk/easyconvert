@@ -13,7 +13,7 @@ import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
 import { maskFailure } from '../../security/server-paths';
-import { graphNodeJobId } from './node-jobs';
+import { graphNodeJobId, nodeOutputKey } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
   createTarArchive,
@@ -139,14 +139,6 @@ async function describePrimaryOutput(
   return { mimeType, size: stat.size };
 }
 
-/**
- * The key of what node `nodeId` made of its input number `index`: each input's output in a folder of its own, so the outputs
- * of two inputs that share a file name never overwrite each other, and each keeps its readable name.
- */
-function nodeOutputKey(graphId: string, nodeId: string, index: number, filename: string): string {
-  return `intermediate/${graphId}/${nodeId}/${index}/${filename}`;
-}
-
 async function processIntermediatePdfArtifacts(
   graphId: string,
   nodeId: string,
@@ -164,7 +156,7 @@ async function processIntermediatePdfArtifacts(
       }
       const transformedBuf = await transformFn(stored.buffer);
       const outFilename = stored.filename || path.basename(inputKey);
-      const outKey = nodeOutputKey(graphId, nodeId, index, outFilename);
+      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
       await storage.saveObject(outKey, transformedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
       return outKey;
     })
@@ -195,7 +187,7 @@ async function processIntermediatePdfParts(
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const output = await transformFn(stored.buffer, stored.filename || path.basename(inputKey));
-      const outKey = nodeOutputKey(graphId, nodeId, index, output.filename);
+      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, output.filename);
       await storage.saveObject(outKey, output.buffer, registryMimeType(output.formatId), output.filename, INTERMEDIATE_TTL_MS);
       return outKey;
     })
@@ -336,7 +328,7 @@ export async function processGraphNodeJob(
 
           const srcExt = artifactExtension(stored.filename, inputKey);
           const convRes = await effectiveEngine.convert(stored.buffer, srcExt, node.targetFormat, node.options || {}, stored.filename);
-          const outKey = nodeOutputKey(graphId, nodeId, index, convRes.filename);
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, convRes.filename);
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -359,7 +351,7 @@ export async function processGraphNodeJob(
             { ...(node.options || {}), ocrEnabled: true },
             stored.filename
           );
-          const outKey = nodeOutputKey(graphId, nodeId, index, convRes.filename);
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, convRes.filename);
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -387,7 +379,7 @@ export async function processGraphNodeJob(
           const gained = optRes.optimized && optRes.buffer.length < stored.buffer.length;
           const outBuffer = gained ? optRes.buffer : stored.buffer;
           const outFilename = stored.filename || path.basename(inputKey);
-          const outKey = nodeOutputKey(graphId, nodeId, index, outFilename);
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
           await effectiveStorage.saveObject(outKey, outBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
           optimizations.push({ key: outKey, optimized: gained, inputBytes: stored.buffer.length, outputBytes: optRes.buffer.length });
@@ -431,7 +423,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outFilename = `thumbnail.${targetFormat}`;
-          const outKey = nodeOutputKey(graphId, nodeId, index, outFilename);
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -458,7 +450,7 @@ export async function processGraphNodeJob(
             { ...(node.options || {}), packaging },
             stored.filename
           );
-          const outKey = nodeOutputKey(graphId, nodeId, index, packaged.filename);
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, packaged.filename);
           await effectiveStorage.saveObject(outKey, packaged.buffer, registryMimeType(MEDIA_PACKAGE_OUTPUT_FORMAT), packaged.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -601,13 +593,13 @@ export async function processGraphNodeJob(
             confirmEditRights: node.options?.confirmEditRights,
           });
           const outFilename = 'merged.pdf';
-          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         } else {
           const mergedBuf = Buffer.from(inputs.map((stored) => stored.buffer.toString('utf-8')).join('\n\n'), 'utf-8');
           const outFilename = `merged.${targetFmt}`;
-          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType(targetFmt), outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -630,7 +622,7 @@ export async function processGraphNodeJob(
         );
         const jsonBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf-8');
         const outFilename = 'metadata.json';
-        const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+        const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, outFilename);
         await effectiveStorage.saveObject(outKey, jsonBuf, registryMimeType('json'), outFilename, INTERMEDIATE_TTL_MS);
         outputKeys.push(outKey);
         break;
@@ -678,7 +670,7 @@ export async function processGraphNodeJob(
           );
         }
 
-        const outKey = `intermediate/${graphId}/${nodeId}/bundle.${targetFmt}`;
+        const outKey = nodeOutputKey('intermediate', graphId, nodeId, 0, `bundle.${targetFmt}`);
         await effectiveStorage.saveObject(outKey, archiveBuf, registryMimeType(targetFmt), `bundle.${targetFmt}`, INTERMEDIATE_TTL_MS);
         outputKeys = [outKey];
         await job.log(`Created archive with ${filesToArchive.length} file(s): ${outKey}`);
@@ -732,7 +724,7 @@ export async function processGraphNodeJob(
 
         for (const [index, f] of extracted.entries()) {
           const entryName = path.basename(f.filename);
-          const outKey = nodeOutputKey(graphId, nodeId, index, entryName);
+          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, entryName);
           await effectiveStorage.saveObject(outKey, f.buffer, archiveEntryMimeType(entryName), entryName, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
@@ -764,8 +756,9 @@ export async function processGraphNodeJob(
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
-          const promotedKey = `results/${graphId}/${index}/${stored.filename || path.basename(inputKey)}`;
-          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, stored.filename || path.basename(inputKey));
+          const filename = stored.filename || path.basename(inputKey);
+          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, filename);
+          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, filename);
           outputKeys.push(promotedKey);
         }
         await job.log(`Promoted ${outputKeys.length} result(s) for download`);

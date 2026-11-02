@@ -298,7 +298,7 @@ describe('graph URL nodes', () => {
     const { storage, saved } = recordingStorage();
     const result = await processGraphNodeJob(nodeJob({ op: 'import.url', url: `${ORIGIN}/data.csv` }), undefined, storage);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
-    expect(saved.get('intermediate/g_ssrf/n1/data.csv')?.toString()).toBe('a,b\n1,2\n');
+    expect(saved.get(result.resultKey)?.toString()).toBe('a,b\n1,2\n');
     expect(result.mimeType).toBe('text/csv');
     expect(result.size).toBe('a,b\n1,2\n'.length);
   });

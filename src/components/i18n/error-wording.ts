@@ -89,7 +89,6 @@ const LIMIT_SENTENCES: Readonly<Partial<Record<ProblemName, (answer: Answer, wor
   'quota-exceeded': quotaSentence,
   'upload-budget-exceeded': (answer, { limit }) => {
     if (answer.refusal === 'open-uploads') return limit('open-uploads', answer, 'limit', 'count');
-    if (answer.refusal === 'held') return limit('imports-held', answer, 'limitBytes', 'bytes');
     if (answer.refusal === 'larger-than-left') return limit('imports-larger-than-left', answer, 'leftBytes', 'bytes');
     if (answer.refusal !== 'daily-bytes') return undefined;
     const ofAccount = isPlan(answer.plan) && answer.plan !== 'anonymous';

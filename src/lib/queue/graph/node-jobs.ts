@@ -15,6 +15,18 @@ export function graphNodeJobId(graphId: string, nodeId: NodeId): string {
   return `${graphId}:${nodeId}`;
 }
 
+/** Where a node's files go: `intermediate` until the graph ends, or `results` for what an `export.internal` node keeps. */
+export type NodeOutputArea = 'intermediate' | 'results';
+
+/**
+ * The key of what node `nodeId` of graph `graphId` made of its input number `index` (0 for a node that makes one file of all
+ * its inputs): each node and each input in a folder of its own, so two outputs that share a file name never overwrite each
+ * other, and each keeps its readable name.
+ */
+export function nodeOutputKey(area: NodeOutputArea, graphId: string, nodeId: NodeId, index: number, filename: string): string {
+  return `${area}/${graphId}/${nodeId}/${index}/${filename}`;
+}
+
 /** The metadata the node jobs of a graph carry: exactly the fields a node job reads, so nothing else reaches the queue. */
 export function graphNodeJobMetadata(graph: GraphNodeJobMetadata): GraphNodeJobMetadata {
   return { ownerUserId: graph.ownerUserId, originalFilename: graph.originalFilename, createdAt: graph.createdAt };

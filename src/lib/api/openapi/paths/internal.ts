@@ -137,6 +137,25 @@ const openApiDocumentResponse = {
   },
 };
 
+/** The 429 of `/api/fetch-url`: a problem that names the refusal of the byte budget and the bytes it is about. */
+const linkImportBudgetResponse = (description: string) => {
+  const schema = {
+    allOf: [
+      { $ref: '#/components/schemas/ProblemDetails' },
+      {
+        type: 'object',
+        properties: {
+          refusal: { type: 'string', enum: ['daily-bytes', 'larger-than-left'], description: 'Which bound of the byte budget refused the import.' },
+          limitBytes: { type: 'integer', description: 'The bytes the caller may bring in each UTC day.' },
+          leftBytes: { type: 'integer', description: 'With `larger-than-left`: the bytes the day had left.' },
+          plan: { type: 'string', description: 'The plan of an account.' },
+        },
+      },
+    ],
+  };
+  return { description, content: { 'application/problem+json': { schema }, 'application/json': { schema } } };
+};
+
 export const internalPaths = {
   '/api/account/files': {
     get: {
@@ -352,8 +371,8 @@ export const internalPaths = {
         '401': createProblemResponse('Authentication required.'),
         '403': createCodedErrorResponse('URL resolves to a private address.', ['address_blocked']),
         '413': createCodedErrorResponse('Remote file exceeds the 100 MB limit of an import from a link. A file of up to the plan limit is added from the device.', ['file_too_large']),
-        '429': createProblemResponse(
-          'The daily byte budget of the caller is spent, or the file is larger than the rest of it (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, `refusal` "daily-bytes", `limitBytes`, and `plan` for an account); the rest of the budget is held by link imports still running (`refusal` "held", retry when they finish); or the caller has no conversion left today (problem type `https://api.easyconvert.io/problems/quota-exceeded`).' +
+        '429': linkImportBudgetResponse(
+          'The daily byte budget of the caller refuses the import (problem type `https://api.easyconvert.io/problems/upload-budget-exceeded`, with `limitBytes`, and `plan` for an account). `refusal` "daily-bytes": the budget was used up before the import started, or the bytes it read took the day past the budget, which stops it; both last until midnight UTC. `refusal` "larger-than-left": the file declares a length larger than the `leftBytes` the day has left, and is refused before it is read. The bytes an import reads count toward the budget however it ends. A file past the import limit is the 413. Or the caller has no conversion left today (problem type `https://api.easyconvert.io/problems/quota-exceeded`).' +
             CONCURRENCY_LIMIT_NOTE
         ),
         '499': createProblemResponse('The client closed the connection before the import finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The bytes received until the import stopped count toward the daily byte budget.'),

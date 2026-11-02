@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import { formatBytes } from '../format-bytes';
-import { PLAN_NAME, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '../plan-limits';
+import { PLAN_NAME, maxFileBytes, type Plan } from '../plan-limits';
 import { getUtcDateKey } from './key-store';
 import { redisKeyStore } from './redis-key-store';
 import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-budget-store';
@@ -12,9 +12,9 @@ import { MemoryBudgetStore, RedisBudgetStore, type BudgetStore } from './upload-
  * for its uploads in parts and link imports together. An account has `dailyBudgetBytes` of its plan for link imports;
  * its uploads are not metered here, because each one opens only while the account has a conversion left and a job
  * slot. The declared size of an upload is reserved when the session opens, returned when it is aborted or its session
- * expires, and kept when it completes. A link import holds what it may read (one file at its import limit, or the bytes
- * left that day when fewer) when it starts, reads no more than it holds, and is charged the bytes it received once it has
- * ended.
+ * expires, and kept when it completes. A link import starts only while its day has bytes left, and the bytes it receives
+ * are charged as they arrive, in batches of at most LINK_IMPORT_METER_BATCH_BYTES, so it stops once the day passes its
+ * budget.
  *
  * The state of a bucket is one record changed by the pure functions below and written whole by its store
  * (upload-budget-store.ts): in Redis beside the quota counters, or in this process when the quota store has no Redis.
@@ -32,13 +32,14 @@ export const ANONYMOUS_OPEN_UPLOADS_MAX = 2;
 export const ANONYMOUS_DAILY_UPLOAD_BYTES = dailyBudgetBytes('anonymous');
 /** An open session that received no part for this long stops counting as open; its bytes stay reserved until it expires. */
 export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
-/** How long the hold of a link import outlives the import's deadline: a cut-off import stops reading within it. */
-export const LINK_IMPORT_HOLD_GRACE_MS = 60 * 1000;
 /**
- * How soon an import refused as `held` is worth trying again: the `Retry-After` of `/api/fetch-url`, and the first wait of
- * a graph import node, which doubles its wait after each refusal.
+ * The most bytes a link import receives before it charges them to its day, and so the most one running import can take its
+ * day past the budget before it stops. The rule is rclone's `--max-transfer` accounting (MIT, commit f0cb5dd6): a transfer
+ * is admitted while the running total is under the limit (`fs/operations/copy.go` lines 118 to 135), and one in flight stops
+ * once the total passes it (`fs/accounting/accounting.go` lines 248 to 281). rclone keeps its total in memory and checks it
+ * on every 1 MiB read; this total is a record in a shared store written by compare-and-set, so it is written once per batch.
  */
-export const HELD_IMPORT_RETRY_AFTER_MS = 2 * 1000;
+export const LINK_IMPORT_METER_BATCH_BYTES = 4 * 1024 * 1024;
 
 const RESERVATION_ID_BYTES = 12;
 
@@ -48,8 +49,6 @@ interface OpenUpload {
   day: string;
   idleUntil: number;
   expiresAt: number;
-  /** Set on the hold of a link import, which holds bytes it has not received yet; an upload session has none. */
-  hold?: true;
 }
 
 export interface UploadBudgetRecord {
@@ -58,15 +57,11 @@ export interface UploadBudgetRecord {
   open: Record<string, OpenUpload>;
 }
 
-/** Why an upload session may not open or take a part: too many uploads open at once, or the bytes of the day reserved already. */
-export type UploadRefusal = 'open-uploads' | 'daily-bytes';
 /**
- * Why a link import may hold nothing now: the bytes of the day received already, or the rest of the day held by other link
- * imports and open uploads, which give back what they do not take once they end.
+ * Why the byte budget refuses: too many uploads open at once, or the bytes of the day used already by what was received and
+ * what open uploads reserved. A link import is refused only for the second.
  */
-export type LinkImportRefusal = 'daily-bytes' | 'held';
-/** Any refusal of the byte budget, as `/api/fetch-url` and the upload routes answer it. */
-export type BudgetRefusal = UploadRefusal | LinkImportRefusal;
+export type UploadRefusal = 'open-uploads' | 'daily-bytes';
 
 interface BudgetPolicy {
   maxOpenUploads: number;
@@ -157,7 +152,7 @@ function activeStore(): BudgetStore {
 /**
  * Whether uploads of `callerUserId` are metered: an anonymous caller attributed to an address. The shared identity of
  * unattributed callers is refused uploads and link imports before it gets here; an account's link imports are metered by
- * `reserveLinkImport`, and its uploads are bounded by its conversions and job slots.
+ * `withLinkImportMeter`, and its uploads are bounded by its conversions and job slots.
  */
 function isMetered(callerUserId: string): boolean {
   return isAnonymousUserId(callerUserId) && !isUnattributedAnonymous(callerUserId);
@@ -235,198 +230,137 @@ export async function resumeUploadReservation(uploadId: string): Promise<UploadR
   return refusal;
 }
 
-/**
- * Holds `bytes` of the day for link import `id` until `expiresAt`, in place of any hold `id` has already, so a retried
- * import that crashed holds its bytes once. A hold never counts as an open upload: it is idle from the start, since the
- * import holds a conversion slot instead.
- */
-export function holdImport(
-  record: UploadBudgetRecord | undefined,
-  hold: { id: string; bytes: number; day: string; now: number; expiresAt: number }
-): UploadBudgetRecord {
-  const current = withoutUpload(currentRecord(record, hold.day, hold.now), hold.id, true);
-  const entry: OpenUpload = { bytes: hold.bytes, day: hold.day, idleUntil: hold.now, expiresAt: hold.expiresAt, hold: true };
-  return { ...current, bytes: current.bytes + hold.bytes, open: { ...current.open, [hold.id]: entry } };
+/** The record on `day` at `now` with `bytes` a link import received charged to it. */
+export function chargeImport(record: UploadBudgetRecord | undefined, charge: { bytes: number; day: string; now: number }): UploadBudgetRecord {
+  const current = currentRecord(record, charge.day, charge.now);
+  return { ...current, bytes: current.bytes + charge.bytes };
 }
+
+/** A header value that is a length: decimal digits only, as RFC 9110 writes `Content-Length`, and a safe integer. */
+const CONTENT_LENGTH = /^\d+$/;
 
 /**
- * What a link import holds, and why it is less than one file at its limit when it is: `received`, the bytes the day
- * received leave only `bytes`, so a larger file cannot come in today; `held`, other link imports and open uploads take the
- * rest, and once they end the day has `leftTodayBytes`.
+ * The length of the body a response declares, or undefined when it declares none the bytes read can be compared with. A
+ * `Content-Length` counts the bytes as sent, so a body sent with a `Content-Encoding` other than `identity` declares its
+ * compressed length, while the reader receives it decoded.
  */
-export type HeldBytes =
-  | { readonly shortBy: 'none'; readonly bytes: number }
-  | { readonly shortBy: 'received'; readonly bytes: number }
-  | { readonly shortBy: 'held'; readonly bytes: number; readonly leftTodayBytes: number };
-
-/** The bytes of its day `record` charges for entries still open, which come back when they end without bringing them in. */
-function openBytes(record: UploadBudgetRecord): number {
-  return Object.values(record.open).reduce((sum, entry) => (entry.day === record.day ? sum + entry.bytes : sum), 0);
+export function declaredBodyBytes(headers: { get(name: string): string | null }): number | undefined {
+  const encoding = headers.get('content-encoding')?.trim().toLowerCase();
+  if (encoding && encoding !== 'identity') return undefined;
+  const header = headers.get('content-length')?.trim();
+  if (!header || !CONTENT_LENGTH.test(header)) return undefined;
+  const length = Number(header);
+  return Number.isSafeInteger(length) ? length : undefined;
 }
 
-/**
- * The bytes link import `id` may hold on `day` at `now`: at most `limitBytes`, and no more than the day has left once any
- * hold `id` has already is given back. With none left, it is refused for the bytes the day received (`daily-bytes`), or for
- * those other imports and open uploads take (`held`), which come back when they end.
- */
-export function linkImportHoldBytes(
-  record: UploadBudgetRecord | undefined,
-  request: { id: string; day: string; now: number; limitBytes: number; dailyBytes: number }
-): HeldBytes | { refusal: LinkImportRefusal } {
-  const current = withoutUpload(currentRecord(record, request.day, request.now), request.id, true);
-  const left = request.dailyBytes - current.bytes;
-  const leftTodayBytes = left + openBytes(current);
-  if (left <= 0) return { refusal: leftTodayBytes > 0 ? 'held' : 'daily-bytes' };
-  if (left >= request.limitBytes) return { shortBy: 'none', bytes: request.limitBytes };
-  return left === leftTodayBytes ? { shortBy: 'received', bytes: left } : { shortBy: 'held', bytes: left, leftTodayBytes };
+/** Why a declared length is refused before a byte is read: past the import's read limit, or past what its day has left. */
+export type DeclaredOverflow = { kind: 'too-large' } | { kind: 'larger-than-left'; leftBytes: number };
+
+/** The refusal of a body that declares `declaredBytes`, by the read limit first and then by the day; undefined when it fits. */
+export function declaredOverflow(declaredBytes: number | undefined, limits: { limitBytes: number; leftBytes: number }): DeclaredOverflow | undefined {
+  if (declaredBytes === undefined) return undefined;
+  if (declaredBytes > limits.limitBytes) return { kind: 'too-large' };
+  if (declaredBytes > limits.leftBytes) return { kind: 'larger-than-left', leftBytes: limits.leftBytes };
+  return undefined;
 }
 
-/**
- * The record with the hold of link import `id` lowered to `bytes`, once the import learned it needs no more, so the rest
- * goes back to the day; undefined (nothing to write) when the hold is gone or holds no more than that.
- */
-export function shrinkImportHold(record: UploadBudgetRecord | undefined, shrink: { id: string; bytes: number; day: string; now: number }): UploadBudgetRecord | undefined {
-  const current = currentRecord(record, shrink.day, shrink.now);
-  const entry = current.open[shrink.id];
-  if (!entry?.hold || entry.bytes <= shrink.bytes) return undefined;
-  const returned = entry.day === current.day ? entry.bytes - shrink.bytes : 0;
-  return { ...current, bytes: current.bytes - returned, open: { ...current.open, [shrink.id]: { ...entry, bytes: shrink.bytes } } };
+/** The bytes a link import running under its day's budget received, charged to the day as they arrive. */
+export interface LinkImportMeter {
+  /** What the owner's day had left when the import started: a declared length past it is refused before reading. */
+  readonly leftBytes: number;
+  /** The bytes received so far, charged or not. */
+  readonly receivedBytes: number;
+  /**
+   * Counts `bytes` just received, and charges the batch once it holds LINK_IMPORT_METER_BATCH_BYTES. Answers false once the
+   * day has passed its budget, so the import stops reading.
+   */
+  count(bytes: number): Promise<boolean>;
+  /** Charges what is counted and not charged yet. Answers false when the day has then passed its budget. */
+  charge(): Promise<boolean>;
 }
 
-/**
- * The record on `day` once link import `id` ended having received `receivedBytes`, whether it succeeded, was too large,
- * failed or was cut off: its hold goes back to the day it was charged to, and the bytes received are charged to `day`,
- * also when the hold expired or was charged to an earlier day.
- */
-export function settleImport(
-  record: UploadBudgetRecord | undefined,
-  settled: { id: string; receivedBytes: number; day: string; now: number }
-): UploadBudgetRecord {
-  const released = withoutUpload(currentRecord(record, settled.day, settled.now), settled.id, true);
-  return { ...released, bytes: released.bytes + settled.receivedBytes };
-}
-
-/** A link import's hold on the day's bytes, taken when it starts. */
-export interface LinkImportReservation {
-  /** What the import holds: the most it may read. */
-  held: HeldBytes;
-  /** Lowers the hold to `bytes`, once the import knows it needs no more. */
-  shrink(bytes: number): Promise<void>;
-  /** Charges the bytes the import received in place of its hold, once it has ended; a second settle changes nothing. */
-  settle(receivedBytes: number): Promise<void>;
-}
-
-/**
- * Takes the hold `holdId` of a link import of `callerUserId` on the day's bytes of `plan`: one file at `importLimitBytes`,
- * or the bytes left when fewer, so imports running at once cannot pass the budget together (`linkImportHoldBytes`). A
- * hold of the same id is replaced, so the retry of an import names its own id. The hold lasts the import's `deadlineMs`
- * and LINK_IMPORT_HOLD_GRACE_MS more; one whose process died returns its bytes then.
- */
-export async function reserveLinkImport(
-  callerUserId: string,
-  plan: Plan,
-  deadlineMs: number,
-  importLimitBytes: number = URL_IMPORT_MAX_BYTES,
-  holdId: string = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex')
-): Promise<{ reservation: LinkImportReservation } | { refusal: LinkImportRefusal }> {
-  const store = activeStore();
-  // Every store runs the change at least once, so the outcome is always assigned.
-  let outcome!: HeldBytes | { refusal: LinkImportRefusal };
-  await store.update(callerUserId, (current) => {
-    const now = Date.now();
-    const day = getUtcDateKey();
-    outcome = linkImportHoldBytes(current, { id: holdId, day, now, limitBytes: importLimitBytes, dailyBytes: dailyBudgetBytes(plan) });
-    if ('refusal' in outcome) return undefined;
-    return holdImport(current, { id: holdId, bytes: outcome.bytes, day, now, expiresAt: now + deadlineMs + LINK_IMPORT_HOLD_GRACE_MS });
-  });
-  if ('refusal' in outcome) return { refusal: outcome.refusal };
-  let settled = false;
-  return {
-    reservation: {
-      held: outcome,
-      shrink: (bytes) => store.update(callerUserId, (current) => shrinkImportHold(current, { id: holdId, bytes, day: getUtcDateKey(), now: Date.now() })),
-      settle: async (receivedBytes) => {
-        if (settled) return;
-        settled = true;
-        await store.update(callerUserId, (current) => settleImport(current, { id: holdId, receivedBytes, day: getUtcDateKey(), now: Date.now() }));
-      },
-    },
-  };
-}
-
-/** What a link import running under its hold may read, and the count of what it received, which it keeps up to date. */
-export interface LinkImportHold {
-  /** One file at the import's limit: the most it could hold. */
-  readonly limitBytes: number;
-  /** What it holds; it stops reading past `held.bytes`. */
-  readonly held: HeldBytes;
-  /** The bytes received so far, counted as they arrive, so an import that fails still charges what it read. */
-  receivedBytes: number;
-  /** Lowers the hold to a declared length smaller than it, so other imports may take the rest at once. */
-  shrinkTo(bytes: number): Promise<void>;
-}
-
-/**
- * What a body larger than its hold is, by the length it declared or, without one, by the hold it passed: past the import
- * limit (`too-large`); larger than the bytes the day has left once the other holds end (`larger-than-left`, final for the
- * day); or larger than a hold the other holds made short, so it fits once they end (`held`).
- */
-export type ImportOverflow = { kind: 'too-large' } | { kind: 'larger-than-left'; leftBytes: number } | { kind: 'held' };
-
-export function importOverflow(hold: Pick<LinkImportHold, 'limitBytes' | 'held'>, declaredBytes?: number): ImportOverflow {
-  const { held, limitBytes } = hold;
-  if (held.shortBy === 'none' || (declaredBytes !== undefined && declaredBytes > limitBytes)) return { kind: 'too-large' };
-  if (held.shortBy === 'received') return { kind: 'larger-than-left', leftBytes: held.bytes };
-  if (declaredBytes !== undefined && declaredBytes > held.leftTodayBytes) return { kind: 'larger-than-left', leftBytes: held.leftTodayBytes };
-  return { kind: 'held' };
-}
-
-/** A link import to run under a hold: whose day it charges, on which plan, for how long, at most how much, under which id. */
+/** A link import: whose day it charges, and on which plan. */
 export interface LinkImportRequest {
   owner: string;
   plan: Plan;
-  deadlineMs: number;
-  limitBytes: number;
-  /** The id of the hold; a hold of the same id is replaced, so the retry of an import names the id of its first attempt. */
-  holdId: string;
+}
+
+/** The meter of a link import of `owner` whose day had `leftBytes` left of `dailyBytes`, charging `store`. */
+function linkImportMeter(store: BudgetStore, owner: string, dailyBytes: number, leftBytes: number): LinkImportMeter {
+  let receivedBytes = 0;
+  let unchargedBytes = 0;
+  const charge = async (): Promise<boolean> => {
+    if (unchargedBytes === 0) return true;
+    const bytes = unchargedBytes;
+    unchargedBytes = 0;
+    let dayBytes = 0;
+    await store.update(owner, (current) => {
+      const charged = chargeImport(current, { bytes, day: getUtcDateKey(), now: Date.now() });
+      dayBytes = charged.bytes;
+      return charged;
+    });
+    return dayBytes <= dailyBytes;
+  };
+  return {
+    leftBytes,
+    get receivedBytes() {
+      return receivedBytes;
+    },
+    count: async (bytes) => {
+      receivedBytes += bytes;
+      unchargedBytes += bytes;
+      return unchargedBytes >= LINK_IMPORT_METER_BATCH_BYTES ? charge() : true;
+    },
+    charge,
+  };
 }
 
 /**
- * Runs `run` under a hold of `request.owner` on the day's bytes (`reserveLinkImport`), and charges the bytes it received
- * once `run` has ended, however it ended. A charge that fails is logged and never replaces the outcome of `run`. Answers
- * the result of `run`, or the refusal of a day with nothing left to hold.
+ * Runs `run` as a link import of `request.owner`, metered against the day's bytes of `request.plan`: refused as
+ * `daily-bytes` before it starts when the day has nothing left, and charged what it received however it ends. A charge
+ * that fails at the end is logged and never replaces the outcome of `run`.
  */
-export async function withLinkImportHold<T>(
+export async function withLinkImportMeter<T>(
   request: LinkImportRequest,
-  run: (hold: LinkImportHold) => Promise<T>
-): Promise<{ result: T } | { refusal: LinkImportRefusal }> {
-  const taken = await reserveLinkImport(request.owner, request.plan, request.deadlineMs, request.limitBytes, request.holdId);
-  if ('refusal' in taken) return taken;
-  const { reservation } = taken;
-  const hold: LinkImportHold = { limitBytes: request.limitBytes, held: reservation.held, receivedBytes: 0, shrinkTo: (bytes) => reservation.shrink(bytes) };
+  run: (meter: LinkImportMeter) => Promise<T>
+): Promise<{ result: T } | { refusal: 'daily-bytes' }> {
+  const store = activeStore();
+  const dailyBytes = dailyBudgetBytes(request.plan);
+  let leftBytes = 0;
+  await store.update(request.owner, (current) => {
+    leftBytes = dailyBytes - currentRecord(current, getUtcDateKey(), Date.now()).bytes;
+    return undefined;
+  });
+  if (leftBytes <= 0) return { refusal: 'daily-bytes' };
+  const meter = linkImportMeter(store, request.owner, dailyBytes, leftBytes);
   try {
-    return { result: await run(hold) };
+    return { result: await run(meter) };
   } finally {
-    await reservation.settle(hold.receivedBytes).catch((err: unknown) => {
-      console.error(`[UploadBudget] The ${hold.receivedBytes} bytes of a link import could not be charged to the daily budget:`, err);
+    await meter.charge().catch((err: unknown) => {
+      console.error(`[UploadBudget] The last bytes of a link import that received ${meter.receivedBytes} could not be charged to the daily budget:`, err);
     });
   }
 }
 
 /** The English sentence of a refusal of the budget of a caller of `plan`: what it may bring in, and when it may again. */
-export function budgetRefusalDetail(refusal: BudgetRefusal, plan: Plan): string {
+export function budgetRefusalDetail(refusal: UploadRefusal, plan: Plan): string {
   if (refusal === 'open-uploads') {
     return `Up to ${ANONYMOUS_OPEN_UPLOADS_MAX} uploads may be open at once without an account. Finish or cancel one, then try again.`;
   }
+  return `${dailyAllowance(plan)} The limit resets at midnight UTC.`;
+}
+
+/** What a caller of `plan` may bring in each day, as the sentence of a refusal names it. */
+function dailyAllowance(plan: Plan): string {
   const limit = formatBytes(dailyBudgetBytes(plan));
-  if (refusal === 'held') {
-    return `Link imports and uploads still in progress hold the rest of today's ${limit}. Try again when they finish; what they do not take is given back.`;
-  }
-  const allowance =
-    plan === 'anonymous'
-      ? `Without an account, uploads and link imports may total ${limit} a day.`
-      : `On the ${PLAN_NAME[plan]} plan, link imports may total ${limit} a day.`;
-  return `${allowance} The limit resets at midnight UTC.`;
+  return plan === 'anonymous'
+    ? `Without an account, uploads and link imports may total ${limit} a day.`
+    : `On the ${PLAN_NAME[plan]} plan, link imports may total ${limit} a day.`;
+}
+
+/** The English sentence of a link import stopped because the day of a caller of `plan` passed its budget while it read. */
+export function dailyLimitReachedDetail(plan: Plan): string {
+  return `${dailyAllowance(plan)} That limit was reached while this file was being read. The limit resets at midnight UTC.`;
 }
 
 /** The English sentence of a file larger than the `leftBytes` the day has left for link imports. */
@@ -435,7 +369,7 @@ export function largerThanLeftDetail(leftBytes: number): string {
 }
 
 /**
- * The bytes `callerUserId` has brought in today, holds of link imports still running included. Only the tests read it:
+ * The bytes `callerUserId` has brought in today, open uploads included. Only the tests read it:
  * the record is written whole by its store, so this is the one read that shows what a bucket was charged.
  */
 export async function bytesBroughtInToday(callerUserId: string): Promise<number> {

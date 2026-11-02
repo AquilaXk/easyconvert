@@ -26,7 +26,7 @@ import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, LINK_IMPORT_HOLD_GRACE_MS, bytesBroughtInToday, reserveLinkImport } from '../src/lib/api-keys/anonymous-upload-budget';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, withLinkImportMeter } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
@@ -39,7 +39,7 @@ import { allConversionQueues, attachJobLifecycleListeners, processConversionJob 
 import { graphScheduler } from '../src/lib/queue/graph';
 import { storageProvider } from '../src/lib/storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { gzipRemote } from './helpers/gzip-remote';
 
@@ -57,8 +57,6 @@ const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget
 const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
 const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://api.easyconvert.io/problems/graph-without-conversion';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
-/** The deadline of an import that spends bytes directly; its hold is settled at once. */
-const IMPORT_DEADLINE_MS = 120_000;
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
 const DAY_ALLOWANCE = 25;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
@@ -119,9 +117,8 @@ async function account(tier: 'free' | 'pro') {
 
 /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
 async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-  const held = await reserveLinkImport(userId, plan, IMPORT_DEADLINE_MS);
-  if ('refusal' in held) throw new Error(`the import budget of ${userId} is already spent`);
-  await held.reservation.settle(bytes);
+  const spent = await withLinkImportMeter({ owner: userId, plan }, (meter) => meter.count(bytes));
+  if ('refusal' in spent) throw new Error(`the import budget of ${userId} is already spent`);
 }
 
 /** A remote that sends `first`, then `afterAbort` a little after the import is aborted, then fails the body. */
@@ -300,25 +297,23 @@ describe('what a request is charged', () => {
       expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
     });
 
-    it('holds the bytes it may still read while it runs, so a second import beside it is refused as held, not as spent', async () => {
+    it('runs beside a second import of the same caller, each reading at once, when the day has room for both', async () => {
       const client = visitor();
-      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - Buffer.byteLength(CSV));
-      let send: () => void = () => undefined;
-      remoteFile(CSV);
-      vi.mocked(undiciFetch).mockImplementationOnce(async () => {
-        await new Promise<void>((resolve) => (send = resolve));
+      await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 2 * Buffer.byteLength(CSV));
+      let fetched = 0;
+      let answerBoth: () => void = () => undefined;
+      const bothFetched = new Promise<void>((resolve) => (answerBoth = resolve));
+      vi.mocked(undiciFetch).mockImplementation(async () => {
+        fetched += 1;
+        if (fetched === 2) answerBoth();
+        await bothFetched;
         return new Response(CSV, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
       });
-      const first = fetchUrlRoute(importRequest(client));
-      await vi.waitFor(() => expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1));
 
-      const second = await fetchUrlRoute(importRequest(client));
-      send();
+      const [first, second] = await Promise.all([fetchUrlRoute(importRequest(client)), fetchUrlRoute(importRequest(client))]);
 
-      expect(second.status).toBe(HTTP_TOO_MANY_REQUESTS);
-      expect((await second.json()).refusal).toBe('held');
-      expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
-      expect((await first).status).toBe(200);
+      expect([first.status, second.status]).toEqual([200, 200]);
+      expect(await bytesBroughtInToday(client.userId)).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES);
     });
 
     /** A remote that sends `mebibytes` of body a mebibyte at a time, declaring its length when asked; it records a cancel. */
@@ -340,30 +335,12 @@ describe('what a request is charged', () => {
       return sent;
     }
 
-    /** A visitor whose day has `leftMebibytes` left after what it received, with `heldMebibytes` of that held by another import still running. */
-    async function visitorWithDayLeft(leftMebibytes: number, heldMebibytes = 0) {
+    /** A visitor whose day has `leftMebibytes` left after what it received. */
+    async function visitorWithDayLeft(leftMebibytes: number) {
       const client = visitor();
       await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - leftMebibytes * MIB);
-      if (heldMebibytes > 0) {
-        const other = await reserveLinkImport(client.userId, 'anonymous', IMPORT_DEADLINE_MS, heldMebibytes * MIB, 'another-import');
-        if ('refusal' in other) throw new Error('the other import was refused');
-      }
       return client;
     }
-
-    it.each([
-      ['whose length it learns as it reads', false],
-      ['whose declared length fits once the other import ends', true],
-    ])('is told to wait for another import, not for tomorrow, when it holds part of a file %s', async (_label, declared) => {
-      const client = await visitorWithDayLeft(150, 100);
-      remoteOfMebibytes(60, { declared });
-
-      const res = await fetchUrlRoute(importRequest(client));
-
-      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
-      expect(res.headers.get('retry-after')).toBe('2');
-      expect(await res.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'held' });
-    });
 
     it('refuses a file that declares more than the day has left before reading a byte, and names what is left', async () => {
       const client = await visitorWithDayLeft(30);
@@ -388,7 +365,7 @@ describe('what a request is charged', () => {
       expect(remote.cancelled).toBe(true);
       const charged = await bytesBroughtInToday(client.userId);
       expect(charged).toBeGreaterThan(ANONYMOUS_DAILY_UPLOAD_BYTES);
-      expect(charged).toBeLessThanOrEqual(ANONYMOUS_DAILY_UPLOAD_BYTES + 4 * MIB);
+      expect(charged).toBeLessThanOrEqual(ANONYMOUS_DAILY_UPLOAD_BYTES + LINK_IMPORT_METER_BATCH_BYTES);
     });
 
     it('imports a gzipped file whose Content-Length is its compressed size whole, and is charged the bytes it decoded', async () => {
@@ -404,36 +381,6 @@ describe('what a request is charged', () => {
         expect(await bytesBroughtInToday(client.userId)).toBe(Buffer.byteLength(csv));
       } finally {
         await remote.close();
-      }
-    });
-
-    it('holds its bytes for the synchronous deadline and the grace after it, so an import that never stops reading gives them back then', async () => {
-      const deadlineMs = 200;
-      vi.stubEnv('SYNC_DEADLINE_MAX_MS', String(deadlineMs));
-      const startedAt = Date.parse('2026-11-02T12:00:00.000Z');
-      vi.useFakeTimers({ toFake: ['Date'], now: startedAt });
-      let endBody: () => void = () => undefined;
-      vi.mocked(undiciFetch).mockImplementation(async () => {
-        const body = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode('name,score\n'));
-            endBody = () => controller.close();
-          },
-        });
-        return new Response(body, { status: 200, headers: { 'content-type': 'text/csv' } }) as never;
-      });
-      const client = visitor();
-      try {
-        expect((await fetchUrlRoute(importRequest(client))).status).toBe(HTTP_GATEWAY_TIMEOUT);
-
-        const holdEnds = startedAt + deadlineMs + LINK_IMPORT_HOLD_GRACE_MS;
-        vi.setSystemTime(holdEnds - 1);
-        expect(await bytesBroughtInToday(client.userId)).toBe(URL_IMPORT_MAX_BYTES);
-        vi.setSystemTime(holdEnds);
-        expect(await bytesBroughtInToday(client.userId)).toBe(0);
-      } finally {
-        endBody();
-        vi.useRealTimers();
       }
     });
 
