@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { NextRequest } from 'next/server';
 import { itLeasesReservations } from './helpers/reservation-lease-cases';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
+import { MemoryReservationLedger, RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { withReservedUnit, type ReservedUnit } from '../src/lib/api-keys/guard';
 import { JOB_DEADLINE_CEILING_MS } from '../src/lib/config/schema';
 import { JobDeadlineError, jobDeadlineSettings } from '../src/lib/queue/job-deadline';
@@ -133,6 +133,47 @@ describe('a reservation a request hands to queued work', () => {
     expect(await used(owner)).toBe(0);
   });
 
+  it('leaves the unit on the provisional lease after a start whose outcome is unknown, writing nothing to the store that failed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const owner = freshOwner();
+    const reservationId = await reservedUnit(owner);
+    const renew = vi.spyOn(MemoryReservationLedger.prototype, 'renew');
+    let renewalsBeforeStart = 0;
+
+    await expect(
+      withReservedUnit(reservationId, (unit) =>
+        unit.handOff({
+          start: async () => {
+            renewalsBeforeStart = renew.mock.calls.length;
+            renew.mockRejectedValue(new QueueUnavailableError('reservation', 'the store is down'));
+            throw new QueueUnavailableError('convert', 'the reply was lost');
+          },
+          recover: async () => ({ status: 'unknown' }),
+        })
+      )
+    ).rejects.toBeInstanceOf(QueueUnavailableError);
+    const renewalsAfterStart = renew.mock.calls.length - renewalsBeforeStart;
+    renew.mockRestore();
+
+    expect(renewalsAfterStart).toBe(0);
+    vi.setSystemTime(Date.now() + RESERVATION_LEASE.provisionalMs + 1000);
+    expect(await used(owner)).toBe(0);
+  });
+
+  it('starts no work and refuses with a retry when the renewal before the hand-off throws', async () => {
+    const owner = freshOwner();
+    const reservationId = await reservedUnit(owner);
+    const start = vi.fn(async () => 'queued');
+    vi.spyOn(redisKeyStore, 'renewReservation').mockRejectedValueOnce(new Error('ECONNRESET'));
+
+    await expect(withReservedUnit(reservationId, (unit) => unit.handOff({ start, recover: async () => ({ status: 'unknown' }) }))).rejects.toBeInstanceOf(
+      QueueUnavailableError
+    );
+
+    expect(start).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
   it('starts no work and refuses with a retry when the lease ended before the hand-off', async () => {
     const owner = freshOwner();
     const reservationId = await reservedUnit(owner);
@@ -187,6 +228,33 @@ describe('a reservation a request hands to queued work', () => {
     });
 
     expect(await used(owner)).toBe(1);
+  });
+});
+
+describe('POST /api/v1/jobs when the password of a job cannot be sealed', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('REDIS_URL', '');
+    vi.stubEnv('REDIS_HOST', '');
+  });
+
+  it('answers 503 and gives the unit back at once, since nothing was handed off', async () => {
+    const user = await userStore.createUser({ email: `seal_${crypto.randomBytes(6).toString('hex')}@lease.test`, name: 'seal', tier: 'pro' });
+    const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'seal', { scopes: ['convert:write'] });
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('KEY_HASH_PEPPER', 'pepper-for-this-test-0123456789abcdef');
+    for (const name of ['JOB_SECRET_KEK', 'STORAGE_VAULT_KEY', 'KEY_ENCRYPTION_KEY', 'JWT_SECRET']) vi.stubEnv(name, '');
+
+    const res = await createJob(
+      new NextRequest('https://easyconvert.app/api/v1/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secretKey}` },
+        body: JSON.stringify({ filename: 'locked.pdf', targetFormat: 'docx', inputBufferBase64: Buffer.from('%PDF-1.7\n').toString('base64'), options: { password: 'open-sesame' } }),
+      })
+    );
+
+    expect(res.status, await res.text()).toBe(503);
+    expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(0);
   });
 });
 
