@@ -9,6 +9,7 @@
 #   calibre   the ebook converter the ebook benchmark compares against and the writer of the MOBI, AZW3, PDB, LRF and OEB tests, from its release archive checked against a pinned SHA-256
 #   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
+#   vtracer  the raster to SVG tracer, the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh)
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # One part needs what another installs and runs once they are all done:
@@ -61,6 +62,7 @@ declare -A task_limit_seconds=(
   [calibre]=240
   [libredwg]=300
   [ghostxps]=300
+  [vtracer]=120
   [raw]=240
   [s3]=360
 )
@@ -106,7 +108,7 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps raw)
+  tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps vtracer raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -228,6 +230,13 @@ task_ghostxps() {
   sha256sum "$ghostxps_dir/bin/gxps" | sudo tee "$digest_file" > /dev/null
 }
 
+# Raster to SVG pairs are traced by vtracer (MIT OR Apache-2.0, an unmodified separate program), the release program pinned with its
+# licence text in scripts/install-vtracer.sh, which checks both digests before the program runs. The download is about 1.3 MB, so it is
+# not cached.
+task_vtracer() {
+  sudo scripts/install-vtracer.sh /opt/vtracer
+}
+
 # Pulls the pinned image, trying a bounded number of times: anonymous registry pulls are rate limited.
 s3_pull_image() {
   local attempt
@@ -316,7 +325,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_vtracer task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

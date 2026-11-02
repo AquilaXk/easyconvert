@@ -38,6 +38,8 @@ import {
   quadraticToCubicBezier,
 } from './font';
 import { convertVectorCad, svgToDxf, parseSvgPathToBezierPoints } from './vector-cad';
+import { vectorizeRaster } from './raster-vectorize';
+import { isVectorizePair } from './raster-vectorize-options';
 import {
   convertHwp,
   parseHwpDocument,
@@ -512,6 +514,11 @@ async function convertFileInScope(
   // 3. Font routing
   if (srcDef.category === 'font' || ['woff', 'woff2', 'ttf', 'otf', 'eot', 'svgfont'].includes(tgt)) {
     return convertFont(inputBuffer, src, tgt, options, originalFilename);
+  }
+
+  // 3b. Raster pictures traced to SVG, ahead of the vector route, which takes every SVG target.
+  if (isVectorizePair(src, tgt)) {
+    return vectorizeRaster(inputBuffer, src, options, originalFilename);
   }
 
   // 4. Vector & CAD routing (including EPS and PS)

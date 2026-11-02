@@ -358,6 +358,43 @@ export const ConversionOptionsSchema = {
         'Length unit of the result of a STEP or IGES conversion to STEP, IGES, STL or OBJ (default mm). STL and OBJ have no unit field, so the choice decides what their numbers mean: pick the unit your slicer or viewer expects. STEP and IGES results declare the unit they are written in.',
     },
 
+    // Raster to SVG tracing
+    vectorize: {
+      type: 'object',
+      additionalProperties: false,
+      description:
+        'PNG, JPEG, WebP, GIF, BMP or TIFF to SVG: how the picture is traced into shapes. Only the values you set are sent to the tracer, and they override the preset. An animated GIF or WebP and a multi-page TIFF are traced from their first frame.',
+      properties: {
+        preset: {
+          type: 'string',
+          enum: ['bw', 'poster', 'photo'],
+          description: 'Start from settings tuned for the input: bw for black and white line art, poster for flat graphics with few colours, photo for photographs.',
+        },
+        mode: {
+          type: 'string',
+          enum: ['spline', 'polygon', 'pixel'],
+          description: 'Curve fitting: spline (default) draws smooth curves, polygon straight edges, pixel keeps the pixel edges (for pixel art).',
+        },
+        filterSpeckle: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 128,
+          description: 'Discard patches smaller than this size in pixels (0 to 128, default 4). Raise it to remove noise from scans and JPEG artefacts.',
+        },
+        colorPrecision: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 8,
+          description: 'Significant bits per RGB channel (1 to 8, default 6). Lower values give fewer colours and flatter shapes.',
+        },
+        simplify: {
+          type: 'number',
+          exclusiveMinimum: 0,
+          description: 'Refit curves with the fewest segments that stay within this distance in pixels (try 1 to 2.5). Fewer nodes and a smaller file. Off by default.',
+        },
+      },
+    },
+
     // Document & PDF options
     page: {
       type: 'integer',

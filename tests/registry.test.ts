@@ -35,7 +35,7 @@ describe('Format Registry & Lookup Tests', () => {
     // The advertised targets, pinned: a pair added or withdrawn changes these lists on purpose.
     expect(targetIds).toEqual([
       'jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip',
-      'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto',
+      'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto', 'svg',
     ]);
 
     const csvTargets = getAvailableTargetFormats('csv');

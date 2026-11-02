@@ -1217,12 +1217,13 @@ export function sanitizeSvgString(svg: string): string {
 }
 
 /**
- * Sanitizes an SVG document after enforcing the SVG input size cap. SVG entry points use this; callers that
- * run the sanitizer over arbitrary XML use {@link sanitizeSvgString}, which has no size cap.
+ * Sanitizes an SVG document after enforcing a size cap: the SVG input cap, or the larger bound of a path that writes the
+ * SVG itself. SVG entry points use this; callers that run the sanitizer over arbitrary XML use {@link sanitizeSvgString},
+ * which has no size cap.
  */
-export function sanitizeSvgDocument(svg: string): string {
-  if (typeof svg === 'string' && svg.length > MAX_SVG_INPUT_CHARS) {
-    throw new SvgSanitizationError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+export function sanitizeSvgDocument(svg: string, maxChars: number = MAX_SVG_INPUT_CHARS): string {
+  if (typeof svg === 'string' && svg.length > maxChars) {
+    throw new SvgSanitizationError(`SVG input exceeds the ${maxChars}-character limit.`);
   }
   return sanitizeSvgString(svg);
 }
