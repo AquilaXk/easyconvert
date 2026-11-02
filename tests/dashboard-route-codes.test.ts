@@ -16,6 +16,7 @@ import { DELETE as deleteDlq, GET as readDlq } from '../src/app/api/webhooks/dlq
 import { POST as replayDlq } from '../src/app/api/webhooks/dlq/[id]/replay/route';
 import { useDashboardErrorWording } from '../src/components/i18n/error-wording';
 import { DASHBOARD_REFUSAL_CODES } from '../src/lib/refusal-codes';
+import type { ApiKeyScope } from '../src/lib/api-keys/types';
 import { renderDom, visibleText } from './helpers/rendered-dom';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
@@ -28,21 +29,24 @@ import { testMessages, type TestLocale } from './helpers/intl-messages';
 const ORIGIN = 'http://localhost:3000';
 const params = (id: string) => ({ params: Promise.resolve({ id }) });
 
+/** The one person of the store, whose session and keys a test sends together. */
 async function owner() {
-  return userStore.sanitizeUser(await userStore.createUser({ email: 'owner@example.com', name: 'Owner' }));
+  const email = 'owner@example.com';
+  return userStore.sanitizeUser((await userStore.findByEmail(email)) ?? (await userStore.createUser({ email, name: 'Owner' })));
 }
 
 async function sessionCookie(): Promise<string> {
   return `easyconvert_session=${createSessionToken(await owner())}`;
 }
 
-/** The `Authorization` header of a key of the owner that has every scope but `*`. */
-async function keyWithoutAdminScope(): Promise<string> {
-  const { secretKey } = await redisKeyStore.generateApiKey((await owner()).id, 'Worker', {
-    scopes: ['convert:read', 'convert:write', 'storage:download'],
-  });
+/** The `Authorization` header of a key of the owner with `scopes`. */
+async function keyWith(scopes: ApiKeyScope[]): Promise<string> {
+  const { secretKey } = await redisKeyStore.generateApiKey((await owner()).id, 'Worker', { scopes });
   return `Bearer ${secretKey}`;
 }
+
+/** The `Authorization` header of a key of the owner that has every scope but `*`. */
+const keyWithoutAdminScope = () => keyWith(['convert:read', 'convert:write', 'storage:download']);
 
 function request(path: string, init: { method?: string; cookie?: string; authorization?: string; body?: unknown } = {}): NextRequest {
   return new NextRequest(`${ORIGIN}${path}`, {
@@ -97,6 +101,9 @@ const ADMIN_ROUTES = new Set([
   'DELETE /api/webhooks/dlq', 'DELETE /api/webhooks/dlq/d', 'POST /api/webhooks/dlq/d/replay',
 ]);
 
+/** The reads a key needs a scope other than `*` for: the converted files (storage:download) and failed webhooks (convert:read). */
+const SCOPED_READS = new Set(['GET /api/account/files', 'DELETE /api/account/files/f', 'GET /api/webhooks/dlq', 'GET /api/webhooks/dlq/d']);
+
 describe('a dashboard route', () => {
   it.each(ROUTES)('%s refuses a caller without a session or key with a 401 the status words', async (_route, call) => {
     const { status, body } = await answer(await call({}));
@@ -114,6 +121,36 @@ describe('a dashboard route', () => {
       expect(status).not.toBe(403);
       expect(body).not.toHaveProperty('code');
     }
+  });
+
+  it('answers a key with only convert:write 403 on the four reads that need another scope, and 200 on the usage', async () => {
+    const authorization = await keyWith(['convert:write']);
+    const statuses = Object.fromEntries(
+      await Promise.all(
+        ROUTES.filter(([route]) => SCOPED_READS.has(route) || route === 'GET /api/keys/usage').map(
+          async ([route, call]) => [route, (await call({ authorization })).status] as const
+        )
+      )
+    );
+    expect(statuses).toEqual({
+      'GET /api/keys/usage': 200,
+      'GET /api/account/files': 403,
+      'DELETE /api/account/files/f': 403,
+      'GET /api/webhooks/dlq': 403,
+      'GET /api/webhooks/dlq/d': 403,
+    });
+  });
+
+  it.each(ROUTES)('%s lets a key sent with a session cookie decide, as an explicit credential wins over the cookie', async (route, call) => {
+    const cookie = await sessionCookie();
+    const { status } = await call({ cookie, authorization: await keyWith(['convert:write']) });
+    if (ADMIN_ROUTES.has(route) || SCOPED_READS.has(route)) expect(status).toBe(403);
+    else expect(status).toBe(200);
+  });
+
+  it('acts for the signed-in person on a scoped read when no key comes with the cookie', async () => {
+    const { status } = await listFiles(request('/api/account/files', { cookie: await sessionCookie() }));
+    expect(status).toBe(200);
   });
 
   it.each([
