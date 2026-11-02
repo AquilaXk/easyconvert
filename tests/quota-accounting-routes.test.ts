@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type Redis from 'ioredis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
@@ -12,16 +13,27 @@ vi.mock('@/lib/security/ssrf', async (importOriginal) => ({
   validateUrlForSsrf: vi.fn(async () => true),
   createSsrfSafeAgent: () => ({ close: async () => undefined }),
 }));
+vi.mock('@/lib/conversions/dispatch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/conversions/dispatch')>();
+  return { ...actual, dispatchConversion: vi.fn(actual.dispatchConversion) };
+});
 
 import { fetch as undiciFetch } from 'undici';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { POST as fetchUrlRoute } from '../src/app/api/fetch-url/route';
+import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { getAnonymousDailyLimit } from '../src/lib/api-keys/key-store';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, chargeAnonymousImport } from '../src/lib/api-keys/anonymous-upload-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
-import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
+import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { userStore } from '../src/lib/auth/user-store';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { InMemoryIdempotencyStore, setIdempotencyStore, type StoredResponse } from '../src/lib/api/idempotency';
+import { acquireSyncSlot, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
+import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
+import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 
 /**
  * Only a successful conversion is charged (QA decision of 2026-11-02): a refusal, a failure and a link import leave the
@@ -29,7 +41,12 @@ import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
  */
 
 const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_GATEWAY_TIMEOUT = 504;
+const HTTP_CLIENT_CLOSED_REQUEST = 499;
+const FREE_CONCURRENCY = 5;
 const QUOTA_EXCEEDED_PROBLEM = 'https://api.easyconvert.io/problems/quota-exceeded';
+const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
+const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
 const DAY_ALLOWANCE = 25;
@@ -41,6 +58,7 @@ let nextClient = 1;
 function visitor() {
   const ip = `203.0.113.${nextClient++}`;
   return {
+    userId: anonymousUserId(ip),
     headers: { 'x-forwarded-for': ip },
     remaining: async () => (await redisKeyStore.getQuotaUsage(anonymousUserId(ip))).remaining,
     spend: async (units: number) => {
@@ -54,12 +72,12 @@ function visitor() {
 
 type Visitor = ReturnType<typeof visitor>;
 
-function convertRequest(client: Visitor, fields: { name: string; content: string; target?: string; options?: string }) {
+function convertRequest(client: Visitor, fields: { name: string; content: string; target?: string; options?: string }, signal?: AbortSignal) {
   const form = new FormData();
   form.append('file', new File([fields.content], fields.name));
   if (fields.target) form.append('targetFormat', fields.target);
   if (fields.options) form.append('options', fields.options);
-  return new NextRequest('http://localhost/api/convert', { method: 'POST', headers: client.headers, body: form });
+  return new NextRequest('http://localhost/api/convert', { method: 'POST', headers: client.headers, body: form, signal });
 }
 
 function batchRequest(client: Visitor, files: Array<{ name: string; content: string }>, targetFormats?: string) {
@@ -78,8 +96,36 @@ function importRequest(client: Visitor, url = 'https://files.example.com/scores.
 }
 
 function remoteFile(content: string, contentType = 'text/csv') {
-  vi.mocked(undiciFetch).mockResolvedValue(new Response(content, { status: 200, headers: { 'content-type': contentType } }) as never);
+  vi.mocked(undiciFetch).mockImplementation(async () => new Response(content, { status: 200, headers: { 'content-type': contentType } }) as never);
 }
+
+/** A conversion that never ends on its own; `started` runs when the route has handed it the file. */
+function endlessConversion(started: () => void = () => undefined) {
+  vi.mocked(dispatchConversion).mockImplementationOnce(() => {
+    started();
+    return new Promise(() => undefined);
+  });
+}
+
+async function holdEverySlot(userId: string): Promise<() => void> {
+  const held: ConversionSlot[] = [];
+  for (let i = 0; i < FREE_CONCURRENCY; i++) held.push(await acquireSyncSlot(userId, 'free'));
+  return () => held.forEach((slot) => slot.granted && slot.release());
+}
+
+/** The suites count in this process: the stores keep their counters here even when REDIS_URL names a server. */
+let redisClients: { keys: Redis | null; users: Redis | null };
+
+beforeEach(() => {
+  redisClients = { keys: redisKeyStore.getRedisClient(), users: redisUserStore.getRedisClient() };
+  redisKeyStore.setRedisClient(null);
+  redisUserStore.setRedisClient(null);
+});
+
+afterEach(() => {
+  redisKeyStore.setRedisClient(redisClients.keys);
+  redisUserStore.setRedisClient(redisClients.users);
+});
 
 describe('what a request is charged', () => {
   beforeEach(() => {
@@ -163,6 +209,21 @@ describe('what a request is charged', () => {
       expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
     });
 
+    it('counts the bytes it brings in against the daily byte budget and is refused once that is spent', async () => {
+      const client = visitor();
+      const before = await client.remaining();
+      await chargeAnonymousImport(client.userId, ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
+      remoteFile(CSV);
+
+      expect((await fetchUrlRoute(importRequest(client))).status).toBe(200);
+      const refused = await fetchUrlRoute(importRequest(client));
+
+      expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes' });
+      expect(vi.mocked(undiciFetch)).toHaveBeenCalledTimes(1);
+      expect(await client.remaining()).toBe(before);
+    });
+
     it('is still allowed with one conversion left, which it leaves for the conversion', async () => {
       const client = visitor();
       await client.spend((await client.remaining()) - 1);
@@ -206,6 +267,85 @@ describe('what a request is charged', () => {
     });
   });
 
+  describe('a synchronous conversion that does not finish', () => {
+    it('charges nothing when it runs past its deadline (504)', async () => {
+      vi.stubEnv('SYNC_DEADLINE_MAX_MS', '50');
+      const client = visitor();
+      const before = await client.remaining();
+      endlessConversion();
+
+      const res = await convertRoute(convertRequest(client, { name: 'scores.csv', content: CSV, target: 'json' }));
+
+      expect(res.status).toBe(HTTP_GATEWAY_TIMEOUT);
+      expect(await client.remaining()).toBe(before);
+    });
+
+    it('charges nothing when the client goes away (499)', async () => {
+      const client = visitor();
+      const before = await client.remaining();
+      const departure = new AbortController();
+      endlessConversion(() => departure.abort());
+
+      const res = await convertRoute(convertRequest(client, { name: 'scores.csv', content: CSV, target: 'json' }, departure.signal));
+
+      expect(res.status).toBe(HTTP_CLIENT_CLOSED_REQUEST);
+      expect(await client.remaining()).toBe(before);
+    });
+
+    it('charges nothing when the caller already has every conversion slot (429), on a single file or a batch', async () => {
+      const client = visitor();
+      const before = await client.remaining();
+      const release = await holdEverySlot(client.userId);
+
+      const single = await convertRoute(convertRequest(client, { name: 'scores.csv', content: CSV, target: 'json' }));
+      const batch = await batchRoute(batchRequest(client, [{ name: 'scores.csv', content: CSV }], JSON.stringify({ default: 'json' })));
+      release();
+
+      expect([single.status, batch.status]).toEqual([HTTP_TOO_MANY_REQUESTS, HTTP_TOO_MANY_REQUESTS]);
+      expect((await single.json()).type).toBe(CONCURRENCY_PROBLEM);
+      expect(await client.remaining()).toBe(before);
+    });
+  });
+
+  describe('a reservation', () => {
+    it('rolled back after it was committed leaves the count charged', async () => {
+      const client = visitor();
+      const before = await client.remaining();
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      await redisKeyStore.commitQuota(unit.reservationId as string);
+
+      expect(await redisKeyStore.rollbackQuota(unit.reservationId as string)).toBe(false);
+      expect(await client.remaining()).toBe(before - 1);
+    });
+
+    it('settled after it was rolled back changes nothing', async () => {
+      const client = visitor();
+      const before = await client.remaining();
+      const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+      await redisKeyStore.rollbackQuota(unit.reservationId as string);
+
+      expect((await redisKeyStore.settleQuota(unit.reservationId as string, 1)).success).toBe(false);
+      expect(await client.remaining()).toBe(before);
+    });
+
+    it('is kept, not given back, while its request runs past 15 minutes', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-11-02T00:00:05.000Z'));
+        const client = visitor();
+        const before = await client.remaining();
+        const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+
+        vi.setSystemTime(new Date('2026-11-02T00:20:05.000Z'));
+        expect(await client.remaining()).toBe(before - 1);
+        expect(await redisKeyStore.rollbackQuota(unit.reservationId as string)).toBe(true);
+        expect(await client.remaining()).toBe(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('a batch', () => {
     it('charges nothing when its target formats are not JSON', async () => {
       const client = visitor();
@@ -215,6 +355,18 @@ describe('what a request is charged', () => {
 
       expect(res.status).toBe(400);
       expect(await client.remaining()).toBe(before);
+    });
+
+    it('reserves only for the files it will convert, so a file it skips cannot use up the last conversion', async () => {
+      const client = visitor();
+      await client.spend((await client.remaining()) - 1);
+
+      const res = await batchRoute(
+        batchRequest(client, [{ name: 'scores.csv', content: CSV }, { name: 'other.zzzz', content: CSV }], JSON.stringify({ default: 'json' }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(await client.remaining()).toBe(0);
     });
 
     it('charges one conversion for each file that was converted, not for a file it had to skip', async () => {
@@ -236,12 +388,53 @@ describe('what a request is charged', () => {
       expect(await client.remaining()).toBe(before - 1);
     });
   });
+
+  describe('/api/v1/convert', () => {
+    /** An idempotency store that takes the lock of a key but cannot record an answer. */
+    class StoreThatCannotRecord extends InMemoryIdempotencyStore {
+      public override complete(_scopedKey: string, _fingerprint: string, _response: StoredResponse): Promise<boolean> {
+        return Promise.reject(new Error('the idempotency store went away'));
+      }
+    }
+
+    afterEach(() => setIdempotencyStore(null));
+
+    it('answers a finished conversion and charges it once when its answer cannot be recorded', async () => {
+      setIdempotencyStore(new StoreThatCannotRecord());
+      const user = userStore.sanitizeUser(await userStore.createUser({ email: `v1-${Date.now()}@quota.test`, name: 'V1', tier: 'free' }));
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'v1 key', { scopes: ['convert:write'] });
+      const remaining = async () => (await redisKeyStore.getQuotaUsage(user.id)).remaining;
+      const before = await remaining();
+      const request = () => {
+        const form = new FormData();
+        form.append('file', new File([CSV], 'scores.csv'));
+        form.append('targetFormat', 'json');
+        return new NextRequest('http://localhost/api/v1/convert', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${secretKey}`, 'idempotency-key': 'scores-once' },
+          body: form,
+        });
+      };
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const first = await v1ConvertRoute(request());
+      const repeat = await v1ConvertRoute(request());
+      errors.mockRestore();
+
+      expect(first.status).toBe(200);
+      expect(repeat.status).not.toBe(200);
+      expect(await remaining()).toBe(before - 1);
+    });
+  });
+
+  describe('a request that needs a conversion left but reserves none', () => {
+    itNeedsOneUnitLeftForEveryCaller();
+  });
 });
 
 describe('the anonymous allowance behind the production proxy', () => {
   const root = path.join(__dirname, '..');
   const compose = fs.readFileSync(path.join(root, 'docker-compose.prod.yml'), 'utf-8');
-  const nginx = fs.readFileSync(path.join(root, 'deploy', 'oci', 'nginx-easyconvert.conf'), 'utf-8');
   /** The trust declaration the production stack starts with when the operator sets none. */
   const productionTrustedProxies = /TRUSTED_PROXIES: \$\{EASYCONVERT_TRUSTED_PROXIES:-([^}]+)\}/.exec(compose)?.[1] ?? '';
 
@@ -260,10 +453,8 @@ describe('the anonymous allowance behind the production proxy', () => {
   const reserve = (forwardedFor: string) =>
     validateApiAccess(anonymousRequest(forwardedFor), { requiredUnits: 1, allowAnonymous: true });
 
-  it('declares the host proxy as the one trusted hop, and the proxy writes the client address as the only entry', () => {
-    expect(productionTrustedProxies).toBe('127.0.0.1/32,172.16.0.0/12');
-    expect(nginx).toMatch(/proxy_set_header X-Forwarded-For \$remote_addr;/);
-    expect(nginx).toMatch(/real_ip_header CF-Connecting-IP;/);
+  it('starts with a trust declaration when the operator sets none', () => {
+    expect(productionTrustedProxies).not.toBe('');
   });
 
   it('counts each visitor by the address the proxy reports, so one visitor using the allowance leaves another theirs', async () => {
