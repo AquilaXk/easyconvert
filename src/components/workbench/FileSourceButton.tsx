@@ -121,7 +121,7 @@ export default function FileSourceButton({
   };
 
   const menuItemClass =
-    'min-h-[44px] w-full px-3 rounded-xs text-sm font-medium text-ink hover:bg-sunken flex items-center gap-2.5 transition-colors cursor-pointer';
+    'min-h-[44px] md:min-h-8 w-full px-1.5 text-sm text-ink-2 hover:bg-sunken hover:text-ink flex items-center gap-2 transition-colors cursor-pointer';
   const menuItems = [
     { key: 'device', Icon: HardDrive, text: t('fromDevice'), action: onPickDevice },
     { key: 'url', Icon: Globe, text: t('fromUrl'), action: () => setIsUrlModalOpen(true) },
@@ -158,7 +158,7 @@ export default function FileSourceButton({
           aria-label={t('sourcesMenu')}
           onKeyDown={handleMenuKey}
           onMouseDown={(event) => event.preventDefault()}
-          className={`absolute right-0 ${styles.menu} w-52 max-w-[calc(100dvw-2rem)] rounded-sm bg-surface border border-rule shadow-elev-1 p-1.5 z-40 text-left`}
+          className={`absolute right-0 ${styles.menu} w-44 max-w-[calc(100dvw-2rem)] rounded-xs bg-surface border border-rule shadow-elev-1 p-1 z-40 text-left`}
         >
           {menuItems.map(({ key, Icon, text, action }, index) => (
             <button

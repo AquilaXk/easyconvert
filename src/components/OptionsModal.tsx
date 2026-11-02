@@ -124,11 +124,11 @@ export default function OptionsModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="options-modal-title"
-      className="w-full max-w-2xl rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2"
+      className="w-full max-w-2xl rounded-xs p-0 bg-surface text-ink border border-rule shadow-elev-2"
     >
       <div className="px-5 sm:px-6 py-4 border-b border-rule flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h2 id="options-modal-title" className="text-lg text-ink">
+          <h2 id="options-modal-title" className="text-base font-semibold text-ink">
             {t('heading')}
           </h2>
           <p className="text-xs text-ink-2 mt-0.5 truncate">
@@ -139,7 +139,7 @@ export default function OptionsModal({
           type="button"
           aria-label={t('close')}
           onClick={onClose}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-sm border border-rule text-ink-3 hover:text-ink hover:border-accent transition-colors cursor-pointer shrink-0"
+          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-xs border border-rule text-ink-3 hover:text-ink hover:border-accent transition-colors cursor-pointer shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
@@ -155,11 +155,11 @@ export default function OptionsModal({
         )}
       </div>
 
-      <div className="px-5 sm:px-6 py-4 bg-sunken/50 border-t border-rule rounded-b-md flex items-center justify-between gap-3">
+      <div className="px-5 sm:px-6 py-4 bg-sunken/50 border-t border-rule rounded-b-xs flex items-center justify-between gap-3">
         <button
           type="button"
           onClick={() => setOptions({ ...DEFAULT_OPTIONS })}
-          className="transition-colors min-h-[44px] px-4 rounded-sm border border-rule text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
+          className="transition-colors min-h-[44px] px-4 rounded-xs border border-rule text-sm font-medium text-ink-2 hover:text-ink hover:border-accent cursor-pointer"
         >
           {t('reset')}
         </button>
@@ -167,7 +167,7 @@ export default function OptionsModal({
           type="button"
           disabled={hasInvalidPassword}
           onClick={handleApply}
-          className="btn-primary min-h-[44px] px-5 rounded-sm text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          className="btn-primary min-h-[44px] px-5 rounded-xs text-sm font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {t('apply')}
         </button>
