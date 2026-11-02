@@ -829,15 +829,13 @@ export class CpuPoolOverloadedError extends EngineUnavailableError {
   }
 }
 
-/** A task on the CPU worker pool ran past its time limit and its thread was terminated, or the job had no time left to start it. */
+/** A task on the CPU worker pool ran past its time limit and its thread was terminated. */
 export class CpuTaskTimeoutError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'timeout';
   readonly status = 422;
 
-  constructor(kind: string, limitMs: number, message?: string);
-  constructor(message: string);
-  constructor(kindOrMessage: string, limitMs?: number, message?: string) {
-    super(message ?? (limitMs === undefined ? kindOrMessage : `The ${kindOrMessage} task exceeded its ${limitMs} ms time limit`));
+  constructor(kind: string, limitMs: number, message?: string) {
+    super(message ?? `The ${kind} task exceeded its ${limitMs} ms time limit`);
     this.name = 'CpuTaskTimeoutError';
   }
 }

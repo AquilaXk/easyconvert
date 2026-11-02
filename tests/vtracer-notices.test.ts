@@ -178,7 +178,7 @@ function crateArchive(files: Record<string, string | { symlinkTo: string }>, nam
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crate-'));
   try {
     const root = path.join(dir, `${name}-${version}`);
-    for (const [file, content] of Object.entries({ 'Cargo.toml': `[package]\nname = "${name}"\nversion = "${version}"\nlicense = "MIT"\n`, ...files })) {
+    for (const [file, content] of Object.entries<string | { symlinkTo: string }>({ 'Cargo.toml': `[package]\nname = "${name}"\nversion = "${version}"\nlicense = "MIT"\n`, ...files })) {
       const target = path.join(root, file);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       if (typeof content === 'string') fs.writeFileSync(target, content);

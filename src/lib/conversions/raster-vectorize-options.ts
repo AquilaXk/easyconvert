@@ -80,7 +80,7 @@ function choiceOf<T extends string>(choices: readonly T[], description: string):
 
 function integerIn(range: IntegerRange, description: string): OptionKind<number> {
   return {
-    isValid: (value): value is number => Number.isInteger(value) && (value as number) >= range.min && (value as number) <= range.max,
+    isValid: (value): value is number => typeof value === 'number' && Number.isInteger(value) && value >= range.min && value <= range.max,
     rule: `must be a whole number from ${range.min} to ${range.max}`,
     schema: { type: 'integer', minimum: range.min, maximum: range.max, description },
   };
@@ -157,25 +157,18 @@ export function vectorizeOptionApplies(key: VectorizeOptionKey, options: Vectori
   return VECTORIZE_OPTIONS[key].applies?.(options) ?? true;
 }
 
-function copyField<K extends VectorizeOptionKey>(key: K, from: VectorizeOptions, to: VectorizeOptions): void {
-  to[key] = from[key];
-}
-
-/** The fields of `options` that hold a value and pass `keep`, or undefined when none is left. */
-function pickFields(options: VectorizeOptions, keep: (key: VectorizeOptionKey) => boolean = () => true): VectorizeOptions | undefined {
+/** The fields of `options` that hold a value and pass `keep`, in schema order, or undefined when none is left. */
+export function pickVectorizeFields(options: VectorizeOptions, keep: (key: VectorizeOptionKey) => boolean = () => true): VectorizeOptions | undefined {
   const picked: VectorizeOptions = {};
-  for (const key of OPTION_KEYS) if (options[key] !== undefined && keep(key)) copyField(key, options, picked);
+  for (const key of OPTION_KEYS) if (options[key] !== undefined && keep(key)) Object.assign(picked, { [key]: options[key] });
   return Object.keys(picked).length > 0 ? picked : undefined;
 }
-
-/** The fields a person set in the options dialog, as typed: a field the engine ignores for now keeps its value. */
-export const setVectorizeFields = (options: VectorizeOptions): VectorizeOptions | undefined => pickFields(options);
 
 /** The valid fields of `raw` the engine reads: what a queue item keeps for a pair. */
 export function sanitizeVectorizeOptions(raw: VectorizeOptions | undefined): VectorizeOptions | undefined {
   if (raw === undefined) return undefined;
-  const valid = pickFields(raw, (key) => VECTORIZE_OPTIONS[key].isValid(raw[key])) ?? {};
-  return pickFields(valid, (key) => vectorizeOptionApplies(key, valid));
+  const valid = pickVectorizeFields(raw, (key) => VECTORIZE_OPTIONS[key].isValid(raw[key])) ?? {};
+  return pickVectorizeFields(valid, (key) => vectorizeOptionApplies(key, valid));
 }
 
 /** The engine flags of the options a request set, in schema order. Explicit flags override the preset, so only set values are sent. */

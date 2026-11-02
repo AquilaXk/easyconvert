@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { createElement, useState } from 'react';
+import { createElement, useState, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -59,19 +59,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mount(initial: ConversionOptions, locale: 'en' | 'ko' = 'en'): Promise<Mounted> {
+async function mountElement(element: ReactElement, locale: 'en' | 'ko'): Promise<HTMLElement> {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  mounted = createRoot(container);
+  mounted.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: element }));
+  await vi.waitFor(() => expect(container.querySelector('[role="radiogroup"]')).not.toBeNull());
+  return container;
+}
+
+async function mount(initial: ConversionOptions, locale: 'en' | 'ko' = 'en'): Promise<Mounted> {
   const sent: ConversionOptions[] = [];
   function Editable() {
     const [options, setOptions] = useState<ConversionOptions>(initial);
     return createElement(VectorizeOptionsSection, { options, onChange: (next: ConversionOptions) => { sent.push(next); setOptions(next); } });
   }
-  const container = document.createElement('div');
-  document.body.appendChild(container);
-  mounted = createRoot(container);
-  mounted.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: createElement(Editable) }));
-  await vi.waitFor(() => expect(container.querySelector('[role="radiogroup"]')).not.toBeNull());
-  return { container, sent };
+  return { container: await mountElement(createElement(Editable), locale), sent };
 }
 
 const textOf = (container: HTMLElement, id: string | null): string => (id ? container.ownerDocument.getElementById(id)?.textContent?.trim() ?? '' : '');
@@ -87,6 +91,13 @@ function radiosOf(container: HTMLElement, name: string): Array<{ label: string; 
     checked: element.checked,
     element,
   }));
+}
+
+/** Picks the radio a person reads as `label` in the group `name`; a missing radio fails the test instead of passing it. */
+function choose(container: HTMLElement, name: string, label: string): void {
+  const radio = radiosOf(container, name).find((candidate) => candidate.label === label);
+  if (!radio) throw new Error(`no radio ${label} in the group ${name}`);
+  radio.element.click();
 }
 
 const chosen = (container: HTMLElement, name: string): string | undefined => radiosOf(container, name).find((radio) => radio.checked)?.label;
@@ -151,17 +162,17 @@ describe('the preset and mode radio lists', () => {
 
   it('sends the preset a person picks, and none sends no preset', async () => {
     const run = await mount({});
-    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'photo')?.element.click();
+    choose(run.container, 'Preset', 'photo');
     await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ preset: 'photo' }));
     expect(chosen(run.container, 'Preset')).toBe('photo');
-    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'none')?.element.click();
+    choose(run.container, 'Preset', 'none');
     await vi.waitFor(() => expect(run.sent.at(-1)?.vectorize).toBeUndefined());
     expect(chosen(run.container, 'Preset')).toBe('none');
   });
 
   it('sends the mode a person picks', async () => {
     const run = await mount({});
-    radiosOf(run.container, 'Mode').find((radio) => radio.label === 'polygon')?.element.click();
+    choose(run.container, 'Mode', 'polygon');
     await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ mode: 'polygon' }));
     expect(chosen(run.container, 'Mode')).toBe('polygon');
   });
@@ -346,11 +357,11 @@ describe('the fields the engine ignores', () => {
     await expand(run);
     await typeInto(byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify') as HTMLInputElement, '1.5');
     await typeInto(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision-value') as HTMLInputElement, '3');
-    radiosOf(run.container, 'Mode').find((radio) => radio.label === 'polygon')?.element.click();
-    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'bw')?.element.click();
+    choose(run.container, 'Mode', 'polygon');
+    choose(run.container, 'Preset', 'bw');
     await vi.waitFor(() => expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision')?.disabled).toBe(true));
-    radiosOf(run.container, 'Mode').find((radio) => radio.label === 'spline')?.element.click();
-    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'none')?.element.click();
+    choose(run.container, 'Mode', 'spline');
+    choose(run.container, 'Preset', 'none');
     await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ mode: 'spline', simplify: 1.5, colorPrecision: 3 }));
     expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify')?.value).toBe('1.5');
     expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision-value')?.value).toBe('3');
@@ -359,9 +370,9 @@ describe('the fields the engine ignores', () => {
   it('greys a field out as soon as the person picks the mode or preset that ignores it', async () => {
     const run = await mount({});
     await expand(run);
-    radiosOf(run.container, 'Mode').find((radio) => radio.label === 'pixel')?.element.click();
+    choose(run.container, 'Mode', 'pixel');
     await vi.waitFor(() => expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify')?.disabled).toBe(true));
-    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'bw')?.element.click();
+    choose(run.container, 'Preset', 'bw');
     await vi.waitFor(() => expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision-value')?.disabled).toBe(true));
   });
 });
@@ -396,6 +407,43 @@ describe('typing a simplify tolerance', () => {
   });
 });
 
+describe('applying the options dialog', () => {
+  it('sends the queue the values the engine reads: a value typed under a mode that ignores it stays in the dialog and is left out', async () => {
+    const saved: ConversionOptions[] = [];
+    const closed = vi.fn();
+    const container = await mountElement(
+      createElement(OptionsModal, { filename: 'logo.png', sourceFormat: 'png', targetFormat: 'svg', initialOptions: {}, onSave: (options: ConversionOptions) => saved.push(options), onClose: closed }),
+      'en'
+    );
+    const run: Mounted = { container, sent: [] };
+    await expand(run);
+    await typeInto(byId<HTMLInputElement>(container, 'opt-vectorize-simplify') as HTMLInputElement, '1.5');
+    choose(container, 'Mode', 'polygon');
+    await vi.waitFor(() => expect(byId<HTMLInputElement>(container, 'opt-vectorize-simplify')?.disabled).toBe(true));
+    expect(byId<HTMLInputElement>(container, 'opt-vectorize-simplify')?.value).toBe('1.5');
+    const apply = [...container.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Apply Options');
+    if (!apply) throw new Error('no Apply Options button');
+    apply.click();
+    await vi.waitFor(() => expect(saved).toEqual([{ vectorize: { mode: 'polygon' } }]));
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the value again once the mode that reads it is back', async () => {
+    const saved: ConversionOptions[] = [];
+    const container = await mountElement(
+      createElement(OptionsModal, { filename: 'logo.png', sourceFormat: 'png', targetFormat: 'svg', initialOptions: {}, onSave: (options: ConversionOptions) => saved.push(options), onClose: noop }),
+      'en'
+    );
+    await expand({ container, sent: [] });
+    await typeInto(byId<HTMLInputElement>(container, 'opt-vectorize-simplify') as HTMLInputElement, '1.5');
+    choose(container, 'Mode', 'pixel');
+    choose(container, 'Mode', 'spline');
+    await vi.waitFor(() => expect(byId<HTMLInputElement>(container, 'opt-vectorize-simplify')?.disabled).toBe(false));
+    [...container.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Apply Options')?.click();
+    await vi.waitFor(() => expect(saved).toEqual([{ vectorize: { mode: 'spline', simplify: 1.5 } }]));
+  });
+});
+
 describe('the options a queue item keeps', () => {
   it('keeps only valid tracer options for a raster to SVG pair', () => {
     const kept = sanitizeOptionsForPair({ quality: 80, width: 100, vectorize: { preset: 'poster', colorPrecision: 12, simplify: 1.5 } }, 'jpg', 'svg');
@@ -408,7 +456,7 @@ describe('the options a queue item keeps', () => {
     expect(sanitizeOptionsForPair({ vectorize: { preset: 'bw', colorPrecision: 3, filterSpeckle: 8 } }, 'gif', 'svg')).toEqual({ vectorize: { preset: 'bw', filterSpeckle: 8 } });
   });
 
-  it('drops every option of the sections the pair does not show', () => {
+  it('drops every option of the sections a raster to SVG pair does not show, for a PNG and for a TIFF source', () => {
     const hidden: ConversionOptions = {
       quality: 80, width: 100, height: 50, fit: 'cover', stripMetadata: true, pages: '1-2', orientation: 'landscape', ocrEnabled: true,
       ocrLanguage: 'eng', password: 'secret', compressionLevel: 9, delimiter: ';', sheetIndex: 1, audioBitrate: '128k', videoFps: 30,

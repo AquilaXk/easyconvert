@@ -15,7 +15,7 @@ import {
   COLOR_PRECISION_RANGE,
   DEFAULT_VECTORIZE_MODE,
   FILTER_SPECKLE_RANGE,
-  setVectorizeFields,
+  pickVectorizeFields,
   TOLERANCE_EXCLUSIVE_MINIMUM,
   vectorizeDefaults,
   vectorizeOptionApplies,
@@ -72,65 +72,59 @@ function ChoiceList<T extends string>({ label, choices, selected, onSelect }: Re
   );
 }
 
-/**
- * A field with a range has a slider and always a value, a whole number in the range. A field without one takes any number above
- * TOLERANCE_EXCLUSIVE_MINIMUM, and has no value while it holds anything else.
- */
-type NumberFieldProps = {
+/** The words around a field: its label and unit, the hint (or why the engine ignores the field), and whether it is ignored. */
+interface FieldText {
   id: string;
   label: string;
   unit: string;
-  /** The hint, or why the engine ignores the field when it is disabled. */
   help: string;
-  placeholder?: string;
   disabled: boolean;
-  onChange: (value: number | undefined) => void;
-} & ({ range: IntegerRange; value: number } | { range?: undefined; value: number | undefined });
-
-/** The value a text sets as it is typed, or null when it sets none: a whole number in the range, or a tolerance above its minimum. */
-function parseNumber(text: string, range: IntegerRange | undefined): number | null {
-  const value = Number(text);
-  if (range) return /^\d+$/.test(text) && value >= range.min && value <= range.max ? value : null;
-  return text.trim() && Number.isFinite(value) && value > TOLERANCE_EXCLUSIVE_MINIMUM ? value : null;
 }
 
-/** The whole number in the range nearest to a typed number, or null for a text that is not a number. */
-function clampNumber(text: string, range: IntegerRange): number | null {
-  const value = Number(text);
-  return text.trim() && Number.isFinite(value) ? Math.min(range.max, Math.max(range.min, Math.round(value))) : null;
+interface NumberInputProps {
+  id: string;
+  label: string;
+  unit: string;
+  helpId: string;
+  placeholder?: string;
+  disabled: boolean;
+  min: number;
+  max?: number;
+  step: number;
+  value: number | undefined;
+  /** The value a typed text sets. */
+  typedValue: (text: string) => number | undefined;
+  /** The value to bring a typed text to on leaving the field, or null to leave it. */
+  settle?: (text: string) => number | null;
+  onChange: (value: number | undefined) => void;
 }
 
 /**
- * A number field with its unit inside, and a slider beside it when it has a range; the slider and the field move each other. What the
- * person typed is kept while it is not a value yet ("0" on the way to "0.5", an empty field on the way to "9") and until the value
- * changes some other way. Leaving the field brings a number past the range to the nearest whole number inside it, and shows the value.
+ * A number field with its unit inside. What the person typed is kept while it is not a value yet ("0" on the way to "0.5", an empty
+ * field on the way to "9") and until the value changes some other way; leaving the field shows the value.
  */
-function NumberField(props: Readonly<NumberFieldProps>) {
-  const { id, label, unit, help, range, placeholder, value, disabled, onChange } = props;
+function NumberInput({ id, label, unit, helpId, placeholder, disabled, min, max, step, value, typedValue, settle, onChange }: Readonly<NumberInputProps>) {
   const t = useTranslations('options.vectorize');
   const [draft, setDraft] = useState<{ text: string; forValue: number | undefined } | null>(null);
   const shown = draft && draft.forValue === value ? draft.text : String(value ?? '');
-  const fieldId = range ? `${id}-value` : id;
-  const helpId = `${id}-help`;
   const type = (text: string) => {
-    const parsed = parseNumber(text, range);
-    const next = parsed ?? (range ? value : undefined);
+    const next = typedValue(text);
     setDraft({ text, forValue: next });
     if (next !== value) onChange(next);
   };
   const leave = () => {
-    const clamped = range && draft ? clampNumber(draft.text, range) : null;
-    if (clamped !== null && clamped !== value) onChange(clamped);
+    const settled = draft && settle ? settle(draft.text) : null;
+    if (settled !== null && settled !== value) onChange(settled);
     setDraft(null);
   };
-  const field = (
+  return (
     <div className="relative">
       <input
-        id={fieldId}
+        id={id}
         type="number"
-        min={range?.min ?? TOLERANCE_EXCLUSIVE_MINIMUM}
-        max={range?.max}
-        step={range ? 1 : SIMPLIFY_STEP}
+        min={min}
+        max={max}
+        step={step}
         value={shown}
         disabled={disabled}
         aria-label={t('fieldWithUnit', { field: label, unit })}
@@ -143,29 +137,103 @@ function NumberField(props: Readonly<NumberFieldProps>) {
       <span className="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-xs text-ink-3">{unit}</span>
     </div>
   );
+}
+
+/** The whole number a text sets in the range, or null while it sets none. */
+function parseInteger(text: string, range: IntegerRange): number | null {
+  const value = Number(text);
+  return /^\d+$/.test(text) && value >= range.min && value <= range.max ? value : null;
+}
+
+/** The whole number in the range nearest to a typed number, or null for a text that is not a number. */
+function clampNumber(text: string, range: IntegerRange): number | null {
+  const value = Number(text);
+  return text.trim() && Number.isFinite(value) ? Math.min(range.max, Math.max(range.min, Math.round(value))) : null;
+}
+
+/** The tolerance a text sets, any number above TOLERANCE_EXCLUSIVE_MINIMUM, or null while it sets none. */
+function parseTolerance(text: string): number | null {
+  const value = Number(text);
+  return text.trim() && Number.isFinite(value) && value > TOLERANCE_EXCLUSIVE_MINIMUM ? value : null;
+}
+
+interface RangeFieldProps {
+  text: FieldText;
+  range: IntegerRange;
+  /** Always a whole number in the range: the value the person set, or what the engine uses without it. */
+  value: number;
+  onChange: (value: number) => void;
+}
+
+/** A slider and a number field that move each other. A number typed past the range is brought inside it on leaving the field. */
+function RangeField({ text, range, value, onChange }: Readonly<RangeFieldProps>) {
+  const helpId = `${text.id}-help`;
   return (
     <div>
-      <label htmlFor={id} className={LABEL_CLASS}>{label}</label>
-      {props.range ? (
-        <div className="flex items-center gap-3">
-          <input
-            id={id}
-            type="range"
-            min={props.range.min}
-            max={props.range.max}
-            value={props.value}
-            disabled={disabled}
-            aria-describedby={helpId}
-            onChange={(e) => onChange(Number(e.target.value))}
-            className={`${RANGE_CLASS} min-w-0 flex-1 ${DISABLED_CLASS}`}
-            style={rangeFill(props.value, props.range.min, props.range.max)}
+      <label htmlFor={text.id} className={LABEL_CLASS}>{text.label}</label>
+      <div className="flex items-center gap-3">
+        <input
+          id={text.id}
+          type="range"
+          min={range.min}
+          max={range.max}
+          value={value}
+          disabled={text.disabled}
+          aria-describedby={helpId}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className={`${RANGE_CLASS} min-w-0 flex-1 ${DISABLED_CLASS}`}
+          style={rangeFill(value, range.min, range.max)}
+        />
+        <div className="w-28 shrink-0">
+          <NumberInput
+            id={`${text.id}-value`}
+            label={text.label}
+            unit={text.unit}
+            helpId={helpId}
+            disabled={text.disabled}
+            min={range.min}
+            max={range.max}
+            step={1}
+            value={value}
+            typedValue={(typed) => parseInteger(typed, range) ?? value}
+            settle={(typed) => clampNumber(typed, range)}
+            onChange={(next) => onChange(next ?? value)}
           />
-          <div className="w-28 shrink-0">{field}</div>
         </div>
-      ) : (
-        field
-      )}
-      <p id={helpId} className={HELP_CLASS}>{help}</p>
+      </div>
+      <p id={helpId} className={HELP_CLASS}>{text.help}</p>
+    </div>
+  );
+}
+
+interface ToleranceFieldProps {
+  text: FieldText;
+  placeholder: string;
+  /** Undefined while the field holds no tolerance. */
+  value: number | undefined;
+  onChange: (value: number | undefined) => void;
+}
+
+/** A field for a distance above zero, empty while the option is off. */
+function ToleranceField({ text, placeholder, value, onChange }: Readonly<ToleranceFieldProps>) {
+  const helpId = `${text.id}-help`;
+  return (
+    <div>
+      <label htmlFor={text.id} className={LABEL_CLASS}>{text.label}</label>
+      <NumberInput
+        id={text.id}
+        label={text.label}
+        unit={text.unit}
+        helpId={helpId}
+        placeholder={placeholder}
+        disabled={text.disabled}
+        min={TOLERANCE_EXCLUSIVE_MINIMUM}
+        step={SIMPLIFY_STEP}
+        value={value}
+        typedValue={(typed) => parseTolerance(typed) ?? undefined}
+        onChange={onChange}
+      />
+      <p id={helpId} className={HELP_CLASS}>{text.help}</p>
     </div>
   );
 }
@@ -173,9 +241,14 @@ function NumberField(props: Readonly<NumberFieldProps>) {
 /** The range as the values a hint names it with. */
 const limits = ({ min, max }: IntegerRange) => ({ min, max });
 
-/** The fields under the Advanced disclosure. */
-const ADVANCED_FIELDS = ['filterSpeckle', 'colorPrecision', 'simplify'] as const;
+/** The fields under the Advanced disclosure, in the order they are shown; the disclosure opens when the options set one of them. */
+const ADVANCED_FIELDS = [
+  { key: 'filterSpeckle', id: 'opt-vectorize-filter-speckle', unit: 'unitPixels', range: FILTER_SPECKLE_RANGE },
+  { key: 'colorPrecision', id: 'opt-vectorize-color-precision', unit: 'unitBits', range: COLOR_PRECISION_RANGE },
+  { key: 'simplify', id: 'opt-vectorize-simplify', unit: 'unitPixels' },
+] as const;
 
+type AdvancedKey = (typeof ADVANCED_FIELDS)[number]['key'];
 type PresetChoice = 'none' | (typeof VECTORIZE_PRESETS)[number];
 
 /**
@@ -185,18 +258,26 @@ type PresetChoice = 'none' | (typeof VECTORIZE_PRESETS)[number];
 export function VectorizeOptionsSection({ options, onChange }: Readonly<SectionProps>) {
   const t = useTranslations('options.vectorize');
   const current = options.vectorize ?? {};
-  const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_FIELDS.some((key) => current[key] !== undefined));
+  const [advancedOpen, setAdvancedOpen] = useState(() => ADVANCED_FIELDS.some(({ key }) => current[key] !== undefined));
   const advancedId = useId();
   const defaults = vectorizeDefaults(current.preset);
   // The values stay as typed while the engine ignores them, so switching back restores them; the queue item keeps only what it reads.
-  const update = (patch: VectorizeOptions) => onChange({ ...options, vectorize: setVectorizeFields({ ...current, ...patch }) });
-  const colorPrecisionApplies = vectorizeOptionApplies('colorPrecision', current);
-  const simplifyApplies = vectorizeOptionApplies('simplify', current);
+  const update = (patch: VectorizeOptions) => onChange({ ...options, vectorize: pickVectorizeFields({ ...current, ...patch }) });
   const presetChoices: ReadonlyArray<Choice<PresetChoice>> = [
     { value: 'none', label: t('presetChoices.none') },
     ...VECTORIZE_PRESETS.map((preset) => ({ value: preset, label: t(`presetChoices.${preset}`), description: t(`presetDescriptions.${preset}`) })),
   ];
   const modeChoices = VECTORIZE_MODES.map((mode) => ({ value: mode, label: t(`modeChoices.${mode}`), description: t(`modeDescriptions.${mode}`) }));
+  const words: Record<AdvancedKey, { label: string; hint: string; ignored?: string }> = {
+    filterSpeckle: { label: t('filterSpeckle'), hint: t('filterSpeckleHint', limits(FILTER_SPECKLE_RANGE)) },
+    colorPrecision: { label: t('colorPrecision'), hint: t('colorPrecisionHint', limits(COLOR_PRECISION_RANGE)), ignored: t('colorPrecisionNotApplied') },
+    simplify: { label: t('simplify'), hint: t('simplifyHint'), ignored: t('simplifyNotApplied') },
+  };
+  const fieldText = (field: (typeof ADVANCED_FIELDS)[number]): FieldText => {
+    const applies = vectorizeOptionApplies(field.key, current);
+    const { label, hint, ignored } = words[field.key];
+    return { id: field.id, label, unit: t(field.unit), help: applies ? hint : (ignored ?? hint), disabled: !applies };
+  };
   return (
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>{t('heading')}</h3>
@@ -226,36 +307,25 @@ export function VectorizeOptionsSection({ options, onChange }: Readonly<SectionP
       </button>
       {advancedOpen && (
         <div id={advancedId} className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-          <NumberField
-            id="opt-vectorize-filter-speckle"
-            label={t('filterSpeckle')}
-            unit={t('unitPixels')}
-            help={t('filterSpeckleHint', limits(FILTER_SPECKLE_RANGE))}
-            range={FILTER_SPECKLE_RANGE}
-            value={current.filterSpeckle ?? defaults.filterSpeckle}
-            disabled={false}
-            onChange={(filterSpeckle) => update({ filterSpeckle })}
-          />
-          <NumberField
-            id="opt-vectorize-color-precision"
-            label={t('colorPrecision')}
-            unit={t('unitBits')}
-            help={colorPrecisionApplies ? t('colorPrecisionHint', limits(COLOR_PRECISION_RANGE)) : t('colorPrecisionNotApplied')}
-            range={COLOR_PRECISION_RANGE}
-            value={current.colorPrecision ?? defaults.colorPrecision}
-            disabled={!colorPrecisionApplies}
-            onChange={(colorPrecision) => update({ colorPrecision })}
-          />
-          <NumberField
-            id="opt-vectorize-simplify"
-            label={t('simplify')}
-            unit={t('unitPixels')}
-            help={simplifyApplies ? t('simplifyHint') : t('simplifyNotApplied')}
-            placeholder={t('simplifyOff')}
-            value={current.simplify}
-            disabled={!simplifyApplies}
-            onChange={(simplify) => update({ simplify })}
-          />
+          {ADVANCED_FIELDS.map((field) =>
+            'range' in field ? (
+              <RangeField
+                key={field.key}
+                text={fieldText(field)}
+                range={field.range}
+                value={current[field.key] ?? defaults[field.key]}
+                onChange={(value) => update({ [field.key]: value })}
+              />
+            ) : (
+              <ToleranceField
+                key={field.key}
+                text={fieldText(field)}
+                placeholder={t('simplifyOff')}
+                value={current[field.key]}
+                onChange={(value) => update({ [field.key]: value })}
+              />
+            )
+          )}
         </div>
       )}
     </section>

@@ -128,6 +128,13 @@ function memoryRefusal(): PayloadLimitError {
   return new PayloadLimitError(`Tracing this picture needs more than the ${ENGINE_MEMORY_LIMIT_MB} MB the SVG tracer may use. Simplify the picture, or raise filterSpeckle or lower colorPrecision.`);
 }
 
+/** A trace the job had no time left to start: the typed time-limit refusal, with the stage limit the job ran past. */
+class TraceOutOfTimeError extends CpuTaskTimeoutError {
+  constructor(limitMs: number) {
+    super(TRACE_TASK, limitMs, OUT_OF_TIME);
+  }
+}
+
 function outputRefusal(): PayloadLimitError {
   return new PayloadLimitError(`The SVG traced from this picture is larger than ${VECTORIZE_MAX_OUTPUT_BYTES} bytes. Raise filterSpeckle or lower colorPrecision for fewer shapes.`);
 }
@@ -146,7 +153,7 @@ function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): u
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError(TRACE_TASK, timeoutMs);
   // The sandbox counts SIGSEGV under a memory limit as a memory refusal, since a C program faults on an allocation it did not check.
   // A Rust program aborts instead: a failed allocation prints what ALLOCATION_FAILURE matches (std `default_alloc_error_hook`) and a
-  // stack overflow prints its own message (std `stack_overflow.rs`), so a SIGSEGV of this program is a fault in it.
+  // stack overflow prints its own message (std `stack_overflow.rs`), so a SIGSEGV of this program is most likely a fault in it, and is reported as one.
   if (error instanceof SandboxedMemoryLimitError) return error.signal === SIGSEGV ? traceFailure(`was stopped by ${SIGSEGV}`) : memoryRefusal();
   if (error instanceof SandboxedBufferLimitError) {
     return error.kind === 'file-size' ? outputRefusal() : new ConversionFailedError('The SVG tracer printed more diagnostics than the limit allows.');
@@ -195,7 +202,7 @@ async function trace(binary: string, picture: Buffer, args: string[], options: C
 function assertTimeLeft(options: ConversionOptions): void {
   options.signal?.throwIfAborted();
   const remaining = remainingJobMs(options);
-  if (remaining !== undefined && remaining <= 0) throw new CpuTaskTimeoutError(OUT_OF_TIME);
+  if (remaining !== undefined && remaining <= 0) throw new TraceOutOfTimeError(stageTimeoutMs(options, ENGINE_DEFAULT_TIMEOUT_MS));
 }
 
 /**
