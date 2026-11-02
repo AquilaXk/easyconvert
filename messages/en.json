@@ -480,7 +480,7 @@
       "yaml-json": "Configuration file normalization",
       "json-csv": "Tabular row and column export",
       "svg-png": "Crisp rasterized PNG graphic",
-      "ai-pdf": "Vector artwork preservation in PDF",
+      "ai-pdf": "Vector artwork to PDF",
       "eps-svg": "Web-ready scalable SVG vector",
       "ttf-woff2": "Compressed WOFF2 web font",
       "otf-ttf": "TrueType desktop font binary",
@@ -536,9 +536,7 @@
     "fallbackName": "{ext} Format",
     "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows.",
     "advantages": {
-      "structure": "Accurate {category} structure translation",
-      "sandbox": "Converted in an isolated sandbox, and files are deleted automatically",
-      "container": "Preserves container layout, streams, and metadata"
+      "sandbox": "Converted in an isolated sandbox, and files are deleted automatically"
     }
   },
   "formatSelector": {
@@ -892,7 +890,7 @@
     "about": {
       "purpose": {
         "heading": "Purpose-Built File Conversion Utility",
-        "body": "EasyConvert provides fast, accurate file conversions across {count} registered formats spanning documents, spreadsheets, presentations, raster and RAW images, vector graphics, CAD drawings, audio, video, fonts, ebooks, and archives."
+        "body": "EasyConvert converts files across {count} registered formats spanning documents, spreadsheets, presentations, raster and RAW images, vector graphics, CAD drawings, audio, video, fonts, ebooks, and archives."
       },
       "architecture": {
         "heading": "Browser and Server Conversion",
@@ -928,7 +926,7 @@
       },
       "feedback": {
         "heading": "Feedback & Assistance",
-        "body": "If you encounter an accessibility barrier on any EasyConvert page or API tool, contact our team so we can reproduce and resolve the issue promptly.",
+        "body": "If you encounter an accessibility barrier on any EasyConvert page or API tool, contact our team so we can reproduce and resolve the issue.",
         "link": "support@easyconvert.com (Accessibility Feedback)"
       }
     },

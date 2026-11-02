@@ -480,7 +480,7 @@
       "yaml-json": "설정 파일 형식 통일",
       "json-csv": "행과 열로 된 표로 내보내기",
       "svg-png": "선명한 PNG 이미지로 래스터화",
-      "ai-pdf": "벡터 아트워크를 PDF로 보존",
+      "ai-pdf": "벡터 아트워크를 PDF로 변환",
       "eps-svg": "웹에서 쓰는 확장 가능한 SVG 벡터",
       "ttf-woff2": "압축된 WOFF2 웹 글꼴",
       "otf-ttf": "데스크톱용 TrueType 글꼴",
@@ -536,9 +536,7 @@
     "fallbackName": "{ext} 형식",
     "fallbackDesc": "{name} 형식은 여러 운영체제와 변환 도구에서 널리 지원하는 파일 형식이에요.",
     "advantages": {
-      "structure": "{category} 구조를 정확하게 변환",
-      "sandbox": "격리된 환경에서 처리하고 파일은 자동으로 삭제",
-      "container": "컨테이너 구조, 스트림, 메타데이터 유지"
+      "sandbox": "격리된 환경에서 처리하고 파일은 자동으로 삭제"
     }
   },
   "formatSelector": {
@@ -892,7 +890,7 @@
     "about": {
       "purpose": {
         "heading": "파일 변환에 집중한 도구",
-        "body": "EasyConvert는 문서, 스프레드시트, 프레젠테이션, 래스터 및 RAW 이미지, 벡터 그래픽, CAD 도면, 오디오, 동영상, 글꼴, 전자책, 압축 파일까지 {count}개 형식을 빠르고 정확하게 변환해요."
+        "body": "EasyConvert는 문서, 스프레드시트, 프레젠테이션, 래스터 및 RAW 이미지, 벡터 그래픽, CAD 도면, 오디오, 동영상, 글꼴, 전자책, 압축 파일까지 {count}개 형식을 변환해요."
       },
       "architecture": {
         "heading": "브라우저 변환과 서버 변환",
@@ -928,7 +926,7 @@
       },
       "feedback": {
         "heading": "의견 보내기와 지원",
-        "body": "EasyConvert 페이지나 API 도구에서 접근성 문제를 발견했다면 팀에 알려 주세요. 문제를 재현해서 빠르게 해결할게요.",
+        "body": "EasyConvert 페이지나 API 도구에서 접근성 문제를 발견했다면 팀에 알려 주세요. 문제를 재현해서 해결할게요.",
         "link": "support@easyconvert.com (접근성 의견)"
       }
     },
@@ -1618,7 +1616,7 @@
     "ogg": "Vorbis나 Opus 압축을 사용하는 개방형 컨테이너 형식이에요.",
     "wma": "Windows Media Audio 독자 오디오 형식이에요.",
     "m4a": "Apple 기기와 iTunes에서 주로 쓰는 MPEG-4 오디오 컨테이너예요.",
-    "opus": "대화형 음성과 고음질 음악 스트리밍을 위한 IETF 표준 코덱이에요.",
+    "opus": "대화형 음성과 음악 스트리밍을 위한 IETF 표준 코덱이에요.",
     "aiff": "Apple이 비압축 PCM용으로 개발한 오디오 교환 파일 형식이에요.",
     "aif": "오디오 교환 파일 형식(AIFF)의 다른 확장자예요.",
     "alac": "무손실 오디오 보관을 위한 Apple Lossless 오디오 코덱이에요.",

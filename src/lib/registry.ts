@@ -81,7 +81,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     extension: 'opus',
     mimeType: 'audio/opus',
     category: 'audio',
-    description: 'IETF standard interactive speech and high-fidelity music streaming codec.',
+    description: 'IETF standard codec for interactive speech and music streaming.',
     targetFormats: ['mp3', 'wav', 'aac', 'ogg', 'flac', 'zip', 'aiff', 'm4a', 'opus', 'wma'],
     optionsSchema: { audioBitrate: true, audioChannels: true, audioSampleRate: true },
   },

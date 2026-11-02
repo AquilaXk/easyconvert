@@ -139,7 +139,7 @@ export function useFormatDetail(): (formatKey: string) => FormatSpecification {
       extension: ext,
       categoryLabel,
       desc,
-      advantages: [t('advantages.structure', { category: categoryLabel.toLowerCase() }), t('advantages.sandbox'), t('advantages.container')],
+      advantages: [t('advantages.sandbox')],
     };
   };
 }
