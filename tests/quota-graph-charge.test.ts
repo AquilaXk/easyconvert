@@ -14,6 +14,7 @@ import { s3Storage } from '../src/lib/storage/s3-storage';
 import { holdResultForJob } from '../src/lib/storage/retention-service';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import type { GraphExecutionState } from '../src/lib/queue/graph/scheduler-types';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 // The scheduler, the queues and the quota store pick Redis or this process when they are first imported.
 vi.hoisted(() => {
@@ -87,7 +88,7 @@ describe('the in-memory graph scheduler', () => {
       const graphId = `graph_twice_${Date.now()}`;
       await scheduler.initGraph(
         graphId,
-        {
+        sealGraph(graphId, {
           failurePolicy: 'continue',
           nodes: {
             left: { op: 'import.upload', storageKey: 'uploads/graph-twice/left.csv' },
@@ -95,7 +96,7 @@ describe('the in-memory graph scheduler', () => {
             leftJson: { op: 'convert', input: 'left', targetFormat: 'json' },
             rightJson: { op: 'convert', input: 'right', targetFormat: 'json' },
           },
-        },
+        }),
         { webhookUrl: 'https://hooks.example.com/graph', webhookSecret: 'whsec_twice' }
       );
 
@@ -127,7 +128,7 @@ describe('the end of a graph, in this process', () => {
     try {
       const scheduler = new InMemoryGraphScheduler();
       const graphId = `graph_end_read_${Date.now()}`;
-      const state = await scheduler.initGraph(graphId, uploads(graphId), WEBHOOK);
+      const state = await scheduler.initGraph(graphId, sealGraph(graphId, uploads(graphId)), WEBHOOK);
       let reads = 0;
       const readState = async () => {
         reads += 1;
@@ -203,7 +204,7 @@ describe('the end of a graph, in this process', () => {
     try {
       const scheduler = new InMemoryGraphScheduler();
       const graphId = `graph_end_cancel_${Date.now()}`;
-      await scheduler.initGraph(graphId, uploads(graphId));
+      await scheduler.initGraph(graphId, sealGraph(graphId, uploads(graphId)));
 
       const failure = await scheduler.onNodeFailed(graphId, 'left', 'left failed');
 

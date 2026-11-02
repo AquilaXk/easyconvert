@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { withReservedUnit } from '../../src/lib/api-keys/guard';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
-import { GRAPH_START_CANCEL_ATTEMPTS } from '../../src/lib/queue/graph/node-jobs';
+import { GRAPH_START_CANCEL_ATTEMPTS, sealGraph } from '../../src/lib/queue/graph/node-jobs';
 import { getRetentionLedger } from '../../src/lib/storage/retention-ledger';
 import { holdResultForJob } from '../../src/lib/storage/retention-service';
 import { QueueUnavailableError } from '../../src/lib/types';
@@ -52,7 +52,7 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
     expect(unit.allowed).toBe(true);
     const graphId = `graph_recovery_${crypto.randomBytes(6).toString('hex')}`;
     refuseNodeJobs(true);
-    await expect(scheduler.initGraph(graphId, GRAPH, { ownerUserId: controls.owner(), reservationId: unit.reservationId })).rejects.toThrow();
+    await expect(scheduler.initGraph(graphId, sealGraph(graphId, GRAPH), { ownerUserId: controls.owner(), reservationId: unit.reservationId })).rejects.toThrow();
     expect(await used()).toBe(1);
     return { scheduler, graphId };
   }
@@ -96,7 +96,7 @@ export function itRecoversAGraphStart(controls: GraphRecoveryControls): void {
 
     const handedOff = withReservedUnit(unit.reservationId, (reserved) =>
       reserved.handOff({
-        start: (reservationId) => scheduler.initGraph(graphId, graph, { ownerUserId: controls.owner(), reservationId }),
+        start: (reservationId) => scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: controls.owner(), reservationId }),
         recover: () => scheduler.recoverStart(graphId),
       })
     );

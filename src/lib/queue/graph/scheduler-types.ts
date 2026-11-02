@@ -76,8 +76,13 @@ export interface NodeFailureResult {
   skippedNodeIds: NodeId[];
 }
 
+declare const sealedGraph: unique symbol;
+
+/** A graph whose nodes carry their secrets sealed under their job ids (`sealGraph` in node-jobs.ts): the only graph a scheduler stores. */
+export type SealedJobGraph = JobGraph & { readonly [sealedGraph]: true };
+
 export interface IGraphScheduler {
-  initGraph(graphId: string, graph: JobGraph, meta?: GraphMetadata): Promise<GraphExecutionState>;
+  initGraph(graphId: string, graph: SealedJobGraph, meta?: GraphMetadata): Promise<GraphExecutionState>;
   onNodeStarted(graphId: string, nodeId: NodeId): Promise<void>;
   onNodeCompleted(
     graphId: string,

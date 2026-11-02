@@ -24,6 +24,7 @@ import {
   type RetentionRecord,
 } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * An uploaded input is held for every job or graph that reads it and goes, after the grace period of a delivered
@@ -145,7 +146,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-complete');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, twoNodes(key)));
+    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, sealGraph(graphId, twoNodes(key))));
 
     await scheduler.onNodeStarted(graphId, 'src');
     const first = await scheduler.onNodeCompleted(graphId, 'src', [key]);
@@ -163,7 +164,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-failed');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, twoNodes(key)));
+    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, sealGraph(graphId, twoNodes(key))));
 
     const failure = await scheduler.onNodeFailed(graphId, 'src', 'boom');
 
@@ -176,7 +177,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-cancelled');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, twoNodes(key)));
+    await withGraphInputsHeld(graphId, twoNodes(key).nodes, () => scheduler.initGraph(graphId, sealGraph(graphId, twoNodes(key))));
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
@@ -188,7 +189,7 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-unheld');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await scheduler.initGraph(graphId, twoNodes(key));
+    await scheduler.initGraph(graphId, sealGraph(graphId, twoNodes(key)));
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
@@ -202,7 +203,7 @@ describe('the uploaded input of a graph', () => {
     storedKeys.push(key);
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await scheduler.initGraph(graphId, twoNodes(key));
+    await scheduler.initGraph(graphId, sealGraph(graphId, twoNodes(key)));
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
@@ -253,7 +254,7 @@ describe('the hold on an owner\'s earlier output chained as a job input', () => 
         out: { op: 'convert' as const, input: 'src', targetFormat: 'json' },
       },
     };
-    await withGraphInputsHeld(graphId, graph.nodes, () => scheduler.initGraph(graphId, graph));
+    await withGraphInputsHeld(graphId, graph.nodes, () => scheduler.initGraph(graphId, sealGraph(graphId, graph)));
     expect(await sweepRetention(storage, afterUndelivered())).toBe(0);
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);

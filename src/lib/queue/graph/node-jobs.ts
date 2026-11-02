@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { GraphExecutionState, GraphNodeJobMetadata, IGraphScheduler } from './scheduler-types';
+import type { GraphExecutionState, GraphNodeJobMetadata, IGraphScheduler, SealedJobGraph } from './scheduler-types';
 import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
-import type { GraphNode, NodeId } from './types';
+import type { GraphNode, JobGraph, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { enqueueConversionJob } from '../enqueue';
 import { tierForOwner } from '../page-cap';
@@ -17,6 +17,15 @@ export const GRAPH_NODE_JOB_ATTEMPTS = 3;
 /** Queue job ID of a graph node. Deterministic so a repeated enqueue is a no-op. */
 export function graphNodeJobId(graphId: string, nodeId: NodeId): string {
   return `${graphId}:${nodeId}`;
+}
+
+/**
+ * A copy of the graph `graphId` with every node's secrets sealed under that node's job id, done once by the route before the
+ * hand-off, so a secret that cannot be sealed refuses the request before its unit is handed off.
+ */
+export function sealGraph(graphId: string, graph: JobGraph): SealedJobGraph {
+  const nodes = Object.fromEntries(Object.entries(graph.nodes).map(([nodeId, node]) => [nodeId, sealGraphNode(node, graphNodeJobId(graphId, nodeId))]));
+  return { ...graph, nodes } as SealedJobGraph;
 }
 
 /** Where a node's files go: `intermediate` until the graph ends, or `results` for what an `export.internal` node keeps. */

@@ -46,6 +46,7 @@ import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
 import { itLeasesHandedOffWork, itLeasesReservations } from './helpers/reservation-lease-cases';
 import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * The quota is Lua scripts over real keys, so what a request is charged is checked on a real Redis server, through the
@@ -672,7 +673,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
 
       const handedOff = withReservedUnit(unit.reservationId, (reserved) =>
         reserved.handOff({
-          start: (reservationId) => scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId }),
+          start: (reservationId) => scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, reservationId }),
           recover: () => scheduler.recoverStart(graphId),
         })
       );
@@ -717,7 +718,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
         const unit = await redisKeyStore.reserveQuota(client.userId, 2);
         const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
         const graph = { failurePolicy: 'fail_fast' as const, nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' } } };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
         expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
 
         control.failNextListRead = true;
@@ -759,7 +760,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
           failurePolicy: 'fail_fast' as const,
           nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' }, conv: { op: 'convert' as const, input: 'up', targetFormat: 'json' } },
         };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, ...WEBHOOK });
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, ...WEBHOOK });
 
         control.failNextStateRead = true;
         await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
@@ -788,7 +789,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
             right: { op: 'convert' as const, input: 'up', targetFormat: 'xml' },
           },
         };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, ...WEBHOOK });
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, ...WEBHOOK });
 
         const failure = await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
 
@@ -806,7 +807,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       const unit = await redisKeyStore.reserveQuota(client.userId, 1);
       const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
       const input = `uploads/${graphId}/a.csv`;
-      await scheduler.initGraph(graphId, { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: input } } }, { ownerUserId: client.userId, reservationId: unit.reservationId });
+      await scheduler.initGraph(graphId, sealGraph(graphId, { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: input } } }), { ownerUserId: client.userId, reservationId: unit.reservationId });
 
       await advanceQuotaClock(RESERVATION_LEASE.provisionalMs + 1000);
 
@@ -825,7 +826,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
           failurePolicy: 'fail_fast' as const,
           nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' }, conv: { op: 'convert' as const, input: 'up', targetFormat: 'json' } },
         };
-        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
+        await scheduler.initGraph(graphId, sealGraph(graphId, graph), { ownerUserId: client.userId, reservationId: unit.reservationId, ...WEBHOOK });
 
         control.failNextListRead = true;
         await expect(scheduler.onNodeCompleted(graphId, 'up', ['uploads/graph-end/a.csv'], 0)).rejects.toThrow('the connection dropped');

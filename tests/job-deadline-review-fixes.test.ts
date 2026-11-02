@@ -10,7 +10,7 @@ import {
   attachJobLifecycleListeners,
   conversionQueue,
 } from '../src/lib/queue/conversion-queue';
-import { enqueueGraphNodeJob } from '../src/lib/queue/graph/node-jobs';
+import { enqueueGraphNodeJob, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { legacyJobTimeoutMs } from '../src/lib/queue/enqueue';
 import { JOB_DEADLINE_AT, bindJobLimits, clampToJobRemaining, remainingJobMs, stageTimeoutMs, stripEngineControls } from '../src/lib/conversions/job-time';
@@ -474,14 +474,14 @@ describe('a graph node that hits its deadline fails the graph', () => {
     const graphId = `deadline_graph_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     await graphScheduler.initGraph(
       graphId,
-      {
+      sealGraph(graphId, {
         failurePolicy: policy,
         nodes: {
           up: { op: 'import.upload', storageKey },
           conv: { op: 'convert', input: 'up', targetFormat: 'json' },
           out: { op: 'export.internal', input: 'conv' },
         },
-      } as never,
+      } as never),
       { originalFilename: 'in.csv' }
     );
     return graphId;
@@ -532,14 +532,14 @@ describe('a graph node that hits its deadline fails the graph', () => {
     const graphId = `deadline_graph_opts_${Date.now()}`;
     await graphScheduler.initGraph(
       graphId,
-      {
+      sealGraph(graphId, {
         failurePolicy: 'fail_fast',
         nodes: {
           up: { op: 'import.upload', storageKey },
           conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { signal: {}, timeoutMs: 999_999_999, deadline: 1 } },
           out: { op: 'export.internal', input: 'conv' },
         },
-      } as never,
+      } as never),
       { originalFilename: 'in.csv' }
     );
     expect(await waitUntil(() => seen.length === 1, 5_000)).toBe(true);

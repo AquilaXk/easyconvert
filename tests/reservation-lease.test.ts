@@ -22,6 +22,7 @@ import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult
 import { storageProvider } from '../src/lib/storage';
 import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 // The quota store picks Redis or this process when it is first imported.
 vi.hoisted(() => {
@@ -289,7 +290,7 @@ describe('queued work that takes a reservation', () => {
     const scheduler = new InMemoryGraphScheduler();
     const graphId = `graph_lease_${crypto.randomBytes(6).toString('hex')}`;
     const key = `uploads/${graphId}/a.csv`;
-    await scheduler.initGraph(graphId, { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: key } } } as never, { ownerUserId: owner, reservationId: unit.reservationId });
+    await scheduler.initGraph(graphId, sealGraph(graphId, { failurePolicy: 'fail_fast', nodes: { up: { op: 'import.upload', storageKey: key } } } as never), { ownerUserId: owner, reservationId: unit.reservationId });
 
     vi.setSystemTime(Date.now() + PAST_THE_PROVISIONAL_LEASE_MS);
     expect(await scheduler.onNodeCompleted(graphId, 'up', [key], 1)).toMatchObject({ graphCompleted: true });

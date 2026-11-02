@@ -1,5 +1,5 @@
 import Redis, { ReplyError } from 'ioredis';
-import type { GraphNode, JobGraph, NodeId } from './types';
+import type { GraphNode, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
@@ -7,6 +7,7 @@ import type {
   IGraphScheduler,
   NodeCompletionResult,
   NodeFailureResult,
+  SealedJobGraph,
 } from './scheduler-types';
 import {
   INIT_GRAPH_LUA_SCRIPT,
@@ -17,7 +18,7 @@ import {
 } from './lua-scripts';
 import { cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
-import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
+import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
@@ -88,11 +89,9 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     };
   }
 
-  async initGraph(graphId: string, graph: JobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
+  async initGraph(graphId: string, graph: SealedJobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
     const k = this.graphKeys(graphId);
-    // Bearer secrets are sealed before anything reaches Redis or a queue; the caller's graph is untouched.
-    const sealedGraph = sealJobGraph(graph, (nodeId) => graphNodeJobId(graphId, nodeId));
-    const entries = Object.entries(sealedGraph.nodes);
+    const entries = Object.entries(graph.nodes);
     const children = new Map<NodeId, NodeId[]>(entries.map(([id]) => [id, []]));
     for (const [id, node] of entries) {
       for (const input of getNodeInputs(node)) children.get(input)?.push(id);
@@ -115,10 +114,10 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       sourceFormat: meta.sourceFormat || '',
       targetFormat: meta.targetFormat || '',
       tasks: meta.tasks ? JSON.stringify(maskTaskRecords(meta.tasks)) : '',
-      inputKeys: JSON.stringify(graphInputKeys(sealedGraph.nodes)),
+      inputKeys: JSON.stringify(graphInputKeys(graph.nodes)),
       createdAt: String(createdAt),
       totalNodes: String(entries.length),
-      graph: JSON.stringify(sealedGraph),
+      graph: JSON.stringify(graph),
     };
 
     await this.redisClient.eval(

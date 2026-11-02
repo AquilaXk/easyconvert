@@ -32,8 +32,7 @@ import {
 import { graphReservationUnits } from '@/lib/jobs/graph-operations';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { graphScheduler } from '@/lib/queue/graph';
-import { graphNodeJobId } from '@/lib/queue/graph/node-jobs';
-import { sealJobGraph } from '@/lib/queue/graph/sealed-nodes';
+import { sealGraph } from '@/lib/queue/graph/node-jobs';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
@@ -706,7 +705,7 @@ function graphTargetFormat(graph: JobGraph): string {
 }
 
 /** The graph the scheduler runs; the request's graph is the same document under the job-graph type. */
-type SchedulerJobGraph = Parameters<typeof graphScheduler.initGraph>[1];
+type SchedulerJobGraph = Parameters<typeof sealGraph>[1];
 
 /** A validated job submission whose conversion unit is reserved. */
 interface ReservedSubmission {
@@ -747,7 +746,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
     graph.nodes = storageKey ? withInlineInputStored(normalizeGraphNodes(graph), storageKey) : normalizeGraphNodes(graph);
     const graphId = generateJobId();
     // Sealed before the hand-off, so a secret that cannot be sealed gives the unit back at once.
-    const sealedGraph = sealJobGraph(graph as unknown as SchedulerJobGraph, (nodeId) => graphNodeJobId(graphId, nodeId));
+    const sealedGraph = sealGraph(graphId, graph as unknown as SchedulerJobGraph);
     const graphState = await withGraphInputsHeld(graphId, graph.nodes, () =>
       unit.handOff({
         start: (reservationId) =>

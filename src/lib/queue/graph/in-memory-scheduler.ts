@@ -1,4 +1,4 @@
-import type { JobGraph, NodeId } from './types';
+import type { NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
@@ -10,11 +10,12 @@ import type {
   NodeCompletionResult,
   NodeExecutionStatus,
   NodeFailureResult,
+  SealedJobGraph,
 } from './scheduler-types';
 import { cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { leaseToHandedOffWork, type Recovery } from '../../api-keys/hand-off';
 import { graphInputKeys } from './input-cleanup';
-import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
+import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { finishGraph, type EndedGraph, type GraphEnd } from './graph-end';
 
@@ -33,15 +34,13 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
 
   async initGraph(
     graphId: string,
-    submittedGraph: JobGraph,
+    graph: SealedJobGraph,
     meta: GraphMetadata = {}
   ): Promise<GraphExecutionState> {
     if (this.graphs.has(graphId)) {
       throw new Error(`Graph already exists: ${graphId}`);
     }
 
-    // Bearer secrets are sealed before anything is stored or queued; the caller's graph is untouched.
-    const graph = sealJobGraph(submittedGraph, (nodeId) => graphNodeJobId(graphId, nodeId));
     const nodeEntries = Object.entries(graph.nodes);
     const totalNodes = nodeEntries.length;
     const policy = graph.failurePolicy || 'fail_fast';

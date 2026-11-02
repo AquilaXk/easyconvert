@@ -25,6 +25,7 @@ import { ConversionFailedError, QueueUnavailableError, type ConversionJobData, t
 import { SecretSealError, unsealJobSecret } from '../../src/lib/security/job-secret-seal';
 import { gzipRemote } from './gzip-remote';
 import { spendImportBytes } from './import-budget';
+import { sealGraph } from '../../src/lib/queue/graph/node-jobs';
 
 /**
  * What a queued graph is charged, run through real queue workers with the lifecycle listeners attached, as the worker
@@ -166,7 +167,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     if (options.startWorkers !== false) startWorker();
     const graphId = options.graphId ?? newGraphId();
-    await graphScheduler.initGraph(graphId, graph as unknown as JobGraph, { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
+    await graphScheduler.initGraph(graphId, sealGraph(graphId, graph as unknown as JobGraph), { ownerUserId: owner, reservationId: unit.reservationId, originalFilename: 'input', ...options.meta });
 
     /** Waits for the graph to end with `expectedStatus` and its owner to be charged `expectedUnits`. */
     async function ended(expectedStatus: 'completed' | 'failed'): Promise<void> {
