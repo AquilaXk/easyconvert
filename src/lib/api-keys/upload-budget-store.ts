@@ -16,6 +16,7 @@ export interface ReservationRef {
 }
 
 export interface BudgetStore {
+  read(bucket: string): Promise<UploadBudgetRecord | undefined>;
   update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void>;
   link(uploadId: string, ref: ReservationRef, expiresAt: number): Promise<void>;
   lookup(uploadId: string): Promise<ReservationRef | undefined>;
@@ -68,6 +69,10 @@ export class MemoryBudgetStore implements BudgetStore {
     return this.records.size + this.links.size;
   }
 
+  async read(bucket: string): Promise<UploadBudgetRecord | undefined> {
+    return this.records.get(bucket, Date.now());
+  }
+
   async update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void> {
     const now = Date.now();
     const next = change(this.records.get(bucket, now));
@@ -116,6 +121,10 @@ export class RedisBudgetStore implements BudgetStore {
 
   private linkKey(uploadId: string): string {
     return `${this.prefix}upload-budget-link:${uploadId}`;
+  }
+
+  async read(bucket: string): Promise<UploadBudgetRecord | undefined> {
+    return parseRecord(await this.redis.get(this.recordKey(bucket)));
   }
 
   async update(bucket: string, change: (current: UploadBudgetRecord | undefined) => UploadBudgetRecord | undefined): Promise<void> {

@@ -7,7 +7,7 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { declaredBodyBytes, declaredOverflow, withLinkImportMeter, type DeclaredOverflow, type LinkImportMeter } from '@/lib/api-keys/anonymous-upload-budget';
+import { declaredBodyBytes, withLinkImportMeter, type DeclaredOverflow, type LinkImportMeter, type MeterVerdict } from '@/lib/api-keys/anonymous-upload-budget';
 import { isUnattributedAnonymous } from '@/lib/auth/anonymous-identity';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
@@ -131,12 +131,17 @@ function declaredTooLarge(overflow: DeclaredOverflow, importer: ImportCaller): N
     : importLargerThanLeftResponse(overflow.leftBytes, importer.instanceUri, importer.plan);
 }
 
+/** The refusal of a body the meter stopped: past the import limit (413), or its day past its budget (429). */
+function meterStopped(verdict: Exclude<MeterVerdict, 'ok'>, importer: ImportCaller): NextResponse {
+  return verdict === 'too-large' ? linkImportTooLarge(importer.caller) : importDayReachedResponse(importer.instanceUri, importer.plan);
+}
+
 /**
  * The body of `res`, every chunk counted by `meter`, or the refusal: a declared length past the import limit or the day
- * before a byte is read, a body that passes the import limit (413), or a day that passes its budget while it is read (429).
+ * before a byte is read, or the verdict of the meter that stopped the body while it was read.
  */
 async function readBody(res: Response, meter: LinkImportMeter, importer: ImportCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
-  const overflow = declaredOverflow(declaredBodyBytes(res.headers), { limitBytes: URL_IMPORT_MAX_BYTES, leftBytes: meter.leftBytes });
+  const overflow = meter.declared(declaredBodyBytes(res.headers));
   if (overflow) {
     discardBody(res);
     return { refusal: declaredTooLarge(overflow, importer) };
@@ -152,10 +157,10 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const withinDay = await meter.count(value.length);
-      if (meter.receivedBytes > URL_IMPORT_MAX_BYTES || !withinDay) {
+      const verdict = await meter.count(value.length);
+      if (verdict !== 'ok') {
         await reader.cancel();
-        return { refusal: withinDay ? linkImportTooLarge(importer.caller) : importDayReachedResponse(importer.instanceUri, importer.plan) };
+        return { refusal: meterStopped(verdict, importer) };
       }
       chunks.push(value);
     }
@@ -163,7 +168,8 @@ async function readBody(res: Response, meter: LinkImportMeter, importer: ImportC
     await reader.cancel().catch(() => {});
     throw streamErr;
   }
-  if (!(await meter.charge())) return { refusal: importDayReachedResponse(importer.instanceUri, importer.plan) };
+  const verdict = await meter.charge();
+  if (verdict !== 'ok') return { refusal: meterStopped(verdict, importer) };
   return { buffer: Buffer.concat(chunks) };
 }
 
@@ -286,7 +292,9 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     // ended is charged before the answer; one cut off is charged once it has stopped reading, without holding the answer.
     const { syncMaxMs } = currentJobDeadlineSettings();
     const imported = await runUnderDeadline(req, syncMaxMs, (limits) =>
-      withLinkImportMeter({ owner: caller.id, plan: importer.plan }, (meter) => importFrom(target, ssrfAgent, limits.signal, meter, importer))
+      withLinkImportMeter({ owner: caller.id, plan: importer.plan, limitBytes: URL_IMPORT_MAX_BYTES }, (meter) =>
+        importFrom(target, ssrfAgent, limits.signal, meter, importer)
+      )
     );
     return 'refusal' in imported ? uploadBudgetRefusalResponse(imported.refusal, instanceUri, importer.plan) : imported.result;
   } catch (err: unknown) {
