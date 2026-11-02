@@ -449,7 +449,6 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
   });
 
   describe('a queued graph', () => {
-    // The Redis scheduler refuses `fail_job` as an unknown policy (tests/graph-scheduler-corrupt-state.test.ts), so only `continue` runs on here.
-    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId), ['continue']);
+    itChargesAGraphOnlyThroughItsScheduler((userId) => otherUsers.push(userId));
   });
 });

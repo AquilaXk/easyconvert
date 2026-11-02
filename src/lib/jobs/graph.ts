@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
+import type { FailurePolicy } from '@/lib/queue/graph/types';
 import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
@@ -16,7 +17,8 @@ import {
   type GraphOperation,
 } from './graph-operations';
 
-export type GraphFailurePolicy = 'fail_job' | 'continue';
+/** The scheduler's own policy: `fail_fast` ends the job as failed when a task fails, `continue` skips what depends on it. */
+export type GraphFailurePolicy = FailurePolicy;
 
 export interface TaskDependency {
   taskId: string;
@@ -46,7 +48,7 @@ export interface TaskNode {
 export interface JobGraph {
   nodes?: Record<string, TaskNode>;
   tasks?: Record<string, TaskNode> | TaskNode[];
-  failurePolicy?: GraphFailurePolicy | 'fail_fast';
+  failurePolicy?: GraphFailurePolicy;
   [key: string]: any;
 }
 
@@ -1001,7 +1003,7 @@ export function linearTasksToJobGraph(
 
   return {
     nodes,
-    failurePolicy: 'fail_job',
+    failurePolicy: 'fail_fast',
   };
 }
 
