@@ -53,10 +53,14 @@ function isRetryDisabled(
   return isBusy || !item.targetFormat || isOversize || optionError !== null;
 }
 
-/** Where a row's conversion stands, as the accessible name of its target select states it. */
-function rowState(item: ConversionQueueItem, isBusy: boolean, hasRowError: boolean): string {
+/**
+ * Where a row's conversion stands, as the accessible name of its target select states it. Only a conversion that ran and
+ * failed reads as failed; a file over the limit or with an option the target cannot take has not run, and its error text
+ * names what blocks it.
+ */
+function rowState(item: ConversionQueueItem, isBusy: boolean): string {
   if (isBusy || item.status === 'completed') return item.status;
-  return hasRowError ? 'failed' : 'ready';
+  return item.status === 'error' ? 'failed' : 'ready';
 }
 
 function RowStatusDisplay({
@@ -181,7 +185,7 @@ export default function QueueItemRow({
             data-testid="queue-target-format-btn"
             aria-label={
               hasTarget
-                ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, rowError !== null) })
+                ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy) })
                 : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
             }
             aria-haspopup="dialog"
