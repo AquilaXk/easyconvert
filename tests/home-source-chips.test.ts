@@ -58,7 +58,8 @@ describe('the source chips of the upload card', () => {
   });
 
   it.each([
-    ['png', ['jpg', 'webp', 'gif', 'bmp', 'tiff', 'avif', 'ico', 'pdf']],
+    ['png', ['jpg', 'webp', 'gif', 'bmp', 'tiff', 'avif', 'ico', 'svg', 'pdf']],
+    ['jpg', ['png', 'webp', 'gif', 'bmp', 'tiff', 'avif', 'ico', 'svg', 'pdf']],
     ['mp4', ['avi', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'gif', 'mp3', 'wav']],
     ['pdf', ['docx', 'txt', 'html', 'jpg', 'png', 'rtf', 'epub', 'pptx', 'xlsx']],
   ])('swap %s to its common targets, each a link to its pair page, then a link to all its formats', async (source, common) => {
