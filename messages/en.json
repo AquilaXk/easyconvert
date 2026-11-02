@@ -1124,6 +1124,29 @@
       "heading": "Archive Compression",
       "level": "Compression Level",
       "levelValue": "Level {level}"
+    },
+    "vectorize": {
+      "heading": "Vector Tracing",
+      "preset": "Preset",
+      "presetNone": "None",
+      "presetChoices": {
+        "bw": "Black and white line art",
+        "poster": "Poster with flat colors",
+        "photo": "Photograph"
+      },
+      "mode": "Mode",
+      "modeChoices": {
+        "spline": "Spline: smooth curves",
+        "polygon": "Polygon: straight edges",
+        "pixel": "Pixel: keep the pixel edges"
+      },
+      "filterSpeckle": "Filter Speckle (px)",
+      "filterSpeckleHint": "Discards patches smaller than this size. Raise it to remove noise from scans and JPEG artifacts.",
+      "colorPrecision": "Color Precision (bits)",
+      "colorPrecisionHint": "Significant bits per RGB channel. Lower values give fewer colors and flatter shapes.",
+      "simplify": "Simplify (px)",
+      "simplifyOff": "Off",
+      "simplifyHint": "Fits curves within this distance with as few nodes as possible. Try 1 to 2.5 for a smaller file."
     }
   },
   "plans": {

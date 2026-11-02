@@ -1124,6 +1124,29 @@
       "heading": "압축 설정",
       "level": "압축 수준",
       "levelValue": "{level}단계"
+    },
+    "vectorize": {
+      "heading": "벡터화 설정",
+      "preset": "프리셋",
+      "presetNone": "사용 안 함",
+      "presetChoices": {
+        "bw": "흑백 선화",
+        "poster": "단색 면이 많은 포스터",
+        "photo": "사진"
+      },
+      "mode": "곡선 방식",
+      "modeChoices": {
+        "spline": "스플라인: 부드러운 곡선",
+        "polygon": "다각형: 곧은 모서리",
+        "pixel": "픽셀: 픽셀 경계 그대로"
+      },
+      "filterSpeckle": "잡티 제거(px)",
+      "filterSpeckleHint": "이 크기보다 작은 조각은 버려요. 스캔이나 JPEG 노이즈를 없애려면 값을 올려요.",
+      "colorPrecision": "색 정밀도(비트)",
+      "colorPrecisionHint": "RGB 채널마다 쓰는 유효 비트 수예요. 값을 낮추면 색이 줄고 면이 단순해져요.",
+      "simplify": "단순화(px)",
+      "simplifyOff": "사용 안 함",
+      "simplifyHint": "이 거리 안에서 곡선을 가장 적은 점으로 맞춰요. 1에서 2.5 사이로 넣으면 파일이 작아져요."
     }
   },
   "plans": {
