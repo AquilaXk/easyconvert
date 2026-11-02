@@ -541,6 +541,44 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       }
     });
 
+    it('cancels the other node jobs of a failed graph with the state read again when its first read fails', async () => {
+      vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+      const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+      const control = { failNextStateRead: false };
+      const flaky = new Proxy(connection, {
+        get(target, prop) {
+          if (prop === 'hgetall') {
+            return async (...args: Parameters<Redis['hgetall']>) => {
+              if (control.failNextStateRead) {
+                control.failNextStateRead = false;
+                throw new Error('the connection dropped');
+              }
+              return target.hgetall(...args);
+            };
+          }
+          const value: unknown = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const cancelNode = vi.fn(async () => true);
+      try {
+        const scheduler = new RedisGraphScheduler({ redisClient: flaky, keyPrefix, enqueueNode: async () => undefined, cancelNode });
+        const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;
+        const graph = {
+          failurePolicy: 'fail_fast' as const,
+          nodes: { up: { op: 'import.upload' as const, storageKey: 'uploads/graph-end/a.csv' }, conv: { op: 'convert' as const, input: 'up', targetFormat: 'json' } },
+        };
+        await scheduler.initGraph(graphId, graph, { ownerUserId: client.userId, ...WEBHOOK });
+
+        control.failNextStateRead = true;
+        await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
+
+        expect(cancelNode).toHaveBeenCalledWith(graphId, 'conv', expect.objectContaining({ op: 'convert' }), 'Graph failed due to node up');
+      } finally {
+        await connection.quit();
+      }
+    });
+
     it('fails the completion of a node that does not end its graph when draining the outbox fails, so the node is tried again', async () => {
       const dispatched = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
       const connection = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
