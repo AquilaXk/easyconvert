@@ -7,7 +7,6 @@ import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
 import ConversionQueue from '@/components/ConversionQueue';
 import Features from '@/components/Features';
 import FaqSection from '@/components/FaqSection';
-import AdBanner from '@/components/AdBanner';
 import Footer from '@/components/Footer';
 import { useClientQueue } from '@/hooks/useClientQueue';
 
@@ -78,7 +77,6 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
         {queue.length === 0 && (
           <>
             <Features />
-            <AdBanner slot="mid-content" />
             <FaqSection dailyLimit={dailyLimit} />
           </>
         )}

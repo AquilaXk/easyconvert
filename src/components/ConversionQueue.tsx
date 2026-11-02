@@ -9,7 +9,6 @@ import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
-import AdBanner from './AdBanner';
 import QueueItemRow from './workbench/QueueItemRow';
 import FileSourceButton from './workbench/FileSourceButton';
 import { getPasswordValidationError } from './workbench/options/options-capabilities';
@@ -290,7 +289,6 @@ export default function ConversionQueue({
             </li>
           ))}
         </ul>
-        {view.completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
       </div>
       <QueueFileBar
         statusSummary={view.statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}

@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 130 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 128 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -333,13 +333,3 @@ Generate a secret with `openssl rand -hex 32`.
 - `QPDF_PATH`: Path of the `qpdf` executable that encrypts PDF output.
 - `FC_LIST_PATH`: Path of the fontconfig `fc-list` executable.
 - `JAVA_HOME`: Java installation handed to LibreOffice for PDF/A export.
-
-### Page
-
-| Variable | Type and rule | Default | Required in production | Process |
-| --- | --- | --- | --- | --- |
-| `NEXT_PUBLIC_ADSENSE_CLIENT` | text | none | no | web |
-| `NEXT_PUBLIC_ADSENSE_SLOT` | text | none | no | web |
-
-- `NEXT_PUBLIC_ADSENSE_CLIENT`: Ad network publisher id for the page banner, read once an ad loader is installed; no ad renders today (policy decision 139).
-- `NEXT_PUBLIC_ADSENSE_SLOT`: Ad slot id of the page banner, read once an ad loader is installed.

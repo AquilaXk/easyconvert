@@ -7,7 +7,6 @@ import { PairHero, QueueHeader } from '@/components/Hero';
 import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
 import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
-import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
@@ -164,8 +163,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           />
         ) : (
           <>
-            <AdBanner slot="top-leaderboard" />
-
             <ConverterWorkflowSteps
               srcMeta={srcMeta}
               tgtMeta={tgtMeta}
@@ -174,8 +171,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
             />
 
             <FormatSpecDeck srcMeta={srcMeta} tgtMeta={tgtMeta} isPair={isPair} />
-
-            <AdBanner slot="mid-content" />
 
             <FormatCrossLinks
               sourceFormat={parsed.sourceFormat}

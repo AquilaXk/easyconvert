@@ -12,7 +12,6 @@ import Features from '../src/components/Features';
 import FormatSelector from '../src/components/FormatSelector';
 import FaqSection from '../src/components/FaqSection';
 import StatusDashboard from '../src/components/StatusDashboard';
-import AdBanner from '../src/components/AdBanner';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
@@ -366,13 +365,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
     expect(phrasesMissing(text, ['Up to 1 GiB per file', '25 conversions a day', 'Files deleted automatically'])).toEqual([]);
     expect(phrasesPresent(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
-  });
-
-  it('verifies AdBanner renders nothing in any slot, since no ad loader is installed to fill a unit', () => {
-    for (const slot of ['top-leaderboard', 'mid-content', 'in-feed', 'post-conversion', 'sidebar'] as const) {
-      const banner = render(AdBanner, { slot });
-      expect(allElements(banner).filter((e) => !['html', 'head', 'body'].includes(e.tagName)), slot).toEqual([]);
-    }
   });
 
   it('verifies StatusDashboard purges fake uptime stats, fake incident logs, and fake modals', () => {
