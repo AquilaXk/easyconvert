@@ -100,6 +100,10 @@ x-app-environment: &app-environment
   RESULT_DISK_HIGH_PERCENT:
   RESULT_DISK_LOW_PERCENT:
   RESULT_DISK_REFUSE_PERCENT:
+  # The anonymous daily allowance the servers enforce: the repository variable the web image's pages were built with, written to
+  # the env file by deploy/oci/deploy.sh, which refuses a web image built with another value. Empty means the default of
+  # src/lib/plan-limits.ts.
+  ANONYMOUS_DAILY_LIMIT: ${ANONYMOUS_DAILY_LIMIT:-}
   APP_URL: ${APP_URL:?set the public origin, for example https://convert.aquilaxk.site}
   # The origin that sign-in redirects and the same-origin check use (src/lib/auth/oauth.ts, src/middleware.ts); without it they
   # would fall back to the forwarded Host header.
