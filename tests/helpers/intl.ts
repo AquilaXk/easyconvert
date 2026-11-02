@@ -10,7 +10,7 @@ export function testTranslator<N extends NamespaceKeys<Messages, NestedKeyOf<Mes
   return createTranslator({ locale, messages: testMessages(locale), namespace });
 }
 
-/** The English title and description of a slug page, as the converter page words them. */
-export function englishSlugCopy(slug: string) {
-  return localizeSlugCopy(testTranslator('en', 'slugPages'), parseConverterSlug(slug).copy);
+/** The title and description of a slug page in `locale` (English by default), as the converter page words them. */
+export function englishSlugCopy(slug: string, locale: TestLocale = 'en') {
+  return localizeSlugCopy(testTranslator(locale, 'slugPages'), parseConverterSlug(slug), locale);
 }

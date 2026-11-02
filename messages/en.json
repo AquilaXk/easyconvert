@@ -118,14 +118,14 @@
     "specs": {
       "pairHeading": "{src} vs {tgt} Specifications",
       "heading": "{format} Format Specification",
-      "intro": "Technical Specifications covering container standards, MIME types, specification maintainers, and format capabilities."
+      "intro": "The standard, MIME type, and maintainer of each format."
     },
     "steps": {
       "heading": {
         "pair": "How to Convert {src} to {tgt}",
         "single": "How to Convert {src} Files"
       },
-      "intro": "Step-by-Step Guide for converting and downloading your files in three steps.",
+      "intro": "Three steps from upload to download.",
       "upload": {
         "heading": "Upload {src} File(s)",
         "body": "Click 'Select File' or drag and drop {src} files into the workbench. You can also import a public link."
@@ -164,7 +164,7 @@
     "faq": {
       "pairTitle": "{src} to {tgt} Frequently Asked Questions",
       "singleTitle": "{src} Converter Frequently Asked Questions",
-      "subtitle": "Common questions about {src} conversion fidelity, privacy, and batch downloads.",
+      "subtitle": "Questions about converting {src}: privacy, results, and several files at once.",
       "howTo": {
         "pair": {
           "q": "How do I convert {src} to {tgt} for free?",
@@ -182,7 +182,7 @@
         "single": {
           "q": "How are {src} files handled for privacy?"
         },
-        "a": "Formats the browser supports run inside your browser with WebAssembly. Anything that needs a server is sent over TLS 1.3 to an isolated worker, and the temporary output is deleted after you download it or after a short retention time."
+        "a": "Some image, audio, and data conversions run in your browser, and their files stay on your device. The others are sent over TLS 1.3 to an isolated worker on our servers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
       "quality": {
         "pair": {
@@ -191,11 +191,11 @@
         "single": {
           "q": "Does {src} conversion preserve formatting and quality?"
         },
-        "a": "Yes. Dedicated format engines translate vector paths, embedded fonts, tables, colour profiles, and media streams to match the source structure."
+        "a": "It depends on the target format. What the target can hold is converted; what it cannot hold, such as the layers of a PSD in a JPG or the page layout of a PDF in plain text, is left out."
       },
       "batch": {
         "q": "Can I batch-convert multiple {src} files at once?",
-        "a": "Yes. Drop multiple files into the queue to convert them in parallel, then save each output individually or download a single consolidated ZIP archive."
+        "a": "Yes. Add several files to the queue and convert them together, then save each result or download all of them as one ZIP file."
       },
       "install": {
         "q": "Do I need to install desktop software or browser extensions?",
@@ -372,12 +372,12 @@
       "workbench": {
         "heading": "Web converter",
         "free": "Free interactive browser conversions without daily paywalls or watermarks",
-        "local": "Local WebAssembly execution for supported client-side formats"
+        "local": "Some formats are converted in your browser with WebAssembly"
       },
       "api": {
         "heading": "Programmatic REST API Policy",
         "scopes": "Scopes per key (<code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code>)",
-        "isolation": "Runs in an isolated worker, and output files are deleted automatically after a short retention time"
+        "isolation": "Runs in an isolated worker; a result is deleted 10 minutes after download, or an hour after conversion at the latest"
       },
       "reference": "View OpenAPI Reference"
     },
@@ -429,7 +429,7 @@
       },
       "handling": {
         "q": "How are my files handled during conversion?",
-        "a": "Image, audio, and data conversions the browser supports run in your browser's memory on your device. Formats that need native codecs or document engines are sent over TLS 1.3 to isolated workers and deleted automatically after a short retention time."
+        "a": "Some image, audio, and data conversions run in your browser, and their files stay on your device. Formats that need native codecs or document engines are sent over TLS 1.3 to isolated workers on our servers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
       "maxSize": {
         "q": "What is the maximum file size limit?",
@@ -503,7 +503,7 @@
     },
     "secondaryNavLabel": "Footer secondary",
     "copyright": "© 2026 EasyConvert.com",
-    "assurance": "Encrypted Transfer & Ephemeral Processing"
+    "assurance": "Encrypted transfer · Files deleted automatically"
   },
   "formatDetail": {
     "categories": {
@@ -537,7 +537,7 @@
     "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows.",
     "advantages": {
       "structure": "Accurate {category} structure translation",
-      "sandbox": "Sandboxed execution with automatic zero-retention cleanup",
+      "sandbox": "Converted in an isolated sandbox, and files are deleted automatically",
       "container": "Preserves container layout, streams, and metadata"
     }
   },
@@ -827,7 +827,7 @@
       },
       "cleanup": {
         "heading": "Automatic File Cleanup",
-        "body": "Temporary job inputs and converted outputs expire automatically after short retention windows."
+        "body": "An uploaded file is deleted 10 minutes after the last job that reads it ends. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       }
     },
     "api": {
@@ -860,12 +860,12 @@
   "infoPages": {
     "privacy": {
       "retention": {
-        "heading": "Zero Permanent Retention",
-        "body": "EasyConvert processes supported client-side conversions directly in your browser memory without uploading source files to external storage."
+        "heading": "When Files Are Deleted",
+        "body": "Conversions the browser supports run in your browser, and their files are not uploaded. Other conversions upload the file to our servers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
       "isolation": {
         "heading": "Isolated Workers & Automatic Cleanup",
-        "body": "When a format pair needs server processing, or you use the REST API, requests travel over TLS 1.3 to isolated, temporary worker containers. Output files are deleted after you download them or after a short retention time."
+        "body": "When a format pair needs server processing, or you use the REST API, requests travel over TLS 1.3 to isolated, temporary worker containers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
       "noResale": {
         "heading": "No Content Resale or Inspection",
@@ -892,8 +892,8 @@
         "body": "EasyConvert provides fast, accurate file conversions across {count} registered formats spanning documents, spreadsheets, presentations, raster and RAW images, vector graphics, CAD drawings, audio, video, fonts, ebooks, and archives."
       },
       "architecture": {
-        "heading": "Hybrid Browser & Ephemeral Sandbox Architecture",
-        "body": "Formats the browser supports run on your device through WebAssembly and WebCodecs. Heavy or specialized formats run in isolated workers over TLS 1.3 and are deleted automatically after a short retention time."
+        "heading": "Browser and Server Conversion",
+        "body": "Some formats run on your device through WebAssembly and WebCodecs. The others run in isolated workers on our servers, reached over TLS 1.3. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       }
     },
     "security": {
@@ -931,7 +931,7 @@
     },
     "contact": {
       "heading": "Get in Touch",
-      "intro": "Send questions about format support, conversion fidelity, or API integration directly to our engineering team.",
+      "intro": "Send questions about format support, conversion results, or API integration directly to our engineering team.",
       "email": {
         "heading": "Direct Support Email",
         "body": "Contact our engineering team for technical questions, API inquiries, or general feedback."
@@ -952,11 +952,11 @@
   "meta": {
     "site": {
       "title": "EasyConvert | Online File Converter",
-      "description": "Convert documents, images, audio, video, spreadsheets, structured data, and archives online with encrypted ephemeral processing."
+      "description": "Convert documents, images, audio, video, spreadsheets, data, and archives online. Transfers are encrypted and files are deleted automatically."
     },
     "home": {
       "title": "EasyConvert | Online File Converter",
-      "description": "Convert documents, images, audio, video, spreadsheets, structured data, and archives online with encrypted ephemeral processing."
+      "description": "Convert documents, images, audio, video, spreadsheets, data, and archives online. Transfers are encrypted and files are deleted automatically."
     },
     "auth": {
       "title": "Sign In | EasyConvert",
@@ -976,7 +976,7 @@
     },
     "unitConverter": {
       "title": "Free Online Unit Converter | EasyConvert",
-      "description": "Convert length, weight, temperature, volume, area, speed, time, digital storage, energy, and pressure units directly in your browser."
+      "description": "Convert length, weight, temperature, volume, area, speed, time, digital storage, energy, and pressure units in your browser."
     },
     "converter": {
       "title": "{title} | EasyConvert"
@@ -1231,7 +1231,7 @@
       },
       "privacy": {
         "title": "Privacy Policy",
-        "description": "Learn about our strict zero data retention policy and transient in-memory processing."
+        "description": "How EasyConvert handles your files: which conversions run in your browser, which run on our servers, and when files are deleted."
       },
       "contact": {
         "title": "Contact Us",
@@ -1239,15 +1239,15 @@
       },
       "about": {
         "title": "About Us",
-        "description": "EasyConvert provides free, private, client-side file and data conversions directly in your browser."
+        "description": "EasyConvert converts documents, images, audio, video, data, and archives online, on our servers and, for some formats, in your browser."
       },
       "security": {
         "title": "Security Overview",
-        "description": "Explore our volatile memory pipeline, TLS encryption, and zero-storage architecture."
+        "description": "How files are protected: TLS encryption in transit and an isolated worker for each job. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
       "status": {
         "title": "System Status",
-        "description": "Real-time operational status and diagnostics of EasyConvert browser-edge conversion pipelines."
+        "description": "Checks which browser features this device offers for the conversions that run in the browser."
       },
       "accessibility": {
         "title": "Accessibility Statement",
@@ -1255,16 +1255,16 @@
       },
       "unit": {
         "title": "Unit Converter",
-        "description": "Convert weight, length, volume, and data units in real time with instant calculation precision."
+        "description": "Convert weight, length, volume, temperature, and data units in your browser."
       }
     },
     "ocr": {
       "title": "PDF OCR Converter",
-      "description": "Optical character recognition utility producing searchable, selectable documents with zero data retention."
+      "description": "Recognize the text of scanned PDFs and images, and get a PDF whose text you can search and select. You can choose the recognition language in the options."
     },
     "unitPair": {
       "title": "{src} to {tgt} Unit Converter",
-      "description": "Convert {src} to {tgt} in real time with instant calculation precision."
+      "description": "Convert {src} to {tgt} in your browser."
     },
     "units": {
       "lbs": "Pounds (lbs)",
@@ -1274,47 +1274,43 @@
     },
     "pair": {
       "title": "{src} to {tgt} Converter",
-      "description": {
-        "videoToAudio": "Convert {src} to {tgt} online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.",
-        "media": "Convert {src} to {tgt} online and free. Fast, high-fidelity media transcoding directly in your browser with zero server retention.",
-        "image": "Convert {src} to {tgt} online and free. High-precision rendering and lossless rasterization straight from your browser.",
-        "archive": "Convert and extract {src} to {tgt} archives safely in your browser with zero cloud storage.",
-        "data": "Convert {src} to {tgt} datasets and tables directly in your browser. Clean data structure preserved with zero retention.",
-        "document": "Convert {src} to {tgt} online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage."
+      "lead": {
+        "extractAudio": "Extract the audio of {src} videos as {tgt} files online.",
+        "convert": "Convert {src} files to {tgt} online."
       }
     },
     "format": {
       "title": "{name} Converter",
-      "description": {
-        "audio": "Convert {name} audio files online and free to MP3, WAV, AAC, and more. High-fidelity audio encoding with zero server storage.",
-        "video": "Convert {name} video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.",
-        "image": "Convert {name} files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.",
-        "archive": "Convert and extract {name} compressed archives safely in your browser with zero cloud uploads.",
-        "data": "Convert {name} spreadsheets and datasets to CSV, Excel, JSON, and other structured formats with high precision.",
-        "presentation": "Convert {name} presentation slides to PDF, PPTX, images, and other formats with preserved layouts.",
-        "ebook": "Convert {name} ebooks to EPUB, PDF, MOBI, and other reader formats directly in your browser.",
-        "document": "Convert {name} documents online and free to PDF, DOCX, and other formats. Preserves layouts, typography, and tables with zero server storage."
+      "lead": {
+        "audio": "Convert {name} audio files online.",
+        "video": "Convert {name} videos online.",
+        "image": "Convert {name} images online.",
+        "archive": "Convert {name} archives online.",
+        "data": "Convert {name} spreadsheets and data files online.",
+        "presentation": "Convert {name} presentations online.",
+        "ebook": "Convert {name} ebooks online.",
+        "document": "Convert {name} documents online."
       }
     },
     "merge": {
       "title": "Merge {format}",
-      "description": "Merge multiple {format} files into a single unified document in seconds. Zero data retention guaranteed."
+      "description": "Combine several {format} files into one {format} file online."
     },
     "compress": {
       "title": "Compress {format}",
-      "description": "Reduce {format} file size while preserving optimum visual fidelity and text sharpness."
+      "description": "Make {format} files smaller online."
     },
     "saveWebsiteAsPdf": {
       "title": "Save Website as PDF",
-      "description": "Capture high-resolution PDF printouts of any public website URL with CSS and vector graphics intact."
+      "description": "Save a public web page as a PDF from its address."
     },
     "websiteScreenshot": {
       "title": "Website {format} Screenshot",
-      "description": "Render full-page or viewport snapshots of websites in lossless {format} format."
+      "description": "Capture a public web page as a {format} image from its address."
     },
     "generic": {
       "title": "{name} Converter",
-      "description": "Convert {name} files instantly in your browser with zero data retention."
+      "description": "Convert {name} files online."
     },
     "names": {
       "Video": "Video",
@@ -1343,6 +1339,29 @@
       "Ebooks": "Ebooks",
       "Fonts": "Fonts",
       "Vectors": "Vectors"
+    },
+    "related": {
+      "pair": "Besides {tgt}, {src} files also convert to {formats}.",
+      "format": "Among others, {name} files convert to {formats}."
+    },
+    "options": "You can use the options to set the {subjects}.",
+    "subjects": {
+      "imageSize": "image size",
+      "quality": "quality",
+      "metadata": "metadata",
+      "videoCodec": "video codec",
+      "frameRate": "frame rate",
+      "resolution": "resolution",
+      "bitrate": "bitrate",
+      "sampleRate": "sample rate",
+      "channels": "audio channels",
+      "pages": "page range",
+      "orientation": "page orientation",
+      "ocr": "text recognition",
+      "password": "password",
+      "delimiter": "delimiter",
+      "sheet": "sheet",
+      "compression": "compression level"
     }
   },
   "status": {
@@ -1402,22 +1421,22 @@
         "description": "Spline tessellation, IEEE 754 coordinate precision, and vector export"
       },
       "privacy-zero-retention": {
-        "name": "Zero Data Retention Ephemeral Memory Sandbox",
-        "description": "Volatile client memory allocation with zero permanent disk retention"
+        "name": "In-Browser File Handling",
+        "description": "A file converted in the browser stays on this device and is not uploaded"
       },
       "privacy-scrubbing": {
-        "name": "Volatile Buffer Scrubbing & Memory Zeroing",
-        "description": "Immediate buffer release upon conversion download or queue clearance"
+        "name": "Releasing Converted Files",
+        "description": "Buffers are released when you remove a file or clear the queue"
       },
       "privacy-crypto": {
-        "name": "Client-Side SHA-256 Cryptographic Hash Verification",
+        "name": "In-Browser SHA-256 Hash Check",
         "description": "Local bitstream integrity checks using the Web Crypto API"
       }
     },
     "sandbox": {
       "heading": "Local Browser Sandbox Execution",
-      "body": "Supported client-side codecs compile to WebAssembly and run inside an isolated browser worker sandbox. Local execution avoids upload wait times, keeps memory buffers ephemeral, and releases temporary storage handles as soon as conversion finishes.",
-      "zeroRetention": "Zero-Retention Sandboxing",
+      "body": "Conversions the browser supports run with WebAssembly in an isolated worker of this tab, so their files are not uploaded. Other conversions run on our servers.",
+      "zeroRetention": "No upload for in-browser conversions",
       "simd": "Hardware SIMD & WebCodecs Support",
       "noBrowserLimit": "No daily limit in the browser"
     },
@@ -1428,12 +1447,12 @@
     "checkedAt": "Browser status checked at {time}",
     "telemetryActive": "Checking status in the browser sandbox",
     "overview": {
-      "heading": "All Client-Side Conversion Engines Operational",
+      "heading": "In-Browser Conversion Check",
       "ready": "Ready",
-      "intro": "Verified directly within your browser execution sandbox.",
+      "intro": "This page checks what this browser supports for the conversions that run in it.",
       "running": "Testing Edge Engines...",
       "run": "Run Edge Diagnostics",
-      "inBrowser": "100% In-Browser Execution"
+      "inBrowser": "Runs in this browser"
     },
     "diagnostics": {
       "heading": "Live Browser Edge Diagnostic Results",
@@ -1461,22 +1480,22 @@
           "unsupported": "{cores} CPU logical execution threads detected"
         },
         "memory-sandbox": {
-          "name": "Ephemeral Memory Buffer Sandbox",
-          "supported": "Transient memory allocation and zeroing verified",
-          "unsupported": "Transient memory allocation failed"
+          "name": "Memory Buffer Check",
+          "supported": "Memory allocation and zeroing verified",
+          "unsupported": "Memory allocation failed"
         }
       }
     },
     "metrics": {
       "execution": {
         "label": "Execution Model",
-        "value": "100% In-Browser",
-        "caption": "WebAssembly & WebCodecs"
+        "value": "Browser and Server",
+        "caption": "WebAssembly in the browser, workers on the server"
       },
       "storage": {
         "label": "Persistent Storage",
-        "value": "0 Bytes",
-        "caption": "Zero permanent retention"
+        "value": "1 hour at most",
+        "caption": "Deleted 10 minutes after download"
       },
       "concurrency": {
         "label": "Hardware Concurrency",
@@ -1486,7 +1505,7 @@
       "privacy": {
         "label": "Privacy Sandbox",
         "value": "Active",
-        "caption": "Ephemeral volatile buffer"
+        "caption": "In-browser files stay in this tab"
       }
     }
   },
@@ -1501,7 +1520,7 @@
   "unitConverter": {
     "categoriesLegend": "Unit categories",
     "heading": "{from} to {to} Converter",
-    "intro": "High-precision client calculation with zero network round-trips.",
+    "intro": "Converted in your browser, with no request to a server.",
     "decimals": "Decimals",
     "decimalsValue": "{digits} decimals",
     "fromValue": "From Value",
@@ -1514,7 +1533,7 @@
     "copiedAnnouncement": "Copied converted result to clipboard.",
     "targetUnit": "Target Unit",
     "formula": "Formula",
-    "private": "100% In-Browser & Private",
+    "private": "Calculated in your browser",
     "breakdownHeading": "{value} {from} Converted to All {category} Units",
     "unitCount": "{count} units",
     "rowCopied": "Copied {name} value to clipboard.",

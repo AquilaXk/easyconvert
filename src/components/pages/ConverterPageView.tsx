@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Hero from '@/components/Hero';
 import ConversionQueue from '@/components/ConversionQueue';
@@ -26,11 +26,12 @@ import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 /** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
   const t = useTranslations('converterPage');
+  const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
   const getFormatDetail = useFormatDetail();
   const parsed = parseConverterSlug(slug);
-  const copy = localizeSlugCopy(tSlug, parsed.copy);
+  const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
   const defaultTarget =

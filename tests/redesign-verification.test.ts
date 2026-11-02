@@ -146,7 +146,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     // Privacy badge and copyright
     const text = visibleText(footer);
-    expect(text).toMatch(/Encrypted Transfer & Ephemeral Processing/);
+    expect(text).toMatch(/Encrypted transfer · Files deleted automatically/);
     expect(text).toMatch(/© 2026 EasyConvert\.com/);
     expect(missingFrom(hrefs, ['/accessibility', '/api-docs'])).toEqual([]);
   });
@@ -335,7 +335,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const page = renderSlug('pdf-to-docx');
     const text = visibleText(page);
 
-    expect(phrasesMissing(text, ['Step-by-Step Guide', 'How to Convert PDF to DOCX'])).toEqual([]);
+    expect(phrasesMissing(text, ['Three steps from upload to download.', 'How to Convert PDF to DOCX'])).toEqual([]);
     expect(headings(page).filter((h) => ['Upload PDF File(s)', 'Choose to DOCX', 'Download Your DOCX'].includes(h))).toEqual([
       'Upload PDF File(s)',
       'Choose to DOCX',
@@ -353,7 +353,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const page = renderSlug('pdf-to-docx');
     const text = visibleText(page);
 
-    expect(phrasesMissing(text, ['Technical Specifications', 'PDF vs DOCX Specifications', 'SOURCE FORMAT'])).toEqual([]);
+    expect(phrasesMissing(text, ['The standard, MIME type, and maintainer of each format.', 'PDF vs DOCX Specifications', 'SOURCE FORMAT'])).toEqual([]);
     expect(headings(page).filter((h) => /\((?:Portable Document Format|Microsoft Word Document)\)/.test(h))).toEqual([
       'PDF (Portable Document Format)',
       'DOCX (Microsoft Word Document)',
@@ -423,10 +423,13 @@ describe('Redesign & Free Static Architecture Verification', () => {
         'SIMD WebAssembly Core Engine',
         'WebCodecs VPU Transcoding Accelerator',
         'Origin Private File System (OPFS)',
-        'Zero Data Retention Ephemeral Memory Sandbox',
-        '100% In-Browser Execution',
+        'In-Browser File Handling',
+        'Runs in this browser',
       ])
     ).toEqual([]);
+    // It claims no storage it does not have: the server keeps a result for an hour at most
+    expect(phrasesPresent(text, ['100% In-Browser', '0 Bytes', 'Zero permanent retention'])).toEqual([]);
+    expect(phrasesMissing(text, ['1 hour at most', 'Deleted 10 minutes after download'])).toEqual([]);
   });
 
   it('verifies informational pages eliminate forgot-password and fake alert forms', () => {
@@ -447,24 +450,27 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(alerts).toEqual([]);
   });
 
-  it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
-    // Video to Audio pair must not claim to preserve typography or document formatting
+  it('verifies converter descriptions say what the page converts, the related formats and the options, from the registry', () => {
+    // A video to audio pair extracts the audio; its options are those of the audio section of the dialog
     expect(englishSlugCopy('mp4-to-mp3').description).toBe(
-      'Convert MP4 to MP3 online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.'
+      'Extract the audio of MP4 videos as MP3 files online. Besides MP3, MP4 files also convert to WEBM, MKV, AVI, MOV, and WAV. ' +
+        'You can use the options to set the bitrate, sample rate, and audio channels.'
     );
-
-    // Document pair preserves layout and typography
-    expect(englishSlugCopy('pdf-to-docx').description).toBe(
-      'Convert PDF to DOCX online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.'
+    // A pair whose dialog has no options names none
+    expect(englishSlugCopy('docx-to-pdf').description).toBe(
+      'Convert DOCX files to PDF online. Besides PDF, DOCX files also convert to HTML, TXT, MD, EPUB, and ODT.'
     );
-
-    // Format converters do not falsely claim to be document converters or mention external office software
+    expect(englishSlugCopy('png-to-jpg', 'ko').description).toBe(
+      'PNG 파일을 JPG 형식으로 온라인에서 변환해요. PNG 파일은 JPG 말고도 JPEG, WEBP, AVIF, TIFF, GIF 형식으로 바꿀 수 있어요. ' +
+        '옵션으로 이미지 크기, 품질, 메타데이터 같은 설정을 바꿀 수 있어요.'
+    );
+    // A format page names the formats its source converts to, never itself, and the options of its first pair
     expect(englishSlugCopy('mp4-converter').description).toBe(
-      'Convert MP4 video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.'
+      'Convert MP4 videos online. Among others, MP4 files convert to WEBM, MKV, AVI, MOV, and MP3. ' +
+        'You can use the options to set the video codec, frame rate, and resolution.'
     );
-    expect(englishSlugCopy('svg-converter').description).toBe(
-      'Convert SVG files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.'
-    );
+    // A format the registry does not know gets the plain sentence alone
+    expect(englishSlugCopy('xyz-to-abc').description).toBe('Convert XYZ files to ABC online.');
   });
 
   it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
