@@ -22,6 +22,7 @@ import {
   resumeUploadReservation,
 } from '@/lib/api-keys/anonymous-upload-budget';
 import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
+import { HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE } from '@/lib/refusal-codes';
 import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse, uploadErrorResponse, uploadUnavailableResponse } from '@/lib/api/part-response';
 import { isUploadIdShape } from '@/lib/storage/upload-id';
@@ -35,9 +36,7 @@ export const dynamic = 'force-dynamic';
 const MAX_PART_BYTES = UPLOAD_PART_MAX_BYTES;
 /** The smallest part an object store takes for a part that is not the last (the S3 rule). */
 const MIN_PART_BYTES = 5 * 1024 * 1024;
-const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_FORBIDDEN = 403;
-const QUOTA_EXCEEDED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/quota-exceeded';
 const ANONYMOUS_PRESIGN_REFUSED =
   'An upload without an account sends its parts through action=chunk, which holds them to the size it declared; it gets no signed part link.';
 

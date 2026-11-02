@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { fetch as undiciFetch } from 'undici';
@@ -7,12 +8,12 @@ import {
   createSsrfSafeAgent,
 } from '@/lib/security/ssrf';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { withLinkImportHold, type LinkImportHold } from '@/lib/api-keys/anonymous-upload-budget';
+import { importOverflow, withLinkImportHold, type LinkImportHold } from '@/lib/api-keys/anonymous-upload-budget';
 import { isUnattributedAnonymous } from '@/lib/auth/anonymous-identity';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
-import { unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
+import { importLargerThanLeftResponse, unattributedTransferRefusal, uploadBudgetRefusalResponse } from '@/lib/api/upload-budget-response';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { currentJobDeadlineSettings } from '@/lib/queue/job-deadline';
 import { formatBytes } from '@/lib/format-bytes';
@@ -125,20 +126,29 @@ interface ImportCaller {
 }
 
 /**
- * The refusal of a body larger than `hold`: past the import limit (413), or past the rest of the day when that was less
- * than one file at the limit (429, the day's budget).
+ * The refusal of a body larger than `hold`, by the length it declared or, without one, by the hold it passed
+ * (`importOverflow`): past the import limit (413), larger than the day has left (429), or held by other transfers (429,
+ * try again when they end).
  */
-function bodyTooLarge(hold: LinkImportHold, importer: ImportCaller): NextResponse {
-  return hold.cappedByDay ? uploadBudgetRefusalResponse('daily-bytes', importer.instanceUri, importer.plan) : linkImportTooLarge(importer.caller);
+function bodyTooLarge(hold: LinkImportHold, importer: ImportCaller, declaredBytes?: number): NextResponse {
+  const overflow = importOverflow(hold, declaredBytes);
+  switch (overflow.kind) {
+    case 'too-large':
+      return linkImportTooLarge(importer.caller);
+    case 'larger-than-left':
+      return importLargerThanLeftResponse(overflow.leftBytes, importer.instanceUri, importer.plan);
+    case 'held':
+      return uploadBudgetRefusalResponse('held', importer.instanceUri, importer.plan);
+  }
 }
 
 /** The body of `res`, read up to the bytes `hold` holds with every chunk counted in it, or the refusal. */
 async function readBody(res: Response, hold: LinkImportHold, importer: ImportCaller): Promise<{ buffer: Buffer } | { refusal: NextResponse }> {
   // Check Content-Length upfront if provided
   const contentLength = parseInt(res.headers.get('content-length') ?? '', 10);
-  if (!isNaN(contentLength) && contentLength > hold.maxBytes) {
+  if (!isNaN(contentLength) && contentLength > hold.held.bytes) {
     discardBody(res);
-    return { refusal: bodyTooLarge(hold, importer) };
+    return { refusal: bodyTooLarge(hold, importer, contentLength) };
   }
 
   if (!res.body) {
@@ -155,7 +165,7 @@ async function readBody(res: Response, hold: LinkImportHold, importer: ImportCal
       if (done) break;
       hold.receivedBytes += value.length;
       totalBytes += value.length;
-      if (totalBytes > hold.maxBytes) {
+      if (totalBytes > hold.held.bytes) {
         await reader.cancel();
         return { refusal: bodyTooLarge(hold, importer) };
       }
@@ -288,7 +298,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     // without holding the answer.
     const { syncMaxMs } = currentJobDeadlineSettings();
     const imported = await runUnderDeadline(req, syncMaxMs, (limits) =>
-      withLinkImportHold(caller.id, importer.plan, syncMaxMs, URL_IMPORT_MAX_BYTES, undefined, (hold) => importFrom(target, ssrfAgent, limits.signal, hold, importer))
+      withLinkImportHold(
+        { owner: caller.id, plan: importer.plan, deadlineMs: syncMaxMs, limitBytes: URL_IMPORT_MAX_BYTES, holdId: crypto.randomUUID() },
+        (hold) => importFrom(target, ssrfAgent, limits.signal, hold, importer)
+      )
     );
     return 'refusal' in imported ? uploadBudgetRefusalResponse(imported.refusal, instanceUri, importer.plan) : imported.result;
   } catch (err: unknown) {

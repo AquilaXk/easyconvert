@@ -1,13 +1,8 @@
 import type { NextResponse } from 'next/server';
 import type { ConversionRefusal } from '../api-keys/guard';
-import { PROBLEM_TYPE_BASE } from '../refusal-codes';
+import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE, SERVICE_UNAVAILABLE_PROBLEM_TYPE } from '../refusal-codes';
 import { createProblemDetailsResponse } from './problem-details';
 import { buildRateLimitHeaders } from './rate-limit';
-
-export const HTTP_TOO_MANY_REQUESTS = 429;
-export const HTTP_SERVICE_UNAVAILABLE = 503;
-export const QUOTA_EXCEEDED_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}quota-exceeded`;
-export const SERVICE_UNAVAILABLE_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}service-unavailable`;
 
 /**
  * The answer of every route that reserves conversions when the guard refused them: 503 while the quota store is offline,

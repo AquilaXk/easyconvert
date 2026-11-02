@@ -311,14 +311,14 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await admin.keys(`*upload-budget*${user.id}*`)).toHaveLength(1);
     });
 
-    it('reads no more than the rest of the day when that is less than the file, and is refused with the daily budget', async () => {
+    it('reads no more than the rest of the day when that is less than the file, and is refused as larger than what is left', async () => {
       await spendImportBytes(client.userId, 'anonymous', ANONYMOUS_DAILY_UPLOAD_BYTES - 1);
       remoteFile(CSV);
 
       const refused = await fetchUrlRoute(importRequest());
 
       expect(refused.status).toBe(HTTP_TOO_MANY_REQUESTS);
-      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
+      expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'larger-than-left', leftBytes: 1, limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
       expect(await remaining()).toBe(DAY_ALLOWANCE);
     });
 

@@ -1,4 +1,4 @@
-import { ConversionFailedError, EngineMissingError, EngineUnavailableError } from '../types';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_SERVICE_UNAVAILABLE = 503;
@@ -20,14 +20,14 @@ function ownStatus(err: ConversionFailedError): number | undefined {
 }
 
 /**
- * Classifies a failed attempt. A typed conversion failure is a verdict on the input (malformed, unsupported,
- * over a limit), so retrying only repeats the work; a missing engine is the exception, because another worker
- * of the pool may have it (`EngineMissingError`). Anything untyped (a dropped socket, an out-of-memory kill)
- * says nothing about the input and stays retryable.
+ * Classifies a failed attempt. A typed conversion failure says itself whether another attempt may end otherwise
+ * (`retryable`): a verdict on the input (malformed, unsupported, over a limit) is final, so retrying only repeats the
+ * work, while a missing engine is not, because another worker of the pool may have it (`EngineMissingError`).
+ * Anything untyped (a dropped socket, an out-of-memory kill) says nothing about the input and stays retryable.
  */
 export function classifyJobFailure(err: unknown): JobFailureInfo {
   if (err instanceof ConversionFailedError) {
-    const retryable = err instanceof EngineMissingError;
+    const retryable = err.retryable;
     const fallbackStatus = err instanceof EngineUnavailableError ? HTTP_SERVICE_UNAVAILABLE : HTTP_BAD_REQUEST;
     return { code: err.name, status: ownStatus(err) ?? fallbackStatus, retryable };
   }

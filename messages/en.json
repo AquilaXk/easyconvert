@@ -1604,7 +1604,8 @@
       "open-uploads": "Without an account, up to {limit} uploads may be open at once. Finish or cancel one, then try again.",
       "daily-bytes": "Without an account, uploads and link imports may total {limit} a day. Try again tomorrow.",
       "daily-import-bytes": "On your plan, link imports may total {limit} a day. Try again tomorrow.",
-      "imports-held": "Link imports that are still running hold the rest of today's {limit}. Try again when they finish."
+      "imports-held": "Link imports and uploads still in progress hold the rest of today's {limit}. Try again when they finish.",
+      "imports-larger-than-left": "This file is larger than the {limit} left today for link imports. Try again tomorrow."
     },
     "conversion": {
       "file_required": "Choose a file to convert.",
@@ -1627,7 +1628,8 @@
       "malformed_input": "The file is damaged or incomplete, so it cannot be read.",
       "unsupported_input": "This kind of file cannot be converted, although it appears intact.",
       "input_over_limit": "The file holds more than a conversion can process, for example too many pixels or too much data once unpacked.",
-      "import_budget_exceeded": "You have used today's limit for link imports. Try again tomorrow.",
+      "import_budget_exceeded": "Today's limit for link imports has no room for this file. Try again tomorrow.",
+      "import_budget_held": "Other link imports and uploads still hold the rest of today's limit. Try again when they finish.",
       "quota_exceeded": "This job needs more conversions than are left today. Try again tomorrow.",
       "timeout": "The conversion did not finish in time. Try again.",
       "engine_unavailable": "The program this conversion needs is not available right now. Try again later.",

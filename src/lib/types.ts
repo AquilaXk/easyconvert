@@ -450,6 +450,8 @@ export interface ConversionJobResult {
 
 export class ConversionFailedError extends Error {
   readonly refusalCode: ConversionRefusalCode = 'conversion_failed';
+  /** Whether another attempt may end otherwise: a verdict on the input is final, so a typed failure is not, unless it says so. */
+  readonly retryable: boolean = false;
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'ConversionFailedError';
@@ -463,6 +465,7 @@ export class ConversionFailedError extends Error {
  */
 export class EngineMissingError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'engine_unavailable';
+  readonly retryable: boolean = true;
   constructor(message: string) {
     super(message);
     this.name = 'EngineMissingError';

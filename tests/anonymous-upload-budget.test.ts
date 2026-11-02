@@ -185,7 +185,7 @@ describe('the hold of a link import', () => {
   }
 
   it('holds one file while the day has room for it, and a larger body is over the import limit', () => {
-    const held = heldFor(received(0.2 * GIB), 'import');
+    const held = heldFor(received(200 * MIB), 'import');
     expect(held).toEqual({ shortBy: 'none', bytes: ONE_FILE });
     expect(importOverflow({ limitBytes: ONE_FILE, held })).toEqual({ kind: 'too-large' });
   });
@@ -197,15 +197,15 @@ describe('the hold of a link import', () => {
   });
 
   it('holds less than one file while another import holds the rest, and a larger body waits for it instead of being refused for the day', () => {
-    const held = heldFor(heldBy(received(0.3 * GIB), 'other', ONE_FILE), 'import');
-    expect(held).toEqual({ shortBy: 'held', bytes: 0.7 * GIB, leftTodayBytes: 1.7 * GIB });
+    const held = heldFor(heldBy(received(300 * MIB), 'other', ONE_FILE), 'import');
+    expect(held).toEqual({ shortBy: 'held', bytes: GIB - 300 * MIB, leftTodayBytes: 2 * GIB - 300 * MIB });
     expect(importOverflow({ limitBytes: ONE_FILE, held })).toEqual({ kind: 'held' });
   });
 
   it('counts an open upload with the holds of other imports, since its bytes come back when it is aborted', () => {
-    const opened = reserveUpload(received(0.5 * GIB), { id: 'upload', bytes: 0.8 * GIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy);
+    const opened = reserveUpload(received(512 * MIB), { id: 'upload', bytes: 800 * MIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy);
     if ('refusal' in opened) throw new Error('refused');
-    expect(heldFor(opened.record, 'import')).toEqual({ shortBy: 'held', bytes: 0.7 * GIB, leftTodayBytes: 1.5 * GIB });
+    expect(heldFor(opened.record, 'import')).toEqual({ shortBy: 'held', bytes: 736 * MIB, leftTodayBytes: 1.5 * GIB });
 
     const full = reserveUpload(received(1.5 * GIB), { id: 'upload', bytes: 0.5 * GIB, day: DAY, now: NOW, expiresAt: NOW + HOUR }, policy);
     if ('refusal' in full) throw new Error('refused');
@@ -213,13 +213,13 @@ describe('the hold of a link import', () => {
   });
 
   it('judges a declared length by the import limit, then by what the day has left once the other holds end', () => {
-    const held = heldFor(heldBy(received(1.5 * GIB), 'other', 0.2 * GIB), 'import');
-    expect(held).toEqual({ shortBy: 'held', bytes: 0.3 * GIB, leftTodayBytes: 0.5 * GIB });
+    const held = heldFor(heldBy(received(1.5 * GIB), 'other', 200 * MIB), 'import');
+    expect(held).toEqual({ shortBy: 'held', bytes: 312 * MIB, leftTodayBytes: 512 * MIB });
     const hold = { limitBytes: ONE_FILE, held };
 
-    expect(importOverflow(hold, 0.4 * GIB)).toEqual({ kind: 'held' });
-    expect(importOverflow(hold, 0.6 * GIB)).toEqual({ kind: 'larger-than-left', leftBytes: 0.5 * GIB });
-    expect(importOverflow(hold, 1.2 * GIB)).toEqual({ kind: 'too-large' });
+    expect(importOverflow(hold, 400 * MIB)).toEqual({ kind: 'held' });
+    expect(importOverflow(hold, 600 * MIB)).toEqual({ kind: 'larger-than-left', leftBytes: 512 * MIB });
+    expect(importOverflow(hold, 1200 * MIB)).toEqual({ kind: 'too-large' });
   });
 
   it('shrinks a hold to a smaller declared length, giving the rest back to the day, and never grows one', () => {

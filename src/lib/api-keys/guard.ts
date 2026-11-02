@@ -9,12 +9,7 @@ import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
 import { CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS, ClientIpConfigError, ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
-import {
-  HTTP_SERVICE_UNAVAILABLE,
-  HTTP_TOO_MANY_REQUESTS,
-  QUOTA_EXCEEDED_PROBLEM_TYPE,
-  SERVICE_UNAVAILABLE_PROBLEM_TYPE,
-} from '../api/conversion-refusal-response';
+import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE, SERVICE_UNAVAILABLE_PROBLEM_TYPE } from '../refusal-codes';
 
 export { extractClientIp };
 
