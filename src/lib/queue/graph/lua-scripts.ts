@@ -132,7 +132,7 @@ return { 1, status, cjson.encode(ready), tostring(units) }
 export const NODE_FAILED_LUA_SCRIPT = `
 -- KEYS[1]: graphKey  KEYS[2]: childrenKey  KEYS[3]: nodesKey  KEYS[4]: outboxKey
 -- ARGV[1]: nodeId  ARGV[2]: error message  ARGV[3]: finishedAt ms
--- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON, skippedNodeIds JSON }
+-- Returns { applied(0|1), graphStatus, cancelledNodeIds JSON, skippedNodeIds JSON, accumulatedUnits }
 ${COMPLETE_WHEN_ALL_TERMINAL}
 local graphStatus = redis.call('HGET', KEYS[1], 'status')
 if graphStatus ~= 'running' then
@@ -195,7 +195,7 @@ if allTerminal(KEYS[3]) then
   status = 'completed'
   redis.call('HSET', KEYS[1], 'status', status, 'finishedOn', ARGV[3])
 end
-return { 1, status, '[]', cjson.encode(skipped) }
+return { 1, status, '[]', cjson.encode(skipped), redis.call('HGET', KEYS[1], 'accumulatedUnits') or '0' }
 `;
 
 export const CANCEL_GRAPH_LUA_SCRIPT = `

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, conversionUnitRefusal, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
 import type { User } from '@/lib/auth/types';
 import type { FormatDefinition } from '@/lib/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
@@ -27,6 +27,7 @@ import {
   normalizeGraphNodes,
   JobGraphValidationError,
 } from '@/lib/jobs';
+import { chargingNodeCount } from '@/lib/jobs/graph-operations';
 import { graphScheduler } from '@/lib/queue/graph';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
@@ -615,21 +616,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return await fail(400, 'webhookSecret is required when webhookUrl is provided.');
     }
 
-    // Phase 1: Atomically reserve quota unit BEFORE enqueueing to BullMQ
-    const unit = await reserveConversionUnit(auth.user);
-    if (!unit.reserved) {
-      const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
-      return reply(
-        createProblemDetailsResponse(
-          429,
-          tierQuotaExceeded(auth.user.tier),
-          instanceUri,
-          'Too Many Requests',
-          undefined,
-          buildRateLimitHeaders({ ...quota, remaining: 0 })
-        )
-      );
-    }
+    // Phase 1: Atomically reserve quota BEFORE enqueueing to BullMQ
+    const unit = await reserveConversionUnit(auth.user, unitsToReserve(graph));
+    if (!unit.reserved) return reply(conversionUnitRefusal(unit, auth.user, quota, instanceUri));
 
     const submission: ReservedSubmission = {
       user: auth.user,
@@ -697,6 +686,14 @@ interface ReservedSubmission {
   inputBufferBase64?: string;
   webhookUrl?: string;
   webhookSecret?: string;
+}
+
+/**
+ * The units a submission reserves: one for a job, one for each charging node of a graph, so a graph is admitted only when
+ * the caller has a unit for every conversion in it; its settle refunds the units of conversions that produced nothing.
+ */
+function unitsToReserve(graph: JobGraph | undefined): number {
+  return graph ? chargingNodeCount(normalizeGraphNodes(graph)) : 1;
 }
 
 /**

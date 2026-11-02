@@ -35,6 +35,9 @@ export interface GraphMetadata {
   createdAt?: number;
 }
 
+/** What the node jobs of a graph carry: never its reservation, which only the graph scheduler settles or gives back. */
+export type GraphNodeJobMetadata = Omit<GraphMetadata, 'reservationId'> & { reservationId?: never };
+
 export interface GraphExecutionState {
   graphId: string;
   status: GraphStatus;

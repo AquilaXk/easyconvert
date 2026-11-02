@@ -58,6 +58,7 @@ import {
   MERGE_FORMATS,
   PDF_SPLIT_OUTPUT_FORMAT,
   THUMBNAIL_FORMATS,
+  chargesConversionUnit,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
@@ -255,6 +256,15 @@ function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean }
   return { password: options?.password, confirmEditRights: options?.confirmEditRights };
 }
 
+/**
+ * The units a node of `op` that produced a result charges: one for a conversion, none for an import, an export or an
+ * optimize node that gained nothing (docs/policy-decisions.md, entry 15).
+ */
+function chargedUnitsOf(op: string, optimizations: NonNullable<ConversionJobResult['optimizations']>): number {
+  const gainedNothing = optimizations.length > 0 && optimizations.every((o) => !o.optimized);
+  return chargesConversionUnit(op) && !gainedNothing ? 1 : 0;
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -274,19 +284,17 @@ export async function processGraphNodeJob(
     ? { ...submittedNode, options: openPasswordOption(stripEngineControls(submittedNode.options), graphNodeJobId(graphId, nodeId)) }
     : submittedNode;
   const effectiveStorage: IStorageBackend = scope.storage;
-  const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
-    pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId)),
-    job
-  );
-
-  await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
-  await job.updateProgress(10);
-  await graphScheduler.onNodeStarted(graphId, nodeId);
-
   let outputKeys: string[] = [];
   const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
 
   try {
+    const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
+      pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId)),
+      job
+    );
+    await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
+    await job.updateProgress(10);
+    await graphScheduler.onNodeStarted(graphId, nodeId);
     attemptSignal.throwIfAborted();
 
     switch (node.op) {
@@ -794,9 +802,7 @@ export async function processGraphNodeJob(
     // An engine that ignored the abort and returned late has no say: the queue already failed this attempt (deadline,
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
-    // Quota is charged for work that produced a result: an optimize node that gained nothing costs no unit.
-    const chargedUnits = optimizations.length > 0 && optimizations.every((o) => !o.optimized) ? 0 : 1;
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, chargedUnits);
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, chargedUnitsOf(node.op, optimizations));
 
     return {
       jobId: job.id,

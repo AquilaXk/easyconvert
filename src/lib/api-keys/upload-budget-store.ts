@@ -3,9 +3,10 @@ import { compareAndSetWithRetry } from '../redis/compare-and-set';
 import type { UploadBudgetRecord } from './anonymous-upload-budget';
 
 /**
- * Where the upload budgets of anonymous address buckets live (docs/policy-decisions.md, entry 137): in Redis beside the
- * quota counters, or in this process when the quota store has no Redis. A record is written whole: Redis takes it with
- * a compare-and-set, and this process changes it between two awaits, so concurrent requests never lose a change.
+ * Where the byte budgets of callers live (docs/policy-decisions.md, entries 15 and 137), for the uploads and link imports
+ * of anonymous address buckets and the link imports of accounts: in Redis beside the quota counters, or in this process
+ * when the quota store has no Redis. A record is written whole: Redis takes it with a compare-and-set, and this process
+ * changes it between two awaits, so concurrent requests never lose a change.
  */
 
 /** Where the reservation of an upload session is: its address bucket and its entry there. */

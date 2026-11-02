@@ -8,7 +8,8 @@ import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
 import { CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS, ClientIpConfigError, ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
-import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
+import { RATE_LIMITED_PROBLEM_TYPE, createProblemDetailsResponse } from '../api/problem-details';
+import { buildRateLimitHeaders } from '../api/rate-limit';
 
 export { extractClientIp };
 
@@ -532,6 +533,29 @@ export async function reserveConversionUnit(user: User, units: number = 1): Prom
   if (isUnattributedAnonymous(user.id)) return { reserved: true };
   const quota = await checkQuotaAndReserve(user.id, user.tier, units);
   return quota.allowed ? { reserved: true, reservationId: quota.reservationId } : { reserved: false, ...quotaRefusal(quota, user.id) };
+}
+
+/**
+ * The answer of an `/api/v1` route whose conversion units were refused: 429 with the day's `quota` in its headers when the
+ * conversions of the day are used up, else the refusal as it is (503 while the quota store is offline).
+ */
+export function conversionUnitRefusal(
+  refusal: Extract<ConversionUnit, { reserved: false }>,
+  user: User,
+  quota: QuotaUsage,
+  instanceUri: string
+): Response {
+  if (refusal.status !== HTTP_TOO_MANY_REQUESTS) {
+    return createProblemDetailsResponse(refusal.status, refusal.error, instanceUri, undefined, refusal.problemType);
+  }
+  return createProblemDetailsResponse(
+    HTTP_TOO_MANY_REQUESTS,
+    tierQuotaExceeded(user.tier),
+    instanceUri,
+    'Too Many Requests',
+    undefined,
+    buildRateLimitHeaders({ ...quota, remaining: 0 })
+  );
 }
 
 /** A reservation while its request runs. Each way of ending it acts once; after one, the others do nothing. */

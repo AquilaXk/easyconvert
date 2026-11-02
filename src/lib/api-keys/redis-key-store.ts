@@ -297,13 +297,21 @@ export class RedisKeyStore extends KeyStore {
     return this.keyPrefix;
   }
 
+  /** The reservation this process holds under `reservationId`, for a store without Redis. */
   public getReservation(reservationId: string): QuotaReservation | undefined {
-    return this.reservations.get(reservationId);
+    return this.memoryReservations().get(reservationId);
   }
 
+  /** How many reservations this process holds, for a store without Redis. */
   public getActiveReservationsCount(): number {
     this.cleanExpiredReservations();
-    return this.reservations.size;
+    return this.memoryReservations().size;
+  }
+
+  /** The reservations of a store without Redis; one with Redis keeps them in Redis, so asking it here is refused. */
+  private memoryReservations(): Map<string, QuotaReservation> {
+    if (this.redisClient) throw new Error('A quota store with Redis keeps its reservations in Redis, not in this process.');
+    return this.reservations;
   }
 
   /** Gives back the in-memory reservations past their day; Redis expires its own, and this process keeps none of them. */

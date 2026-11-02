@@ -1,4 +1,4 @@
-import type { GraphMetadata } from './scheduler-types';
+import type { GraphNodeJobMetadata } from './scheduler-types';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { enqueueConversionJob } from '../enqueue';
@@ -23,7 +23,7 @@ export async function enqueueGraphNodeJob(
   graphId: string,
   nodeId: NodeId,
   node: GraphNode,
-  meta: GraphMetadata,
+  meta: GraphNodeJobMetadata,
   inputArtifacts: string[]
 ): Promise<void> {
   const resourceClass = resolveNodeResourceClass(node);
@@ -40,8 +40,6 @@ export async function enqueueGraphNodeJob(
       fileSize: 0,
       options: nodeFields.options || {},
       userId: meta.ownerUserId,
-      // No reservation id: the graph holds one reservation for all its nodes, and only the graph scheduler settles it
-      // or gives it back when the graph ends. The lifecycle listeners end the reservation of any job that carries one.
       graphId,
       graphNodeId: nodeId,
       // Fail closed: whatever path got a node here, its secrets are sealed before the queue sees it.
@@ -70,7 +68,7 @@ export async function cancelGraphNodeJob(
   return getQueueForResourceClass(resolveNodeResourceClass(node)).cancelJob(graphNodeJobId(graphId, nodeId), reason);
 }
 
-async function graphDeadlineOwner(meta: GraphMetadata): Promise<{ tier: string; notAfter?: number }> {
+async function graphDeadlineOwner(meta: GraphNodeJobMetadata): Promise<{ tier: string; notAfter?: number }> {
   const tier = await tierForOwner(meta.ownerUserId);
   return meta.createdAt === undefined ? { tier } : { tier, notAfter: meta.createdAt + tierMaxDeadlineMs(tier) };
 }

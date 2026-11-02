@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { validateApiAccess, authErrorHeaders, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
+import { validateApiAccess, authErrorHeaders, conversionUnitRefusal, reserveConversionUnit, tierQuotaExceeded, withReservedUnit, type ReservedUnit } from '@/lib/api-keys/guard';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -258,7 +258,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
     const unit = await reserveConversionUnit(auth.user);
-    if (!unit.reserved) return quotaExhausted();
+    if (!unit.reserved) return reply(conversionUnitRefusal(unit, auth.user, quota, instanceUri));
 
     const conversion: ReservedConversion = {
       req,

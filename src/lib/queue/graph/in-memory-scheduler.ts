@@ -3,6 +3,7 @@ import { getNodeInputs } from './validate-graph';
 import type {
   GraphExecutionState,
   GraphMetadata,
+  GraphNodeJobMetadata,
   GraphNodeState,
   IGraphScheduler,
   NodeCompletionResult,
@@ -19,6 +20,11 @@ import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 
 /** Node states from which a node can still complete or fail. */
 const RUNNABLE_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>(['waiting', 'active']);
+
+/** What the node jobs of `state` carry: its owner, file name and start, never its reservation. */
+function nodeJobMetadata(state: GraphExecutionState): GraphNodeJobMetadata {
+  return { ownerUserId: state.ownerUserId, originalFilename: state.originalFilename, createdAt: state.createdAt };
+}
 
 interface InternalGraphData {
   state: GraphExecutionState;
@@ -98,7 +104,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     for (const [nodeId, nodeState] of Object.entries(nodesRecord)) {
       if (nodeState.status === 'waiting') {
         const node = graph.nodes[nodeId];
-        await this.enqueueNodeJob(graphId, nodeId, node, { ...meta, createdAt });
+        await this.enqueueNodeJob(graphId, nodeId, node, nodeJobMetadata(state));
       }
     }
 
@@ -159,13 +165,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
           childState.status = 'waiting';
           readyNodeIds.push(childId);
           const childNode = data.state.graph.nodes[childId];
-          await this.enqueueNodeJob(graphId, childId, childNode, {
-            ownerUserId: data.state.ownerUserId,
-            reservationId: data.state.reservationId,
-            webhookUrl: data.state.webhookUrl,
-            webhookSecret: data.state.webhookSecret,
-            createdAt: data.state.createdAt,
-          });
+          await this.enqueueNodeJob(graphId, childId, childNode, nodeJobMetadata(data.state));
         }
       }
     }
@@ -279,7 +279,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
         data.state.status = 'completed';
         data.state.finishedAt = Date.now();
         await this.cleanupIntermediates(graphId);
-        await this.handleGraphCompletionSideEffects(data.state, 1);
+        await this.handleGraphCompletionSideEffects(data.state, data.accumulatedUnits);
       }
 
       return {
@@ -356,7 +356,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     graphId: string,
     nodeId: NodeId,
     node: any,
-    meta: GraphMetadata
+    meta: GraphNodeJobMetadata
   ): Promise<void> {
     const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
     await enqueueGraphNodeJob(graphId, nodeId, node, meta, inputArtifacts);

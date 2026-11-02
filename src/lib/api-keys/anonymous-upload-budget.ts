@@ -30,6 +30,8 @@ export const ANONYMOUS_OPEN_UPLOADS_MAX = 2;
 export const ANONYMOUS_DAILY_UPLOAD_BYTES = dailyBudgetBytes('anonymous');
 /** An open session that received no part for this long stops counting as open; its bytes stay reserved until it expires. */
 export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
+/** How long the hold of a link import outlives the import's deadline: a cut-off import stops reading within it. */
+export const LINK_IMPORT_HOLD_GRACE_MS = 60 * 1000;
 
 const RESERVATION_ID_BYTES = 12;
 
@@ -217,53 +219,75 @@ export async function resumeUploadReservation(uploadId: string): Promise<BudgetR
 }
 
 /**
- * The record once link import `id` ended having received `receivedBytes`: its hold is replaced by those bytes on the day
- * it was charged to, whether the import succeeded, was too large, failed or was cut off.
+ * Holds `bytes` of the day for link import `id` until `expiresAt`. A hold never counts as an open upload: it is idle from
+ * the start, since the import holds a conversion slot instead.
  */
-function settleImport(record: UploadBudgetRecord, id: string, receivedBytes: number): UploadBudgetRecord {
-  const entry = record.open[id];
-  const released = withoutUpload(record, id, true);
-  return entry && entry.day === record.day ? { ...released, bytes: released.bytes + receivedBytes } : released;
+export function holdImport(
+  record: UploadBudgetRecord | undefined,
+  hold: { id: string; bytes: number; day: string; now: number; expiresAt: number }
+): UploadBudgetRecord {
+  const current = currentRecord(record, hold.day, hold.now);
+  const entry: OpenUpload = { bytes: hold.bytes, day: hold.day, idleUntil: hold.now, expiresAt: hold.expiresAt };
+  return { ...current, bytes: current.bytes + hold.bytes, open: { ...current.open, [hold.id]: entry } };
+}
+
+/**
+ * The record on `day` once link import `id` ended having received `receivedBytes`, whether it succeeded, was too large,
+ * failed or was cut off: its hold goes back to the day it was charged to, and the bytes received are charged to `day`,
+ * also when the hold expired or was charged to an earlier day.
+ */
+export function settleImport(
+  record: UploadBudgetRecord | undefined,
+  settled: { id: string; receivedBytes: number; day: string; now: number }
+): UploadBudgetRecord {
+  const released = withoutUpload(currentRecord(record, settled.day, settled.now), settled.id, true);
+  return { ...released, bytes: released.bytes + settled.receivedBytes };
 }
 
 /** A link import's hold on the day's bytes, taken when it starts. */
 export interface LinkImportReservation {
-  /** Charges the bytes the import received in place of its hold, once it has ended. */
+  /** Charges the bytes the import received in place of its hold, once it has ended; a second settle changes nothing. */
   settle(receivedBytes: number): Promise<void>;
 }
 
 /**
  * Takes the hold of a link import of `callerUserId` on the day's bytes of `plan`: the import limit, or the bytes left
- * when fewer, so imports running at once cannot pass the budget together. Refused once the day has no byte left. A hold
- * does not count as an open upload (the import holds a conversion slot instead), and one whose process died returns its
- * bytes after OPEN_UPLOAD_IDLE_MS.
+ * when fewer, so imports running at once cannot pass the budget together. Refused once the day has no byte left. The
+ * hold lasts the import's `deadlineMs` and LINK_IMPORT_HOLD_GRACE_MS more; one whose process died returns its bytes then.
  */
 export async function reserveLinkImport(
   callerUserId: string,
-  plan: Plan
+  plan: Plan,
+  deadlineMs: number
 ): Promise<{ reservation: LinkImportReservation } | { refusal: BudgetRefusal }> {
   const store = activeStore();
   const id = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex');
-  const policy: BudgetPolicy = { maxOpenUploads: Number.POSITIVE_INFINITY, dailyBytes: dailyBudgetBytes(plan), idleMs: 0 };
   let refusal: BudgetRefusal | undefined;
   await store.update(callerUserId, (current) => {
     const now = Date.now();
     const day = getUtcDateKey();
-    const left = policy.dailyBytes - currentRecord(current, day, now).bytes;
+    const left = dailyBudgetBytes(plan) - currentRecord(current, day, now).bytes;
     refusal = left > 0 ? undefined : 'daily-bytes';
     if (refusal) return undefined;
-    const held = reserveUpload(current, { id, bytes: Math.min(URL_IMPORT_MAX_BYTES, left), day, now, expiresAt: now + OPEN_UPLOAD_IDLE_MS }, policy);
-    return 'record' in held ? held.record : undefined;
+    return holdImport(current, { id, bytes: Math.min(URL_IMPORT_MAX_BYTES, left), day, now, expiresAt: now + deadlineMs + LINK_IMPORT_HOLD_GRACE_MS });
   });
   if (refusal) return { refusal };
+  let settled = false;
   return {
     reservation: {
-      settle: (receivedBytes) => store.update(callerUserId, (current) => current && settleImport(current, id, receivedBytes)),
+      settle: async (receivedBytes) => {
+        if (settled) return;
+        settled = true;
+        await store.update(callerUserId, (current) => settleImport(current, { id, receivedBytes, day: getUtcDateKey(), now: Date.now() }));
+      },
     },
   };
 }
 
-/** The bytes `callerUserId` has brought in today, holds of link imports still running included. */
+/**
+ * The bytes `callerUserId` has brought in today, holds of link imports still running included. Only the tests read it:
+ * the record is written whole by its store, so this is the one read that shows what a bucket was charged.
+ */
 export async function bytesBroughtInToday(callerUserId: string): Promise<number> {
   let bytes = 0;
   await activeStore().update(callerUserId, (current) => {

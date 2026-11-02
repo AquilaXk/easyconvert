@@ -48,6 +48,21 @@ export const LEGACY_GRAPH_OPERATION_ALIASES: Readonly<Record<string, GraphOperat
 export const IMPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['import.upload', 'import.url']);
 export const EXPORT_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>(['export.url', 'export.internal']);
 
+/**
+ * Whether a node of `op` charges a conversion unit when it produces a result (docs/policy-decisions.md, entry 15): every
+ * operation that runs an engine on the files does. Imports and exports only move files in or out, and charge nothing.
+ */
+export function chargesConversionUnit(op: string | undefined): boolean {
+  if (op === undefined || !GRAPH_OPERATION_SET.has(op)) return false;
+  const operation = op as GraphOperation;
+  return !IMPORT_OPERATIONS.has(operation) && !EXPORT_OPERATIONS.has(operation);
+}
+
+/** The units a graph of `nodes` reserves when it is submitted: one for each node that charges one. */
+export function chargingNodeCount(nodes: Record<string, { op?: string }>): number {
+  return Object.values(nodes).filter((node) => chargesConversionUnit(node.op)).length;
+}
+
 /** Operations whose output format must be named by the caller; none of them has a default. */
 export const TARGET_FORMAT_REQUIRED_OPERATIONS: ReadonlySet<GraphOperation> = new Set<GraphOperation>([
   'convert',

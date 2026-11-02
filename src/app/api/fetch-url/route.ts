@@ -290,12 +290,13 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const target = await importTarget(req);
     if (!(target instanceof URL)) return target;
     const plan = planOfCaller(caller);
-    const held = await reserveLinkImport(caller.id, plan);
+    // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS), and holds its bytes as long.
+    const { syncMaxMs } = currentJobDeadlineSettings();
+    const held = await reserveLinkImport(caller.id, plan, syncMaxMs);
     if ('refusal' in held) return uploadBudgetRefusalResponse(held.refusal, instanceUri, plan);
     budget = held.reservation;
 
-    // The whole import, headers and body, runs under the synchronous deadline (SYNC_DEADLINE_MAX_MS).
-    return await runUnderDeadline(req, currentJobDeadlineSettings().syncMaxMs, (limits) => {
+    return await runUnderDeadline(req, syncMaxMs, (limits) => {
       const work = importFrom(target, ssrfAgent, limits.signal, received, caller);
       stopped = work.catch(() => undefined);
       return work;
