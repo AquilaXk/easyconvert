@@ -23,11 +23,19 @@ import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { storageProvider } from '../src/lib/storage';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, bytesBroughtInToday, withLinkImportMeter } from '../src/lib/api-keys/anonymous-upload-budget';
+import {
+  ANONYMOUS_DAILY_UPLOAD_BYTES,
+  LINK_IMPORT_METER_BATCH_BYTES,
+  bytesBroughtInToday,
+  reserveAnonymousUpload,
+  resumeUploadReservation,
+  withLinkImportMeter,
+} from '../src/lib/api-keys/anonymous-upload-budget';
+import { spendImportBytes } from './helpers/import-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
-import type { Plan } from '../src/lib/plan-limits';
+import { URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
@@ -90,12 +98,6 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       headers: { ...headers, 'content-type': 'application/json' },
       body: JSON.stringify({ url: 'https://files.example.com/scores.csv' }),
     });
-  }
-
-  /** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
-  async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-    const spent = await withLinkImportMeter({ owner: userId, plan }, (meter) => meter.count(bytes));
-    if ('refusal' in spent) throw new Error(`the import budget of ${userId} is already spent`);
   }
 
   const convertCsv = () => convertRoute(convertRequest({ name: 'scores.csv', content: CSV, target: 'json' }));
@@ -318,6 +320,29 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       expect(await refused.json()).toMatchObject({ type: UPLOAD_BUDGET_PROBLEM, refusal: 'daily-bytes', limitBytes: ANONYMOUS_DAILY_UPLOAD_BYTES });
       expect(await bytesBroughtInToday(client.userId)).toBe(ANONYMOUS_DAILY_UPLOAD_BYTES - 1 + Buffer.byteLength(CSV));
       expect(await remaining()).toBe(DAY_ALLOWANCE);
+    });
+
+    it('charges exactly what concurrent imports received while an upload of the same caller keeps changing the record', async () => {
+      const IMPORTS = 6;
+      const BATCHES = 3;
+      const TAIL_BYTES = 7;
+      const UPLOAD_BYTES = 1024 * 1024;
+      const opened = await reserveAnonymousUpload(client.userId, UPLOAD_BYTES, Date.now() + 60_000);
+      if ('refusal' in opened) throw new Error(`refused: ${opened.refusal}`);
+      const uploadId = `upload_${crypto.randomBytes(6).toString('hex')}`;
+      await opened.reservation.bind(uploadId, Date.now() + 60_000);
+      const importAll = () =>
+        withLinkImportMeter({ owner: client.userId, plan: 'anonymous', limitBytes: URL_IMPORT_MAX_BYTES }, async (meter) => {
+          for (let batch = 0; batch < BATCHES; batch++) await meter.count(LINK_IMPORT_METER_BATCH_BYTES);
+          await meter.count(TAIL_BYTES);
+        });
+
+      await Promise.all([
+        ...Array.from({ length: IMPORTS }, importAll),
+        ...Array.from({ length: IMPORTS * BATCHES }, () => resumeUploadReservation(uploadId)),
+      ]);
+
+      expect(await bytesBroughtInToday(client.userId)).toBe(UPLOAD_BYTES + IMPORTS * (BATCHES * LINK_IMPORT_METER_BATCH_BYTES + TAIL_BYTES));
     });
 
     it('stops at the synchronous deadline when the remote sends the body too slowly, and frees its slot', async () => {

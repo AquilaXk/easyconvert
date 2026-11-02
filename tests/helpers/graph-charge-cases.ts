@@ -8,7 +8,7 @@ import { POST as v1JobsRoute } from '../../src/app/api/v1/jobs/route';
 import { DELETE as cancelQueueJobRoute } from '../../src/app/api/queue/jobs/[id]/route';
 import { DELETE as cancelV1JobRoute } from '../../src/app/api/v1/jobs/[id]/route';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
-import { LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, dailyBudgetBytes, withLinkImportMeter } from '../../src/lib/api-keys/anonymous-upload-budget';
+import { LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, dailyBudgetBytes } from '../../src/lib/api-keys/anonymous-upload-budget';
 import { webhookDispatcher } from '../../src/lib/api-keys/webhook-dispatcher';
 import { anonymousUserId } from '../../src/lib/auth/anonymous-identity';
 import { formatBytes } from '../../src/lib/format-bytes';
@@ -24,6 +24,7 @@ import { StorageServiceError } from '../../src/lib/storage/adapters/adapter-inte
 import { ConversionFailedError, type ConversionJobData, type ConversionJobResult } from '../../src/lib/types';
 import { SecretSealError, unsealJobSecret } from '../../src/lib/security/job-secret-seal';
 import { gzipRemote } from './gzip-remote';
+import { spendImportBytes } from './import-budget';
 
 /**
  * What a queued graph is charged, run through real queue workers with the lifecycle listeners attached, as the worker
@@ -114,11 +115,6 @@ function anonymousOwner(): string {
   return anonymousUserId(`192.0.2.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
 }
 
-/** Uses `bytes` of the day's import budget of `owner`, as an import that received them would. */
-async function spendImportBytes(owner: string, plan: 'anonymous' | 'free', bytes: number): Promise<void> {
-  const spent = await withLinkImportMeter({ owner, plan }, (meter) => meter.count(bytes));
-  if ('refusal' in spent) throw new Error(`the import budget of ${owner} is already spent`);
-}
 
 /** What a suite can do to the quota store besides what every store does. */
 interface StoreControls {

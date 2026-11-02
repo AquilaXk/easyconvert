@@ -26,7 +26,8 @@ import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { ANONYMOUS_DAILY_UPLOAD_BYTES, LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday, withLinkImportMeter } from '../src/lib/api-keys/anonymous-upload-budget';
+import { ANONYMOUS_DAILY_UPLOAD_BYTES, LINK_IMPORT_METER_BATCH_BYTES, bytesBroughtInToday } from '../src/lib/api-keys/anonymous-upload-budget';
+import { spendImportBytes } from './helpers/import-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
@@ -113,12 +114,6 @@ async function account(tier: 'free' | 'pro') {
   const email = `import-budget-${tier}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@quota.test`;
   const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'Import Budget', tier }));
   return { userId: user.id, headers: { cookie: `easyconvert_session=${createSessionToken(user)}` } };
-}
-
-/** Uses `bytes` of the day's import budget of `userId`, as an import that received them would. */
-async function spendImportBytes(userId: string, plan: Plan, bytes: number) {
-  const spent = await withLinkImportMeter({ owner: userId, plan }, (meter) => meter.count(bytes));
-  if ('refusal' in spent) throw new Error(`the import budget of ${userId} is already spent`);
 }
 
 /** A remote that sends `first`, then `afterAbort` a little after the import is aborted, then fails the body. */
