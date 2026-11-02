@@ -33,6 +33,8 @@ interface FileSourceButtonProps {
 /** Where focus lands when the menu opens: its first item from a click, Enter, Space or Down, its last from Up. */
 type MenuState = 'closed' | 'first' | 'last';
 
+const itemIndexFor = (state: Exclude<MenuState, 'closed'>, count: number) => (state === 'first' ? 0 : count - 1);
+
 /** The item a key moves focus to within the menu, by the menu button pattern of the WAI-ARIA Authoring Practices. */
 function nextItemIndex(key: string, current: number, count: number): number | null {
   switch (key) {
@@ -52,7 +54,8 @@ function nextItemIndex(key: string, current: number, count: number): number | nu
 /**
  * A split button: the device picker on the main part, and a menu of the other file sources (device, link) on the chevron,
  * which follows the menu button pattern: opening it moves focus to an item, the arrows, Home and End move within it, Escape
- * and a choice return focus to the chevron, and focus leaving it closes it.
+ * and a choice return focus to the chevron, and Tab or a pointer press outside closes it. It never closes on a blur, since
+ * WebKit blurs the focused item on a mouse press without focusing what was pressed.
  */
 export default function FileSourceButton({
   label, variant, disabled = false, onPickDevice, onImportFile, className = '',
@@ -69,7 +72,7 @@ export default function FileSourceButton({
   useEffect(() => {
     if (menu === 'closed') return;
     const items = itemsRef.current;
-    items[menu === 'first' ? 0 : items.length - 1]?.focus();
+    items[itemIndexFor(menu, items.length)]?.focus();
     const handleOutside = (event: PointerEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) setMenu('closed');
     };
@@ -83,12 +86,23 @@ export default function FileSourceButton({
   };
 
   const handleToggleKey = (event: React.KeyboardEvent) => {
+    if (event.key === 'Escape' && isMenuOpen) {
+      event.preventDefault();
+      setMenu('closed');
+      return;
+    }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
-    setMenu(event.key === 'ArrowDown' ? 'first' : 'last');
+    const next = event.key === 'ArrowDown' ? 'first' : 'last';
+    if (isMenuOpen) itemsRef.current[itemIndexFor(next, itemsRef.current.length)]?.focus();
+    else setMenu(next);
   };
 
   const handleMenuKey = (event: React.KeyboardEvent) => {
+    if (event.key === 'Tab') {
+      setMenu('closed');
+      return;
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
       closeToToggle();
@@ -99,10 +113,6 @@ export default function FileSourceButton({
     if (next === null) return;
     event.preventDefault();
     items[next].focus();
-  };
-
-  const handleFocusLeave = (event: React.FocusEvent) => {
-    if (isMenuOpen && !rootRef.current?.contains(event.relatedTarget as Node | null)) setMenu('closed');
   };
 
   const choose = (action: () => void) => () => {
@@ -118,7 +128,7 @@ export default function FileSourceButton({
   ];
 
   return (
-    <div ref={rootRef} onBlur={handleFocusLeave} className={`relative inline-flex items-stretch ${className}`}>
+    <div ref={rootRef} className={`relative inline-flex items-stretch ${className}`}>
       <button
         type="button"
         disabled={disabled}
@@ -147,6 +157,7 @@ export default function FileSourceButton({
           role="menu"
           aria-label={t('sourcesMenu')}
           onKeyDown={handleMenuKey}
+          onMouseDown={(event) => event.preventDefault()}
           className={`absolute right-0 ${styles.menu} w-52 max-w-[calc(100dvw-2rem)] rounded-sm bg-surface border border-rule shadow-elev-1 p-1.5 z-40 text-left`}
         >
           {menuItems.map(({ key, Icon, text, action }, index) => (
