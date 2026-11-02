@@ -65,7 +65,8 @@ function formatPageFiles(t: SlugCopyTranslator, name: SlugName, source: string):
 
 /**
  * How each language lists names: "PNG, JPG, and GIF" in English, "PNG, JPG, GIF" in Korean, whose sentences end the list
- * with 등 or 형식으로 where the list format of the language would join the last name with the written 및.
+ * with 등 or 형식으로 where the list format of the language would join the last name with the written 및. A sentence of one
+ * option subject reads without 등 ("구분 기호 옵션을 정할 수 있어요.", "Options include the delimiter.").
  */
 const LIST_OF: Readonly<Record<AppLocale, (items: readonly string[]) => string>> = {
   en: (items) => new Intl.ListFormat('en', { type: 'conjunction' }).format(items),
@@ -134,7 +135,7 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
         t(extractsAudio ? 'pair.lead.extractAudio' : 'pair.lead.convert', names),
         relatedTargets(source, [source, target]),
         (formats) => t('related.pair', { formats: LIST_OF[locale](formats) }),
-        subjects.length > 0 ? [t('options', { subjects: LIST_OF[locale](subjects) })] : []
+        subjects.length > 0 ? [t('options', { subjects: LIST_OF[locale](subjects), count: subjects.length })] : []
       );
       return { title: t('pair.title', { src: nameOf(t, copy.src), tgt: names.tgt }), description };
     }

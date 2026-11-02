@@ -1363,7 +1363,7 @@
       "pair": "{formats} 형식으로도 바꿀 수 있어요.",
       "format": "{formats} 등으로 바꿀 수 있어요."
     },
-    "options": "옵션에서 {subjects} 등을 정할 수 있어요.",
+    "options": "{count, plural, =1 {{subjects} 옵션을 정할 수 있어요.} other {옵션에서 {subjects} 등을 정할 수 있어요.}}",
     "subjects": {
       "imageSize": "이미지 크기",
       "quality": "품질",

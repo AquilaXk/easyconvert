@@ -1363,7 +1363,7 @@
       "pair": "Other targets include {formats}.",
       "format": "Targets include {formats}."
     },
-    "options": "Options include {subjects}.",
+    "options": "{count, plural, =1 {Options include the {subjects}.} other {Options include {subjects}.}}",
     "subjects": {
       "imageSize": "image size",
       "quality": "quality",
