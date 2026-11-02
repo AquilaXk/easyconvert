@@ -311,6 +311,12 @@ describe('Dockerfile.web', () => {
     expect(allowance).toBeLessThan(build);
   });
 
+  it('records the anonymous allowance its pages were built with, where the deploy reads it back', () => {
+    const finalStage = web.slice(web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
+    expect(finalStage).toMatch(/^ARG ANONYMOUS_DAILY_LIMIT=$/m);
+    expect(finalStage).toMatch(/^LABEL easyconvert\.anonymous-daily-limit="\$\{ANONYMOUS_DAILY_LIMIT\}"$/m);
+  });
+
   it('is built on the worker image, runs as its non-root user and starts Next.js', () => {
     expect(web).toMatch(/^FROM \$\{WORKER_IMAGE\} AS web$/m);
     expect(web).not.toMatch(/^USER root/m);
@@ -463,6 +469,36 @@ describe('deploy workflow', () => {
     expect(runs).toContain('deploy.sh rollback');
   });
 
+  it('pushes the web image only after it started with the production container flags', () => {
+    const steps = workflow.jobs.build.steps;
+    const build = steps.findIndex((step) => step.with?.file === 'Dockerfile.web');
+    const boot = steps.findIndex((step) => step.run?.includes('scripts/boot-web-image.sh'));
+    const push = steps.findIndex((step) => /docker push --quiet "\$WEB_REPO:sha-\$GITHUB_SHA"/.test(step.run ?? ''));
+    expect(String(steps[build].with?.load)).toBe('true');
+    expect(String(steps[build].with?.push)).toBe('false');
+    expect(steps[boot].run).toBe('bash scripts/boot-web-image.sh "$WEB_REPO:sha-$GITHUB_SHA"');
+    expect(build).toBeLessThan(boot);
+    expect(boot).toBeLessThan(push);
+    expect(steps[push].run).toContain('docker push --quiet "$WEB_REPO:main"');
+  });
+
+  it('starts the web image with the hardening of the web service in the production compose file', () => {
+    const boot = read('scripts/boot-web-image.sh');
+    const webService = compose.services.web;
+    expect(webService.read_only).toBe(true);
+    expect(boot).toMatch(/^\s+--read-only \\$/m);
+    expect(webService.cap_drop).toEqual(['ALL']);
+    expect(boot).toMatch(/^\s+--cap-drop ALL \\$/m);
+    expect(boot).toMatch(/^\s+--user 10001:10001 \\$/m);
+    expect(webService.security_opt).toContain('no-new-privileges:true');
+    expect(boot).toMatch(/^\s+--security-opt no-new-privileges:true \\$/m);
+    const seccomp = webService.security_opt?.find((option) => option.startsWith('seccomp='))?.replace('seccomp=./', '');
+    expect(boot).toContain(`SECCOMP="$(cd "$(dirname "$0")/.." && pwd)/${seccomp}"`);
+    for (const mount of ['/tmp', '/home/easyconvert', '/app/.next/cache']) {
+      expect(boot, mount).toMatch(new RegExp(`--tmpfs ${mount.replaceAll('/', '\\/').replaceAll('.', '\\.')}:[^ ]*\\bnoexec\\b`));
+    }
+  });
+
   it('execs the deploy script in the steps that deploy and roll back, so that the runner signals it and no wrapper shell holds the signal back', () => {
     const steps = workflow.jobs.deploy.steps.filter((step) => /deploy\.sh (deploy|rollback)/.test(step.run ?? ''));
     expect(steps).toHaveLength(2);
@@ -477,7 +513,7 @@ describe('env allowlist', () => {
   const passedThrough = Object.values(compose.services).flatMap((service) =>
     Object.entries(service.environment ?? {}).filter(([, value]) => value === null).map(([name]) => name)
   );
-  const SET_BY_THE_DEPLOY_JOB = ['EASYCONVERT_WEB_IMAGE', 'EASYCONVERT_WORKER_IMAGE'];
+  const SET_BY_THE_DEPLOY_JOB = ['ANONYMOUS_DAILY_LIMIT', 'EASYCONVERT_WEB_IMAGE', 'EASYCONVERT_WORKER_IMAGE'];
 
   it('is sorted and has no duplicate', () => {
     expect(allowlist).toEqual([...new Set(allowlist)].sort());
@@ -487,6 +523,14 @@ describe('env allowlist', () => {
     const wanted = [...new Set([...referenced, ...passedThrough])].filter((name) => !SET_BY_THE_DEPLOY_JOB.includes(name));
     const unlisted = wanted.filter((name) => !allowlist.includes(name));
     expect(unlisted).toEqual([]);
+  });
+
+  it('passes the anonymous allowance to every application service from the deploy step, the one source the build reads too', () => {
+    for (const service of APP_SERVICES) expect(compose.services[service].environment?.ANONYMOUS_DAILY_LIMIT, service).toBe('${ANONYMOUS_DAILY_LIMIT:-}');
+    const deployStep = (parse(read('.github/workflows/deploy-oci.yml')) as { jobs: Record<string, { steps: Array<{ name?: string; env?: Record<string, string> }> }> }).jobs.deploy.steps.find(
+      (step) => step.name?.startsWith('Deploy, check health')
+    );
+    expect(deployStep?.env?.ANONYMOUS_DAILY_LIMIT).toBe('${{ vars.ANONYMOUS_DAILY_LIMIT }}');
   });
 
   it('lets through the two budget knobs and keeps the digest-pinned image variables out of reach of the secret', () => {
@@ -704,6 +748,7 @@ case "$1" in
       inspect)
         ref="\${@: -1}"
         case "$*" in
+          *anonymous-daily-limit*) echo "\${STUB_WEB_ALLOWANCE:-}" ;;
           *Labels*)
             case "$ref" in *@sha256:*) tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")" ;; *) tag="\${ref##*:}" ;; esac
             echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:$tag")}" ;;
@@ -1120,9 +1165,24 @@ exit 0`
 
   it('checks the pairing on the pinned web digest and not on the tag', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
-    const pairing = calls().filter((call) => call.startsWith('docker image inspect') && call.includes('Labels'));
+    const pairing = calls().filter((call) => call.startsWith('docker image inspect') && call.includes('org.opencontainers.image.base.name'));
     expect(pairing).toHaveLength(1);
     expect(pairing[0]).toMatch(/ ghcr\.io\/aquilaxk\/easyconvert-web@sha256:[0-9a-f]{64}$/);
+  });
+
+  it('refuses a web image built with another anonymous allowance than the deploy step passes, before anything starts', () => {
+    const result = run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '25', STUB_WEB_ALLOWANCE: '30' }) });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("was built with ANONYMOUS_DAILY_LIMIT '30', but the release runs with '25'");
+    expect(calls().some((call) => call.includes(' up '))).toBe(false);
+  });
+
+  it('runs the release with the anonymous allowance of the deploy step, the one the web image was built with', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '30', STUB_WEB_ALLOWANCE: '30' }) }).status).toBe(0);
+
+    const releaseEnv = readFileSync(path.join(home, 'current', '.env'), 'utf-8');
+    expect(releaseEnv.split('\n').filter((line) => line.startsWith('ANONYMOUS_DAILY_LIMIT='))).toEqual(['ANONYMOUS_DAILY_LIMIT=30']);
   });
 
   it('logs the HTTP status of a failed smoke conversion and nothing of its answer', () => {
