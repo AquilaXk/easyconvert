@@ -1,4 +1,4 @@
-import createNextIntlPlugin from 'next-intl/plugin';
+import { PHASE_PRODUCTION_SERVER } from 'next/constants.js';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -16,6 +16,11 @@ const nextConfig = {
   },
 };
 
-const withNextIntl = createNextIntlPlugin();
-
-export default withNextIntl(nextConfig);
+// The i18n plugin only wires the request config into the build, and loading it loads a native compiler that unpacks itself
+// into an executable cache, which the production container (read-only root, noexec tmpfs) does not have. `next start`
+// serves the built output, so the server phase takes the plain config (tests/next-config-runtime-phase.test.ts).
+export default async function config(phase) {
+  if (phase === PHASE_PRODUCTION_SERVER) return nextConfig;
+  const { default: createNextIntlPlugin } = await import('next-intl/plugin');
+  return createNextIntlPlugin()(nextConfig);
+}
