@@ -1,9 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   NOTICES_FILE,
   pinnedLinkedCrates,
+  readCrateLicence,
   readPinned,
   sha256,
   UPSTREAM_DIGESTS,
@@ -39,6 +42,9 @@ const CRATES_IN_THE_BINARY = [
   'zune-jpeg 0.5.15',
 ];
 
+/** Crates the program reaches only through another crate: `png` and `flate2` to `miniz_oxide` and `adler2`, `image` to `moxcms` and `pxfm`. */
+const CRATES_REACHED_THROUGH_OTHERS = ['adler2 2.0.1', 'crc32fast 1.5.0', 'miniz_oxide 0.8.9', 'moxcms 0.8.1', 'pxfm 0.1.30', 'simd-adler32 0.3.10'];
+
 describe('the third-party notices of the tracer program', () => {
   it('come from the upstream files of the commit the install script pins', () => {
     expect(VTRACER_COMMIT).toBe(pin('VTRACER_COMMIT'));
@@ -49,7 +55,24 @@ describe('the third-party notices of the tracer program', () => {
     const names = pinnedLinkedCrates().map((crate) => `${crate.name} ${crate.version}`);
     expect(listedCrates()).toEqual(names);
     expect(names).toEqual(expect.arrayContaining(CRATES_IN_THE_BINARY));
+    expect(names).toEqual(expect.arrayContaining(CRATES_REACHED_THROUGH_OTHERS));
+    expect(names).toHaveLength(71);
     expect(names.filter((name) => name.startsWith('resvg '))).toEqual([]);
+  });
+
+  it('give every listed crate a licence text, but for the one crate whose archive ships none', () => {
+    const shipping = new Set([...noticesText.matchAll(/^Shipped by: (.+)$/gm)].flatMap(([, labels]) => labels.split(/\), /).map((label) => label.replace(/ \(.*$/, ''))));
+    expect(listedCrates().filter((crate) => !shipping.has(crate))).toEqual(['flo_curves 0.3.1']);
+    expect(noticesText).toMatch(/^Crates whose archive ships no licence text, with the authors their manifest names:\nflo_curves 0\.3\.1 \(Apache-2\.0\): Andrew Hunter\n\n/m);
+  });
+
+  it('carry the notices of musl libc and of the Rust standard library, which the static musl build links in', () => {
+    expect(noticesText).toMatch(/^musl libc 1\.2\.5 \(MIT\).*\n={80}\nmusl as a whole is licensed under the following standard MIT license:/m);
+    expect(noticesText).toContain('Copyright © 2005-2020 Rich Felker, et al.');
+    const rustCommit = /^Rust standard library .*commit ([0-9a-f]{40})/m.exec(noticesText)?.[1];
+    expect(rustCommit).toBe('88d9e12ae178fab0fb5cc050a94da85685d449ea');
+    expect(noticesText).toContain('The Rust Project is dual-licensed under Apache 2.0 and MIT');
+    for (const file of ['COPYRIGHT', 'LICENSE-MIT', 'LICENSE-APACHE']) expect(noticesText).toMatch(new RegExp(`^Rust standard library .*: ${file} at commit ${rustCommit}$`, 'm'));
   });
 
   it('carry the Apache-2.0 text for the crates that offer it without shipping it', () => {
@@ -71,5 +94,51 @@ describe('the third-party notices of the tracer program', () => {
     const runner = stages[stages.length - 1];
     const runs = runner.instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument);
     expect(runs.filter((run) => run.includes('THIRD-PARTY-NOTICES'))).toEqual(['cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES']);
+  });
+});
+
+/** A crates.io archive of the files given, as `cargo package` writes it: every member under `<name>-<version>/`. */
+function crateArchive(files: Record<string, string | { symlinkTo: string }>, name = 'demo', version = '1.0.0'): Buffer {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crate-'));
+  try {
+    const root = path.join(dir, `${name}-${version}`);
+    for (const [file, content] of Object.entries({ 'Cargo.toml': `[package]\nname = "${name}"\nversion = "${version}"\nlicense = "MIT"\n`, ...files })) {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      if (typeof content === 'string') fs.writeFileSync(target, content);
+      else fs.symlinkSync(content.symlinkTo, target);
+    }
+    return execFileSync('tar', ['-cz', '-f', '-', '-C', dir, `${name}-${version}`], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const read = (archive: Buffer, name = 'demo', version = '1.0.0') => readCrateLicence({ name, version, checksum: '' }, archive);
+
+describe('reading the licence texts of a crate archive', () => {
+  it('reads the root licence files and the texts of a REUSE LICENSES directory', () => {
+    const licence = read(crateArchive({ 'LICENSE-MIT': 'MIT text\n', 'LICENSES/Apache-2.0.txt': 'Apache text\n', 'src/LICENSE.rs': 'not a licence\n' }));
+    expect(licence.texts).toEqual([
+      { file: 'LICENSE-MIT', text: 'MIT text\n' },
+      { file: 'LICENSES/Apache-2.0.txt', text: 'Apache text\n' },
+    ]);
+  });
+
+  it('stops at an empty licence file', () => {
+    expect(() => read(crateArchive({ LICENSE: '' }))).toThrow('demo-1.0.0/LICENSE is empty');
+  });
+
+  it('stops at a licence file that is not a regular file', () => {
+    expect(() => read(crateArchive({ 'LICENSE-MIT': 'MIT text\n', LICENSE: { symlinkTo: 'LICENSE-MIT' } }))).toThrow('demo-1.0.0/LICENSE is not a regular file');
+  });
+
+  it('stops at a licence file whose name tar would read as a pattern', () => {
+    expect(() => read(crateArchive({ 'LICENSE-[x]': 'text\n' }))).toThrow('demo-1.0.0/LICENSE-[x] is not a name tar reads literally');
+  });
+
+  it('stops at a crate that ships no licence text, but for the crate known to ship none', () => {
+    expect(() => read(crateArchive({ 'README.md': 'demo\n' }))).toThrow('demo 1.0.0 ships no licence text');
+    expect(read(crateArchive({ 'README.md': 'curves\n' }, 'flo_curves', '0.3.1'), 'flo_curves', '0.3.1').texts).toEqual([]);
   });
 });

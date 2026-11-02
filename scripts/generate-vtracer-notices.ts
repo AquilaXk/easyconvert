@@ -212,15 +212,15 @@ interface ProgramInfo {
   readonly license: string;
 }
 
-interface CrateLicence {
+export interface CrateLicence {
   readonly crate: LinkedCrate;
   readonly license: string;
   readonly authors: readonly string[];
   readonly texts: ReadonlyArray<{ file: string; text: string }>;
 }
 
-async function crateLicence(crate: LinkedCrate): Promise<CrateLicence> {
-  const archive = await downloadChecked(`${CRATE_URL}/${crate.name}/${crate.name}-${crate.version}.crate`, crate.checksum, MAX_CRATE_BYTES);
+/** The licence fields and texts of a crate, read from its crates.io archive as data. */
+export function readCrateLicence(crate: LinkedCrate, archive: Buffer): CrateLicence {
   const prefix = `${crate.name}-${crate.version}/`;
   const members = new Set(listMembers(archive));
   const manifest = parse(tar(archive, [`${prefix}Cargo.toml`], MAX_LICENSE_FILE_BYTES).toString('utf8')) as Manifest;
@@ -293,7 +293,10 @@ async function main(): Promise<void> {
   const workspacePackage = ((parse(readPinned(ROOT_MANIFEST)) as Manifest).workspace as Record<string, Record<string, unknown>>).package;
   const program = { version: String(workspacePackage.version), license: String(workspacePackage.license) };
   const licences: CrateLicence[] = [];
-  for (const crate of pinnedLinkedCrates()) licences.push(await crateLicence(crate));
+  for (const crate of pinnedLinkedCrates()) {
+    const archive = await downloadChecked(`${CRATE_URL}/${crate.name}/${crate.name}-${crate.version}.crate`, crate.checksum, MAX_CRATE_BYTES);
+    licences.push(readCrateLicence(crate, archive));
+  }
   const apache = (await downloadChecked(APACHE_LICENSE_URL, APACHE_LICENSE_SHA256, MAX_LICENSE_FILE_BYTES)).toString('utf8');
   fs.writeFileSync(NOTICES_FILE, render(licences, program, apache), 'utf8');
   console.log(`wrote ${path.relative(process.cwd(), NOTICES_FILE)}: ${licences.length} crates, SHA-256 ${sha256(fs.readFileSync(NOTICES_FILE))}`);
