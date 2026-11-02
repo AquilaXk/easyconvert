@@ -180,8 +180,18 @@ describe('the Advanced disclosure', () => {
     const { container } = await mount({});
     expect(disclosure(container).textContent?.trim()).toBe('Advanced');
     expect(disclosure(container).getAttribute('aria-expanded')).toBe('false');
+    expect(disclosure(container).hasAttribute('aria-controls')).toBe(false);
     expect(container.querySelector('input[type="range"]')).toBeNull();
     expect(byId(container, 'opt-vectorize-simplify')).toBeNull();
+  });
+
+  it('starts open when the options it starts from set one of its fields, so no value it sends is hidden', async () => {
+    for (const vectorize of [{ filterSpeckle: 12 }, { colorPrecision: 3 }, { simplify: 1.5 }]) {
+      const { container } = await mount({ vectorize });
+      expect(disclosure(container).getAttribute('aria-expanded'), JSON.stringify(vectorize)).toBe('true');
+      expect(byId(container, 'opt-vectorize-simplify')).not.toBeNull();
+      mounted?.unmount();
+    }
   });
 
   it('opens on click to the three fields and closes again', async () => {
@@ -245,6 +255,25 @@ describe('a slider and its number field', () => {
     await typeInto(field, '2.5');
     expect(lastVectorize(run)).toEqual({ colorPrecision: 3 });
     expect(field.value).toBe('2.5');
+  });
+
+  it('brings a number typed past the range to the nearest whole number inside it on leaving the field, and sends it', async () => {
+    const run = await mount({});
+    await expand(run);
+    const speckle = byId<HTMLInputElement>(run.container, 'opt-vectorize-filter-speckle-value') as HTMLInputElement;
+    await typeInto(speckle, '200');
+    expect(lastVectorize(run)).toBeUndefined();
+    speckle.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ filterSpeckle: 128 }));
+    expect(speckle.value).toBe('128');
+    expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-filter-speckle')?.value).toBe('128');
+    const precision = byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision-value') as HTMLInputElement;
+    for (const [typed, kept] of [['0', 1], ['2.6', 3]] as const) {
+      await typeInto(precision, typed);
+      precision.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ filterSpeckle: 128, colorPrecision: kept }));
+      expect(precision.value).toBe(String(kept));
+    }
   });
 
   it('lets the person clear the number field to type another value, and shows the value again on leaving it', async () => {
@@ -313,6 +342,21 @@ describe('the fields the engine ignores', () => {
     expect(phrasesMissing(textUnder(run), ['The black and white preset traces two colors, so this does not apply.'])).toEqual([]);
   });
 
+  it('keeps the values a person typed while a mode or preset greys their field out, and sends them again on switching back', async () => {
+    const run = await mount({});
+    await expand(run);
+    await typeInto(byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify') as HTMLInputElement, '1.5');
+    await typeInto(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision-value') as HTMLInputElement, '3');
+    radiosOf(run.container, 'Mode').find((radio) => radio.label === 'polygon')?.element.click();
+    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'bw')?.element.click();
+    await vi.waitFor(() => expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision')?.disabled).toBe(true));
+    radiosOf(run.container, 'Mode').find((radio) => radio.label === 'spline')?.element.click();
+    radiosOf(run.container, 'Preset').find((radio) => radio.label === 'none')?.element.click();
+    await vi.waitFor(() => expect(lastVectorize(run)).toEqual({ mode: 'spline', simplify: 1.5, colorPrecision: 3 }));
+    expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify')?.value).toBe('1.5');
+    expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-color-precision-value')?.value).toBe('3');
+  });
+
   it('greys a field out as soon as the person picks the mode or preset that ignores it', async () => {
     const run = await mount({});
     await expand(run);
@@ -324,7 +368,7 @@ describe('the fields the engine ignores', () => {
 });
 
 describe('typing a simplify tolerance', () => {
-  it('lets simplify take any value above 0, as the request schema does', async () => {
+  it('sets the minimum of the simplify field to 0, the exclusive minimum of the request schema', async () => {
     const run = await mount({});
     await expand(run);
     expect(byId<HTMLInputElement>(run.container, 'opt-vectorize-simplify')?.getAttribute('min')).toBe('0');
@@ -364,6 +408,17 @@ describe('the options a queue item keeps', () => {
   it('drops the options the engine ignores for the chosen mode or preset', () => {
     expect(sanitizeOptionsForPair({ vectorize: { mode: 'polygon', simplify: 1.5 } }, 'png', 'svg')).toEqual({ vectorize: { mode: 'polygon' } });
     expect(sanitizeOptionsForPair({ vectorize: { preset: 'bw', colorPrecision: 3, filterSpeckle: 8 } }, 'gif', 'svg')).toEqual({ vectorize: { preset: 'bw', filterSpeckle: 8 } });
+  });
+
+  it('drops every option of the sections the pair does not show', () => {
+    const hidden: ConversionOptions = {
+      quality: 80, width: 100, height: 50, fit: 'cover', stripMetadata: true, pages: '1-2', orientation: 'landscape', ocrEnabled: true,
+      ocrLanguage: 'eng', password: 'secret', compressionLevel: 9, delimiter: ';', sheetIndex: 1, audioBitrate: '128k', videoFps: 30,
+      trim: { start: '0', end: '1' },
+    };
+    for (const source of ['png', 'tiff']) {
+      expect(sanitizeOptionsForPair({ ...hidden, vectorize: { mode: 'pixel' } }, source, 'svg'), source).toEqual({ vectorize: { mode: 'pixel' } });
+    }
   });
 
   it('drops the tracer options for any other pair', () => {
