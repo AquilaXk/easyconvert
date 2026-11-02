@@ -41,12 +41,13 @@ export const OPEN_UPLOAD_IDLE_MS = 60 * 60 * 1000;
  */
 export const LINK_IMPORT_METER_BATCH_BYTES = 4 * 1024 * 1024;
 /**
- * How long the record keeps what one running link import has charged, after its last charge. A charge writes the import's
- * running total under its id, so a write that landed but lost its reply, written again, adds only what is new (an idempotency
- * key, as a retried request with the same key has one effect). The import's last charge removes the entry; one whose last
- * charge failed is dropped after this time, which outlasts any wait between two batches of a live import.
+ * How long past its deadline the record keeps what one link import has charged. A charge writes the import's running total
+ * under its id, so a write that landed but lost its reply, written again, adds only what is new (an idempotency key, as a
+ * retried request with the same key has one effect, and its result is kept after the request ended). The entry is kept,
+ * marked closed after the last charge, until the import's deadline plus this time, which outlasts the last charge of an
+ * import its deadline cut off, written once it stopped reading.
  */
-export const LINK_IMPORT_CHARGE_KEPT_MS = OPEN_UPLOAD_IDLE_MS;
+export const LINK_IMPORT_CHARGE_GRACE_MS = 5 * 60 * 1000;
 
 const RESERVATION_ID_BYTES = 12;
 
@@ -58,9 +59,10 @@ interface OpenUpload {
   expiresAt: number;
 }
 
-/** What one running link import has charged in all, and until when the record keeps it. */
+/** What one link import has charged in all, whether its last charge was written, and until when the record keeps it. */
 interface ChargedImport {
   bytes: number;
+  closed?: boolean;
   keptUntil: number;
 }
 
@@ -68,7 +70,7 @@ export interface UploadBudgetRecord {
   day: string;
   bytes: number;
   open: Record<string, OpenUpload>;
-  /** The running link imports, by import id (`LINK_IMPORT_CHARGE_KEPT_MS`). */
+  /** The link imports of the last hours, by import id (`LINK_IMPORT_CHARGE_GRACE_MS`). */
   imports?: Record<string, ChargedImport>;
 }
 
@@ -258,18 +260,19 @@ export async function resumeUploadReservation(uploadId: string): Promise<UploadR
 
 /**
  * The record on `day` at `now` once the link import `importId` has charged `totalBytes` in all: only what it did not charge
- * before is added, so the same charge written twice adds nothing. A `closing` charge, its last, removes the import's entry.
+ * before is added, so the same charge written twice adds nothing, the last one included. A `closing` charge, its last, marks
+ * the entry closed; the entry is kept until `keptUntil` either way.
  */
 export function chargeImport(
   record: UploadBudgetRecord | undefined,
-  charge: { importId: string; totalBytes: number; day: string; now: number; closing: boolean }
+  charge: { importId: string; totalBytes: number; day: string; now: number; closing: boolean; keptUntil: number }
 ): UploadBudgetRecord {
   const current = currentRecord(record, charge.day, charge.now);
-  const imports = { ...current.imports };
-  const added = Math.max(0, charge.totalBytes - (imports[charge.importId]?.bytes ?? 0));
-  if (charge.closing) delete imports[charge.importId];
-  else imports[charge.importId] = { bytes: charge.totalBytes, keptUntil: charge.now + LINK_IMPORT_CHARGE_KEPT_MS };
-  return { ...current, bytes: current.bytes + added, imports };
+  const charged = current.imports?.[charge.importId];
+  const added = Math.max(0, charge.totalBytes - (charged?.bytes ?? 0));
+  const entry: ChargedImport = { bytes: Math.max(charge.totalBytes, charged?.bytes ?? 0), keptUntil: charge.keptUntil };
+  if (charge.closing || charged?.closed) entry.closed = true;
+  return { ...current, bytes: current.bytes + added, imports: { ...current.imports, [charge.importId]: entry } };
 }
 
 /** A header value that is a length: decimal digits only, as RFC 9110 writes `Content-Length`, and a safe integer. */
@@ -320,11 +323,12 @@ export interface LinkImportMeter {
   charge(): Promise<MeterVerdict>;
 }
 
-/** A link import: whose day it charges, on which plan, and the most bytes it reads. */
+/** A link import: whose day it charges, on which plan, the most bytes it reads, and the most time it may run. */
 export interface LinkImportRequest {
   owner: string;
   plan: Plan;
   limitBytes: number;
+  deadlineMs: number;
 }
 
 /** The meter as `withLinkImportMeter` holds it: also the bytes received and not known to be charged. */
@@ -335,24 +339,29 @@ interface HeldMeter extends LinkImportMeter {
 /**
  * The meter of the link import `request`, whose owner's day had `leftBytes` left, charging `store` under a new import id.
  * Each charge writes the running total, so a charge that failed is made good by the next one. After the last charge, a
- * charge with nothing new answers the verdict it had without writing again.
+ * charge with nothing new answers the verdict it had without writing again. An import that received nothing and never
+ * wrote has nothing to charge and no entry to close, so it writes nothing.
  */
 function linkImportMeter(store: BudgetStore, request: LinkImportRequest, leftBytes: number): HeldMeter {
   const dailyBytes = dailyBudgetBytes(request.plan);
   const importId = crypto.randomBytes(RESERVATION_ID_BYTES).toString('hex');
+  const keptUntil = Date.now() + request.deadlineMs + LINK_IMPORT_CHARGE_GRACE_MS;
   let receivedBytes = 0;
   let chargedBytes = 0;
   let closedWith: MeterVerdict | undefined;
+  let wrote = false;
   const verdict = (dayBytes: number): MeterVerdict => {
     if (receivedBytes > request.limitBytes) return 'too-large';
     return dayBytes > dailyBytes ? 'day-reached' : 'ok';
   };
   const charge = async (closing: boolean): Promise<MeterVerdict> => {
     if (closedWith && receivedBytes === chargedBytes) return closedWith;
+    if (!wrote && receivedBytes === 0) return 'ok';
+    wrote = true;
     const totalBytes = receivedBytes;
     let dayBytes = 0;
     await store.update(request.owner, (current) => {
-      const charged = chargeImport(current, { importId, totalBytes, day: getUtcDateKey(), now: Date.now(), closing });
+      const charged = chargeImport(current, { importId, totalBytes, day: getUtcDateKey(), now: Date.now(), closing, keptUntil });
       dayBytes = charged.bytes;
       return charged;
     });

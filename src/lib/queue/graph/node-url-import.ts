@@ -17,6 +17,7 @@ import {
 } from '../../api-keys/anonymous-upload-budget';
 import { maxFileBytes, planOfCaller, type Plan } from '../../plan-limits';
 import { tierForOwner } from '../page-cap';
+import { tierMaxDeadlineMs } from '../job-deadline';
 import { nodeOutputKey } from './node-jobs';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -45,9 +46,11 @@ export async function importUrlWithinBudget(
   if (!graphId || !nodeId || !owner) {
     throw new ConversionFailedError(`Import node "${nodeId}" has no owner, so its bytes cannot be charged to a daily budget.`);
   }
-  const plan = planOfCaller({ id: owner, tier: await tierForOwner(owner) });
+  const tier = await tierForOwner(owner);
+  const plan = planOfCaller({ id: owner, tier });
   const limitBytes = Math.min(urlImportMaxBytes(), maxFileBytes(plan));
-  const imported = await withLinkImportMeter({ owner, plan, limitBytes }, (meter) =>
+  const deadlineMs = job.opts.timeout ?? tierMaxDeadlineMs(tier);
+  const imported = await withLinkImportMeter({ owner, plan, limitBytes, deadlineMs }, (meter) =>
     importUrlArtifact({ storage, graphId, nodeId, url, headers, signal: job.signal, meter, limitBytes, plan })
   );
   if ('refusal' in imported) throw new ImportBudgetExceededError(budgetRefusalDetail(imported.refusal, plan));

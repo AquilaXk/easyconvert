@@ -292,7 +292,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     // ended is charged before the answer; one cut off is charged once it has stopped reading, without holding the answer.
     const { syncMaxMs } = currentJobDeadlineSettings();
     const imported = await runUnderDeadline(req, syncMaxMs, (limits) =>
-      withLinkImportMeter({ owner: caller.id, plan: importer.plan, limitBytes: URL_IMPORT_MAX_BYTES }, (meter) =>
+      withLinkImportMeter({ owner: caller.id, plan: importer.plan, limitBytes: URL_IMPORT_MAX_BYTES, deadlineMs: syncMaxMs }, (meter) =>
         importFrom(target, ssrfAgent, limits.signal, meter, importer)
       )
     );
