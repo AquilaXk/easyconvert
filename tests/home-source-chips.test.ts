@@ -3,6 +3,7 @@ import { createElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { canonicalFormat } from '../src/lib/format-aliases';
 import { getAvailableTargetFormats } from '../src/lib/registry';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
@@ -14,7 +15,8 @@ const { default: SourceChipPicker } = await import('../src/components/workbench/
 
 /**
  * The format chips of the home page's upload card, driven the way a person drives them: a click on a source swaps the
- * card to that source's targets, each a link to its pair page, and keyboard focus follows the swap both ways.
+ * card to the common targets of that source, each a link to its pair page, then a link to every format of the source,
+ * and keyboard focus follows the swap both ways.
  */
 
 let root: Root | undefined;
@@ -30,47 +32,69 @@ async function mount(locale: TestLocale): Promise<HTMLElement> {
   document.body.append(host);
   root = createRoot(host);
   root.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: createElement(SourceChipPicker) }));
-  await vi.waitFor(() => expect(host.querySelector('[data-testid=source-chip]')).not.toBeNull());
+  await vi.waitFor(() => expect(host.querySelector('[role=group] button')).not.toBeNull());
   return host;
 }
 
 const buttonNamed = (host: HTMLElement, name: string) =>
   [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === name);
 
+async function targetsOf(host: HTMLElement, source: string): Promise<HTMLAnchorElement[]> {
+  buttonNamed(host, source.toUpperCase())!.click();
+  await vi.waitFor(() => expect(host.querySelector('[role=group] a')).not.toBeNull());
+  return [...host.querySelectorAll<HTMLAnchorElement>('[role=group] a')];
+}
+
+const INTERNAL_FORMATS = ['hocr', 'alto', 'odd', 'ps', 'eps', 'icns', 'xps'];
+
 describe('the source chips of the upload card', () => {
-  it('offer each source as a toggle that is not pressed, under the question they answer', async () => {
+  it('offer each source as a button named by what it does, under the question they answer', async () => {
     const host = await mount('ko');
     const group = host.querySelector('[role=group]')!;
     expect(document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent).toBe('어떤 형식을 변환할까요?');
-    const chips = [...group.querySelectorAll('button')];
-    expect(chips.map((c) => c.textContent)).toContain('PNG');
-    expect(new Set(chips.map((c) => c.getAttribute('aria-pressed')))).toEqual(new Set(['false']));
+    const png = buttonNamed(host, 'PNG')!;
+    expect(png.getAttribute('aria-label')).toBe('PNG, 변환할 형식 고르기');
+    expect([...group.querySelectorAll('button')].filter((chip) => chip.hasAttribute('aria-pressed'))).toEqual([]);
   });
 
-  it('swap to the targets of the chosen source, link each to its pair page and move focus to "back"', async () => {
-    const host = await mount('ko');
-    buttonNamed(host, 'PNG')!.click();
-
-    await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('← 뒤로'));
-    expect(buttonNamed(host, 'PNG')!.getAttribute('aria-pressed')).toBe('true');
-    const group = host.querySelector('[role=group]')!;
-    expect(document.getElementById(group.getAttribute('aria-labelledby')!)?.textContent).toBe('PNG 파일을 다음 형식으로 변환:');
-
-    const expected = getAvailableTargetFormats('png').map((f) => f.id).filter((id) => id !== 'png');
-    const hrefs = [...group.querySelectorAll('a')].map((a) => a.getAttribute('href'));
-    expect(hrefs).toEqual(expected.map((id) => `/png-to-${id}`));
-    expect(hrefs).toContain('/png-to-jpg');
-    expect(host.querySelector('[data-testid=source-chip]')).toBeNull();
-  });
-
-  it('return focus to the chip it came from when "back" is pressed', async () => {
+  it.each([
+    ['png', ['jpg', 'webp', 'gif', 'bmp', 'tiff', 'avif', 'ico', 'pdf']],
+    ['mp4', ['avi', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'gif', 'mp3', 'wav']],
+    ['pdf', ['docx', 'txt', 'html', 'jpg', 'png', 'rtf', 'epub', 'pptx', 'xlsx']],
+  ])('swap %s to its common targets, each a link to its pair page, then a link to all its formats', async (source, common) => {
     const host = await mount('en');
-    buttonNamed(host, 'MP4')!.click();
+    const links = await targetsOf(host, source);
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      ...common.map((target) => `/${source}-to-${target}`),
+      `/${source}-converter`,
+    ]);
+    expect(links.at(-1)!.textContent).toBe('See all formats');
+  });
+
+  it('show at most ten registered targets for every source, each format once by its own name and none internal', async () => {
+    const host = await mount('en');
+    const sources = [...host.querySelectorAll('[role=group] button')].map((chip) => chip.textContent!.toLowerCase());
+    for (const source of sources) {
+      const targets = (await targetsOf(host, source)).slice(0, -1).map((a) => a.getAttribute('href')!.replace(`/${source}-to-`, ''));
+      const registered = getAvailableTargetFormats(source).map((format) => format.id);
+      expect(targets.length, source).toBeLessThanOrEqual(10);
+      expect(targets.filter((target) => !registered.includes(target)), source).toEqual([]);
+      expect(targets.filter((target) => canonicalFormat(target) !== target), source).toEqual([]);
+      expect(targets.filter((target) => INTERNAL_FORMATS.includes(target)), source).toEqual([]);
+      buttonNamed(host, `← Back`)!.click();
+      await vi.waitFor(() => expect(host.querySelector('[role=group] button')).not.toBeNull());
+    }
+    expect(sources).toHaveLength(20);
+  });
+
+  it('move focus to "back" on the swap, and back to the chip it came from', async () => {
+    const host = await mount('en');
+    await targetsOf(host, 'mp4');
     await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('← Back'));
     expect(host.textContent).toContain('Convert MP4 to:');
+    expect(buttonNamed(host, 'MP4')!.getAttribute('aria-label')).toBe('MP4, change format');
 
     (document.activeElement as HTMLButtonElement).click();
-    await vi.waitFor(() => expect(document.activeElement?.getAttribute('data-format')).toBe('mp4'));
-    expect(document.activeElement?.getAttribute('aria-pressed')).toBe('false');
+    await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('MP4'));
   });
 });
