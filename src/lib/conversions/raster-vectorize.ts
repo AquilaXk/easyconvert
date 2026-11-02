@@ -64,6 +64,7 @@ const INPUT_NAME = 'input.png';
 const OUTPUT_NAME = 'output.svg';
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
+const SIGSEGV = 'SIGSEGV';
 /** What Rust's default allocation-error handler prints before it aborts, which is how the address-space limit ends the program. */
 const ALLOCATION_FAILURE = /memory allocation of \d+ bytes failed/;
 const UNPRINTABLE = /[^\x20-\x7e]/g;
@@ -145,10 +146,16 @@ function firstLine(stderr: string, sandboxDir: string): string {
   return line === undefined ? '' : ` (${line.replace(UNPRINTABLE, '?').slice(0, MAX_DETAIL_CHARS)})`;
 }
 
+function traceFailure(how: string, detail = ''): ConversionFailedError {
+  return new ConversionFailedError(`The SVG tracer could not trace this picture: it ${how}${detail}.`);
+}
+
 function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError('SVG tracing', timeoutMs);
-  if (error instanceof SandboxedMemoryLimitError) return memoryRefusal();
+  // The sandbox reports SIGSEGV under a memory limit as a memory refusal, but a fault in the program is not one: Rust ends a failed
+  // allocation with the abort that ALLOCATION_FAILURE matches.
+  if (error instanceof SandboxedMemoryLimitError) return error.signal === SIGSEGV ? traceFailure(`was stopped by ${SIGSEGV}`) : memoryRefusal();
   if (error instanceof SandboxedBufferLimitError) {
     return error.limitBytes === VECTORIZE_MAX_OUTPUT_BYTES ? outputRefusal() : new ConversionFailedError('The SVG tracer printed more diagnostics than the limit allows.');
   }
@@ -158,7 +165,7 @@ function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): u
     }
     if (ALLOCATION_FAILURE.test(error.stderr)) return memoryRefusal();
     const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
-    return new ConversionFailedError(`The SVG tracer could not trace this picture: it ${how}${firstLine(error.stderr, sandboxDir)}.`);
+    return traceFailure(how, firstLine(error.stderr, sandboxDir));
   }
   return error;
 }
