@@ -1,6 +1,6 @@
 import { redisKeyStore } from './redis-key-store';
 import { RESERVATION_LEASE } from './reservation-ledger';
-import { leaseToHandedOffWork, RECOVERY_UNKNOWN, type Recovery, type ReservedUnit } from './hand-off';
+import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
 import { getAnonymousDailyLimit } from '../plan-limits';
@@ -15,9 +15,6 @@ import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE, SERVICE_UNAVAILABLE_PROBLEM_TYPE } from '../refusal-codes';
 
 export { extractClientIp };
-
-/** The engine a refused hand-off names: the reservation it needed was gone. */
-const RESERVATION_ENGINE = 'reservation';
 
 export interface ApiAuthResult {
   authorized: boolean;
@@ -569,28 +566,13 @@ const NO_RESERVATION: ReservedUnit = {
   handOff: (work) => work.start(undefined),
 };
 
-/** Renews the provisional lease of `reservationId` every heartbeat until stopped; a renewal that fails is logged. */
+/** Renews the provisional lease of `reservationId` every heartbeat until stopped; a renewal that fails is logged by `renewLease`. */
 function keepLeaseAlive(reservationId: string): () => void {
   const timer = setInterval(() => {
-    redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.provisionalMs).catch((err: unknown) => {
-      console.error(`[Guard] The lease of reservation ${reservationId} could not be renewed:`, err);
-    });
+    renewLease(reservationId, RESERVATION_LEASE.provisionalMs).catch(() => undefined);
   }, RESERVATION_LEASE.heartbeatMs);
   timer.unref?.();
   return () => clearInterval(timer);
-}
-
-/**
- * Moves the lease of the live reservation `reservationId` to end `leaseMs` from now, when that is later; false when it is
- * gone. A store that fails is a store the request cannot use now, answered with a retry.
- */
-async function renewLease(reservationId: string, leaseMs: number): Promise<boolean> {
-  try {
-    return await redisKeyStore.renewReservation(reservationId, leaseMs);
-  } catch (err) {
-    console.error(`[Guard] The lease of reservation ${reservationId} could not be renewed:`, err);
-    throw new QueueUnavailableError(RESERVATION_ENGINE, `the lease of reservation ${reservationId} could not be renewed`);
-  }
 }
 
 /**
@@ -634,7 +616,7 @@ export async function withReservedUnit<T>(reservationId: string | undefined, run
         return recovery.work;
       });
       release();
-      await leaseToHandedOffWork(reservationId, 'the work of its request');
+      await leaseToHandedOffWork(reservationId);
       return started;
     },
   };

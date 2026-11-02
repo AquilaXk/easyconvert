@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
+import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
 import { EXTEND_QUOTA_LUA_SCRIPT, RENEW_QUOTA_LUA_SCRIPT, RESERVE_QUOTA_LUA_SCRIPT, SETTLE_TO_QUOTA_LUA_SCRIPT, USED_QUOTA_LUA_SCRIPT } from './quota-lua-scripts';
 
 /**
@@ -21,13 +22,17 @@ const HOUR_MS = 60 * 60 * 1000;
  * The lifetimes of a reservation's lease. The holder renews a provisional lease every third of its length, as a lease client
  * sends a keep-alive every third of the lease's time to live, so one missed renewal does not end it. A handed-off lease is a
  * day, at least an hour past the longest deadline a job may be given (JOB_DEADLINE_CEILING_MS, the bound of every deadline
- * setting, which a test holds to 23 hours at most); it is the backstop for work whose end is never reported.
+ * setting, which this module checks when it loads); it is the backstop for work whose end is never reported.
  */
 export const RESERVATION_LEASE = {
   provisionalMs: 90_000,
   heartbeatMs: 30_000,
   handedOffMs: 24 * HOUR_MS,
 } as const;
+
+if (RESERVATION_LEASE.handedOffMs - JOB_DEADLINE_CEILING_MS < HOUR_MS) {
+  throw new Error(`The lease of handed-off work (${RESERVATION_LEASE.handedOffMs} ms) must outlast the longest job deadline (${JOB_DEADLINE_CEILING_MS} ms) by an hour.`);
+}
 
 /** What `extend` did: held the units, refused them because they do not fit in the day (with the conversions left), or found no reservation. */
 export type QuotaExtension = { status: 'extended' } | { status: 'does-not-fit'; remaining: number } | { status: 'no-reservation' };

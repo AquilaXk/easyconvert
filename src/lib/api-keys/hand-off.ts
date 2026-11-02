@@ -1,5 +1,6 @@
 import { redisKeyStore } from './redis-key-store';
 import { RESERVATION_LEASE } from './reservation-ledger';
+import { QueueUnavailableError } from '../types';
 
 /**
  * How a request hands its reserved conversion units to queued work (docs/policy-decisions.md, entry 15). The queue layer
@@ -42,16 +43,36 @@ export interface ReservedUnit {
   handOff<T>(work: HandOff<T>): Promise<T>;
 }
 
+/** The engine a refused hand-off names: the reservation it needed was gone, or its lease could not be renewed. */
+export const RESERVATION_ENGINE = 'reservation';
+
 /**
- * Gives the reservation `reservationId` the lease of handed-off work for `holder`, once that work is known to be stored or a
- * worker took it, as a consumer extends its hold on the work it takes. The work runs either way, so a renewal that fails is
- * logged, and the reservation keeps the lease it had.
+ * Moves the lease of the live reservation `reservationId` to end `leaseMs` from now, when that is later; false when no live
+ * lease is left. A store that fails is logged and thrown as a `QueueUnavailableError`, a store the request cannot use now.
  */
-export async function leaseToHandedOffWork(reservationId: string, holder: string): Promise<void> {
+export async function renewLease(reservationId: string, leaseMs: number): Promise<boolean> {
   try {
-    if (await redisKeyStore.renewReservation(reservationId, RESERVATION_LEASE.handedOffMs)) return;
-    console.error(`[Reservation] Reservation ${reservationId} of ${holder} had ended, so ${holder} is not charged.`);
+    return await redisKeyStore.renewReservation(reservationId, leaseMs);
   } catch (err) {
-    console.error(`[Reservation] The lease of reservation ${reservationId} of ${holder} could not be extended:`, err);
+    console.error(`[Reservation] The lease of reservation ${reservationId} could not be renewed:`, err);
+    throw new QueueUnavailableError(RESERVATION_ENGINE, `the lease of reservation ${reservationId} could not be renewed`);
+  }
+}
+
+/** Tries of the renewal to the lease of handed-off work: a renewal that throws is tried once more, at once. */
+const HANDED_OFF_RENEWAL_ATTEMPTS = 2;
+
+/**
+ * Gives the reservation `reservationId` the lease of handed-off work, once that work is known to be stored or a worker took
+ * it, as a consumer extends its hold on the work it takes. The work runs either way, so a renewal that throws twice is only
+ * logged, and so is one that finds no live lease, as a warning: work that committed fast, a graph that already settled, or a
+ * reservation made before leases.
+ */
+export async function leaseToHandedOffWork(reservationId: string): Promise<void> {
+  for (let attempt = 1; attempt <= HANDED_OFF_RENEWAL_ATTEMPTS; attempt++) {
+    const renewed = await renewLease(reservationId, RESERVATION_LEASE.handedOffMs).catch(() => undefined);
+    if (renewed === undefined) continue;
+    if (!renewed) console.warn(`[Reservation] No live lease to renew for ${reservationId}.`);
+    return;
   }
 }

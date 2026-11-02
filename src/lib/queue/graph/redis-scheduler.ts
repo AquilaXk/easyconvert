@@ -141,7 +141,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       throw new Error(`Failed to retrieve newly initialized graph: ${graphId}`);
     }
     // Renewed after the last step, so a start that throws leaves the reservation on the provisional lease.
-    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId, `graph ${graphId}`);
+    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId);
     return state;
   }
 

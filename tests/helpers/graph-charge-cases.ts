@@ -180,6 +180,21 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     return { graphId, owner, ended };
   }
 
+  /**
+   * The job of node `nodeId` of graph `graphId` once its queue recorded its failure, which comes after the node reported
+   * the failure to the scheduler and so may come after the graph ended.
+   */
+  async function failedNodeJob(graphId: string, nodeId: string) {
+    return vi.waitFor(
+      async () => {
+        const job = await getJobAcrossQueues(`${graphId}:${nodeId}`);
+        expect(job?.state).toBe('failed');
+        return job;
+      },
+      { timeout: 5_000, interval: 20 }
+    );
+  }
+
   async function runGraph(graph: SubmittedGraph, expectedStatus: 'completed' | 'failed', expectedUnits: number): Promise<void> {
     const queued = await queueGraph(graph, expectedUnits);
     await queued.ended(expectedStatus);
@@ -392,7 +407,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
     await queued.ended('failed');
-    expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect((await failedNodeJob(queued.graphId, 'link'))?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(await bytesBroughtInToday(owner)).toBe(dailyBudgetBytes('anonymous'));
     expect(vi.mocked(undiciFetch)).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
@@ -445,7 +460,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph({ failurePolicy: 'fail_fast', nodes: { link: { op: 'import.url', url: LINK }, conv: { op: 'convert', input: 'link', targetFormat: 'json' } } }, 0, { owner });
     await queued.ended('failed');
-    expect((await getJobAcrossQueues(`${queued.graphId}:link`))?.failedRefusalCode).toBe('import_budget_exceeded');
+    expect((await failedNodeJob(queued.graphId, 'link'))?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(cancelled).toBe(true);
     const charged = await bytesBroughtInToday(owner);
     expect(charged).toBeGreaterThan(dailyBudgetBytes('anonymous'));
@@ -490,7 +505,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph(importThenConvert(), 0, { owner });
     await queued.ended('failed');
-    const link = await getJobAcrossQueues(`${queued.graphId}:link`);
+    const link = await failedNodeJob(queued.graphId, 'link');
     expect(link?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(link?.attemptsMade).toBe(1);
   }, GRAPH_TIMEOUT_MS + 10_000);
@@ -528,7 +543,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
 
     const queued = await queueGraph(importThenConvert(), 0, { owner });
     await queued.ended('failed');
-    const job = await getJobAcrossQueues(`${queued.graphId}:link`);
+    const job = await failedNodeJob(queued.graphId, 'link');
     expect(job?.failedRefusalCode).toBe('import_budget_exceeded');
     expect(job?.failedReason).toContain(formatBytes(bytesLeft));
     expect(await bytesBroughtInToday(owner)).toBe(dailyBudgetBytes('anonymous') - bytesLeft);
@@ -557,7 +572,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     const { owner, used } = await ownerWithUnitsLeft(3);
     const queued = await queueGraph(await fiveFilesIntoConvert(), used, { owner, reservedUnits: 2 });
     await queued.ended('failed');
-    expect((await getJobAcrossQueues(`${queued.graphId}:conv`))?.failedRefusalCode).toBe('quota_exceeded');
+    expect((await failedNodeJob(queued.graphId, 'conv'))?.failedRefusalCode).toBe('quota_exceeded');
     expect(converted).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
 

@@ -95,7 +95,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
 
     this.graphs.set(graphId, { state, remainingDeps, children, accumulatedUnits: 0 });
     await this.queueReadyNodes(graphId);
-    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId, `graph ${graphId}`);
+    if (meta.reservationId) await leaseToHandedOffWork(meta.reservationId);
     return JSON.parse(JSON.stringify(state));
   }
 
