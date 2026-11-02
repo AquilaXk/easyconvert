@@ -270,7 +270,12 @@ export class RedisGraphScheduler implements IGraphScheduler {
   async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
     const state = await this.getGraphState(graphId);
     if (!state) return RECOVERY_UNKNOWN;
-    return queueReadyNodesOrCancel(state, () => this.drainOutbox(graphId), (reason) => this.cancelGraph(graphId, reason));
+    return queueReadyNodesOrCancel(
+      state,
+      () => this.drainOutbox(graphId),
+      (reason) => this.cancelGraph(graphId, reason),
+      () => this.getGraphState(graphId)
+    );
   }
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {

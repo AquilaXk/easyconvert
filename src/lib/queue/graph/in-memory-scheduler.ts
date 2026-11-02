@@ -111,7 +111,12 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     const data = this.graphs.get(graphId);
     // In this process no write lands after its start returned or threw, so a graph that is not here never started.
     if (!data) return { status: 'not-started' };
-    return queueReadyNodesOrCancel(JSON.parse(JSON.stringify(data.state)), () => this.enqueueWaitingNodes(data.state), (reason) => this.cancelGraph(graphId, reason));
+    return queueReadyNodesOrCancel(
+      JSON.parse(JSON.stringify(data.state)),
+      () => this.enqueueWaitingNodes(data.state),
+      (reason) => this.cancelGraph(graphId, reason),
+      () => this.getGraphState(graphId)
+    );
   }
 
   async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {
