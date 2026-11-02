@@ -126,7 +126,19 @@ jobs:
       - name: Tag the worker image main
         env:
           WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
-        run: docker buildx imagetools create --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"
+        run: docker buildx imagetools create --prefer-index=false --tag "$WORKER_REPO:main" "$WORKER_REPO@$WORKER_DIGEST"
+
+      # deploy.sh pins the digest it pulls for the worker and refuses a pair whose web image was built on another one, so main must
+      # name the worker digest itself, not an index that wraps it.
+      - name: Check that the worker main tag names the worker digest
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+        run: |
+          tagged="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "$WORKER_REPO:main")"
+          if [ "$tagged" != "\"$WORKER_DIGEST\"" ]; then
+            echo "::error::$WORKER_REPO:main names $tagged, not the worker image $WORKER_DIGEST"
+            exit 1
+          fi
 
       - name: Record the digests
         env:
