@@ -19,7 +19,7 @@ import { attachJobLifecycleListeners, getJobAcrossQueues } from '../src/lib/queu
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
-import { s3Storage } from '../src/lib/storage/s3-storage';
+import { storageProvider } from '../src/lib/storage';
 import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 
@@ -206,12 +206,14 @@ describe('a reservation a request hands to queued work', () => {
   ])('stops renewing the lease once the request %s', async (_label, end) => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const reservationId = await reservedUnit(freshOwner());
+    let timersWhileRunning = 0;
 
     await withReservedUnit(reservationId, async (unit) => {
-      expect(vi.getTimerCount()).toBe(1);
+      timersWhileRunning = vi.getTimerCount();
       await end(unit);
     }).catch(() => undefined);
 
+    expect(timersWhileRunning).toBe(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -353,7 +355,7 @@ describe('POST /api/v1/jobs when the queue stores the job and then fails', () =>
 
   it('keeps the hold the stored job took on the stored input it reads', async () => {
     const key = `uploads/lease-${crypto.randomBytes(6).toString('hex')}/scores.csv`;
-    s3Storage.saveObject(key, Buffer.from(CSV), 'text/csv', 'scores.csv');
+    await storageProvider.saveObject(key, Buffer.from(CSV), 'text/csv', 'scores.csv');
     try {
       const { res } = await submit({ storageKey: key });
 
@@ -361,7 +363,7 @@ describe('POST /api/v1/jobs when the queue stores the job and then fails', () =>
       const { jobId } = await res.json();
       expect((await getRetentionLedger().get(key))?.holds?.[jobId]).toBeGreaterThan(Date.now());
     } finally {
-      s3Storage.deleteObject(key);
+      await storageProvider.deleteObject(key);
     }
   });
 });
