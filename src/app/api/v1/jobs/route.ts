@@ -569,13 +569,16 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
     }
 
-    // Persist multipart upload into S3 staging storage only after magic byte validation passes
+    // Persist multipart upload into S3 staging storage only after magic byte validation passes. A graph reads every input
+    // from storage, so an inline base64 input of a graph is stored too, and its import nodes name the stored file.
     if (uploadedBuffer && fileMeta && !storageKey) {
-      const init = await s3Storage.initiateMultipartUpload(fileMeta.name, fileMeta.type, fileMeta.size);
-      await s3Storage.uploadPart(init.uploadId, 1, uploadedBuffer);
-      const completed = await s3Storage.completeMultipartUpload(init.uploadId);
-      storageKey = completed.key;
+      storageKey = await storeRequestInput(uploadedBuffer, fileMeta);
+    } else if (graph && inputBufferBase64 && !storageKey) {
+      const decoded = Buffer.from(inputBufferBase64, 'base64');
+      storageKey = await storeRequestInput(decoded, { name: originalFilename || 'input', type: sourceDef.mimeType, size: decoded.length });
+      inputBufferBase64 = undefined;
     }
+    if (graph && storageKey) graph.nodes = withInlineInputStored(normalizeGraphNodes(graph), storageKey);
 
     // Resolve target format definition
     const cleanTarget = targetFormat.toLowerCase().replace(/^\./, '').trim();
@@ -658,6 +661,20 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     return fail(500, message, 'Internal Server Error');
   }
 }));
+
+/** Stores an input that came in the request body as an upload, and answers its key. */
+async function storeRequestInput(buffer: Buffer, file: { name: string; type: string; size: number }): Promise<string> {
+  const init = await s3Storage.initiateMultipartUpload(file.name, file.type, file.size);
+  await s3Storage.uploadPart(init.uploadId, 1, buffer);
+  return (await s3Storage.completeMultipartUpload(init.uploadId)).key;
+}
+
+/** The nodes of a graph with each import.upload node that names the request's own input (`inline`) reading `storageKey`. */
+function withInlineInputStored(nodes: ReturnType<typeof normalizeGraphNodes>, storageKey: string): ReturnType<typeof normalizeGraphNodes> {
+  return Object.fromEntries(
+    Object.entries(nodes).map(([id, node]) => [id, node.op === 'import.upload' && isInlineInputKey(String(node.storageKey ?? '')) ? { ...node, storageKey } : node])
+  );
+}
 
 /**
  * The output format of a graph that names none at the top level: the format of its last convert node, else that of its
