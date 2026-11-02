@@ -47,16 +47,29 @@ describe('the target select of a file row', () => {
   });
 });
 
-describe('a file row that cannot start', () => {
-  const alertOf = (row: DomElement) => allElements(row).filter((element) => attrOf(element, 'role') === 'alert').map(visibleText);
+const alertOf = (row: DomElement) => allElements(row).filter((element) => attrOf(element, 'role') === 'alert').map(visibleText);
 
+describe('a file row that cannot start', () => {
   it.each([
-    ['a file over the limit', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /exceeds the 1 GiB limit/],
-    ['a password the target cannot take', { name: 'notes.pdf', sourceFormat: 'pdf', targetFormat: 'zip', options: { password: '비밀번호' } }, /password/i],
-  ] as const)('reads %s as ready, since nothing ran, and names what blocks it in its error text', (_case, item, reason) => {
-    const row = rowOf(item as Partial<ConversionQueueItem>, 'en');
-    const select = buttonNames(row).find((name) => name.includes(': convert '));
-    expect(select).toMatch(/, ready$/);
+    ['a file over the limit', 'en', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /exceeds the 1 GiB limit/, /, can't convert$/],
+    ['a password the target cannot take', 'en', { name: 'notes.pdf', sourceFormat: 'pdf', targetFormat: 'zip', options: { password: '비밀번호' } }, /password/i, /, can't convert$/],
+    ['a file over the limit', 'ko', { size: PLAN_MAX_FILE_BYTES.anonymous + 1 }, /1 GiB/, /, 변환할 수 없음$/],
+  ] as const)('reads %s in %s as one that cannot convert, names what blocks it, and shows no failure or retry', (_case, locale, item, reason, state) => {
+    const row = rowOf(item as Partial<ConversionQueueItem>, locale);
+    const select = buttonNames(row).find((name) => name.includes(locale === 'en' ? ': convert ' : ' 형식으로 변환'));
+    expect(select).toMatch(state);
     expect(alertOf(row)).toEqual([expect.stringMatching(reason)]);
+    expect(visibleText(row)).not.toMatch(/Failed|실패/);
+    expect(buttonNames(row).filter((name) => /Retry|다시 시도/.test(name))).toEqual([]);
+  });
+});
+
+describe('a file row whose conversion ran and failed', () => {
+  it('shows the failure and its reason in the row, as its target select states it, and offers no retry of its own', () => {
+    const row = rowOf({ status: 'error', error: { code: 'conversionFailed' } }, 'en');
+    expect(buttonNames(row)).toContain('photo.png: convert PNG to JPG, failed');
+    expect(visibleText(row)).toContain('Failed');
+    expect(alertOf(row)).toEqual(['Conversion failed. Try another format or try again.']);
+    expect(buttonNames(row).filter((name) => /Retry/.test(name))).toEqual([]);
   });
 });

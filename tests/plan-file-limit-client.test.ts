@@ -225,9 +225,9 @@ describe('a file over the limit', () => {
     const text = visibleText(dom);
     expect(text).toContain(message);
     expect(text).not.toContain('allows files up to');
-    expect(text).toContain('Failed');
+    expect(text).not.toContain('Failed');
     expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBe('');
-    expect(attrOf(select(dom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')).toBe('');
+    expect(select(dom, 'button').filter((b) => visibleText(b) === 'Retry')).toEqual([]);
   });
 
   function alertOf(dom: ReturnType<typeof rowFor>): string | null {
