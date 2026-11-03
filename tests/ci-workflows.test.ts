@@ -330,8 +330,26 @@ describe('the nightly workflow', () => {
     expect(run.strategy?.matrix?.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const steps = run.steps.map((step) => step.run ?? step.uses ?? '');
     expect(steps).toContain('npm run bench:realworld -- run --shard ${{ matrix.shard }}/10 --out realworld-shard-${{ matrix.shard }}.json');
-    const cache = run.steps.find((step) => String(step.uses).startsWith('actions/cache@'));
-    expect(cache?.with?.key).toBe("realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}");
+    const manifestKey = "realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}";
+    const restore = run.steps.find((step) => String(step.uses).startsWith('actions/cache/restore@'));
+    expect(restore?.with?.key).toBe(`${manifestKey}-\${{ github.run_id }}`);
+    expect(String(restore?.with?.['restore-keys']).split('\n').filter(Boolean)).toEqual([manifestKey, 'realworld-${{ matrix.shard }}-']);
+    expect(run.steps.some((step) => String(step.uses).startsWith('actions/cache@'))).toBe(false);
+  });
+
+  it('keeps the files a real-world shard fetched even when the shard fails, and saves nothing when it fetched nothing', () => {
+    const steps = nightly.jobs.realworld.steps;
+    const indexOf = (predicate: (step: Step) => boolean): number => steps.findIndex(predicate);
+    const before = indexOf((step) => step.id === 'before');
+    const runAt = indexOf((step) => step.name === 'Run the corpus shard');
+    const after = indexOf((step) => step.id === 'after');
+    const saveAt = indexOf((step) => String(step.uses).startsWith('actions/cache/save@'));
+    expect(indexOf((step) => String(step.uses).startsWith('actions/cache/restore@'))).toBeLessThan(before);
+    expect([before, runAt, after, saveAt].every((at, i, all) => at > -1 && (i === 0 || at > all[i - 1]))).toBe(true);
+    expect(steps[after].if).toBe('always()');
+    expect(steps[saveAt].if).toBe("always() && steps.after.outputs.files != steps.before.outputs.files");
+    expect(steps[saveAt].with?.path).toBe('~/.cache/easyconvert-realworld');
+    expect(steps[saveAt].with?.key).toBe("realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}");
     const gate = nightly.jobs['realworld-gate'];
     expect(gate.needs).toEqual(['realworld']);
     expect(gate.if).toBe('always()');
