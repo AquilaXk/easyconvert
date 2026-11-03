@@ -31,7 +31,7 @@ HOLD_MARKER="$HOME_DIR/hold"
 WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
-SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/convert}"
+SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/health/conversion}"
 PAGE_URL="${PAGE_URL:-http://127.0.0.1:8090/}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/easysubway-data}"
 MIN_FREE_GB="${MIN_FREE_GB:-15}"
@@ -212,21 +212,20 @@ healthy() {
   return 1
 }
 
-# One conversion through the web service: a 1x1 PPM, which ImageMagick decodes in a sandboxed child (`unshare -r -n`), to PNG.
-# /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile). The job
-# log is public: only the HTTP status is logged, never the body of the answer.
+# One conversion in the web service: its probe converts a 1x1 PPM of its own, which ImageMagick decodes in a sandboxed child
+# (`unshare -r -n`), to PNG. /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile,
+# seccomp profile). The probe takes no file and charges no allowance, so every start of a day passes it, and the host proxy does not
+# forward it (docs/deploy-oci.md). The job log is public: only the HTTP status is logged, never the body of the answer.
 smoke_conversion() {
   local http ok=1
   SMOKE_DIR="$(mktemp -d)"
-  printf 'P6\n1 1\n255\n\377\000\000' > "$SMOKE_DIR/smoke.ppm"
-  child curl --fail --silent --max-time 60 -o "$SMOKE_DIR/smoke.png" -w '%{http_code}' \
-    -F "file=@$SMOKE_DIR/smoke.ppm;filename=smoke.ppm" -F targetFormat=png "$SMOKE_URL" > "$SMOKE_DIR/status" || true
+  child curl --fail --silent --max-time 60 -o "$SMOKE_DIR/smoke.png" -w '%{http_code}' "$SMOKE_URL" > "$SMOKE_DIR/status" || true
   http="$(cat "$SMOKE_DIR/status")"
   [[ "$http" =~ ^[0-9]{3}$ ]] || http="none"
   if [ "$http" != 200 ]; then
-    log "the smoke conversion (PPM to PNG through $SMOKE_URL) failed: HTTP status $http"
+    log "the smoke conversion (PPM to PNG at $SMOKE_URL) failed: HTTP status $http"
   elif [ "$(head -c 8 "$SMOKE_DIR/smoke.png" | od -An -tx1 | tr -d ' \n')" != "$PNG_SIGNATURE" ]; then
-    log "the smoke conversion (PPM to PNG through $SMOKE_URL) answered HTTP status 200 with something that is not a PNG"
+    log "the smoke conversion (PPM to PNG at $SMOKE_URL) answered HTTP status 200 with something that is not a PNG"
   else
     ok=0
   fi
