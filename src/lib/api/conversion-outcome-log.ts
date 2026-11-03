@@ -26,9 +26,10 @@ export interface ConversionTrace {
   bytes?: number;
   /** The error that decided the answer. */
   cause?: unknown;
-  /** The name of the uploaded file and the options as received; the text to cut out of a failure's line is read from them only when that line is written. */
-  fileName?: string;
-  options?: ConversionOptions;
+  /** The text of the request an error message might repeat; built from the file name and the options only when the line of a failure is written. */
+  privateText?: () => string[];
+  /** Keeps the name of the uploaded file and the options as received for `privateText`. */
+  keepPrivate(fileName: string, options: ConversionOptions): void;
 }
 
 interface ConversionOutcome {
@@ -76,13 +77,13 @@ function passwordsOf(options: ConversionOptions): unknown[] {
  * forms. A message is composed before it is read, but a percent-encoded name is not, so an encoded name sent decomposed
  * is cut only by the encoding of the decomposed form.
  */
-export function privateTextOf(fileName: string, options: ConversionOptions): string[] {
+function privateTextOf(fileName: string, options: ConversionOptions): string[] {
   const leaf = fileName.split(PATH_SEPARATORS).pop() ?? fileName;
   const received = [fileName, leaf, leaf.replace(EXTENSION, ''), ...passwordsOf(options)].filter(
     (text): text is string => typeof text === 'string' && text.length > 0
   );
-  const forms = received.flatMap((text) => [text, text.normalize('NFC')]);
-  return [...new Set(forms.flatMap((text) => (text.isWellFormed() ? [text, encodeURIComponent(text)] : [text])))];
+  const forms = new Set(received.flatMap((text) => [text, text.normalize('NFC')]));
+  return [...new Set([...forms].flatMap((text) => (text.isWellFormed() ? [text, encodeURIComponent(text)] : [text])))];
 }
 
 /** One pattern for every secret, longest first, so that a name is cut whole before its stem and each text is read once. */
@@ -107,7 +108,7 @@ function describeCause(trace: ConversionTrace, status: number): ConversionOutcom
   const { cause } = trace;
   if (!(cause instanceof Error)) return { class: typeof cause };
   if (status < HTTP_INTERNAL_SERVER_ERROR) return { class: cause.name };
-  const secrets = secretPattern(trace.fileName === undefined ? [] : privateTextOf(trace.fileName, trace.options ?? {}));
+  const secrets = secretPattern(trace.privateText?.() ?? []);
   const frames = (cause.stack ?? '')
     .split('\n')
     .filter((line) => line.trimStart().startsWith('at '))
@@ -155,6 +156,16 @@ async function logOutcome(route: string, trace: ConversionTrace, status: number,
   }
 }
 
+function newTrace(): ConversionTrace {
+  const trace: ConversionTrace = {
+    requestId: randomUUID(),
+    keepPrivate(fileName, options) {
+      trace.privateText = () => privateTextOf(fileName, options);
+    },
+  };
+  return trace;
+}
+
 /**
  * Wraps a convert route so that each answer of 400 or more is logged once, with what the route put in its trace. An error the
  * route lets escape is logged as a 500 and thrown again for the framework to answer.
@@ -165,7 +176,7 @@ export function loggingOutcomes<Result extends Response>(
 ): (req: NextRequest) => Promise<Result> {
   return async (req) => {
     const startedAt = Date.now();
-    const trace: ConversionTrace = { requestId: randomUUID() };
+    const trace = newTrace();
     let response: Result;
     try {
       response = await handler(req, trace);

@@ -12,7 +12,8 @@ import {
   EngineMissingError,
   EngineUnavailableError,
   OcrEngineUnavailableError,
-  OcrLanguageUnavailableError,
+  OcrLanguageDataMissingError,
+  OcrLanguageUnknownError,
   RawEngineRequiredError,
   UnsupportedOptionError,
 } from '../src/lib/types';
@@ -66,7 +67,7 @@ describe('every missing-engine error shares one marker, which makes a job retrya
   it.each([
     ['EngineUnavailableError', new EngineUnavailableError('soffice'), HTTP_SERVICE_UNAVAILABLE],
     ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing'), HTTP_SERVICE_UNAVAILABLE],
-    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing', HTTP_SERVICE_UNAVAILABLE), HTTP_SERVICE_UNAVAILABLE],
+    ['OcrLanguageDataMissingError', new OcrLanguageDataMissingError('traineddata missing'), HTTP_SERVICE_UNAVAILABLE],
     ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required'), HTTP_SERVICE_UNAVAILABLE],
     ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing'), HTTP_SERVICE_UNAVAILABLE],
     ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError(), HTTP_SERVICE_UNAVAILABLE],
@@ -81,7 +82,7 @@ describe('every missing-engine error shares one marker, which makes a job retrya
   it('keeps a verdict on the input final', () => {
     expect(classifyJobFailure(new UnsupportedOptionError('width 0')).retryable).toBe(false);
     expect(classifyJobFailure(new ConversionFailedError('bad input')).retryable).toBe(false);
-    expect(classifyJobFailure(new OcrLanguageUnavailableError('Unsupported OCR language')).retryable).toBe(false);
+    expect(classifyJobFailure(new OcrLanguageUnknownError('Unsupported OCR language')).retryable).toBe(false);
     expect(classifyJobFailure(new OcrTextLayerLimitError('The page has more than 50000 words.'))).toEqual({
       code: 'OcrTextLayerLimitError',
       status: HTTP_BAD_REQUEST,

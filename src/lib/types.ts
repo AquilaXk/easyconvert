@@ -648,22 +648,34 @@ export class DataRepresentationError extends ConversionFailedError {
   }
 }
 
-/**
- * The OCR language of a request cannot be used. 400 (the default) when the code names no language of the table or joins too
- * many: a verdict on the request (`option_not_supported`) that no other worker changes, so it is final. 503 when the language
- * is known but its data is not installed here (`engine_unavailable`), which another worker may have, so it is retryable.
- */
-export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
-  readonly status: number;
-  readonly refusalCode: ConversionRefusalCode;
-  readonly retryable: boolean;
-  constructor(message: string, status = HTTP_BAD_REQUEST) {
+/** The OCR language of a request cannot be used: its code is unknown, or its data is not installed on this worker. */
+export abstract class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
+  protected constructor(message: string) {
     super(message);
     this.name = 'OcrLanguageUnavailableError';
-    this.status = status;
-    const dataMissingHere = status >= SERVER_FAULT_STATUS;
-    this.refusalCode = dataMissingHere ? 'engine_unavailable' : 'option_not_supported';
-    this.retryable = dataMissingHere;
+  }
+}
+
+/**
+ * The code names no language of the table, joins too many, or mixes `auto` with another: a verdict on the request
+ * (`option_not_supported`, 400) that no other worker changes, so it is final.
+ */
+export class OcrLanguageUnknownError extends OcrLanguageUnavailableError {
+  readonly refusalCode: ConversionRefusalCode = 'option_not_supported';
+  readonly retryable: boolean = false;
+  readonly status = HTTP_BAD_REQUEST;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrLanguageUnknownError';
+  }
+}
+
+/** The language is known but its data is not installed here (`engine_unavailable`, 503), which another worker may have, so it is retryable. */
+export class OcrLanguageDataMissingError extends OcrLanguageUnavailableError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrLanguageDataMissingError';
   }
 }
 
@@ -797,11 +809,6 @@ export class EngineUnavailableError extends EngineMissingError {
   }
 }
 
-/** HTTP status of a worker output that vanished: a server fault, not a verdict on the request. */
-const WORKER_OUTPUT_MISSING_STATUS = 500;
-const INVALID_CONVERSION_OUTPUT_STATUS = 500;
-const UNKNOWN_ARTIFACT_FORMAT_STATUS = 500;
-
 /** What an API answers for a vanished output; the worker's file name stays in the server log. */
 export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer available';
 
@@ -812,7 +819,7 @@ export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer 
  * redo a conversion whose storage is failing. The message names the output, never its location on disk.
  */
 export class WorkerOutputMissingError extends ConversionFailedError {
-  readonly status = WORKER_OUTPUT_MISSING_STATUS;
+  readonly status = SERVER_FAULT_STATUS;
 
   constructor(outputName: string) {
     super(`The persisted conversion output "${outputName}" is no longer available`);
@@ -825,7 +832,7 @@ export class WorkerOutputMissingError extends ConversionFailedError {
  * server fault: the job fails with 500 and the message names the formats, never the bytes.
  */
 export class InvalidConversionOutputError extends ConversionFailedError {
-  readonly status = INVALID_CONVERSION_OUTPUT_STATUS;
+  readonly status = SERVER_FAULT_STATUS;
 
   constructor(source: string, target: string) {
     super(`The conversion of the .${source} file to .${target} produced bytes that are not a .${target} file.`);
@@ -835,7 +842,7 @@ export class InvalidConversionOutputError extends ConversionFailedError {
 
 /** A stored artifact has a file extension the format registry does not know, so its MIME type cannot be named: a server fault. */
 export class UnknownArtifactFormatError extends ConversionFailedError {
-  readonly status = UNKNOWN_ARTIFACT_FORMAT_STATUS;
+  readonly status = SERVER_FAULT_STATUS;
 
   constructor(artifactName: string) {
     super(`Artifact "${artifactName}" has no format registered, so its MIME type is unknown`);
@@ -884,9 +891,6 @@ export class CpuTaskTimeoutError extends ConversionFailedError {
   }
 }
 
-/** HTTP status of a CPU pool task that was cancelled; a client that went away is answered 499 before this is seen. */
-const CPU_TASK_ABORTED_STATUS = 500;
-
 /** HTTP status of a job that ran past its deadline: the server's wall-clock limit, not a fault in the request. */
 export const JOB_TIMEOUT_STATUS = 504;
 
@@ -923,7 +927,7 @@ export class RequestAbortedError extends Error {
 
 /** A task on the CPU worker pool was cancelled by its caller or by the pool's shutdown: a server fault, not a verdict on the input. */
 export class CpuTaskAbortedError extends ConversionFailedError {
-  readonly status = CPU_TASK_ABORTED_STATUS;
+  readonly status = SERVER_FAULT_STATUS;
 
   constructor(kind: string) {
     super(`The ${kind} task was cancelled`);
@@ -949,7 +953,7 @@ export class QueueUnavailableError extends EngineUnavailableError {
  * not retryable; the status is a server fault (500), not a verdict on the caller's input.
  */
 export class GraphStateCorruptError extends ConversionFailedError {
-  readonly status = 500;
+  readonly status = SERVER_FAULT_STATUS;
   constructor(message: string) {
     super(message);
     this.name = 'GraphStateCorruptError';

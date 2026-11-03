@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AudioResampleError, AudioResampleFaultError, resampleInterleavedInt16 } from '../src/lib/conversions/audio-resampler';
-import { AvifEncoderFailedError } from '../src/lib/conversions/avif-cli';
+import { AvifEncoderFailedError, AvifEncoderFaultError } from '../src/lib/conversions/avif-cli';
 import { LoudnessMeasurementError, LoudnessReportMissingError, parseLoudnormMeasurement } from '../src/lib/conversions/media-audio-quality';
 import { measureInk } from '../src/lib/conversions/ocr-bands';
 import { sauvolaBinarize, SAUVOLA_MAX_PIXELS } from '../src/lib/conversions/ocr-sauvola';
@@ -94,7 +94,11 @@ describe('a tool that ran and printed nothing usable', () => {
     expect(typedFailureOf(error)?.status).toBe(HTTP_BAD_REQUEST);
   });
 
-  it('is a fault of the server when the AVIF encoder exits with a failure', () => {
-    expect(typedFailureOf(new AvifEncoderFailedError('the AVIF encoder failed on the picture'))?.status).toBe(HTTP_INTERNAL_SERVER_ERROR);
+  it('is a fault of the server only for the AVIF encoder exit that does not blame the picture', () => {
+    const fault = new AvifEncoderFaultError('the AVIF encoder failed on the picture');
+
+    expect(fault).toBeInstanceOf(AvifEncoderFailedError);
+    expect(typedFailureOf(fault)?.status).toBe(HTTP_INTERNAL_SERVER_ERROR);
+    expect(typedFailureOf(new AvifEncoderFailedError('the AVIF encoder failed on the picture'))?.status).toBe(HTTP_BAD_REQUEST);
   });
 });

@@ -13,7 +13,7 @@ import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { OcrTextLayerLimitError } from '../src/lib/conversions/ocr-text-layer';
 import { AudioResampleFaultError } from '../src/lib/conversions/audio-resampler';
-import { AvifEncoderFailedError } from '../src/lib/conversions/avif-cli';
+import { AvifEncoderFaultError } from '../src/lib/conversions/avif-cli';
 import { LoudnessReportMissingError } from '../src/lib/conversions/media-audio-quality';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -23,7 +23,8 @@ import {
   GraphStateCorruptError,
   ImportBudgetExceededError,
   InvalidConversionOutputError,
-  OcrLanguageUnavailableError,
+  OcrLanguageDataMissingError,
+  OcrLanguageUnknownError,
   OcrPreprocessFaultError,
   RawEngineRequiredError,
   UnknownArtifactFormatError,
@@ -69,7 +70,7 @@ const ROUTES = [
     url: 'http://localhost/api/convert',
     headers: async () => visitor(),
     faultSentence: 'The conversion failed on the server.',
-    textFields: ['sourceFormat', 'options'],
+    textFields: [['sourceFormat', 'unknown_format'], ['options', 'invalid_options']],
   },
   {
     name: '/api/v1/convert',
@@ -78,7 +79,7 @@ const ROUTES = [
     url: 'http://localhost/api/v1/convert',
     headers: keyHeaders,
     faultSentence: 'Internal conversion error',
-    textFields: ['sourceFormat', 'options', 'webhookUrl', 'webhookSecret'],
+    textFields: [['sourceFormat', undefined], ['options', undefined], ['webhookUrl', undefined], ['webhookSecret', undefined]],
   },
 ] as const;
 
@@ -121,7 +122,7 @@ describe.each(ROUTES)('$name', (route) => {
     ['AudioResampleFaultError', () => new AudioResampleFaultError('The SIMD resampler kernel failed'), 500],
     ['OcrPreprocessFaultError', () => new OcrPreprocessFaultError('Expected 6 gray samples for a 3x2 page, got 5.'), 500],
     ['LoudnessReportMissingError', () => new LoudnessReportMissingError('The loudness measuring pass printed no report.'), 500],
-    ['AvifEncoderFailedError', () => new AvifEncoderFailedError('Cannot encode the image as .avif (the AVIF encoder failed on the picture)'), 500],
+    ['AvifEncoderFaultError', () => new AvifEncoderFaultError('Cannot encode the image as .avif (the AVIF encoder failed on the picture)'), 500],
     ['RawEngineRequiredError', () => new RawEngineRequiredError('native RAW decoder required'), 503],
   ])('answers %s, a fault of the server, with its status and a failure line', async (name, make, status) => {
     vi.mocked(dispatchConversion).mockRejectedValueOnce(make());
@@ -136,7 +137,7 @@ describe.each(ROUTES)('$name', (route) => {
     ['AudioResampleFaultError', () => new AudioResampleFaultError('kernel failed at /srv/worker/secret-path')],
     ['OcrPreprocessFaultError', () => new OcrPreprocessFaultError('page at /srv/worker/secret-path is not gray')],
     ['LoudnessReportMissingError', () => new LoudnessReportMissingError('no report from /srv/worker/secret-path')],
-    ['AvifEncoderFailedError', () => new AvifEncoderFailedError('encoder failed in /srv/worker/secret-path')],
+    ['AvifEncoderFaultError', () => new AvifEncoderFaultError('encoder failed in /srv/worker/secret-path')],
   ])('answers %s with the fixed sentence of a fault, not the words of its error', async (_name, make) => {
     vi.mocked(dispatchConversion).mockRejectedValueOnce(make());
 
@@ -151,7 +152,7 @@ describe.each(ROUTES)('$name', (route) => {
   it.each([
     ['CpuTaskTimeoutError', () => new CpuTaskTimeoutError('png', 1000), 422, 'timeout'],
     ['ImportBudgetExceededError', () => new ImportBudgetExceededError('no bytes left today'), 429, 'import_budget_exceeded'],
-    ['OcrLanguageUnavailableError', () => new OcrLanguageUnavailableError('unknown language'), 400, 'option_not_supported'],
+    ['OcrLanguageUnknownError', () => new OcrLanguageUnknownError('unknown language'), 400, 'option_not_supported'],
     ['OcrTextLayerLimitError', () => new OcrTextLayerLimitError('The page has more than 50000 words.'), 400, 'input_over_limit'],
   ])('answers %s with the status and the code its class declares, and logs it as a refusal', async (name, make, status, code) => {
     vi.mocked(dispatchConversion).mockRejectedValueOnce(make());
@@ -211,7 +212,7 @@ describe.each(ROUTES)('$name', (route) => {
     expect(res.status).toBe(HTTP_BAD_REQUEST);
   });
 
-  it.each(route.textFields)('answers %s sent as a file part with 400 and converts nothing', async (field) => {
+  it.each(route.textFields)('answers %s sent as a file part with 400 and converts nothing', async (field, code) => {
     const form = pdfForm();
     const protect = JSON.stringify({ protect: { userPassword: 'user-secret', ownerPassword: 'owner-secret' } });
     form.append(field, new File([field === 'options' ? protect : 'value'], `${field}.txt`));
@@ -220,6 +221,7 @@ describe.each(ROUTES)('$name', (route) => {
     const res = await send(form);
 
     expect(res.status).toBe(HTTP_BAD_REQUEST);
+    expect((await res.json()).code).toBe(code);
     expect(dispatchConversion).not.toHaveBeenCalled();
   });
 });

@@ -238,8 +238,6 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;
-    trace.fileName = file.name;
-    trace.options = options;
 
     // Validate conversion options against SSOT JSON Schema contract BEFORE reserving quota
     if (options && Object.keys(options).length > 0) {
@@ -248,6 +246,8 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
         return reply(optionsValidation.response as NextResponse);
       }
     }
+
+    trace.keepPrivate(file.name, options);
 
     const webhookUrlParam = formText(formData, 'webhookUrl')?.trim() || undefined;
     const webhookSecretParam = formText(formData, 'webhookSecret')?.trim() || undefined;

@@ -1,4 +1,4 @@
-import { OcrPreprocessFaultError } from '../types';
+import { OcrPreprocessError, OcrPreprocessFaultError } from '../types';
 
 /**
  * Netpbm portable anymap writer (http://netpbm.sourceforge.net/doc/pbm.html, pgm.html, ppm.html).
@@ -24,8 +24,9 @@ const PNM_MAX_SIDE_PX = 1_000_000;
 
 function assertDimensions(width: number, height: number): void {
   const valid = Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0;
-  if (!valid || width > PNM_MAX_SIDE_PX || height > PNM_MAX_SIDE_PX) {
-    throw new OcrPreprocessFaultError(`Cannot write a ${width}x${height} PNM image.`);
+  if (!valid) throw new OcrPreprocessFaultError(`Cannot write a ${width}x${height} PNM image.`);
+  if (width > PNM_MAX_SIDE_PX || height > PNM_MAX_SIDE_PX) {
+    throw new OcrPreprocessError(`A ${width}x${height} page has a side over the ${PNM_MAX_SIDE_PX} pixels a page of OCR may have.`);
   }
 }
 

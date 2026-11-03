@@ -12,7 +12,7 @@ import {
   convertFile,
 } from '../src/lib/conversions/index';
 import { OcrResult, OcrLineBlock } from '../src/lib/conversions/ocr-pdf-combiner';
-import { OcrLanguageUnavailableError } from '../src/lib/types';
+import { OcrLanguageDataMissingError, OcrLanguageUnknownError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { extractPdfTextLayerPages } from '../src/lib/conversions/pdf-text-geometry';
 import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
@@ -415,37 +415,37 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       // jpn_vert
       await expect(
         performOcr(dummyImage, 'jpn_vert')
-      ).rejects.toThrow(OcrLanguageUnavailableError);
+      ).rejects.toThrow(OcrLanguageDataMissingError);
 
       try {
         await performOcr(dummyImage, 'jpn_vert');
       } catch (err: any) {
-        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
-        expect(err.name).toBe('OcrLanguageUnavailableError');
+        expect(err).toBeInstanceOf(OcrLanguageDataMissingError);
+        expect(err.name).toBe('OcrLanguageDataMissingError');
         expect(err.message).toContain('jpn_vert.traineddata');
       }
 
       // chi_sim_vert
       await expect(
         performOcr(dummyImage, 'chi_sim_vert')
-      ).rejects.toThrow(OcrLanguageUnavailableError);
+      ).rejects.toThrow(OcrLanguageDataMissingError);
 
       try {
         await performOcr(dummyImage, 'chi_sim_vert');
       } catch (err: any) {
-        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err).toBeInstanceOf(OcrLanguageDataMissingError);
         expect(err.message).toContain('chi_sim_vert.traineddata');
       }
 
       // chi_tra_vert
       await expect(
         performOcr(dummyImage, 'chi_tra_vert')
-      ).rejects.toThrow(OcrLanguageUnavailableError);
+      ).rejects.toThrow(OcrLanguageDataMissingError);
 
       try {
         await performOcr(dummyImage, 'chi_tra_vert');
       } catch (err: any) {
-        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err).toBeInstanceOf(OcrLanguageDataMissingError);
         expect(err.message).toContain('chi_tra_vert.traineddata');
       }
     });
@@ -453,34 +453,34 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
     it('supports hyphenated vertical model aliases jpn-vert, chi-sim-vert, chi-tra-vert and fails closed when traineddata is unavailable', async () => {
       await expect(
         performOcr(dummyImage, 'jpn-vert')
-      ).rejects.toThrow(OcrLanguageUnavailableError);
+      ).rejects.toThrow(OcrLanguageDataMissingError);
 
       try {
         await performOcr(dummyImage, 'jpn-vert');
       } catch (err: any) {
-        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err).toBeInstanceOf(OcrLanguageDataMissingError);
         expect(err.message).toContain('jpn_vert.traineddata');
       }
 
       await expect(
         performOcr(dummyImage, 'chi-sim-vert')
-      ).rejects.toThrow(OcrLanguageUnavailableError);
+      ).rejects.toThrow(OcrLanguageDataMissingError);
 
       try {
         await performOcr(dummyImage, 'chi-sim-vert');
       } catch (err: any) {
-        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err).toBeInstanceOf(OcrLanguageDataMissingError);
         expect(err.message).toContain('chi_sim_vert.traineddata');
       }
 
       await expect(
         performOcr(dummyImage, 'chi-tra-vert')
-      ).rejects.toThrow(OcrLanguageUnavailableError);
+      ).rejects.toThrow(OcrLanguageDataMissingError);
 
       try {
         await performOcr(dummyImage, 'chi-tra-vert');
       } catch (err: any) {
-        expect(err).toBeInstanceOf(OcrLanguageUnavailableError);
+        expect(err).toBeInstanceOf(OcrLanguageDataMissingError);
         expect(err.message).toContain('chi_tra_vert.traineddata');
       }
     });
@@ -493,7 +493,7 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
         thrownError = err;
       }
       expect(thrownError).not.toBeNull();
-      expect(thrownError.name).toBe('OcrLanguageUnavailableError');
+      expect(thrownError.name).toBe('OcrLanguageUnknownError');
       expect(thrownError.status).toBe(400);
       expect(thrownError.message).toContain('Unsupported or unrecognized OCR language: \'invalid_vertical_lang\'');
       expect(thrownError.message).toContain('jpn_vert');

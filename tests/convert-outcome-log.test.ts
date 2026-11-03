@@ -25,6 +25,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { admitsNewFiles } from '../src/lib/storage/retention-service';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
+import { MAX_PASSWORD_LIST_ITEMS } from '../src/lib/api/contracts/schemas';
 import { ImportBudgetExceededError, UnsupportedTargetError } from '../src/lib/types';
 
 /**
@@ -373,6 +374,22 @@ describe('the secrets the log line cuts out', () => {
       expect(encodedSecrets()).toBe(0);
     });
 
+    it('refuses a list of more passwords than the schema allows before any of them is read', async () => {
+      const res = await send({ passwords: Array.from({ length: MAX_PASSWORD_LIST_ITEMS + 1 }, (_, at) => `${MARKER}${at}`) });
+
+      expect(res.status).toBe(route.invalidStatus);
+      expect(encodedSecrets()).toBe(0);
+    });
+
+    it('encodes a password listed again and again once for the line of a failure', async () => {
+      vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError('qpdf failed'));
+
+      const res = await send({ password: MARKED.password, passwords: Array.from({ length: MAX_PASSWORD_LIST_ITEMS }, () => MARKED.password) });
+
+      expect(res.status).toBe(500);
+      expect(encodedSecrets()).toBe(1);
+    });
+
     it('reads the passwords of the options for nothing while the conversion refuses the file', async () => {
       vi.mocked(dispatchConversion).mockRejectedValueOnce(new UnsupportedTargetError('No writer for this file'));
 
@@ -382,7 +399,7 @@ describe('the secrets the log line cuts out', () => {
       expect(encodedSecrets()).toBe(0);
     });
 
-    it('reads them once for the line of a failure of the server, and cuts them out of it', async () => {
+    it('reads them for the line of a failure of the server, and cuts them out of it', async () => {
       vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError(`qpdf rejected ${MARKED.protect.ownerPassword} and ${MARKED.passwords[1]}`));
 
       const res = await send({ ...MARKED });

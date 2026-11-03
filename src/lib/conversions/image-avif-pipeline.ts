@@ -1,6 +1,6 @@
 import type { Sharp } from 'sharp';
 import type { ConversionOptions } from '../types';
-import { AVIF_ENCODER_LIBRARY_CLI, encodeAvifWithCli, findAvifenc, type AvifCicp } from './avif-cli';
+import { assertAv1FrameSize, AVIF_ENCODER_LIBRARY_CLI, encodeAvifWithCli, findAvifenc, type AvifCicp } from './avif-cli';
 import { CICP_MATRIX_BT2020_NCL, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ } from './cicp';
 import { withoutOpaqueAlpha, type ContentClass } from './image-content';
 import type { DirectAvifSlot } from './image-avif-direct';
@@ -57,6 +57,7 @@ async function encodeAvifFromPipeline(
   const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
   const upright = swapsSides ? { width: source.height ?? 0, height: source.width ?? 0 } : { width: source.width ?? 0, height: source.height ?? 0 };
   const target = resizedDimensions(upright.width, upright.height, options);
+  assertAv1FrameSize(target.width, target.height);
   const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
   const avifenc = await findAvifenc();
   const pixels = target.width * target.height;

@@ -50,6 +50,7 @@ const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 /** The fields read as text that change the conversion; neither may be sent as a file, which would drop it and convert without it. */
 const TEXT_FIELDS = ['sourceFormat', 'options'] as const;
+const TEXT_FIELD_CODES: Record<(typeof TEXT_FIELDS)[number], ConversionRefusalCode> = { sourceFormat: 'unknown_format', options: 'invalid_options' };
 const MULTIPART_REQUIRED = 'The request body must be multipart/form-data.';
 
 /**
@@ -180,13 +181,13 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       return refusal(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
     }
 
-    if (!targetFormat) {
-      return refusal(400, 'target_required', 'Missing required "targetFormat" parameter.');
-    }
-
     const sentAsFile = fileSentAsText(formData, TEXT_FIELDS);
     if (sentAsFile) {
-      return refusal(400, sentAsFile === 'options' ? 'invalid_options' : 'unknown_format', `The "${sentAsFile}" field must be text, not a file.`);
+      return refusal(400, TEXT_FIELD_CODES[sentAsFile], `The "${sentAsFile}" field must be text, not a file.`);
+    }
+
+    if (!targetFormat) {
+      return refusal(400, 'target_required', 'Missing required "targetFormat" parameter.');
     }
 
     const detectedDef = sourceFormatOf(file.name, formText(formData, 'sourceFormat'));
@@ -223,8 +224,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       }
     }
 
-    trace.fileName = file.name;
-    trace.options = options;
+    trace.keepPrivate(file.name, options);
 
     if (!options.pages && options.page) {
       options.pages = String(options.page);

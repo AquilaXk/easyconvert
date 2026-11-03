@@ -10,7 +10,8 @@ import {
   ComplexScriptRequiresNativeEngineError,
   EngineUnavailableError,
   OcrEngineUnavailableError,
-  OcrLanguageUnavailableError,
+  OcrLanguageDataMissingError,
+  OcrLanguageUnknownError,
   RawEngineRequiredError,
   UnsupportedOptionError,
 } from '../src/lib/types';
@@ -75,7 +76,7 @@ describe('jobs that fail on their input are not retried', () => {
 
   it.each([
     ['OcrTextLayerLimitError', new OcrTextLayerLimitError('The page has more than 50000 words.')],
-    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('Unsupported or unrecognized OCR language')],
+    ['OcrLanguageUnknownError', new OcrLanguageUnknownError('Unsupported or unrecognized OCR language')],
   ])('does not retry %s, a verdict on the page or the request that no other worker changes', async (name, error) => {
     const { calls, job } = await runFailingJob(`nonretry-${name}`, error);
     expect(calls).toBe(1);
@@ -94,7 +95,7 @@ describe('jobs that fail on their input are not retried', () => {
 
   it.each([
     ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing')],
-    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing', HTTP_SERVICE_UNAVAILABLE)],
+    ['OcrLanguageDataMissingError', new OcrLanguageDataMissingError('traineddata missing')],
     ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required')],
     ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing')],
     ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError()],

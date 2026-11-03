@@ -31,7 +31,7 @@ export function formText(form: FormData, name: string): string | undefined {
  * The first of the text fields `names` that the form holds as a file part. `formText` reads such a field as missing, which is
  * right for a required field but would drop an option or a webhook the caller sent, and convert without it.
  */
-export function fileSentAsText(form: FormData, names: readonly string[]): string | undefined {
+export function fileSentAsText<Name extends string>(form: FormData, names: readonly Name[]): Name | undefined {
   return names.find((name) => {
     const value = form.get(name);
     return value !== null && typeof value !== 'string';

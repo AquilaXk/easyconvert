@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { OcrLanguageUnavailableError } from '../types';
+import { OcrLanguageDataMissingError } from '../types';
 import { OCR_LANGUAGES, ocrLanguageCode, type OcrLanguage } from './ocr-languages';
 
 /**
@@ -14,8 +14,6 @@ import { OCR_LANGUAGES, ocrLanguageCode, type OcrLanguage } from './ocr-language
 
 const TRAINEDDATA_SUFFIX = '.traineddata';
 const GZIP_SUFFIX = '.gz';
-/** HTTP status of a language whose data is not installed: the request is valid, the server lacks the data. */
-export const OCR_LANGUAGE_NOT_INSTALLED_STATUS = 503;
 
 const SYSTEM_TESSDATA_DIRS: readonly string[] = [
   '/usr/share/tesseract-ocr/5/tessdata',
@@ -45,8 +43,8 @@ export function locateLanguageData(traineddata: string): LanguageDataLocation | 
   return undefined;
 }
 
-function notInstalled(message: string): OcrLanguageUnavailableError {
-  return new OcrLanguageUnavailableError(message, OCR_LANGUAGE_NOT_INSTALLED_STATUS);
+function notInstalled(message: string): OcrLanguageDataMissingError {
+  return new OcrLanguageDataMissingError(message);
 }
 
 /**

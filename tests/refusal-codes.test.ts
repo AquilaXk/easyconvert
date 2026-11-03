@@ -28,7 +28,7 @@ import {
   CpuTaskTimeoutError,
   InvalidMediaOptionError,
   MissingVolumeError,
-  OcrLanguageUnavailableError,
+  OcrLanguageUnknownError,
   PdfPasswordListError,
   RawEngineRequiredError,
   UnprocessableFontInputError,
@@ -180,7 +180,7 @@ describe('the API document lists, per status, the codes /api/convert answers wit
     new CpuTaskTimeoutError('png', 1000),
     new CadExpansionLimitError('The drawing expands past the budget.'),
     new DjvuComponentSizeError(20_000_000),
-    new OcrLanguageUnavailableError('Unsupported or unrecognized OCR language'),
+    new OcrLanguageUnknownError('Unsupported or unrecognized OCR language'),
     new OcrTextLayerLimitError('The page has more than 50000 words.'),
   ])('documents the answer to %s', async (error) => {
     const { status, body } = await convertAnswer(error);

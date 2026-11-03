@@ -118,7 +118,8 @@ function rehydrate(failure: WorkerFailure): Error {
   if (Constructor) return new Constructor(failure.message);
   const error = new ConversionFailedError(failure.message);
   error.name = failure.name;
-  // An error that declares neither a status nor a refusal code (a TypeError or a RangeError of an encoder) is no verdict on the input.
+  // An error that declares neither a status nor a refusal code (a TypeError, a RangeError or a plain Error of an encoder) is no verdict on the
+  // input: the font encoder's limits on an upload are typed (`Woff2LimitError`, listed above), so what is left is a broken invariant of the server.
   const status = failure.status ?? (failure.refusalCode === undefined ? SERVER_FAULT_STATUS : undefined);
   if (status !== undefined) (error as ConversionFailedError & { status?: number }).status = status;
   if (isCodeOf(CONVERSION_REFUSAL_CODES, failure.refusalCode)) (error as { refusalCode: ConversionRefusalCode }).refusalCode = failure.refusalCode;

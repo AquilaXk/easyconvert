@@ -19,6 +19,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   AudioResampleError: 'conversion_failed',
   AudioResampleFaultError: 'conversion_failed',
   AvifEncoderFailedError: 'conversion_failed',
+  AvifEncoderFaultError: 'conversion_failed',
   BmpDecodeError: 'conversion_failed',
   CadGeometryError: 'conversion_failed',
   CffCharStringError: 'conversion_failed',
@@ -70,7 +71,6 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   SvgPathDataError: 'conversion_failed',
   SvgSanitizationError: 'conversion_failed',
   TooManyMediaStreamsError: 'conversion_failed',
-  TracerCrashedError: 'conversion_failed',
   UnknownArtifactFormatError: 'conversion_failed',
   UnsupportedMobiEncodingError: 'conversion_failed',
   UnsupportedRawCompressionError: 'conversion_failed',
@@ -97,6 +97,8 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   EngineUnavailableError: 'engine_unavailable',
   NativeRenameUnsupportedError: 'engine_unavailable',
   OcrEngineUnavailableError: 'engine_unavailable',
+  OcrLanguageDataMissingError: 'engine_unavailable',
+  OcrLanguageUnavailableError: 'engine_unavailable',
   OcrGeometryUnavailableError: 'engine_unavailable',
   ParquetCodecUnavailableError: 'engine_unavailable',
   QueueUnavailableError: 'engine_unavailable',
@@ -131,7 +133,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   MissingVolumeError: 'missing_volume',
 
   InvalidMediaOptionError: 'option_not_supported',
-  OcrLanguageUnavailableError: 'option_not_supported',
+  OcrLanguageUnknownError: 'option_not_supported',
   UnsupportedOptionError: 'option_not_supported',
 
   ArchivePasswordRequiredError: 'password_required',
