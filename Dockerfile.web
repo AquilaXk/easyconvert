@@ -64,6 +64,9 @@ LABEL org.opencontainers.image.base.name="${WORKER_IMAGE}"
 # The anonymous daily allowance the pages were built with, which deploy/oci/deploy.sh compares with the one the servers run with.
 ARG ANONYMOUS_DAILY_LIMIT=
 LABEL easyconvert.anonymous-daily-limit="${ANONYMOUS_DAILY_LIMIT}"
+# The smoke probe the server answers (src/app/api/health/conversion), which deploy/oci/deploy.sh reads from each release it starts.
+# An image without it gets the smoke through /api/convert that it was built for.
+LABEL easyconvert.smoke-probe="/api/health/conversion"
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

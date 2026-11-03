@@ -32,6 +32,7 @@ WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
 SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/health/conversion}"
+CONVERT_SMOKE_URL="${CONVERT_SMOKE_URL:-http://127.0.0.1:8090/api/convert}"
 PAGE_URL="${PAGE_URL:-http://127.0.0.1:8090/}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/easysubway-data}"
 MIN_FREE_GB="${MIN_FREE_GB:-15}"
@@ -51,6 +52,8 @@ APPARMOR_PROFILE='easyconvert'
 APPARMOR_INSTALLED="${APPARMOR_INSTALLED:-/etc/apparmor.d/easyconvert}"
 BASE_IMAGE_LABEL='org.opencontainers.image.base.name'
 ALLOWANCE_LABEL='easyconvert.anonymous-daily-limit'
+SMOKE_PROBE_LABEL='easyconvert.smoke-probe'
+SMOKE_PROBE_PATH='/api/health/conversion'
 PNG_SIGNATURE='89504e470d0a1a0a'
 
 CHILD=""
@@ -212,20 +215,34 @@ healthy() {
   return 1
 }
 
-# One conversion in the web service: its probe converts a 1x1 PPM of its own, which ImageMagick decodes in a sandboxed child
-# (`unshare -r -n`), to PNG. /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile,
-# seccomp profile). The probe takes no file and charges no allowance, so every start of a day passes it, and the host proxy does not
-# forward it (docs/deploy-oci.md). The job log is public: only the HTTP status is logged, never the body of the answer.
-smoke_conversion() {
-  local http ok=1
+# One conversion in the web service: a 1x1 PPM, which ImageMagick decodes in a sandboxed child (`unshare -r -n`), to PNG. /api/health
+# starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile). The web image of the
+# release names its smoke in the label SMOKE_PROBE_LABEL, read from the release being started, since a rollback or a reconcile starts
+# an older release with this script: the probe, which converts a PPM of its own, charges no allowance and is not forwarded by the
+# host proxy (docs/deploy-oci.md); or, for an image built before the label, the upload of the PPM to /api/convert, which spends one
+# unit of the anonymous allowance (policy entry 122). The job log is public: only the HTTP status is logged, never the body of the answer.
+smoke_conversion() { # smoke_conversion <release-dir>
+  local web probe url http ok=1 form=()
+  web="$(env_value "$1/images.env" EASYCONVERT_WEB_IMAGE)"
+  probe="$(docker image inspect --format "{{ index .Config.Labels \"$SMOKE_PROBE_LABEL\" }}" "$web" 2> /dev/null)" \
+    || { log "the smoke probe of the web image $web could not be read"; return 1; }
+  case "$probe" in
+    "$SMOKE_PROBE_PATH") url="$SMOKE_URL" ;;
+    "") url="$CONVERT_SMOKE_URL" ;;
+    *) log "the web image $web names the smoke probe '$probe', which this deploy.sh does not know"; return 1 ;;
+  esac
   SMOKE_DIR="$(mktemp -d)"
-  child curl --fail --silent --max-time 60 -o "$SMOKE_DIR/smoke.png" -w '%{http_code}' "$SMOKE_URL" > "$SMOKE_DIR/status" || true
+  if [ -z "$probe" ]; then
+    printf 'P6\n1 1\n255\n\377\000\000' > "$SMOKE_DIR/smoke.ppm"
+    form=(-F "file=@$SMOKE_DIR/smoke.ppm;filename=smoke.ppm" -F targetFormat=png)
+  fi
+  child curl --fail --silent --max-time 60 -o "$SMOKE_DIR/smoke.png" -w '%{http_code}' "${form[@]}" "$url" > "$SMOKE_DIR/status" || true
   http="$(cat "$SMOKE_DIR/status")"
   [[ "$http" =~ ^[0-9]{3}$ ]] || http="none"
   if [ "$http" != 200 ]; then
-    log "the smoke conversion (PPM to PNG at $SMOKE_URL) failed: HTTP status $http"
+    log "the smoke conversion (PPM to PNG at $url) failed: HTTP status $http"
   elif [ "$(head -c 8 "$SMOKE_DIR/smoke.png" | od -An -tx1 | tr -d ' \n')" != "$PNG_SIGNATURE" ]; then
-    log "the smoke conversion (PPM to PNG at $SMOKE_URL) answered HTTP status 200 with something that is not a PNG"
+    log "the smoke conversion (PPM to PNG at $url) answered HTTP status 200 with something that is not a PNG"
   else
     ok=0
   fi
@@ -285,6 +302,25 @@ canonical_host_matches() { # canonical_host_matches <origin the release runs wit
   return "$ok"
 }
 
+# The public site, asked through the nginx of this host as the CDN asks it, must not forward the smoke probe: a site file installed
+# before #954 lacks the block, and the deploy fails closed, whatever the answer is when it is not the 404 of the block. The origin
+# certificate is trusted by the CDN only, so its chain is not checked; the request goes to the loopback address and only the status
+# is read.
+public_probe_refused() { # public_probe_refused <origin the release runs with>
+  local host http
+  host="$(host_of "$1")"
+  SMOKE_DIR="$(mktemp -d)"
+  child curl --silent --insecure --max-time 15 -o /dev/null -w '%{http_code}' \
+    --resolve "$host:443:127.0.0.1" "https://$host$SMOKE_PROBE_PATH" > "$SMOKE_DIR/status" || true
+  http="$(cat "$SMOKE_DIR/status")"
+  rm -rf -- "$SMOKE_DIR"
+  SMOKE_DIR=""
+  [[ "$http" =~ ^[0-9]{3}$ ]] || http="none"
+  [ "$http" = 404 ] && return 0
+  log "the public site (https://$host through the nginx of this host) answered the smoke probe with HTTP status $http, not 404: install deploy/oci/nginx-easyconvert.conf again (docs/deploy-oci.md, first-time setup, step 8)"
+  return 1
+}
+
 # Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile
 # option dropped) would run under another profile and pass every other check on a host that happens to allow it.
 profiles_applied() { # profiles_applied <release-dir>: every replica; the web needs one, the all-queue worker may have none
@@ -303,7 +339,7 @@ start_release() { # start_release <release-dir>
   child compose "$1" up -d --wait --wait-timeout 240 --remove-orphans || { log "docker compose up did not bring the stack up"; return 1; }
   profiles_applied "$1" || return 1
   healthy || { log "$HEALTH_URL did not answer"; return 1; }
-  smoke_conversion || return 1
+  smoke_conversion "$1" || return 1
   [ -z "$(compose "$1" ps -q worker)" ] && return 0
   child compose "$1" exec -T worker unshare -r -n -- true || { log "the worker cannot create its sandbox namespaces (unshare -r -n)"; return 1; }
 }
@@ -399,7 +435,7 @@ deploy() {
   origin="$(release_origin "$release")" || die "Compose could not resolve the origin of the web service"
   child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
 
-  if start_release "$release" && canonical_host_matches "$origin"; then
+  if start_release "$release" && canonical_host_matches "$origin" && public_probe_refused "$origin"; then
     trap '' INT TERM
     PENDING_RELEASE=""
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"
