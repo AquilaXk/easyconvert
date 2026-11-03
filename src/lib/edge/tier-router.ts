@@ -10,6 +10,7 @@
  */
 
 import { ConversionOptions } from '../types';
+import { mergeIntervals, pageCountOfIntervals, type PageInterval } from '../conversions/page-range';
 import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isAudioStreamPair, isStreamableAudioPair, type RawPcmOptions } from './workers/opfs-audio';
 import { isPureAudioConvertible } from './pure/pure-audio';
@@ -353,7 +354,7 @@ export interface MicroVMOffloadEvaluation {
 export function parsePageRangeCount(pagesStr: string): number | undefined {
   if (!pagesStr || typeof pagesStr !== 'string') return undefined;
 
-  const intervals: Array<{ start: number; end: number }> = [];
+  const intervals: PageInterval[] = [];
   const tokens = pagesStr.split(',');
 
   for (const token of tokens) {
@@ -382,31 +383,7 @@ export function parsePageRangeCount(pagesStr: string): number | undefined {
 
   if (intervals.length === 0) return undefined;
 
-  // Sort intervals by start ascending
-  intervals.sort((a, b) => a.start - b.start);
-
-  // Merge overlapping or contiguous intervals
-  const merged: Array<{ start: number; end: number }> = [];
-  let current = { ...intervals[0] };
-
-  for (let i = 1; i < intervals.length; i++) {
-    const next = intervals[i];
-    if (next.start <= current.end + 1) {
-      current.end = Math.max(current.end, next.end);
-    } else {
-      merged.push(current);
-      current = { ...next };
-    }
-  }
-  merged.push(current);
-
-  // Calculate total distinct pages
-  let total = 0;
-  for (const range of merged) {
-    total += range.end - range.start + 1;
-  }
-
-  return total > 0 ? total : undefined;
+  return pageCountOfIntervals(mergeIntervals(intervals));
 }
 
 /**

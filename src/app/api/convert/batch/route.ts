@@ -9,7 +9,6 @@ import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
-import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
   ConversionOptions,
   ConversionFailedError,
@@ -222,7 +221,7 @@ async function convertPlanned(
         inputBuffer,
         extension,
         targetFormat,
-        bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(caller.tier)), limits),
+        bindJobLimits(defaultOptions, limits),
         file.name
       );
 

@@ -4,7 +4,7 @@
  * `JOB_DEADLINE_AT`. The deadline is never a per-stage `timeoutMs`: every stage keeps its own limit and is
  * clamped to the time the job has left, `min(stage limit, remaining)`.
  *
- * `JOB_DEADLINE_AT` is a symbol, so it cannot come out of request JSON (as for the tier page cap). The string
+ * `JOB_DEADLINE_AT` is a symbol, so it cannot come out of request JSON (as for the other server-only values). The string
  * keys `signal`, `timeoutMs` and `deadline*` are engine control options that only server code may set:
  * `bindJobLimits` removes them from request options and installs the job's own.
  */
@@ -66,7 +66,7 @@ export function stripEngineControls<T extends object>(options: T): T {
 /**
  * Options for one conversion of a job: request options with every engine control key removed, the job's signal
  * (combined with a genuine `AbortSignal` the server code passed in, never with a lookalike from JSON) and the
- * job's absolute deadline. Symbol-keyed server values such as the tier page cap are kept.
+ * job's absolute deadline. Symbol-keyed server values are kept.
  */
 export function bindJobLimits<T extends object>(
   options: T | undefined,

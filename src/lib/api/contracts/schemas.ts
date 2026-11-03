@@ -12,7 +12,7 @@ import {
 } from './result-properties';
 import { MANIFEST_EXTENSION_BY_FORMAT_SCHEMA, MASTER_PLAYLIST_NAME_SCHEMA, PACKAGING_FORMATS } from '@/lib/conversions/media-packaging';
 import { SERVER_ONLY_KEYWORD, SERVER_ONLY_OPTION_KEYS } from './server-only-options';
-import { PdfOptimizeOptionsSchema, PdfReorderOptionsSchema, PdfRotateOptionsSchema, PdfSplitOptionsSchema } from './pdf-operation-schemas';
+import { PdfOptimizeOptionsSchema, PdfReorderOptionsSchema, PdfRotateOptionsSchema, PdfSplitOptionsSchema, pageSpecSchema } from './pdf-operation-schemas';
 import { VECTORIZE_OPTIONS_SCHEMA } from '@/lib/conversions/raster-vectorize-options';
 
 /** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
@@ -273,11 +273,7 @@ export const ConversionOptionsSchema = {
       description:
         'Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.',
     },
-    pages: {
-      type: 'string',
-      pattern: '^[0-9,\\-\\s]+$',
-      description: 'Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4").',
-    },
+    pages: pageSpecSchema('Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4").'),
     multiPageOutput: {
       type: 'string',
       enum: ['zip', 'first'],

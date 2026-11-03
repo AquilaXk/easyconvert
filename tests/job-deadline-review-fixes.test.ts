@@ -14,7 +14,6 @@ import { enqueueGraphNodeJob, sealGraph } from '../src/lib/queue/graph/node-jobs
 import { graphScheduler } from '../src/lib/queue/graph';
 import { legacyJobTimeoutMs } from '../src/lib/queue/enqueue';
 import { JOB_DEADLINE_AT, bindJobLimits, clampToJobRemaining, remainingJobMs, stageTimeoutMs, stripEngineControls } from '../src/lib/conversions/job-time';
-import { TIER_PAGE_CAP, withTierPageCap } from '../src/lib/conversions/page-range';
 import type { ConversionEnginePort, EngineResult } from '../src/lib/queue/engine-port';
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -148,11 +147,6 @@ describe('request options cannot supply the signal, a timeout or a deadline', ()
     }
     expect(bound.quality).toBe(80);
     expect(bound[JOB_DEADLINE_AT]).toBe(123);
-  });
-
-  it('keeps the symbol-keyed tier page cap that server code set', () => {
-    const bound = bindJobLimits(withTierPageCap({ quality: 80 }, 50), { signal: jobSignal }) as unknown as Record<PropertyKey, unknown>;
-    expect(bound[TIER_PAGE_CAP]).toBe(50);
   });
 
   it('combines a genuine AbortSignal from server code with the job signal', () => {

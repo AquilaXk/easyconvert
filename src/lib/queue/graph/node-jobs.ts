@@ -3,8 +3,7 @@ import type { GraphExecutionState, GraphNodeJobMetadata, IGraphScheduler, Sealed
 import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
 import type { GraphNode, JobGraph, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
-import { enqueueConversionJob } from '../enqueue';
-import { tierForOwner } from '../page-cap';
+import { enqueueConversionJob, tierForOwner } from '../enqueue';
 import { tierMaxDeadlineMs } from '../job-deadline';
 import { resolveNodeResourceClass } from '../resource-class';
 import { sealGraphNode } from './sealed-nodes';

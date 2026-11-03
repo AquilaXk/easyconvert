@@ -14,7 +14,7 @@ import {
 import { maxInputPixels, resizedDimensions } from './image-input-limits';
 import { truncatedJpegDecodeOptions } from './image-jpeg-stream';
 import { EXIF_ORIENTATION_NORMAL, FIRST_QUARTER_TURN_ORIENTATION, orientRgbaFrame, withUprightOrientation } from './image-orientation';
-import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
+import { assertPageImageCount, resolvePageSelection } from './page-range';
 
 /**
  * Frame and page selection for multi-frame image sources.
@@ -31,8 +31,8 @@ import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './p
  *                                      PDF page renderer uses); a single selected page is a plain image.
  *  - `page` and `pages` select pages; when both are given they must agree. `multiPageOutput: 'first'`
  *    reduces any selection to its first page before a keep-everything default applies.
- *  - A page outside 1..N throws InvalidPageRangeError; a document source with more pages than the tier
- *    allows (`maxPages`) or more pixels than the aggregate budget is refused.
+ *  - A page outside 1..N throws InvalidPageRangeError; a document source with more pages than
+ *    `PAGE_IMAGE_MAX_PAGES` (the same for every caller, refused with a 413) or more pixels than the aggregate budget is refused.
  */
 
 /** Targets whose container can hold an animation. */
@@ -56,7 +56,7 @@ export interface PageResize {
 }
 
 /** Selection-relevant options. */
-export interface FrameOptions extends TierPageCapped {
+export interface FrameOptions {
   page?: number | string | null;
   pages?: string | null;
   multiPageOutput?: 'zip' | 'first';
@@ -272,14 +272,9 @@ async function selectDocumentPages(
   options: FrameOptions,
   resize: PageResize | null
 ): Promise<FrameSelection> {
-  const cap = resolvePageLimit(options);
   const requested = resolveRequestedPages(options, pageCount);
   const pages = requested ?? Array.from({ length: pageCount }, (_unused, index) => index + 1);
-  if (pages.length > cap) {
-    throw new InvalidPageRangeError(
-      `This image has ${pages.length} pages to convert, over the limit of ${cap} pages per request; select pages with the "page" or "pages" option`
-    );
-  }
+  assertPageImageCount(pages.length);
   if (pages.length === SINGLE_FRAME) return singleSource(buffer, { page: pages[0] - 1 }, pageCount, pages[0]);
   // Every page is decoded at its source size and encoded at its resized size: charge the larger of the two.
   let pixels = 0;

@@ -28,8 +28,6 @@ import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfInputFile, 
  * encrypted input is refused or decrypted first, and the result is written without encryption.
  */
 
-/** Longest page specification, in characters. */
-const MAX_PAGE_SPEC_CHARS = 8192;
 /** Most digits of a page number; a longer number is no page of any document. */
 const MAX_PAGE_DIGITS = 9;
 /** Most parts one split may produce (the extractor of the ZIP the parts come back in refuses more entries than this). */
@@ -60,10 +58,7 @@ function assertPageSpec(spec: unknown, name: string): string {
   if (typeof spec !== 'string' || spec.trim() === '') {
     throw new InvalidPageRangeError(`Option "${name}" must be a page specification such as "1-3,5".`);
   }
-  if (spec.length > MAX_PAGE_SPEC_CHARS) {
-    throw new InvalidPageRangeError(`Option "${name}" is longer than ${MAX_PAGE_SPEC_CHARS} characters.`);
-  }
-  validatePageRangeSyntax(spec);
+  validatePageRangeSyntax(spec, `Option "${name}"`);
   return spec;
 }
 

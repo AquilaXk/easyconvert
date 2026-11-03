@@ -22,8 +22,7 @@ import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReserve
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
-import { validateTierPageLimit } from '@/lib/conversions';
-import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
+import { validatePageRangeSyntax } from '@/lib/conversions';
 import {
   codedRefusal,
   createProblemDetailsResponse,
@@ -211,7 +210,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
     }
     if (options.pages) {
       try {
-        validateTierPageLimit(options.pages, caller.tier);
+        validatePageRangeSyntax(options.pages);
       } catch (err: unknown) {
         return refusal(422, refusalCodeOf(err), err instanceof Error ? err.message : String(err));
       }
@@ -241,7 +240,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         inputBuffer,
         detectedDef.extension,
         tgt,
-        bindJobLimits(withTierPageCap(options, tierMaxPages(caller.tier)), limits),
+        bindJobLimits(options, limits),
         file.name
       )
     );

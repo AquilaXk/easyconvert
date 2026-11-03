@@ -437,7 +437,7 @@
   "tests/image-option-validation-and-errors.test.ts": 0.1,
   "tests/image-oriented-animation-metadata.test.ts": 0.2,
   "tests/image-output-pixel-cap.test.ts": 0.2,
-  "tests/image-page-cap-routes.test.ts": 1.9,
+  "tests/image-pages-routes.test.ts": 1.9,
   "tests/image-page-parsing.test.ts": 1.8,
   "tests/image-pdf-frames.test.ts": 1.1,
   "tests/image-pdf-input-pixel-limit.test.ts": 0,
