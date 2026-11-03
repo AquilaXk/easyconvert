@@ -373,6 +373,8 @@ The reference picture of each test (`<test>.png` of the suite, the `truth` compa
 
 For a Kindle file the `text` companion of the manifest is the EPUB of the same book, which is the truth of its text and pictures.
 
+The Project Gutenberg files are regenerated in place by their host, so every one of them is read from a dated capture of a public web archive in its raw form (`https://web.archive.org/web/<timestamp>id_/<original address>`), whose bytes are the ones pinned (entries 91 and 143 of `docs/policy-decisions.md`).
+
 | Sample | Class | Source and licence |
 |---|---|---|
 | `book-pg11.epub` | illustrated | Alice's Adventures in Wonderland, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |

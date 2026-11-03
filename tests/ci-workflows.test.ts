@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -330,12 +330,93 @@ describe('the nightly workflow', () => {
     expect(run.strategy?.matrix?.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const steps = run.steps.map((step) => step.run ?? step.uses ?? '');
     expect(steps).toContain('npm run bench:realworld -- run --shard ${{ matrix.shard }}/10 --out realworld-shard-${{ matrix.shard }}.json');
-    const cache = run.steps.find((step) => String(step.uses).startsWith('actions/cache@'));
-    expect(cache?.with?.key).toBe("realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}");
+    const manifestKey = "realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}";
+    const restore = run.steps.find((step) => String(step.uses).startsWith('actions/cache/restore@'));
+    expect(restore?.with?.key).toBe(`${manifestKey}-\${{ github.run_id }}`);
+    expect(String(restore?.with?.['restore-keys']).split('\n').filter(Boolean)).toEqual([manifestKey, 'realworld-${{ matrix.shard }}-']);
+    expect(run.steps.some((step) => String(step.uses).startsWith('actions/cache@'))).toBe(false);
+  });
+
+  it('keeps the files a real-world shard wrote even when the shard fails, and saves nothing when it wrote nothing', () => {
+    const steps = nightly.jobs.realworld.steps;
+    const indexOf = (predicate: (step: Step) => boolean): number => steps.findIndex(predicate);
+    const restoreAt = indexOf((step) => String(step.uses).startsWith('actions/cache/restore@'));
+    const markAt = indexOf((step) => step.name === 'Mark the restored corpus cache');
+    const runAt = indexOf((step) => step.name === 'Run the corpus shard');
+    const writtenAt = indexOf((step) => step.id === 'written');
+    const saveAt = indexOf((step) => String(step.uses).startsWith('actions/cache/save@'));
+    expect([restoreAt, markAt, runAt, writtenAt, saveAt].every((at, i, all) => at > -1 && (i === 0 || at > all[i - 1]))).toBe(true);
+    expect(steps[writtenAt].if).toBe('always()');
+    expect(steps[saveAt].if).toBe("always() && steps.written.outputs.any == 'true'");
+    expect(String(steps[saveAt].with?.path).split('\n').filter(Boolean)).toEqual(['~/.cache/easyconvert-realworld']);
+    expect(steps[saveAt].with?.key).toBe("realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}");
     const gate = nightly.jobs['realworld-gate'];
     expect(gate.needs).toEqual(['realworld']);
     expect(gate.if).toBe('always()');
     expect(gate.steps.map((step) => step.run ?? '')).toContain('npm run bench:realworld -- merge --out realworld-results realworld-shards/*.json');
+  });
+
+  describe('the step that decides whether a real-world shard saves its cache', () => {
+    const dirs: string[] = [];
+    afterAll(() => {
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    });
+    const NOW = Date.now() / 1000;
+
+    interface Outcome {
+      /** What the step wrote to GITHUB_OUTPUT. */
+      output: string;
+      stdout: string;
+      /** The files left in the cache directory, which the save step archives whole. */
+      left: string[];
+    }
+
+    /** Runs the step's script over a cache directory whose files have the given ages in seconds, the restore marker (when there is one) being 100 s old. */
+    function runStep(files: Record<string, { content: string; ageSeconds: number }> | null, { marker = true }: { marker?: boolean } = {}): Outcome {
+      const home = mkdtempSync(path.join(tmpdir(), 'realworld-cache-'));
+      dirs.push(home);
+      const cache = path.join(home, '.cache', 'easyconvert-realworld');
+      if (files !== null) mkdirSync(path.join(cache, 'nested'), { recursive: true });
+      for (const [name, { content, ageSeconds }] of Object.entries(files ?? {})) {
+        writeFileSync(path.join(cache, name), content);
+        utimesSync(path.join(cache, name), NOW - ageSeconds, NOW - ageSeconds);
+      }
+      if (marker) {
+        writeFileSync(path.join(home, 'realworld-restored'), '');
+        utimesSync(path.join(home, 'realworld-restored'), NOW - 100, NOW - 100);
+      }
+      const output = path.join(home, 'output');
+      writeFileSync(output, '');
+      const script = nightly.jobs.realworld.steps.find((step) => step.id === 'written')?.run ?? '';
+      const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], { env: { PATH: process.env.PATH, HOME: home, RUNNER_TEMP: home, GITHUB_OUTPUT: output }, encoding: 'utf-8' });
+      expect(result.status, result.stderr).toBe(0);
+      return { output: read(output), stdout: result.stdout, left: files === null ? [] : (readdirSync(cache, { recursive: true }) as string[]).sort() };
+    }
+
+    it('saves when a file was replaced by one of the same size after the restore', () => {
+      expect(runStep({ 'a.bin': { content: 'old bytes', ageSeconds: 500 }, 'nested/b.bin': { content: 'new bytes', ageSeconds: 5 } }).output).toBe('any=true\n');
+    });
+
+    it('saves nothing when every file is older than the restore, or when the only new file is a partial one', () => {
+      expect(runStep({ 'a.bin': { content: 'a', ageSeconds: 500 }, 'nested/b.bin': { content: 'b', ageSeconds: 300 } }).output).toBe('');
+      expect(runStep({ 'a.bin': { content: 'a', ageSeconds: 500 }, 'nested/b.bin.part': { content: 'half', ageSeconds: 1 } }).output).toBe('');
+    });
+
+    it('removes partial files before the save, since the cache action archives the directory whole and its exclusion patterns do not reach below it', () => {
+      const { output, left } = runStep({ 'a.bin': { content: 'a', ageSeconds: 5 }, 'nested/b.bin.part': { content: 'half', ageSeconds: 1 }, 'c.part': { content: 'half', ageSeconds: 1 } });
+      expect(output).toBe('any=true\n');
+      expect(left).toEqual(['a.bin', 'nested']);
+    });
+
+    it('saves nothing and says so when the restore marker is missing, instead of hiding the error of the search', () => {
+      const { output, stdout } = runStep({ 'a.bin': { content: 'new', ageSeconds: 5 } }, { marker: false });
+      expect(output).toBe('');
+      expect(stdout).toContain('::warning::');
+    });
+
+    it('saves nothing, and does not fail the job, when the shard never created the cache directory', () => {
+      expect(runStep(null).output).toBe('');
+    });
   });
 
   it('never queues two nightly runs on top of each other', () => {

@@ -42531,6 +42531,46 @@
       "delta": 0,
       "ratio": null
     },
+    "vectorize/lineart.gif->svg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9523360227889214
+    },
+    "vectorize/lineart.png->svg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9248198117288017
+    },
+    "vectorize/photo-a.jpg->svg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.921820715689413
+    },
+    "vectorize/screenshot.png->svg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8484419106218491
+    },
     "video/aom-bayshore-270p.y4m->h264/bd_rate_psnr": {
       "direction": "lower",
       "tolerance": {

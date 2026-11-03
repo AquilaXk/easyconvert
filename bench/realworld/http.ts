@@ -4,7 +4,7 @@
  */
 import net from 'node:net';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
-import { describeFetchFailure, isBusyHostStatus, retryDelayMs } from '../http-retry';
+import { retryDelayMs, retryPaced, throwIfHostBusy } from '../http-retry';
 
 const RETRIES = 6;
 const HTTP_OK = 200;
@@ -32,28 +32,12 @@ export class FetchError extends Error {
   }
 }
 
-/** A host that refused for its rate (HTTP 429) or load (HTTP 503), with the `Retry-After` seconds it sent, if any. */
-class BusyHostError extends FetchError {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly retryAfter: string | null
-  ) {
-    super(message);
-  }
-}
-
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 async function attempt(url: string, range: [number, number] | null, maxBytes: number): Promise<Buffer> {
   const headers: Record<string, string> = { 'user-agent': USER_AGENT };
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const expectedStatus = range ? HTTP_PARTIAL : HTTP_OK;
-  if (isBusyHostStatus(response.status)) {
-    throw new BusyHostError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`, response.status, response.headers.get('retry-after'));
-  }
+  throwIfHostBusy(response, url, `${url}: HTTP ${response.status}, expected ${expectedStatus}`);
   if (response.status !== expectedStatus) throw new FetchError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`);
   const declared = Number(response.headers.get('content-length') ?? '0');
   if (declared > maxBytes) throw new FetchError(`${url}: ${declared} bytes exceeds the ${maxBytes}-byte cap`);
@@ -65,16 +49,7 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
 
 async function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
   applyProxyFromEnvironment();
-  let lastError: unknown;
-  for (let tryNumber = 0; tryNumber <= RETRIES; tryNumber++) {
-    try {
-      return await run();
-    } catch (error) {
-      lastError = error;
-      if (tryNumber < RETRIES) await sleep(error instanceof BusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
-    }
-  }
-  throw new FetchError(`${url}: failed after ${RETRIES + 1} attempts: ${describeFetchFailure(lastError)}`);
+  return retryPaced(url, RETRIES, run, (message) => new FetchError(message));
 }
 
 /** The body of `url`, or of bytes [start, end] of it, retried with exponential backoff on network and server errors. */
@@ -87,6 +62,7 @@ export function fetchSize(url: string): Promise<number> {
   return withRetries(url, async () => {
     const response = await fetch(url, { headers: { range: 'bytes=0-0', 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     await response.arrayBuffer();
+    throwIfHostBusy(response, url, `${url}: HTTP ${response.status}, expected ${HTTP_PARTIAL}`);
     const total = /\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
     if (response.status !== HTTP_PARTIAL || total === null) throw new FetchError(`${url}: server did not answer a range request (HTTP ${response.status})`);
     return Number(total[1]);

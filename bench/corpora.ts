@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { REMOTE_CACHE_DIR, REMOTE_MANIFEST_PATH } from './config';
 import { BenchArgumentError, BenchError } from './errors';
-import { describeFetchFailure, isBusyHostStatus, retryDelayMs } from './http-retry';
+import { retryDelayMs, retryPaced, throwIfHostBusy } from './http-retry';
 import { EOCD_SEARCH_BYTES, inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory } from './realworld/zip-range';
 
 export const REMOTE_MANIFEST_SCHEMA = 1;
@@ -128,17 +128,6 @@ export class CorpusDigestError extends CorpusError {}
 /** A host did not deliver a sample (network, status, size). */
 export class CorpusFetchError extends CorpusError {}
 
-/** A host that refused a request because of its rate (HTTP 429) or load (HTTP 503), with the `Retry-After` it sent, if any. */
-class CorpusBusyHostError extends CorpusFetchError {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly retryAfter: string | null
-  ) {
-    super(message);
-  }
-}
-
 export const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
 function requireHttps(value: unknown, where: string): void {
@@ -243,8 +232,6 @@ export function isRemoteCase(caseName: string, manifest: RemoteManifest = readRe
   return manifest.samples.some((sample) => caseName.startsWith(`${sample.id}->`) || caseName.startsWith(`${sample.id}.`));
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 5;
 
@@ -324,7 +311,7 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   const expected = range ? HTTP_PARTIAL : HTTP_OK;
   if (response.status !== expected) {
     const message = `${url}: HTTP ${response.status}, expected ${expected}`;
-    if (isBusyHostStatus(response.status)) throw new CorpusBusyHostError(message, response.status, response.headers.get('retry-after'));
+    throwIfHostBusy(response, url, message);
     throw new CorpusFetchError(message);
   }
   const declared = Number(response.headers.get('content-length') ?? '0');
@@ -340,17 +327,10 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
 
 /** The body of `url`, or of the inclusive byte range of it, retried with a pause on network and server errors. */
 export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = []): Promise<Buffer> {
-  let last: unknown;
   const retries = process.env.BENCH_CORPUS_RETRIES === undefined ? DEFAULT_RETRIES : Number(process.env.BENCH_CORPUS_RETRIES);
-  for (let tryNumber = 0; tryNumber <= retries; tryNumber++) {
-    try {
-      return await attempt(url, range, maxBytes, extraHosts);
-    } catch (error) {
-      last = error;
-      if (tryNumber < retries) await sleep(error instanceof CorpusBusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
-    }
-  }
-  throw new CorpusFetchError(`${url}: failed after ${retries + 1} attempts: ${describeFetchFailure(last)}`);
+  return retryPaced(url, retries, () => attempt(url, range, maxBytes, extraHosts), (message) => new CorpusFetchError(message), {
+    contactedHost: () => (redirectedTo.get(url) ?? new URL(url)).host,
+  });
 }
 
 /** The redirect targets the sample's set allows besides its own domain. */
