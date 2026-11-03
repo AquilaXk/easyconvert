@@ -276,10 +276,16 @@ export const internalPaths = {
       summary: 'Register Account',
       operationId: 'register',
       security: PUBLIC_ACCESS,
-      requestBody: credentialsBody({ name: { type: 'string' } }),
+      requestBody: credentialsBody({
+        name: { type: 'string' },
+        acceptedTermsVersion: {
+          type: 'string',
+          description: 'Version (effective date) of the terms of service the user accepted; must be the current one.',
+        },
+      }),
       responses: {
         '200': sessionUserResponse('Account created and signed in.'),
-        '400': createCodedErrorResponse('Invalid JSON, email, or password length.', ['invalid_json', 'invalid_email', 'password_length']),
+        '400': createCodedErrorResponse('Invalid JSON, email, or password length, or terms of service not accepted in their current version.', ['invalid_json', 'invalid_email', 'password_length', 'terms_not_accepted']),
         '409': createCodedErrorResponse('Email address already registered.', ['account_exists']),
         '500': createErrorResponse('Registration failed on the server (fixed `error`, no `code`).'),
       },

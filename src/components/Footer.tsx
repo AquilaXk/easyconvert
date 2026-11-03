@@ -45,7 +45,9 @@ export default function Footer() {
               <Link
                 key={item.key}
                 href={item.href}
-                className="min-h-[44px] sm:min-h-[36px] inline-flex items-center text-ink-2 hover:text-ink transition-colors font-medium"
+                className={`min-h-[44px] sm:min-h-[36px] inline-flex items-center hover:text-ink transition-colors ${
+                  'emphasized' in item ? 'text-ink font-bold' : 'text-ink-2 font-medium'
+                }`}
               >
                 {tLinks(item.key)}
               </Link>

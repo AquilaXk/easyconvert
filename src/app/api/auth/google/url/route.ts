@@ -15,7 +15,11 @@ export async function GET(req: NextRequest) {
   const redirectUri = `${origin}/api/auth/google/callback`;
 
   try {
-    const session = await createOAuthSession({ locale: offeredLocale(req.nextUrl.searchParams.get('locale')) });
+    const { searchParams } = req.nextUrl;
+    const session = await createOAuthSession({
+      locale: offeredLocale(searchParams.get('locale')),
+      acceptedTermsVersion: searchParams.get('acceptedTermsVersion') ?? undefined,
+    });
     const url = getGoogleOAuthUrl(redirectUri, session);
 
     const res = NextResponse.json({

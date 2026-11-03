@@ -1,6 +1,4 @@
 export type SlugInfoType =
-  | 'terms'
-  | 'privacy'
   | 'contact'
   | 'about'
   | 'security'
@@ -40,20 +38,6 @@ export interface ParsedSlug {
 }
 
 export const INFO_PAGE_MAP: Record<string, ParsedSlug> = {
-  terms: {
-    isInfoPage: true,
-    infoType: 'terms',
-    copy: { kind: 'info', page: 'terms' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
-  privacy: {
-    isInfoPage: true,
-    infoType: 'privacy',
-    copy: { kind: 'info', page: 'privacy' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
   contact: {
     isInfoPage: true,
     infoType: 'contact',

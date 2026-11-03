@@ -8,6 +8,7 @@ import { POST as registerRoute } from '../src/app/api/auth/register/route';
 import { POST as queueJobsRoute } from '../src/app/api/queue/jobs/route';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { DjvuComponentSizeError } from '../src/lib/conversions/djvu-container';
@@ -228,7 +229,7 @@ describe('a failure the server did not classify keeps its text in the server log
     const logged = vi.spyOn(console, 'error').mockImplementation(noop);
     vi.spyOn(redisUserStore, 'findByEmail').mockRejectedValue(new Error('connect ENOENT /var/run/redis/redis.sock'));
     const credentials = (path: string) =>
-      new NextRequest(`http://localhost:3000${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'store@fault.test', password: 'LongEnough1' }) });
+      new NextRequest(`http://localhost:3000${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'store@fault.test', password: 'LongEnough1', acceptedTermsVersion: TERMS_VERSION }) });
     const answers = await Promise.all([loginRoute(credentials('/api/auth/login')), registerRoute(credentials('/api/auth/register'))]);
     const bodies = await Promise.all(answers.map(async (res) => ({ status: res.status, body: await res.json() })));
     expect(bodies).toEqual([

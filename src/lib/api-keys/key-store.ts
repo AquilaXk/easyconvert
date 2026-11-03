@@ -197,6 +197,7 @@ export class KeyStore {
       webhookUrl: options.webhookUrl,
       webhookSecret: encryptSecret(options.webhookSecret),
       scopes: options.scopes,
+      acceptedTermsVersion: options.acceptedTermsVersion,
     };
 
     this.keys.set(key.id, key);

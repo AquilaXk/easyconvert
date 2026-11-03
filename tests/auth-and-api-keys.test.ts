@@ -7,6 +7,7 @@ import { generateOAuthState, validateOAuthState, getGoogleOAuthUrl, exchangeGoog
 import { keyStore, TIER_LIMITS } from '../src/lib/api-keys/key-store';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { POST as registerHandler } from '../src/app/api/auth/register/route';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 import { POST as loginHandler } from '../src/app/api/auth/login/route';
 import { GET as meHandler } from '../src/app/api/auth/me/route';
 import { POST as logoutHandler } from '../src/app/api/auth/logout/route';
@@ -336,6 +337,7 @@ describe('Auth & API Key Infrastructure', () => {
           email: 'fullstack@example.com',
           password: 'Password999!',
           name: 'Full Stack',
+          acceptedTermsVersion: TERMS_VERSION,
         }),
       });
 
@@ -354,6 +356,7 @@ describe('Auth & API Key Infrastructure', () => {
           email: 'fullstack@example.com',
           password: 'Password999!',
           name: 'Full Stack',
+          acceptedTermsVersion: TERMS_VERSION,
         }),
       });
       const dupRes = await registerHandler(dupReq);

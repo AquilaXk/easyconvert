@@ -9,6 +9,7 @@ import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie, getSessionFromRequest } from '@/lib/auth/session';
 import { getPathname } from '@/i18n/navigation';
 import { routing, type AppLocale } from '@/i18n/routing';
+import { TERMS_VERSION } from '@/lib/legal/documents';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,12 +54,16 @@ export async function GET(req: NextRequest) {
     let userRecord = await redisUserStore.findByEmail(googleProfile.email);
 
     if (!userRecord) {
+      if (oauthSession.acceptedTermsVersion !== TERMS_VERSION) {
+        return redirectTo(req, locale, '/auth', '?tab=register&error=terms_required');
+      }
       userRecord = await redisUserStore.createUser({
         email: googleProfile.email,
         name: googleProfile.name,
         avatarUrl: googleProfile.picture,
         tier: 'free',
         provider: 'google',
+        acceptedTermsVersion: TERMS_VERSION,
       });
     } else if (userRecord.provider === 'google') {
       if (googleProfile.picture && !userRecord.avatarUrl) {

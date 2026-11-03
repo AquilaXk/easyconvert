@@ -229,7 +229,7 @@ const HEADING_TITLE_TOKENS: ReadonlySet<string> = new Set(['text', 'code_inline'
  * markdown-it-anchor's `getTokensText` reads it, from the `text` and `code_inline` tokens of the heading's inline content, and
  * the ids are numbered in document order. A heading whose slug is empty gets no id of its own, and the next one is numbered.
  */
-function addHeadingIds(tokens: Token[]): void {
+export function addHeadingIds(tokens: Token[]): void {
   const slugs = new HeadingSlugs();
   tokens.forEach((token, index) => {
     if (token.type !== 'heading_open') return;

@@ -3,8 +3,6 @@ import { useTranslations } from 'next-intl';
 
 /** The sections of each policy page, in order; each one's heading and body are `infoPages.<page>.<section>`. */
 const POLICY_SECTIONS = {
-  privacy: ['retention', 'isolation', 'noResale'],
-  terms: ['acceptance', 'acceptableUse', 'availability'],
   about: ['purpose', 'architecture'],
   security: ['transport', 'isolation'],
   accessibility: ['conformance', 'keyboard', 'landmarks', 'contrast', 'feedback'],

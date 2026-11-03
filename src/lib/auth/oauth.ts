@@ -14,6 +14,8 @@ export interface OAuthSessionState {
   createdAt: number;
   /** The language the sign-in started in, so that the callback answers in it. */
   locale: AppLocale;
+  /** The version of the terms accepted on the sign-up form, which an account the callback creates records. */
+  acceptedTermsVersion?: string;
 }
 
 /** `value` when it names a language the site offers, else the default language. */
@@ -54,6 +56,7 @@ export async function createOAuthSession(options?: {
   nonce?: string;
   codeVerifier?: string;
   locale?: AppLocale;
+  acceptedTermsVersion?: string;
 }): Promise<OAuthSessionState> {
   cleanStaleStates();
   const state = options?.state || crypto.randomBytes(24).toString('hex');
@@ -80,6 +83,7 @@ export async function createOAuthSession(options?: {
     codeChallenge,
     createdAt: Date.now(),
     locale: options?.locale ?? routing.defaultLocale,
+    acceptedTermsVersion: options?.acceptedTermsVersion,
   };
 
   const redis = redisUserStore.getRedisClient();

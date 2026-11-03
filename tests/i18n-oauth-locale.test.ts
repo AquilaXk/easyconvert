@@ -4,6 +4,7 @@ import { GET as googleUrl } from '../src/app/api/auth/google/url/route';
 import { GET as googleCallback } from '../src/app/api/auth/google/callback/route';
 import { OAUTH_STATE_COOKIE_NAME } from '../src/lib/auth/oauth';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 
 /**
  * Sign-in with Google comes back in the language it started in: the sign-in page sends its locale to the URL route, the
@@ -28,15 +29,17 @@ beforeEach(() => {
 });
 
 describe('the Google sign-in keeps the language it started in', () => {
+  const accepted = `acceptedTermsVersion=${TERMS_VERSION}`;
+
   it('lands on the Korean dashboard after starting on /ko', async () => {
-    expect(await signInFrom('?locale=ko')).toBe('/ko/dashboard');
+    expect(await signInFrom(`?locale=ko&${accepted}`)).toBe('/ko/dashboard');
   });
 
   it('lands on the English dashboard without a locale or with one the site does not offer', async () => {
-    expect(await signInFrom('')).toBe('/dashboard');
-    expect(await signInFrom('?locale=en')).toBe('/dashboard');
-    expect(await signInFrom('?locale=xx')).toBe('/dashboard');
-    expect(await signInFrom('?locale=//evil.example')).toBe('/dashboard');
+    expect(await signInFrom(`?${accepted}`)).toBe('/dashboard');
+    expect(await signInFrom(`?locale=en&${accepted}`)).toBe('/dashboard');
+    expect(await signInFrom(`?locale=xx&${accepted}`)).toBe('/dashboard');
+    expect(await signInFrom(`?locale=//evil.example&${accepted}`)).toBe('/dashboard');
   });
 
   it('sends a refusal back to the sign-in page of that language', async () => {

@@ -256,7 +256,7 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
   });
 
   it('indexes pages of registered formats and the site pages, and no page a slug only names', () => {
-    for (const slug of ['png-to-jpg', 'zip-to-tar.gz', 'video-to-gif', 'pdf-converter', 'terms', 'pdf-ocr', 'lbs-to-kg', 'merge-pdf', 'website-png-screenshot']) {
+    for (const slug of ['png-to-jpg', 'zip-to-tar.gz', 'video-to-gif', 'pdf-converter', 'contact', 'pdf-ocr', 'lbs-to-kg', 'merge-pdf', 'website-png-screenshot']) {
       expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(true);
     }
     for (const slug of ['hello-world', 'foo-to-bar', 'png-to-xyz', 'xyz-converter', 'merge-xyz']) {

@@ -73,6 +73,7 @@
       "hidePassword": "Hide password",
       "showPassword": "Show password",
       "confirmPassword": "Confirm Password",
+      "acceptTerms": "I accept the <link>terms of service</link>.",
       "signIn": "Sign In",
       "createAccount": "Create Account"
     },
@@ -83,6 +84,7 @@
       "invalid_oauth_state": "Invalid authentication state. Try signing in again.",
       "oauth_exchange_failed": "Could not verify your Google account. Sign in again.",
       "account_linking_required": "An account with this email already exists. Sign in with your password first to link Google.",
+      "terms_required": "To create an account with Google, open Sign up and accept the terms of service first.",
       "generic": "Authentication failed. Please try signing in again."
     },
     "messages": {
@@ -638,34 +640,6 @@
     }
   },
   "infoPages": {
-    "privacy": {
-      "retention": {
-        "heading": "When Files Are Deleted",
-        "body": "Conversions the browser supports run in your browser, and their files are not uploaded. Other conversions upload the file to our servers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
-      },
-      "isolation": {
-        "heading": "Isolated Workers & Automatic Cleanup",
-        "body": "When a format pair needs server processing, or you use the REST API, requests travel over TLS 1.3 to isolated, temporary worker containers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
-      },
-      "noResale": {
-        "heading": "No Content Resale or Inspection",
-        "body": "We do not sell, rent, or train models on your files. Uploaded bytes exist only to complete the conversion you requested."
-      }
-    },
-    "terms": {
-      "acceptance": {
-        "heading": "1. Acceptance of Terms",
-        "body": "By accessing or using EasyConvert, you agree to these Terms of Service. If you do not agree, discontinue use of the service."
-      },
-      "acceptableUse": {
-        "heading": "2. Acceptable Use",
-        "body": "You agree not to convert content that you lack permission to process, and not to submit malicious binaries, exploit payloads, or unlawful material."
-      },
-      "availability": {
-        "heading": "3. Service Availability & Free Use",
-        "body": "EasyConvert is free to use in the web application. Conversions that run in your browser have no daily limit, and conversions that run on our servers are free for up to {dailyLimit} a day without an account. No subscription, credit pack, or paid account is required."
-      }
-    },
     "about": {
       "purpose": {
         "heading": "Purpose-Built File Conversion Utility",
@@ -729,6 +703,10 @@
   "layout": {
     "skipToContent": "Skip to main content"
   },
+  "legal": {
+    "effective": "Effective {date}",
+    "contents": "Contents"
+  },
   "meta": {
     "site": {
       "title": "EasyConvert | Online File Converter",
@@ -759,6 +737,9 @@
       "description": "Convert length, weight, temperature, volume, area, speed, time, digital storage, energy, and pressure units in your browser."
     },
     "converter": {
+      "title": "{title} | EasyConvert"
+    },
+    "legal": {
       "title": "{title} | EasyConvert"
     }
   },
@@ -1036,6 +1017,8 @@
     "aboutUs": "About Us",
     "privacy": "Privacy",
     "terms": "Terms",
+    "dpa": "Data Processing Terms",
+    "acceptableUse": "Acceptable Use",
     "security": "Security",
     "accessibility": "Accessibility",
     "contact": "Contact",
@@ -1043,14 +1026,6 @@
   },
   "slugPages": {
     "info": {
-      "terms": {
-        "title": "Terms of Service",
-        "description": "Review the terms and conditions governing your use of EasyConvert."
-      },
-      "privacy": {
-        "title": "Privacy Policy",
-        "description": "How EasyConvert handles your files: which conversions run in your browser, which run on our servers, and when files are deleted."
-      },
       "contact": {
         "title": "Contact Us",
         "description": "Get in touch with our team for questions, feedback, or open-source issues."
@@ -1519,6 +1494,7 @@
       "client_ip_unconfigured": "Sign-in is unavailable while the server is being configured. Try again later.",
       "invalid_email": "Enter a valid email address.",
       "password_length": "The password must be 8 to 1024 characters long.",
+      "terms_not_accepted": "Accept the terms of service to create an account.",
       "account_exists": "An account with this email address already exists. Sign in instead."
     },
     "dashboard": {

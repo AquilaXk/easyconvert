@@ -3,6 +3,8 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import { ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, User } from 'lucide-react';
+import { Link } from '@/i18n/navigation';
+import { LEGAL_DOCUMENTS } from '@/lib/legal/documents';
 
 export type AuthTab = 'login' | 'register';
 
@@ -14,6 +16,7 @@ const OAUTH_ERROR_CODES = [
   'invalid_oauth_state',
   'oauth_exchange_failed',
   'account_linking_required',
+  'terms_required',
 ] as const;
 
 export type OAuthErrorKey = (typeof OAUTH_ERROR_CODES)[number] | 'generic';
@@ -70,6 +73,7 @@ export interface AuthCredentialsFormProps {
   email: string;
   password: string;
   confirmPassword: string;
+  acceptedTerms: boolean;
   showPassword: boolean;
   isBusy: boolean;
   isSubmitting: boolean;
@@ -77,6 +81,7 @@ export interface AuthCredentialsFormProps {
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
+  onAcceptedTermsChange: (value: boolean) => void;
   onTogglePassword: () => void;
   onSubmit: (e: React.FormEvent) => void;
 }
@@ -87,6 +92,7 @@ export function AuthCredentialsForm({
   email,
   password,
   confirmPassword,
+  acceptedTerms,
   showPassword,
   isBusy,
   isSubmitting,
@@ -94,6 +100,7 @@ export function AuthCredentialsForm({
   onEmailChange,
   onPasswordChange,
   onConfirmPasswordChange,
+  onAcceptedTermsChange,
   onTogglePassword,
   onSubmit,
 }: Readonly<AuthCredentialsFormProps>) {
@@ -208,6 +215,28 @@ export function AuthCredentialsForm({
               className={inputBaseClass}
             />
           </div>
+        </div>
+      )}
+
+      {activeTab === 'register' && (
+        <div className="flex items-center gap-3 min-h-[44px]">
+          <input
+            id="auth-accept-terms"
+            type="checkbox"
+            required
+            checked={acceptedTerms}
+            onChange={(e) => onAcceptedTermsChange(e.target.checked)}
+            className="size-4 cursor-pointer"
+          />
+          <label htmlFor="auth-accept-terms" className="text-sm text-ink cursor-pointer select-none">
+            {t.rich('acceptTerms', {
+              link: (chunks) => (
+                <Link href={LEGAL_DOCUMENTS.terms.path} target="_blank" className="font-medium text-accent-ink hover:underline">
+                  {chunks}
+                </Link>
+              ),
+            })}
+          </label>
         </div>
       )}
 

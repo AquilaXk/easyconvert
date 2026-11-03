@@ -35,6 +35,8 @@ COPY tsconfig.json next.config.mjs postcss.config.mjs tailwind.config.ts ./
 COPY messages/ ./messages/
 COPY public/ ./public/
 COPY src/ ./src/
+# The legal pages are built from these Markdown files (src/lib/legal/texts.ts).
+COPY docs/legal/ ./docs/legal/
 COPY scripts/check-built-alternates.mjs ./scripts/
 
 # The public origin (https://<host>) the prerendered pages name in their canonical and hreflang links. Search engines read hreflang

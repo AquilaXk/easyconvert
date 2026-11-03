@@ -139,6 +139,10 @@ export const components = {
           type: 'array',
           items: { type: 'string', enum: API_KEY_SCOPES },
         },
+        acceptedTermsVersion: {
+          type: 'string',
+          description: 'Version (effective date) of the terms of service in force when the key was created; absent on older keys.',
+        },
       },
     },
     WebhookDlqEntry: {

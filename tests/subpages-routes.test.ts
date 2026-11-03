@@ -93,15 +93,6 @@ describe('Subpages & Routes Verification', () => {
     });
 
     it('correctly identifies informational pages without treating them as file formats', () => {
-      const terms = parseConverterSlug('terms');
-      expect(terms.isInfoPage).toBe(true);
-      expect(terms.infoType).toBe('terms');
-      expect(slugPageCopy('terms').title).toBe('Terms of Service');
-
-      const privacy = parseConverterSlug('privacy');
-      expect(privacy.isInfoPage).toBe(true);
-      expect(privacy.infoType).toBe('privacy');
-
       const contact = parseConverterSlug('contact');
       expect(contact.isInfoPage).toBe(true);
       expect(contact.infoType).toBe('contact');

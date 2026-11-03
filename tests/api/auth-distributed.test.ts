@@ -4,6 +4,7 @@ import { redisUserStore } from '../../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../../src/lib/api-keys/redis-key-store';
 import { createSessionToken, createSessionCookie, getSessionFromRequest } from '../../src/lib/auth/session';
 import { POST as registerHandler } from '../../src/app/api/auth/register/route';
+import { TERMS_VERSION } from '../../src/lib/legal/documents';
 import { POST as loginHandler } from '../../src/app/api/auth/login/route';
 import { POST as jobsPostHandler } from '../../src/app/api/v1/jobs/route';
 import { POST as convertPostHandler } from '../../src/app/api/v1/convert/route';
@@ -107,6 +108,7 @@ describe('Phase 1: Distributed Auth, Zero-Heap API & Async MIME Sniffer', () => 
           email: 'e2e-auth@example.com',
           password: 'SecurePassword123!',
           name: 'E2E User',
+          acceptedTermsVersion: TERMS_VERSION,
         }),
       });
 

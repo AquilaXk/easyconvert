@@ -1,3 +1,4 @@
+import { LEGAL_DOCUMENTS } from '../../legal/documents';
 import { components } from './components';
 import { webhookEvents } from './events';
 import { conversionPaths } from './paths/conversion';
@@ -16,6 +17,7 @@ export function buildOpenApiDocument() {
       version: '1.0.0',
       description:
         'Enterprise data, media, document, CAD, and RAW conversion platform with asynchronous job queues, zero-heap streaming, dead-letter webhook queues, and granular RBAC scopes. Operations marked `x-internal` serve the web application and are not part of the public contract.',
+      termsOfService: LEGAL_DOCUMENTS.terms.path,
       contact: {
         name: 'EasyConvert Engineering',
         url: 'https://github.com/AquilaXk/easyconvert',

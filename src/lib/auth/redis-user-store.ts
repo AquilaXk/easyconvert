@@ -216,6 +216,7 @@ export class RedisUserStore {
     provider?: 'email' | 'google';
     passwordHash?: string;
     salt?: string;
+    acceptedTermsVersion?: string;
   }): Promise<UserRecord> {
     const normalizedEmail = this.normalizeEmail(data.email);
     if (!data.name || typeof data.name !== 'string' || data.name.trim().length === 0) {
@@ -232,6 +233,7 @@ export class RedisUserStore {
       provider: data.provider || 'email',
       passwordHash: data.passwordHash,
       salt: data.salt,
+      acceptedTermsVersion: data.acceptedTermsVersion,
       createdAt: now,
       updatedAt: now,
     };

@@ -73,6 +73,7 @@
       "hidePassword": "비밀번호 숨기기",
       "showPassword": "비밀번호 표시",
       "confirmPassword": "비밀번호 확인",
+      "acceptTerms": "<link>이용약관</link>에 동의해요.",
       "signIn": "로그인",
       "createAccount": "계정 만들기"
     },
@@ -83,6 +84,7 @@
       "invalid_oauth_state": "로그인 상태가 올바르지 않아요. 다시 로그인해 주세요.",
       "oauth_exchange_failed": "Google 계정을 확인하지 못했어요. 다시 로그인해 주세요.",
       "account_linking_required": "이 이메일로 만든 계정이 이미 있어요. Google 계정을 연결하려면 먼저 비밀번호로 로그인해 주세요.",
+      "terms_required": "Google로 계정을 만들려면 회원가입에서 이용약관에 먼저 동의해 주세요.",
       "generic": "로그인하지 못했어요. 다시 시도해 주세요."
     },
     "messages": {
@@ -638,34 +640,6 @@
     }
   },
   "infoPages": {
-    "privacy": {
-      "retention": {
-        "heading": "파일이 삭제되는 시점",
-        "body": "브라우저에서 처리할 수 있는 변환은 파일을 업로드하지 않고 브라우저에서 처리해요. 그 밖의 변환은 파일을 서버로 올려 처리해요. 변환한 파일은 내려받고 10분 뒤에, 내려받지 않으면 변환하고 1시간 뒤에 삭제돼요."
-      },
-      "isolation": {
-        "heading": "격리된 작업 실행과 자동 삭제",
-        "body": "서버 처리가 필요한 형식이나 REST API 요청은 TLS 1.3으로 암호화해 격리된 임시 작업 환경으로 보내요. 변환한 파일은 내려받고 10분 뒤에, 내려받지 않으면 변환하고 1시간 뒤에 삭제돼요."
-      },
-      "noResale": {
-        "heading": "파일 내용을 판매하거나 열람하지 않아요",
-        "body": "파일을 판매하거나 대여하지 않고, 모델 학습에도 쓰지 않아요. 업로드한 데이터는 요청한 변환을 마치는 데에만 써요."
-      }
-    },
-    "terms": {
-      "acceptance": {
-        "heading": "1. 약관 동의",
-        "body": "EasyConvert에 접속하거나 서비스를 이용하면 이 이용약관에 동의한 것으로 봐요. 동의하지 않는다면 서비스를 이용하지 말아 주세요."
-      },
-      "acceptableUse": {
-        "heading": "2. 허용되는 이용",
-        "body": "처리할 권한이 없는 콘텐츠는 변환하지 말아 주세요. 악성 실행 파일, 취약점 공격 코드, 불법 자료도 제출할 수 없어요."
-      },
-      "availability": {
-        "heading": "3. 서비스 제공과 무료 이용",
-        "body": "EasyConvert 웹 애플리케이션은 무료로 쓸 수 있어요. 브라우저에서 처리하는 변환에는 하루 횟수 제한이 없고, 서버에서 처리하는 변환은 계정 없이도 하루 {dailyLimit}회까지 무료예요. 구독, 이용권, 유료 계정은 필요 없어요."
-      }
-    },
     "about": {
       "purpose": {
         "heading": "파일 변환에 집중한 도구",
@@ -729,6 +703,10 @@
   "layout": {
     "skipToContent": "본문으로 바로가기"
   },
+  "legal": {
+    "effective": "시행일 {date}",
+    "contents": "목차"
+  },
   "meta": {
     "site": {
       "title": "EasyConvert | 온라인 파일 변환기",
@@ -759,6 +737,9 @@
       "description": "길이, 무게, 온도, 부피, 넓이, 속도, 시간, 디지털 저장 용량, 에너지, 압력 단위를 브라우저에서 변환해요."
     },
     "converter": {
+      "title": "{title} | EasyConvert"
+    },
+    "legal": {
       "title": "{title} | EasyConvert"
     }
   },
@@ -1036,6 +1017,8 @@
     "aboutUs": "서비스 소개",
     "privacy": "개인정보 처리방침",
     "terms": "이용약관",
+    "dpa": "개인정보 처리위탁 약관",
+    "acceptableUse": "이용 제한 정책",
     "security": "보안",
     "accessibility": "접근성",
     "contact": "문의",
@@ -1043,14 +1026,6 @@
   },
   "slugPages": {
     "info": {
-      "terms": {
-        "title": "이용약관",
-        "description": "EasyConvert 이용에 적용되는 약관과 조건을 확인해 보세요."
-      },
-      "privacy": {
-        "title": "개인정보 처리방침",
-        "description": "EasyConvert가 파일을 어떻게 다루는지 안내해요. 어떤 변환을 브라우저에서, 어떤 변환을 서버에서 처리하는지, 파일은 언제 삭제되는지 설명해요."
-      },
       "contact": {
         "title": "문의",
         "description": "질문, 의견, 오픈 소스 관련 문제는 팀에 직접 문의해 주세요."
@@ -1928,6 +1903,7 @@
       "client_ip_unconfigured": "지금은 로그인할 수 없어요. 잠시 후 다시 시도해 주세요.",
       "invalid_email": "올바른 이메일 주소를 입력해 주세요.",
       "password_length": "비밀번호는 8자에서 1024자 사이여야 해요.",
+      "terms_not_accepted": "계정을 만들려면 이용약관에 동의해 주세요.",
       "account_exists": "이 이메일 주소로 만든 계정이 이미 있어요. 로그인해 주세요."
     },
     "dashboard": {

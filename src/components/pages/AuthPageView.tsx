@@ -16,6 +16,7 @@ function LoginFormContent() {
     password,
     confirmPassword,
     name,
+    acceptedTerms,
     showPassword,
     isLoading,
     isGoogleLoading,
@@ -26,6 +27,7 @@ function LoginFormContent() {
     setPassword,
     setConfirmPassword,
     setName,
+    setAcceptedTerms,
     setShowPassword,
     handleTabSwitch,
     handleTabKeyDown,
@@ -133,6 +135,7 @@ function LoginFormContent() {
           email={email}
           password={password}
           confirmPassword={confirmPassword}
+          acceptedTerms={acceptedTerms}
           showPassword={showPassword}
           isBusy={isLoading || isGoogleLoading}
           isSubmitting={isLoading}
@@ -140,6 +143,7 @@ function LoginFormContent() {
           onEmailChange={setEmail}
           onPasswordChange={setPassword}
           onConfirmPasswordChange={setConfirmPassword}
+          onAcceptedTermsChange={setAcceptedTerms}
           onTogglePassword={() => setShowPassword((prev) => !prev)}
           onSubmit={(event) => {
             void handleSubmit(event);

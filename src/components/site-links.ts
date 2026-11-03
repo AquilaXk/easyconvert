@@ -7,6 +7,8 @@ type Href = ComponentProps<typeof Link>['href'];
 export interface SiteLink {
   key: string;
   href: Href;
+  /** Set out from the links beside it, as the privacy policy must be. */
+  emphasized?: boolean;
 }
 
 export const TOOL_ROUTES = [
@@ -114,8 +116,10 @@ export const SECONDARY_LINKS = [
   { key: 'aboutUs', href: '/about' },
   { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
   { key: 'apiDocs', href: '/api-docs' },
-  { key: 'privacy', href: '/privacy' },
+  { key: 'privacy', href: '/privacy', emphasized: true },
   { key: 'terms', href: '/terms' },
+  { key: 'acceptableUse', href: '/acceptable-use' },
+  { key: 'dpa', href: '/dpa' },
   { key: 'security', href: '/security' },
   { key: 'accessibility', href: '/accessibility' },
   { key: 'contact', href: '/contact' },

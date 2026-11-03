@@ -5,6 +5,7 @@ import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
+import { TERMS_VERSION } from '@/lib/legal/documents';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,10 @@ export async function POST(req: NextRequest) {
       return refusal(400, 'password_length', 'Password must be between 8 and 1024 characters in length.');
     }
 
+    if (body.acceptedTermsVersion !== TERMS_VERSION) {
+      return refusal(400, 'terms_not_accepted', `Accept the terms of service: send acceptedTermsVersion "${TERMS_VERSION}".`);
+    }
+
     const displayName = name || email.split('@')[0];
 
     const existingUser = await redisUserStore.findByEmail(email);
@@ -44,6 +49,7 @@ export async function POST(req: NextRequest) {
       provider: 'email',
       passwordHash: hash,
       salt,
+      acceptedTermsVersion: TERMS_VERSION,
     });
 
     const user = redisUserStore.sanitizeUser(userRecord);

@@ -32,6 +32,7 @@ export const AUTH_ERROR_CODES = [
   'client_ip_unconfigured',
   'invalid_email',
   'password_length',
+  'terms_not_accepted',
   'account_exists',
 ] as const;
 

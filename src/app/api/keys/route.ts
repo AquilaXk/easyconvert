@@ -5,6 +5,7 @@ import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
+import { TERMS_VERSION } from '@/lib/legal/documents';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,6 +101,7 @@ export async function POST(req: NextRequest) {
       webhookSecret: parsed.webhookSecret,
       scopes: parsed.scopes,
       expiresAt: parsed.expiresAt,
+      acceptedTermsVersion: TERMS_VERSION,
     });
 
     return NextResponse.json({

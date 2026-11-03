@@ -154,21 +154,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(missingFrom(hrefs, ['/accessibility', '/api-docs'])).toEqual([]);
   });
 
-  it('verifies Terms of Service has no obsolete daily quotas or paid credits mentions', () => {
-    const terms = renderSlug('terms');
-    const text = visibleText(terms);
-
-    expect(headings(terms).slice(0, 4)).toEqual([
-      'Terms of Service',
-      '1. Acceptance of Terms',
-      '2. Acceptable Use',
-      '3. Service Availability & Free Use',
-    ]);
-    expect(phrasesPresent(text, ['credits with prioritized throughput'])).toEqual([]);
-    expect(phrasesPresent(text, ['unlimited conversions'])).toEqual([]);
-    expect(phrasesMissing(text, ['free for up to 10 a day without an account'])).toEqual([]);
-  });
-
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
     for (const pair of POPULAR_CONVERSIONS) {
       const srcDef = FORMAT_REGISTRY[pair.from];
@@ -197,14 +182,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(pdfToWord.isInfoPage).toBe(false);
     expect(pdfToWord.sourceFormat).toBe('pdf');
     expect(pdfToWord.targetFormat).toBe('docx');
-
-    const terms = parseConverterSlug('terms');
-    expect(terms.isInfoPage).toBe(true);
-    expect(terms.infoType).toBe('terms');
-
-    const privacy = parseConverterSlug('privacy');
-    expect(privacy.isInfoPage).toBe(true);
-    expect(privacy.infoType).toBe('privacy');
 
     const status = parseConverterSlug('status');
     expect(status.isInfoPage).toBe(true);
