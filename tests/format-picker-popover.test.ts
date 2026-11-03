@@ -415,6 +415,9 @@ function pickerLists(): Array<[string, PickerCase]> {
   ];
 }
 
+/** The check mounts the picker for every list in each language (304 lists), which took 8.5 s in Korean on a CI runner; the 30 s ceiling is about three and a half times that. */
+const REGISTRY_WIDE_TIMEOUT_MS = 30_000;
+
 describe('the names the picker shows', () => {
   it.each(['en', 'ko'] as const)('are unique within every list it can show, across its categories, to the eye and to a screen reader, in %s', (locale) => {
     const repeated: string[] = [];
@@ -434,5 +437,5 @@ describe('the names the picker shows', () => {
       unmount();
     }
     expect(repeated).toEqual([]);
-  });
+  }, REGISTRY_WIDE_TIMEOUT_MS);
 });
