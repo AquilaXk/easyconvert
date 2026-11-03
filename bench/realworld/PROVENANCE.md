@@ -153,10 +153,15 @@ redistribution, which does not happen here: the files are read to test conversio
 - The PDF files of `pdfjs-test-pdfs` and `qpdf-test-pdfs` are the regression files that the two projects keep for encrypted documents and for damaged structure (a looping page tree, a wrong cross-reference table, a truncated object). Files that carry the name of a fuzzer or of a CVE are not used.
 - A few FATE files are cut from a longer recording by their publisher (their names say `partial`); they stay because a truncated
   real file is a common input.
-- GitHub raw URLs carry a commit or a release tag, and Debian and Arch packages come from archives that keep old versions. The
-  FFmpeg collections, raw.pixls.us, Wikimedia Commons, the Library of Congress, kernel.org, the GNU and Slackware mirrors, the
-  CentOS vault, Tiny Core, iPXE and the Open Preservation Foundation files are pinned by digest only, and a change at the host fails
-  the run until the file is re-pinned (`bench/realworld/fetch.ts` never accepts other bytes).
+- GitHub raw URLs carry a commit or a release tag, and Debian and Arch packages come from archives that keep old versions. A host that
+  rebuilds a file under the same address is not an origin (entry 143 of `docs/policy-decisions.md`): the Gutenberg Kindle edition
+  (`gutenberg-pg11-images.azw3`) and the iPXE ISO are read from a dated capture of a public web archive in its raw form
+  (`https://web.archive.org/web/<timestamp>id_/<original address>`), and the three Library of Congress ALTO pages from the static storage
+  address (`tile.loc.gov/storage-services/...`) that the page address redirects to. `ipxe-ipxe.iso` was re-pinned on 2026-11-03 to the
+  capture of 2026-09-09 (SHA-256 `97daefcb…`) because the publisher's rolling build changed at least twice in a month and no capture
+  holds the bytes pinned on 2026-10-16. The FFmpeg collections, raw.pixls.us, Wikimedia Commons, kernel.org, the GNU and Slackware
+  mirrors, the CentOS vault, Tiny Core and the Open Preservation Foundation files are pinned by digest only, and a change at the host
+  fails the run until the file is re-pinned or moved to a dated copy (`bench/realworld/fetch.ts` never accepts other bytes).
 - Licence rule (the research and R&D sets of the parity benchmark are described in `bench/corpus/PROVENANCE.md`; none is in this corpus): only files whose licence allows commercial use are used; Creative Commons NonCommercial (NC) and NoDerivatives (ND) files are excluded, however they are used. Where the publisher lists a licence per file (the camera sample archive) it is read from that list and not from the statement of the source.
 - Selection: files from exploit databases (the `EDB-` and `CVE-` named test documents of LibreOffice), fuzzer outputs and files the
   project marks as failing import are not used, and neither are government form templates whose licence is not stated. The entries

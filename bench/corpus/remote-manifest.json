@@ -4318,7 +4318,7 @@
       "description": "Alice's Adventures in Wonderland, Project Gutenberg EPUB with images and a linked table of contents",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/11/pg11-images.epub"
+        "url": "https://web.archive.org/web/20261007052056id_/https://www.gutenberg.org/cache/epub/11/pg11-images.epub"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4335,7 +4335,7 @@
       "description": "The Adventures of Sherlock Holmes, Project Gutenberg EPUB with images and a linked table of contents",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/1661/pg1661-images.epub"
+        "url": "https://web.archive.org/web/20261019182608id_/https://www.gutenberg.org/cache/epub/1661/pg1661-images.epub"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4369,7 +4369,7 @@
       "description": "Moby Dick, Project Gutenberg EPUB with images and a linked table of contents",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/2701/pg2701-images.epub"
+        "url": "https://web.archive.org/web/20261016191234id_/https://www.gutenberg.org/cache/epub/2701/pg2701-images.epub"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4386,7 +4386,7 @@
       "description": "Dracula, Project Gutenberg EPUB with images and a linked table of contents",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/345/pg345-images.epub"
+        "url": "https://web.archive.org/web/20261007052056id_/https://www.gutenberg.org/cache/epub/345/pg345-images.epub"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4403,7 +4403,7 @@
       "description": "Alice's Adventures in Wonderland, Project Gutenberg Kindle file with images; its text truth is the EPUB of the same book",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/11/pg11-images.mobi"
+        "url": "https://web.archive.org/web/20261024052711id_/https://www.gutenberg.org/cache/epub/11/pg11-images.mobi"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4416,7 +4416,7 @@
           "role": "text",
           "origin": {
             "kind": "file",
-            "url": "https://www.gutenberg.org/cache/epub/11/pg11-images.epub"
+            "url": "https://web.archive.org/web/20261007052056id_/https://www.gutenberg.org/cache/epub/11/pg11-images.epub"
           },
           "bytes": 187950,
           "sha256": "e332bfce56f79897138d73e7b698dc59bd073d932acb87897606aa7b5df96dac"
@@ -4431,7 +4431,7 @@
       "description": "The Adventures of Sherlock Holmes, Project Gutenberg Kindle file with images; its text truth is the EPUB of the same book",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/1661/pg1661-images.mobi"
+        "url": "https://web.archive.org/web/20261017031624id_/https://www.gutenberg.org/cache/epub/1661/pg1661-images.mobi"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4444,7 +4444,7 @@
           "role": "text",
           "origin": {
             "kind": "file",
-            "url": "https://www.gutenberg.org/cache/epub/1661/pg1661-images.epub"
+            "url": "https://web.archive.org/web/20261019182608id_/https://www.gutenberg.org/cache/epub/1661/pg1661-images.epub"
           },
           "bytes": 378476,
           "sha256": "f441042ace4506f5921318b5ee3deaf52169a59be31f0629b9082e27f8bba3f1"
@@ -4459,7 +4459,7 @@
       "description": "Dracula, Project Gutenberg Kindle file with images; its text truth is the EPUB of the same book",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/345/pg345-images.mobi"
+        "url": "https://web.archive.org/web/20261007052056id_/https://www.gutenberg.org/cache/epub/345/pg345-images.mobi"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
@@ -4472,7 +4472,7 @@
           "role": "text",
           "origin": {
             "kind": "file",
-            "url": "https://www.gutenberg.org/cache/epub/345/pg345-images.epub"
+            "url": "https://web.archive.org/web/20261007052056id_/https://www.gutenberg.org/cache/epub/345/pg345-images.epub"
           },
           "bytes": 602043,
           "sha256": "02a852bab9d8464f93fc253925646e847dcc334012a289ab57ecd5df27c3003e"
