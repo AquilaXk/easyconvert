@@ -16,6 +16,7 @@ import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
 import { readPdfPageFrames, renderedSizePixels, type PdfPageFrame, type RenderedPdfPage } from './pdf-page-geometry';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
+import { PAGE_IMAGE_MAX_PAGES } from './page-range';
 
 /**
  * Renders PDF pages to images for OCR with Poppler's `pdftoppm`, an external executable run under the process
@@ -32,8 +33,8 @@ import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
  * resolution against OCR_MAX_DPI (400).
  */
 
-/** Most pages one request may render for OCR; each is a full page raster, so the count bounds the work. */
-export const OCR_MAX_RENDERED_PAGES = 500;
+/** Most pages one request may render for OCR; each is a full page raster, so the count bounds the work. It is the limit of every page-image chain. */
+export const OCR_MAX_RENDERED_PAGES = PAGE_IMAGE_MAX_PAGES;
 /** One page that has not rendered in this time is stuck, not slow. */
 export const OCR_RENDER_TIMEOUT_MS = 60_000;
 /** Resident memory limit for one pdftoppm run; the sandbox kills the process group above it. */

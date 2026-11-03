@@ -36,7 +36,7 @@ import { sealGraph } from '@/lib/queue/graph/node-jobs';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
-import { validateTierPageLimit } from '@/lib/conversions';
+import { validatePageRangeSyntax } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
@@ -298,14 +298,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    // Normalize page / pages option and validate tier page limits
+    // Normalize page / pages option and validate the page range syntax
     if (options) {
       if (!options.pages && options.page) {
         options.pages = String(options.page);
       }
       if (options.pages) {
         try {
-          validateTierPageLimit(options.pages, auth.user.tier);
+          validatePageRangeSyntax(options.pages);
         } catch (err: any) {
           return await fail(422, err.message, 'Unprocessable Entity');
         }
@@ -321,7 +321,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
           }
           if (t.options.pages) {
             try {
-              validateTierPageLimit(t.options.pages, auth.user.tier);
+              validatePageRangeSyntax(t.options.pages);
             } catch (err: any) {
               pageRangeError = err.message;
               break;

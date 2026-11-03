@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 129 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 128 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -217,7 +217,6 @@ Generate a secret with `openssl rand -hex 32`.
 | `JOB_DEADLINE_MAX_MS_FREE` | integer, 1 to 3600000 | `300000` | no | web, worker |
 | `JOB_DEADLINE_MAX_MS_PRO` | integer, 1 to 3600000 | `1800000` | no | web, worker |
 | `JOB_DEADLINE_MAX_MS_ENTERPRISE` | integer, 1 to 3600000 | `3600000` | no | web, worker |
-| `JOB_DEADLINE_PER_PAGE_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
 | `JOB_DEADLINE_PER_MIB_MS` | integer, 1 to 2147483647 | `2000` | no | web, worker |
 | `JOB_DEADLINE_PER_MEDIA_SECOND_MS` | integer, 1 to 2147483647 | `3000` | no | web, worker |
 | `SYNC_DEADLINE_MAX_MS` | integer, 1 to 2147483647 | `120000` | no | web, worker |
@@ -238,13 +237,12 @@ Generate a secret with `openssl rand -hex 32`.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.
 - `EASYCONVERT_PDF_TEXT_DEADLINE_MS`: Milliseconds the PDF text extraction may run before it is stopped.
 - `EASYCONVERT_OCR_PAGE_BUDGET_MS`: Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job's own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.
-- `JOB_DEADLINE_BASE_MS_FREE`: Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.
-- `JOB_DEADLINE_BASE_MS_PRO`: Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.
-- `JOB_DEADLINE_BASE_MS_ENTERPRISE`: Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.
-- `JOB_DEADLINE_MAX_MS_FREE`: Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
-- `JOB_DEADLINE_MAX_MS_PRO`: Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
-- `JOB_DEADLINE_MAX_MS_ENTERPRISE`: Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
-- `JOB_DEADLINE_PER_PAGE_MS`: Milliseconds added to a job deadline for each page of a document (the page limit of the tier when the count is unknown). The default is the OCR page budget.
+- `JOB_DEADLINE_BASE_MS_FREE`: Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.
+- `JOB_DEADLINE_BASE_MS_PRO`: Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.
+- `JOB_DEADLINE_BASE_MS_ENTERPRISE`: Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.
+- `JOB_DEADLINE_MAX_MS_FREE`: Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
+- `JOB_DEADLINE_MAX_MS_PRO`: Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
+- `JOB_DEADLINE_MAX_MS_ENTERPRISE`: Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.
 - `JOB_DEADLINE_PER_MIB_MS`: Milliseconds added to a job deadline for each started MiB of input.
 - `JOB_DEADLINE_PER_MEDIA_SECOND_MS`: Milliseconds added to a job deadline for each second of audio or video, when the length is known.
 - `SYNC_DEADLINE_MAX_MS`: Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.

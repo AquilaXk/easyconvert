@@ -21,6 +21,5 @@ export const SERVER_ONLY_OPTION_KEYS = [
   'throwOnUnavailable',
   'inProcessFallback',
   'pdfExportPageRange',
-  'maxRenderedPages',
   'disableNativeEngine',
 ] as const satisfies readonly (keyof WorkerEngineOptions | keyof WorkerVfsPayload)[];

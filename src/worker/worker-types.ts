@@ -28,11 +28,6 @@ export interface WorkerEngineOptions extends ConversionOptions {
    * for a spreadsheet that becomes the first page image; the request schema has no such field.
    */
   pdfExportPageRange?: string;
-  /**
-   * Most pages the worker renders to page images for this request; a larger selection is refused (413). Set by the worker for
-   * the sources whose page count a request cannot predict; the request schema has no such field.
-   */
-  maxRenderedPages?: number;
 }
 
 export interface WorkerConversionResult extends ConversionResult {
