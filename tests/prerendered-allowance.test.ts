@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 
 vi.mock('next-intl/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next-intl/server')>()),
@@ -33,11 +34,11 @@ describe('the allowance a page states', () => {
     vi.unstubAllEnvs();
   });
 
-  it.each(PAGES)('is the one the server enforces on %s: the configured limit, else 10', async (_name, render) => {
+  it.each(PAGES)('is the one the server enforces on %s: the configured limit, else the default', async (_name, render) => {
     vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '30');
     expect(dailyLimitOf(await render())).toBe(30);
 
     vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '');
-    expect(dailyLimitOf(await render())).toBe(10);
+    expect(dailyLimitOf(await render())).toBe(ANONYMOUS_DAILY_CONVERSIONS);
   });
 });

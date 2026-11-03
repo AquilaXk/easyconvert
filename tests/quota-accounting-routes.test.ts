@@ -59,7 +59,7 @@ const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-lim
 const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://api.easyconvert.io/problems/graph-without-conversion';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
-const DAY_ALLOWANCE = 10;
+const DAY_ALLOWANCE = ANONYMOUS_DAILY_CONVERSIONS;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -181,6 +181,8 @@ describe('what a request is charged', () => {
   });
 
   describe('the anonymous allowance', () => {
+    // The two tests below pin the published numbers of entry 15 by hand, as an oracle independent of src/lib/plan-limits.ts;
+    // every other test reads the constants.
     it('is 10 conversions a day when nothing configures it', () => {
       vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '');
       expect(getAnonymousDailyLimit()).toBe(10);
@@ -681,7 +683,7 @@ describe('what a request is charged', () => {
   });
 
   describe('/api/v1/jobs', () => {
-    const FREE_DAY_ALLOWANCE = 10;
+    const FREE_DAY_ALLOWANCE = FREE_DAILY_CONVERSIONS;
     let worker: Worker<ConversionJobData, ConversionJobResult> | undefined;
 
     afterEach(async () => {

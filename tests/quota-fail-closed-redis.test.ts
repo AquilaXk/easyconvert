@@ -13,7 +13,7 @@ import { POST as convertHandler } from '../src/app/api/convert/route';
 import { POST as multipartHandler } from '../src/app/api/storage/multipart/route';
 import { POST as queueJobsHandler } from '../src/app/api/queue/jobs/route';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, PLAN_MAX_FILE_BYTES, TIER_LIMITS } from '../src/lib/plan-limits';
 
 describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware', () => {
   beforeEach(() => {
@@ -99,12 +99,11 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
 
     it('enforces boundary conditions and deducts quota correctly in local in-memory fallback', async () => {
       const store = new RedisKeyStore({ isolated: true });
-      // Free tier default limit is 10
       const withinLimit = await store.deductQuota('local-user-1', 5);
       expect(withinLimit.allowed).toBe(true);
-      expect(withinLimit.remaining).toBe(5);
+      expect(withinLimit.remaining).toBe(TIER_LIMITS.free - 5);
 
-      const exactBoundary = await store.deductQuota('local-user-1', 5);
+      const exactBoundary = await store.deductQuota('local-user-1', TIER_LIMITS.free - 5);
       expect(exactBoundary.allowed).toBe(true);
       expect(exactBoundary.remaining).toBe(0);
 
@@ -139,11 +138,11 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
   });
 
   describe('Anonymous Client Daily Quota & IP Rate Limiting', () => {
-    it('verifies anonymous daily limit defaults to 10 conversions per day when unconfigured', () => {
+    it('verifies the anonymous daily limit defaults to the anonymous constant when unconfigured', () => {
       const original = process.env.ANONYMOUS_DAILY_LIMIT;
       try {
         delete process.env.ANONYMOUS_DAILY_LIMIT;
-        expect(getAnonymousDailyLimit()).toBe(10);
+        expect(getAnonymousDailyLimit()).toBe(ANONYMOUS_DAILY_CONVERSIONS);
       } finally {
         if (original) process.env.ANONYMOUS_DAILY_LIMIT = original;
       }

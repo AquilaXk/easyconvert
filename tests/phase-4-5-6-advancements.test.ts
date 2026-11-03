@@ -19,6 +19,7 @@ import { POST as jobsPostHandler, GET as jobsGetHandler } from '../src/app/api/v
 import { GET as jobDetailHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { GET as openApiHandler } from '../src/app/api/openapi.json/route';
 import { NextRequest } from 'next/server';
+import { TIER_LIMITS } from '../src/lib/plan-limits';
 
 describe('Phase 4, 5, 6 Enterprise Advancements', () => {
   beforeEach(() => {
@@ -327,13 +328,13 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
       const quotaAfterReserve = await redisKeyStore.getQuotaUsage(user.id);
       expect(quotaAfterReserve.usedToday).toBe(1);
-      expect(quotaAfterReserve.remaining).toBe(9);
+      expect(quotaAfterReserve.remaining).toBe(TIER_LIMITS.free - 1);
 
       // Step 2: Rollback the reservation (simulating aborted conversion)
       await redisKeyStore.rollbackQuota(res1.reservationId!);
       const quotaAfterRollback = await redisKeyStore.getQuotaUsage(user.id);
       expect(quotaAfterRollback.usedToday).toBe(0);
-      expect(quotaAfterRollback.remaining).toBe(10);
+      expect(quotaAfterRollback.remaining).toBe(TIER_LIMITS.free);
 
       // Step 3: Reserve and commit (simulating successful conversion)
       const res2 = await redisKeyStore.reserveQuota(user.id, 1);
@@ -342,7 +343,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
 
       const quotaAfterCommit = await redisKeyStore.getQuotaUsage(user.id);
       expect(quotaAfterCommit.usedToday).toBe(1);
-      expect(quotaAfterCommit.remaining).toBe(9);
+      expect(quotaAfterCommit.remaining).toBe(TIER_LIMITS.free - 1);
     });
 
     it('WebhookDispatcher signs and verifies HMAC-SHA256 signatures with replay protection', () => {

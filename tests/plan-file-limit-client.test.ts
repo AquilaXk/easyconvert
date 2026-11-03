@@ -167,6 +167,7 @@ describe('the drop zone states the limit of the plan', () => {
       )
     );
 
+  // The copy is written out by hand, as the viewer reads it: an oracle independent of src/lib/plan-limits.ts.
   it.each([
     ['anonymous', 'Up to 1 GiB per file · 7 conversions a day · Files deleted automatically'],
     ['free', 'Up to 1 GiB per file · 10 conversions a day · Files deleted automatically'],

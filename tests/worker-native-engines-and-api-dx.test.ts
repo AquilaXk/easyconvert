@@ -24,7 +24,10 @@ import { createProblemDetailsResponse } from '../src/lib/api/problem-details';
 import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-headers';
 import { skipUnless } from './helpers/strict-skip';
 
-/** Daily quotas of the account tiers (hand-written from the pricing table: free 10, pro 500, enterprise 10,000). */
+/**
+ * Daily quotas of the account tiers, hand-written from the pricing table (free 10, pro 500, enterprise 10,000) as an oracle
+ * independent of src/lib/plan-limits.ts: the headers must state the published numbers.
+ */
 const FREE_DAILY_LIMIT = 10;
 const PRO_DAILY_LIMIT = 500;
 
