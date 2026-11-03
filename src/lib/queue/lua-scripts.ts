@@ -443,3 +443,68 @@ for _, id in ipairs(ARGV) do
 end
 return removed
 `;
+
+/** Gives an ended job the data it keeps (`removeDataOnFinish`), checking inside the step that the job is still there and ended. */
+export const REPLACE_ENDED_JOB_DATA_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- ARGV[1]: JSON data the ended job keeps
+-- Returns 1 after replacing the data, or 0 when the job is gone or has not ended, so no hash is ever created here.
+local state = redis.call('HGET', KEYS[1], 'state')
+if state ~= 'completed' and state ~= 'failed' and state ~= 'cancelled' then
+  return 0
+end
+redis.call('HSET', KEYS[1], 'data', ARGV[1])
+return 1
+`;
+
+/** Removes the dead letters recorded at or before a time. Letters are appended as jobs fail, so the oldest are at the head. */
+export const TRIM_DEAD_LETTERS_LUA_SCRIPT = `
+-- KEYS[1]: dead-letter list, oldest first
+-- ARGV[1]: time in milliseconds
+-- A letter that is not readable counts as the oldest. Returns how many letters were removed.
+local cutoff = tonumber(ARGV[1])
+local removed = 0
+while true do
+  local head = redis.call('LINDEX', KEYS[1], 0)
+  if not head then
+    return removed
+  end
+  local ok, letter = pcall(cjson.decode, head)
+  local recordedAt = 0
+  if ok and type(letter) == 'table' then
+    recordedAt = tonumber(letter.timestamp) or 0
+  end
+  if recordedAt > cutoff then
+    return removed
+  end
+  redis.call('LPOP', KEYS[1])
+  removed = removed + 1
+end
+`;
+
+/** Removes a job that is not active from every state it can be in, as BullMQ's removeJob-2.lua does. */
+export const REMOVE_JOB_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- KEYS[2..7]: waiting, delayed, active, completed, failed and cancelled keys
+-- KEYS[8]: the index of the job's user (a placeholder key when it has none)
+-- ARGV[1]: job id
+-- Returns 1 after removing the job, 0 when it is active (its attempt is still running) or unknown.
+local state = redis.call('HGET', KEYS[1], 'state')
+if not state or state == 'active' then
+  return 0
+end
+local t = redis.call('TYPE', KEYS[2])
+local typeName = (type(t) == 'table' and t.ok) or t
+if typeName == 'list' then
+  redis.call('LREM', KEYS[2], 0, ARGV[1])
+else
+  redis.call('ZREM', KEYS[2], ARGV[1])
+end
+redis.call('ZREM', KEYS[3], ARGV[1])
+for i = 4, 7 do
+  redis.call('SREM', KEYS[i], ARGV[1])
+end
+redis.call('ZREM', KEYS[8], ARGV[1])
+redis.call('DEL', KEYS[1])
+return 1
+`;

@@ -85,6 +85,7 @@
       "oauth_exchange_failed": "Google 계정을 확인하지 못했어요. 다시 로그인해 주세요.",
       "account_linking_required": "이 이메일로 만든 계정이 이미 있어요. Google 계정을 연결하려면 먼저 비밀번호로 로그인해 주세요.",
       "terms_required": "Google로 계정을 만들려면 회원가입에서 이용약관에 먼저 동의해 주세요.",
+      "terms_outdated": "이 페이지를 연 뒤에 이용약관이 바뀌었어요. 페이지를 새로 고친 뒤 다시 동의해 주세요.",
       "generic": "로그인하지 못했어요. 다시 시도해 주세요."
     },
     "messages": {
@@ -190,6 +191,7 @@
         "never": "만료 없음"
       },
       "expiryNote": "만료 7일 전에 <code>key.expiring_soon</code> 웹훅을 보내요.",
+      "acceptTerms": "<link>이용약관</link>에 동의해요.",
       "create": "API 키 만들기",
       "cancel": "취소",
       "generated": {
@@ -1904,10 +1906,13 @@
       "invalid_email": "올바른 이메일 주소를 입력해 주세요.",
       "password_length": "비밀번호는 8자에서 1024자 사이여야 해요.",
       "terms_not_accepted": "계정을 만들려면 이용약관에 동의해 주세요.",
+      "terms_outdated": "이 페이지를 연 뒤에 이용약관이 바뀌었어요. 페이지를 새로 고친 뒤 다시 동의해 주세요.",
       "account_exists": "이 이메일 주소로 만든 계정이 이미 있어요. 로그인해 주세요."
     },
     "dashboard": {
       "admin_scope_required": "이 작업에는 전체 권한(*)이 있는 API 키가 필요해요.",
+      "terms_not_accepted": "API 키를 만들려면 이용약관에 동의해 주세요.",
+      "terms_outdated": "이 페이지를 연 뒤에 이용약관이 바뀌었어요. 페이지를 새로 고친 뒤 다시 동의해 주세요.",
       "invalid_key_settings": "API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.",
       "invalid_grace_period": "유예 시간은 0초에서 7일 사이로 정해 주세요.",
       "key_create_failed": "API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요."

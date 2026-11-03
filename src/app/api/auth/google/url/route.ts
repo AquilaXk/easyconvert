@@ -7,6 +7,9 @@ import {
   OAUTH_STATE_COOKIE_NAME,
   OAUTH_STATE_TTL_SECONDS,
 } from '@/lib/auth/oauth';
+import { codedRefusal } from '@/lib/api/problem-details';
+import type { AuthErrorCode } from '@/lib/refusal-codes';
+import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,9 +19,14 @@ export async function GET(req: NextRequest) {
 
   try {
     const { searchParams } = req.nextUrl;
+    const sentVersion = searchParams.get('acceptedTermsVersion');
+    if (sentVersion !== null && termsRefusal(sentVersion) === 'terms_outdated') {
+      return codedRefusal<AuthErrorCode>(400, 'terms_outdated', termsRefusalText('terms_outdated'));
+    }
+    // Only the version in force is kept, so the state never carries a value the callback could record unchecked.
     const session = await createOAuthSession({
       locale: offeredLocale(searchParams.get('locale')),
-      acceptedTermsVersion: searchParams.get('acceptedTermsVersion') ?? undefined,
+      acceptedTermsVersion: sentVersion === TERMS_VERSION ? sentVersion : undefined,
     });
     const url = getGoogleOAuthUrl(redirectUri, session);
 

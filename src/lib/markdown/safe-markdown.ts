@@ -229,7 +229,7 @@ const HEADING_TITLE_TOKENS: ReadonlySet<string> = new Set(['text', 'code_inline'
  * markdown-it-anchor's `getTokensText` reads it, from the `text` and `code_inline` tokens of the heading's inline content, and
  * the ids are numbered in document order. A heading whose slug is empty gets no id of its own, and the next one is numbered.
  */
-export function addHeadingIds(tokens: Token[]): void {
+function addHeadingIds(tokens: Token[]): void {
   const slugs = new HeadingSlugs();
   tokens.forEach((token, index) => {
     if (token.type !== 'heading_open') return;
@@ -293,10 +293,11 @@ function countLines(source: string): number {
 }
 
 /**
- * Renders Markdown to an HTML fragment containing only allowlisted elements, attributes and URLs.
+ * Parses Markdown into the token stream that `renderMarkdownTokens` renders: CommonMark with the table and strikethrough
+ * extensions, the heading ids added and the policy applied, within the source budgets.
  * Throws MarkdownSanitizationError for out-of-policy parse trees and for inputs that exceed a budget.
  */
-export function renderMarkdownFragment(markdown: string): string {
+export function parseMarkdownTokens(markdown: string): Token[] {
   if (typeof markdown !== 'string') {
     throw new MarkdownSanitizationError('Markdown source must be a string');
   }
@@ -306,18 +307,35 @@ export function renderMarkdownFragment(markdown: string): string {
   if (countLines(markdown) > MAX_MARKDOWN_SOURCE_LINES) {
     throw new MarkdownSanitizationError(`Markdown source exceeds the ${MAX_MARKDOWN_SOURCE_LINES} line limit`);
   }
-  let html: string;
+  return withResourceErrorsTyped(() => parser.parse(markdown, {}));
+}
+
+/** Renders tokens of `parseMarkdownTokens`, or a run of them, to HTML within the output budget. */
+export function renderMarkdownTokens(tokens: Token[]): string {
+  const html = withResourceErrorsTyped(() => parser.renderer.render(tokens, parser.options, {}));
+  if (html.length > MAX_MARKDOWN_OUTPUT_CHARS) {
+    throw new MarkdownSanitizationError(`Rendered Markdown exceeds the ${MAX_MARKDOWN_OUTPUT_CHARS} character limit`);
+  }
+  return html;
+}
+
+/** Runs `step`; V8 reports string or stack exhaustion as RangeError, which surfaces as the typed failure (HTTP 400). */
+function withResourceErrorsTyped<T>(step: () => T): T {
   try {
-    html = parser.render(markdown);
+    return step();
   } catch (error) {
-    // V8 reports string or stack exhaustion as RangeError; surface it as the typed failure (HTTP 400).
     if (error instanceof RangeError) {
       throw new MarkdownSanitizationError(`Markdown rendering exhausted resources: ${error.message}`);
     }
     throw error;
   }
-  if (html.length > MAX_MARKDOWN_OUTPUT_CHARS) {
-    throw new MarkdownSanitizationError(`Rendered Markdown exceeds the ${MAX_MARKDOWN_OUTPUT_CHARS} character limit`);
-  }
-  return html;
+}
+
+/**
+ * Renders Markdown to an HTML fragment containing only allowlisted elements, attributes and URLs, as markdown-it's own
+ * `render` does: the renderer over the tokens of `parse` (lib/index.mjs, `MarkdownIt.prototype.render`).
+ * Throws MarkdownSanitizationError for out-of-policy parse trees and for inputs that exceed a budget.
+ */
+export function renderMarkdownFragment(markdown: string): string {
+  return renderMarkdownTokens(parseMarkdownTokens(markdown));
 }

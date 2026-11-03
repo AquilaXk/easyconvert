@@ -419,7 +419,7 @@ describe('Auth & API Key Infrastructure', () => {
       const postKeyReq = new NextRequest('http://localhost:3000/api/keys', {
         method: 'POST',
         headers: { Cookie: cookieHeader },
-        body: JSON.stringify({ name: 'CI/CD Pipeline Key' }),
+        body: JSON.stringify({ acceptedTermsVersion: TERMS_VERSION, name: 'CI/CD Pipeline Key' }),
       });
       const postKeyRes = await keysPostHandler(postKeyReq);
       expect(postKeyRes.status).toBe(200);

@@ -221,3 +221,16 @@ for i = 1, #all, 2 do
 end
 return { 1, 'cancelled', cjson.encode(cancelled), redis.call('HGET', KEYS[1], 'reservationId') or '', redis.call('HGET', KEYS[1], 'inputKeys') or '[]' }
 `;
+
+export const FORGET_ENDED_GRAPH_LUA_SCRIPT = `
+-- KEYS: every key of one ended graph, its state hash first
+-- ARGV[1]: milliseconds the ended graph is kept
+-- The webhook secret is emptied, not removed, since the state always carries the field. Returns 1.
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('HSET', KEYS[1], 'webhookSecret', '')
+end
+for _, key in ipairs(KEYS) do
+  redis.call('PEXPIRE', key, ARGV[1])
+end
+return 1
+`;

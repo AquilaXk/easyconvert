@@ -14,7 +14,7 @@ export interface OAuthSessionState {
   createdAt: number;
   /** The language the sign-in started in, so that the callback answers in it. */
   locale: AppLocale;
-  /** The version of the terms accepted on the sign-up form, which an account the callback creates records. */
+  /** The version of the terms accepted on the sign-up form, kept only when it was the one in force; an account the callback creates records it. */
   acceptedTermsVersion?: string;
 }
 

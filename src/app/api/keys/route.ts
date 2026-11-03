@@ -5,7 +5,7 @@ import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
-import { TERMS_VERSION } from '@/lib/legal/documents';
+import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
 
 export const dynamic = 'force-dynamic';
 
@@ -92,6 +92,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const termsRefused = termsRefusal(body?.acceptedTermsVersion);
+    if (termsRefused) return refusal(400, termsRefused, termsRefusalText(termsRefused));
     const parsed = parseKeyCreationPayload(body);
     if (parsed.error) return refusal(400, 'invalid_key_settings', parsed.error);
 

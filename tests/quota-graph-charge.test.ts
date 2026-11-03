@@ -36,6 +36,8 @@ afterAll(() => {
   vi.unstubAllEnvs();
 });
 
+const forget = async () => {};
+
 describe('what a queued graph is charged, with the in-memory scheduler and store', () => {
   itChargesAGraphOnlyThroughItsScheduler();
 });
@@ -140,7 +142,7 @@ describe('the end of a graph, in this process', () => {
         return state;
       };
 
-      const between = await finishGraph({ graphId, reservationId: undefined, inputKeys: [], readState }, { outcome: { status: 'completed' }, reservation: { kind: 'rollback' } }, async () => 'drained');
+      const between = await finishGraph({ graphId, reservationId: undefined, inputKeys: [], readState, forget }, { outcome: { status: 'completed' }, reservation: { kind: 'rollback' } }, async () => 'drained');
 
       expect(between).toBe('drained');
       expect(dispatched.mock.calls.map((call) => call[1])).toEqual(['graph.completed']);
@@ -165,7 +167,7 @@ describe('the end of a graph, in this process', () => {
       });
       const between = vi.fn(async (state: GraphExecutionState | undefined) => state);
 
-      await finishGraph({ graphId, reservationId: undefined, inputKeys: [input], readState }, { outcome: { status: 'failed', error: 'left failed' }, reservation: { kind: 'rollback' } }, between);
+      await finishGraph({ graphId, reservationId: undefined, inputKeys: [input], readState, forget }, { outcome: { status: 'failed', error: 'left failed' }, reservation: { kind: 'rollback' } }, between);
 
       expect(readState).toHaveBeenCalledTimes(2);
       expect(between).toHaveBeenCalledWith(undefined);
@@ -186,7 +188,7 @@ describe('the end of a graph, in this process', () => {
       const graphId = `graph_end_gone_${Date.now()}`;
       const readState = vi.fn(async (): Promise<GraphExecutionState | undefined> => undefined);
 
-      await finishGraph({ graphId, reservationId: undefined, inputKeys: [], readState }, { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } });
+      await finishGraph({ graphId, reservationId: undefined, inputKeys: [], readState, forget }, { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } });
 
       expect(readState).toHaveBeenCalledTimes(1);
       expect(logged.mock.calls.filter(([line]) => String(line).includes(graphId))).toHaveLength(1);

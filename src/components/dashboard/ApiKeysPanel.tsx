@@ -74,6 +74,7 @@ export interface ApiKeysPanelState {
   revokingKeyId: string | null;
   selectedScopes: ApiKeyScope[];
   keyExpiry: KeyExpiryOption;
+  acceptedTerms: boolean;
 }
 
 export interface ApiKeysPanelActions {
@@ -83,6 +84,7 @@ export interface ApiKeysPanelActions {
   onNameChange: (name: string) => void;
   onToggleScope: (scope: ApiKeyScope, checked: boolean) => void;
   onExpiryChange: (expiry: KeyExpiryOption) => void;
+  onAcceptedTermsChange: (value: boolean) => void;
   onGenerateKey: (e: React.FormEvent) => void;
   onRequestRevoke: (id: string | null) => void;
   onConfirmRevoke: (id: string) => void;
@@ -106,6 +108,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
     revokingKeyId,
     selectedScopes,
     keyExpiry,
+    acceptedTerms,
   } = state;
   const t = useTranslations('dashboard.keys');
   const sampleKeyDisplay = generatedSecret || '$EASYCONVERT_API_KEY';
@@ -152,10 +155,12 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
             newKeyName={newKeyName}
             selectedScopes={selectedScopes}
             keyExpiry={keyExpiry}
+            acceptedTerms={acceptedTerms}
             isGeneratingKey={isGeneratingKey}
             onNameChange={actions.onNameChange}
             onToggleScope={actions.onToggleScope}
             onExpiryChange={actions.onExpiryChange}
+            onAcceptedTermsChange={actions.onAcceptedTermsChange}
             onSubmit={actions.onGenerateKey}
             onCancel={actions.onCloseGenerateForm}
           />

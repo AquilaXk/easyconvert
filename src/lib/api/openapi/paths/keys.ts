@@ -1,5 +1,6 @@
 import {
   API_KEY_SCOPES,
+  createCodedErrorResponse,
   createErrorResponse,
   createJsonResponse,
   createPathParameter,
@@ -26,6 +27,10 @@ export const keyPaths = {
       operationId: 'createApiKey',
       security: requireScope('*'),
       requestBody: jsonBody({
+        acceptedTermsVersion: {
+          type: 'string',
+          description: 'Version (effective date) of the terms of service at /terms that the key\'s owner accepted; must be the version in force.',
+        },
         name: { type: 'string', example: 'Production Microservice Key' },
         allowedIps: {
           type: 'array',
@@ -39,9 +44,13 @@ export const keyPaths = {
           items: { type: 'string', enum: API_KEY_SCOPES },
         },
         expiresAt: { type: 'number', description: 'Unix timestamp in milliseconds when the key expires.' },
-      }, ['name']),
+      }, ['acceptedTermsVersion', 'name']),
       responses: {
         '200': { description: 'API key generated; `secretKey` is returned only once.' },
+        '400': createCodedErrorResponse(
+          'Terms of service not accepted (`terms_not_accepted`) or accepted in an earlier version (`terms_outdated`), or key settings out of range (`invalid_key_settings`).',
+          ['terms_not_accepted', 'terms_outdated', 'invalid_key_settings']
+        ),
       },
     },
   },

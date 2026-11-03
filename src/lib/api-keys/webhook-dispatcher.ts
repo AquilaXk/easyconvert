@@ -5,12 +5,24 @@ import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
 import { redisKeyStore } from './redis-key-store';
 import { getWebhookSecretStore, requireWebhookTargetId } from './webhook-secret-store';
+import { decryptSecret, encryptSecret } from './secret-encryption';
 import {
   createQueueEngine,
   Worker,
   type IQueueEngine,
   type Job,
 } from '../queue/bullmq-engine';
+
+/**
+ * How long a dead letter is kept after its delivery failed: 30 days, within the 2 to 90 days for which webhook delivery
+ * services keep a failed delivery for a manual redelivery (docs/policy-decisions.md, entry 146). The download link in a
+ * letter expires long before, so a later redelivery would only announce a file that is gone.
+ */
+export const WEBHOOK_DLQ_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function isDlqEntryExpired(entry: WebhookDlqEntry, now: number): boolean {
+  return !(entry.failedAt > now - WEBHOOK_DLQ_RETENTION_MS);
+}
 
 /** DLQ reason for events that were not sent because no signing secret is configured. */
 export const MISSING_WEBHOOK_SECRET_REASON = 'missing_webhook_secret';
@@ -682,10 +694,11 @@ export class WebhookDispatcher {
   }
 
   public async saveToDlq(unmasked: WebhookDlqEntry): Promise<void> {
-    // The target URL and signing secret stay as they are because a replay needs them; the payload
-    // and the error text are what a reader of the queue sees, so they are stored masked.
+    // A replay needs the target URL and the signing secret: the URL stays as it is and the secret is stored encrypted, as
+    // the key store keeps it. The payload and the error text are what a reader of the queue sees, so they are stored masked.
     const entry: WebhookDlqEntry = {
       ...unmasked,
+      secret: encryptSecret(unmasked.secret) ?? '',
       payload: redactForOutput(unmasked.payload),
       errorMessage: unmasked.errorMessage === undefined ? undefined : redactText(unmasked.errorMessage),
     };
@@ -720,7 +733,13 @@ export class WebhookDispatcher {
     return Array.from(this.inMemoryDlq.values());
   }
 
+  /** The entry `id`, or null when there is none or it expired (WEBHOOK_DLQ_RETENTION_MS). */
   private async readDlqEntry(id: string): Promise<WebhookDlqEntry | null> {
+    const entry = await this.readStoredDlqEntry(id);
+    return entry && !isDlqEntryExpired(entry, Date.now()) ? entry : null;
+  }
+
+  private async readStoredDlqEntry(id: string): Promise<WebhookDlqEntry | null> {
     const client = redisKeyStore.getRedisClient();
     if (client) {
       try {
@@ -731,6 +750,14 @@ export class WebhookDispatcher {
       }
     }
     return this.inMemoryDlq.get(id) || null;
+  }
+
+  /** Removes the entries whose retention (WEBHOOK_DLQ_RETENTION_MS) has passed, and answers how many it removed. */
+  public async purgeExpiredDlqEntries(): Promise<number> {
+    const now = Date.now();
+    const expired = (await this.readAllDlqEntries()).filter((entry) => isDlqEntryExpired(entry, now)).map((entry) => entry.id);
+    await this.removeDlqEntries(expired);
+    return expired.length;
   }
 
   private async removeDlqEntries(ids: readonly string[]): Promise<boolean> {
@@ -770,8 +797,9 @@ export class WebhookDispatcher {
   public async getDlqEntries(ownerUserId: string): Promise<WebhookDlqEntry[]> {
     const entries = await this.readAllDlqEntries();
     await this.purgeOwnerlessEntries(entries);
+    const now = Date.now();
     return entries
-      .filter((entry) => isDlqEntryOwnedBy(entry, ownerUserId))
+      .filter((entry) => isDlqEntryOwnedBy(entry, ownerUserId) && !isDlqEntryExpired(entry, now))
       .sort((a, b) => b.failedAt - a.failedAt);
   }
 
@@ -819,7 +847,7 @@ export class WebhookDispatcher {
       entry.targetUrl,
       entry.event as WebhookEvent,
       payloadData,
-      entry.secret,
+      decryptSecret(entry.secret) ?? '',
       {
         maxRetries: 3,
         skipDlq: true,

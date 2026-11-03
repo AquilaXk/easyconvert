@@ -12,7 +12,7 @@ Each plan has limits, such as the largest file size and the number of conversion
 
 You need to be at least 14 years old to create an account. Keep your password and your API keys secret. You are responsible for what is done with them.
 
-You can stop using EasyConvert at any time. To delete your account, send a request through the [contact page](/contact).
+You can stop using EasyConvert at any time. To delete your account, send a request through the [contact page](/contact). We delete it within 10 days, as section 4 of the [Privacy Policy](/privacy) describes.
 
 ## 3. Your files
 

@@ -10,6 +10,7 @@ import * as dpaRoute from '../src/app/[locale]/dpa/page';
 import * as acceptableUseRoute from '../src/app/[locale]/acceptable-use/page';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from '../src/lib/legal/documents';
 import { LEGAL_TEXTS } from '../src/lib/legal/texts';
+import { readLegalPage } from '../src/lib/legal/render';
 import { allElements, attrOf, classTokens, headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
 import type { TestLocale } from './helpers/intl';
 import { parseDockerfile } from './helpers/dockerfile';
@@ -99,11 +100,53 @@ describe('the terms state the free allowance and no paid plan', () => {
 });
 
 describe('the legal texts', () => {
+  it('refuse a text without a title or without a section, instead of rendering an empty page', () => {
+    expect(() => readLegalPage('Only a paragraph.', 'en')).toThrow(/title/);
+    expect(() => readLegalPage('# Title\n\nAn introduction and no section.', 'en')).toThrow(/section/);
+    expect(readLegalPage('# Title\n\nIntro.\n\n## 1. One\n\nSee the [contact page](/contact).', 'ko').bodyHtml).toContain('href="/ko/contact"');
+  });
+
   it('are the Markdown files of docs/legal, one per page and language', () => {
     for (const [id, locale] of CASES) {
       const file = path.join(rootDir, 'docs', 'legal', `${LEGAL_DOCUMENTS[id].path.slice(1)}.${locale}.md`);
       expect(LEGAL_TEXTS[id][locale], file).toBe(fs.readFileSync(file, 'utf8'));
     }
+  });
+});
+
+/** The source files `file` imports, resolved as the build resolves them (`@/` is `src/`); packages are left out. */
+function importsOf(file: string): string[] {
+  const source = fs.readFileSync(file, 'utf8');
+  const specifiers = [...source.matchAll(/(?:from|import)\s*\(?\s*'([^']+)'/g)].map((match) => match[1].replace(/\?raw$/, ''));
+  return specifiers.flatMap((specifier) => {
+    const base = specifier.startsWith('@/') ? path.join(rootDir, 'src', specifier.slice(2)) : specifier.startsWith('.') ? path.resolve(path.dirname(file), specifier) : undefined;
+    if (!base) return [];
+    const found = [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts'), path.join(base, 'index.tsx')].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+    return found ? [found] : [];
+  });
+}
+
+/** Every source file reachable from `entry` through its imports. */
+function reachableFrom(entry: string): Set<string> {
+  const seen = new Set<string>([entry]);
+  for (const file of seen) for (const imported of importsOf(file)) seen.add(imported);
+  return seen;
+}
+
+describe('the client bundles', () => {
+  it('reach no legal text: no client component imports the texts, the renderer or the legal components, directly or not', () => {
+    const sources = fs.readdirSync(path.join(rootDir, 'src'), { recursive: true, encoding: 'utf8' })
+      .filter((name) => /\.tsx?$/.test(name))
+      .map((name) => path.join(rootDir, 'src', name));
+    const clientEntries = sources.filter((file) => /^\s*['"]use client['"]/.test(fs.readFileSync(file, 'utf8')));
+    const legalOnly = [path.join(rootDir, 'src', 'lib', 'legal', 'texts.ts'), path.join(rootDir, 'src', 'lib', 'legal', 'render.ts')];
+    expect(clientEntries.length).toBeGreaterThan(20);
+    expect(reachableFrom(path.join(rootDir, 'src', 'app', '[locale]', 'terms', 'page.tsx')).has(legalOnly[0])).toBe(true);
+    const leaks = clientEntries.filter((entry) => {
+      const reached = reachableFrom(entry);
+      return legalOnly.some((file) => reached.has(file)) || [...reached].some((file) => file.startsWith(path.join(rootDir, 'docs', 'legal')));
+    });
+    expect(leaks.map((file) => path.relative(rootDir, file))).toEqual([]);
   });
 });
 

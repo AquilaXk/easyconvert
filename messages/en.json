@@ -85,6 +85,7 @@
       "oauth_exchange_failed": "Could not verify your Google account. Sign in again.",
       "account_linking_required": "An account with this email already exists. Sign in with your password first to link Google.",
       "terms_required": "To create an account with Google, open Sign up and accept the terms of service first.",
+      "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
       "generic": "Authentication failed. Please try signing in again."
     },
     "messages": {
@@ -190,6 +191,7 @@
         "never": "Never (No Expiration)"
       },
       "expiryNote": "A <code>key.expiring_soon</code> webhook fires 7 days before expiration.",
+      "acceptTerms": "I accept the <link>terms of service</link>.",
       "create": "Create API Key",
       "cancel": "Cancel",
       "generated": {
@@ -1495,10 +1497,13 @@
       "invalid_email": "Enter a valid email address.",
       "password_length": "The password must be 8 to 1024 characters long.",
       "terms_not_accepted": "Accept the terms of service to create an account.",
+      "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
       "account_exists": "An account with this email address already exists. Sign in instead."
     },
     "dashboard": {
       "admin_scope_required": "This needs an API key with the full (*) scope.",
+      "terms_not_accepted": "Accept the terms of service to create an API key.",
+      "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
       "invalid_key_settings": "Check the key's settings: a name, scope, address list or expiry date is not valid.",
       "invalid_grace_period": "Choose a grace period between 0 seconds and 7 days.",
       "key_create_failed": "Could not create the API key. Try again in a moment."

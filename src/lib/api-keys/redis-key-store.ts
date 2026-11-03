@@ -41,6 +41,9 @@ export interface RedisKeyStoreOptions {
   redisClient?: Redis;
 }
 
+/** How long a request burst counter lives after the last request it counted, unless the caller sets `ttlSeconds`. */
+export const TOKEN_BUCKET_TTL_SECONDS = 3600;
+
 export interface TokenBucketOptions {
   capacity?: number;
   refillRate?: number;
@@ -683,7 +686,7 @@ export class RedisKeyStore extends KeyStore {
     const capacity = options.capacity ?? 50;
     const refillRate = options.refillRate ?? 10;
     const cost = options.cost ?? 1;
-    const ttl = options.ttlSeconds ?? 3600;
+    const ttl = options.ttlSeconds ?? TOKEN_BUCKET_TTL_SECONDS;
     const now = Date.now();
 
     if (this.redisClient) {

@@ -2,8 +2,7 @@ import React from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import type { AppLocale } from '@/i18n/routing';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from '@/lib/legal/documents';
-import { readLegalPage } from '@/lib/legal/render';
-import { LEGAL_TEXTS } from '@/lib/legal/texts';
+import { legalPage } from '@/lib/legal/render';
 
 /** Element styles of the rendered Markdown, which carries no classes of its own. */
 const PROSE_CLASS = [
@@ -12,7 +11,7 @@ const PROSE_CLASS = [
   '[&_ul]:mt-4 [&_ul]:list-disc [&_ul]:pl-6 [&_li]:mt-1.5',
   '[&_table]:mt-4 [&_table]:w-full [&_table]:text-sm [&_table]:border-collapse',
   '[&_th]:border [&_th]:border-rule [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold',
-  '[&_td]:border [&_td]:border-rule [&_td]:px-3 [&_td]:py-2 [&_td]:align-top',
+  '[&_td]:border [&_td]:border-rule [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:[overflow-wrap:anywhere]',
   '[&_code]:font-mono [&_code]:text-sm [&_code]:break-all',
 ].join(' ');
 
@@ -24,7 +23,7 @@ export function LegalDocument({ id, locale }: Readonly<{ id: LegalDocumentId; lo
   const t = useTranslations('legal');
   const format = useFormatter();
   const { version } = LEGAL_DOCUMENTS[id];
-  const page = readLegalPage(LEGAL_TEXTS[id][locale]);
+  const page = legalPage(id, locale);
   const effective = format.dateTime(new Date(`${version}T00:00:00Z`), { dateStyle: 'long', timeZone: 'UTC' });
 
   return (

@@ -418,6 +418,23 @@ export class RedisUserStore {
     return user?.sessionVersion || 1;
   }
 
+  /**
+   * Removes the account `id`: its record, its email index and its session version. Its sessions stop working, since a
+   * session is accepted only while its account's record exists. Returns false when there is no such account.
+   */
+  public async deleteUser(id: string): Promise<boolean> {
+    const record = await this.findById(id);
+    if (!record) return false;
+    const email = this.normalizeEmail(record.email);
+    if (this.redisClient) {
+      await this.redisClient.del(`${this.keyPrefix}${id}`, `${this.keyPrefix}emailIndex:${email}`, `${this.keyPrefix}session_version:${id}`);
+    }
+    this.distributedUsers.delete(id);
+    this.distributedEmails.delete(email);
+    this.userSessionVersions.delete(id);
+    return true;
+  }
+
   public async close(): Promise<void> {
     if (this.redisClient) {
       try {

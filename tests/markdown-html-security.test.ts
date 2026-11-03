@@ -11,7 +11,7 @@ import {
   MarkdownSanitizationError,
   applyTokenPolicy,
   renderMarkdownFragment,
-} from '../src/lib/conversions/markdown';
+} from '../src/lib/markdown/safe-markdown';
 import { ConversionFailedError } from '../src/lib/types';
 import {
   collectAttributes,
@@ -412,7 +412,7 @@ describe('markdown resource budgets', () => {
   });
 
   it('turns a resource-exhaustion RangeError into the typed error', () => {
-    vi.spyOn(MarkdownIt.prototype, 'render').mockImplementation(() => {
+    vi.spyOn(MarkdownIt.prototype, 'parse').mockImplementation(() => {
       throw new RangeError('Invalid string length');
     });
     expect(() => renderMarkdownFragment('# hi')).toThrow(MarkdownSanitizationError);
@@ -420,7 +420,7 @@ describe('markdown resource budgets', () => {
   });
 
   it('does not convert unrelated errors', () => {
-    vi.spyOn(MarkdownIt.prototype, 'render').mockImplementation(() => {
+    vi.spyOn(MarkdownIt.prototype, 'parse').mockImplementation(() => {
       throw new TypeError('unrelated');
     });
     expect(() => renderMarkdownFragment('# hi')).toThrow(TypeError);

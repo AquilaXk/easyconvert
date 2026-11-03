@@ -15,7 +15,9 @@ import {
   NODE_COMPLETED_LUA_SCRIPT,
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
+  FORGET_ENDED_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
+import { endedJobRetentionMs } from '../enqueue';
 import { assertSealedFor, cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords } from './sealed-nodes';
@@ -221,7 +223,19 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
 
   /** The graph `graphId` whose end a script recorded, with the reservation id and the input keys the script returned. */
   private endedGraph(graphId: string, reservationId: string | undefined, inputKeys: string | undefined): EndedGraph {
-    return { graphId, reservationId: reservationId || undefined, inputKeys: endedInputKeys(graphId, inputKeys), readState: () => this.getGraphState(graphId) };
+    return {
+      graphId,
+      reservationId: reservationId || undefined,
+      inputKeys: endedInputKeys(graphId, inputKeys),
+      readState: () => this.getGraphState(graphId),
+      forget: () => this.forgetEndedGraph(graphId),
+    };
+  }
+
+  /** Empties the webhook secret of the ended graph `graphId` and sets every key of it to expire `endedJobRetentionMs` from now. */
+  async forgetEndedGraph(graphId: string): Promise<void> {
+    const k = this.graphKeys(graphId);
+    await this.redisClient.eval(FORGET_ENDED_GRAPH_LUA_SCRIPT, 6, k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox, String(endedJobRetentionMs()));
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {

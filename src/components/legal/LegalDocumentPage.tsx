@@ -7,15 +7,14 @@ import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale, type LocaleParams } from '@/i18n/page';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from '@/lib/legal/documents';
-import { readLegalPage } from '@/lib/legal/render';
-import { LEGAL_TEXTS } from '@/lib/legal/texts';
+import { legalPage } from '@/lib/legal/render';
 import { LegalDocument } from './LegalDocument';
 
 /** A legal page's title and description, both read from its Markdown, with its canonical URL and hreflang alternates. */
 export async function legalPageMetadata(params: LocaleParams, id: LegalDocumentId): Promise<Metadata> {
   const locale = await resolvePageLocale(params);
   const t = await getTranslations({ locale, namespace: 'meta.legal' });
-  const { title, summary } = readLegalPage(LEGAL_TEXTS[id][locale]);
+  const { title, summary } = legalPage(id, locale);
   return { title: t('title', { title }), description: summary, alternates: localeAlternates(locale, LEGAL_DOCUMENTS[id].path) };
 }
 

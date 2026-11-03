@@ -8,6 +8,7 @@ import { GET as listKeysRoute, POST as createKeyRoute } from '../src/app/api/key
 import { GET as listDlqRoute } from '../src/app/api/webhooks/dlq/route';
 import { GET as getDlqItemRoute } from '../src/app/api/webhooks/dlq/[id]/route';
 import type { User } from '../src/lib/auth/types';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 
 const BASE_URL = 'http://localhost:3000';
 const WEBHOOK_SECRET = 'whsec_redaction_probe_7f3a';
@@ -74,7 +75,7 @@ describe('Credential redaction in API responses (#242)', () => {
     const res = await createKeyRoute(
       sessionRequest(owner, '/api/keys', {
         method: 'POST',
-        body: JSON.stringify({ name: 'created', webhookUrl: PUBLIC_WEBHOOK_URL, webhookSecret: WEBHOOK_SECRET }),
+        body: JSON.stringify({ acceptedTermsVersion: TERMS_VERSION, name: 'created', webhookUrl: PUBLIC_WEBHOOK_URL, webhookSecret: WEBHOOK_SECRET }),
       })
     );
     const text = await res.text();

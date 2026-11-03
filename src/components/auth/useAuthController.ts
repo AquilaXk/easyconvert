@@ -101,7 +101,7 @@ export function useAuthController() {
         window.location.href = data.url;
         return;
       }
-      setError(t('messages.googleFailed'));
+      setError(data.code ? authErrorWording(data, res.status) : t('messages.googleFailed'));
       setIsGoogleLoading(false);
     } catch {
       setError(t('messages.googleNetwork'));

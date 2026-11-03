@@ -52,13 +52,14 @@ describe('sign-up records the accepted terms version', () => {
   });
 
   it.each([
-    ['without a version', {}],
-    ['with an earlier version', { acceptedTermsVersion: '2020-01-01' }],
-    ['with a version that is not text', { acceptedTermsVersion: true }],
-  ])('refuses a sign-up %s and creates no account', async (_, body) => {
+    ['without a version', {}, 'terms_not_accepted'],
+    ['with a version that is not text', { acceptedTermsVersion: true }, 'terms_not_accepted'],
+    ['with a version that is no date', { acceptedTermsVersion: 'yes' }, 'terms_not_accepted'],
+    ['with an earlier version, from a page loaded before the terms changed', { acceptedTermsVersion: '2020-01-01' }, 'terms_outdated'],
+  ])('refuses a sign-up %s and creates no account', async (_, body, code) => {
     const answer = await signUp(body);
     expect(answer.status).toBe(400);
-    expect((await answer.json()).code).toBe('terms_not_accepted');
+    expect((await answer.json()).code).toBe(code);
     expect(await redisUserStore.findByEmail('reader@legal.test')).toBeNull();
   });
 
@@ -72,23 +73,53 @@ describe('sign-up records the accepted terms version', () => {
     expect(await redisUserStore.findByEmail(SANDBOX_EMAIL)).toBeNull();
   });
 
+  it('answers a Google start with an earlier version with terms_outdated, so the page asks for a reload', async () => {
+    const started = await googleUrl(new NextRequest(`${ORIGIN}/api/auth/google/url?acceptedTermsVersion=2020-01-01`));
+    expect(started.status).toBe(400);
+    expect((await started.json()).code).toBe('terms_outdated');
+  });
+
+  it('creates no Google account from a start whose version is not one', async () => {
+    expect(await signInWithGoogle('?acceptedTermsVersion=yes')).toBe('/auth?tab=register&error=terms_required');
+    expect(await redisUserStore.findByEmail(SANDBOX_EMAIL)).toBeNull();
+  });
+
   it('signs in an existing Google account without asking again', async () => {
     await redisUserStore.createUser({ email: SANDBOX_EMAIL, name: 'Existing', provider: 'google', acceptedTermsVersion: TERMS_VERSION });
     expect(await signInWithGoogle('')).toBe('/dashboard');
   });
 });
 
-describe('API key creation records the accepted terms version', () => {
-  it('stores the version in force on the new key', async () => {
+describe('API key creation records the terms version the request accepted', () => {
+  async function keyOwnerCookie(): Promise<string> {
     const user = redisUserStore.sanitizeUser(await redisUserStore.createUser({ email: 'keys@legal.test', name: 'Keys' }));
-    const cookie = `easyconvert_session=${createSessionToken(user)}`;
-    const created = await createKey(
-      new NextRequest(`${ORIGIN}/api/keys`, { method: 'POST', headers: { cookie }, body: JSON.stringify({ name: 'CI' }) })
-    );
+    return `easyconvert_session=${createSessionToken(user)}`;
+  }
+
+  function createKeyWith(cookie: string, body: Record<string, unknown>) {
+    return createKey(new NextRequest(`${ORIGIN}/api/keys`, { method: 'POST', headers: { cookie }, body: JSON.stringify({ name: 'CI', ...body }) }));
+  }
+
+  it('stores the version in force on the new key', async () => {
+    const cookie = await keyOwnerCookie();
+    const created = await createKeyWith(cookie, { acceptedTermsVersion: TERMS_VERSION });
     expect(created.status).toBe(200);
     expect((await created.json()).key.acceptedTermsVersion).toBe(TERMS_VERSION);
 
     const listed = await (await listKeys(new NextRequest(`${ORIGIN}/api/keys`, { headers: { cookie } }))).json();
     expect(listed.keys[0].acceptedTermsVersion).toBe(TERMS_VERSION);
+  });
+
+  it.each([
+    ['without a version', {}, 'terms_not_accepted'],
+    ['with an earlier version', { acceptedTermsVersion: '2020-01-01' }, 'terms_outdated'],
+  ])('refuses a key %s and creates none', async (_, body, code) => {
+    const cookie = await keyOwnerCookie();
+    const answer = await createKeyWith(cookie, body);
+    expect(answer.status).toBe(400);
+    expect((await answer.json()).code).toBe(code);
+
+    const listed = await (await listKeys(new NextRequest(`${ORIGIN}/api/keys`, { headers: { cookie } }))).json();
+    expect(listed.keys).toEqual([]);
   });
 });

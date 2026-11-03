@@ -2094,14 +2094,8 @@
   {
     "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "_onJobCompleted",
-    "count": 3
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "_onJobFailed",
-    "count": 5
+    "count": 2
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",
@@ -2114,12 +2108,6 @@
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "add",
     "count": 3
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "clean",
-    "count": 1
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",
@@ -2192,13 +2180,6 @@
   {
     "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "max-depth",
-    "function": "clean",
-    "count": 2,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "max-depth",
     "function": "getJobs",
     "count": 3,
     "maxValue": 7
@@ -2208,7 +2189,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2376
+    "maxValue": 2369
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

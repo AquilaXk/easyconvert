@@ -42,6 +42,8 @@ export interface EndedGraph {
   reservationId: string | undefined;
   inputKeys: readonly string[];
   readState: () => Promise<GraphExecutionState | undefined>;
+  /** Empties the webhook secret of the state and lets the state go `endedJobRetentionMs` after now, as its node jobs go. */
+  forget: () => Promise<void>;
 }
 
 /** How often the state of an ended graph is read before the end goes on without it. */
@@ -119,7 +121,8 @@ async function readEndedState(graph: EndedGraph): Promise<GraphExecutionState | 
  * The end of `graph`, run once by the one call that recorded it (the Lua transition in Redis, `recordEnd` in the process).
  * The reservation is ended first, so no later step can leave it open; then the state is read once (`readEndedState`) and
  * handed to `between` (cancelling the other node jobs, draining the outbox); then the webhook is told, when the state was
- * read, and the holds on the input files and the intermediate files are removed, which needs no state. A failure of
+ * read, the holds on the input files and the intermediate files are removed, which needs no state, and the state is set to
+ * expire without its webhook secret (`forget`). A failure of
  * `between` is logged and never stops what follows, and nothing here throws. Answers what `between` returned, or undefined
  * when it failed.
  */
@@ -133,5 +136,6 @@ export async function finishGraph<T>(
   const result = between && (await orLogged(graph.graphId, 'a step between its settle and its announcement failed', () => between(state)));
   if (state) await notifyWebhook(state, end.outcome);
   await removeGraphFiles(graph.graphId, graph.inputKeys);
+  await orLogged(graph.graphId, 'its state could not be set to expire', graph.forget);
   return result;
 }

@@ -14,6 +14,7 @@ import { warnBrowserFailure } from '@/lib/browser-failure';
 import { applySessionChange } from '@/lib/viewer-plan';
 import { useDashboardErrorWording } from '../i18n/error-wording';
 import { useReadSequence } from './useReadSequence';
+import { TERMS_VERSION } from '@/lib/legal/documents';
 import { useRecordDelete } from './useRecordDelete';
 
 /** The body of a key creation, or why there is none; `defaultName` names a key the form left unnamed. */
@@ -98,6 +99,7 @@ export function useApiKeysController(
     'storage:download',
   ]);
   const [keyExpiry, setKeyExpiry] = useState<KeyExpiryOption>('30d');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const { copiedKey, copyToClipboard } = useClipboardCopyStatus();
   const keysReads = useReadSequence();
 
@@ -142,7 +144,7 @@ export function useApiKeysController(
       const res = await fetch('/api/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request.body),
+        body: JSON.stringify({ ...request.body, ...(acceptedTerms ? { acceptedTermsVersion: TERMS_VERSION } : {}) }),
       });
       const data: unknown = await res.json().catch(() => null);
       if (
@@ -194,7 +196,7 @@ export function useApiKeysController(
 
   const state: ApiKeysPanelState = {
     apiKeys, quota, newKeyName, generatedSecret, isGeneratingKey,
-    showGenerateForm, copiedKey, revokingKeyId, selectedScopes, keyExpiry,
+    showGenerateForm, copiedKey, revokingKeyId, selectedScopes, keyExpiry, acceptedTerms,
   };
 
   const actions: ApiKeysPanelActions = {
@@ -204,6 +206,7 @@ export function useApiKeysController(
     onNameChange: setNewKeyName,
     onToggleScope: handleToggleScope,
     onExpiryChange: setKeyExpiry,
+    onAcceptedTermsChange: setAcceptedTerms,
     onGenerateKey: (event) => { void handleGenerateKey(event); },
     onRequestRevoke: setRevokingKeyId,
     onConfirmRevoke: (id) => { void keyRevoke.remove(id); },

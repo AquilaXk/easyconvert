@@ -602,6 +602,15 @@ export class KeyStore {
     return true;
   }
 
+  /** Removes the daily conversion counts of `userId` kept in this process (`<userId>:<day>`), and answers how many it removed. */
+  public forgetUsage(userId: string): number {
+    this.ensureInitialized();
+    const owned = [...this.dailyUsage.keys()].filter((dateKey) => dateKey.startsWith(`${userId}:`));
+    owned.forEach((dateKey) => this.dailyUsage.delete(dateKey));
+    if (owned.length > 0) this.persist();
+    return owned.length;
+  }
+
   public resetStore() {
     this.keys.clear();
     this.keyHashIndex.clear();

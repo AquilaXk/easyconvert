@@ -195,14 +195,26 @@ export const internalPaths = {
     get: {
       ...INTERNAL,
       summary: 'Start OAuth Sign-In',
-      description: 'Returns the authorization URL and binds the OAuth state to the browser with an HttpOnly cookie.',
+      description:
+        'Returns the authorization URL and binds the OAuth state to the browser with an HttpOnly cookie. A sign-in that may create an account sends the accepted terms version; the state keeps it only when it is the version in force.',
       operationId: 'getOAuthAuthorizationUrl',
       security: PUBLIC_ACCESS,
+      parameters: [
+        { name: 'locale', in: 'query', required: false, schema: { type: 'string', enum: ['en', 'ko'] }, description: 'Language the callback answers in.' },
+        {
+          name: 'acceptedTermsVersion',
+          in: 'query',
+          required: false,
+          schema: { type: 'string' },
+          description: 'Version (effective date) of the terms of service accepted on the sign-up form. Without the version in force, a Google account that has no EasyConvert account yet is not created.',
+        },
+      ],
       responses: {
         '200': {
           ...createJsonResponse('Authorization URL.', { success: { type: 'boolean' }, url: { type: 'string' } }),
           headers: { 'Set-Cookie': { schema: { type: 'string' }, description: 'OAuth state cookie.' } },
         },
+        '400': createCodedErrorResponse('An earlier version of the terms of service, sent by a page loaded before they changed: reload the page.', ['terms_outdated']),
         '500': createErrorResponse('OAuth is not configured.'),
       },
     },
@@ -211,7 +223,8 @@ export const internalPaths = {
     get: {
       ...INTERNAL,
       summary: 'Complete OAuth Sign-In',
-      description: 'Verifies the OAuth state cookie, exchanges the code, and redirects to the dashboard with a session cookie, or to `/auth?error=...`.',
+      description:
+        'Verifies the OAuth state cookie, exchanges the code, and redirects to the dashboard with a session cookie, or to `/auth?error=...`. A Google account without an EasyConvert account is created only when the state carries the terms version in force; otherwise the redirect goes to `/auth?tab=register&error=terms_required`, or `error=terms_outdated` when the terms changed during the sign-in.',
       operationId: 'completeOAuthSignIn',
       security: PUBLIC_ACCESS,
       parameters: [
@@ -285,7 +298,10 @@ export const internalPaths = {
       }),
       responses: {
         '200': sessionUserResponse('Account created and signed in.'),
-        '400': createCodedErrorResponse('Invalid JSON, email, or password length, or terms of service not accepted in their current version.', ['invalid_json', 'invalid_email', 'password_length', 'terms_not_accepted']),
+        '400': createCodedErrorResponse(
+          'Invalid JSON, email, or password length; terms of service not accepted (`terms_not_accepted`), or accepted in an earlier version from a page loaded before they changed (`terms_outdated`).',
+          ['invalid_json', 'invalid_email', 'password_length', 'terms_not_accepted', 'terms_outdated']
+        ),
         '409': createCodedErrorResponse('Email address already registered.', ['account_exists']),
         '500': createErrorResponse('Registration failed on the server (fixed `error`, no `code`).'),
       },

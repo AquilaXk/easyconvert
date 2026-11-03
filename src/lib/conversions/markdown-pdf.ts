@@ -1,4 +1,4 @@
-import { HeadingSlugs } from './github-slug';
+import { HeadingSlugs } from '../markdown/github-slug';
 
 /**
  * Markdown to HTML for the PDF routes (in-process renderer and LibreOffice staging).

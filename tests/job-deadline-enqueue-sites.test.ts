@@ -92,7 +92,7 @@ describe('no conversion job is queued without a deadline', () => {
 
   it('sets the timeout in the wrapper itself, and the options type has no timeout to supply', () => {
     const wrapper = fs.readFileSync(path.join(SRC_DIR, 'lib/queue/enqueue.ts'), 'utf8');
-    expect(wrapper).toMatch(/Omit<JobOptions,\s*'timeout'>/);
+    expect(wrapper).toMatch(/Omit<JobOptions,\s*'timeout'(\s*\|\s*'[A-Za-z]+')*>/);
     expect(wrapper).toMatch(/\.\.\.opts,\s*timeout,/);
   });
 

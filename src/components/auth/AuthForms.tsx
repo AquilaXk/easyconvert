@@ -17,6 +17,7 @@ const OAUTH_ERROR_CODES = [
   'oauth_exchange_failed',
   'account_linking_required',
   'terms_required',
+  'terms_outdated',
 ] as const;
 
 export type OAuthErrorKey = (typeof OAUTH_ERROR_CODES)[number] | 'generic';

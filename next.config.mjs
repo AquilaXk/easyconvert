@@ -18,7 +18,7 @@ const nextConfig = {
 
 /** The legal pages import their Markdown from docs/legal as text (`?raw`, src/lib/legal/texts.ts), as Vite does in the tests. */
 function importMarkdownAsText(webpackConfig) {
-  webpackConfig.module.rules.push({ resourceQuery: /raw/, type: 'asset/source' });
+  webpackConfig.module.rules.push({ resourceQuery: /^\?raw$/, type: 'asset/source' });
   return webpackConfig;
 }
 

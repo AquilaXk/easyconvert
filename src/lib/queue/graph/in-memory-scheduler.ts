@@ -273,6 +273,11 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     return JSON.parse(JSON.stringify(data.state));
   }
 
+  async forgetEndedGraph(graphId: string): Promise<void> {
+    const data = this.graphs.get(graphId);
+    if (data) forgetWebhookSecret(data.state);
+  }
+
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const data = this.graphs.get(graphId);
     if (!data || !recordEnd(data.state, 'cancelled', reason)) return false;
@@ -309,7 +314,13 @@ function endedGraph(data: InternalGraphData): EndedGraph {
     reservationId: data.state.reservationId,
     inputKeys: graphInputKeys(data.state.graph.nodes),
     readState: async () => data.state,
+    forget: async () => forgetWebhookSecret(data.state),
   };
+}
+
+/** Drops the webhook secret of an ended graph. The process keeps its state until it stops, as it keeps its jobs. */
+function forgetWebhookSecret(state: GraphExecutionState): void {
+  delete state.webhookSecret;
 }
 
 /** Marks every node of the ended `state` whose status is not in `ended` cancelled, and answers their ids. */

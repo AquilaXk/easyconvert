@@ -6,7 +6,9 @@ import { Moon, Sun, ShieldCheck } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
-import { DIRECTORY_CATEGORIES, SECONDARY_LINKS } from './site-links';
+import { DIRECTORY_CATEGORIES, SECONDARY_LINKS, type SiteLink } from './site-links';
+
+const isEmphasized = (link: SiteLink) => link.emphasized === true;
 
 export default function Footer() {
   const t = useTranslations('footer');
@@ -46,7 +48,7 @@ export default function Footer() {
                 key={item.key}
                 href={item.href}
                 className={`min-h-[44px] sm:min-h-[36px] inline-flex items-center hover:text-ink transition-colors ${
-                  'emphasized' in item ? 'text-ink font-bold' : 'text-ink-2 font-medium'
+                  isEmphasized(item) ? 'text-ink font-bold' : 'text-ink-2 font-medium'
                 }`}
               >
                 {tLinks(item.key)}

@@ -8,6 +8,8 @@ import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { clusterKeySlot, crc16Xmodem } from './helpers/redis-cluster-slot';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
+import { endedJobRetentionMs } from '../src/lib/queue/enqueue';
+import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 
 /**
  * Job graphs on a real Redis server, executed by real queue workers. Runs only when REDIS_URL
@@ -222,6 +224,28 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       expect(state?.failedNodes).toBe(0);
     });
 
+    it.each(['cancelled', 'failed'] as const)('drops the webhook secret of a %s graph and lets its keys expire after the ended-job retention', async (end) => {
+      const dispatch = vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true } as never);
+      const scheduler = isolatedScheduler(redis);
+      const graphId = uniqueId(`forget-${end}`);
+      const keys = scheduler.graphKeys(graphId);
+      await scheduler.initGraph(graphId, sealGraph(graphId, chain), { webhookUrl: 'https://93.184.215.14/hook', webhookSecret: 'whsec_graph_plain' });
+      expect(await redis.pttl(keys.graph)).toBe(-1);
+
+      if (end === 'cancelled') await scheduler.cancelGraph(graphId);
+      else await scheduler.onNodeFailed(graphId, 'a', 'boom');
+
+      if (end === 'failed') expect(dispatch.mock.calls[0][3]).toBe('whsec_graph_plain');
+      expect(await redis.hget(keys.graph, 'webhookSecret')).toBe('');
+      for (const key of Object.values(keys)) {
+        if ((await redis.exists(key)) === 0) continue;
+        const ttl = await redis.pttl(key);
+        expect(ttl).toBeGreaterThan(0);
+        expect(ttl).toBeLessThanOrEqual(endedJobRetentionMs());
+      }
+      dispatch.mockRestore();
+    });
+
     it('keeps every key of each graph script in one cluster slot', async () => {
       expect(crc16Xmodem('123456789')).toBe(0x31c3); // CRC-16/XMODEM check value
       const calls: string[][] = [];
@@ -247,7 +271,7 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       await scheduler.initGraph(other, sealGraph(other, chain));
       await scheduler.cancelGraph(other);
 
-      expect(calls.length).toBe(6);
+      expect(calls.length).toBe(8);
       for (const keys of calls) {
         expect(new Set(keys.map(clusterKeySlot)).size).toBe(1);
       }

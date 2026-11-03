@@ -16,6 +16,7 @@ import { DELETE as deleteDlq, GET as readDlq } from '../src/app/api/webhooks/dlq
 import { POST as replayDlq } from '../src/app/api/webhooks/dlq/[id]/replay/route';
 import { useDashboardErrorWording } from '../src/components/i18n/error-wording';
 import { DASHBOARD_REFUSAL_CODES } from '../src/lib/refusal-codes';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 import type { ApiKeyScope } from '../src/lib/api-keys/types';
 import { renderDom, visibleText } from './helpers/rendered-dom';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
@@ -177,7 +178,7 @@ describe('a dashboard route', () => {
 
   it('refuses key settings it cannot take with 400 invalid_key_settings, and a grace period out of range with invalid_grace_period', async () => {
     const cookie = await sessionCookie();
-    const settings = await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: { scopes: ['admin'] } })));
+    const settings = await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: { acceptedTermsVersion: TERMS_VERSION, scopes: ['admin'] } })));
     expect(settings).toMatchObject({ status: 400, body: { code: 'invalid_key_settings' } });
     const update = await answer(await updateKey(request('/api/keys/k', { method: 'PATCH', cookie, body: { name: ' ' } }), params('k')));
     expect(update).toMatchObject({ status: 400, body: { code: 'invalid_key_settings' } });
@@ -187,13 +188,20 @@ describe('a dashboard route', () => {
 
   it('answers a key it could not make with 500 key_create_failed and a fixed sentence', async () => {
     vi.spyOn(redisKeyStore, 'generateApiKey').mockRejectedValueOnce(new Error('connect ECONNREFUSED /var/run/redis.sock'));
-    const { status, body } = await answer(await createKey(request('/api/keys', { method: 'POST', cookie: await sessionCookie(), body: {} })));
+    const { status, body } = await answer(await createKey(request('/api/keys', { method: 'POST', cookie: await sessionCookie(), body: { acceptedTermsVersion: TERMS_VERSION } })));
     expect({ status, code: body.code }).toEqual({ status: 500, code: 'key_create_failed' });
     expect(String(body.error)).not.toContain('ECONNREFUSED');
   });
 
   it('keeps a code only where the status cannot say the cause', () => {
-    expect([...DASHBOARD_REFUSAL_CODES].sort()).toEqual(['admin_scope_required', 'invalid_grace_period', 'invalid_key_settings', 'key_create_failed']);
+    expect([...DASHBOARD_REFUSAL_CODES].sort()).toEqual([
+      'admin_scope_required',
+      'invalid_grace_period',
+      'invalid_key_settings',
+      'key_create_failed',
+      'terms_not_accepted',
+      'terms_outdated',
+    ]);
   });
 
   it('words each refusal by its code in the page language, with none of the English the route sent', async () => {
@@ -201,12 +209,16 @@ describe('a dashboard route', () => {
     const refusals = [
       await answer(await listKeys(request('/api/keys'))),
       await answer(await deleteFile(request('/api/account/files/missing', { method: 'DELETE', cookie }), params('missing'))),
-      await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: { scopes: ['admin'] } }))),
+      await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: { acceptedTermsVersion: TERMS_VERSION, scopes: ['admin'] } }))),
+      await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: {} }))),
+      await answer(await createKey(request('/api/keys', { method: 'POST', cookie, body: { acceptedTermsVersion: '2020-01-01' } }))),
     ];
     expect(refusals.map(({ body, status }) => worded('ko', body, status))).toEqual([
       '계속하려면 로그인해 주세요.',
       '찾는 항목이 더 이상 없어요.',
       'API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.',
+      'API 키를 만들려면 이용약관에 동의해 주세요.',
+      '이 페이지를 연 뒤에 이용약관이 바뀌었어요. 페이지를 새로 고친 뒤 다시 동의해 주세요.',
     ]);
     for (const { body, status } of refusals) expect(worded('en', body, status)).not.toContain(String(body.error));
   });

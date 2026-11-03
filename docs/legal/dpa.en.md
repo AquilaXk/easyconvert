@@ -29,7 +29,9 @@ You authorise these subprocessors:
 | Subprocessor | Task | Location |
 | --- | --- | --- |
 | Oracle Corporation (Oracle Cloud Infrastructure) | Hosting | Seoul, Republic of Korea |
-| Cloudflare, Inc. | Delivery and protection of the website and the API | Data centres worldwide |
+| Cloudflare, Inc. | Delivery and protection of the website and the API, and forwarding of the mail sent to support@aquilaxk.site to the operator's mailbox, without keeping it | Data centres worldwide |
+
+Mail you send to support@aquilaxk.site arrives in the operator's own mailbox, where the operator reads and answers it.
 
 We tell you of a new or replaced subprocessor by updating this page at least 30 days before the change. You can object within that time through the [contact page](/contact). If we cannot meet your objection, you can stop using the service. We bind each subprocessor to data protection obligations that are no less protective than these terms, and we remain responsible for its work. A subprocessor cannot pass the processing to another party without our consent.
 
@@ -42,9 +44,9 @@ We help you, as far as the nature of the processing allows:
 
 We tell you without undue delay after we become aware of a personal data breach that affects your data.
 
-## 7. Deletion at the end
+## 7. Return and deletion at the end
 
-The personal data is deleted on the schedule in section 3 of the [Privacy Policy](/privacy). We do not keep copies. At the end of the service, any personal data that remains is deleted, unless a law requires us to keep it.
+At the end of the service, you choose whether we return the personal data to you or delete it. Your results are returned to you by their download until they are deleted. The personal data is deleted on the schedule in section 3 of the [Privacy Policy](/privacy), and you can ask through the [contact page](/contact) for its deletion before that time. We do not keep copies, unless a law requires us to keep the data.
 
 ## 8. Information and audits
 
