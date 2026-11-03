@@ -47,7 +47,7 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   return body;
 }
 
-function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
+async function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
   applyProxyFromEnvironment();
   return retryPaced(url, RETRIES, run, (message) => new FetchError(message));
 }

@@ -539,23 +539,29 @@ jobs:
       # asked for every file again the next night, since the cache of a job that fails is not kept. Only a shard that wrote a file
       # after the restore saves (by modification time, so a file replaced by one of the same size counts), because the shards hold
       # 200 to 450 MB each and the repository's caches share 10 GB. Files are digest-checked before they are written, so what is
-      # kept is complete; a partial file of a killed run is left out. The key carries the run id: a cache entry is immutable, and
-      # the restore above reads the newest.
+      # kept is complete. The partial file of a killed run is deleted first: the cache action archives the directory whole, and an
+      # exclusion pattern under a directory path removes nothing from it. The key carries the run id: a cache entry is immutable,
+      # and the restore above reads the newest.
       - name: Look for corpus files written by this run
         if: always()
         id: written
         run: |
-          if [ -n "$(find "$HOME/.cache/easyconvert-realworld" -type f ! -name '*.part' -newer "$RUNNER_TEMP/realworld-restored" 2>/dev/null | head -n 1)" ]; then
-            echo "any=true" >> "$GITHUB_OUTPUT"
+          cache="$HOME/.cache/easyconvert-realworld"
+          marker="$RUNNER_TEMP/realworld-restored"
+          if [ ! -f "$marker" ]; then
+            echo "::warning::The restore marker is missing, so the files of this run cannot be told from the restored ones; the corpus cache is not saved."
+          elif [ -d "$cache" ]; then
+            find "$cache" -type f -name '*.part' -delete
+            if [ -n "$(find "$cache" -type f -newer "$marker" | head -n 1)" ]; then
+              echo "any=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Save the corpus cache
         if: always() && steps.written.outputs.any == 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: |
-            ~/.cache/easyconvert-realworld
-            !~/.cache/easyconvert-realworld/**/*.part
+          path: ~/.cache/easyconvert-realworld
           key: realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload the shard report
