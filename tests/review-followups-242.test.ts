@@ -8,6 +8,7 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { GET as listQueueJobsRoute } from '../src/app/api/queue/jobs/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { API_KEY_BURST_LIMITS } from '../src/lib/api-keys/guard';
+import { TIER_LIMITS } from '../src/lib/plan-limits';
 import type { User } from '../src/lib/auth/types';
 import type { ConversionJobData } from '../src/lib/types';
 
@@ -99,12 +100,14 @@ describe('PR #246 review follow-ups', () => {
     const BURST_ATTEMPT_FACTOR = 3;
 
     it('labels a per-key burst rejection as rate-limited, not quota-exceeded', async () => {
-      const user = await createUser('burst_type', 'free');
+      // A plan whose daily allowance outlasts every attempt, so the 429 can only come from the burst bucket.
+      const user = await createUser('burst_type', 'pro');
       const key = await redisKeyStore.generateApiKey(user.id, 'burst', { scopes: ['convert:write'] });
-      const capacity = API_KEY_BURST_LIMITS.free.capacity;
+      const capacity = API_KEY_BURST_LIMITS.pro.capacity;
 
       // The bucket refills while requests run, so a slow runner can need more than capacity + 1 calls.
       const maxAttempts = capacity * BURST_ATTEMPT_FACTOR;
+      expect(TIER_LIMITS.pro).toBeGreaterThan(maxAttempts);
       let last: Response | undefined;
       for (let i = 0; i < maxAttempts && last?.status !== 429; i++) {
         const formData = new FormData();
