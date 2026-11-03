@@ -37,6 +37,7 @@ describe('the intro of a converter page', () => {
     ['png-to-jpg', 'ko', 'PNG 파일을 JPG 형식으로 온라인에서 변환해요. WEBP, AVIF, TIFF, GIF, BMP 형식으로도 바꿀 수 있어요. 옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
     ['mp4-to-mp3', 'en', 'Extract the sound of MP4 files as MP3 files online. Other targets include WEBM, MKV, AVI, and MOV. Options include bitrate, sample rate, and audio channels.'],
     ['docx-to-pdf', 'en', 'Convert DOCX files to PDF online. Other targets include HTML, TXT, MD, EPUB, and ODT.'],
+    ['pdf-to-docx', 'en', 'Convert PDF files to DOCX online. Other targets include HTML, MD, RTF, TXT, and EPUB.'],
     ['video-converter', 'en', 'Convert videos online. Targets include WEBM, MKV, AVI, MOV, and MP3.'],
     ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있어요.'],
     ['ttf-converter', 'en', 'Convert TTF fonts online. Targets include WOFF, WOFF2, EOT, OTF, and SVG.'],
@@ -139,11 +140,16 @@ function optionsSentence(subjects: string[]): string {
 
 /** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner. */
 
+/** The pair pages that name options are those of images, video and audio; a document, font, archive or data pair page does not. */
+const OPTION_INTRO_CATEGORIES = ['image', 'video', 'audio'];
+
 describe('the options a pair page names', () => {
-  it('are the first options its dialog renders, in the dialog order, on every registered pair', () => {
+  it('are the first options its dialog renders for an image, video or audio source, in the dialog order, and none for any other source', () => {
     const differing = registeredPairs.flatMap((slug) => {
       const [source, target] = slug.split('-to-');
-      const rendered = subjectsTheDialogRenders(source, target).slice(0, 3);
+      const rendered = OPTION_INTRO_CATEGORIES.includes(FORMAT_REGISTRY[source].category)
+        ? subjectsTheDialogRenders(source, target).slice(0, 3)
+        : [];
       const { description } = slugPageCopy(slug, 'en');
       const named = rendered.length === 0 ? !/option/i.test(description) : description.endsWith(` ${optionsSentence(rendered)}`);
       return named ? [] : [`${slug}: dialog ${rendered.join(', ')} | intro ${description}`];
@@ -152,8 +158,8 @@ describe('the options a pair page names', () => {
   }, REGISTRY_WIDE_TIMEOUT_MS);
 
   it.each([
-    ['csv-to-xlsx', 'en', 'Options include the delimiter.'],
-    ['csv-to-xlsx', 'ko', '구분 기호 옵션을 정할 수 있어요.'],
+    ['png-to-hocr', 'en', 'Options include the text recognition.'],
+    ['png-to-hocr', 'ko', '문자 인식 옵션을 정할 수 있어요.'],
     ['png-to-jpg', 'ko', '옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
   ] as const)('of %s in %s reads naturally with one subject or several', (slug, locale, sentence) => {
     expect(slugPageCopy(slug, locale).description.endsWith(sentence), slugPageCopy(slug, locale).description).toBe(true);

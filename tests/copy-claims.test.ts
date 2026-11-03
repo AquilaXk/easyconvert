@@ -50,9 +50,8 @@ const UNMEASURED_CLAIMS: Readonly<Record<TestLocale, readonly RegExp[]>> = {
 /** Each message that states a true property of a format or codec in one of the words above, by key. */
 const FORMAT_FACTS: ReadonlySet<string> = new Set([
   'features.pairs.flac-mp3', 'options.audio.codecs.flac', 'siteLinks.losslessPng', 'status.components.pipeline-audio.description',
-  'formatSpecs.dxf.adv2', 'formatSpecs.flac.desc', 'formatSpecs.gif.desc', 'formatSpecs.m4a.adv1', 'formatSpecs.m4a.desc',
-  'formatSpecs.pdf.adv1', 'formatSpecs.png.adv1', 'formatSpecs.png.desc', 'formatSpecs.svg.desc', 'formatSpecs.tar.adv1',
-  'formatSpecs.ttf.adv1', 'formatSpecs.webp.adv1', 'formatSpecs.webp.desc', 'formatSpecs.woff2.adv2', 'formatSpecs.zip.adv2',
+  'formatSpecs.flac.desc', 'formatSpecs.gif.desc', 'formatSpecs.m4a.desc', 'formatSpecs.png.desc', 'formatSpecs.svg.desc',
+  'formatSpecs.webp.desc',
   'formatDescriptions.alac', 'formatDescriptions.ape', 'formatDescriptions.arc', 'formatDescriptions.flac', 'formatDescriptions.pdfa',
   'formatDescriptions.png', 'formatDescriptions.webp', 'formatDescriptions.zip', 'formatDescriptions.zstd',
 ]);
@@ -96,7 +95,7 @@ describe('the interface copy', () => {
   });
 
   it('catches each kind of retired claim it guards against, and not a format fact or a question', () => {
-    expect(claimsIn('en', 'formatSpecs.csv.adv1', 'Lossless conversion of every table')).toBe(true);
+    expect(claimsIn('en', 'formatSpecs.csv.desc', 'Lossless conversion of every table')).toBe(true);
     const claims = {
       en: ['Converted directly in your browser.', 'Zero data retention guaranteed.', 'High-fidelity media transcoding.', '100% In-Browser Execution', 'X-Zero-Data-Retention: true', 'Fast, accurate file conversions.', 'Accurate image structure translation', 'Preserves container layout', 'Vector artwork preservation in PDF', 'Converts precisely.', 'Supported pairs run locally in browser memory.', 'Files are processed in-memory.', 'Standard lossless conversion parameters apply.', 'Crisp rasterized PNG graphic'],
       ko: ['파일은 보관하지 않아요.', '고음질로 인코딩해요.', '휘발성 메모리', '모든 처리를 브라우저에서 실행', '빠르고 정확하게 변환해요.', '구조를 정확하게 변환', '벡터 아트워크를 PDF로 보존', '빠르게 해결할게요.', '브라우저 메모리에서 바로 처리해요.', '기본 무손실 변환 설정이 적용돼요.', '선명한 PNG 이미지로 래스터화'],
@@ -105,7 +104,7 @@ describe('the interface copy', () => {
       for (const sample of claims[locale]) expect(claimsIn(locale, 'converterPage.sample', sample), sample).toBe(true);
     }
     const notClaims = {
-      en: [['converterPage.faq.q', 'Does converting PNG to JPG preserve layout and quality?'], ['features.sample', 'Breakfast menus and steadfast rules'], ['formatSpecs.mp4.adv3', 'Supports fast-start web playback'], ['options.audio.codecs.flac', 'FLAC (Lossless)'], ['status.diagnostics.probes.memory-sandbox.name', 'Memory buffer check']],
+      en: [['converterPage.sample', 'Does converting PNG to JPG preserve layout and quality?'], ['features.sample', 'Breakfast menus and steadfast rules'], ['formatSpecs.mp4.desc', 'Supports fast-start web playback'], ['options.audio.codecs.flac', 'FLAC (Lossless)'], ['status.diagnostics.probes.memory-sandbox.name', 'Memory buffer check']],
       ko: [['unitConverter.referenceHeading', 'kg → lb 빠른 환산표'], ['formatDescriptions.pdfa', '장기 보존용으로 특화된 ISO 표준 PDF예요.'], ['status.diagnostics.probes.opfs.unsupported', 'Blob 메모리 스트리밍으로 처리']],
     } as const;
     for (const locale of ['en', 'ko'] as const) {

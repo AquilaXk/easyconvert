@@ -313,39 +313,44 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(select(breadcrumb[0], 'svg')).toHaveLength(4);
   });
 
-  it('verifies Dynamic Converter Page implements 3-step visual conversion workflow', () => {
-    const page = renderSlug('pdf-to-docx');
-    const text = visibleText(page);
+  it('verifies a pair page holds its title, upload prompt, two format cards and related conversions, and nothing that explains how to convert', () => {
+    const main = select(renderSlug('pdf-to-docx'), 'main')[0];
 
-    expect(phrasesMissing(text, ['Three steps from upload to download.', 'How to Convert PDF to DOCX'])).toEqual([]);
-    expect(headings(page).filter((h) => ['Upload PDF File(s)', 'Choose to DOCX', 'Download Your DOCX'].includes(h))).toEqual([
-      'Upload PDF File(s)',
-      'Choose to DOCX',
-      'Download Your DOCX',
+    expect(headings(main)).toEqual([
+      'PDF to DOCX Converter',
+      'Select your file to convert',
+      'PDF Portable Document Format',
+      'DOCX Office Open XML Document',
+      'Convert from PDF',
+      'Convert to DOCX',
     ]);
-    // The step numerals appear in order before their headings.
-    expect(text.match(/\b0[123] (?:Upload PDF File\(s\)|Choose to DOCX|Download Your DOCX)/g)).toEqual([
-      '01 Upload PDF File(s)',
-      '02 Choose to DOCX',
-      '03 Download Your DOCX',
+    expect(links(main).filter((link) => link.text.endsWith(' Converter'))).toEqual([
+      { text: 'PDF Converter', href: '/pdf-converter' },
+      { text: 'DOCX Converter', href: '/docx-converter' },
     ]);
+    expect(phrasesPresent(visibleText(main), ['Three steps', 'How to Convert', 'Specification', 'MIME', 'Frequently Asked', 'Pick a target format', 'Pick a source format', 'Choose an output format'])).toEqual([]);
   });
 
-  it('verifies Side-by-Side Format Specification Comparison Deck and technical dossier', () => {
-    const page = renderSlug('pdf-to-docx');
-    const text = visibleText(page);
+  it('verifies a format page describes its one format without a link to itself, and a category page describes none', () => {
+    const format = select(renderSlug('pdf-converter'), 'main')[0];
+    expect(headings(format)).toEqual(['PDF Converter', 'Select your file to convert', 'PDF Portable Document Format', 'Convert from PDF', 'Convert to PDF']);
+    expect(links(format).filter((link) => link.text.endsWith(' Converter'))).toEqual([]);
 
-    expect(phrasesMissing(text, ['The standard, MIME type, and maintainer of each format.', 'PDF vs DOCX Specifications', 'SOURCE FORMAT'])).toEqual([]);
-    expect(headings(page).filter((h) => /\((?:Portable Document Format|Microsoft Word Document)\)/.test(h))).toEqual([
-      'PDF (Portable Document Format)',
-      'DOCX (Microsoft Word Document)',
-    ]);
-    // Every dossier card lists the same fields for the source and the target.
-    const fieldLabels = ['Full Name', 'Developer', 'MIME Type', 'Category'];
-    for (const label of fieldLabels) {
-      expect(text.split(label).length - 1).toBeGreaterThanOrEqual(2);
-    }
-    expect(phrasesMissing(text, ['Portable Document Format', 'application/pdf', 'Adobe Systems / ISO 32000'])).toEqual([]);
+    const category = select(renderSlug('document-converter'), 'main')[0];
+    expect(headings(category)).toEqual(['Document Converter', 'Select your file to convert', 'Convert from DOCX', 'Convert to DOCX']);
+  });
+
+  it('verifies the related-conversion lists of a format page offer no conversion of a format to itself or to its other name', () => {
+    const selfPairs = (slug: string, format: string, aliases: readonly string[]) => {
+      const names = [format, ...aliases].map((name) => name.toUpperCase());
+      return links(select(renderSlug(slug), 'main')[0])
+        .filter((link) => names.some((from) => names.some((to) => link.text === `${from} to ${to}`)))
+        .map((link) => link.text);
+    };
+    expect(selfPairs('pdf-converter', 'pdf', [])).toEqual([]);
+    expect(selfPairs('mp3-converter', 'mp3', [])).toEqual([]);
+    expect(selfPairs('jpg-converter', 'jpg', ['jpeg', 'jfif'])).toEqual([]);
+    expect(selfPairs('jpeg-converter', 'jpeg', ['jpg'])).toEqual([]);
   });
 
   it('verifies a page with no ad network configured shows no ad frame and reserves no space for one', () => {

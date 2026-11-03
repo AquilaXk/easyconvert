@@ -7,26 +7,26 @@ import { PairHero, QueueHeader } from '@/components/Hero';
 import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
 import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
-import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
+import { canonicalFormat } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { parseConverterSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import { formatCategoryLabel, useFormatDetail } from '@/components/converter/format-specs';
-import { buildContextualFaqs } from '@/components/converter/FormatFaqAndSteps';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
-import {
-  ConverterBreadcrumb,
-  ConverterWorkflowSteps,
-  FormatSpecDeck,
-} from '@/components/converter/FormatSpecDeck';
+import { ConverterBreadcrumb } from '@/components/converter/ConverterBreadcrumb';
+import { FormatCards } from '@/components/converter/FormatCards';
 import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
+/** Whether `format` is `other` itself or another name of it: a conversion of a format to itself is no pair to link. */
+function isSameFormat(format: string, other: string): boolean {
+  return canonicalFormat(format) === canonicalFormat(other);
+}
+
 /** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
-  const t = useTranslations('converterPage');
   const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
@@ -66,17 +66,17 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
   const tgtMeta = isPair ? getFormatDetail(tgtKey) : null;
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
-  const convertFromTargets = sourceFormatRegistry?.targetFormats || [
+  const convertFromTargets = (sourceFormatRegistry?.targetFormats || [
     'pdf',
     'docx',
     'png',
     'jpg',
     'txt',
-  ];
+  ]).filter((target) => !isSameFormat(target, srcKey));
 
   const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
   const convertToSources = Object.entries(FORMAT_REGISTRY)
-    .filter(([key, def]) => def.targetFormats.includes(targetForReverse) && key !== targetForReverse)
+    .filter(([key, def]) => def.targetFormats.includes(targetForReverse) && !isSameFormat(key, targetForReverse))
     .map(([key]) => key);
 
   const categoryName = sourceFormatRegistry?.category || 'document';
@@ -86,13 +86,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
     normalizedSlug === `${categoryName}-converter` ||
     normalizedSlug === `${categoryName}s-converter` ||
     (srcKey === categoryName.toLowerCase() && normalizedSlug.includes('-converter'));
-
-  const contextualFaqs = buildContextualFaqs(t, srcMeta, tgtMeta, isPair, totalFormatCount);
-  const srcUpper = srcMeta.extension.toUpperCase();
-  const tgtUpper = tgtMeta?.extension.toUpperCase() ?? '';
-  const faqTitle = isPair
-    ? t('faq.pairTitle', { src: srcUpper, tgt: tgtUpper })
-    : t('faq.singleTitle', { src: srcUpper });
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -114,6 +107,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
             sourceFormat={queue[0].sourceFormat}
             targetFormat={queueTarget}
             pageTitle={copy.title}
+            pageDescription={copy.description}
           />
         ) : (
           <PairHero
@@ -150,27 +144,13 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           />
         ) : (
           <>
-            <ConverterWorkflowSteps
-              srcMeta={srcMeta}
-              tgtMeta={tgtMeta}
-              isPair={isPair}
-              totalFormatCount={totalFormatCount}
-            />
-
-            <FormatSpecDeck srcMeta={srcMeta} tgtMeta={tgtMeta} isPair={isPair} />
+            {!isCategorySlug && <FormatCards srcMeta={srcMeta} tgtMeta={tgtMeta} />}
 
             <FormatCrossLinks
               sourceFormat={parsed.sourceFormat}
               convertFromTargets={convertFromTargets}
               targetForReverse={targetForReverse}
               convertToSources={convertToSources.slice(0, 30)}
-            />
-
-            <FaqSection
-              dailyLimit={dailyLimit}
-              customFaqs={contextualFaqs}
-              title={faqTitle}
-              subtitle={t('faq.subtitle', { src: srcUpper })}
             />
           </>
         )}

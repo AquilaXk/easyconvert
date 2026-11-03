@@ -113,7 +113,7 @@ describe('the Korean copy keeps one register and one set of terms', () => {
 
   it('carries no status code or protocol name in a sentence a person reads', () => {
     const protocolTerms = /HTTP\s*\d|\(HTTP|\bMIME\b|\bRBAC\b/;
-    const developerPages = /^(?:apiDocs|dashboard\.keys|dashboard\.usage|dashboard\.guide|home\.api|converterPage\.(?:dossier|specs)|formatSpecs|formatDescriptions)\./;
+    const developerPages = /^(?:apiDocs|dashboard\.keys|dashboard\.usage|dashboard\.guide|home\.api|formatSpecs|formatDescriptions)\./;
     expect(koreanEntries.filter(([key, text]) => !developerPages.test(key) && protocolTerms.test(text)).map(([key]) => key)).toEqual([]);
   });
 

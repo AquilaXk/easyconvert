@@ -114,4 +114,13 @@ describe('the header over the queue', () => {
     expect(host.querySelector('h1')!.textContent).toBe('PNG to WEBP Converter');
     expect(host.querySelector<HTMLInputElement>('#main-file-input')).not.toBeNull();
   });
+
+  it('keeps the intro of a converter page under its title, and says nothing under the title of the home page', async () => {
+    const intro = 'Convert PNG files to JPG online.';
+    const page = await mount(createElement(QueueHeader, { onFilesSelected: vi.fn(), sourceFormat: 'png', targetFormat: 'jpg', pageTitle: 'PNG to JPG Converter', pageDescription: intro }));
+    expect(page.querySelector('p')!.textContent).toBe(intro);
+    act(() => root?.unmount());
+    const home = await mount(createElement(QueueHeader, { onFilesSelected: vi.fn(), sourceFormat: 'png', targetFormat: 'jpg' }));
+    expect(home.querySelector('p')).toBeNull();
+  });
 });

@@ -103,101 +103,17 @@
       "converter": "{format} Converter",
       "pair": "{src} to {tgt}"
     },
-    "dossier": {
-      "fullName": "Full Name",
-      "developer": "Developer",
-      "mimeType": "MIME Type",
-      "category": "Category",
-      "source": "SOURCE FORMAT",
-      "target": "TARGET FORMAT",
-      "capabilities": "Key Capabilities"
-    },
-    "specs": {
-      "pairHeading": "{src} vs {tgt} Specifications",
-      "heading": "{format} Format Specification",
-      "intro": "The standard, MIME type, and maintainer of each format."
-    },
-    "steps": {
-      "heading": {
-        "pair": "How to Convert {src} to {tgt}",
-        "single": "How to Convert {src} Files"
-      },
-      "intro": "Three steps from upload to download.",
-      "upload": {
-        "heading": "Upload {src} File(s)",
-        "body": "Click 'Select File' or drag and drop {src} files into the workbench. You can also import a public link."
-      },
-      "choose": {
-        "pair": {
-          "heading": "Choose to {tgt}",
-          "body": "Confirm {tgt} as the output format, or pick another target and adjust optional conversion settings."
-        },
-        "single": {
-          "heading": "Select Destination Format",
-          "body": "Pick a target format from {count} supported audio, video, image, document, CAD, and archive formats."
-        }
-      },
-      "download": {
-        "pair": {
-          "heading": "Download Your {tgt}"
-        },
-        "single": {
-          "heading": "Download Converted Files"
-        },
-        "body": "Click 'Convert' to run the conversion and save each output file directly, or download a batch as one ZIP archive."
-      }
+    "formatCard": {
+      "link": "{format} Converter"
     },
     "crossLinks": {
       "from": {
-        "heading": "Convert from {format}",
-        "body": "Pick a target format to start a {format} conversion."
+        "heading": "Convert from {format}"
       },
       "to": {
-        "heading": "Convert to {format}",
-        "body": "Pick a source format to convert into {format}."
+        "heading": "Convert to {format}"
       },
       "pair": "{src} to {tgt}"
-    },
-    "faq": {
-      "pairTitle": "{src} to {tgt} Frequently Asked Questions",
-      "singleTitle": "{src} Converter Frequently Asked Questions",
-      "subtitle": "Questions about converting {src}: privacy, results, and several files at once.",
-      "howTo": {
-        "pair": {
-          "q": "How do I convert {src} to {tgt} for free?",
-          "a": "Drop your {src} file into the workbench above or click 'Select File', confirm {tgt} as the output format, and click Convert. Download the converted {tgt} file right away with no watermarks or account requirement."
-        },
-        "single": {
-          "q": "How do I convert {src} files online for free?",
-          "a": "Add your {src} file to the workbench above, pick an output format from {count} supported formats, and click Convert. Conversions are free and carry no watermark."
-        }
-      },
-      "privacy": {
-        "pair": {
-          "q": "How are {src} to {tgt} files handled for privacy?"
-        },
-        "single": {
-          "q": "How are {src} files handled for privacy?"
-        },
-        "a": "Some image, audio, and data conversions run in your browser, and their files stay on your device. The others are sent over TLS 1.3 to an isolated worker on our servers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
-      },
-      "quality": {
-        "pair": {
-          "q": "Does converting {src} to {tgt} preserve layout and quality?"
-        },
-        "single": {
-          "q": "Does {src} conversion preserve formatting and quality?"
-        },
-        "a": "It depends on the target format. What the target can hold is converted; what it cannot hold, such as the layers of a PSD in a JPG or the page layout of a PDF in plain text, is left out."
-      },
-      "batch": {
-        "q": "Can I batch-convert multiple {src} files at once?",
-        "a": "Yes. Add several files to the queue and convert them together, then save each result or download all of them as one ZIP file."
-      },
-      "install": {
-        "q": "Do I need to install desktop software or browser extensions?",
-        "a": "No installation is needed. EasyConvert runs in standard web browsers across macOS, Windows, Linux, iOS, and Android."
-      }
     }
   },
   "dashboard": {
@@ -518,23 +434,8 @@
       "data": "Structured Data",
       "fallback": "File Format"
     },
-    "developers": {
-      "audio": "Audio Engineering Standard",
-      "video": "Moving Picture Standard",
-      "image": "Digital Imaging Standard",
-      "document": "Open Document Standard",
-      "archive": "Archive Compression Standard",
-      "spreadsheet": "Tabular Data Standard",
-      "ebook": "Digital Publishing Standard",
-      "cad": "Engineering CAD Standard",
-      "font": "Digital Typography Standard",
-      "fallback": "Standard Specification"
-    },
     "fallbackName": "{ext} Format",
-    "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows.",
-    "advantages": {
-      "sandbox": "Converted in an isolated sandbox, and files are deleted automatically"
-    }
+    "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows."
   },
   "formatSelector": {
     "defaultTitle": "Select Format",
@@ -546,196 +447,100 @@
   },
   "formatSpecs": {
     "pdf": {
-      "desc": "PDF is an open ISO standard format for electronic document exchange. It encapsulates formatted text, vector graphics, raster images, and embedded fonts independent of operating system or viewer hardware.",
-      "adv1": "Preserves vector typography, pagination, and visual layout",
-      "adv2": "Cross-platform document viewing standard",
-      "adv3": "Supports digital signatures, interactive forms, and metadata"
+      "desc": "PDF is an open ISO standard format for electronic document exchange. It encapsulates formatted text, vector graphics, raster images, and embedded fonts independent of operating system or viewer hardware."
     },
     "docx": {
-      "desc": "DOCX is an XML-based document container used by Microsoft Word. It packages formatted text, tables, charts, embedded media, and styles inside a compressed ZIP archive.",
-      "adv1": "Editable typography, headers, footers, and tables",
-      "adv2": "Compact XML compression structure with broad interoperability",
-      "adv3": "Native compatibility across desktop and mobile word processors"
+      "desc": "DOCX is an XML-based document container used by Microsoft Word. It packages formatted text, tables, charts, embedded media, and styles inside a compressed ZIP archive."
     },
     "doc": {
-      "desc": "DOC is a binary document format developed by Microsoft for Word 97 through 2003. It stores styled text, inline graphics, tables, and formatting inside an OLE compound file container.",
-      "adv1": "Compatibility across legacy word processing workflows",
-      "adv2": "Supports embedded OLE objects, drawing shapes, and font metrics",
-      "adv3": "Direct migration source for modern open standards such as DOCX and PDF"
+      "desc": "DOC is a binary document format developed by Microsoft for Word 97 through 2003. It stores styled text, inline graphics, tables, and formatting inside an OLE compound file container."
     },
     "csv": {
-      "desc": "CSV stores two-dimensional tabular records as plain UTF-8 text lines with delimiter-separated fields and RFC 4180 quoting rules.",
-      "adv1": "Plain-text tabular layout readable in any editor or script",
-      "adv2": "Direct import and export across SQL databases, spreadsheets, and dataframe tools",
-      "adv3": "Low byte overhead well suited for streaming line-by-line parsers"
+      "desc": "CSV stores two-dimensional tabular records as plain UTF-8 text lines with delimiter-separated fields and RFC 4180 quoting rules."
     },
     "json": {
-      "desc": "JSON is a text data-interchange format encoding key-value objects, arrays, numbers, booleans, and UTF-8 strings per RFC 8259 and ECMA-404.",
-      "adv1": "Primary wire format for HTTP APIs and configuration schemas",
-      "adv2": "Built-in parsers across JavaScript, TypeScript, Python, Go, and Rust",
-      "adv3": "Represents nested hierarchical records cleanly"
+      "desc": "JSON is a text data-interchange format encoding key-value objects, arrays, numbers, booleans, and UTF-8 strings per RFC 8259 and ECMA-404."
     },
     "xlsx": {
-      "desc": "XLSX packages multi-sheet workbooks, typed cell values, shared string tables, formulas, and number formats inside a ZIP-compressed OpenXML archive.",
-      "adv1": "Supports up to 1,048,576 rows and 16,384 columns per worksheet",
-      "adv2": "Multi-sheet workbooks with typed cells, formulas, and number formatting",
-      "adv3": "Standard workbook interchange format across spreadsheet suites"
+      "desc": "XLSX packages multi-sheet workbooks, typed cell values, shared string tables, formulas, and number formats inside a ZIP-compressed OpenXML archive."
     },
     "xls": {
-      "desc": "XLS is the BIFF8 binary workbook format used by Excel 97 through 2003, storing worksheets, cell records, and formulas in a Compound File Binary stream.",
-      "adv1": "Interoperates with legacy accounting and reporting exports",
-      "adv2": "Converts cleanly to XLSX, CSV, JSON, and PDF",
-      "adv3": "Retains cell types, worksheet names, and numeric formatting"
+      "desc": "XLS is the BIFF8 binary workbook format used by Excel 97 through 2003, storing worksheets, cell records, and formulas in a Compound File Binary stream."
     },
     "pptx": {
-      "desc": "PPTX stores presentation slides, master layouts, DrawingML vector shapes, embedded images, and speaker notes inside an OpenXML ZIP package.",
-      "adv1": "Structured slide masters, vector shapes, and embedded media assets",
-      "adv2": "Clean XML part layout for slide rendering and PDF export",
-      "adv3": "Supported across desktop, web, and mobile presentation tools"
+      "desc": "PPTX stores presentation slides, master layouts, DrawingML vector shapes, embedded images, and speaker notes inside an OpenXML ZIP package."
     },
     "mp4": {
-      "desc": "MP4 is a digital multimedia container used to store video, audio, and subtitle streams. Derived from the ISO Base Media File Format, it combines high compression efficiency with native browser and hardware playback.",
-      "adv1": "Playback support across modern devices, TVs, and web browsers",
-      "adv2": "High compression efficiency preserving resolution and colour fidelity",
-      "adv3": "Supports progressive streaming and fast-start web playback"
+      "desc": "MP4 is a digital multimedia container used to store video, audio, and subtitle streams. Derived from the ISO Base Media File Format, it combines high compression efficiency with native browser and hardware playback."
     },
     "mp3": {
-      "desc": "MP3 is a lossy digital audio compression format. Psychoacoustic perceptual coding attenuates masked frequency components to reduce file size while retaining clear audio playback.",
-      "adv1": "Compact file size at roughly 10% of uncompressed PCM audio",
-      "adv2": "Native playback across digital audio players and web browsers",
-      "adv3": "Low bandwidth footprint suited for streaming and portable storage"
+      "desc": "MP3 is a lossy digital audio compression format. Psychoacoustic perceptual coding attenuates masked frequency components to reduce file size while retaining clear audio playback."
     },
     "wav": {
-      "desc": "WAV is an uncompressed audio container storing linear pulse-code modulation (LPCM) samples. It records acoustic waveforms sample-for-sample without lossy compression artifacts.",
-      "adv1": "Uncompressed PCM audio fidelity without encoding artifacts",
-      "adv2": "Minimal decoding overhead for low-latency audio editing",
-      "adv3": "Standard master exchange format for studio production and mastering"
+      "desc": "WAV is an uncompressed audio container storing linear pulse-code modulation (LPCM) samples. It records acoustic waveforms sample-for-sample without lossy compression artifacts."
     },
     "aac": {
-      "desc": "AAC is a perceptual audio coding standard designed as the successor to MP3. At matching bitrates, AAC delivers cleaner high-frequency detail across stereo and multichannel layouts.",
-      "adv1": "Higher coding efficiency than MP3 at matching bitrates",
-      "adv2": "Default audio codec across MP4 streaming and mobile platforms",
-      "adv3": "Supports up to 48 full-bandwidth channels and high sample rates"
+      "desc": "AAC is a perceptual audio coding standard designed as the successor to MP3. At matching bitrates, AAC delivers cleaner high-frequency detail across stereo and multichannel layouts."
     },
     "flac": {
-      "desc": "FLAC is an open, royalty-free lossless audio codec. Compressed FLAC streams decode back to an exact bit-for-bit match of the source PCM audio.",
-      "adv1": "Bit-exact audio reconstruction with 30 to 50% size reduction",
-      "adv2": "Open-source, royalty-free specification with embedded CRC checksums",
-      "adv3": "Supports sample depths up to 32 bits and sample rates up to 655 kHz"
+      "desc": "FLAC is an open, royalty-free lossless audio codec. Compressed FLAC streams decode back to an exact bit-for-bit match of the source PCM audio."
     },
     "ogg": {
-      "desc": "OGG is an open multimedia bitstream container commonly paired with the Vorbis or Opus audio codecs for patent-free streaming and game asset delivery.",
-      "adv1": "Open-source and patent-free container and codec standard",
-      "adv2": "Variable bitrate encoding with low framing overhead",
-      "adv3": "Broad support in game engines and desktop web browsers"
+      "desc": "OGG is an open multimedia bitstream container commonly paired with the Vorbis or Opus audio codecs for patent-free streaming and game asset delivery."
     },
     "m4a": {
-      "desc": "M4A is an audio-only MPEG-4 container carrying AAC or Apple Lossless (ALAC) streams alongside structured chapter and cover-art metadata.",
-      "adv1": "Compact AAC or lossless ALAC audio inside an ISO MP4 container",
-      "adv2": "Native playback and metadata tagging on macOS, iOS, and web browsers",
-      "adv3": "Supports chapter markers, cover art, and gapless playback"
+      "desc": "M4A is an audio-only MPEG-4 container carrying AAC or Apple Lossless (ALAC) streams alongside structured chapter and cover-art metadata."
     },
     "png": {
-      "desc": "PNG is a raster graphics file format using lossless DEFLATE compression. It supports indexed palettes, greyscale, and full RGBA alpha transparency up to 16 bits per channel.",
-      "adv1": "Lossless compression with zero generation loss across repeated saves",
-      "adv2": "Full 8-bit and 16-bit alpha channel transparency",
-      "adv3": "Preferred raster format for UI graphics, diagrams, logos, and screenshots"
+      "desc": "PNG is a raster graphics file format using lossless DEFLATE compression. It supports indexed palettes, greyscale, and full RGBA alpha transparency up to 16 bits per channel."
     },
     "jpg": {
-      "desc": "JPG is the ISO standard for continuous-tone photographic images, applying Discrete Cosine Transform (DCT) compression tuned for natural colour gradients.",
-      "adv1": "Adjustable quality factor balancing visual detail and byte size",
-      "adv2": "Native support across every web browser, operating system, and camera",
-      "adv3": "Small payload size for web publishing and messaging"
+      "desc": "JPG is the ISO standard for continuous-tone photographic images, applying Discrete Cosine Transform (DCT) compression tuned for natural colour gradients."
     },
     "jpeg": {
-      "desc": "JPEG is the standard continuous-tone photographic format identical in bitstream structure to JPG, using DCT block compression for natural imagery.",
-      "adv1": "Universal hardware and software decoding support",
-      "adv2": "Configurable chroma subsampling and quantization quality",
-      "adv3": "Default output format across digital cameras and scanners"
+      "desc": "JPEG is the standard continuous-tone photographic format identical in bitstream structure to JPG, using DCT block compression for natural imagery."
     },
     "webp": {
-      "desc": "WebP provides both lossy VP8 intra-frame coding and lossless dictionary compression for web imagery, supporting alpha transparency, ICC profiles, and animation.",
-      "adv1": "26% smaller lossless payloads than PNG with full alpha transparency",
-      "adv2": "25 to 34% smaller lossy files than JPEG at equivalent SSIM",
-      "adv3": "Supports multi-frame animation, ICC colour profiles, and EXIF/XMP metadata"
+      "desc": "WebP provides both lossy VP8 intra-frame coding and lossless dictionary compression for web imagery, supporting alpha transparency, ICC profiles, and animation."
     },
     "avif": {
-      "desc": "AVIF stores AV1 intra-coded still images inside an ISO HEIF container, supporting 8-bit, 10-bit, and 12-bit colour depths alongside HDR transfer functions.",
-      "adv1": "Up to 50% smaller byte size than JPEG at matching perceptual quality",
-      "adv2": "Supports High Dynamic Range (PQ / HLG) and wide colour gamuts",
-      "adv3": "Decoded natively by current desktop and mobile browsers"
+      "desc": "AVIF stores AV1 intra-coded still images inside an ISO HEIF container, supporting 8-bit, 10-bit, and 12-bit colour depths alongside HDR transfer functions."
     },
     "heic": {
-      "desc": "HEIC stores HEVC (H.265) intra-coded photographs inside an ISO Base Media container, cutting storage size roughly in half relative to baseline JPEG.",
-      "adv1": "Roughly half the byte size of equivalent JPEG photographs",
-      "adv2": "Stores 10-bit colour, auxiliary depth maps, and burst sequences",
-      "adv3": "Default camera capture container on iOS and iPadOS devices"
+      "desc": "HEIC stores HEVC (H.265) intra-coded photographs inside an ISO Base Media container, cutting storage size roughly in half relative to baseline JPEG."
     },
     "svg": {
-      "desc": "SVG is an XML vector graphics specification describing two-dimensional paths, shapes, text, and gradients mathematically so artwork renders sharply at any DPI.",
-      "adv1": "Resolution-independent scaling from small UI icons to print layouts",
-      "adv2": "Compact text-based XML structure that compresses well with GZIP or Brotli",
-      "adv3": "Directly scriptable and styleable with CSS in web documents"
+      "desc": "SVG is an XML vector graphics specification describing two-dimensional paths, shapes, text, and gradients mathematically so artwork renders sharply at any DPI."
     },
     "gif": {
-      "desc": "GIF is an indexed-palette bitmap format using lossless LZW compression for up to 256 colours per frame and looping frame sequences.",
-      "adv1": "Autoplay looping animation support across browsers and chat clients",
-      "adv2": "1-bit index transparency and frame disposal timing control",
-      "adv3": "Convenient target for short screen-capture clips"
+      "desc": "GIF is an indexed-palette bitmap format using lossless LZW compression for up to 256 colours per frame and looping frame sequences."
     },
     "epub": {
-      "desc": "EPUB packages XHTML content documents, CSS stylesheets, fonts, and navigation manifests in a ZIP container for reflowable digital books.",
-      "adv1": "Reflowable typography that adapts to screen width and reader font settings",
-      "adv2": "Open W3C publishing standard supported across dedicated e-readers",
-      "adv3": "Structured table of contents, landmarks, and OPF publication metadata"
+      "desc": "EPUB packages XHTML content documents, CSS stylesheets, fonts, and navigation manifests in a ZIP container for reflowable digital books."
     },
     "mobi": {
-      "desc": "MOBI is a binary PalmDOC-derived e-book container developed by Mobipocket for portable e-ink readers, bundling HTML markup, images, and chapter offsets.",
-      "adv1": "Compatible with older Kindle e-ink hardware and desktop reader apps",
-      "adv2": "Compact PalmDOC or Huff/CDIC compressed text records",
-      "adv3": "Supports embedded chapter navigation and dictionary lookup tables"
+      "desc": "MOBI is a binary PalmDOC-derived e-book container developed by Mobipocket for portable e-ink readers, bundling HTML markup, images, and chapter offsets."
     },
     "zip": {
-      "desc": "ZIP bundles one or more files and directory trees with independent per-entry DEFLATE compression and a central directory index.",
-      "adv1": "Built-in extraction on macOS, Windows, Linux, iOS, and Android",
-      "adv2": "Random-access central directory allows extracting single entries quickly",
-      "adv3": "CRC-32 integrity checksums for every archived entry"
+      "desc": "ZIP bundles one or more files and directory trees with independent per-entry DEFLATE compression and a central directory index."
     },
     "rar": {
-      "desc": "RAR is a compressed archive container supporting solid dictionary compression, Reed-Solomon recovery records, and multi-volume split archives.",
-      "adv1": "Optional recovery records for reconstructing damaged archive sectors",
-      "adv2": "Multi-volume splitting and solid compression across similar files",
-      "adv3": "AES-256 payload and filename encryption support"
+      "desc": "RAR is a compressed archive container supporting solid dictionary compression, Reed-Solomon recovery records, and multi-volume split archives."
     },
     "7z": {
-      "desc": "7Z is an open modular archive container using LZMA and LZMA2 dictionary compression with large solid blocks and optional AES-256 encryption.",
-      "adv1": "High LZMA and LZMA2 compression ratios on large file sets",
-      "adv2": "Solid block compression reduces redundancy across related files",
-      "adv3": "AES-256 payload and header encryption support"
+      "desc": "7Z is an open modular archive container using LZMA and LZMA2 dictionary compression with large solid blocks and optional AES-256 encryption."
     },
     "tar": {
-      "desc": "TAR serializes files and directory hierarchies sequentially in 512-byte blocks while preserving POSIX permissions, ownership, and modification timestamps.",
-      "adv1": "Preserves POSIX permissions, timestamps, and directory structure",
-      "adv2": "Standard source distribution container across Unix and Linux toolchains",
-      "adv3": "Pairs cleanly with GZIP, BZip2, XZ, or Zstandard stream compressors"
+      "desc": "TAR serializes files and directory hierarchies sequentially in 512-byte blocks while preserving POSIX permissions, ownership, and modification timestamps."
     },
     "dxf": {
-      "desc": "DXF is a tagged CAD data exchange format representing 2D and 3D entities, layers, blocks, arcs, polylines, and splines for CAD/CAM interoperability.",
-      "adv1": "Vector CAD exchange format supported across drafting and CAM software",
-      "adv2": "Preserves named layers, coordinate geometry, arcs, and spline entities",
-      "adv3": "Common input format for laser cutting, plotting, and CNC workflows"
+      "desc": "DXF is a tagged CAD data exchange format representing 2D and 3D entities, layers, blocks, arcs, polylines, and splines for CAD/CAM interoperability."
     },
     "ttf": {
-      "desc": "TTF defines quadratic Bézier glyph outlines, character-to-glyph cmap tables, kerning metrics, and hinting instructions in a single binary font file.",
-      "adv1": "Sharp outline glyph rendering across desktop and mobile displays",
-      "adv2": "Grid-fitting hinting tables keep small body text legible",
-      "adv3": "Installed natively on macOS, Windows, Linux, iOS, and Android"
+      "desc": "TTF defines quadratic Bézier glyph outlines, character-to-glyph cmap tables, kerning metrics, and hinting instructions in a single binary font file."
     },
     "woff2": {
-      "desc": "WOFF2 wraps TrueType or OpenType glyph tables with font-specific preprocessing and Brotli compression for `@font-face` delivery on the web.",
-      "adv1": "Brotli-compressed font payloads roughly 30% smaller than WOFF 1.0",
-      "adv2": "Faster webfont network transfer reduces layout shift during page load",
-      "adv3": "Supported natively across all evergreen desktop and mobile browsers"
+      "desc": "WOFF2 wraps TrueType or OpenType glyph tables with font-specific preprocessing and Brotli compression for `@font-face` delivery on the web."
     }
   },
   "header": {
@@ -756,7 +561,6 @@
       "default": "File Converter"
     },
     "subtitle": {
-      "queue": "Choose an output format, adjust the options, and convert.",
       "pair": "Convert {src} files to {tgt} online.",
       "source": "Convert {src} files to any format online.",
       "default": "Convert documents, images, audio, video, and archives to the format you need, online."

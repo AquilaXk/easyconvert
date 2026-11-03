@@ -22,6 +22,8 @@ type OptionSubject = keyof Messages['slugPages']['subjects'];
 /** How many other targets an intro names at most, and how many option subjects. */
 const RELATED_FORMAT_COUNT = 5;
 const OPTION_SUBJECT_COUNT = 3;
+/** The categories whose pair pages name what the options set; a document, font, archive or other pair page has no such sentence. */
+const OPTION_INTRO_CATEGORIES: ReadonlySet<string> = new Set(['image', 'video', 'audio']);
 /** The longest intro, as the meta description it also is; the list of other targets gets shorter until the intro fits. */
 const INTRO_MAX_LENGTH = 160;
 
@@ -109,8 +111,8 @@ function introOf(lead: string, related: readonly string[], relatedSentence: (for
 
 /**
  * The title and description of a slug page in the page's language. A converter page says what it converts and which other
- * formats the registry converts its source to; a pair page also names what the options of that pair set, since a format
- * page's options depend on the target. It claims nothing about speed or quality.
+ * formats the registry converts its source to; an image, video or audio pair page also names what the options of that pair
+ * set, since a format page's options depend on the target. It claims nothing about speed or quality.
  */
 export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, locale: AppLocale): LocalizedSlugCopy {
   const { copy, sourceFormat: source, targetFormat: target } = parsed;
@@ -130,7 +132,9 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
     case 'pair': {
       const names = { src: filesOf(t, copy.src), tgt: nameOf(t, copy.tgt), tgtFiles: filesOf(t, copy.tgt), tgtKind: copy.tgt.kind };
       const extractsAudio = FORMAT_REGISTRY[source]?.category === 'video' && FORMAT_REGISTRY[target]?.category === 'audio';
-      const subjects = optionSubjects(source, target).map((subject) => t(`subjects.${subject}`));
+      const subjects = OPTION_INTRO_CATEGORIES.has(FORMAT_REGISTRY[source]?.category ?? '')
+        ? optionSubjects(source, target).map((subject) => t(`subjects.${subject}`))
+        : [];
       const description = introOf(
         t(extractsAudio ? 'pair.lead.extractAudio' : 'pair.lead.convert', names),
         relatedTargets(source, [source, target]),
