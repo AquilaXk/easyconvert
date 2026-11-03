@@ -533,7 +533,7 @@ Interface
 
 ## 16. Free and anonymous limits
 
-- **Status**: Decided (#693). The processing and concurrency caps are implemented (#690).
+- **Status**: Decided (#693). The processing and concurrency caps are implemented (#690). The absence of a page limit is implemented (#693): no request is refused because of the page count the caller's plan allows.
 - **Decision**:
   - **Free and anonymous callers**:
     - files up to 1 GB;
@@ -541,14 +541,19 @@ Interface
     - up to 5 minutes of processing per conversion;
     - at most 5 concurrent conversions;
     - **a caller without an account and a free account each have 10 conversions a day on the server** (entry 15).
-  - **Output files**: kept for 24 hours, with immediate deletion on request.
+  - **Output files**: deleted ten minutes after their first complete download or an hour after they were stored, whichever comes first (entry 125), with immediate deletion on request.
+  - **Page counts**:
+    - the plan of the caller never refuses a request for its page count; the per-plan table (50, 500 and 2,000 pages) is removed, and a page range (`page`, `pages`) is checked for syntax and against the page count of the document only;
+    - the work of a request is bounded by its job deadline (5 minutes for free and anonymous callers; `src/lib/queue/job-deadline.ts`: each page adds `JOB_DEADLINE_PER_PAGE_MS` up to the maximum of the tier, and a document of unknown page count gets that maximum) and by engine guards that have one value for every caller;
+    - the engine guards that stay are 500 pages of page images for an office document, a DjVu or an XPS document (`OFFICE_PAGE_IMAGE_MAX_PAGES`, entry 44), 500 pages for a multi-page image (a TIFF or a HEIF sequence) converted to separate images (`IMAGE_DOCUMENT_MAX_PAGES` in `page-range.ts`, the same number, with the aggregate pixel budget of `image-limits.ts`), the OCR page budget and the render and memory guards of the worker. A request past one of them is refused with a typed answer that names the limit and the way out (`pages`, or `multiPageOutput: "first"`).
 - **Why**:
   - These are the limits users meet at the common free tiers, so a free user can do the same work here.
   - Processing time bounds cost better than a page count. A 1,000-page text PDF is cheap, while one 4K video minute is not.
-  - 24-hour retention covers download retries. Immediate deletion serves privacy.
+  - A result that lives until its download plus ten minutes covers download retries (entry 125). Immediate deletion serves privacy.
+  - The reference converter states no page limit: its free plan lists a 1 GB file size, 5 minutes of processing and 5 concurrent tasks, its PDF to PNG and JPG formats (read from its formats API on 2026-11-03) have a `pages` selection and no page cap, and it charges by the time a conversion takes. The per-plan page table here was a limit the plan of the caller set, not one the work needed, so it is removed while the guards that protect the worker stay.
 - **Trade-offs**: heavy free use costs compute, bounded by the time and concurrency caps.
 - **Alternatives rejected**: page limits, which are arbitrary for cost and annoying for users.
-- **Verified by**: the quota tests; #693 adds the file-size and retention tests.
+- **Verified by**: the quota tests; #693 adds the file-size and retention tests. `tests/no-tier-page-limit.test.ts` converts a 60-page PDF to page images and refuses a range with a bad syntax or past the document; `tests/image-pages-routes.test.ts` converts a 60-page TIFF for a free, a pro and an anonymous caller through every route, queue job and graph node; `tests/image-frame-selection.test.ts` and `tests/job-deadline.test.ts` hold the guard of 500 pages and the deadline of a long document.
 - **Revisit when**: cost per free conversion exceeds the budget.
 
 ## 17. Parity gate: quality and speed against reference tools

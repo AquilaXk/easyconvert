@@ -4,7 +4,7 @@ import { withInputHeld } from '../storage/retention-service';
 import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './bullmq-engine';
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
-import { tierForOwner } from './page-cap';
+import { tierForOwner } from './owner-tier';
 import { foundOrUnknown, type ReservedUnit } from '../api-keys/hand-off';
 
 /**

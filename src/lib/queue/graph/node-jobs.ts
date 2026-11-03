@@ -4,7 +4,7 @@ import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/
 import type { GraphNode, JobGraph, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { enqueueConversionJob } from '../enqueue';
-import { tierForOwner } from '../page-cap';
+import { tierForOwner } from '../owner-tier';
 import { tierMaxDeadlineMs } from '../job-deadline';
 import { resolveNodeResourceClass } from '../resource-class';
 import { sealGraphNode } from './sealed-nodes';

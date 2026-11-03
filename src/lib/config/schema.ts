@@ -1217,7 +1217,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_PER_PAGE_MS',
     area: 'limits',
     description:
-      'Milliseconds added to a job deadline for each page of a document (the page limit of the tier when the count is unknown). The default is the OCR page budget.',
+      'Milliseconds added to a job deadline for each page of a document (a document of unknown page count gets the maximum of the tier). The default is the OCR page budget.',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
     default: 10_000,
     requiredInProduction: false,

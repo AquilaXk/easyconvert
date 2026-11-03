@@ -1,4 +1,3 @@
-import { tierMaxPages } from '../conversions/page-range';
 import { bindJobLimits } from '../conversions/job-time';
 import { getFormatByExtension } from '../registry';
 import type { ConversionOptions } from '../types';
@@ -19,13 +18,13 @@ import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
 export type JobDeadlineFamily = 'pages' | 'media' | 'bytes';
 
 export interface JobDeadlineInput {
-  /** The owner's tier; an unknown or missing tier is the free tier, as for the page limit. */
+  /** The owner's tier; an unknown or missing tier is the free tier. */
   tier?: string;
   /** What the work is counted in: `pages` for documents, `media` for audio and video, `bytes` for the rest. */
   family: JobDeadlineFamily;
   /** Size of the input in bytes; missing means unknown, which gives the maximum of the tier. */
   inputBytes?: number;
-  /** Pages of a document; missing means the page limit of the tier. */
+  /** Pages of a document; missing means unknown, which gives the maximum of the tier. */
   pages?: number;
   /** Length of an audio or video input in seconds. */
   mediaSeconds?: number;
@@ -177,9 +176,9 @@ export function tierMaxDeadlineMs(tier: string | undefined, settings: JobDeadlin
 
 /**
  * Wall-clock limit in milliseconds for one conversion job of `input`: the tier's base plus `perPageMs` per page
- * (the page limit of the tier when the count is unknown, and never more pages than that limit), `perMediaSecondMs`
- * per second of media, and `perMibMs` per started MiB of input, never above the tier's maximum. Work of unknown
- * size gets the maximum. Invalid quantities throw a RangeError.
+ * (a document of unknown page count gets the maximum), `perMediaSecondMs` per second of media, and `perMibMs` per
+ * started MiB of input, never above the tier's maximum. Work of unknown size gets the maximum. Invalid quantities throw
+ * a RangeError.
  */
 export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSettings = currentJobDeadlineSettings()): number {
   const tier = knownTier(input.tier);
@@ -191,8 +190,8 @@ export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSett
 
   let deadline = settings.baseMs[tier] + Math.ceil(input.inputBytes / BYTES_PER_MIB) * settings.perMibMs;
   if (input.family === 'pages') {
-    const limit = tierMaxPages(tier);
-    deadline += Math.min(input.pages ?? limit, limit) * settings.perPageMs;
+    if (input.pages === undefined) return max;
+    deadline += input.pages * settings.perPageMs;
   } else if (input.family === 'media' && input.mediaSeconds !== undefined) {
     deadline += Math.ceil(input.mediaSeconds) * settings.perMediaSecondMs;
   }

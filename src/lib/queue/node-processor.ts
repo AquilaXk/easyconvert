@@ -19,7 +19,6 @@ import { registerStoredResult, releaseResultHold, takeInputHold } from '../stora
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
-import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { deadlineBoundEngine } from './job-deadline';
 import { frameMetadataFields } from '../api/frame-headers';
 import { engineTraceFields } from '../api/engine-trace';
@@ -137,8 +136,8 @@ export async function processNodeJob(
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
     return processGraphNodeJob(job, baseEngine, rootStorage);
   }
-  // Every conversion of the job runs under the page limit of its owner's tier and under the job's deadline.
-  const engine = deadlineBoundEngine(pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId)), job);
+  // Every conversion of the job runs under the job's deadline.
+  const engine = deadlineBoundEngine(baseEngine, job);
 
   // Scratch files a remote backend stages for this job's input are removed when the job ends.
   const scope = scopeStorageObjects(rootStorage);

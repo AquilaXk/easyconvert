@@ -13,7 +13,6 @@ import {
 } from '../src/lib/queue/job-deadline';
 import { CONFIG_SCHEMA } from '../src/lib/config/schema';
 import { ConfigurationError, parseConfig } from '../src/lib/config';
-import { TIER_MAX_PAGES } from '../src/lib/conversions/page-range';
 
 /**
  * The deadline of a conversion job is one pure function of the owner's tier and the size of the work. These
@@ -59,17 +58,16 @@ describe('jobDeadlineMs defaults', () => {
     );
   });
 
-  it('allows a document the pages it has, and the page limit of the tier when the count is unknown', () => {
+  it('allows a document the pages it has, and the maximum of the tier when the count is unknown', () => {
     expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 1 })).toBe(FREE_BASE + PER_PAGE);
     expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 20 })).toBe(FREE_BASE + 20 * PER_PAGE);
     expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0 })).toBe(FREE_MAX);
-    expect(TIER_MAX_PAGES.free).toBe(50);
   });
 
-  it('never counts more pages than the tier converts', () => {
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 5000 })).toBe(
-      jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: TIER_MAX_PAGES.free })
-    );
+  it('counts every page of a long document, up to the maximum of the tier', () => {
+    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 24 })).toBe(FREE_BASE + 24 * PER_PAGE);
+    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 5000 })).toBe(FREE_MAX);
+    expect(jobDeadlineMs({ tier: 'pro', family: 'pages', inputBytes: 0, pages: 5000 })).toBe(1_800_000);
   });
 
   it('sums the page, size and media allowances before the maximum applies', () => {
@@ -96,7 +94,7 @@ describe('jobDeadlineMs defaults', () => {
     }
   });
 
-  it('caps the free tier at 5 minutes (QA decision 2026-10-10), which is below the page limit times the OCR page budget', () => {
+  it('caps the free tier at 5 minutes (QA decision 2026-10-10), which is below the time a long document would add at the OCR page budget', () => {
     expect(FREE_MAX).toBe(5 * 60_000);
     const settings = jobDeadlineSettings();
     expect(settings.maxMs.free).toBe(FREE_MAX);
@@ -104,8 +102,7 @@ describe('jobDeadlineMs defaults', () => {
     // refuses a scan that really costs that much with a typed 413 instead of running past the cap.
     expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 50 })).toBe(FREE_MAX);
     expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 20 })).toBe(FREE_BASE + 20 * PER_PAGE);
-    for (const tier of ['free', 'pro', 'enterprise']) {
-      const pages = TIER_MAX_PAGES[tier];
+    for (const [tier, pages] of [['free', 50], ['pro', 500], ['enterprise', 2000]] as const) {
       const settings2 = jobDeadlineSettings();
       expect(jobDeadlineMs({ tier, family: 'pages', inputBytes: 0, pages })).toBe(
         Math.min(settings2.baseMs[tier] + pages * 10_000, settings2.maxMs[tier])

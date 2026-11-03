@@ -1,13 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
-import { NextRequest } from 'next/server';
 import { convertImage } from '../src/lib/conversions/image';
-import { withTierPageCap } from '../src/lib/conversions/page-range';
-import type { ConversionOptions } from '../src/lib/types';
-import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
-import { POST as convertPost } from '../src/app/api/convert/route';
-import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { userStore } from '../src/lib/auth/user-store';
+import { IMAGE_DOCUMENT_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { buildBilevelTiff } from './helpers/tiff-builder';
 import { bombGif } from './helpers/image-bombs';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
@@ -30,7 +24,7 @@ import {
  *  - `page` and `pages` must agree when both are given, `{ page: null }` means absent;
  *  - `multiPageOutput: 'first'` wins over every keep-all default (gif, webp and tiff outputs);
  *  - a TIFF output with `pages` is ONE multi-page TIFF holding exactly those pages;
- *  - the tier page limit and an aggregate pixel budget bound the default all-pages case.
+ *  - one page limit for every caller and an aggregate pixel budget bound the default all-pages case.
  *
  * Oracles: ImageMagick writes the colour fixtures and reads page counts, sizes and colours back; the
  * bilevel/mixed-size TIFFs come from the hand-written writer in tests/helpers/tiff-builder.ts.
@@ -44,10 +38,10 @@ const COLOURS: readonly Rgb[] = [
   [0, 0, 255],
 ];
 const COLOUR_TOLERANCE = 12;
-const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
-const FREE_TIER_PAGES = 50;
-const OVER_FREE_TIER_PAGES = 51;
+/** 500 decoded and encoded pages take longer than the 5 s default on a loaded shard. */
+const LIMIT_DOCUMENT_TIMEOUT_MS = 60_000;
+const OVER_PAGE_LIMIT = IMAGE_DOCUMENT_MAX_PAGES + 1;
+const OVER_FORMER_FREE_TIER = 51;
 const TINY_PAGE = 8;
 // Each page stays under the 100 Mpx input limit (81 Mpx); five of them exceed the 400 Mpx aggregate budget.
 const HUGE_PAGE_SIDE = 9000;
@@ -184,26 +178,26 @@ describe('a TIFF output with pages is one multi-page TIFF', () => {
 });
 
 describe('page limits', () => {
-  const manyPages = () => buildBilevelTiff(Array.from({ length: OVER_FREE_TIER_PAGES }, () => ({ width: TINY_PAGE, height: TINY_PAGE })));
+  const pagesOf = (count: number) => buildBilevelTiff(Array.from({ length: count }, () => ({ width: TINY_PAGE, height: TINY_PAGE })));
 
-  it.skipIf(SKIP_WITHOUT_MAGICK).each(['png', 'tiff', 'pdf'])('%s: more pages than the free tier allows are refused by default', async (target) => {
-    const error = await captureError(() => convertImage(manyPages(), target, {}, 'many.tif', 'tiff'));
+  it.skipIf(SKIP_WITHOUT_MAGICK).each(['png', 'tiff', 'pdf'])('%s: more pages than the limit of every caller are refused by default', async (target) => {
+    const error = await captureError(() => convertImage(pagesOf(OVER_PAGE_LIMIT), target, {}, 'many.tif', 'tiff'));
     expect(error.name).toBe('InvalidPageRangeError');
-    expect(error.message).toContain(`${OVER_FREE_TIER_PAGES} pages`);
-    expect(error.message).toContain(`limit of ${FREE_TIER_PAGES} pages`);
+    expect(error.message).toContain(`${OVER_PAGE_LIMIT} pages`);
+    expect(error.message).toContain(`limit of ${IMAGE_DOCUMENT_MAX_PAGES} pages`);
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK)('an explicit selection within the limit is accepted', async () => {
-    const result = await convertImage(manyPages(), 'png', { pages: `1-${FREE_TIER_PAGES}` }, 'many.tif', 'tiff');
+  it.skipIf(SKIP_WITHOUT_MAGICK)('a selection within the limit of a longer document is accepted', async () => {
+    const result = await convertImage(pagesOf(OVER_PAGE_LIMIT), 'png', { pages: `1-${OVER_FORMER_FREE_TIER}` }, 'many.tif', 'tiff');
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(Object.keys(zip.files)).toHaveLength(FREE_TIER_PAGES);
+    expect(Object.keys(zip.files)).toHaveLength(OVER_FORMER_FREE_TIER);
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK)('a higher limit from the caller lets every page through', async () => {
-    const result = await convertImage(manyPages(), 'png', withTierPageCap<ConversionOptions>({}, 100), 'many.tif', 'tiff');
+  it.skipIf(SKIP_WITHOUT_MAGICK)('a document of exactly the limit converts every page', { timeout: LIMIT_DOCUMENT_TIMEOUT_MS }, async () => {
+    const result = await convertImage(pagesOf(IMAGE_DOCUMENT_MAX_PAGES), 'png', {}, 'many.tif', 'tiff');
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(Object.keys(zip.files)).toHaveLength(OVER_FREE_TIER_PAGES);
-    expect(result.sourceFrameCount).toBe(OVER_FREE_TIER_PAGES);
+    expect(Object.keys(zip.files)).toHaveLength(IMAGE_DOCUMENT_MAX_PAGES);
+    expect(result.sourceFrameCount).toBe(IMAGE_DOCUMENT_MAX_PAGES);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('refuses pages whose pixels exceed the aggregate budget before decoding any', async () => {
@@ -225,57 +219,6 @@ describe('the input pixel limit holds on the multi-frame path', () => {
     expect(error).toBeInstanceOf(InputPixelLimitError);
     expect((error as InputPixelLimitError).status).toBe(413);
     expect(error.message).toContain(`${OVERSIZED_SIDE}x${OVERSIZED_SIDE} pixels`);
-  });
-});
-
-describe('the API applies the caller tier to the page limit', () => {
-  let freeKey: string;
-  let proKey: string;
-
-  beforeEach(async () => {
-    const make = async (tier: 'free' | 'pro') => {
-      const user = await userStore.createUser({
-        name: `Page limit ${tier}`,
-        email: `pages_${tier}_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
-        tier,
-      });
-      return (await redisKeyStore.generateApiKey(user.id, `Page limit ${tier}`, { scopes: ['convert:write', 'convert:read'] })).secretKey;
-    };
-    freeKey = await make('free');
-    proKey = await make('pro');
-  });
-
-  const request = (url: string, key: string, options: Record<string, unknown> = {}) => {
-    const tiff = buildBilevelTiff(Array.from({ length: OVER_FREE_TIER_PAGES }, () => ({ width: TINY_PAGE, height: TINY_PAGE })));
-    const form = new FormData();
-    form.append('file', new Blob([new Uint8Array(tiff)]), 'many.tif');
-    form.append('targetFormat', 'png');
-    form.append('options', JSON.stringify(options));
-    return new NextRequest(url, { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form });
-  };
-
-  it.skipIf(SKIP_WITHOUT_MAGICK)('a free key cannot convert more pages than the free tier allows', async () => {
-    for (const [handler, url] of [
-      [v1ConvertPost, 'http://localhost/api/v1/convert'],
-      [convertPost, 'http://localhost/api/convert'],
-    ] as const) {
-      const res = await handler(request(url, freeKey));
-      expect(res.status, url).toBe(HTTP_BAD_REQUEST);
-      expect(JSON.stringify(await res.json())).toContain(`limit of ${FREE_TIER_PAGES} pages`);
-    }
-  });
-
-  it.skipIf(SKIP_WITHOUT_MAGICK)('a client-supplied maxPages cannot raise the limit', async () => {
-    const res = await v1ConvertPost(request('http://localhost/api/v1/convert', freeKey, { maxPages: 1000 }));
-    expect(res.status).toBe(HTTP_BAD_REQUEST);
-  });
-
-  it.skipIf(SKIP_WITHOUT_MAGICK)('a pro key converts every page', async () => {
-    const res = await v1ConvertPost(request('http://localhost/api/v1/convert', proKey));
-    expect(res.status).toBe(HTTP_OK);
-    const body = await res.json();
-    expect(body.sourceFrameCount).toBe(OVER_FREE_TIER_PAGES);
-    expect(body.mimeType).toBe('application/zip');
   });
 });
 
