@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { BusyHostError, HostPacer, hostPacer, LIMITED_HOST_GAP_MS, retryDelayMs, retryPaced } from '../bench/http-retry';
+import { BusyHostError, HostPacer, hostPacer, retryDelayMs, retryPaced } from '../bench/http-retry';
 import { DigestMismatchError, ensureCached, findCached } from '../bench/realworld/fetch';
 import { fetchBytes, fetchSize } from '../bench/realworld/http';
 import type { CorpusFile } from '../bench/realworld/manifest';
@@ -24,7 +24,7 @@ describe('the pause a host asks for with Retry-After', () => {
 
   it('counts a leap second the same wherever it falls in the day, and refuses a second above it', () => {
     expect(retryDelayMs(0, 429, 'Mon, 02 Nov 2026 10:00:60 GMT', NOW)).toBe(60_000);
-    expect(retryDelayMs(0, 429, 'Mon, 02 Nov 2026 23:59:60 GMT', NOW)).toBe(120_000);
+    expect(retryDelayMs(0, 429, 'Mon, 02 Nov 2026 23:59:60 GMT', Date.parse('2026-11-02T23:59:00Z'))).toBe(60_000);
     expect(retryDelayMs(0, 429, 'Mon, 02 Nov 2026 10:00:61 GMT', NOW)).toBe(30_000);
   });
 
@@ -70,274 +70,258 @@ function virtualClock() {
   };
 }
 
+
+const LISTED = 'listed.example';
+const SPACING_MS = 3000;
+const listedSpacing: ReadonlyMap<string, number> = new Map([[LISTED, SPACING_MS]]);
+const fail = (message: string): Error => new Error(message);
+const refusal = (status: number, retryAfter: string | null, refusedBy: string): BusyHostError => new BusyHostError(`HTTP ${status}`, status, retryAfter, refusedBy);
+
+/** One request to `host` through the pacer: it resolves with the instant it was released. */
+const request = (pacer: HostPacer, clock: { now(): number }, host: string): Promise<number> => pacer.run(host, async () => clock.now() - NOW);
+
 describe('spacing the requests to one host', () => {
-  const HOST = 'a.example';
-  const refusal = (retryAfter: string, refusedBy: string = HOST): BusyHostError => new BusyHostError('HTTP 429', 429, retryAfter, refusedBy);
+  it('spaces only the hosts of the table, the storage host of the newspaper pages at its published 150 requests a minute', async () => {
+    const { clock, run } = virtualClock();
+    const pacer = new HostPacer(clock);
+    const sent = [request(pacer, clock, 'tile.loc.gov'), request(pacer, clock, 'tile.loc.gov'), request(pacer, clock, 'digitalcorpora.s3.amazonaws.com'), request(pacer, clock, 'digitalcorpora.s3.amazonaws.com')];
+    await run();
+    expect(await Promise.all(sent)).toEqual([0, 400, 0, 0]);
+  });
 
-  /** One request to `host` through the pacer: it resolves with the instant it was released, or ends in the refusal it was given. */
-  function request(pacer: HostPacer, clock: { now(): number }, host: string, refused?: BusyHostError): Promise<number> {
-    return pacer.run(host, async () => {
-      if (refused !== undefined) throw refused;
-      return clock.now();
+  it('spaces a listed host from its first request, so a refusal does not let the next request leave early', async () => {
+    const { clock, run } = virtualClock();
+    const pacer = new HostPacer(clock, listedSpacing);
+    const released: Record<string, number> = {};
+    const first = pacer.run(LISTED, async () => {
+      released.first = clock.now() - NOW;
+      await clock.sleep(200);
     });
-  }
-  const refuse = (pacer: HostPacer, clock: { now(): number }, retryAfter: string, host: string = HOST): Promise<unknown> => request(pacer, clock, host, refusal(retryAfter)).catch(() => undefined);
-
-  it('does not delay a host that has not refused', async () => {
-    const { clock, elapsed } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await request(pacer, clock, HOST);
-    await request(pacer, clock, HOST);
-    expect(elapsed()).toBe(0);
-  });
-
-  it('holds a request to a host that refused until the time it asked for has passed', async () => {
-    const { clock, run, tick } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await refuse(pacer, clock, '30');
-    tick(5000);
-    const sent = request(pacer, clock, HOST).then((at) => at - NOW);
+    const refused = clock.sleep(100).then(() =>
+      retryPaced(
+        `https://${LISTED}/refused`,
+        0,
+        async () => {
+          released.refused = clock.now() - NOW;
+          await clock.sleep(200);
+          throw refusal(503, null, LISTED);
+        },
+        fail,
+        { pacer }
+      ).catch(() => undefined)
+    );
+    const third = clock.sleep(350).then(() => request(pacer, clock, LISTED));
     await run();
-    expect(await sent).toBe(30_000);
+    await Promise.all([first, refused]);
+    released.third = await third;
+    expect(released).toEqual({ first: 0, refused: SPACING_MS, third: 2 * SPACING_MS });
   });
 
-  it('lets one request go per gap, so requests that wait together do not leave together', async () => {
+  it('holds a host without a published limit only for the time its refusal asked, then lets every waiting request go', async () => {
     const { clock, run } = virtualClock();
     const pacer = new HostPacer(clock);
-    await refuse(pacer, clock, '30');
-    const sent = [0, 1, 2].map(() => request(pacer, clock, HOST).then((at) => at - NOW));
+    pacer.pause('a.example', 30_000);
+    const sent = [0, 1, 2].map(() => request(pacer, clock, 'a.example'));
+    const other = request(pacer, clock, 'b.example');
     await run();
-    expect(await Promise.all(sent)).toEqual([30_000, 30_000 + LIMITED_HOST_GAP_MS, 30_000 + 2 * LIMITED_HOST_GAP_MS]);
+    expect(await Promise.all(sent)).toEqual([30_000, 30_000, 30_000]);
+    expect(await other).toBe(0);
   });
 
-  it('keeps the requests already waiting back through a cooldown that is renewed, because the host restarts its block at every request it gets', async () => {
+  it('keeps the requests already waiting back through a block that is renewed, and keeps the longer of two blocks', async () => {
     const { clock, run } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await refuse(pacer, clock, '60');
-    const sent = [0, 1, 2, 3].map((caller) => (caller === 0 ? request(pacer, clock, HOST, refusal('60')).catch(() => clock.now()) : request(pacer, clock, HOST)));
+    const pacer = new HostPacer(clock, listedSpacing);
+    pacer.pause(LISTED, 30_000);
+    const sent = [0, 1, 2].map(() => request(pacer, clock, LISTED));
+    void clock.sleep(10_000).then(() => {
+      pacer.pause(LISTED, 60_000);
+      pacer.pause(LISTED, 5000);
+    });
     await run();
-    expect((await Promise.all(sent)).map((at) => at - NOW)).toEqual([60_000, 120_000, 120_000 + LIMITED_HOST_GAP_MS, 120_000 + 2 * LIMITED_HOST_GAP_MS]);
+    expect(await Promise.all(sent)).toEqual([70_000, 70_000 + SPACING_MS, 70_000 + 2 * SPACING_MS]);
   });
 
-  it('forgets a refusal whose wait has passed when nothing was released since, so a host that refused once is not spaced', async () => {
-    const { clock, tick, elapsed } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await refuse(pacer, clock, '1');
-    tick(2001);
-    await request(pacer, clock, HOST);
-    await request(pacer, clock, HOST);
-    expect(elapsed()).toBe(2001);
-  });
-
-  it('keeps the gap after the queue has emptied, and drops it only after a quiet period longer than the gap', async () => {
-    const { clock, run, tick } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await refuse(pacer, clock, '30');
-    const first = request(pacer, clock, HOST).then((at) => at - NOW);
-    await run();
-    expect(await first).toBe(30_000);
-    tick(1);
-    const soon = request(pacer, clock, HOST).then((at) => at - NOW);
-    await run();
-    expect(await soon).toBe(30_000 + LIMITED_HOST_GAP_MS);
-    tick(LIMITED_HOST_GAP_MS + 1);
-    const quiet = [await request(pacer, clock, HOST), await request(pacer, clock, HOST)];
-    expect(quiet[1] - quiet[0]).toBe(0);
-  });
-
-  it('leaves other hosts alone, and keeps the longer of two cooldowns', async () => {
-    const { clock, run, elapsed } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await Promise.all([refuse(pacer, clock, '20'), refuse(pacer, clock, '5')]);
-    await request(pacer, clock, 'b.example');
-    expect(elapsed()).toBe(0);
-    const sent = request(pacer, clock, HOST).then((at) => at - NOW);
-    await run();
-    expect(await sent).toBe(20_000);
-  });
-
-  it('pauses the host that refused as well as the host the download was addressed to', async () => {
+  it('refuses at once, without sending, every request to a host whose block runs past the bound, the queued ones too', async () => {
     const { clock, run } = virtualClock();
-    const pacer = new HostPacer(clock);
-    await request(pacer, clock, 'front.example', refusal('30', 'files.example')).catch(() => undefined);
-    const sent = ['front.example', 'files.example'].map((host) => request(pacer, clock, host).then((at) => at - NOW));
+    const pacer = new HostPacer(clock, listedSpacing);
+    let sent = 0;
+    const send = (): Promise<string> =>
+      pacer
+        .run(LISTED, async () => {
+          sent += 1;
+          return 'sent';
+        })
+        .catch((error: Error) => `${error.name} at ${clock.now() - NOW}`);
+    const queued = [send(), send(), send()];
+    pacer.pause(LISTED, 3_600_000);
+    const later = send();
     await run();
-    expect(await Promise.all(sent)).toEqual([30_000, 30_000]);
+    expect(await Promise.all([...queued, later])).toEqual(['sent', 'RetryAfterTooLongError at 0', 'RetryAfterTooLongError at 0', 'RetryAfterTooLongError at 0']);
+    expect(sent).toBe(1);
   });
 });
 
-describe('the downloads to a host that refused, through the retry loop of the fetchers', () => {
-  const HOST = 'limited.example';
-  const fail = (message: string): Error => new Error(message);
+/** `workers` workers that download `files` files from `host` through the retry loop, each request taking `latencyMs`; `answer` decides each response. */
+async function downloadAll(options: {
+  host: string;
+  files: number;
+  workers: number;
+  latencyMs: number;
+  spacing?: ReadonlyMap<string, number>;
+  answer: (now: number) => BusyHostError | null;
+}): Promise<{ totalMs: number; releases: number[]; failed: number }> {
+  const { clock, run, elapsed } = virtualClock();
+  const pacer = new HostPacer(clock, options.spacing);
+  const releases: number[] = [];
+  let failed = 0;
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < options.files) {
+      next += 1;
+      await retryPaced(
+        `https://${options.host}/f${next}`,
+        6,
+        async () => {
+          releases.push(elapsed());
+          await clock.sleep(options.latencyMs);
+          const refused = options.answer(clock.now());
+          if (refused !== null) throw refused;
+        },
+        fail,
+        { pacer }
+      ).catch(() => (failed += 1));
+    }
+  };
+  const all = Promise.all(Array.from({ length: options.workers }, worker));
+  await run();
+  await all;
+  return { totalMs: elapsed(), releases, failed };
+}
 
-  it('never sends faster than the gap, however many of its responses were good and even when only one download is under way', async () => {
+describe('the downloads of a shard, through the retry loop of the fetchers', () => {
+  it('costs the object-storage host only the wait of its one 503, not a spacing for every request after it', async () => {
+    const shard = { host: 'digitalcorpora.s3.amazonaws.com', files: 840, workers: 8, latencyMs: 80 };
+    const free = await downloadAll({ ...shard, answer: () => null });
+    let refused = false;
+    const once = await downloadAll({
+      ...shard,
+      answer: () => {
+        if (refused) return null;
+        refused = true;
+        return refusal(503, null, shard.host);
+      },
+    });
+    expect(free.totalMs).toBe((840 / 8) * 80);
+    expect(once.failed).toBe(0);
+    expect(once.releases).toHaveLength(841);
+    expect(once.totalMs).toBeLessThanOrEqual(free.totalMs + retryDelayMs(0, 503, null) + shard.latencyMs);
+  });
+
+  it('never sends to a listed host faster than its spacing, from the first request on and with one download under way', async () => {
+    const result = await downloadAll({ host: LISTED, files: 30, workers: 1, latencyMs: 200, spacing: listedSpacing, answer: () => null });
+    const gaps = result.releases.slice(1).map((at, i) => at - result.releases[i]);
+    expect(Math.min(...gaps)).toBe(SPACING_MS);
+  });
+
+  it('holds a request that arrives a millisecond after the last release for the rest of the spacing', async () => {
+    const { clock, run, tick } = virtualClock();
+    const pacer = new HostPacer(clock, listedSpacing);
+    await request(pacer, clock, LISTED);
+    tick(1);
+    const second = request(pacer, clock, LISTED);
+    await run();
+    expect(await second).toBe(SPACING_MS);
+  });
+
+  it('waits on the host it reaches, which a remembered redirect makes another than the one in the address, and pauses both when that host refuses', async () => {
     const { clock, run } = virtualClock();
+    const storage = LISTED;
+    const pacer = new HostPacer(clock, listedSpacing);
+    await request(pacer, clock, storage);
+    let reachedAt = -1;
+    const viaFront = retryPaced(
+      'https://front.example/file',
+      0,
+      async () => {
+        reachedAt = clock.now() - NOW;
+        throw refusal(429, '30', storage);
+      },
+      fail,
+      { pacer, contactedHost: () => storage }
+    ).catch(() => undefined);
+    await run();
+    await viaFront;
+    expect(reachedAt).toBe(SPACING_MS);
+    const after = [request(pacer, clock, 'front.example'), request(pacer, clock, storage)];
+    await run();
+    expect(await Promise.all(after)).toEqual([SPACING_MS + 30_000, SPACING_MS + 30_000]);
+  });
+
+  it('fails every download of a host that asked for longer than a download waits at once, with one request sent in all', async () => {
+    const { clock, run, elapsed } = virtualClock();
     const pacer = new HostPacer(clock);
-    const releases: number[] = [];
+    const sent: number[] = [];
+    const outcomes: string[] = [];
     const downloads = (async () => {
-      for (let id = 0; id < 30; id++) {
+      for (let id = 0; id < 6; id++) {
         await retryPaced(
-          `https://${HOST}/f${id}`,
+          `https://blocking.example/s${id}`,
           6,
           async () => {
-            releases.push(clock.now());
-            await clock.sleep(200);
-            if (releases.length === 1) throw new BusyHostError('HTTP 429', 429, '1', HOST);
+            sent.push(elapsed());
+            throw refusal(429, '3600', 'blocking.example');
           },
           fail,
-          pacer
-        );
+          { pacer }
+        ).catch((error: Error) => outcomes.push(error.message));
       }
     })();
     await run();
     await downloads;
-    expect(releases).toHaveLength(31);
-    const gaps = releases.slice(1).map((at, i) => at - releases[i]);
-    expect(Math.min(...gaps.slice(1))).toBeGreaterThanOrEqual(LIMITED_HOST_GAP_MS);
-  });
-
-  it('holds a request that arrives a millisecond after the last release for the rest of the gap', async () => {
-    const { clock, run, tick } = virtualClock();
-    const pacer = new HostPacer(clock);
-    const releases: number[] = [];
-    const task = async (): Promise<void> => {
-      releases.push(clock.now());
-      if (releases.length === 1) throw new BusyHostError('HTTP 429', 429, '1', HOST);
-    };
-    const first = retryPaced(`https://${HOST}/a`, 6, task, fail, pacer);
-    await run();
-    await first;
-    tick(1);
-    const second = retryPaced(`https://${HOST}/b`, 6, task, fail, pacer);
-    await run();
-    await second;
-    expect(releases).toHaveLength(3);
-    expect(releases[2] - releases[1]).toBe(LIMITED_HOST_GAP_MS);
-  });
-
-  it('fails a download at once when the host asks for longer than a download waits, instead of retrying inside the block', async () => {
-    const { clock, run, elapsed } = virtualClock();
-    const pacer = new HostPacer(clock);
-    let calls = 0;
-    const download = retryPaced(
-      `https://${HOST}/file`,
-      6,
-      async () => {
-        calls += 1;
-        throw new BusyHostError('HTTP 429', 429, '3600', HOST);
-      },
-      fail,
-      pacer
-    );
-    const outcome = download.then(
-      () => 'resolved',
-      (error: Error) => error.message
-    );
-    await run();
-    expect(await outcome).toMatch(/3600 s.*120 s/);
-    expect(calls).toBe(1);
+    expect(sent).toEqual([0]);
     expect(elapsed()).toBe(0);
+    expect(outcomes).toHaveLength(6);
+    for (const outcome of outcomes) expect(outcome).toMatch(/blocking\.example asked to be left alone for 3600 s, longer than the 120 s a download waits/);
   });
 
-  it('costs eight workers the cooldown and the published spacing of the downloads that follow, not more', async () => {
-    const FILES = 100;
-    const WORKERS = 8;
-    async function download(refuseFirst: boolean): Promise<{ total: number; releases: number[] }> {
-      const { clock, run, elapsed } = virtualClock();
-      const pacer = new HostPacer(clock);
-      const releases: number[] = [];
-      let next = 0;
-      let refused = !refuseFirst;
-      const worker = async (): Promise<void> => {
-        while (next < FILES) {
-          next += 1;
-          await retryPaced(
-            `https://${HOST}/f${next}`,
-            6,
-            async () => {
-              releases.push(elapsed());
-              await clock.sleep(200);
-              if (!refused) {
-                refused = true;
-                throw new BusyHostError('HTTP 429', 429, '30', HOST);
-              }
-            },
-            fail,
-            pacer
-          );
-        }
-      };
-      const all = Promise.all(Array.from({ length: WORKERS }, worker));
-      await run();
-      await all;
-      return { total: elapsed(), releases };
-    }
-    const free = await download(false);
-    const refusedOnce = await download(true);
-    expect(free.total).toBeLessThan(3000);
-    expect(refusedOnce.total).toBeLessThanOrEqual(30_000 + (FILES + WORKERS) * LIMITED_HOST_GAP_MS);
-    const afterRefusal = refusedOnce.releases.filter((at) => at > 200);
-    expect(Math.min(...afterRefusal.slice(1).map((at, i) => at - afterRefusal[i]))).toBeGreaterThanOrEqual(LIMITED_HOST_GAP_MS);
-  });
-
-  describe('eight workers on a host that allows 20 requests a minute and restarts its block at every request made during it', () => {
-    async function simulate(limitPerMinute: number, files: number): Promise<{ refusals: number; failed: number; total: number; pacedGaps: number[] }> {
-      const { clock, run, elapsed } = virtualClock();
-      const pacer = new HostPacer(clock);
+  describe('eight workers on a host that allows 20 requests a minute and blocks for two minutes, restarting the block at every request made during it', () => {
+    function limitedHost(): { answer: (now: number) => BusyHostError | null; refusals: () => number } {
       const arrivals: number[] = [];
-      const releases: number[] = [];
       let blockedUntil = 0;
-      let firstRefusalAt = Number.POSITIVE_INFINITY;
       let refusals = 0;
-      let failed = 0;
-      let next = 0;
-      const worker = async (): Promise<void> => {
-        while (next < files) {
-          next += 1;
-          try {
-            await retryPaced(
-              `https://${HOST}/f${next}`,
-              6,
-              async () => {
-                releases.push(clock.now());
-                await clock.sleep(200);
-                const now = clock.now();
-                arrivals.push(now);
-                while (arrivals[0] <= now - 60_000) arrivals.shift();
-                if (now < blockedUntil || arrivals.length > limitPerMinute) {
-                  blockedUntil = now + 120_000;
-                  refusals += 1;
-                  firstRefusalAt = Math.min(firstRefusalAt, now);
-                  throw new BusyHostError('HTTP 429', 429, '120', HOST);
-                }
-              },
-              fail,
-              pacer
-            );
-          } catch {
-            failed += 1;
-          }
-        }
+      return {
+        refusals: () => refusals,
+        answer(now) {
+          arrivals.push(now);
+          while (arrivals[0] <= now - 60_000) arrivals.shift();
+          if (now >= blockedUntil && arrivals.length <= 20) return null;
+          blockedUntil = now + 120_000;
+          refusals += 1;
+          return refusal(429, '120', LISTED);
+        },
       };
-      const all = Promise.all(Array.from({ length: 8 }, worker));
-      await run();
-      await all;
-      const paced = releases.filter((at) => at > firstRefusalAt);
-      return { refusals, failed, total: elapsed(), pacedGaps: paced.slice(1).map((at, i) => at - paced[i]) };
     }
+    const shard = { host: LISTED, files: 100, workers: 8, latencyMs: 200 };
 
-    it('sends nothing closer than the published spacing once the host has refused, and loses no download', async () => {
-      const { refusals, failed, pacedGaps } = await simulate(20, 100);
-      expect(failed).toBe(0);
-      expect(refusals).toBeLessThanOrEqual(8);
-      expect(Math.min(...pacedGaps)).toBeGreaterThanOrEqual(LIMITED_HOST_GAP_MS);
+    it('is never refused when its published limit is in the table, and loses no download', async () => {
+      const host = limitedHost();
+      const result = await downloadAll({ ...shard, spacing: listedSpacing, answer: host.answer });
+      expect(host.refusals()).toBe(0);
+      expect(result.failed).toBe(0);
+      expect(result.totalMs).toBe(99 * SPACING_MS + shard.latencyMs);
+    });
+
+    it('is refused when its limit is not in the table, which is what the table is for', async () => {
+      const host = limitedHost();
+      await downloadAll({ ...shard, answer: host.answer });
+      expect(host.refusals()).toBeGreaterThanOrEqual(1);
     });
   });
 });
 
-/** Resolves once the shared pacer has taken note of the first refusal of a download, so the test does not guess how long the client needs to read it. */
-async function refusalNoted(firstRun: unknown): Promise<void> {
-  await (firstRun as Promise<unknown>).catch(() => undefined);
+/** Resolves once the retry loop has taken note of the refusal that ended the first `run` of the shared pacer, so the test does not guess how long the client needs to read it. */
+async function refusalNoted(firstRun: Promise<unknown>): Promise<void> {
+  await firstRun.catch(() => undefined);
 }
 
 describe('a download from a host that limited its rate', () => {

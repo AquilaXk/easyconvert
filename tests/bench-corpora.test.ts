@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ClassRows } from '../bench/class-rows';
 import { CORPUS_TIER_ENV, QUICK_PUBLIC_SUBSET, PUBLIC_SPEED_SAMPLES } from '../bench/config';
 import { createContext } from '../bench/context';
@@ -29,6 +29,7 @@ import {
   y4mLayout,
 } from '../bench/corpora';
 import { AUDIO_EDGE_CASE_IDS } from '../bench/families/audio';
+import { hostPacer } from '../bench/http-retry';
 import { ReferenceCache } from '../bench/ref-cache';
 import { SPEC } from '../bench/rows';
 import { caseInScope, corpusTier, rowInScope } from '../bench/scope';
@@ -412,6 +413,21 @@ describe('what a host may make the fetcher read', () => {
       expect((await httpBytes(url, [4, 6], 100)).toString()).toBe('456');
       expect((await httpBytes(url, [7, 9], 100)).toString()).toBe('789');
       expect(downloadHits).toBe(1);
+    });
+
+    it('waits its turn at the host a request reaches, which is the storage host once the redirect to it is remembered', async () => {
+      const front = http.createServer((_request, response) => response.writeHead(302, { location: `${base}/signed` }).end());
+      await new Promise<void>((resolve) => front.listen(0, '127.0.0.1', resolve));
+      const frontBase = `http://127.0.0.1:${(front.address() as AddressInfo).port}`;
+      const runs = vi.spyOn(hostPacer, 'run');
+      try {
+        expect((await httpBytes(`${frontBase}/archive`, [0, 3], 100)).toString()).toBe('0123');
+        expect((await httpBytes(`${frontBase}/archive`, [4, 6], 100)).toString()).toBe('456');
+        expect(runs.mock.calls.map(([host]) => host)).toEqual([new URL(frontBase).host, new URL(base).host]);
+      } finally {
+        runs.mockRestore();
+        await new Promise<void>((resolve) => front.close(() => resolve()));
+      }
     });
 
     it('stops reading a body once it is longer than the size the manifest pins, without taking the rest', async () => {
