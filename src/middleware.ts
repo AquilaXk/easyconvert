@@ -209,7 +209,7 @@ const handleRootLocale = createIntlMiddleware(routing);
 const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
 
 /** What reading a URL drops from the decoded path: a tab or a line break anywhere, and a space or control character at the end. */
-const DROPPED_BY_URL_PARSING = /[\t\n\r]|[\u0000-\u0020]$/;
+const DROPPED_BY_URL_PARSING = /[\t\n\r]|(?:[\u0000-\u0020]$)/;
 
 /**
  * The page's answer in the visitor's language. next-intl rewrites to the decoded path read back as a URL, which drops what
