@@ -286,7 +286,7 @@ describe.skipIf(!haveRenderer)('XPS packages that would make the renderer work w
     const xps = await packageOf({ 'FixedDocSeq.fdseq': sequenceOf('/Documents/1/FixedDoc.fdoc'), 'Documents/1/FixedDoc.fdoc': documentOf(pageNames(501)) });
     const error = await refusalOf(dispatchConversion(xps, 'xps', 'png', {}, 'long.xps'));
     expect(error).toBeInstanceOf(PayloadLimitError);
-    expect(error.message).toMatch(/prints 501 pages; at most 500 are rendered to images/);
+    expect(error.message).toMatch(/converts 501 pages to images; at most 500 are converted in one request/);
   }, CONVERSION_TIMEOUT_MS);
 
   it('draws the first page of such a document when the request asks for the first page only', async () => {
