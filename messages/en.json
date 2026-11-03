@@ -103,9 +103,7 @@
       "pair": "{src} to {tgt}"
     },
     "formatConverter": "{format} Converter",
-    "formatCard": {
-      "label": "Formats"
-    },
+    "formatCardsLabel": "Formats",
     "crossLinks": {
       "from": {
         "heading": "Convert from {format}"

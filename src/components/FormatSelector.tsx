@@ -7,7 +7,7 @@ import { useTranslations } from 'next-intl';
 import type { FormatDefinition } from '@/lib/types';
 import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
 import { CATEGORY_ORDER } from '@/lib/registry-stats';
-import { canonicalFormat } from '@/lib/format-aliases';
+import { canonicalFormat, collapseAliases } from '@/lib/format-aliases';
 import { FormatSelectorBody, formatLabel } from './workbench/FormatSelectorView';
 import { usePopoverDismiss } from './workbench/usePopoverDismiss';
 
@@ -41,12 +41,6 @@ function sortFormatCategories(keys: Iterable<string>): string[] {
     if (idxA !== -1) return -1;
     return idxB !== -1 ? 1 : a.localeCompare(b);
   });
-}
-
-/** Each format once, by its own name: an alias whose format is also offered folds into it, as the reference lists JPG alone. */
-function collapseAliases(formats: FormatDefinition[]): FormatDefinition[] {
-  const offered = new Set(formats.map((f) => f.id));
-  return formats.filter((f) => canonicalFormat(f.id) === f.id || !offered.has(canonicalFormat(f.id)));
 }
 
 function resolveInitialCategory(currentFormatId: string | undefined, sourceFormat: string | undefined, allFormats: FormatDefinition[], categories: string[]): string {
@@ -189,7 +183,7 @@ export default function FormatSelector({
   const [search, setSearch] = useState('');
   const popoverRef = useRef<HTMLDialogElement>(null);
 
-  const allFormats = useMemo(() => collapseAliases(availableFormats ?? getAllFormats()), [availableFormats]);
+  const allFormats = useMemo(() => collapseAliases(availableFormats ?? getAllFormats(), (format) => format.id), [availableFormats]);
   const categoriesWithFormats = useMemo(() => groupFormatsByCategory(allFormats), [allFormats]);
   const categories = useMemo(() => sortFormatCategories(categoriesWithFormats.keys()), [categoriesWithFormats]);
   const currentFormatId = selectedFormatId ? canonicalFormat(selectedFormatId.toLowerCase()) : undefined;

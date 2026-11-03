@@ -1,6 +1,6 @@
 import type { Messages, useTranslations } from 'next-intl';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
-import { isSameFormat, otherFormats } from '@/lib/format-aliases';
+import { otherFormats } from '@/lib/format-aliases';
 import type { FormatCategory } from '@/lib/types';
 import type { AppLocale } from '@/i18n/routing';
 import type { ParsedSlug, SlugName } from '@/lib/slug-parser';
@@ -24,11 +24,7 @@ type OptionSubject = keyof Messages['slugPages']['subjects'];
 const RELATED_FORMAT_COUNT = 5;
 const OPTION_SUBJECT_COUNT = 3;
 /** The source categories whose pair pages name what the options set; other pair pages have no such sentence. */
-export const OPTION_INTRO_CATEGORIES: ReadonlySet<FormatCategory> = new Set<FormatCategory>([
-  'image',
-  'video',
-  'audio',
-]);
+const OPTION_INTRO_CATEGORIES: ReadonlySet<FormatCategory> = new Set<FormatCategory>(['image', 'video', 'audio']);
 /** The longest intro, as the meta description it also is; the list of other targets gets shorter until the intro fits. */
 const INTRO_MAX_LENGTH = 160;
 
@@ -80,8 +76,7 @@ const LIST_OF: Readonly<Record<AppLocale, (items: readonly string[]) => string>>
 /** Formats the registry converts `source` to, each named once by its own name, other than `source` and `target`. */
 function relatedTargets(source: string, target: string): string[] {
   const ids = getAvailableTargetFormats(source).map(({ id }) => id);
-  return otherFormats(source, ids)
-    .filter((id) => !isSameFormat(id, target))
+  return otherFormats(ids, source, target)
     .slice(0, RELATED_FORMAT_COUNT)
     .map((id) => id.toUpperCase());
 }
@@ -107,9 +102,9 @@ function introOf(lead: string, related: readonly string[], relatedSentence: (for
 }
 
 /**
- * The title and description of a slug page in the page's language. A converter page says what it converts and which
- * other formats the registry converts its source to; an image, video or audio pair page also names what the options of
- * that pair set, since a format page's options depend on the target. It claims nothing about speed or quality.
+ * The title and description of a slug page in the page's language. A converter page says what it converts and which other
+ * formats the registry converts its source to; an image, video or audio pair page also names what the options of that pair
+ * set, since a format page's options depend on the target. It claims nothing about speed or quality.
  */
 export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, locale: AppLocale): LocalizedSlugCopy {
   const { copy, sourceFormat: source, targetFormat: target } = parsed;

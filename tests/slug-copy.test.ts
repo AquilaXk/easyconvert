@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
-import { OPTION_INTRO_CATEGORIES } from '../src/components/converter/slug-copy';
+import { isSameFormat } from '../src/lib/format-aliases';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { allElements, attrOf, renderDom } from './helpers/rendered-dom';
@@ -21,7 +21,7 @@ const firstSentence = (text: string) => text.split(/(?<=[.요])\s/)[0];
 
 const registeredPairs = Object.keys(FORMAT_REGISTRY).flatMap((source) =>
   getAvailableTargetFormats(source)
-    .filter(({ id }) => id !== source)
+    .filter(({ id }) => !isSameFormat(id, source))
     .map(({ id }) => `${source}-to-${id}`)
 );
 const formatPages = Object.keys(FORMAT_REGISTRY).map((id) => `${id}-converter`);
@@ -141,11 +141,14 @@ function optionsSentence(subjects: string[]): string {
   return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
 }
 
+/** The pair pages that name options are those of images, video and audio; a document, font, archive or data pair page does not. */
+const OPTION_INTRO_CATEGORIES = ['image', 'video', 'audio'];
+
 describe('the options a pair page names', () => {
   it('are the first options its dialog renders for an image, video or audio source, in the dialog order, and none for any other source', () => {
     const differing = registeredPairs.flatMap((slug) => {
       const [source, target] = slug.split('-to-');
-      const rendered = OPTION_INTRO_CATEGORIES.has(FORMAT_REGISTRY[source].category)
+      const rendered = OPTION_INTRO_CATEGORIES.includes(FORMAT_REGISTRY[source].category)
         ? subjectsTheDialogRenders(source, target).slice(0, 3)
         : [];
       const { description } = slugPageCopy(slug, 'en');

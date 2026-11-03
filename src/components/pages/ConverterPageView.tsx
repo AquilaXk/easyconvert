@@ -9,7 +9,7 @@ import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
 import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
-import { isSameFormat, otherFormats } from '@/lib/format-aliases';
+import { otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { parseConverterSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
@@ -54,22 +54,18 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
 
   const srcKey = parsed.sourceFormat.toLowerCase();
   const tgtKey = parsed.targetFormat.toLowerCase();
-  // A format converted to itself or to another name of it (JPEG to JPG) is no pair: the page describes the one format.
-  const isPair = Boolean(tgtKey && tgtKey !== 'any' && !isSameFormat(tgtKey, srcKey));
+  const isPair = Boolean(tgtKey && tgtKey !== 'any' && tgtKey !== srcKey);
   const isCategorySlug = parsed.copy.kind === 'format' && parsed.copy.name.kind === 'category';
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
-  const convertFromTargets = otherFormats(
-    srcKey,
-    sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt']
-  );
+  const convertFromTargets = otherFormats(sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt'], srcKey);
 
   const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
   const convertToSources = otherFormats(
-    targetForReverse,
     Object.entries(FORMAT_REGISTRY)
       .filter(([, def]) => def.targetFormats.includes(targetForReverse))
-      .map(([key]) => key)
+      .map(([key]) => key),
+    targetForReverse
   );
 
   const categoryName = sourceFormatRegistry?.category || 'document';
@@ -132,7 +128,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           />
         ) : (
           <>
-            {!isCategorySlug && <FormatCards srcKey={srcKey} tgtKey={isPair ? tgtKey : null} />}
+            {!isCategorySlug && <FormatCards ids={isPair ? [srcKey, tgtKey] : [srcKey]} />}
 
             <FormatCrossLinks
               sourceFormat={parsed.sourceFormat}

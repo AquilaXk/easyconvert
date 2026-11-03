@@ -1,4 +1,5 @@
 import { FORMAT_REGISTRY } from './registry';
+import { isSameFormat } from './format-aliases';
 import {
   INFO_PAGE_MAP,
   UNIT_CONVERTER_INFO_PAGE,
@@ -44,6 +45,12 @@ function readSlugWord(raw: string): { format: string; name: SlugName } {
   return { format: raw, name: { kind: 'format', id: raw, display: raw.toUpperCase() } };
 }
 
+/** The page of one format or category, the converter of anything it can be converted to. */
+function formatPage({ format, name }: { format: string; name: SlugName }): ParsedSlug {
+  return { isInfoPage: false, sourceFormat: format, targetFormat: 'any', copy: { kind: 'format', name } };
+}
+
+/** A pair of a format and itself or another name of it (`jpeg-to-jpg`) converts nothing: its page is the page of its source. */
 function parsePairSlug(cleanSlug: string): ParsedSlug {
   const parts = cleanSlug.split('-to-');
   const rawSrc = parts[0]?.trim() || 'pdf';
@@ -56,6 +63,7 @@ function parsePairSlug(cleanSlug: string): ParsedSlug {
 
   const src = readSlugWord(rawSrc);
   const tgt = readSlugWord(rawTgt);
+  if (isSameFormat(src.format, tgt.format)) return formatPage(src);
   return {
     isInfoPage: false,
     sourceFormat: src.format,
@@ -70,13 +78,7 @@ function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
     return UNIT_CONVERTER_INFO_PAGE;
   }
 
-  const { format, name } = readSlugWord(rawFmt);
-  return {
-    isInfoPage: false,
-    sourceFormat: format,
-    targetFormat: 'any',
-    copy: { kind: 'format', name },
-  };
+  return formatPage(readSlugWord(rawFmt));
 }
 
 /** A slug as the parser reads it: lowercased, without leading slashes or surrounding space. */

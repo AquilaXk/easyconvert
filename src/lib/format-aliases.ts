@@ -34,17 +34,22 @@ export function isSameFormat(id: string, other: string): boolean {
 }
 
 /**
- * The formats of `ids` other than `own`, each named once: a name of `own` is dropped, and the names of any other
- * format collapse to one, its canonical name when `ids` holds it and else the first name `ids` holds. The order of
- * `ids` stays.
+ * Each format of `items` once, by its own name: an item that is another name of a format whose own name is also in
+ * `items` is dropped, and the others stay in place, so a format whose own name is absent keeps every name it has.
  */
-export function otherFormats(own: string, ids: readonly string[]): string[] {
-  const ownFormat = canonicalFormat(own);
-  const named = new Map<string, string>();
-  for (const id of ids) {
-    const format = canonicalFormat(id);
-    if (format === ownFormat) continue;
-    if (!named.has(format) || id === format) named.set(format, id);
-  }
-  return [...named.values()];
+export function collapseAliases<T>(items: readonly T[], idOf: (item: T) => string): T[] {
+  const offered = new Set(items.map(idOf));
+  return items.filter((item) => {
+    const id = idOf(item);
+    return canonicalFormat(id) === id || !offered.has(canonicalFormat(id));
+  });
+}
+
+/** The formats of `ids` other than those `own` names, each named once as `collapseAliases` names it. */
+export function otherFormats(ids: readonly string[], ...own: readonly string[]): string[] {
+  const ownFormats = new Set(own.map(canonicalFormat));
+  return collapseAliases(
+    ids.filter((id) => !ownFormats.has(canonicalFormat(id))),
+    (id) => id
+  );
 }

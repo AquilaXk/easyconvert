@@ -16,7 +16,7 @@ import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import HomePageView from '../src/components/pages/HomePageView';
 import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
-import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
+import { FORMAT_NAME_ALIASES, isSameFormat } from '../src/lib/format-aliases';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
   allElements,
@@ -367,9 +367,23 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const [section] = select(select(renderSlug(slug, locale), 'main')[0], 'section', 'aria-label', CARDS_LABEL[locale]);
     return {
       exists: section !== undefined,
-      names: section ? headings(section).map((heading) => heading.split(' ')[0]) : [],
+      names: section ? headings(section) : [],
       hrefs: section ? links(section).map((link) => link.href.replace(/^\/ko(?=\/)/, '')) : [],
     };
+  };
+
+  // The name on a card is the id of the page in capitals and the full name of the format; the registry's extension would read JPG for ULTRAHDR.
+  const CARD_NAME: Readonly<Record<string, string>> = {
+    raw: 'RAW Digital Camera RAW',
+    ultrahdr: 'ULTRAHDR Ultra HDR JPEG',
+    pdf: 'PDF Portable Document Format',
+    alto: 'ALTO ALTO XML Document',
+    docx: 'DOCX Office Open XML Document',
+    svgfont: 'SVGFONT SVG Font Glyphs',
+    webpvideo: 'WEBPVIDEO Animated WebP',
+    jpeg: 'JPEG JPEG Continuous-Tone Photographic Image',
+    jpg: 'JPG JPEG Continuous-Tone Photographic Image',
+    jfif: 'JFIF JPEG File Interchange Format',
   };
 
   it.each(['en', 'ko'] as const)(
@@ -377,29 +391,75 @@ describe('Redesign & Free Static Architecture Verification', () => {
     (locale) => {
       for (const [slug, ids] of [['raw-to-ultrahdr', ['raw', 'ultrahdr']], ['pdf-to-alto', ['pdf', 'alto']], ['pdf-to-docx', ['pdf', 'docx']]] as const) {
         const { names, hrefs } = formatCards(slug, locale);
-        expect(names, slug).toEqual(ids.map((id) => id.toUpperCase()));
+        expect(names, slug).toEqual(ids.map((id) => CARD_NAME[id]));
         expect(hrefs, slug).toEqual(ids.map((id) => `/${id}-converter`));
       }
       for (const id of ['ultrahdr', 'alto', 'svgfont', 'webpvideo']) {
         const { names, hrefs } = formatCards(`${id}-converter`, locale);
-        expect(names, id).toEqual([id.toUpperCase()]);
+        expect(names, id).toEqual([CARD_NAME[id]]);
         expect(hrefs, id).toEqual([]);
       }
     }
   );
 
-  it('verifies a slug that names a category by a word shows no format card and no format in its breadcrumb', () => {
-    for (const slug of ['music-converter', 'photo-converter', 'word-converter', 'audio-converter', 'cad-converter']) {
-      expect(formatCards(slug).exists, slug).toBe(false);
-      const breadcrumb = select(renderSlug(slug), 'nav', 'aria-label', 'Breadcrumb')[0];
-      expect(links(breadcrumb).map((link) => link.href), slug).toEqual(['/']);
+  // The category words of a slug (CATEGORY_WORDS of the slug parser), by which a page describes no one format.
+  const CATEGORY_WORDS = [
+    'video', 'audio', 'image', 'document', 'ebook', 'archive', 'vector', 'font', 'cad', 'spreadsheet', 'presentation', 'data',
+    'word', 'excel', 'powerpoint', 'photo', 'picture', 'music',
+  ];
+  const BREADCRUMB_LABEL = { en: 'Breadcrumb', ko: '현재 위치' } as const;
+
+  it.each(['en', 'ko'] as const)('verifies a slug that names a category by a word shows no format card and no format in its breadcrumb (%s)', (locale) => {
+    expect(CATEGORY_WORDS).toHaveLength(18);
+    for (const slug of CATEGORY_WORDS.map((word) => `${word}-converter`)) {
+      expect(formatCards(slug, locale).exists, slug).toBe(false);
+      const breadcrumb = select(renderSlug(slug, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
+      expect(links(breadcrumb).map((link) => link.href.replace(/^\/ko(?=\/|$)/, '') || '/'), slug).toEqual(['/']);
       expect(select(breadcrumb, 'li').filter((item) => attrOf(item, 'aria-current') === 'page'), slug).toHaveLength(1);
     }
   });
 
-  it('verifies a pair of two names of one format is a format page with one card, and a format is listed once among the related conversions', () => {
-    expect(formatCards('jpeg-to-jpg')).toEqual({ exists: true, names: ['JPEG'], hrefs: [] });
+  // A pair of two names of one format converts nothing, so every part of the page (title, meta, tiles, breadcrumb, card and
+  // both lists) describes the one format the slug starts from, as the page of that format does.
+  const ALIAS_PAIR_HEADINGS = {
+    en: (name: string) => [`${name} Converter`, 'Select your file to convert', `Convert from ${name}`, `Convert to ${name}`],
+    ko: (name: string) => [`${name} 변환기`, '변환할 파일을 선택하세요', `${name} 파일 변환`, `${name} 형식으로 변환`],
+  } as const;
+  const aliasPairSlugs = Object.entries(FORMAT_REGISTRY).flatMap(([source, { targetFormats }]) =>
+    targetFormats.filter((target) => target !== source && isSameFormat(source, target)).map((target) => `${source}-to-${target}`)
+  );
 
+  it('verifies the slug parser reads a pair of two names of one format, or of a format and itself, as the page of its source', () => {
+    for (const [slug, source] of [['jpeg-to-jpg', 'jpeg'], ['jpg-to-jpeg', 'jpg'], ['tgz-to-tar.gz', 'tgz'], ['pdf-to-pdf', 'pdf']] as const) {
+      expect(parseConverterSlug(slug), slug).toMatchObject({ sourceFormat: source, targetFormat: 'any', copy: { kind: 'format', name: { id: source } } });
+    }
+    expect(parseConverterSlug('jpeg-to-png')).toMatchObject({ sourceFormat: 'jpeg', targetFormat: 'png', copy: { kind: 'pair' } });
+  });
+
+  it.each(['en', 'ko'] as const)('verifies the h1 and both list headings of jpeg-to-jpg, jpg-to-jpeg and jfif-to-jpg name their one format (%s)', (locale) => {
+    // No registry format converts to JFIF, so its page has no second list.
+    for (const [slug, name, hasToList] of [['jpeg-to-jpg', 'JPEG', true], ['jpg-to-jpeg', 'JPG', true], ['jfif-to-jpg', 'JFIF', false]] as const) {
+      const [h1, prompt, from, to] = ALIAS_PAIR_HEADINGS[locale](name);
+      const all = headings(select(renderSlug(slug, locale), 'main')[0]);
+      expect(all, slug).toEqual([h1, prompt, CARD_NAME[name.toLowerCase()], from, ...(hasToList ? [to] : [])]);
+    }
+  });
+
+  it.each(['en', 'ko'] as const)(
+    'verifies each of the 14 pairs of two names of one format reads as the page of its source in the title, meta, cards and lists (%s)',
+    (locale) => {
+      expect(aliasPairSlugs).toHaveLength(14);
+      for (const slug of aliasPairSlugs) {
+        const formatSlug = `${slug.split('-to-')[0]}-converter`;
+        expect(headings(select(renderSlug(slug, locale), 'main')[0]), slug).toEqual(headings(select(renderSlug(formatSlug, locale), 'main')[0]));
+        expect(formatCards(slug, locale), slug).toEqual(formatCards(formatSlug, locale));
+        expect(formatCards(slug, locale).hrefs, slug).toEqual([]);
+        expect(slugPageCopy(slug, locale), slug).toEqual(slugPageCopy(formatSlug, locale));
+      }
+    }
+  );
+
+  it('verifies a format is listed once among the related conversions', () => {
     const texts = links(select(renderSlug('png-converter'), 'main')[0]).map((link) => link.text);
     expect(texts.filter((text) => text === 'JPG to PNG')).toHaveLength(1);
     expect(texts.filter((text) => text === 'JPEG to PNG' || text === 'JFIF to PNG')).toEqual([]);

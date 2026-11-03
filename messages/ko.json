@@ -103,9 +103,7 @@
       "pair": "{src} → {tgt}"
     },
     "formatConverter": "{format} 변환기",
-    "formatCard": {
-      "label": "형식"
-    },
+    "formatCardsLabel": "형식",
     "crossLinks": {
       "from": {
         "heading": "{format} 파일 변환"
