@@ -87,11 +87,13 @@ async function expectOnePixelPng(res: Response): Promise<void> {
 }
 
 let keysClient: Redis | null;
+/** The faked clock where the last test left it; each test starts later than any verdict an earlier one left can live. */
+let clock = Date.now();
 
 beforeEach(() => {
-  // Each test starts after any verdict an earlier test left has expired.
   vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(Date.now() + VERDICT_GONE_AFTER_MS);
+  clock += VERDICT_GONE_AFTER_MS;
+  vi.setSystemTime(clock);
   keysClient = redisKeyStore.getRedisClient();
   redisKeyStore.setRedisClient(null);
   redisKeyStore.resetStore();
@@ -101,6 +103,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clock = Date.now();
   vi.useRealTimers();
   vi.unstubAllEnvs();
   redisKeyStore.setRedisClient(keysClient);
