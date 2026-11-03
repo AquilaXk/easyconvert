@@ -20,12 +20,10 @@ export type JobDeadlineFamily = 'pages' | 'media' | 'bytes';
 export interface JobDeadlineInput {
   /** The owner's tier; an unknown or missing tier is the free tier. */
   tier?: string;
-  /** What the work is counted in: `pages` for documents, `media` for audio and video, `bytes` for the rest. */
+  /** What the work is counted in: `pages` for documents (their pages are not known before the conversion), `media` for audio and video, `bytes` for the rest. */
   family: JobDeadlineFamily;
   /** Size of the input in bytes; missing means unknown, which gives the maximum of the tier. */
   inputBytes?: number;
-  /** Pages of a document; missing means unknown, which gives the maximum of the tier. */
-  pages?: number;
   /** Length of an audio or video input in seconds. */
   mediaSeconds?: number;
 }
@@ -33,7 +31,6 @@ export interface JobDeadlineInput {
 export interface JobDeadlineSettings {
   baseMs: Record<string, number>;
   maxMs: Record<string, number>;
-  perPageMs: number;
   perMibMs: number;
   perMediaSecondMs: number;
   /** Most a synchronous request may run; longer conversions belong on the asynchronous API. */
@@ -48,7 +45,6 @@ export const JOB_DEADLINE_ENV = {
   MAX_FREE: 'JOB_DEADLINE_MAX_MS_FREE',
   MAX_PRO: 'JOB_DEADLINE_MAX_MS_PRO',
   MAX_ENTERPRISE: 'JOB_DEADLINE_MAX_MS_ENTERPRISE',
-  PER_PAGE: 'JOB_DEADLINE_PER_PAGE_MS',
   PER_MIB: 'JOB_DEADLINE_PER_MIB_MS',
   PER_MEDIA_SECOND: 'JOB_DEADLINE_PER_MEDIA_SECOND_MS',
   SYNC_MAX: 'SYNC_DEADLINE_MAX_MS',
@@ -57,8 +53,9 @@ export const JOB_DEADLINE_ENV = {
 /**
  * Defaults, from the real-world corpus (bench/realworld, nightly run on 16 518 jobs): the slowest job that ended
  * with a conversion or a typed refusal took 66.8 s on a parallel CI runner, the slowest per-page rate was 14.2 s
- * per page, and the rest of the corpus finished in under 42.7 s (99.9th percentile). A page is allowed 10 s, the
- * OCR page budget; media keeps the 3 s per second of the media engine's own formula (3 x duration + 60 s).
+ * per page, and the rest of the corpus finished in under 42.7 s (99.9th percentile). A document gets the maximum of
+ * its tier, since its pages are not known before it is converted; media keeps the 3 s per second of the media engine's
+ * own formula (3 x duration + 60 s).
  */
 export const JOB_DEADLINE_DEFAULTS: Record<keyof typeof JOB_DEADLINE_ENV, number> = {
   BASE_FREE: 60_000,
@@ -67,7 +64,6 @@ export const JOB_DEADLINE_DEFAULTS: Record<keyof typeof JOB_DEADLINE_ENV, number
   MAX_FREE: 300_000,
   MAX_PRO: 1_800_000,
   MAX_ENTERPRISE: JOB_DEADLINE_CEILING_MS,
-  PER_PAGE: 10_000,
   PER_MIB: 2_000,
   PER_MEDIA_SECOND: 3_000,
   SYNC_MAX: 120_000,
@@ -131,7 +127,6 @@ export function jobDeadlineSettings(env: Env = process.env): JobDeadlineSettings
   return {
     baseMs,
     maxMs,
-    perPageMs: readSetting(env, 'PER_PAGE'),
     perMibMs: readSetting(env, 'PER_MIB'),
     perMediaSecondMs: readSetting(env, 'PER_MEDIA_SECOND'),
     syncMaxMs: readSetting(env, 'SYNC_MAX'),
@@ -163,36 +158,26 @@ function requireNonNegativeNumber(value: number, label: string): void {
   }
 }
 
-function requirePageCount(value: number): void {
-  if (!Number.isInteger(value) || value < 1) {
-    throw new JobDeadlineError(`pages must be an integer of at least 1, got ${String(value)}`);
-  }
-}
-
 /** The maximum deadline of a tier in milliseconds. */
 export function tierMaxDeadlineMs(tier: string | undefined, settings: JobDeadlineSettings = currentJobDeadlineSettings()): number {
   return settings.maxMs[knownTier(tier)];
 }
 
 /**
- * Wall-clock limit in milliseconds for one conversion job of `input`: the tier's base plus `perPageMs` per page
- * (a document of unknown page count gets the maximum), `perMediaSecondMs` per second of media, and `perMibMs` per
- * started MiB of input, never above the tier's maximum. Work of unknown size gets the maximum. Invalid quantities throw
- * a RangeError.
+ * Wall-clock limit in milliseconds for one conversion job of `input`: the tier's base plus `perMediaSecondMs` per second of
+ * media and `perMibMs` per started MiB of input, never above the tier's maximum. Work of unknown size gets the maximum, and so
+ * does a document: its pages are known only once it is converted and the slowest page of the corpus took 14.2 s, so an
+ * allowance computed from its size would end a long document early. Invalid quantities throw a RangeError.
  */
 export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSettings = currentJobDeadlineSettings()): number {
   const tier = knownTier(input.tier);
   const max = settings.maxMs[tier];
   if (input.inputBytes !== undefined) requireNonNegativeNumber(input.inputBytes, 'inputBytes');
   if (input.mediaSeconds !== undefined) requireNonNegativeNumber(input.mediaSeconds, 'mediaSeconds');
-  if (input.pages !== undefined) requirePageCount(input.pages);
-  if (input.inputBytes === undefined) return max;
+  if (input.inputBytes === undefined || input.family === 'pages') return max;
 
   let deadline = settings.baseMs[tier] + Math.ceil(input.inputBytes / BYTES_PER_MIB) * settings.perMibMs;
-  if (input.family === 'pages') {
-    if (input.pages === undefined) return max;
-    deadline += input.pages * settings.perPageMs;
-  } else if (input.family === 'media' && input.mediaSeconds !== undefined) {
+  if (input.family === 'media' && input.mediaSeconds !== undefined) {
     deadline += Math.ceil(input.mediaSeconds) * settings.perMediaSecondMs;
   }
   return Math.min(deadline, max);
@@ -220,7 +205,6 @@ export interface ConversionDeadlineInput {
   targetFormat: string;
   /** Missing means unknown, which gives the maximum of the tier. */
   inputBytes?: number;
-  pages?: number;
   mediaSeconds?: number;
   options?: ConversionOptions;
 }
@@ -235,7 +219,6 @@ export function conversionDeadlineMs(
       tier: input.tier,
       family: jobDeadlineFamily(input.sourceFormat, input.targetFormat),
       inputBytes: input.inputBytes,
-      pages: input.pages,
       mediaSeconds: input.mediaSeconds,
     },
     settings

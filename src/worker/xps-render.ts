@@ -7,7 +7,7 @@ import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { renderedXpsPageParts } from '../lib/conversions/office/xps-reader';
 import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-resources';
-import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
+import { PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { ConversionFailedError, CorruptStreamError } from '../lib/types';
@@ -173,7 +173,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
   const entries = await readPackageEntries(bytes);
   const pageParts = await renderedXpsPageParts(bytes, options.signal);
   const pageCount = pageParts.length;
-  const pageOptions: WorkerEngineOptions = { ...options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES };
+  const pageOptions: WorkerEngineOptions = { ...options, maxRenderedPages: PAGE_IMAGE_MAX_PAGES };
   if (tgt !== PDF_TARGET && !selectsPages(options)) {
     boundRenderedPages(
       Array.from({ length: pageCount }, (_, index) => index + 1),

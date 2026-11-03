@@ -1,6 +1,6 @@
 import { expect } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
+import { PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { PayloadLimitError } from '../src/lib/types';
 import { pageRenderProcesses } from '../src/worker/poppler-ppm';
 import { oracleTest } from './helpers/oracle-test';
@@ -45,10 +45,10 @@ oracleTest(
     const sample = await requireRealworldSample(ctx, LONG_DOCUMENT_ID);
     const suite = suitePdf(sample.bytes, sample.format);
     const printedPages = pdfPageCount(suite);
-    expect(printedPages).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
+    expect(printedPages).toBeGreaterThan(PAGE_IMAGE_MAX_PAGES);
     const refusal = await refusalOf(sample.bytes, sample.format, 'jpg', LONG_DOCUMENT_ID);
     expect(refusal.message).toContain(`${printedPages} pages`);
-    expect(refusal.message).toContain(`at most ${OFFICE_PAGE_IMAGE_MAX_PAGES}`);
+    expect(refusal.message).toContain(`at most ${PAGE_IMAGE_MAX_PAGES}`);
     const first = await dispatchConversion(sample.bytes, sample.format, 'png', { multiPageOutput: 'first' }, LONG_DOCUMENT_ID);
     await expectSamePixels(first.buffer, referencePages(suite, 1, 1)[0], `${LONG_DOCUMENT_ID} page 1`);
   },

@@ -22,7 +22,7 @@ import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
 import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
 import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { startsWithBytes } from '../lib/conversions/package-access';
-import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
+import { PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
 import { SandboxedProcessError, rethrowSandboxUnavailable } from './sandbox';
@@ -91,14 +91,14 @@ export const OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS = 120_000;
 
 /**
  * The options of a document that becomes page images (the office suite writes the PDF, Poppler draws the pages): a request
- * renders at most `OFFICE_PAGE_IMAGE_MAX_PAGES` pages whatever application opens the source, and each stage may run for
+ * renders at most `PAGE_IMAGE_MAX_PAGES` pages whatever application opens the source, and each stage may run for
  * `OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS` unless the server set another limit. A spreadsheet that asks for the first
  * page (`multiPageOutput: "first"`, no page selection) also has the suite print that page only, which skips the layout and the
  * PDF of every other page; a text document or a presentation is laid out whole before any page is written, so that cut gains
  * nothing there. The limits are set here, over whatever the request carried.
  */
 export function withOfficePageBounds(src: string, options: WorkerEngineOptions): WorkerEngineOptions {
-  const bounded = { ...options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES, timeoutMs: options.timeoutMs ?? OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS };
+  const bounded = { ...options, maxRenderedPages: PAGE_IMAGE_MAX_PAGES, timeoutMs: options.timeoutMs ?? OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS };
   if (officeSuiteApplication(src) !== 'calc') return bounded;
   const firstPageOnly = options.multiPageOutput === 'first' && !selectsPages(options);
   return { ...bounded, pdfExportPageRange: firstPageOnly ? FIRST_PAGE_RANGE : undefined };

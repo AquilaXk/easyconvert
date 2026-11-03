@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { convertImage } from '../src/lib/conversions/image';
-import { IMAGE_DOCUMENT_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { buildBilevelTiff } from './helpers/tiff-builder';
 import { bombGif } from './helpers/image-bombs';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
@@ -40,8 +39,9 @@ const COLOURS: readonly Rgb[] = [
 const COLOUR_TOLERANCE = 12;
 /** 500 decoded and encoded pages take longer than the 5 s default on a loaded shard. */
 const LIMIT_DOCUMENT_TIMEOUT_MS = 60_000;
-const OVER_PAGE_LIMIT = IMAGE_DOCUMENT_MAX_PAGES + 1;
-const OVER_FORMER_FREE_TIER = 51;
+const FIVE_HUNDRED_PAGES = 500;
+const FIVE_HUNDRED_AND_ONE_PAGES = 501;
+const FIFTY_ONE_PAGES = 51;
 const TINY_PAGE = 8;
 // Each page stays under the 100 Mpx input limit (81 Mpx); five of them exceed the 400 Mpx aggregate budget.
 const HUGE_PAGE_SIDE = 9000;
@@ -181,23 +181,30 @@ describe('page limits', () => {
   const pagesOf = (count: number) => buildBilevelTiff(Array.from({ length: count }, () => ({ width: TINY_PAGE, height: TINY_PAGE })));
 
   it.skipIf(SKIP_WITHOUT_MAGICK).each(['png', 'tiff', 'pdf'])('%s: more pages than the limit of every caller are refused by default', async (target) => {
-    const error = await captureError(() => convertImage(pagesOf(OVER_PAGE_LIMIT), target, {}, 'many.tif', 'tiff'));
+    const error = await captureError(() => convertImage(pagesOf(FIVE_HUNDRED_AND_ONE_PAGES), target, {}, 'many.tif', 'tiff'));
     expect(error.name).toBe('InvalidPageRangeError');
-    expect(error.message).toContain(`${OVER_PAGE_LIMIT} pages`);
-    expect(error.message).toContain(`limit of ${IMAGE_DOCUMENT_MAX_PAGES} pages`);
+    expect(error.message).toContain(`${FIVE_HUNDRED_AND_ONE_PAGES} pages`);
+    expect(error.message).toContain(`limit of ${FIVE_HUNDRED_PAGES} pages`);
+    expect(error.message).toContain('multiPageOutput');
+  });
+
+  it.skipIf(SKIP_WITHOUT_MAGICK)('multiPageOutput "first" takes the first page of a document past the limit', { timeout: LIMIT_DOCUMENT_TIMEOUT_MS }, async () => {
+    const result = await convertImage(pagesOf(FIVE_HUNDRED_AND_ONE_PAGES), 'png', { multiPageOutput: 'first' }, 'many.tif', 'tiff');
+    expect(result.mimeType).toBe('image/png');
+    expect(result.sourceFrameCount).toBe(FIVE_HUNDRED_AND_ONE_PAGES);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('a selection within the limit of a longer document is accepted', async () => {
-    const result = await convertImage(pagesOf(OVER_PAGE_LIMIT), 'png', { pages: `1-${OVER_FORMER_FREE_TIER}` }, 'many.tif', 'tiff');
+    const result = await convertImage(pagesOf(FIVE_HUNDRED_AND_ONE_PAGES), 'png', { pages: `1-${FIFTY_ONE_PAGES}` }, 'many.tif', 'tiff');
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(Object.keys(zip.files)).toHaveLength(OVER_FORMER_FREE_TIER);
+    expect(Object.keys(zip.files)).toHaveLength(FIFTY_ONE_PAGES);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('a document of exactly the limit converts every page', { timeout: LIMIT_DOCUMENT_TIMEOUT_MS }, async () => {
-    const result = await convertImage(pagesOf(IMAGE_DOCUMENT_MAX_PAGES), 'png', {}, 'many.tif', 'tiff');
+    const result = await convertImage(pagesOf(FIVE_HUNDRED_PAGES), 'png', {}, 'many.tif', 'tiff');
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(Object.keys(zip.files)).toHaveLength(IMAGE_DOCUMENT_MAX_PAGES);
-    expect(result.sourceFrameCount).toBe(IMAGE_DOCUMENT_MAX_PAGES);
+    expect(Object.keys(zip.files)).toHaveLength(FIVE_HUNDRED_PAGES);
+    expect(result.sourceFrameCount).toBe(FIVE_HUNDRED_PAGES);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('refuses pages whose pixels exceed the aggregate budget before decoding any', async () => {

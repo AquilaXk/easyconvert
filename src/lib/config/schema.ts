@@ -1151,7 +1151,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_BASE_MS_FREE',
     area: 'limits',
     description:
-      'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
+      'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 60_000,
     requiredInProduction: false,
@@ -1162,7 +1162,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_BASE_MS_PRO',
     area: 'limits',
     description:
-      'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
+      'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 120_000,
     requiredInProduction: false,
@@ -1173,7 +1173,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_BASE_MS_ENTERPRISE',
     area: 'limits',
     description:
-      'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
+      'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 180_000,
     requiredInProduction: false,
@@ -1184,7 +1184,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_MAX_MS_FREE',
     area: 'limits',
     description:
-      'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+      'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 300_000,
     requiredInProduction: false,
@@ -1195,7 +1195,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_MAX_MS_PRO',
     area: 'limits',
     description:
-      'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+      'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 1_800_000,
     requiredInProduction: false,
@@ -1206,20 +1206,9 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_MAX_MS_ENTERPRISE',
     area: 'limits',
     description:
-      'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+      'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: JOB_DEADLINE_CEILING_MS,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_PER_PAGE_MS',
-    area: 'limits',
-    description:
-      'Milliseconds added to a job deadline for each page of a document (a document of unknown page count gets the maximum of the tier). The default is the OCR page budget.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 10_000,
     requiredInProduction: false,
     secret: false,
     roles: BOTH,

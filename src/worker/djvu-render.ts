@@ -4,7 +4,7 @@ import path from 'node:path';
 import { checkDjvuContainer } from '../lib/conversions/djvu-container';
 import { DJVUSED_MAX_OUTPUT_BYTES, DJVUSED_PAGE_COUNT_SCRIPT, DJVUSED_SIZE_SCRIPT, parseDjvusedPageCount, parseDjvusedSizes, type DjvuPageSize } from '../lib/conversions/djvu-report';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
-import { groupConsecutiveRanges, OFFICE_PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from '../lib/conversions/page-range';
+import { groupConsecutiveRanges, PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from '../lib/conversions/page-range';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { Semaphore } from '../lib/workers/semaphore';
 import { ConversionFailedError, CpuTaskTimeoutError, EngineUnavailableError, InvalidPageRangeError } from '../lib/types';
@@ -432,7 +432,7 @@ function drawPlanOf(job: DjvuJob, sizes: readonly DjvuPageSize[]): DrawPlan {
   const every = Array.from({ length: pageCount }, (_, index) => index + 1);
   if (job.tgt === PDF_TARGET) return { pageSpec: undefined, pageCount, drawnPixels: pixelsOf(sizes, every), maxBytes: MAX_OUTPUT_BYTES };
   const selected = resolvePageSelection(job.options.page, job.options.pages, pageCount, (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)) ?? every;
-  const drawn = boundRenderedPages(selected, { ...job.options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES });
+  const drawn = boundRenderedPages(selected, { ...job.options, maxRenderedPages: PAGE_IMAGE_MAX_PAGES });
   return {
     pageSpec: drawn.length === pageCount ? undefined : pageSpecOf(drawn),
     pageCount: drawn.length,
@@ -538,6 +538,6 @@ export async function convertDjvu(job: DjvuJob): Promise<WorkerConversionResult 
     });
   }
   const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) => fs.readFileSync(await draw(tempDir)));
-  const pageOptions: WorkerEngineOptions = { ...withoutPageSelection(options), maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES };
+  const pageOptions: WorkerEngineOptions = { ...withoutPageSelection(options), maxRenderedPages: PAGE_IMAGE_MAX_PAGES };
   return job.convertPdfPages(pdf, tgt, pageOptions, originalFilename);
 }

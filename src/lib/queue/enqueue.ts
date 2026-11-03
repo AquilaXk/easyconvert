@@ -4,7 +4,8 @@ import { withInputHeld } from '../storage/retention-service';
 import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './bullmq-engine';
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
-import { tierForOwner } from './owner-tier';
+import { redisUserStore } from '../auth/redis-user-store';
+import { isAnonymousUserId } from '../auth/anonymous-identity';
 import { foundOrUnknown, type ReservedUnit } from '../api-keys/hand-off';
 
 /**
@@ -112,6 +113,15 @@ export async function trustedInputBytes(
   }
   if (input.inputBufferBase64) return base64ByteLength(input.inputBufferBase64);
   return undefined;
+}
+
+const FREE_TIER = 'free';
+
+/** Tier of the owner of `userId`, which sets the deadline of the owner's jobs; unknown and anonymous owners are the free tier. */
+export async function tierForOwner(userId: string | undefined): Promise<string> {
+  if (!userId || isAnonymousUserId(userId)) return FREE_TIER;
+  const owner = await redisUserStore.findById(userId);
+  return owner?.tier ?? FREE_TIER;
 }
 
 /**

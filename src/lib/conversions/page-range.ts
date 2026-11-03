@@ -8,21 +8,20 @@ export interface PageInterval {
 }
 
 /**
- * Most pages of an office document (a workbook, a text document or a presentation) one request renders to page images. The printed
- * pages follow the content, so a request cannot predict them: real workbooks print 900 to 5,200 pages and a real 8 MB report
+ * Most pages one request renders to page images or converts to separate images, the same for every caller (policy entry 44).
+ * The pages follow the content and a request cannot predict them: real workbooks print 900 to 5,200 pages and a real 8 MB report
  * 4,181 to 4,874. The office suite writes their PDF in 3 to 32 s, but the pages cost about 50 ms and 0.5 MB each (4 vCPU), so
- * one request ran to minutes and half a gigabyte, past the job deadline when the runner is shared. 500 pages is the limit the
- * other multi-page chains of the worker use (OCR, re-encoded rasters).
+ * one request ran to minutes and half a gigabyte, past the job deadline when the runner is shared. A PDF, a DjVu, an XPS
+ * document and a multi-page image (a TIFF or a HEIF sequence) are held to the same number, which keeps the output ZIP and the
+ * decoding of a document of any size within one job; OCR and the re-encoded rasters of the worker use it too.
  */
-export const OFFICE_PAGE_IMAGE_MAX_PAGES = 500;
+export const PAGE_IMAGE_MAX_PAGES = 500;
 
 /**
- * Most pages of a multi-page image (a TIFF or a HEIF sequence) one request converts to separate images. One value for every
- * caller: the limit of the other multi-page chains of the worker (`OFFICE_PAGE_IMAGE_MAX_PAGES`, policy entry 44), which keeps
- * the output ZIP and the decoding of a document of any size within one job. The aggregate pixel budget bounds the same request
- * by its size.
+ * Longest page specification, in characters. A specification is untrusted text that the web server and the worker read on one
+ * thread; this bound, with the merge of its ranges, keeps the cost of reading it to its tokens and the pages it selects.
  */
-export const IMAGE_DOCUMENT_MAX_PAGES = OFFICE_PAGE_IMAGE_MAX_PAGES;
+export const MAX_PAGE_SPEC_CHARS = 8192;
 
 function parseIntegerPage(val: string, label: string): number {
   const num = Number.parseInt(val, 10);
@@ -32,39 +31,31 @@ function parseIntegerPage(val: string, label: string): number {
   return num;
 }
 
-function parseSinglePageToken(token: string, pageCount: number): number {
+function parseSinglePageToken(token: string, pageCount: number): PageInterval {
   const page = parseIntegerPage(token, 'page number');
   if (page > pageCount) {
     throw new InvalidPageRangeError(`Page number ${page} exceeds document page count of ${pageCount}.`);
   }
-  return page;
+  return { start: page, end: page };
 }
 
-function parseOpenEndedStart(startPart: string, pageCount: number): number[] {
+function parseOpenEndedStart(startPart: string, pageCount: number): PageInterval {
   const start = parseIntegerPage(startPart, 'range start');
   if (start > pageCount) {
     throw new InvalidPageRangeError(`Range start ${start} exceeds document page count of ${pageCount}.`);
   }
-  const pages: number[] = [];
-  for (let p = start; p <= pageCount; p++) {
-    pages.push(p);
-  }
-  return pages;
+  return { start, end: pageCount };
 }
 
-function parseOpenEndedEnd(endPart: string, pageCount: number): number[] {
+function parseOpenEndedEnd(endPart: string, pageCount: number): PageInterval {
   const end = parseIntegerPage(endPart, 'range end');
   if (end > pageCount) {
     throw new InvalidPageRangeError(`Range end ${end} exceeds document page count of ${pageCount}.`);
   }
-  const pages: number[] = [];
-  for (let p = 1; p <= end; p++) {
-    pages.push(p);
-  }
-  return pages;
+  return { start: 1, end };
 }
 
-function parseClosedRange(startPart: string, endPart: string, pageCount: number): number[] {
+function parseClosedRange(startPart: string, endPart: string, pageCount: number): PageInterval {
   const start = parseIntegerPage(startPart, 'range start');
   const end = parseIntegerPage(endPart, 'range end');
   if (start > pageCount || end > pageCount) {
@@ -73,14 +64,10 @@ function parseClosedRange(startPart: string, endPart: string, pageCount: number)
   if (start > end) {
     throw new InvalidPageRangeError(`Range start ${start} cannot exceed range end ${end}.`);
   }
-  const pages: number[] = [];
-  for (let p = start; p <= end; p++) {
-    pages.push(p);
-  }
-  return pages;
+  return { start, end };
 }
 
-function parseRangeToken(token: string, pageCount: number): number[] {
+function parseRangeToken(token: string, pageCount: number): PageInterval {
   const hyphenCount = (token.match(/-/g) || []).length;
   if (hyphenCount !== 1) {
     throw new InvalidPageRangeError(`Invalid range format: "${token}". Exactly one hyphen is allowed per range.`);
@@ -99,9 +86,9 @@ function parseRangeToken(token: string, pageCount: number): number[] {
   return parseClosedRange(startPart, endPart, pageCount);
 }
 
-function parseTokenPages(token: string, pageCount: number): number[] {
+function parseTokenInterval(token: string, pageCount: number): PageInterval {
   if (!token.includes('-')) {
-    return [parseSinglePageToken(token, pageCount)];
+    return parseSinglePageToken(token, pageCount);
   }
   return parseRangeToken(token, pageCount);
 }
@@ -115,11 +102,34 @@ function assertValidTokenString(token: string, spec: string): void {
   }
 }
 
+function assertSpecLength(spec: string): void {
+  if (spec.length > MAX_PAGE_SPEC_CHARS) {
+    throw new InvalidPageRangeError(`A page range specification is at most ${MAX_PAGE_SPEC_CHARS} characters long.`);
+  }
+}
+
 /**
- * Parses and validates a page range specification string against the total page count.
- * Grammar: N | N-M | N- | -M, comma separated (e.g. "1, 3-5, 8-").
+ * Sorts the intervals and joins the ones that overlap or touch, the pass of Chromium's `printing::PageRange::Normalize`
+ * (printing/page_range.cc): the cost is the sort of the tokens, whatever pages they name.
  */
-export function parsePageRanges(spec: string, pageCount: number): number[] {
+function mergeIntervals(intervals: PageInterval[]): PageInterval[] {
+  intervals.sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged: PageInterval[] = [intervals[0]];
+  for (let index = 1; index < intervals.length; index++) {
+    const last = merged[merged.length - 1];
+    const next = intervals[index];
+    if (last.end + 1 < next.start) merged.push(next);
+    else last.end = Math.max(last.end, next.end);
+  }
+  return merged;
+}
+
+/**
+ * Parses and validates a page range specification string against the total page count, and returns the pages it selects as
+ * sorted, non-overlapping intervals that do not touch.
+ * Grammar: N | N-M | N- | -M, comma separated (e.g. "1, 3-5, 8-"). At most `MAX_PAGE_SPEC_CHARS` characters.
+ */
+export function parsePageIntervals(spec: string, pageCount: number): PageInterval[] {
   if (typeof pageCount !== 'number' || !Number.isInteger(pageCount) || pageCount < 1) {
     throw new InvalidPageRangeError(`Invalid document page count: ${pageCount}. Must be an integer >= 1.`);
   }
@@ -127,23 +137,23 @@ export function parsePageRanges(spec: string, pageCount: number): number[] {
   if (typeof spec !== 'string' || spec.trim() === '') {
     throw new InvalidPageRangeError('Page range specification must be a non-empty string.');
   }
+  assertSpecLength(spec);
 
-  const rawTokens = spec.split(',');
-  const matchedPages = new Set<number>();
-
-  for (const rawToken of rawTokens) {
+  const intervals = spec.split(',').map((rawToken) => {
     const token = rawToken.trim();
     assertValidTokenString(token, spec);
-    for (const page of parseTokenPages(token, pageCount)) {
-      matchedPages.add(page);
-    }
-  }
+    return parseTokenInterval(token, pageCount);
+  });
+  return mergeIntervals(intervals);
+}
 
-  if (matchedPages.size === 0) {
-    throw new InvalidPageRangeError(`Page range specification "${spec}" matched 0 pages.`);
+/** The pages `parsePageIntervals` selects, as an ascending list. */
+export function parsePageRanges(spec: string, pageCount: number): number[] {
+  const pages: number[] = [];
+  for (const { start, end } of parsePageIntervals(spec, pageCount)) {
+    for (let page = start; page <= end; page++) pages.push(page);
   }
-
-  return Array.from(matchedPages).sort((a, b) => a - b);
+  return pages;
 }
 
 /**
@@ -207,6 +217,7 @@ export function validatePageRangeSyntax(spec: string): void {
   if (typeof spec !== 'string' || spec.trim() === '') {
     throw new InvalidPageRangeError('Page range specification must be a non-empty string.');
   }
+  assertSpecLength(spec);
 
   const rawTokens = spec.split(',');
   for (const rawToken of rawTokens) {

@@ -47,7 +47,7 @@ import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resourc
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { groupConsecutiveRanges, pageEntryName, resolvePageSelection } from '../lib/conversions/page-range';
+import { groupConsecutiveRanges, pageEntryName, PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -86,7 +86,7 @@ import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
-import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
+import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, withPageImageBound, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -1414,7 +1414,7 @@ async function renderPdfToImageWithPoppler(
     sandboxPrefix: 'easyconvert-poppler-img-',
     tgt,
     input,
-    options,
+    options: withPageImageBound(options),
     originalFilename,
     startTime,
     timeout,
@@ -1468,7 +1468,7 @@ async function renderPdfToSvgWithPoppler(
     sandboxPrefix: 'easyconvert-poppler-svg-',
     tgt: 'svg',
     input,
-    options,
+    options: withPageImageBound(options),
     originalFilename,
     startTime,
     timeout,
@@ -1545,8 +1545,6 @@ const POPPLER_DEFAULT_TIMEOUT_MS = 45_000;
 const POPPLER_MAX_TIMEOUT_MS = 120_000;
 const POPPLER_DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
-/** Pages one request may re-encode: the page images are already rendered, the encoders then run once per page. */
-const CHAINED_PAGE_ENCODE_MAX_PAGES = 500;
 
 /** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript, DXF and the metafiles. */
 function isPdfChainTarget(tgt: string): boolean {
@@ -1607,9 +1605,9 @@ async function reencodeRenderedPages(
     const entryNames = Object.keys(pages.files)
       .filter((name) => !pages.files[name].dir)
       .sort((a, b) => a.localeCompare(b));
-    if (entryNames.length > CHAINED_PAGE_ENCODE_MAX_PAGES) {
+    if (entryNames.length > PAGE_IMAGE_MAX_PAGES) {
       throw new PayloadLimitError(
-        `The document has ${entryNames.length} pages; at most ${CHAINED_PAGE_ENCODE_MAX_PAGES} can be converted to .${targetExtension} in one request. Select a page range.`
+        `The document has ${entryNames.length} pages; at most ${PAGE_IMAGE_MAX_PAGES} can be converted to .${targetExtension} in one request. Select a page range.`
       );
     }
     const encoded: ZipFile[] = [];

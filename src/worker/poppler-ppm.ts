@@ -4,6 +4,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../lib/types';
+import { PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sandbox';
 
@@ -285,6 +286,15 @@ export function boundRenderedPages(selected: number[], options: { multiPageOutpu
     );
   }
   return pages;
+}
+
+/**
+ * The options of a render that draws page images (PNG, JPEG, TIFF, PPM, SVG): a request draws at most `PAGE_IMAGE_MAX_PAGES`
+ * pages, selected or not, unless the worker set another limit for the chain (policy entry 44). The limit has one value for
+ * every caller and every chain that renders a PDF's pages.
+ */
+export function withPageImageBound<T extends { maxRenderedPages?: number }>(options: T): T {
+  return { ...options, maxRenderedPages: options.maxRenderedPages ?? PAGE_IMAGE_MAX_PAGES };
 }
 
 /** Raster density of a PDF page image: the default and the range the API accepts. */

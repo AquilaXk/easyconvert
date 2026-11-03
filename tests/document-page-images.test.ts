@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { JOB_DEADLINE_AT, type JobDeadlined, stageTimeoutMs } from '../src/lib/conversions/job-time';
-import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
+import { PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { PayloadLimitError } from '../src/lib/types';
 import { OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS, withOfficePageBounds } from '../src/worker/office-suite-route';
 import type { WorkerEngineOptions } from '../src/worker/worker-types';
@@ -15,7 +15,7 @@ import { expectSamePixels, pagesOfZip, pdfPageCount, referencePages, suitePdf } 
  * prints 4,181 pages with LibreOffice 24.2 on macOS and 4,874 on Ubuntu 24.04) to JPEG: the request drew every page and
  * packed 505 to 595 MB of JPEG pages (63 s on a quiet machine, 82 s on the Linux testbed) and passed the 180 s deadline on a
  * shared runner, although the same file converts to every other target in under a second. A request now renders at most
- * `OFFICE_PAGE_IMAGE_MAX_PAGES` pages whatever the source application and refuses a longer document with a 413 that names
+ * `PAGE_IMAGE_MAX_PAGES` pages whatever the source application and refuses a longer document with a 413 that names
  * the limit and the ways out. The real file itself is judged by `document-page-images.perf.test.ts` (nightly: the layout of 4,874 pages
  * is 30 to 100 s of CPU, which starves the timing suites that share a shard); here the same refusals are checked on documents made for
  * the test. The oracles are not the converter: the office suite's own PDF of the same file, whose pages `pdftoppm`
@@ -28,7 +28,7 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** Lines that print on more pages than the limit with room to spare (about 45 lines fit on a page). */
 const LINES_BEYOND_THE_LIMIT = 40_000;
 /** Slides beyond the limit: one page each. */
-const SLIDES_BEYOND_THE_LIMIT = OFFICE_PAGE_IMAGE_MAX_PAGES + 20;
+const SLIDES_BEYOND_THE_LIMIT = PAGE_IMAGE_MAX_PAGES + 20;
 const IMAGE_TARGETS = ['jpg', 'png'] as const;
 
 let longTextBytes: Buffer | undefined;
@@ -49,7 +49,7 @@ async function refusalOf(input: Buffer, source: string, target: string, name: st
 describe('the page bounds of a request that becomes page images', () => {
   it('limit the pages of every office application, and cut the PDF export to page 1 for a workbook only', () => {
     for (const source of ['docx', 'rtf', 'odt', 'pptx', 'odp', 'xlsx', 'ods']) {
-      expect(withOfficePageBounds(source, {}).maxRenderedPages, source).toBe(OFFICE_PAGE_IMAGE_MAX_PAGES);
+      expect(withOfficePageBounds(source, {}).maxRenderedPages, source).toBe(PAGE_IMAGE_MAX_PAGES);
     }
     expect(withOfficePageBounds('docx', { multiPageOutput: 'first' }).pdfExportPageRange).toBeUndefined();
     expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
@@ -71,7 +71,7 @@ describe('the page bounds of a request that becomes page images', () => {
     expect(withOfficePageBounds('docx', { multiPageOutput: 'first', pages: '2-3' })).toMatchObject({
       multiPageOutput: 'first',
       pages: '2-3',
-      maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES,
+      maxRenderedPages: PAGE_IMAGE_MAX_PAGES,
     });
   });
 });
@@ -83,12 +83,12 @@ describe('a document to page images', () => {
     async () => {
       const document = longText();
       const printedPages = pdfPageCount(suitePdf(document, 'odt'));
-      expect(printedPages).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
+      expect(printedPages).toBeGreaterThan(PAGE_IMAGE_MAX_PAGES);
       for (const target of IMAGE_TARGETS) {
         const refusal = await refusalOf(document, 'odt', target, 'long.odt');
         expect(refusal.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
         expect(refusal.message).toContain(`${printedPages} pages`);
-        expect(refusal.message).toContain(`at most ${OFFICE_PAGE_IMAGE_MAX_PAGES}`);
+        expect(refusal.message).toContain(`at most ${PAGE_IMAGE_MAX_PAGES}`);
         expect(refusal.message).toContain('multiPageOutput');
       }
     },

@@ -16,7 +16,7 @@ import {
   type MeterVerdict,
 } from '../../api-keys/anonymous-upload-budget';
 import { maxFileBytes, planOfCaller, type Plan } from '../../plan-limits';
-import { tierForOwner } from '../owner-tier';
+import { tierForOwner } from '../enqueue';
 import { tierMaxDeadlineMs } from '../job-deadline';
 import { nodeOutputKey } from './node-jobs';
 

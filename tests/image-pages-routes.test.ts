@@ -23,12 +23,12 @@ import { buildBilevelTiff } from './helpers/tiff-builder';
  * 50 pages the free tier used to allow and under the guard every caller shares (500 pages, policy entry 44).
  */
 
-const PAGES = 60;
+const SIXTY_PAGES = 60;
 const PAGE_SIDE = 8;
 const HTTP_OK = 200;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
-const manyPages = (count = PAGES) => buildBilevelTiff(Array.from({ length: count }, () => ({ width: PAGE_SIDE, height: PAGE_SIDE })));
+const manyPages = (count = SIXTY_PAGES) => buildBilevelTiff(Array.from({ length: count }, () => ({ width: PAGE_SIDE, height: PAGE_SIDE })));
 
 interface Account {
   id: string;
@@ -74,14 +74,14 @@ async function zipOf(response: Response): Promise<JSZip> {
   if (response.headers.get('content-type')?.includes('json')) {
     const body = await response.json();
     expect(body.mimeType).toBe('application/zip');
-    expect(body.sourceFrameCount).toBe(PAGES);
+    expect(body.sourceFrameCount).toBe(SIXTY_PAGES);
     return JSZip.loadAsync(Buffer.from(String(body.dataUri).split(',')[1], 'base64'));
   }
   return JSZip.loadAsync(Buffer.from(await response.arrayBuffer()));
 }
 
 async function expectEveryPage(response: Response): Promise<void> {
-  expect(Object.keys((await zipOf(response)).files)).toHaveLength(PAGES);
+  expect(Object.keys((await zipOf(response)).files)).toHaveLength(SIXTY_PAGES);
 }
 
 async function expectEveryPageInBatch(response: Response): Promise<void> {
@@ -90,7 +90,7 @@ async function expectEveryPageInBatch(response: Response): Promise<void> {
   const names = Object.keys(outer.files);
   expect(names).toHaveLength(1);
   const inner = await JSZip.loadAsync(await outer.file(names[0])!.async('nodebuffer'));
-  expect(Object.keys(inner.files)).toHaveLength(PAGES);
+  expect(Object.keys(inner.files)).toHaveLength(SIXTY_PAGES);
 }
 
 describe('synchronous routes convert every page of a document for every caller', () => {
@@ -201,7 +201,7 @@ describe('queued jobs convert every page for a free owner as for a pro owner', (
       expect(result.status).toBe('completed');
       const stored = s3Storage.getObject(result.resultKey);
       if (!stored) throw new Error(`The graph node stored no output under ${result.resultKey}`);
-      expect(Object.keys((await JSZip.loadAsync(stored.buffer)).files)).toHaveLength(PAGES);
+      expect(Object.keys((await JSZip.loadAsync(stored.buffer)).files)).toHaveLength(SIXTY_PAGES);
     }
   });
 });
