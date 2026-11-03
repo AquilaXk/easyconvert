@@ -59,15 +59,15 @@ describe('jobDeadlineMs defaults', () => {
 
   it('gives a document the maximum of its tier whatever its size, since its pages are not known before it is converted', () => {
     for (const [tier, max] of [['free', FREE_MAX], ['pro', 1_800_000], ['enterprise', 3_600_000]] as const) {
-      expect(jobDeadlineMs({ tier, family: 'pages', inputBytes: 0 }), tier).toBe(max);
-      expect(jobDeadlineMs({ tier, family: 'pages', inputBytes: 3 * MIB }), tier).toBe(max);
-      expect(jobDeadlineMs({ tier, family: 'pages' }), tier).toBe(max);
+      expect(jobDeadlineMs({ tier, family: 'document', inputBytes: 0 }), tier).toBe(max);
+      expect(jobDeadlineMs({ tier, family: 'document', inputBytes: 3 * MIB }), tier).toBe(max);
+      expect(jobDeadlineMs({ tier, family: 'document' }), tier).toBe(max);
     }
   });
 
   it('is not changed by the settings that scale the other work, for a document', () => {
     const tuned = jobDeadlineSettings({ JOB_DEADLINE_BASE_MS_FREE: '1000', JOB_DEADLINE_PER_MIB_MS: '1' });
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: MIB }, tuned)).toBe(FREE_MAX);
+    expect(jobDeadlineMs({ tier: 'free', family: 'document', inputBytes: MIB }, tuned)).toBe(FREE_MAX);
     expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: MIB }, tuned)).toBe(1_001);
   });
 
@@ -95,7 +95,7 @@ describe('jobDeadlineMs defaults', () => {
   it('caps the free tier at 5 minutes (QA decision 2026-10-10)', () => {
     expect(FREE_MAX).toBe(5 * 60_000);
     expect(jobDeadlineSettings().maxMs.free).toBe(FREE_MAX);
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0 })).toBe(FREE_MAX);
+    expect(jobDeadlineMs({ tier: 'free', family: 'document', inputBytes: 0 })).toBe(FREE_MAX);
   });
 });
 
@@ -107,7 +107,7 @@ describe('jobDeadlineMs input checks', () => {
     ['a negative media length', { inputBytes: 0, mediaSeconds: -1 }],
     ['a media length that is NaN', { inputBytes: 0, mediaSeconds: Number.NaN }],
   ])('refuses %s instead of guessing', (_label, extra) => {
-    expect(() => jobDeadlineMs({ tier: 'free', family: 'pages', ...extra } as never)).toThrow(RangeError);
+    expect(() => jobDeadlineMs({ tier: 'free', family: 'document', ...extra } as never)).toThrow(RangeError);
   });
 });
 
@@ -148,7 +148,7 @@ describe('deadline errors', () => {
 describe('jobDeadlineFamily', () => {
   it('puts documents, presentations, spreadsheets and ebooks in the document family', () => {
     for (const source of ['pdf', 'docx', 'pptx', 'xlsx', 'epub']) {
-      expect(jobDeadlineFamily(source, 'txt'), source).toBe('pages');
+      expect(jobDeadlineFamily(source, 'txt'), source).toBe('document');
     }
   });
 

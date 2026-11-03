@@ -47,10 +47,7 @@ async function refusalOf(input: Buffer, source: string, target: string, name: st
 }
 
 describe('the page bounds of a request that becomes page images', () => {
-  it('limit the pages of every office application, and cut the PDF export to page 1 for a workbook only', () => {
-    for (const source of ['docx', 'rtf', 'odt', 'pptx', 'odp', 'xlsx', 'ods']) {
-      expect(withOfficePageBounds(source, {}).maxRenderedPages, source).toBe(PAGE_IMAGE_MAX_PAGES);
-    }
+  it('cut the PDF export to page 1 for a workbook only', () => {
     expect(withOfficePageBounds('docx', { multiPageOutput: 'first' }).pdfExportPageRange).toBeUndefined();
     expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
   });
@@ -71,7 +68,6 @@ describe('the page bounds of a request that becomes page images', () => {
     expect(withOfficePageBounds('docx', { multiPageOutput: 'first', pages: '2-3' })).toMatchObject({
       multiPageOutput: 'first',
       pages: '2-3',
-      maxRenderedPages: PAGE_IMAGE_MAX_PAGES,
     });
   });
 });

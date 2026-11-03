@@ -1151,7 +1151,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_BASE_MS_FREE',
     area: 'limits',
     description:
-      'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
+      'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 60_000,
     requiredInProduction: false,
@@ -1162,7 +1162,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_BASE_MS_PRO',
     area: 'limits',
     description:
-      'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
+      'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 120_000,
     requiredInProduction: false,
@@ -1173,7 +1173,7 @@ const SCHEMA_ENTRIES = [
     name: 'JOB_DEADLINE_BASE_MS_ENTERPRISE',
     area: 'limits',
     description:
-      'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
+      'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
     kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
     default: 180_000,
     requiredInProduction: false,

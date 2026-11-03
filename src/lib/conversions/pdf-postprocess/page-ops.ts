@@ -58,7 +58,7 @@ function assertPageSpec(spec: unknown, name: string): string {
   if (typeof spec !== 'string' || spec.trim() === '') {
     throw new InvalidPageRangeError(`Option "${name}" must be a page specification such as "1-3,5".`);
   }
-  validatePageRangeSyntax(spec);
+  validatePageRangeSyntax(spec, `Option "${name}"`);
   return spec;
 }
 

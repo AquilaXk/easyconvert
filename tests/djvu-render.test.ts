@@ -804,7 +804,6 @@ describe.skipIf(runsCannotStart)('the programs and their limits', () => {
       const program = standIn(`cp '${await pdfOfPages(4)}' "$out"`, { pages: 9 });
       await convertWith(program, IMAGES, { pages: '2-4,7' }, singlePage(64, 64), captured);
       expect(argumentsOf(program)).toBe('-format=pdf -page=2-4,7 <input> <output>');
-      expect(captured.options).toMatchObject({ maxRenderedPages: IMAGE_PAGE_LIMIT });
       expect(captured.options?.pages).toBeUndefined();
       expect(captured.options?.page).toBeUndefined();
     });

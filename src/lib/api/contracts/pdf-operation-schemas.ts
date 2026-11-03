@@ -1,9 +1,15 @@
+import { MAX_PAGE_SPEC_CHARS } from '@/lib/conversions/page-range';
+
 /** Options of the PDF page operations of a job graph: split, rotate, reorder and optimize. */
 
 /** Pages as the `pages` option writes them: `3`, `2-5`, `4-`, `-3`, comma separated. */
 const PAGE_SPEC_PATTERN = String.raw`^[0-9,\-\s]+$`;
-const MAX_PAGE_SPEC_LENGTH = 8192;
 const MAX_SPLIT_RANGES_PARTS = 1000;
+
+/** A page specification option: the grammar of the `pages` option, at most `MAX_PAGE_SPEC_CHARS` characters. */
+export function pageSpecSchema(description: string) {
+  return { type: 'string', pattern: PAGE_SPEC_PATTERN, maxLength: MAX_PAGE_SPEC_CHARS, description } as const;
+}
 
 export const PdfSplitOptionsSchema = {
   type: 'object',
@@ -11,12 +17,7 @@ export const PdfSplitOptionsSchema = {
   description:
     'pdf.split-pages node: cuts the PDF into parts and returns one ZIP of PDFs. Give `ranges` or `everyNPages`; with neither, every page becomes a file of its own.',
   properties: {
-    ranges: {
-      type: 'string',
-      pattern: PAGE_SPEC_PATTERN,
-      maxLength: MAX_PAGE_SPEC_LENGTH,
-      description: `One part per comma separated range, in the order written (for example "1-3,4-6,7-"). At most ${MAX_SPLIT_RANGES_PARTS} parts.`,
-    },
+    ranges: pageSpecSchema(`One part per comma separated range, in the order written (for example "1-3,4-6,7-"). At most ${MAX_SPLIT_RANGES_PARTS} parts.`),
     everyNPages: {
       type: 'integer',
       minimum: 1,
@@ -38,12 +39,7 @@ export const PdfRotateOptionsSchema = {
     'pdf.rotate-pages node. Give `rotation` (for `pages`, every page when omitted), or `rotations` to turn several groups of pages by different amounts; not both.',
   properties: {
     rotation: PdfRotationDegreesSchema,
-    pages: {
-      type: 'string',
-      pattern: PAGE_SPEC_PATTERN,
-      maxLength: MAX_PAGE_SPEC_LENGTH,
-      description: 'Pages to turn (for example "1-3,5" or "2-"). Every page when omitted.',
-    },
+    pages: pageSpecSchema('Pages to turn (for example "1-3,5" or "2-"). Every page when omitted.'),
     rotations: {
       type: 'array',
       minItems: 1,
@@ -54,12 +50,7 @@ export const PdfRotateOptionsSchema = {
         additionalProperties: false,
         properties: {
           rotation: PdfRotationDegreesSchema,
-          pages: {
-            type: 'string',
-            pattern: PAGE_SPEC_PATTERN,
-            maxLength: MAX_PAGE_SPEC_LENGTH,
-            description: 'Pages of this group. Every page when omitted.',
-          },
+          pages: pageSpecSchema('Pages of this group. Every page when omitted.'),
         },
       },
     },
@@ -72,12 +63,7 @@ export const PdfReorderOptionsSchema = {
   required: ['order'],
   description: 'pdf.reorder-pages node.',
   properties: {
-    order: {
-      type: 'string',
-      pattern: PAGE_SPEC_PATTERN,
-      maxLength: MAX_PAGE_SPEC_LENGTH,
-      description: 'The pages to put first, in the new order (for example "3,1,2" or "4-6,1-3"); a full order lists every page once. Pages not listed follow in their original order, so no page is lost. A page listed twice answers 400.',
-    },
+    order: pageSpecSchema('The pages to put first, in the new order (for example "3,1,2" or "4-6,1-3"); a full order lists every page once. Pages not listed follow in their original order, so no page is lost. A page listed twice answers 400.'),
   },
 } as const;
 

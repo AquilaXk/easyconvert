@@ -159,6 +159,16 @@ describe('the engine guard of PDF page images has one value for every caller', (
   }
 
   oracleTest(
+    'a request cannot lift the guard with an option of its own',
+    ['pdftoppm', 'pdfinfo'],
+    async () => {
+      const response = await convertPost(form(await pdfWithPages(FIVE_HUNDRED_AND_ONE_PAGES), 'long.pdf', { targetFormat: 'png', options: JSON.stringify({ maxRenderedPages: 100000 }) }));
+      expect(response.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+    },
+    ENGINE_TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
     `${FIVE_HUNDRED_PAGES} selected pages are accepted, whether the document has them all or a selection picks them`,
     ['pdftoppm', 'pdfinfo'],
     async () => {
@@ -181,18 +191,29 @@ describe('the engine guard of PDF page images has one value for every caller', (
     ENGINE_TEST_TIMEOUT_MS
   );
 
-  for (const target of ['svg', 'tiff', 'webp']) {
+  for (const target of ['svg', 'tiff', 'webp', 'eps']) {
     oracleTest(
-      `${target}: ${FIVE_HUNDRED_AND_ONE_PAGES} selected pages are refused before any page is drawn`,
-      ['pdftoppm', 'pdftocairo', 'pdfinfo'],
+      `${target}: ${FIVE_HUNDRED_AND_ONE_PAGES} selected pages are refused with the typed 413`,
+      ['pdftoppm', 'pdftocairo', 'pdftops', 'pdfinfo'],
       async () => {
         const longer = await pdfWithPages(FIVE_HUNDRED_AND_ONE_PAGES);
         const error = await captureError(() => convertPdfPagesWithNativeTools(longer, target, { throwOnUnavailable: true }, 'long.pdf'));
-        expect(error.name).toBe('PayloadLimitError');
+        expect(error).toMatchObject({ name: 'PayloadLimitError', status: HTTP_PAYLOAD_TOO_LARGE });
+        expect(error.message).toContain(`at most ${FIVE_HUNDRED_PAGES}`);
       },
       ENGINE_TEST_TIMEOUT_MS
     );
   }
+
+  oracleTest(
+    `one PostScript file of ${FIVE_HUNDRED_AND_ONE_PAGES} pages is not page images, so it is not refused`,
+    ['pdftops', 'pdfinfo'],
+    async () => {
+      const result = await convertPdfPagesWithNativeTools(await pdfWithPages(FIVE_HUNDRED_AND_ONE_PAGES), 'ps', { throwOnUnavailable: true }, 'long.pdf');
+      expect(result?.mimeType).toBe('application/postscript');
+    },
+    ENGINE_TEST_TIMEOUT_MS
+  );
 });
 
 describe('a page range is validated for syntax, not for the plan', () => {
@@ -205,10 +226,10 @@ describe('a page range is validated for syntax, not for the plan', () => {
     expect(JSON.stringify(await response.json())).toMatch(/cannot exceed range end|Range 5-2/);
   });
 
-  it('/api/convert refuses a specification past the longest one before it reads a token', async () => {
+  it('/api/convert refuses a specification past the longest one with the contract answer, before it reads a token', async () => {
     const response = await convertPost(form(await pdfWithPages(2), 'two.pdf', { targetFormat: 'png', options: JSON.stringify({ pages: `${'1,'.repeat(LONGEST_SPEC_CHARS)}1` }) }, key));
-    expect([HTTP_BAD_REQUEST, HTTP_UNPROCESSABLE]).toContain(response.status);
-    expect(JSON.stringify(await response.json())).toContain(`${LONGEST_SPEC_CHARS} characters`);
+    expect(response.status).toBe(HTTP_BAD_REQUEST);
+    expect((await response.json()).invalidParams).toEqual([{ name: 'pages', reason: `must NOT have more than ${LONGEST_SPEC_CHARS} characters` }]);
   });
 
   it('/api/v1/jobs accepts a range past 50 pages for a free account', async () => {
@@ -236,8 +257,8 @@ describe('the engine guard of a multi-page image has one value for every caller'
     ['an enterprise account', 'enterprise'],
   ] as const)('%s is refused a document past the guard with the same typed answer', async (_label, who) => {
     const tierKey = who === 'enterprise' ? await keyOfTier('enterprise') : key;
-    const response = await convertPost(form(tiffWithPages(FIVE_HUNDRED_AND_ONE_PAGES), 'many.tif', { targetFormat: 'png', options: JSON.stringify({ maxPages: 100000 }) }, who && tierKey));
-    expect(response.status).toBe(HTTP_BAD_REQUEST);
-    expect(JSON.stringify(await response.json())).toContain(`limit of ${FIVE_HUNDRED_PAGES} pages`);
+    const response = await convertPost(form(tiffWithPages(FIVE_HUNDRED_AND_ONE_PAGES), 'many.tif', { targetFormat: 'png', options: JSON.stringify({}) }, who && tierKey));
+    expect(response.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+    expect(JSON.stringify(await response.json())).toContain(`at most ${FIVE_HUNDRED_PAGES}`);
   }, LIMIT_DOCUMENT_TIMEOUT_MS);
 });

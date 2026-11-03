@@ -1,4 +1,4 @@
-import { InvalidPageRangeError } from '../types';
+import { InvalidPageRangeError, PayloadLimitError } from '../types';
 
 export { InvalidPageRangeError };
 
@@ -13,9 +13,22 @@ export interface PageInterval {
  * 4,181 to 4,874. The office suite writes their PDF in 3 to 32 s, but the pages cost about 50 ms and 0.5 MB each (4 vCPU), so
  * one request ran to minutes and half a gigabyte, past the job deadline when the runner is shared. A PDF, a DjVu, an XPS
  * document and a multi-page image (a TIFF or a HEIF sequence) are held to the same number, which keeps the output ZIP and the
- * decoding of a document of any size within one job; OCR and the re-encoded rasters of the worker use it too.
+ * decoding of a document of any size within one job; the page budget of OCR (`OCR_MAX_RENDERED_PAGES`) is the same number.
  */
 export const PAGE_IMAGE_MAX_PAGES = 500;
+
+/**
+ * Refuses a request that converts more than `PAGE_IMAGE_MAX_PAGES` pages to images, with the 413 of the other input limits.
+ * Every chain that draws or decodes pages of a document asks it, so the answer and its text are the same for a PDF, an office
+ * document, a DjVu or XPS document and a multi-page image.
+ */
+export function assertPageImageCount(pageCount: number): void {
+  if (pageCount > PAGE_IMAGE_MAX_PAGES) {
+    throw new PayloadLimitError(
+      `The request converts ${pageCount} pages to images; at most ${PAGE_IMAGE_MAX_PAGES} are converted in one request. Select pages with "pages" (for example "1-10"), or set "multiPageOutput" to "first" for the first page.`
+    );
+  }
+}
 
 /**
  * Longest page specification, in characters. A specification is untrusted text that the web server and the worker read on one
@@ -102,9 +115,11 @@ function assertValidTokenString(token: string, spec: string): void {
   }
 }
 
-function assertSpecLength(spec: string): void {
+const DEFAULT_SPEC_SUBJECT = 'A page range specification';
+
+function assertSpecLength(spec: string, subject: string): void {
   if (spec.length > MAX_PAGE_SPEC_CHARS) {
-    throw new InvalidPageRangeError(`A page range specification is at most ${MAX_PAGE_SPEC_CHARS} characters long.`);
+    throw new InvalidPageRangeError(`${subject} is longer than ${MAX_PAGE_SPEC_CHARS} characters.`);
   }
 }
 
@@ -112,7 +127,7 @@ function assertSpecLength(spec: string): void {
  * Sorts the intervals and joins the ones that overlap or touch, the pass of Chromium's `printing::PageRange::Normalize`
  * (printing/page_range.cc): the cost is the sort of the tokens, whatever pages they name.
  */
-function mergeIntervals(intervals: PageInterval[]): PageInterval[] {
+export function mergeIntervals(intervals: PageInterval[]): PageInterval[] {
   intervals.sort((a, b) => a.start - b.start || a.end - b.end);
   const merged: PageInterval[] = [intervals[0]];
   for (let index = 1; index < intervals.length; index++) {
@@ -137,7 +152,7 @@ export function parsePageIntervals(spec: string, pageCount: number): PageInterva
   if (typeof spec !== 'string' || spec.trim() === '') {
     throw new InvalidPageRangeError('Page range specification must be a non-empty string.');
   }
-  assertSpecLength(spec);
+  assertSpecLength(spec, DEFAULT_SPEC_SUBJECT);
 
   const intervals = spec.split(',').map((rawToken) => {
     const token = rawToken.trim();
@@ -147,37 +162,35 @@ export function parsePageIntervals(spec: string, pageCount: number): PageInterva
   return mergeIntervals(intervals);
 }
 
-/** The pages `parsePageIntervals` selects, as an ascending list. */
-export function parsePageRanges(spec: string, pageCount: number): number[] {
+/** The pages of `intervals` as an ascending list. */
+export function pagesOfIntervals(intervals: readonly PageInterval[]): number[] {
   const pages: number[] = [];
-  for (const { start, end } of parsePageIntervals(spec, pageCount)) {
+  for (const { start, end } of intervals) {
     for (let page = start; page <= end; page++) pages.push(page);
   }
   return pages;
 }
 
-/**
- * Groups a sorted array of page numbers into contiguous intervals.
- * E.g. [1, 2, 3, 5, 7, 8] => [{ start: 1, end: 3 }, { start: 5, end: 5 }, { start: 7, end: 8 }].
- */
-export function groupConsecutiveRanges(pages: number[]): PageInterval[] {
-  if (pages.length === 0) return [];
-  const intervals: PageInterval[] = [];
-  let currentStart = pages[0];
-  let currentEnd = pages[0];
+/** How many pages `intervals` select. */
+export function pageCountOfIntervals(intervals: readonly PageInterval[]): number {
+  return intervals.reduce((total, { start, end }) => total + end - start + 1, 0);
+}
 
-  for (let i = 1; i < pages.length; i++) {
-    const page = pages[i];
-    if (page === currentEnd + 1) {
-      currentEnd = page;
-    } else {
-      intervals.push({ start: currentStart, end: currentEnd });
-      currentStart = page;
-      currentEnd = page;
-    }
-  }
-  intervals.push({ start: currentStart, end: currentEnd });
-  return intervals;
+/** The pages `parsePageIntervals` selects, as an ascending list. */
+export function parsePageRanges(spec: string, pageCount: number): number[] {
+  return pagesOfIntervals(parsePageIntervals(spec, pageCount));
+}
+
+/** The pages a render draws out of `selected`: only the first when the request wants one page (`multiPageOutput: "first"`), since the others would be drawn for nothing. */
+export function pagesToDraw(selected: readonly PageInterval[], multiPageOutput: string | undefined): PageInterval[] {
+  return multiPageOutput === 'first' && selected.length > 0 ? [{ start: selected[0].start, end: selected[0].start }] : [...selected];
+}
+
+/** `pagesToDraw`, refused before any page is drawn when the pages are more than `PAGE_IMAGE_MAX_PAGES`. */
+export function boundPageImages(selected: readonly PageInterval[], multiPageOutput: string | undefined): PageInterval[] {
+  const drawn = pagesToDraw(selected, multiPageOutput);
+  assertPageImageCount(pageCountOfIntervals(drawn));
+  return drawn;
 }
 
 function validateRangeBound(part: string, label: string): number | undefined {
@@ -211,13 +224,14 @@ function validateSingleTokenSyntax(token: string, spec: string): void {
 }
 
 /**
- * Validates the syntactic validity of a page range string without requiring a known total page count.
+ * Validates the syntactic validity of a page range string without requiring a known total page count. `subject` names what
+ * is too long in the refusal of a specification past `MAX_PAGE_SPEC_CHARS`, for a caller whose specification is an option.
  */
-export function validatePageRangeSyntax(spec: string): void {
+export function validatePageRangeSyntax(spec: string, subject: string = DEFAULT_SPEC_SUBJECT): void {
   if (typeof spec !== 'string' || spec.trim() === '') {
     throw new InvalidPageRangeError('Page range specification must be a non-empty string.');
   }
-  assertSpecLength(spec);
+  assertSpecLength(spec, subject);
 
   const rawTokens = spec.split(',');
   for (const rawToken of rawTokens) {
@@ -253,28 +267,39 @@ function parsePageNumber(page: unknown): number | undefined {
 }
 
 /**
- * Resolves the pages a request selects from its `page` (one page) and `pages` (ranges) options, or undefined
+ * Resolves the pages a request selects from its `page` (one page) and `pages` (ranges) options as intervals, or undefined
  * when it selects none. `null`, an empty or blank string count as absent, and surrounding whitespace is
  * ignored in both options. When both are given they must select the same single page, otherwise the request
  * is ambiguous and is refused.
  */
+export function resolvePageIntervals(
+  page: number | string | null | undefined,
+  spec: string | null | undefined,
+  pageCount: number,
+  outOfRange: (page: number | string, pageCount: number) => InvalidPageRangeError
+): PageInterval[] | undefined {
+  const single = parsePageNumber(page);
+  const ranges = typeof spec === 'string' && spec.trim() !== '' ? spec.trim() : undefined;
+  if (single === undefined) {
+    return ranges === undefined ? undefined : parsePageIntervals(ranges, pageCount);
+  }
+  if (single < 1 || single > pageCount) throw outOfRange(single, pageCount);
+  if (ranges !== undefined) {
+    const listed = parsePageIntervals(ranges, pageCount);
+    if (listed.length !== 1 || listed[0].start !== single || listed[0].end !== single) {
+      throw new InvalidPageRangeError(`The "page" option (${single}) and the "pages" option ("${ranges}") select different pages`);
+    }
+  }
+  return [{ start: single, end: single }];
+}
+
+/** The pages `resolvePageIntervals` selects, as an ascending list. */
 export function resolvePageSelection(
   page: number | string | null | undefined,
   spec: string | null | undefined,
   pageCount: number,
   outOfRange: (page: number | string, pageCount: number) => InvalidPageRangeError
 ): number[] | undefined {
-  const single = parsePageNumber(page);
-  const ranges = typeof spec === 'string' && spec.trim() !== '' ? spec.trim() : undefined;
-  if (single === undefined) {
-    return ranges === undefined ? undefined : parsePageRanges(ranges, pageCount);
-  }
-  if (single < 1 || single > pageCount) throw outOfRange(single, pageCount);
-  if (ranges !== undefined) {
-    const listed = parsePageRanges(ranges, pageCount);
-    if (listed.length !== 1 || listed[0] !== single) {
-      throw new InvalidPageRangeError(`The "page" option (${single}) and the "pages" option ("${ranges}") select different pages`);
-    }
-  }
-  return [single];
+  const intervals = resolvePageIntervals(page, spec, pageCount, outOfRange);
+  return intervals === undefined ? undefined : pagesOfIntervals(intervals);
 }

@@ -7,20 +7,21 @@ import { JOB_DEADLINE_CEILING_MS } from '../config/schema';
 /**
  * The wall-clock limit of a conversion job. One pure function, `jobDeadlineMs`, is the single source of every
  * deadline: the queue's job timeout, the `timeoutMs` the converter receives, and the limit of the synchronous
- * routes. A deadline is the base of the owner's tier plus an allowance for the work (pages, media seconds, MiB of
- * input), never above the tier's maximum. Every number is a documented setting (`JOB_DEADLINE_*`, see
+ * routes. A deadline is the base of the owner's tier plus an allowance for the work (media seconds, MiB of input),
+ * never above the tier's maximum. A document gets the maximum: its pages are not known before it is converted, and the
+ * base and the size allowance apply to the other work only. Every number is a documented setting (`JOB_DEADLINE_*`, see
  * docs/configuration.md).
  *
  * Work whose size is not known when the job is queued (a graph node, a stored input without a size) gets the
  * maximum of the tier: bounded, never unbounded.
  */
 
-export type JobDeadlineFamily = 'pages' | 'media' | 'bytes';
+export type JobDeadlineFamily = 'document' | 'media' | 'bytes';
 
 export interface JobDeadlineInput {
   /** The owner's tier; an unknown or missing tier is the free tier. */
   tier?: string;
-  /** What the work is counted in: `pages` for documents (their pages are not known before the conversion), `media` for audio and video, `bytes` for the rest. */
+  /** What the work is counted in: `document` for documents (their pages are not known before the conversion), `media` for audio and video, `bytes` for the rest. */
   family: JobDeadlineFamily;
   /** Size of the input in bytes; missing means unknown, which gives the maximum of the tier. */
   inputBytes?: number;
@@ -174,7 +175,7 @@ export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSett
   const max = settings.maxMs[tier];
   if (input.inputBytes !== undefined) requireNonNegativeNumber(input.inputBytes, 'inputBytes');
   if (input.mediaSeconds !== undefined) requireNonNegativeNumber(input.mediaSeconds, 'mediaSeconds');
-  if (input.inputBytes === undefined || input.family === 'pages') return max;
+  if (input.inputBytes === undefined || input.family === 'document') return max;
 
   let deadline = settings.baseMs[tier] + Math.ceil(input.inputBytes / BYTES_PER_MIB) * settings.perMibMs;
   if (input.family === 'media' && input.mediaSeconds !== undefined) {
@@ -183,19 +184,19 @@ export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSett
   return Math.min(deadline, max);
 }
 
-const PAGE_CATEGORIES: ReadonlySet<string> = new Set(['document', 'presentation', 'spreadsheet', 'ebook']);
+const DOCUMENT_CATEGORIES: ReadonlySet<string> = new Set(['document', 'presentation', 'spreadsheet', 'ebook']);
 const MEDIA_CATEGORIES: ReadonlySet<string> = new Set(['audio', 'video']);
 
 function normalizeFormat(format: string): string {
   return (format || '').trim().toLowerCase().replace(/^\./, '');
 }
 
-/** What a conversion between the two formats is counted in: media on either side, a paged source, or bytes. */
+/** What a conversion between the two formats is counted in: media on either side, a document source, or bytes. */
 export function jobDeadlineFamily(sourceFormat: string, targetFormat: string): JobDeadlineFamily {
   const source = getFormatByExtension(normalizeFormat(sourceFormat))?.category;
   const target = getFormatByExtension(normalizeFormat(targetFormat))?.category;
   if ((source && MEDIA_CATEGORIES.has(source)) || (target && MEDIA_CATEGORIES.has(target))) return 'media';
-  if (source && PAGE_CATEGORIES.has(source)) return 'pages';
+  if (source && DOCUMENT_CATEGORIES.has(source)) return 'document';
   return 'bytes';
 }
 

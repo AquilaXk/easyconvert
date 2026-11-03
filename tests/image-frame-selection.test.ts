@@ -39,6 +39,7 @@ const COLOURS: readonly Rgb[] = [
 const COLOUR_TOLERANCE = 12;
 /** 500 decoded and encoded pages take longer than the 5 s default on a loaded shard. */
 const LIMIT_DOCUMENT_TIMEOUT_MS = 60_000;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const FIVE_HUNDRED_PAGES = 500;
 const FIVE_HUNDRED_AND_ONE_PAGES = 501;
 const FIFTY_ONE_PAGES = 51;
@@ -182,9 +183,9 @@ describe('page limits', () => {
 
   it.skipIf(SKIP_WITHOUT_MAGICK).each(['png', 'tiff', 'pdf'])('%s: more pages than the limit of every caller are refused by default', async (target) => {
     const error = await captureError(() => convertImage(pagesOf(FIVE_HUNDRED_AND_ONE_PAGES), target, {}, 'many.tif', 'tiff'));
-    expect(error.name).toBe('InvalidPageRangeError');
+    expect(error).toMatchObject({ name: 'PayloadLimitError', status: HTTP_PAYLOAD_TOO_LARGE, refusalCode: 'input_over_limit' });
     expect(error.message).toContain(`${FIVE_HUNDRED_AND_ONE_PAGES} pages`);
-    expect(error.message).toContain(`limit of ${FIVE_HUNDRED_PAGES} pages`);
+    expect(error.message).toContain(`at most ${FIVE_HUNDRED_PAGES}`);
     expect(error.message).toContain('multiPageOutput');
   });
 

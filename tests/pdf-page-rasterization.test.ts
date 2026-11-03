@@ -7,7 +7,6 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import {
   parsePageRanges,
-  groupConsecutiveRanges,
   validatePageRangeSyntax,
 } from '../src/lib/conversions/page-range';
 import { InvalidPageRangeError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
@@ -99,19 +98,6 @@ describe('WP-40: PDF Page Range Selection & Multi-Page Rasterization', () => {
     it('fails closed on reverse ranges (start > end)', () => {
       expect(() => parsePageRanges('5-2', 5)).toThrow(InvalidPageRangeError);
       expect(() => parsePageRanges('3-1', 5)).toThrow(InvalidPageRangeError);
-    });
-  });
-
-  describe('Consecutive Range Grouping', () => {
-    it('groups consecutive page numbers into contiguous intervals', () => {
-      expect(groupConsecutiveRanges([1, 2, 3, 5, 7, 8])).toEqual([
-        { start: 1, end: 3 },
-        { start: 5, end: 5 },
-        { start: 7, end: 8 },
-      ]);
-      expect(groupConsecutiveRanges([1])).toEqual([{ start: 1, end: 1 }]);
-      expect(groupConsecutiveRanges([1, 2, 3, 4])).toEqual([{ start: 1, end: 4 }]);
-      expect(groupConsecutiveRanges([])).toEqual([]);
     });
   });
 

@@ -50,12 +50,9 @@ describe('the PDF export of a spreadsheet that becomes the first page image', ()
   });
 
   it('is asked for by the spreadsheet bounds only for the first page of a request without a page selection', () => {
-    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' })).toMatchObject({
-      pdfExportPageRange: '1',
-      maxRenderedPages: PAGE_IMAGE_MAX_PAGES,
-    });
+    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
     expect(withOfficePageBounds('ods', { multiPageOutput: 'first', pages: '2-3' }).pdfExportPageRange).toBeUndefined();
-    expect(withOfficePageBounds('xls', {})).toMatchObject({ pdfExportPageRange: undefined, maxRenderedPages: PAGE_IMAGE_MAX_PAGES });
+    expect(withOfficePageBounds('xls', {}).pdfExportPageRange).toBeUndefined();
   });
 });
 

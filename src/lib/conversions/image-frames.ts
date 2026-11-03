@@ -14,7 +14,7 @@ import {
 import { maxInputPixels, resizedDimensions } from './image-input-limits';
 import { truncatedJpegDecodeOptions } from './image-jpeg-stream';
 import { EXIF_ORIENTATION_NORMAL, FIRST_QUARTER_TURN_ORIENTATION, orientRgbaFrame, withUprightOrientation } from './image-orientation';
-import { PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from './page-range';
+import { assertPageImageCount, resolvePageSelection } from './page-range';
 
 /**
  * Frame and page selection for multi-frame image sources.
@@ -32,7 +32,7 @@ import { PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from './page-range';
  *  - `page` and `pages` select pages; when both are given they must agree. `multiPageOutput: 'first'`
  *    reduces any selection to its first page before a keep-everything default applies.
  *  - A page outside 1..N throws InvalidPageRangeError; a document source with more pages than
- *    `PAGE_IMAGE_MAX_PAGES` (the same for every caller) or more pixels than the aggregate budget is refused.
+ *    `PAGE_IMAGE_MAX_PAGES` (the same for every caller, refused with a 413) or more pixels than the aggregate budget is refused.
  */
 
 /** Targets whose container can hold an animation. */
@@ -274,11 +274,7 @@ async function selectDocumentPages(
 ): Promise<FrameSelection> {
   const requested = resolveRequestedPages(options, pageCount);
   const pages = requested ?? Array.from({ length: pageCount }, (_unused, index) => index + 1);
-  if (pages.length > PAGE_IMAGE_MAX_PAGES) {
-    throw new InvalidPageRangeError(
-      `This image has ${pages.length} pages to convert, over the limit of ${PAGE_IMAGE_MAX_PAGES} pages per request; select pages with the "page" or "pages" option, or set "multiPageOutput" to "first" for the first page`
-    );
-  }
+  assertPageImageCount(pages.length);
   if (pages.length === SINGLE_FRAME) return singleSource(buffer, { page: pages[0] - 1 }, pageCount, pages[0]);
   // Every page is decoded at its source size and encoded at its resized size: charge the larger of the two.
   let pixels = 0;

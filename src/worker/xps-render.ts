@@ -7,11 +7,11 @@ import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { renderedXpsPageParts } from '../lib/conversions/office/xps-reader';
 import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-resources';
-import { PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
+import { boundPageImages } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { ConversionFailedError, CorruptStreamError } from '../lib/types';
-import { boundRenderedPages, selectsPages } from './poppler-ppm';
+import { selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
 import { createConversionResult, drawnPdfTooLargeError, handOffOutput, MAX_DRAWN_PDF_BYTES_FOR_IMAGES, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
@@ -173,13 +173,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
   const entries = await readPackageEntries(bytes);
   const pageParts = await renderedXpsPageParts(bytes, options.signal);
   const pageCount = pageParts.length;
-  const pageOptions: WorkerEngineOptions = { ...options, maxRenderedPages: PAGE_IMAGE_MAX_PAGES };
-  if (tgt !== PDF_TARGET && !selectsPages(options)) {
-    boundRenderedPages(
-      Array.from({ length: pageCount }, (_, index) => index + 1),
-      pageOptions
-    );
-  }
+  if (tgt !== PDF_TARGET && !selectsPages(options)) boundPageImages([{ start: 1, end: pageCount }], options.multiPageOutput);
   await requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), runTimeoutMs(options), options.signal);
 
   if (tgt === PDF_TARGET) {
@@ -192,5 +186,5 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
   const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) =>
     fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES, pageCount }))
   );
-  return job.convertPdfPages(pdf, tgt, pageOptions, originalFilename);
+  return job.convertPdfPages(pdf, tgt, options, originalFilename);
 }

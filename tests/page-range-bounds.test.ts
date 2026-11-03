@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { parsePageIntervals, parsePageRanges, validatePageRangeSyntax } from '../src/lib/conversions/page-range';
-import { InvalidPageRangeError } from '../src/lib/types';
+import {
+  assertPageImageCount,
+  boundPageImages,
+  MAX_PAGE_SPEC_CHARS,
+  PAGE_IMAGE_MAX_PAGES,
+  parsePageIntervals,
+  parsePageRanges,
+  validatePageRangeSyntax,
+} from '../src/lib/conversions/page-range';
+import { extractPdfPages } from '../src/lib/conversions/pdf-postprocess';
+import { ConversionOptionsSchema } from '../src/lib/api/contracts';
+import { InvalidPageRangeError, PayloadLimitError } from '../src/lib/types';
 
 /**
  * A page specification is untrusted text that the web server and the worker read on one thread, so its cost must follow
@@ -15,6 +25,7 @@ import { InvalidPageRangeError } from '../src/lib/types';
 const LONGEST_SPEC_CHARS = 8192;
 const REPEATED_RANGE_TOKENS = 600;
 const HUGE_PAGE_COUNT = 1_000_000_000;
+const LONG_DOCUMENT_PAGES = 200_000;
 const RANDOM_SPECS = 300;
 const RANDOM_PAGE_COUNT = 40;
 const MAX_TOKENS_PER_SPEC = 6;
@@ -74,6 +85,16 @@ describe('a hostile page specification', () => {
     expect(parsePageIntervals(spec, HUGE_PAGE_COUNT)).toEqual([{ start: 1, end: HUGE_PAGE_COUNT }]);
   });
 
+  it(`lists the ${LONG_DOCUMENT_PAGES} pages of a document once, however often the whole range repeats within the longest specification`, () => {
+    const whole = `1-${LONG_DOCUMENT_PAGES}`;
+    const spec = Array(Math.floor(LONGEST_SPEC_CHARS / (whole.length + 1))).fill(whole).join(',');
+    expect(spec.length).toBeLessThanOrEqual(LONGEST_SPEC_CHARS);
+    const pages = parsePageRanges(spec, LONG_DOCUMENT_PAGES);
+    expect(pages).toHaveLength(LONG_DOCUMENT_PAGES);
+    expect(pages[0]).toBe(1);
+    expect(pages.at(-1)).toBe(LONG_DOCUMENT_PAGES);
+  });
+
   it('keeps its error for a page the document does not have', () => {
     const spec = `${Array(REPEATED_RANGE_TOKENS).fill('1-10').join(',')},11`;
     expect(() => parsePageIntervals(spec, 10)).toThrow(InvalidPageRangeError);
@@ -88,5 +109,43 @@ describe('a hostile page specification', () => {
     expect(() => validatePageRangeSyntax(tooLong)).toThrow(InvalidPageRangeError);
     expect(() => parsePageRanges(tooLong, 12)).toThrow(InvalidPageRangeError);
     expect(() => parsePageIntervals(tooLong, 12)).toThrow(InvalidPageRangeError);
+  });
+});
+
+describe('the longest specification is one number in the code, the contract and the refusals', () => {
+  it('is the maxLength of the public pages option', () => {
+    expect(MAX_PAGE_SPEC_CHARS).toBe(LONGEST_SPEC_CHARS);
+    expect(ConversionOptionsSchema.properties.pages.maxLength).toBe(MAX_PAGE_SPEC_CHARS);
+  });
+
+  it('is refused by a PDF page operation with the name of the option', async () => {
+    const tooLong = '1,'.repeat(LONGEST_SPEC_CHARS / 2) + '1';
+    await expect(extractPdfPages(Buffer.alloc(0), tooLong)).rejects.toMatchObject({
+      name: 'InvalidPageRangeError',
+      message: `Option "pages" is longer than ${LONGEST_SPEC_CHARS} characters.`,
+    });
+  });
+});
+
+describe('the page-image bound', () => {
+  const pagesFrom = (count: number) => [{ start: 1, end: count }];
+
+  it('lets a request of exactly the limit through and refuses one more with a 413 that names the ways out', () => {
+    expect(() => assertPageImageCount(PAGE_IMAGE_MAX_PAGES)).not.toThrow();
+    expect(() => assertPageImageCount(PAGE_IMAGE_MAX_PAGES + 1)).toThrow(
+      expect.objectContaining({
+        name: 'PayloadLimitError',
+        status: 413,
+        refusalCode: 'input_over_limit',
+        message: expect.stringMatching(new RegExp(`${PAGE_IMAGE_MAX_PAGES + 1} pages.*at most ${PAGE_IMAGE_MAX_PAGES}.*"pages".*"multiPageOutput"`)),
+      })
+    );
+  });
+
+  it('counts the pages that are drawn: only the first page of a request for the first page, and every page of two joined ranges', () => {
+    expect(boundPageImages(pagesFrom(PAGE_IMAGE_MAX_PAGES + 100), 'first')).toEqual([{ start: 1, end: 1 }]);
+    expect(boundPageImages(pagesFrom(PAGE_IMAGE_MAX_PAGES), undefined)).toEqual(pagesFrom(PAGE_IMAGE_MAX_PAGES));
+    expect(() => boundPageImages([{ start: 1, end: 300 }, { start: 600, end: 800 }], undefined)).toThrow(PayloadLimitError);
+    expect(boundPageImages([{ start: 1, end: 300 }, { start: 600, end: 700 }], undefined)).toHaveLength(2);
   });
 });
