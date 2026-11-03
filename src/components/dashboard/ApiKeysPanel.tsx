@@ -5,12 +5,12 @@ import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
 import { CreateApiKeyForm, GeneratedSecretBanner } from './ApiKeyCreateCard';
 import { ApiKeysTable } from './ApiKeysTable';
 import { IntegrationGuide } from './IntegrationGuide';
-import type { KeyExpiryOption } from './dashboard-types';
+import { displayedUsage, type KeyExpiryOption } from './dashboard-types';
 
 function QuotaSummaryStrip({ quota }: Readonly<{ quota: QuotaUsage }>) {
   const t = useTranslations('dashboard.quota');
   const format = useFormatter();
-  const usedToday = Math.min(quota.usedToday, quota.dailyLimit);
+  const usedToday = displayedUsage(quota.usedToday, quota.dailyLimit);
   const pct = quota.dailyLimit > 0 ? (usedToday / quota.dailyLimit) * 100 : 0;
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-5">

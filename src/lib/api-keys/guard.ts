@@ -57,8 +57,7 @@ const QUOTA_ENGINE_OFFLINE = 'Service Unavailable: distributed quota engine is t
 
 /**
  * The refusal text of a caller whose conversions of the day are used up: the allowance the key store enforces for its plan
- * (`ANONYMOUS_DAILY_LIMIT` without an account) and when it resets. It offers nothing to get more: a free account has the same
- * allowance, and no plan is on sale (`PAID_PLANS_ON_SALE`).
+ * (`ANONYMOUS_DAILY_LIMIT` without an account) and when it resets.
  */
 function quotaExceeded(caller: PlanCaller): string {
   return `Daily conversion quota exceeded (${dailyConversions(planOfCaller(caller))} conversions per day). It resets at midnight UTC.`;
@@ -210,7 +209,7 @@ interface QuotaCheck {
 /** Why the quota of a caller could not be reserved: the quota store is offline (503), or the conversions of the day are used up (429). */
 type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining'>;
 
-/** The refusal of `userId` for a quota check that did not allow it; an anonymous caller is told how to get more. */
+/** The refusal of `userId` for a quota check that did not allow it. */
 function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
   const anonymous = isAnonymousUserId(userId);
   if (quota.serviceUnavailable) {
@@ -222,7 +221,7 @@ function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
     };
   }
   return {
-    error: anonymous ? quotaExceeded({ id: userId }) : quota.error ?? '',
+    error: quota.error ?? '',
     status: HTTP_TOO_MANY_REQUESTS,
     remaining: quota.remaining,
     problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
