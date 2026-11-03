@@ -328,7 +328,9 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
 /** The body of `url`, or of the inclusive byte range of it, retried with a pause on network and server errors. */
 export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = []): Promise<Buffer> {
   const retries = process.env.BENCH_CORPUS_RETRIES === undefined ? DEFAULT_RETRIES : Number(process.env.BENCH_CORPUS_RETRIES);
-  return retryPaced(url, retries, () => attempt(url, range, maxBytes, extraHosts), (message) => new CorpusFetchError(message));
+  return retryPaced(url, retries, () => attempt(url, range, maxBytes, extraHosts), (message) => new CorpusFetchError(message), {
+    contactedHost: () => (redirectedTo.get(url) ?? new URL(url)).host,
+  });
 }
 
 /** The redirect targets the sample's set allows besides its own domain. */

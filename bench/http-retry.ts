@@ -71,27 +71,32 @@ function askedWaitMs(status: number | null, retryAfter: string | null, now: numb
   return seconds !== null && status !== null && isBusyHostStatus(status) ? seconds * 1000 : null;
 }
 
-/**
- * The pause before retry number `tryNumber` + 1. It doubles with the attempt; a host that refuses for its rate or load and names
- * the time to wait (`Retry-After`, in seconds or as a date) is waited for that long, up to RATE_LIMIT_MAX_WAIT_MS, and a rate limit
- * that names no time (or a time already past) gets RATE_LIMIT_DEFAULT_WAIT_MS. The pause is never shorter than the ordinary one.
- * The pacer holds a refusing host for this long; a download whose host asked for more than the bound does not retry at all
- * (`RetryAfterTooLongError`).
- */
-export function retryDelayMs(tryNumber: number, status: number | null, retryAfter: string | null, now: number = Date.now()): number {
+/** The pause a refusal with the wait `askedMs` (null when it named none) gets before try number `tryNumber` + 1. */
+function pauseMs(tryNumber: number, status: number | null, askedMs: number | null): number {
   const ordinary = BACKOFF_BASE_MS * 2 ** tryNumber;
-  const asked = askedWaitMs(status, retryAfter, now);
-  if (asked !== null) return Math.max(ordinary, Math.min(asked, RATE_LIMIT_MAX_WAIT_MS));
+  if (askedMs !== null) return Math.max(ordinary, Math.min(askedMs, RATE_LIMIT_MAX_WAIT_MS));
   if (status === HTTP_TOO_MANY_REQUESTS) return Math.max(ordinary, RATE_LIMIT_DEFAULT_WAIT_MS);
   return ordinary;
 }
 
 /**
- * The gap between two requests to a host that has refused for its rate, 3 s: the strictest published limit of a corpus host is
- * 20 requests a minute (the JSON API of loc.gov, "Working within limits"), whose block lasts an hour and restarts at every request
- * made during it. A host that never refused is not spaced.
+ * The pause before retry number `tryNumber` + 1. It doubles with the attempt; a host that refuses for its rate or load and names
+ * the time to wait (`Retry-After`, in seconds or as a date) is waited for that long, up to RATE_LIMIT_MAX_WAIT_MS, and a rate limit
+ * that names no time (or a time already past) gets RATE_LIMIT_DEFAULT_WAIT_MS. The pause is never shorter than the ordinary one.
  */
-export const LIMITED_HOST_GAP_MS = 3000;
+export function retryDelayMs(tryNumber: number, status: number | null, retryAfter: string | null, now: number = Date.now()): number {
+  return pauseMs(tryNumber, status, askedWaitMs(status, retryAfter, now));
+}
+
+/**
+ * The hosts that publish a request limit, with the spacing it gives; every other host is not spaced. This is Scrapy's per-slot
+ * configuration (`DOWNLOAD_SLOTS`, scrapy/settings/default_settings.py:334, read by `Downloader._get_slot`,
+ * scrapy/core/downloader/__init__.py:317-331 at e397746c), whose default delay is 0 (`DOWNLOAD_DELAY`, default_settings.py:315).
+ */
+export const PUBLISHED_SPACING_MS: ReadonlyMap<string, number> = new Map([
+  // 150 requests a minute for media under /storage-services/ (www.loc.gov/apis/json-and-yaml/working-within-limits/).
+  ['tile.loc.gov', 60_000 / 150],
+]);
 
 /** A host that refused for its rate (HTTP 429) or load (HTTP 503), with the `Retry-After` it sent and the host of the response that refused. */
 export class BusyHostError extends Error {
@@ -106,10 +111,10 @@ export class BusyHostError extends Error {
   }
 }
 
-/** A host that asked for more quiet than a download waits for; the download fails at once, since its retries inside the block would only restart the block. */
+/** A request to a host that asked for more quiet than a download waits; it is refused without being sent, since a request inside the block may restart it. */
 export class RetryAfterTooLongError extends Error {
-  constructor(status: number, askedMs: number) {
-    super(`HTTP ${status}, the host asked for ${Math.round(askedMs / 1000)} s, more than the ${RATE_LIMIT_MAX_WAIT_MS / 1000} s a download waits`);
+  constructor(host: string, remainingMs: number) {
+    super(`${host} asked to be left alone for ${Math.round(remainingMs / 1000)} s, longer than the ${RATE_LIMIT_MAX_WAIT_MS / 1000} s a download waits`);
     this.name = 'RetryAfterTooLongError';
   }
 }
@@ -127,82 +132,79 @@ interface Clock {
 
 const systemClock: Clock = { now: () => Date.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) };
 
+interface Waiter {
+  resolve(): void;
+  reject(error: Error): void;
+}
+
 interface HostState {
-  /** The instant before which the host asked to be left alone. */
+  readonly spacingMs: number;
+  /** The instant before which the host asked to be left alone, as long as it asked, so a block past the bound is known as one. */
   blockedUntil: number;
-  /** The instant the last request to the host was released; the next may follow one gap later. */
   lastRelease: number;
-  waiting: Array<() => void>;
+  waiting: Waiter[];
   draining: boolean;
 }
 
 /**
- * What the downloads of one process know about the hosts that refused them, kept per process: ten shards that run on ten runners
- * each pace themselves. A refusal for rate or load is a statement about the host, not about the request: from then on the
- * requests to that host leave one per LIMITED_HOST_GAP_MS, the published spacing, and none leaves before the quiet time the host
- * asked for has passed. The gap is fixed, as Scrapy's per-host delay is: a good response does not shorten it, because the host's
- * limit is a rate and a response that went through says nothing of the rate it would have allowed.
+ * The turns of the requests of one process at each host, kept per process: ten shards on ten runners each pace themselves. A host
+ * of PUBLISHED_SPACING_MS gets one request per its spacing from its first request on; any host that refused gets nothing until
+ * the time it asked for has passed, and a request to a host whose block runs past RATE_LIMIT_MAX_WAIT_MS is refused at once.
  *
- * The release loop follows Scrapy's per-host slot (`Downloader._process_queue`, scrapy/core/downloader/__init__.py:397-428, and
- * `_latercall`, :448-450, at e397746c; the fixed delay is `Slot.download_delay`, :141-145): it releases one request, stamps
- * `lastseen` in the same step, and re-reads the delay and the stamp each time it wakes, so a delay that changed while the requests
- * slept is the one that counts. Here that re-read is of `blockedUntil` too, which a second refusal pushes out under the queued
- * downloads. Bottleneck's `minTime` reserves the next slot in the step that grants the current one (`LocalDatastore.__register__`,
- * src/LocalDatastore.coffee:107-116, MIT, 2.19.5). Both keep the stamp when the queue empties; so does this one. A host is
- * forgotten only after a quiet period, when no request has been released for longer than the gap, nothing waits and its quiet time
- * has passed; it is spaced again at its next refusal.
+ * The release loop is Scrapy's per-slot queue (`Downloader._process_queue`, scrapy/core/downloader/__init__.py:397-428, and
+ * `_latercall`, :448-450, at e397746c): it releases one request, stamps `lastseen` in the same step, and reads the delay and the
+ * stamp again each time it wakes, so a block renewed while requests slept holds the requests already queued.
  */
 export class HostPacer {
   private readonly hosts = new Map<string, HostState>();
 
-  constructor(private readonly clock: Clock = systemClock) {}
+  constructor(
+    private readonly clock: Clock = systemClock,
+    private readonly spacing: ReadonlyMap<string, number> = PUBLISHED_SPACING_MS
+  ) {}
 
-  /** Waits on the clock the pacer runs on, so one clock orders every wait of a process. */
+  now(): number {
+    return this.clock.now();
+  }
+
   sleep(ms: number): Promise<void> {
     return this.clock.sleep(ms);
   }
 
-  /**
-   * Runs `task`, one request to `host`, when the host's turn comes; callers that wait together leave in turn, in the order they
-   * came. A refusal for rate or load (`BusyHostError`) pauses the host that refused and the host asked, which a redirect makes
-   * another, for the time `retryDelayMs` names for try number `tryNumber`, and is thrown again, or as `RetryAfterTooLongError`
-   * when the host asked for more than a download waits.
-   */
-  async run<T>(host: string, task: () => Promise<T>, tryNumber = 0): Promise<T> {
+  /** Runs `task`, one request to `host`, when the host's turn comes; requests that wait together leave in the order they came. */
+  async run<T>(host: string, task: () => Promise<T>): Promise<T> {
     await this.turn(host);
-    try {
-      return await task();
-    } catch (error) {
-      if (error instanceof BusyHostError) throw this.noteRefusal(host, error, tryNumber);
-      throw error;
+    return task();
+  }
+
+  /** Holds `host` for `ms` from now, keeping the longer of two blocks, and refuses the requests waiting for it when the block runs past the bound. */
+  pause(host: string, ms: number): void {
+    const state = this.stateOf(host);
+    state.blockedUntil = Math.max(state.blockedUntil, this.clock.now() + ms);
+    const tooLong = this.blockPastBound(host, state);
+    if (tooLong !== null) for (const waiter of state.waiting.splice(0)) waiter.reject(tooLong);
+  }
+
+  private stateOf(host: string): HostState {
+    let state = this.hosts.get(host);
+    if (state === undefined) {
+      state = { spacingMs: this.spacing.get(host) ?? 0, blockedUntil: 0, lastRelease: Number.NEGATIVE_INFINITY, waiting: [], draining: false };
+      this.hosts.set(host, state);
     }
+    return state;
   }
 
-  private noteRefusal(host: string, error: BusyHostError, tryNumber: number): Error {
-    const now = this.clock.now();
-    const waitMs = retryDelayMs(tryNumber, error.status, error.retryAfter, now);
-    for (const refusing of new Set([host, error.refusedBy])) this.noteBusy(refusing, waitMs, now);
-    const asked = askedWaitMs(error.status, error.retryAfter, now);
-    return asked !== null && asked > RATE_LIMIT_MAX_WAIT_MS ? new RetryAfterTooLongError(error.status, asked) : error;
-  }
-
-  /** Records that `host` asked for `waitMs` of quiet, keeping the longer of two waits, and spaces the downloads that follow. */
-  private noteBusy(host: string, waitMs: number, now: number): void {
-    const state = this.hosts.get(host) ?? { blockedUntil: 0, lastRelease: Number.NEGATIVE_INFINITY, waiting: [], draining: false };
-    state.blockedUntil = Math.max(state.blockedUntil, now + waitMs);
-    this.hosts.set(host, state);
+  private blockPastBound(host: string, state: HostState): RetryAfterTooLongError | null {
+    const remaining = state.blockedUntil - this.clock.now();
+    return remaining > RATE_LIMIT_MAX_WAIT_MS ? new RetryAfterTooLongError(host, remaining) : null;
   }
 
   private turn(host: string): Promise<void> {
-    const state = this.hosts.get(host);
-    if (state === undefined) return Promise.resolve();
-    const now = this.clock.now();
-    if (state.waiting.length === 0 && now >= state.blockedUntil && now - state.lastRelease > LIMITED_HOST_GAP_MS) {
-      this.hosts.delete(host);
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-      state.waiting.push(resolve);
+    const state = this.stateOf(host);
+    const tooLong = this.blockPastBound(host, state);
+    if (tooLong !== null) return Promise.reject(tooLong);
+    return new Promise((resolve, reject) => {
+      state.waiting.push({ resolve, reject });
       void this.drain(state);
     });
   }
@@ -212,13 +214,13 @@ export class HostPacer {
     state.draining = true;
     while (state.waiting.length > 0) {
       const now = this.clock.now();
-      const readyAt = Math.max(state.blockedUntil, state.lastRelease + LIMITED_HOST_GAP_MS);
+      const readyAt = Math.max(state.blockedUntil, state.lastRelease + state.spacingMs);
       if (readyAt > now) {
         await this.clock.sleep(readyAt - now);
         continue;
       }
       state.lastRelease = now;
-      state.waiting.shift()?.();
+      state.waiting.shift()?.resolve();
     }
     state.draining = false;
   }
@@ -227,22 +229,35 @@ export class HostPacer {
 /** The pacer both sample fetchers share, since the parity benchmark and the real-world corpus can read from one host in one process. */
 export const hostPacer = new HostPacer();
 
+export interface PacedOptions {
+  pacer?: HostPacer;
+  /** The host the next try reaches, read before each try; the host of `url` unless a remembered redirect goes elsewhere. */
+  contactedHost?: () => string;
+}
+
 /**
- * Runs `task` up to `retries` + 1 times against the host of `url`: each try waits its turn at the pacer, which also pauses a host
- * that refused for rate or load, and any other failure is waited out with the ordinary backoff. A host that asks for more quiet
- * than a download waits fails the download at once. The error after the last try is made by `fail`, so each fetcher keeps its own
- * error type.
+ * Runs `task` up to `retries` + 1 times, each try in its turn at the host it reaches. A refusal for rate or load holds that host,
+ * the host that answered and the host of `url` for the time the refusal asked (`Retry-After`, read once), which the next try
+ * waits for; a host that asked for longer than a download waits fails the download without another request. Any other failure is
+ * waited out with the ordinary backoff. The error after the last try is made by `fail`, so each fetcher keeps its own error type.
  */
-export async function retryPaced<T>(url: string, retries: number, task: () => Promise<T>, fail: (message: string) => Error, pacer: HostPacer = hostPacer): Promise<T> {
-  const host = new URL(url).host;
+export async function retryPaced<T>(url: string, retries: number, task: () => Promise<T>, fail: (message: string) => Error, options: PacedOptions = {}): Promise<T> {
+  const { pacer = hostPacer, contactedHost = () => new URL(url).host } = options;
   let last: unknown;
   for (let tryNumber = 0; tryNumber <= retries; tryNumber++) {
+    const host = contactedHost();
     try {
-      return await pacer.run(host, task, tryNumber);
+      return await pacer.run(host, task);
     } catch (error) {
       if (error instanceof RetryAfterTooLongError) throw fail(`${url}: ${error.message}`);
       last = error;
-      if (!(error instanceof BusyHostError) && tryNumber < retries) await pacer.sleep(retryDelayMs(tryNumber, null, null));
+      if (error instanceof BusyHostError) {
+        const askedMs = askedWaitMs(error.status, error.retryAfter, pacer.now());
+        const blockMs = askedMs !== null && askedMs > RATE_LIMIT_MAX_WAIT_MS ? askedMs : pauseMs(tryNumber, error.status, askedMs);
+        for (const refusing of new Set([new URL(url).host, host, error.refusedBy])) pacer.pause(refusing, blockMs);
+      } else if (tryNumber < retries) {
+        await pacer.sleep(retryDelayMs(tryNumber, null, null));
+      }
     }
   }
   throw fail(`${url}: failed after ${retries + 1} attempts: ${describeFetchFailure(last)}`);

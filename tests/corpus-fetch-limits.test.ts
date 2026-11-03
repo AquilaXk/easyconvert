@@ -214,7 +214,7 @@ describe('the downloads of a shard, through the retry loop of the fetchers', () 
     expect(free.totalMs).toBe((840 / 8) * 80);
     expect(once.failed).toBe(0);
     expect(once.releases).toHaveLength(841);
-    expect(once.totalMs).toBeLessThanOrEqual(free.totalMs + retryDelayMs(0, 503, null) + shard.latencyMs);
+    expect(once.totalMs).toBe(free.totalMs + retryDelayMs(0, 503, null) + shard.latencyMs);
   });
 
   it('never sends to a listed host faster than its spacing, from the first request on and with one download under way', async () => {

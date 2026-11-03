@@ -388,7 +388,7 @@ describe('the nightly workflow', () => {
       const output = path.join(home, 'output');
       writeFileSync(output, '');
       const script = nightly.jobs.realworld.steps.find((step) => step.id === 'written')?.run ?? '';
-      const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], { env: { ...process.env, HOME: home, RUNNER_TEMP: home, GITHUB_OUTPUT: output }, encoding: 'utf-8' });
+      const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], { env: { PATH: process.env.PATH, HOME: home, RUNNER_TEMP: home, GITHUB_OUTPUT: output }, encoding: 'utf-8' });
       expect(result.status, result.stderr).toBe(0);
       return { output: read(output), stdout: result.stdout, left: files === null ? [] : (readdirSync(cache, { recursive: true }) as string[]).sort() };
     }
