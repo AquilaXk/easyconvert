@@ -529,28 +529,33 @@ jobs:
             realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}
             realworld-${{ matrix.shard }}-
 
-      - name: Count the cached corpus files
-        id: before
-        run: echo "files=$(find "$HOME/.cache/easyconvert-realworld" -type f -printf '%s\n' 2>/dev/null | awk '{n++; s+=$1} END {print n+0 "-" s+0}')" >> "$GITHUB_OUTPUT"
+      - name: Mark the restored corpus cache
+        run: touch "$RUNNER_TEMP/realworld-restored"
 
       - name: Run the corpus shard
         run: npm run bench:realworld -- run --shard ${{ matrix.shard }}/10 --out realworld-shard-${{ matrix.shard }}.json
 
       # Saved even when the shard fails: a host that refuses a download one night (a rate limit, an outage) would otherwise be
-      # asked for every file again the next night, since the cache of a job that fails is not kept. Only a shard that fetched
-      # something saves, because the shards hold 200 to 450 MB each and the repository's caches share 10 GB. Files are
-      # digest-checked before they are written, so what is kept is complete. The key carries the run id: a cache entry is
-      # immutable, and the restore above reads the newest.
-      - name: Count the cached corpus files after the run
+      # asked for every file again the next night, since the cache of a job that fails is not kept. Only a shard that wrote a file
+      # after the restore saves (by modification time, so a file replaced by one of the same size counts), because the shards hold
+      # 200 to 450 MB each and the repository's caches share 10 GB. Files are digest-checked before they are written, so what is
+      # kept is complete; a partial file of a killed run is left out. The key carries the run id: a cache entry is immutable, and
+      # the restore above reads the newest.
+      - name: Look for corpus files written by this run
         if: always()
-        id: after
-        run: echo "files=$(find "$HOME/.cache/easyconvert-realworld" -type f -printf '%s\n' 2>/dev/null | awk '{n++; s+=$1} END {print n+0 "-" s+0}')" >> "$GITHUB_OUTPUT"
+        id: written
+        run: |
+          if [ -n "$(find "$HOME/.cache/easyconvert-realworld" -type f ! -name '*.part' -newer "$RUNNER_TEMP/realworld-restored" 2>/dev/null | head -n 1)" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Save the corpus cache
-        if: always() && steps.after.outputs.files != steps.before.outputs.files
+        if: always() && steps.written.outputs.any == 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ~/.cache/easyconvert-realworld
+          path: |
+            ~/.cache/easyconvert-realworld
+            !~/.cache/easyconvert-realworld/**/*.part
           key: realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload the shard report
