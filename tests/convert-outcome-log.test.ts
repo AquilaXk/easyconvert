@@ -42,16 +42,18 @@ function pdfForm(target: string, options?: Record<string, unknown>): FormData {
   return form;
 }
 
+type ConsoleSpy = { mock: { calls: unknown[][] }; mockRestore(): void };
+
 /** The outcome lines `spy` received under `prefix`, parsed. */
-function outcomesOf(spy: ReturnType<typeof vi.spyOn>, prefix: string): { raw: string; outcome: LoggedOutcome }[] {
+function outcomesOf(spy: ConsoleSpy, prefix: string): { raw: string; outcome: LoggedOutcome }[] {
   return spy.mock.calls
     .map((call) => String(call[0]))
     .filter((line) => line.startsWith(prefix))
     .map((raw) => ({ raw, outcome: JSON.parse(raw.slice(prefix.length)) as LoggedOutcome }));
 }
 
-let warn: ReturnType<typeof vi.spyOn>;
-let error: ReturnType<typeof vi.spyOn>;
+let warn: ConsoleSpy;
+let error: ConsoleSpy;
 
 beforeEach(() => {
   vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
