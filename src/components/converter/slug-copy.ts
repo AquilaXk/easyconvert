@@ -76,7 +76,7 @@ const LIST_OF: Readonly<Record<AppLocale, (items: readonly string[]) => string>>
 /** Formats the registry converts `source` to, each named once by its own name, other than `source` and `target`. */
 function relatedTargets(source: string, target: string): string[] {
   const ids = getAvailableTargetFormats(source).map(({ id }) => id);
-  return otherFormats(ids, source, target)
+  return otherFormats(ids, [source, target])
     .slice(0, RELATED_FORMAT_COUNT)
     .map((id) => id.toUpperCase());
 }

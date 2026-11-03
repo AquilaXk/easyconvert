@@ -58,18 +58,11 @@ const ERROR_CLASS = /(?:Error|Exception)$/;
 /** Elements whose text is code a visitor copies, not copy. */
 const CODE_ELEMENTS = new Set(['code', 'pre', 'kbd', 'samp']);
 
-/** Object properties whose values are names or configuration, not copy: format standards keep their own names. */
-const NON_COPY_PROPERTIES = new Set(['developer', 'mimeType', 'adjustFontFallback']);
+/** Object properties whose values are configuration, not copy: the font a page falls back to is named by its family. */
+const NON_COPY_PROPERTIES = new Set(['adjustFontFallback']);
 
 /** A link, an address, an HTTP request line or an HTML entity reads the same in every language. */
 const LANGUAGE_NEUTRAL = /^(?:https?:\/\/\S+|\S+@\S+\.\w+|(?:GET|POST|PUT|PATCH|DELETE) \S+|(?:&\w+;\s*)+)$/;
-
-/** The tables of the full names of format standards (`pdf: 'Portable Document Format'`), which keep their own names in every language. */
-const FORMAT_NAME_TABLES = new Set([
-  'src/components/converter/format-specs.ts',
-  'src/components/converter/format-specs-media.ts',
-  'src/components/converter/format-specs-packages.ts',
-]);
 
 /** Files whose prose-like literals are code samples or API payloads, shown as code, not copy. */
 const CODE_SAMPLE_FILES = new Set([
@@ -175,7 +168,6 @@ function scan(file: string): Finding[] {
     if (
       text !== undefined &&
       !CODE_SAMPLE_FILES.has(relative) &&
-      !FORMAT_NAME_TABLES.has(relative) &&
       (PROSE.test(text) || (literal !== undefined && SHORT_COPY.test(literal) && isMessageProperty(node))) &&
       !ts.isImportDeclaration(node.parent) &&
       !ts.isExportDeclaration(node.parent) &&

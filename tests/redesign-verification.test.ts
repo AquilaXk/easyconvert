@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
-import { parseConverterSlug } from '../src/lib/slug-parser';
+import { CATEGORY_WORDS, parseConverterSlug, type CategoryWord } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
@@ -34,6 +34,7 @@ import {
   type DomElement,
 } from './helpers/rendered-dom';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
+import { testMessages } from './helpers/intl-messages';
 import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
 /**
@@ -402,20 +403,50 @@ describe('Redesign & Free Static Architecture Verification', () => {
     }
   );
 
-  // The category words of a slug (CATEGORY_WORDS of the slug parser), by which a page describes no one format.
-  const CATEGORY_WORDS = [
-    'video', 'audio', 'image', 'document', 'ebook', 'archive', 'vector', 'font', 'cad', 'spreadsheet', 'presentation', 'data',
-    'word', 'excel', 'powerpoint', 'photo', 'picture', 'music',
-  ];
+  // The category words are the parser's own list; the category the registry gives the format each word stands for is written out here.
+  const WORD_CATEGORY: Readonly<Record<CategoryWord, string>> = {
+    video: 'video', audio: 'audio', image: 'image', document: 'document', ebook: 'ebook', archive: 'archive', vector: 'vector',
+    font: 'font', cad: 'cad', spreadsheet: 'spreadsheet', presentation: 'presentation', data: 'data', word: 'document',
+    excel: 'spreadsheet', powerpoint: 'presentation', photo: 'image', picture: 'image', music: 'audio',
+  };
+  const CATEGORY_WORD_LIST = Object.keys(CATEGORY_WORDS) as CategoryWord[];
   const BREADCRUMB_LABEL = { en: 'Breadcrumb', ko: '현재 위치' } as const;
 
-  it.each(['en', 'ko'] as const)('verifies a slug that names a category by a word shows no format card and no format in its breadcrumb (%s)', (locale) => {
-    expect(CATEGORY_WORDS).toHaveLength(18);
-    for (const slug of CATEGORY_WORDS.map((word) => `${word}-converter`)) {
-      expect(formatCards(slug, locale).exists, slug).toBe(false);
-      const breadcrumb = select(renderSlug(slug, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
-      expect(links(breadcrumb).map((link) => link.href.replace(/^\/ko(?=\/|$)/, '') || '/'), slug).toEqual(['/']);
-      expect(select(breadcrumb, 'li').filter((item) => attrOf(item, 'aria-current') === 'page'), slug).toHaveLength(1);
+  it.each(['en', 'ko'] as const)(
+    'verifies a slug that names a category by a word shows no format card, and a breadcrumb that ends on the registry category of the word (%s)',
+    (locale) => {
+      expect(CATEGORY_WORD_LIST.length).toBeGreaterThan(0);
+      for (const word of CATEGORY_WORD_LIST) {
+        const slug = `${word}-converter`;
+        expect(formatCards(slug, locale).exists, slug).toBe(false);
+        const breadcrumb = select(renderSlug(slug, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
+        expect(links(breadcrumb).map((link) => link.href.replace(/^\/ko(?=\/|$)/, '') || '/'), slug).toEqual(['/']);
+        const current = select(breadcrumb, 'li').filter((item) => attrOf(item, 'aria-current') === 'page');
+        expect(current.map(visibleText), slug).toEqual([testMessages(locale).formatDetail.categories[WORD_CATEGORY[word] as 'video']]);
+      }
+    }
+  );
+
+  it('verifies a pair of a category word and the format it stands for stays a pair page, in either order, and is not read as the page of one format', () => {
+    for (const [word, { format, display }] of Object.entries(CATEGORY_WORDS)) {
+      expect(parseConverterSlug(`${word}-to-${format}`), `${word}-to-${format}`).toMatchObject({
+        sourceFormat: format,
+        targetFormat: format,
+        copy: { kind: 'pair', src: { kind: 'category', id: word, display }, tgt: { kind: 'format', id: format } },
+      });
+      expect(parseConverterSlug(`${format}-to-${word}`), `${format}-to-${word}`).toMatchObject({
+        copy: { kind: 'pair', src: { kind: 'format', id: format }, tgt: { kind: 'category', id: word, display } },
+      });
+    }
+  });
+
+  it.each(['en', 'ko'] as const)('verifies the page of a category word to its format keeps the word in its title and a card for the format only (%s)', (locale) => {
+    for (const [word, { format }] of Object.entries(CATEGORY_WORDS)) {
+      const slug = `${word}-to-${format}`;
+      const page = select(renderSlug(slug, locale), 'main')[0];
+      expect(headings(page)[0], slug).not.toBe(headings(select(renderSlug(`${format}-converter`, locale), 'main')[0])[0]);
+      expect(slugPageCopy(slug, locale).title, slug).not.toBe(slugPageCopy(`${format}-converter`, locale).title);
+      expect(formatCards(slug, locale).names, slug).toHaveLength(1);
     }
   });
 
@@ -451,7 +482,10 @@ describe('Redesign & Free Static Architecture Verification', () => {
       expect(aliasPairSlugs).toHaveLength(14);
       for (const slug of aliasPairSlugs) {
         const formatSlug = `${slug.split('-to-')[0]}-converter`;
-        expect(headings(select(renderSlug(slug, locale), 'main')[0]), slug).toEqual(headings(select(renderSlug(formatSlug, locale), 'main')[0]));
+        const [alias, format] = [slug, formatSlug].map((name) => renderSlug(name, locale));
+        expect(visibleText(alias), slug).toBe(visibleText(format));
+        expect(hrefsOf(alias), slug).toEqual(hrefsOf(format));
+        expect(headings(select(alias, 'main')[0]), slug).toEqual(headings(select(format, 'main')[0]));
         expect(formatCards(slug, locale), slug).toEqual(formatCards(formatSlug, locale));
         expect(formatCards(slug, locale).hrefs, slug).toEqual([]);
         expect(slugPageCopy(slug, locale), slug).toEqual(slugPageCopy(formatSlug, locale));

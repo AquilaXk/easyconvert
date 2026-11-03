@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { tryToParsePath } from 'next/dist/lib/try-to-parse-path';
 import { getAccessFallbackHTTPStatus, isHTTPAccessFallbackError } from 'next/dist/client/components/http-access-fallback/http-access-fallback';
-import ConverterPage from '../src/app/[locale]/[slug]/page';
+import ConverterPage, { generateMetadata } from '../src/app/[locale]/[slug]/page';
 import { config, middleware } from '../src/middleware';
 import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
@@ -22,6 +22,9 @@ const ORIGIN = 'http://localhost:3000';
 vi.mock('next-intl/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next-intl/server')>()),
   setRequestLocale: () => undefined,
+  // The metadata reads its titles from the messages of the locale, as the page's translator would.
+  getTranslations: async ({ locale, namespace }: { locale: 'en' | 'ko'; namespace: 'slugPages' | 'meta.converter' }) =>
+    (await import('./helpers/intl')).testTranslator(locale, namespace),
 }));
 
 function request(pathname: string, headers: Record<string, string> = {}): NextRequest {
@@ -192,6 +195,21 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     expect(canonicalSlugPath('PNG-to-JPG')).toBe('/png-to-jpg');
     expect(canonicalSlugPath('Zip-To-Tar.GZ')).toBe('/zip-to-tar.gz');
     expect(canonicalSlugPath('png-to-jpg')).toBe('/png-to-jpg');
+  });
+
+  it.each([
+    ['en', 'jpeg-to-jpg', '/jpeg-converter', '/ko/jpeg-converter'],
+    ['ko', 'jpeg-to-jpg', '/ko/jpeg-converter', '/jpeg-converter'],
+    ['en', 'pdf-to-pdf', '/pdf-converter', '/ko/pdf-converter'],
+    ['ko', 'pdf-to-pdf', '/ko/pdf-converter', '/pdf-converter'],
+    ['en', 'Jfif-To-JPG', '/jfif-converter', '/ko/jfif-converter'],
+    ['en', 'video-to-mp4', '/video-to-mp4', '/ko/video-to-mp4'],
+    ['ko', 'png-to-jpg', '/ko/png-to-jpg', '/png-to-jpg'],
+    ['en', 'Video-Converter', '/video-converter', '/ko/video-converter'],
+  ])('names the page of the parsed format as the canonical of %s %s, and the other locale as its alternate', async (locale, slug, canonical, other) => {
+    const { alternates } = await generateMetadata({ params: Promise.resolve({ locale, slug }) });
+    const [english, korean] = locale === 'en' ? [canonical, other] : [other, canonical];
+    expect(alternates).toEqual({ canonical, languages: { en: english, ko: korean, 'x-default': english } });
   });
 
   it('indexes pages of registered formats and the site pages, and no page a slug only names', () => {

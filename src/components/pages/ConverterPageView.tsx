@@ -54,18 +54,18 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
 
   const srcKey = parsed.sourceFormat.toLowerCase();
   const tgtKey = parsed.targetFormat.toLowerCase();
-  const isPair = Boolean(tgtKey && tgtKey !== 'any' && tgtKey !== srcKey);
+  const isPair = parsed.copy.kind !== 'format' && tgtKey !== srcKey;
   const isCategorySlug = parsed.copy.kind === 'format' && parsed.copy.name.kind === 'category';
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
-  const convertFromTargets = otherFormats(sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt'], srcKey);
+  const convertFromTargets = otherFormats(sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt'], [srcKey]);
 
   const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
   const convertToSources = otherFormats(
     Object.entries(FORMAT_REGISTRY)
       .filter(([, def]) => def.targetFormats.includes(targetForReverse))
       .map(([key]) => key),
-    targetForReverse
+    [targetForReverse]
   );
 
   const categoryName = sourceFormatRegistry?.category || 'document';
