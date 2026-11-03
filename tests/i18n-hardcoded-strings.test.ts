@@ -58,8 +58,8 @@ const ERROR_CLASS = /(?:Error|Exception)$/;
 /** Elements whose text is code a visitor copies, not copy. */
 const CODE_ELEMENTS = new Set(['code', 'pre', 'kbd', 'samp']);
 
-/** Object properties whose values are names or configuration, not copy: format standards keep their own names. */
-const NON_COPY_PROPERTIES = new Set(['fullName', 'developer', 'mimeType', 'adjustFontFallback']);
+/** Object properties whose values are configuration, not copy: the font a page falls back to is named by its family. */
+const NON_COPY_PROPERTIES = new Set(['adjustFontFallback']);
 
 /** A link, an address, an HTTP request line or an HTML entity reads the same in every language. */
 const LANGUAGE_NEUTRAL = /^(?:https?:\/\/\S+|\S+@\S+\.\w+|(?:GET|POST|PUT|PATCH|DELETE) \S+|(?:&\w+;\s*)+)$/;

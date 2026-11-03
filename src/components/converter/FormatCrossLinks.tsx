@@ -20,12 +20,9 @@ function ConversionGridCard({
 
   return (
     <div className="border-t border-rule pt-6">
-      <h2 className="text-xl sm:text-2xl text-ink mb-1">
+      <h2 className="text-xl sm:text-2xl text-ink mb-5">
         {t(`${direction}.heading`, { format: upperName })}
       </h2>
-      <p className="text-xs sm:text-sm text-ink-2 mb-5">
-        {t(`${direction}.body`, { format: upperName })}
-      </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
         {formats.map((fmt) => {

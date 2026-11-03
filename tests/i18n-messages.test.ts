@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parse, TYPE, type MessageFormatElement } from '@formatjs/icu-messageformat-parser';
 import { testMessages, type TestLocale } from './helpers/intl';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { FORMAT_SPECIFICATIONS } from '../src/components/converter/format-specs';
+import { FORMAT_FULL_NAMES } from '../src/lib/format-full-names';
 import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { formatMessageKey } from '../src/i18n/message-keys';
 import { routing } from '../src/i18n/routing';
@@ -87,7 +87,7 @@ describe('every language carries every message', () => {
     expect(ids.filter((id) => !korean.has(`formatDescriptions.${id}`))).toEqual([]);
     for (const locale of LOCALES) {
       const specs = [...MESSAGES.get(locale)!.keys()].filter((key) => key.startsWith('formatSpecs.'));
-      expect(new Set(specs.map((key) => key.split('.')[1]))).toEqual(new Set(Object.keys(FORMAT_SPECIFICATIONS)));
+      expect(new Set(specs.map((key) => key.split('.')[1]))).toEqual(new Set(Object.keys(FORMAT_FULL_NAMES)));
     }
   });
 
@@ -113,7 +113,7 @@ describe('the Korean copy keeps one register and one set of terms', () => {
 
   it('carries no status code or protocol name in a sentence a person reads', () => {
     const protocolTerms = /HTTP\s*\d|\(HTTP|\bMIME\b|\bRBAC\b/;
-    const developerPages = /^(?:apiDocs|dashboard\.keys|dashboard\.usage|dashboard\.guide|home\.api|converterPage\.(?:dossier|specs)|formatSpecs|formatDescriptions)\./;
+    const developerPages = /^(?:apiDocs|dashboard\.keys|dashboard\.usage|dashboard\.guide|home\.api|formatSpecs|formatDescriptions)\./;
     expect(koreanEntries.filter(([key, text]) => !developerPages.test(key) && protocolTerms.test(text)).map(([key]) => key)).toEqual([]);
   });
 

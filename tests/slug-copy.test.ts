@@ -1,6 +1,8 @@
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
+import { isSameFormat } from '../src/lib/format-aliases';
+import { CATEGORY_WORDS } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { allElements, attrOf, renderDom } from './helpers/rendered-dom';
@@ -20,15 +22,11 @@ const firstSentence = (text: string) => text.split(/(?<=[.요])\s/)[0];
 
 const registeredPairs = Object.keys(FORMAT_REGISTRY).flatMap((source) =>
   getAvailableTargetFormats(source)
-    .filter(({ id }) => id !== source)
+    .filter(({ id }) => !isSameFormat(id, source))
     .map(({ id }) => `${source}-to-${id}`)
 );
 const formatPages = Object.keys(FORMAT_REGISTRY).map((id) => `${id}-converter`);
-const CATEGORY_WORDS = [
-  'video', 'audio', 'image', 'document', 'ebook', 'archive', 'vector', 'font', 'cad', 'spreadsheet', 'presentation', 'data',
-  'word', 'excel', 'powerpoint', 'photo', 'picture', 'music',
-];
-const categoryPages = CATEGORY_WORDS.map((word) => `${word}-converter`);
+const categoryPages = Object.keys(CATEGORY_WORDS).map((word) => `${word}-converter`);
 const categoryPairs = ['video-to-gif', 'video-to-mp3', 'video-to-audio', 'image-to-pdf', 'word-to-pdf', 'pdf-to-word', 'pdf-to-image'];
 
 describe('the intro of a converter page', () => {
@@ -37,6 +35,9 @@ describe('the intro of a converter page', () => {
     ['png-to-jpg', 'ko', 'PNG 파일을 JPG 형식으로 온라인에서 변환해요. WEBP, AVIF, TIFF, GIF, BMP 형식으로도 바꿀 수 있어요. 옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
     ['mp4-to-mp3', 'en', 'Extract the sound of MP4 files as MP3 files online. Other targets include WEBM, MKV, AVI, and MOV. Options include bitrate, sample rate, and audio channels.'],
     ['docx-to-pdf', 'en', 'Convert DOCX files to PDF online. Other targets include HTML, TXT, MD, EPUB, and ODT.'],
+    ['pdf-to-docx', 'en', 'Convert PDF files to DOCX online. Other targets include HTML, MD, RTF, TXT, and EPUB.'],
+    ['csv-to-xlsx', 'en', 'Convert CSV files to XLSX online. Other targets include JSON, TSV, PARQUET, HTML, and YAML.'],
+    ['jpeg-to-png', 'en', 'Convert JPEG files to PNG online. Other targets include WEBP, AVIF, TIFF, GIF, and BMP. Options include image size, quality, and metadata removal.'],
     ['video-converter', 'en', 'Convert videos online. Targets include WEBM, MKV, AVI, MOV, and MP3.'],
     ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있어요.'],
     ['ttf-converter', 'en', 'Convert TTF fonts online. Targets include WOFF, WOFF2, EOT, OTF, and SVG.'],
@@ -137,13 +138,16 @@ function optionsSentence(subjects: string[]): string {
   return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
 }
 
-/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner. */
+/** The pair pages that name options are those of images, video and audio; a document, font, archive or data pair page does not. */
+const OPTION_INTRO_CATEGORIES = ['image', 'video', 'audio'];
 
 describe('the options a pair page names', () => {
-  it('are the first options its dialog renders, in the dialog order, on every registered pair', () => {
+  it('are the first options its dialog renders for an image, video or audio source, in the dialog order, and none for any other source', () => {
     const differing = registeredPairs.flatMap((slug) => {
       const [source, target] = slug.split('-to-');
-      const rendered = subjectsTheDialogRenders(source, target).slice(0, 3);
+      const rendered = OPTION_INTRO_CATEGORIES.includes(FORMAT_REGISTRY[source].category)
+        ? subjectsTheDialogRenders(source, target).slice(0, 3)
+        : [];
       const { description } = slugPageCopy(slug, 'en');
       const named = rendered.length === 0 ? !/option/i.test(description) : description.endsWith(` ${optionsSentence(rendered)}`);
       return named ? [] : [`${slug}: dialog ${rendered.join(', ')} | intro ${description}`];
@@ -152,8 +156,8 @@ describe('the options a pair page names', () => {
   }, REGISTRY_WIDE_TIMEOUT_MS);
 
   it.each([
-    ['csv-to-xlsx', 'en', 'Options include the delimiter.'],
-    ['csv-to-xlsx', 'ko', '구분 기호 옵션을 정할 수 있어요.'],
+    ['png-to-hocr', 'en', 'Options include the text recognition.'],
+    ['png-to-hocr', 'ko', '문자 인식 옵션을 정할 수 있어요.'],
     ['png-to-jpg', 'ko', '옵션에서 이미지 크기, 품질, 메타데이터 제거 등을 정할 수 있어요.'],
   ] as const)('of %s in %s reads naturally with one subject or several', (slug, locale, sentence) => {
     expect(slugPageCopy(slug, locale).description.endsWith(sentence), slugPageCopy(slug, locale).description).toBe(true);

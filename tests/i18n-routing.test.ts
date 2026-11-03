@@ -4,12 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { tryToParsePath } from 'next/dist/lib/try-to-parse-path';
 import { getAccessFallbackHTTPStatus, isHTTPAccessFallbackError } from 'next/dist/client/components/http-access-fallback/http-access-fallback';
-import ConverterPage from '../src/app/[locale]/[slug]/page';
+import ConverterPage, { generateMetadata } from '../src/app/[locale]/[slug]/page';
 import { config, middleware } from '../src/middleware';
 import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
+import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { DOTTED_FORMAT_SUFFIXES, canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
+import { CATEGORY_WORDS, DOTTED_FORMAT_SUFFIXES, canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
 
 /**
  * Locale routing as a visitor meets it: English at the unprefixed paths, Korean under /ko, the visitor's language
@@ -22,6 +23,9 @@ const ORIGIN = 'http://localhost:3000';
 vi.mock('next-intl/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next-intl/server')>()),
   setRequestLocale: () => undefined,
+  // The metadata reads its titles from the messages of the locale, as the page's translator would.
+  getTranslations: async ({ locale, namespace }: { locale: 'en' | 'ko'; namespace: 'slugPages' | 'meta.converter' }) =>
+    (await import('./helpers/intl')).testTranslator(locale, namespace),
 }));
 
 function request(pathname: string, headers: Record<string, string> = {}): NextRequest {
@@ -192,6 +196,63 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     expect(canonicalSlugPath('PNG-to-JPG')).toBe('/png-to-jpg');
     expect(canonicalSlugPath('Zip-To-Tar.GZ')).toBe('/zip-to-tar.gz');
     expect(canonicalSlugPath('png-to-jpg')).toBe('/png-to-jpg');
+  });
+
+  it.each([
+    ['en', 'jpeg-to-jpg', '/jpeg-converter', '/ko/jpeg-converter'],
+    ['ko', 'jpeg-to-jpg', '/ko/jpeg-converter', '/jpeg-converter'],
+    ['en', 'pdf-to-pdf', '/pdf-converter', '/ko/pdf-converter'],
+    ['ko', 'pdf-to-pdf', '/ko/pdf-converter', '/pdf-converter'],
+    ['en', 'Jfif-To-JPG', '/jfif-converter', '/ko/jfif-converter'],
+    ['en', 'video-to-mp4', '/video-to-mp4', '/ko/video-to-mp4'],
+    ['ko', 'png-to-jpg', '/ko/png-to-jpg', '/png-to-jpg'],
+    ['en', 'Video-Converter', '/video-converter', '/ko/video-converter'],
+    ['en', 'video-to-video', '/video-converter', '/ko/video-converter'],
+    ['ko', 'Image-To-Photo', '/ko/image-converter', '/image-converter'],
+    ['en', 'ocr', '/pdf-ocr', '/ko/pdf-ocr'],
+    ['ko', 'ocr-pdf', '/ko/pdf-ocr', '/pdf-ocr'],
+    ['en', 'pdf-ocr', '/pdf-ocr', '/ko/pdf-ocr'],
+  ])('names the page of the parsed format as the canonical of %s %s, and the other locale as its alternate', async (locale, slug, canonical, other) => {
+    const { alternates } = await generateMetadata({ params: Promise.resolve({ locale, slug }) });
+    const [english, korean] = locale === 'en' ? [canonical, other] : [other, canonical];
+    expect(alternates).toEqual({ canonical, languages: { en: english, ko: korean, 'x-default': english } });
+  });
+
+  // The slugs the parser reads as the page of their source: two names of one format, a registry format converted to itself,
+  // and two category words for one format. Each starts with the word whose page it is.
+  const registered = (id: string) => Object.hasOwn(FORMAT_REGISTRY, id);
+  const aliasSlugs = Object.entries(FORMAT_NAME_ALIASES)
+    .filter(([alias, format]) => registered(alias) && registered(format))
+    .flatMap(([alias, format]) => [`${alias}-to-${format}`, `${format}-to-${alias}`]);
+  const selfTargetSlugs = Object.entries(FORMAT_REGISTRY)
+    .filter(([id, { targetFormats }]) => targetFormats.includes(id))
+    .map(([id]) => `${id}-to-${id}`);
+  const words = Object.entries(CATEGORY_WORDS);
+  const categoryPairSlugs = words.flatMap(([word, { format }]) =>
+    words.filter(([, other]) => other.format === format).map(([otherWord]) => `${word}-to-${otherWord}`)
+  );
+
+  it('sweeps every slug read as the page of its source and finds it a copy of an indexable page that is its own canonical', async () => {
+    const swept = [...aliasSlugs, ...selfTargetSlugs, ...categoryPairSlugs];
+    expect(aliasSlugs.length).toBeGreaterThan(14);
+    expect(selfTargetSlugs.length).toBeGreaterThan(60);
+    expect(categoryPairSlugs.length).toBeGreaterThan(18);
+    const metadataOf = (locale: string, slug: string) => generateMetadata({ params: Promise.resolve({ locale, slug }) });
+    const broken: string[] = [];
+    for (const slug of swept) {
+      const canonical = `/${slug.split('-to-')[0]}-converter`;
+      if (canonicalSlugPath(slug) !== canonical || canonicalSlugPath(canonical) !== canonical || !isIndexableSlug(parseConverterSlug(canonical))) {
+        broken.push(`${slug}: canonical ${canonicalSlugPath(slug)}`);
+        continue;
+      }
+      for (const locale of routing.locales) {
+        const [copy, page] = await Promise.all([metadataOf(locale, slug), metadataOf(locale, canonical.slice(1))]);
+        if (copy.title !== page.title || JSON.stringify(copy.alternates) !== JSON.stringify(page.alternates) || copy.robots !== undefined) {
+          broken.push(`${locale} ${slug}: differs from ${canonical}`);
+        }
+      }
+    }
+    expect(broken).toEqual([]);
   });
 
   it('indexes pages of registered formats and the site pages, and no page a slug only names', () => {

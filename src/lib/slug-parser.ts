@@ -1,4 +1,5 @@
 import { FORMAT_REGISTRY } from './registry';
+import { isSameFormat } from './format-aliases';
 import {
   INFO_PAGE_MAP,
   UNIT_CONVERTER_INFO_PAGE,
@@ -12,7 +13,7 @@ import {
 export type { CategoryWord, ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
 
 /** The words a slug may name a category by instead of a format: the format its page converts and the word its title shows. */
-const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: string }>> = {
+export const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: string }>> = {
   video: { format: 'mp4', display: 'Video' },
   audio: { format: 'mp3', display: 'Audio' },
   image: { format: 'jpg', display: 'Image' },
@@ -33,6 +34,7 @@ const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: s
   music: { format: 'mp3', display: 'Music' },
 };
 
+const OCR_PATH = '/pdf-ocr';
 const OCR_SLUGS = new Set(['pdf-ocr', 'ocr-pdf', 'ocr']);
 
 /** The format a word of a slug converts and how a title names it: a category by its word, a format in capitals. */
@@ -44,6 +46,17 @@ function readSlugWord(raw: string): { format: string; name: SlugName } {
   return { format: raw, name: { kind: 'format', id: raw, display: raw.toUpperCase() } };
 }
 
+/** The page of one format or category, the converter of anything it can be converted to. */
+function formatPage({ format, name }: { format: string; name: SlugName }): ParsedSlug {
+  return { isInfoPage: false, sourceFormat: format, targetFormat: 'any', copy: { kind: 'format', name } };
+}
+
+/**
+ * A pair of two words for one format (`jpeg-to-jpg`, `pdf-to-pdf`) or of two category words for one format
+ * (`video-to-video`, `image-to-photo`) converts nothing: its page is the page of its source. A category word stands for a
+ * format only as a representative (`video` for MP4), so `video-to-mp4` converts videos to MP4 and stays a pair page: a
+ * category word and a format word are never one format.
+ */
 function parsePairSlug(cleanSlug: string): ParsedSlug {
   const parts = cleanSlug.split('-to-');
   const rawSrc = parts[0]?.trim() || 'pdf';
@@ -56,6 +69,7 @@ function parsePairSlug(cleanSlug: string): ParsedSlug {
 
   const src = readSlugWord(rawSrc);
   const tgt = readSlugWord(rawTgt);
+  if (src.name.kind === tgt.name.kind && isSameFormat(src.format, tgt.format)) return formatPage(src);
   return {
     isInfoPage: false,
     sourceFormat: src.format,
@@ -70,13 +84,7 @@ function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
     return UNIT_CONVERTER_INFO_PAGE;
   }
 
-  const { format, name } = readSlugWord(rawFmt);
-  return {
-    isInfoPage: false,
-    sourceFormat: format,
-    targetFormat: 'any',
-    copy: { kind: 'format', name },
-  };
+  return formatPage(readSlugWord(rawFmt));
 }
 
 /** A slug as the parser reads it: lowercased, without leading slashes or surrounding space. */
@@ -84,9 +92,16 @@ function normalizeSlug(slug: string): string {
   return slug.toLowerCase().replace(/^\/+/, '').trim();
 }
 
-/** The one canonical path of a converter slug page, however its slug was cased. */
+/**
+ * The one canonical path of a converter slug page, however its slug was cased. A slug read as the page of a format
+ * (`/jpeg-converter`, and `/jpeg-to-jpg`, `/pdf-to-pdf` or `/video-to-video`, which are that page) names the converter path
+ * of that format, and the slugs of the OCR page (`/ocr`, `/ocr-pdf`) name `/pdf-ocr`, so the pages that show the same
+ * content are copies of one URL.
+ */
 export function canonicalSlugPath(slug: string): string {
-  return `/${normalizeSlug(slug)}`;
+  const { copy } = parseConverterSlug(slug);
+  if (copy.kind === 'format') return `/${copy.name.id}-converter`;
+  return copy.kind === 'ocr' ? OCR_PATH : `/${normalizeSlug(slug)}`;
 }
 
 const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);

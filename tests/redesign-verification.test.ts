@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
-import { parseConverterSlug } from '../src/lib/slug-parser';
+import { CATEGORY_WORDS, parseConverterSlug, type CategoryWord } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
@@ -14,8 +14,9 @@ import FaqSection from '../src/components/FaqSection';
 import StatusDashboard from '../src/components/StatusDashboard';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
+import HomePageView from '../src/components/pages/HomePageView';
 import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
-import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
+import { FORMAT_NAME_ALIASES, isSameFormat } from '../src/lib/format-aliases';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
   allElements,
@@ -32,7 +33,8 @@ import {
   visibleText,
   type DomElement,
 } from './helpers/rendered-dom';
-import { slugPageCopy } from './helpers/intl';
+import { slugPageCopy, type TestLocale } from './helpers/intl';
+import { testMessages } from './helpers/intl-messages';
 import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
 /**
@@ -47,7 +49,8 @@ const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
 // The pages get the allowance from the constant, and the copy checks below write the 10 of entry 15 out by hand, as a visitor
 // reads it: an oracle independent of src/lib/plan-limits.ts.
-const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+const renderSlug = (slug: string, locale: TestLocale = 'en') =>
+  renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -88,9 +91,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const header = render(Header, {});
     const hrefs = hrefsOf(header);
 
-    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works', '/api-docs', '/dashboard'])).toEqual([]);
+    expect(missingFrom(hrefs, ['/#format-catalog', '/api-docs', '/dashboard'])).toEqual([]);
     // Bare fragments only resolve on the home page.
-    expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
+    expect(presentIn(hrefs, ['#format-catalog'])).toEqual([]);
   });
 
   it('verifies Header offers sign-in through /auth only, with no link to the retired login and register routes', () => {
@@ -99,7 +102,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(links(header)).toEqual([
       { text: 'EasyConvert', href: '/' },
       { text: 'Formats', href: '/#format-catalog' },
-      { text: 'How It Works', href: '/#how-it-works' },
       { text: 'API Docs', href: '/api-docs' },
       { text: 'Dashboard', href: '/dashboard' },
       { text: 'English', href: '/' },
@@ -132,8 +134,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const footer = render(Footer, {});
     const hrefs = hrefsOf(footer);
 
-    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works'])).toEqual([]);
-    expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
+    expect(missingFrom(hrefs, ['/#format-catalog'])).toEqual([]);
+    expect(presentIn(hrefs, ['#format-catalog'])).toEqual([]);
     // Obsolete pricing and api links should not exist
     expect(hrefs.filter((href) => href.includes('/pricing') || href.includes('/api/v2'))).toEqual([]);
 
@@ -313,39 +315,224 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(select(breadcrumb[0], 'svg')).toHaveLength(4);
   });
 
-  it('verifies Dynamic Converter Page implements 3-step visual conversion workflow', () => {
-    const page = renderSlug('pdf-to-docx');
-    const text = visibleText(page);
+  it('verifies a pair page holds its title, upload prompt, two format cards and related conversions, and nothing that explains how to convert', () => {
+    const main = select(renderSlug('pdf-to-docx'), 'main')[0];
 
-    expect(phrasesMissing(text, ['Three steps from upload to download.', 'How to Convert PDF to DOCX'])).toEqual([]);
-    expect(headings(page).filter((h) => ['Upload PDF File(s)', 'Choose to DOCX', 'Download Your DOCX'].includes(h))).toEqual([
-      'Upload PDF File(s)',
-      'Choose to DOCX',
-      'Download Your DOCX',
+    expect(headings(main)).toEqual([
+      'PDF to DOCX Converter',
+      'Select your file to convert',
+      'PDF Portable Document Format',
+      'DOCX Office Open XML Document',
+      'Convert from PDF',
+      'Convert to DOCX',
     ]);
-    // The step numerals appear in order before their headings.
-    expect(text.match(/\b0[123] (?:Upload PDF File\(s\)|Choose to DOCX|Download Your DOCX)/g)).toEqual([
-      '01 Upload PDF File(s)',
-      '02 Choose to DOCX',
-      '03 Download Your DOCX',
+    expect(links(main).filter((link) => link.text.endsWith(' Converter'))).toEqual([
+      { text: 'PDF Converter', href: '/pdf-converter' },
+      { text: 'DOCX Converter', href: '/docx-converter' },
     ]);
+    expect(phrasesPresent(visibleText(main), ['Three steps', 'How to Convert', 'Specification', 'MIME', 'Frequently Asked', 'Pick a target format', 'Pick a source format', 'Choose an output format'])).toEqual([]);
   });
 
-  it('verifies Side-by-Side Format Specification Comparison Deck and technical dossier', () => {
-    const page = renderSlug('pdf-to-docx');
-    const text = visibleText(page);
+  it('verifies the home page holds the title, the upload card, the format directory, the security card and the API card, and no steps, questions or link to them', () => {
+    const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+    const main = select(home, 'main')[0];
 
-    expect(phrasesMissing(text, ['The standard, MIME type, and maintainer of each format.', 'PDF vs DOCX Specifications', 'SOURCE FORMAT'])).toEqual([]);
-    expect(headings(page).filter((h) => /\((?:Portable Document Format|Microsoft Word Document)\)/.test(h))).toEqual([
-      'PDF (Portable Document Format)',
-      'DOCX (Microsoft Word Document)',
+    const sections = allElements(main).filter((element) => element.tagName === 'h1' || element.tagName === 'h2');
+    expect(sections.map(visibleText)).toEqual([
+      'File Converter',
+      'Select your file to convert',
+      'Supported Format Directory',
+      'Security & Data Handling',
+      'REST API & Batch Workflows',
     ]);
-    // Every dossier card lists the same fields for the source and the target.
-    const fieldLabels = ['Full Name', 'Developer', 'MIME Type', 'Category'];
-    for (const label of fieldLabels) {
-      expect(text.split(label).length - 1).toBeGreaterThanOrEqual(2);
+    const text = visibleText(main);
+    expect(phrasesPresent(text, ['How Conversion Works', 'Frequently Asked', 'Add source files', 'Select an extension'])).toEqual([]);
+    // The limits line under the upload card is the one place the home page states the allowance.
+    expect(text).toContain('10 conversions a day');
+    expect(allElements(home).filter((element) => attrOf(element, 'id') === 'how-it-works')).toEqual([]);
+    expect(presentIn(hrefsOf(home), ['/#how-it-works'])).toEqual([]);
+  });
+
+  it('verifies a format page describes its one format without a link to itself, and a category page describes none', () => {
+    const format = select(renderSlug('pdf-converter'), 'main')[0];
+    expect(headings(format)).toEqual(['PDF Converter', 'Select your file to convert', 'PDF Portable Document Format', 'Convert from PDF', 'Convert to PDF']);
+    expect(links(format).filter((link) => link.text.endsWith(' Converter'))).toEqual([]);
+
+    const category = select(renderSlug('document-converter'), 'main')[0];
+    expect(headings(category)).toEqual(['Document Converter', 'Select your file to convert', 'Convert from DOCX', 'Convert to DOCX']);
+  });
+
+  // The section of the format cards is named for a screen reader; it is the one place the cards are told from the headings around them.
+  const CARDS_LABEL = { en: 'Formats', ko: '형식' } as const;
+  const formatCards = (slug: string, locale: TestLocale = 'en') => {
+    const [section] = select(select(renderSlug(slug, locale), 'main')[0], 'section', 'aria-label', CARDS_LABEL[locale]);
+    return {
+      exists: section !== undefined,
+      names: section ? headings(section) : [],
+      hrefs: section ? links(section).map((link) => link.href.replace(/^\/ko(?=\/)/, '')) : [],
+    };
+  };
+
+  // The name on a card is the id of the page in capitals and the full name of the format; the registry's extension would read JPG for ULTRAHDR.
+  const CARD_NAME: Readonly<Record<string, string>> = {
+    raw: 'RAW Digital Camera RAW',
+    ultrahdr: 'ULTRAHDR Ultra HDR JPEG',
+    pdf: 'PDF Portable Document Format',
+    alto: 'ALTO ALTO XML Document',
+    docx: 'DOCX Office Open XML Document',
+    svgfont: 'SVGFONT SVG Font Glyphs',
+    webpvideo: 'WEBPVIDEO Animated WebP',
+    jpeg: 'JPEG JPEG Continuous-Tone Photographic Image',
+    jpg: 'JPG JPEG Continuous-Tone Photographic Image',
+    jfif: 'JFIF JPEG File Interchange Format',
+  };
+
+  it.each(['en', 'ko'] as const)(
+    'verifies each card names and links its format by the id of the page, not by the extension of the registry entry (%s)',
+    (locale) => {
+      for (const [slug, ids] of [['raw-to-ultrahdr', ['raw', 'ultrahdr']], ['pdf-to-alto', ['pdf', 'alto']], ['pdf-to-docx', ['pdf', 'docx']]] as const) {
+        const { names, hrefs } = formatCards(slug, locale);
+        expect(names, slug).toEqual(ids.map((id) => CARD_NAME[id]));
+        expect(hrefs, slug).toEqual(ids.map((id) => `/${id}-converter`));
+      }
+      for (const id of ['ultrahdr', 'alto', 'svgfont', 'webpvideo']) {
+        const { names, hrefs } = formatCards(`${id}-converter`, locale);
+        expect(names, id).toEqual([CARD_NAME[id]]);
+        expect(hrefs, id).toEqual([]);
+      }
     }
-    expect(phrasesMissing(text, ['Portable Document Format', 'application/pdf', 'Adobe Systems / ISO 32000'])).toEqual([]);
+  );
+
+  // The category words are the parser's own list; the category the registry gives the format each word stands for is written out here.
+  const WORD_CATEGORY: Readonly<Record<CategoryWord, string>> = {
+    video: 'video', audio: 'audio', image: 'image', document: 'document', ebook: 'ebook', archive: 'archive', vector: 'vector',
+    font: 'font', cad: 'cad', spreadsheet: 'spreadsheet', presentation: 'presentation', data: 'data', word: 'document',
+    excel: 'spreadsheet', powerpoint: 'presentation', photo: 'image', picture: 'image', music: 'audio',
+  };
+  const CATEGORY_WORD_LIST = Object.keys(CATEGORY_WORDS) as CategoryWord[];
+  const BREADCRUMB_LABEL = { en: 'Breadcrumb', ko: '현재 위치' } as const;
+
+  it.each(['en', 'ko'] as const)(
+    'verifies a slug that names a category by a word shows no format card, and a breadcrumb that ends on the registry category of the word (%s)',
+    (locale) => {
+      expect(CATEGORY_WORD_LIST.length).toBeGreaterThan(0);
+      for (const word of CATEGORY_WORD_LIST) {
+        const slug = `${word}-converter`;
+        expect(formatCards(slug, locale).exists, slug).toBe(false);
+        const breadcrumb = select(renderSlug(slug, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
+        expect(links(breadcrumb).map((link) => link.href.replace(/^\/ko(?=\/|$)/, '') || '/'), slug).toEqual(['/']);
+        const current = select(breadcrumb, 'li').filter((item) => attrOf(item, 'aria-current') === 'page');
+        expect(current.map(visibleText), slug).toEqual([testMessages(locale).formatDetail.categories[WORD_CATEGORY[word] as 'video']]);
+      }
+    }
+  );
+
+  // A slug whose target is "any" names no target: its page is the page of its source, not a pair with a card "ANY".
+  it.each(['en', 'ko'] as const)('verifies a slug that converts a format to "any" shows one card and the breadcrumb of its source, not a pair (%s)', (locale) => {
+    for (const slug of ['pdf-to-any', 'png-to-any', 'video-to-any']) {
+      const { sourceFormat } = parseConverterSlug(slug);
+      const cards = formatCards(slug, locale);
+      expect(cards.names, slug).toHaveLength(1);
+      expect(cards.names.join(' ').toLowerCase(), slug).not.toContain('any');
+      const breadcrumb = (name: string) => select(renderSlug(name, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
+      expect(links(breadcrumb(slug)), slug).toEqual(links(breadcrumb(`${sourceFormat}-converter`)));
+      expect(visibleText(breadcrumb(slug)).toLowerCase(), slug).not.toContain('any');
+    }
+  });
+
+  it('verifies a pair of two category words for one format reads as the page of its source category, and any other category pair stays a pair', () => {
+    for (const [slug, word] of [['video-to-video', 'video'], ['image-to-photo', 'image'], ['photo-to-picture', 'photo'], ['document-to-word', 'document'], ['word-to-document', 'word']] as const) {
+      expect(parseConverterSlug(slug), slug).toMatchObject({ targetFormat: 'any', copy: { kind: 'format', name: { kind: 'category', id: word } } });
+    }
+    for (const slug of ['video-to-audio', 'word-to-excel', 'image-to-pdf', 'video-to-mp4', 'mp4-to-video']) {
+      expect(parseConverterSlug(slug).copy.kind, slug).toBe('pair');
+    }
+  });
+
+  it('verifies a pair of a category word and the format it stands for stays a pair page, in either order, and is not read as the page of one format', () => {
+    for (const [word, { format, display }] of Object.entries(CATEGORY_WORDS)) {
+      expect(parseConverterSlug(`${word}-to-${format}`), `${word}-to-${format}`).toMatchObject({
+        sourceFormat: format,
+        targetFormat: format,
+        copy: { kind: 'pair', src: { kind: 'category', id: word, display }, tgt: { kind: 'format', id: format } },
+      });
+      expect(parseConverterSlug(`${format}-to-${word}`), `${format}-to-${word}`).toMatchObject({
+        copy: { kind: 'pair', src: { kind: 'format', id: format }, tgt: { kind: 'category', id: word, display } },
+      });
+    }
+  });
+
+  it.each(['en', 'ko'] as const)('verifies the page of a category word to its format keeps the word in its title and a card for the format only (%s)', (locale) => {
+    for (const [word, { format }] of Object.entries(CATEGORY_WORDS)) {
+      const slug = `${word}-to-${format}`;
+      const page = select(renderSlug(slug, locale), 'main')[0];
+      expect(headings(page)[0], slug).not.toBe(headings(select(renderSlug(`${format}-converter`, locale), 'main')[0])[0]);
+      expect(slugPageCopy(slug, locale).title, slug).not.toBe(slugPageCopy(`${format}-converter`, locale).title);
+      expect(formatCards(slug, locale).names, slug).toHaveLength(1);
+    }
+  });
+
+  // A pair of two names of one format converts nothing, so every part of the page (title, meta, tiles, breadcrumb, card and
+  // both lists) describes the one format the slug starts from, as the page of that format does.
+  const ALIAS_PAIR_HEADINGS = {
+    en: (name: string) => [`${name} Converter`, 'Select your file to convert', `Convert from ${name}`, `Convert to ${name}`],
+    ko: (name: string) => [`${name} 변환기`, '변환할 파일을 선택하세요', `${name} 파일 변환`, `${name} 형식으로 변환`],
+  } as const;
+  const aliasPairSlugs = Object.entries(FORMAT_REGISTRY).flatMap(([source, { targetFormats }]) =>
+    targetFormats.filter((target) => target !== source && isSameFormat(source, target)).map((target) => `${source}-to-${target}`)
+  );
+
+  it('verifies the slug parser reads a pair of two names of one format, or of a format and itself, as the page of its source', () => {
+    for (const [slug, source] of [['jpeg-to-jpg', 'jpeg'], ['jpg-to-jpeg', 'jpg'], ['tgz-to-tar.gz', 'tgz'], ['pdf-to-pdf', 'pdf']] as const) {
+      expect(parseConverterSlug(slug), slug).toMatchObject({ sourceFormat: source, targetFormat: 'any', copy: { kind: 'format', name: { id: source } } });
+    }
+    expect(parseConverterSlug('jpeg-to-png')).toMatchObject({ sourceFormat: 'jpeg', targetFormat: 'png', copy: { kind: 'pair' } });
+  });
+
+  it.each(['en', 'ko'] as const)('verifies the h1 and both list headings of jpeg-to-jpg, jpg-to-jpeg and jfif-to-jpg name their one format (%s)', (locale) => {
+    // No registry format converts to JFIF, so its page has no second list.
+    for (const [slug, name, hasToList] of [['jpeg-to-jpg', 'JPEG', true], ['jpg-to-jpeg', 'JPG', true], ['jfif-to-jpg', 'JFIF', false]] as const) {
+      const [h1, prompt, from, to] = ALIAS_PAIR_HEADINGS[locale](name);
+      const all = headings(select(renderSlug(slug, locale), 'main')[0]);
+      expect(all, slug).toEqual([h1, prompt, CARD_NAME[name.toLowerCase()], from, ...(hasToList ? [to] : [])]);
+    }
+  });
+
+  it.each(['en', 'ko'] as const)(
+    'verifies each of the 14 pairs of two names of one format reads as the page of its source in the title, meta, cards and lists (%s)',
+    (locale) => {
+      expect(aliasPairSlugs).toHaveLength(14);
+      for (const slug of aliasPairSlugs) {
+        const formatSlug = `${slug.split('-to-')[0]}-converter`;
+        const [alias, format] = [slug, formatSlug].map((name) => renderSlug(name, locale));
+        expect(visibleText(alias), slug).toBe(visibleText(format));
+        expect(hrefsOf(alias), slug).toEqual(hrefsOf(format));
+        expect(headings(select(alias, 'main')[0]), slug).toEqual(headings(select(format, 'main')[0]));
+        expect(formatCards(slug, locale), slug).toEqual(formatCards(formatSlug, locale));
+        expect(formatCards(slug, locale).hrefs, slug).toEqual([]);
+        expect(slugPageCopy(slug, locale), slug).toEqual(slugPageCopy(formatSlug, locale));
+      }
+    }
+  );
+
+  it('verifies a format is listed once among the related conversions', () => {
+    const texts = links(select(renderSlug('png-converter'), 'main')[0]).map((link) => link.text);
+    expect(texts.filter((text) => text === 'JPG to PNG')).toHaveLength(1);
+    expect(texts.filter((text) => text === 'JPEG to PNG' || text === 'JFIF to PNG')).toEqual([]);
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+
+  it('verifies the related-conversion lists of a format page offer no conversion of a format to itself or to its other name', () => {
+    const selfPairs = (slug: string, format: string, aliases: readonly string[]) => {
+      const names = [format, ...aliases].map((name) => name.toUpperCase());
+      return links(select(renderSlug(slug), 'main')[0])
+        .filter((link) => names.some((from) => names.some((to) => link.text === `${from} to ${to}`)))
+        .map((link) => link.text);
+    };
+    expect(selfPairs('pdf-converter', 'pdf', [])).toEqual([]);
+    expect(selfPairs('mp3-converter', 'mp3', [])).toEqual([]);
+    expect(selfPairs('jpg-converter', 'jpg', ['jpeg', 'jfif'])).toEqual([]);
+    expect(selfPairs('jpeg-converter', 'jpeg', ['jpg'])).toEqual([]);
   });
 
   it('verifies a page with no ad network configured shows no ad frame and reserves no space for one', () => {

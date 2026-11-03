@@ -27,3 +27,33 @@ export const FORMAT_NAME_ALIASES: Readonly<Record<string, string>> = {
 export function canonicalFormat(id: string): string {
   return Object.hasOwn(FORMAT_NAME_ALIASES, id) ? FORMAT_NAME_ALIASES[id] : id;
 }
+
+/** Whether two registry ids name one format: the same id, or two names of it (JPEG and JPG, JPEG and JFIF). */
+export function isSameFormat(id: string, other: string): boolean {
+  return canonicalFormat(id) === canonicalFormat(other);
+}
+
+/**
+ * Each format of `items` once, by its own name: an item that is another name of a format whose own name is also in
+ * `items` is dropped, an id the list holds twice stays where it first stood, and the others stay in place, so a format
+ * whose own name is absent keeps every name it has.
+ */
+export function collapseAliases<T>(items: readonly T[], idOf: (item: T) => string): T[] {
+  const offered = new Set(items.map(idOf));
+  const kept = new Set<string>();
+  return items.filter((item) => {
+    const id = idOf(item);
+    if (kept.has(id) || (canonicalFormat(id) !== id && offered.has(canonicalFormat(id)))) return false;
+    kept.add(id);
+    return true;
+  });
+}
+
+/** The formats of `ids` other than those `own` names, each named once as `collapseAliases` names it. */
+export function otherFormats(ids: readonly string[], own: readonly string[]): string[] {
+  const ownFormats = new Set(own.map(canonicalFormat));
+  return collapseAliases(
+    ids.filter((id) => !ownFormats.has(canonicalFormat(id))),
+    (id) => id
+  );
+}

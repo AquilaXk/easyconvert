@@ -1,6 +1,7 @@
 import type { Messages, useTranslations } from 'next-intl';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
-import { canonicalFormat } from '@/lib/format-aliases';
+import { otherFormats } from '@/lib/format-aliases';
+import type { FormatCategory } from '@/lib/types';
 import type { AppLocale } from '@/i18n/routing';
 import type { ParsedSlug, SlugName } from '@/lib/slug-parser';
 import {
@@ -22,6 +23,8 @@ type OptionSubject = keyof Messages['slugPages']['subjects'];
 /** How many other targets an intro names at most, and how many option subjects. */
 const RELATED_FORMAT_COUNT = 5;
 const OPTION_SUBJECT_COUNT = 3;
+/** The source categories whose pair pages name what the options set; other pair pages have no such sentence. */
+const OPTION_INTRO_CATEGORIES: ReadonlySet<FormatCategory> = new Set<FormatCategory>(['image', 'video', 'audio']);
 /** The longest intro, as the meta description it also is; the list of other targets gets shorter until the intro fits. */
 const INTRO_MAX_LENGTH = 160;
 
@@ -31,7 +34,6 @@ const OPTION_SUBJECTS: ReadonlyArray<[OptionSubject, (sections: VisibleOptionsSe
   ['quality', (s) => s.showImage],
   ['metadata', (s) => s.showImage],
   ['pages', (s) => s.canSelectPages],
-  ['orientation', (s) => s.canConfigureLayout],
   ['ocr', (s) => s.canConfigureOcr],
   ['password', (s) => s.passwordMode !== null],
   ['videoCodec', (s) => s.showVideo && s.showVideoCodec],
@@ -40,8 +42,6 @@ const OPTION_SUBJECTS: ReadonlyArray<[OptionSubject, (sections: VisibleOptionsSe
   ['bitrate', (s) => s.showAudio && resolveAudioCapabilities(s.tgt).canConfigureBitrate],
   ['sampleRate', (s) => s.showAudio && resolveAudioCapabilities(s.tgt).allowedSampleRates.length > 0],
   ['channels', (s) => s.showAudio && resolveAudioCapabilities(s.tgt).allowedChannels.length > 0],
-  ['delimiter', (s) => s.canConfigureDelimiter],
-  ['sheet', (s) => s.canConfigureSheetIndex],
   ['compression', (s) => s.showArchive],
 ];
 
@@ -73,18 +73,12 @@ const LIST_OF: Readonly<Record<AppLocale, (items: readonly string[]) => string>>
   ko: (items) => items.join(', '),
 };
 
-/** Formats the registry converts `source` to, each named once by its own name, other than those named in `exclude`. */
-function relatedTargets(source: string, exclude: readonly string[]): string[] {
-  const named = new Set(exclude.map(canonicalFormat));
-  const related: string[] = [];
-  for (const { id } of getAvailableTargetFormats(source)) {
-    const format = canonicalFormat(id);
-    if (related.length === RELATED_FORMAT_COUNT) break;
-    if (named.has(format)) continue;
-    named.add(format);
-    related.push(format.toUpperCase());
-  }
-  return related;
+/** Formats the registry converts `source` to, each named once by its own name, other than `source` and `target`. */
+function relatedTargets(source: string, target: string): string[] {
+  const ids = getAvailableTargetFormats(source).map(({ id }) => id);
+  return otherFormats(ids, [source, target])
+    .slice(0, RELATED_FORMAT_COUNT)
+    .map((id) => id.toUpperCase());
 }
 
 /** What the options dialog lets a person set when converting `source` to `target`, as the dialog renders it. */
@@ -109,8 +103,8 @@ function introOf(lead: string, related: readonly string[], relatedSentence: (for
 
 /**
  * The title and description of a slug page in the page's language. A converter page says what it converts and which other
- * formats the registry converts its source to; a pair page also names what the options of that pair set, since a format
- * page's options depend on the target. It claims nothing about speed or quality.
+ * formats the registry converts its source to; an image, video or audio pair page also names what the options of that pair
+ * set, since a format page's options depend on the target. It claims nothing about speed or quality.
  */
 export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, locale: AppLocale): LocalizedSlugCopy {
   const { copy, sourceFormat: source, targetFormat: target } = parsed;
@@ -130,10 +124,13 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
     case 'pair': {
       const names = { src: filesOf(t, copy.src), tgt: nameOf(t, copy.tgt), tgtFiles: filesOf(t, copy.tgt), tgtKind: copy.tgt.kind };
       const extractsAudio = FORMAT_REGISTRY[source]?.category === 'video' && FORMAT_REGISTRY[target]?.category === 'audio';
-      const subjects = optionSubjects(source, target).map((subject) => t(`subjects.${subject}`));
+      const sourceCategory = FORMAT_REGISTRY[source]?.category;
+      const subjects = sourceCategory && OPTION_INTRO_CATEGORIES.has(sourceCategory)
+        ? optionSubjects(source, target).map((subject) => t(`subjects.${subject}`))
+        : [];
       const description = introOf(
         t(extractsAudio ? 'pair.lead.extractAudio' : 'pair.lead.convert', names),
-        relatedTargets(source, [source, target]),
+        relatedTargets(source, target),
         (formats) => t('related.pair', { formats: LIST_OF[locale](formats) }),
         subjects.length > 0 ? [t('options', { subjects: LIST_OF[locale](subjects), count: subjects.length })] : []
       );
@@ -142,7 +139,7 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
     case 'format': {
       const description = introOf(
         t('format.lead', { files: formatPageFiles(t, copy.name, source) }),
-        relatedTargets(source, [source]),
+        relatedTargets(source, source),
         (formats) => t('related.format', { formats: LIST_OF[locale](formats) }),
         []
       );

@@ -122,10 +122,18 @@ interface QueueHeaderProps {
   targetFormat?: string;
   /** The title of a converter page, which stays while its queue is shown; the home page names the first file's formats. */
   pageTitle?: string;
+  /** The intro of a converter page, which stays under its title; the home page has none. */
+  pageDescription?: string;
 }
 
 /** The title over the file queue, and the file input and paste target that add more files to it. */
-export function QueueHeader({ onFilesSelected, sourceFormat, targetFormat, pageTitle }: Readonly<QueueHeaderProps>) {
+export function QueueHeader({
+  onFilesSelected,
+  sourceFormat,
+  targetFormat,
+  pageTitle,
+  pageDescription,
+}: Readonly<QueueHeaderProps>) {
   const t = useTranslations('hero');
   const upload = useHeroUpload(onFilesSelected, targetFormat || undefined);
   return (
@@ -133,7 +141,7 @@ export function QueueHeader({ onFilesSelected, sourceFormat, targetFormat, pageT
       <input {...upload.fileInput} />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{pageTitle ?? formatsTitle(t, sourceFormat, targetFormat)}</h1>
-        <p className="mt-1.5 text-sm text-ink-2 max-w-2xl">{t('subtitle.queue')}</p>
+        {pageDescription && <p className="mt-1.5 text-sm text-ink-2 max-w-2xl">{pageDescription}</p>}
       </div>
     </section>
   );
