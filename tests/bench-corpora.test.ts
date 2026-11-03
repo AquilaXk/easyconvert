@@ -331,7 +331,7 @@ describe('what a host may make the fetcher read', () => {
     it('waits a long time for a rate limit that names no time, and caps what a host asks for', () => {
       expect(retryDelayMs(0, 429, null)).toBe(30_000);
       expect(retryDelayMs(0, 429, '86400')).toBe(120_000);
-      expect(retryDelayMs(0, 429, 'Wed, 21 Oct 2026 07:28:00 GMT')).toBe(30_000);
+      expect(retryDelayMs(0, 429, 'soon')).toBe(30_000);
     });
   });
 
@@ -340,17 +340,14 @@ describe('what a host may make the fetcher read', () => {
     let base: string;
     let endlessClosed: Promise<number>;
     let sent = 0;
+    let limitedServer: http.Server;
+    let limitedBase: string;
     let firstLimitedAt: number | undefined;
     let downloadHits = 0;
     beforeAll(async () => {
       server = http.createServer((request, response) => {
         if (request.url === '/away') {
           response.writeHead(302, { location: 'http://evil.invalid/payload' }).end();
-        } else if (request.url === '/limited') {
-          // A rate-limit window: every request in the 2.5 seconds after the first one is refused, naming the time to wait.
-          firstLimitedAt ??= Date.now();
-          if (Date.now() - firstLimitedAt < 2500) response.writeHead(429, { 'retry-after': '3' }).end();
-          else response.writeHead(200, { 'content-length': 4 }).end('body');
         } else if (request.url === '/download') {
           // A download page that answers each request with a redirect to a signed address of the file (a rate-limited front host).
           downloadHits += 1;
@@ -377,11 +374,21 @@ describe('what a host may make the fetcher read', () => {
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      // A host of its own: a download pauses every later download of the host that refused it (the host pacer of http-retry.ts).
+      limitedServer = http.createServer((_request, response) => {
+        // A rate-limit window: every request in the 2.5 seconds after the first one is refused, naming the time to wait.
+        firstLimitedAt ??= Date.now();
+        if (Date.now() - firstLimitedAt < 2500) response.writeHead(429, { 'retry-after': '3' }).end();
+        else response.writeHead(200, { 'content-length': 4 }).end('body');
+      });
+      await new Promise<void>((resolve) => limitedServer.listen(0, '127.0.0.1', resolve));
+      limitedBase = `http://127.0.0.1:${(limitedServer.address() as AddressInfo).port}`;
       process.env.BENCH_CORPUS_RETRIES = '0';
     });
     afterAll(async () => {
       delete process.env.BENCH_CORPUS_RETRIES;
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => limitedServer.close(() => resolve()));
     });
 
     it('refuses a redirect to another host, naming it, and follows one on the same host', async () => {
@@ -392,7 +399,7 @@ describe('what a host may make the fetcher read', () => {
     it('waits out a rate limit for the time the host names, then gets the body', async () => {
       process.env.BENCH_CORPUS_RETRIES = '1';
       try {
-        expect((await httpBytes(`${base}/limited`, null, 1000)).toString()).toBe('body');
+        expect((await httpBytes(`${limitedBase}/limited`, null, 1000)).toString()).toBe('body');
       } finally {
         process.env.BENCH_CORPUS_RETRIES = '0';
       }

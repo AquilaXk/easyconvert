@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { REMOTE_CACHE_DIR, REMOTE_MANIFEST_PATH } from './config';
 import { BenchArgumentError, BenchError } from './errors';
-import { describeFetchFailure, isBusyHostStatus, retryDelayMs } from './http-retry';
+import { describeFetchFailure, hostPacer, isBusyHostStatus, retryDelayMs } from './http-retry';
 import { EOCD_SEARCH_BYTES, inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory } from './realworld/zip-range';
 
 export const REMOTE_MANIFEST_SCHEMA = 1;
@@ -342,12 +342,16 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
 export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = []): Promise<Buffer> {
   let last: unknown;
   const retries = process.env.BENCH_CORPUS_RETRIES === undefined ? DEFAULT_RETRIES : Number(process.env.BENCH_CORPUS_RETRIES);
+  const host = new URL(url).host;
   for (let tryNumber = 0; tryNumber <= retries; tryNumber++) {
+    await hostPacer.beforeRequest(host);
     try {
       return await attempt(url, range, maxBytes, extraHosts);
     } catch (error) {
       last = error;
-      if (tryNumber < retries) await sleep(error instanceof CorpusBusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
+      if (tryNumber === retries) break;
+      if (error instanceof CorpusBusyHostError) hostPacer.noteBusy(host, retryDelayMs(tryNumber, error.status, error.retryAfter));
+      else await sleep(retryDelayMs(tryNumber, null, null));
     }
   }
   throw new CorpusFetchError(`${url}: failed after ${retries + 1} attempts: ${describeFetchFailure(last)}`);

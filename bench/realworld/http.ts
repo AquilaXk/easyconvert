@@ -4,7 +4,7 @@
  */
 import net from 'node:net';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
-import { describeFetchFailure, isBusyHostStatus, retryDelayMs } from '../http-retry';
+import { describeFetchFailure, hostPacer, isBusyHostStatus, retryDelayMs } from '../http-retry';
 
 const RETRIES = 6;
 const HTTP_OK = 200;
@@ -65,13 +65,17 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
 
 async function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
   applyProxyFromEnvironment();
+  const host = new URL(url).host;
   let lastError: unknown;
   for (let tryNumber = 0; tryNumber <= RETRIES; tryNumber++) {
+    await hostPacer.beforeRequest(host);
     try {
       return await run();
     } catch (error) {
       lastError = error;
-      if (tryNumber < RETRIES) await sleep(error instanceof BusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
+      if (tryNumber === RETRIES) break;
+      if (error instanceof BusyHostError) hostPacer.noteBusy(host, retryDelayMs(tryNumber, error.status, error.retryAfter));
+      else await sleep(retryDelayMs(tryNumber, null, null));
     }
   }
   throw new FetchError(`${url}: failed after ${RETRIES + 1} attempts: ${describeFetchFailure(lastError)}`);

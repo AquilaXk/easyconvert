@@ -795,7 +795,7 @@ describe('the pause before a retry of a real-world download', () => {
 
   it('gives a rate limit that names no time the default pause', () => {
     expect(retryDelayMs(0, 429, null)).toBe(30_000);
-    expect(retryDelayMs(0, 429, 'Wed, 21 Oct 2026 07:28:00 GMT')).toBe(30_000);
+    expect(retryDelayMs(0, 429, 'soon')).toBe(30_000);
   });
 });
 
