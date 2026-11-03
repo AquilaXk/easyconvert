@@ -3,6 +3,7 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
+import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -531,7 +532,7 @@ function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse
       status: 200,
       headers: {
         'Content-Type': conversionResult.mimeType,
-        'Content-Disposition': `attachment; filename="${a.outFileName}"`,
+        'Content-Disposition': attachmentContentDisposition(a.outFileName),
         'X-Conversion-Time-Ms': a.durationMs.toString(),
         'X-File-Id': a.fileId,
         ...frameMetadataHeaders(conversionResult),

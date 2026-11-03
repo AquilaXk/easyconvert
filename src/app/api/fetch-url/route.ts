@@ -9,6 +9,7 @@ import {
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { declaredBodyBytes, withLinkImportMeter, type DeclaredOverflow, type LinkImportMeter, type MeterVerdict } from '@/lib/api-keys/anonymous-upload-budget';
 import { isUnattributedAnonymous } from '@/lib/auth/anonymous-identity';
+import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { codedRefusal, createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
@@ -198,7 +199,7 @@ function importedFile(res: Response, finalUrl: URL, buffer: Buffer): NextRespons
     headers: {
       'Content-Type': contentType,
       'X-Filename': encodeURIComponent(filename),
-      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Disposition': attachmentContentDisposition(filename),
       'Content-Length': buffer.length.toString(),
     },
   });

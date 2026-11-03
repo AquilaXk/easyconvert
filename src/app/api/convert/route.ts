@@ -21,6 +21,7 @@ import {
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
+import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import type { User } from '@/lib/auth/types';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -52,8 +53,9 @@ const CODED_ARCHIVE_REFUSALS: ReadonlySet<ConversionRefusalCode> = new Set(['arc
 
 const isMultipartBody = (req: NextRequest): boolean => (req.headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
 
-/** Whether a failed conversion was refused for its input (400) rather than failed on the server (500). */
+/** Whether a failed conversion was refused for its input (400) rather than failed on the server (500); a TypeError is a fault of the server. */
 function isValidationError(error: unknown, message: string): boolean {
+  if (error instanceof TypeError) return false;
   return (
     error instanceof ConversionFailedError ||
     message.includes('payload is empty') ||
@@ -248,13 +250,12 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
 
     const duration = Date.now() - startTime;
 
-    await unit.commit();
-
-    return new NextResponse(new Uint8Array(result.buffer), {
+    // The answer is built before the unit is charged, so an answer that cannot be built charges nothing.
+    const answer = new NextResponse(new Uint8Array(result.buffer), {
       status: 200,
       headers: {
         'Content-Type': result.mimeType,
-        'Content-Disposition': `attachment; filename="${result.filename}"`,
+        'Content-Disposition': attachmentContentDisposition(result.filename),
         'Content-Length': result.size.toString(),
         'X-Conversion-Time-Ms': duration.toString(),
         'X-Engine-Used': result.engineUsed,
@@ -263,6 +264,8 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         ...conversionWarningsHeaders(result),
       },
     });
+    await unit.commit();
+    return answer;
   } catch (error: unknown) {
     return conversionErrorResponse(error, instanceUri);
   } finally {
