@@ -100,7 +100,9 @@ describe('PR #246 review follow-ups', () => {
     const BURST_ATTEMPT_FACTOR = 3;
 
     it('labels a per-key burst rejection as rate-limited, not quota-exceeded', async () => {
-      // A plan whose daily allowance outlasts every attempt, so the 429 can only come from the burst bucket.
+      // A free key's conversions of the day (10) run out before its burst of 20, so through the route a free key gets the
+      // quota 429 first. A pro key's allowance outlasts every attempt, so this 429 can only come from the burst bucket. The free
+      // bucket's label is asserted on the guard itself in api-key-burst-rate-limit.test.ts.
       const user = await createUser('burst_type', 'pro');
       const key = await redisKeyStore.generateApiKey(user.id, 'burst', { scopes: ['convert:write'] });
       const capacity = API_KEY_BURST_LIMITS.pro.capacity;

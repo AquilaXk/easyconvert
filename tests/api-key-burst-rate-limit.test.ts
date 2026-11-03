@@ -16,6 +16,7 @@ const FREE_BURST_CAPACITY = 20;
 const PRO_BURST_CAPACITY = 100;
 // The free allowance of entry 15, hand-written as an oracle independent of src/lib/plan-limits.ts: the headers must state it.
 const FREE_DAILY_LIMIT = 10;
+const RATE_LIMITED_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
 // One missing token at 2 tokens/s (free) or 20 tokens/s (pro) is < 1 s, so Retry-After rounds up to 1 s.
 const EXPECTED_BURST_RETRY_AFTER_SECONDS = 1;
 // Fixed clock: 12:00:00 UTC is exactly 12 h (43,200 s) before the next UTC-midnight quota reset.
@@ -70,6 +71,7 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
       expect(limited.authorized).toBe(false);
       expect(limited.status).toBe(429);
       expect(limited.error).toContain('Rate limit exceeded');
+      expect(limited.problemType).toBe(RATE_LIMITED_TYPE);
       expect(limited.retryAfterSeconds).toBe(EXPECTED_BURST_RETRY_AFTER_SECONDS);
       expect(authErrorHeaders(limited)).toEqual({ 'Retry-After': String(EXPECTED_BURST_RETRY_AFTER_SECONDS) });
 
