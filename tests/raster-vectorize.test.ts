@@ -244,6 +244,7 @@ describe('the tracer program, as the wrapper sees it', () => {
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(PayloadLimitError);
     expect(failure.message).toBe('The SVG tracer could not trace this picture: it was stopped by SIGSEGV.');
+    expect((failure as ConversionFailedError & { status?: number }).status).toBe(500);
   });
 
   it('runs the program without a network, under the measured memory, output, diagnostics and time limits', async () => {

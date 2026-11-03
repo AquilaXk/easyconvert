@@ -24,7 +24,7 @@
  *    bounded for long files and block seams are bit-exact.
  *  - Integer output is quantised with seeded TPDF dither; float and 24/32-bit output never is.
  */
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, SERVER_FAULT_STATUS } from '../types';
 import { besselI0, kaiserBeta, kaiserLengthEstimate } from './audio-kaiser';
 import {
   type HalfBandFilter,
@@ -40,6 +40,16 @@ export class AudioResampleError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'AudioResampleError';
+  }
+}
+
+/** A kernel failed, or an argument that the callers validate reached the resampler broken: a fault of the server, not of the audio. */
+export class AudioResampleFaultError extends AudioResampleError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AudioResampleFaultError';
   }
 }
 
@@ -965,7 +975,7 @@ function convolveExactBlock(
       try {
         run(row, simd.xPtr, simd.outPtr, taps, upFactor, downFactor, base, firstPeriod, periods, firstOutput, count);
       } catch (error) {
-        throw new AudioResampleError(`The SIMD resampler kernel failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new AudioResampleFaultError(`The SIMD resampler kernel failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     } else {
       convolveRowAsymmetric(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
@@ -1187,7 +1197,7 @@ function buildPipeline(
       const outputFrames = i === order.length - 1 ? blockFrames : requests[i + 1];
       const simd = kernel === 'scalar' ? null : SimdPolyState.create(poly, channels, requests[i] * channels, outputFrames * channels);
       if (simd === null && kernel === 'simd') {
-        throw new AudioResampleError('The SIMD resampler kernel was requested but is not available for this stage');
+        throw new AudioResampleFaultError('The SIMD resampler kernel was requested but is not available for this stage');
       }
       if (simd !== null) kernelUsed = 'simd-f64x2';
       source = new PolyphaseStage(source, poly, channels, requests[i], simd);
@@ -1220,7 +1230,7 @@ function runResampler(
 function resolveOutputBitDepth(options: ResampleOptions, fallback: ResampleOutputBitDepth): ResampleOutputBitDepth {
   const depth = options.outputBitDepth ?? fallback;
   if (!KNOWN_BIT_DEPTHS.has(depth)) {
-    throw new AudioResampleError(`Unsupported output bit depth ${String(depth)}`);
+    throw new AudioResampleFaultError(`Unsupported output bit depth ${String(depth)}`);
   }
   return depth;
 }
@@ -1228,7 +1238,7 @@ function resolveOutputBitDepth(options: ResampleOptions, fallback: ResampleOutpu
 function resolveKernel(options: ResampleOptions): ResampleKernel {
   const kernel = options.kernel ?? 'auto';
   if (!KNOWN_KERNELS.has(kernel)) {
-    throw new AudioResampleError(`Unsupported resampler kernel ${String(kernel)}`);
+    throw new AudioResampleFaultError(`Unsupported resampler kernel ${String(kernel)}`);
   }
   return kernel;
 }
@@ -1236,7 +1246,7 @@ function resolveKernel(options: ResampleOptions): ResampleKernel {
 function resolveSeed(options: ResampleOptions): number {
   const seed = options.ditherSeed ?? DEFAULT_DITHER_SEED;
   if (!Number.isInteger(seed)) {
-    throw new AudioResampleError(`Dither seed must be an integer, got ${seed}`);
+    throw new AudioResampleFaultError(`Dither seed must be an integer, got ${seed}`);
   }
   return seed;
 }
@@ -1285,7 +1295,7 @@ export function resamplePlanarFloat(
 ): Float32Array[] {
   validateRates(srcRate, tgtRate);
   if (channelData.length === 0) {
-    throw new AudioResampleError('At least one audio channel is required');
+    throw new AudioResampleFaultError('At least one audio channel is required');
   }
   validateChannels(channelData.length);
   const quality = resolveQuality(options);
@@ -1294,7 +1304,7 @@ export function resamplePlanarFloat(
   const inFrames = channelData[0].length;
   for (const ch of channelData) {
     if (ch.length !== inFrames) {
-      throw new AudioResampleError('All audio channels must have the same length');
+      throw new AudioResampleFaultError('All audio channels must have the same length');
     }
   }
   let quantizer: DitherQuantizer | null = null;
@@ -1358,11 +1368,11 @@ export function resampleInterleavedInt16(
   const quality = resolveQuality(options);
   const depth = resolveOutputBitDepth(options, INT16_BITS);
   if (!SUPPORTED_INT16_OUTPUT_BITS.has(depth as number)) {
-    throw new AudioResampleError(`Int16 resampling supports 8 or 16 bit output, got ${String(depth)}`);
+    throw new AudioResampleFaultError(`Int16 resampling supports 8 or 16 bit output, got ${String(depth)}`);
   }
   const seed = resolveSeed(options);
   if (data.length % channels !== 0) {
-    throw new AudioResampleError(
+    throw new AudioResampleFaultError(
       `Interleaved sample count ${data.length} is not a multiple of the channel count ${channels}`
     );
   }

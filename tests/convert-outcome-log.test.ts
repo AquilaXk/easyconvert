@@ -323,3 +323,84 @@ describe('answers that turn a caller away before any work', () => {
     expect(error.mock.calls).toHaveLength(0);
   });
 });
+
+describe('the secrets the log line cuts out', () => {
+  const MARKER = 'pw-marker-';
+  const MARKED = { password: `${MARKER}open`, passwords: [`${MARKER}one`, `${MARKER}two`], protect: { userPassword: `${MARKER}user`, ownerPassword: `${MARKER}owner` } };
+
+  async function v1Headers(): Promise<Record<string, string>> {
+    const user = await userStore.createUser({
+      name: 'Secrets Tester',
+      email: `secrets_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
+      tier: 'pro',
+    });
+    const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Secrets Key', { scopes: ['convert:write'] });
+    return { Authorization: `Bearer ${secretKey}` };
+  }
+
+  const ROUTES = [
+    { name: 'POST /api/convert', prefix: '[convert]', headers: async () => VISITOR, post: convertRoute, url: 'http://localhost/api/convert', invalid: { pages: 'garbage' }, invalidStatus: 400 },
+    { name: 'POST /api/v1/convert', prefix: '[v1/convert]', headers: v1Headers, post: v1ConvertRoute, url: 'http://localhost/api/v1/convert', invalid: { quality: 1000 }, invalidStatus: 422 },
+  ] as const;
+
+  /** What the passwords cost: the texts of the options that were encoded for the matcher. */
+  let encodings: { mock: { calls: unknown[][] }; mockRestore(): void };
+  const encodedSecrets = () => encodings.mock.calls.filter(([text]) => String(text).includes(MARKER)).length;
+
+  beforeEach(() => {
+    encodings = vi.spyOn(globalThis, 'encodeURIComponent');
+  });
+
+  afterEach(() => {
+    encodings.mockRestore();
+  });
+
+  describe.each(ROUTES)('$name', (route) => {
+    const send = async (options: Record<string, unknown>) =>
+      route.post(new NextRequest(route.url, { method: 'POST', headers: await route.headers(), body: pdfForm('docx', options) }));
+
+    it('reads the passwords of the options for nothing while the conversion succeeds', async () => {
+      const res = await send({ password: MARKED.password, passwords: MARKED.passwords });
+
+      expect(res.status).toBe(200);
+      expect(encodedSecrets()).toBe(0);
+    });
+
+    it('reads the passwords of the options for nothing while a request is refused for its options', async () => {
+      const res = await send({ ...MARKED, ...route.invalid });
+
+      expect(res.status).toBe(route.invalidStatus);
+      expect(encodedSecrets()).toBe(0);
+    });
+
+    it('reads the passwords of the options for nothing while the conversion refuses the file', async () => {
+      vi.mocked(dispatchConversion).mockRejectedValueOnce(new UnsupportedTargetError('No writer for this file'));
+
+      const res = await send({ ...MARKED });
+
+      expect(res.status).toBe(400);
+      expect(encodedSecrets()).toBe(0);
+    });
+
+    it('reads them once for the line of a failure of the server, and cuts them out of it', async () => {
+      vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError(`qpdf rejected ${MARKED.protect.ownerPassword} and ${MARKED.passwords[1]}`));
+
+      const res = await send({ ...MARKED });
+
+      expect(res.status).toBe(500);
+      expect(encodedSecrets()).toBeGreaterThan(0);
+      const [line] = outcomesOf(error, `${route.prefix} failure `);
+      expect(line.outcome.error?.message).toBe('qpdf rejected [redacted] and [redacted]');
+    });
+  });
+
+  it('cuts out a name sent decomposed from a message that holds it percent-encoded in the decomposed form', async () => {
+    const stem = '홍길동 이력서'.normalize('NFD');
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError(`GET /files/${encodeURIComponent(stem)}.zip`));
+
+    await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx', {}, `${stem}.pdf`) }));
+
+    const [line] = outcomesOf(error, '[convert] failure ');
+    expect(line.outcome.error?.message).toBe('GET /files/[redacted].zip');
+  });
+});

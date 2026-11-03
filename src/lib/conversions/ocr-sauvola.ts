@@ -1,4 +1,4 @@
-import { OcrPreprocessError } from '../types';
+import { OcrPreprocessError, OcrPreprocessFaultError } from '../types';
 
 /**
  * Sauvola adaptive thresholding (Sauvola and Pietikainen, "Adaptive document image binarization",
@@ -54,7 +54,7 @@ export function oddWindow(size: number): number {
 
 function assertImage(gray: Uint8Array, width: number, height: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    throw new OcrPreprocessError(`Invalid image size ${width}x${height} for binarization.`);
+    throw new OcrPreprocessFaultError(`Invalid image size ${width}x${height} for binarization.`);
   }
   if (width * height > SAUVOLA_MAX_PIXELS) {
     throw new OcrPreprocessError(
@@ -62,7 +62,7 @@ function assertImage(gray: Uint8Array, width: number, height: number): void {
     );
   }
   if (gray.length !== width * height) {
-    throw new OcrPreprocessError(
+    throw new OcrPreprocessFaultError(
       `Gray buffer holds ${gray.length} bytes but a ${width}x${height} image needs ${width * height}.`
     );
   }
@@ -156,7 +156,7 @@ export async function sauvolaBinarize(
   const k = options.k ?? SAUVOLA_K;
   const dynamicRange = options.dynamicRange ?? SAUVOLA_DYNAMIC_RANGE;
   if (!(dynamicRange > 0) || !Number.isFinite(k)) {
-    throw new OcrPreprocessError('Sauvola parameters must be finite and the dynamic range positive.');
+    throw new OcrPreprocessFaultError('Sauvola parameters must be finite and the dynamic range positive.');
   }
   const yieldEvery = Math.max(1, options.yieldEveryPixels ?? SAUVOLA_YIELD_PIXELS);
   const half = (oddWindow(options.windowSize) - 1) >> 1;

@@ -499,6 +499,16 @@ export class OcrPreprocessError extends ConversionFailedError {
   }
 }
 
+/** A buffer, a size or a channel count of OCR page preparation disagrees with another: a broken invariant of the server's code, not a verdict on the page. */
+export class OcrPreprocessFaultError extends OcrPreprocessError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrPreprocessFaultError';
+  }
+}
+
 export class UnsupportedTargetError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'unsupported_pair';
   constructor(message: string) {
@@ -639,16 +649,21 @@ export class DataRepresentationError extends ConversionFailedError {
 }
 
 /**
- * The OCR language of a request cannot be used. 400 (the default) when the code names no language of the table
- * or joins too many; 503 when the language is known but its data is not installed here, which another worker
- * may have.
+ * The OCR language of a request cannot be used. 400 (the default) when the code names no language of the table or joins too
+ * many: a verdict on the request (`option_not_supported`) that no other worker changes, so it is final. 503 when the language
+ * is known but its data is not installed here (`engine_unavailable`), which another worker may have, so it is retryable.
  */
 export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
   readonly status: number;
-  constructor(message: string, status = 400) {
+  readonly refusalCode: ConversionRefusalCode;
+  readonly retryable: boolean;
+  constructor(message: string, status = HTTP_BAD_REQUEST) {
     super(message);
     this.name = 'OcrLanguageUnavailableError';
     this.status = status;
+    const dataMissingHere = status >= SERVER_FAULT_STATUS;
+    this.refusalCode = dataMissingHere ? 'engine_unavailable' : 'option_not_supported';
+    this.retryable = dataMissingHere;
   }
 }
 
@@ -746,6 +761,8 @@ export function isUnprocessableInputError(error: unknown): error is ConversionFa
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_SERVICE_UNAVAILABLE = 503;
+/** The status a class declares for a fault of the server's own code or tools, as against a verdict on the request. */
+export const SERVER_FAULT_STATUS = 500;
 
 /** What a typed failure declares about itself: the HTTP status it is answered with and its refusal code. */
 export interface TypedFailure {

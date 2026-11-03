@@ -37,15 +37,15 @@ import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-co
  */
 const CONVERT_CODES = {
   400: [
-    'file_required', 'empty_file', 'target_required', 'unknown_format', 'invalid_options', 'unsupported_pair', 'spoofed_file',
-    'option_not_supported', 'invalid_pages', 'malformed_input', 'unsafe_archive', 'unsupported_input', 'input_over_limit',
-    'engine_unavailable', 'conversion_failed',
+    'multipart_required', 'file_required', 'empty_file', 'target_required', 'unknown_format', 'invalid_options', 'unsupported_pair',
+    'spoofed_file', 'option_not_supported', 'invalid_pages', 'malformed_input', 'unsafe_archive', 'unsupported_input',
+    'input_over_limit', 'conversion_failed',
   ],
   422: [
     'invalid_pages', 'encrypted_input', 'password_required', 'invalid_password', 'unsupported_method', 'unsupported_input',
     'malformed_input', 'empty_file', 'archive_entry_collision', 'missing_volume', 'option_not_supported', 'timeout',
+    'input_over_limit', 'conversion_failed',
   ],
-  429: ['import_budget_exceeded'],
   503: ['engine_unavailable'],
 } as const satisfies Record<number, readonly ConversionRefusalCode[]>;
 
@@ -298,7 +298,7 @@ export const internalPaths = {
           ...binaryResponse('Converted file.'),
           headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS, ...CONVERSION_WARNINGS_RESPONSE_HEADERS },
         },
-        '400': createCodedErrorResponse('Invalid input, unsupported conversion, or spoofed file.', CONVERT_CODES[400]),
+        '400': createCodedErrorResponse('Invalid input, unsupported conversion, or spoofed file, or a body that is declared `multipart/form-data` but cannot be parsed ("multipart_required").', CONVERT_CODES[400]),
         '401': createProblemResponse('Authentication required.'),
         '422': {
           description: `Page count exceeds the tier limit, the document or the archive header is encrypted, password protected or DRM protected so its text cannot be read (with a \`code\` such as "password_required" or "encrypted_input"), a part of a multi-volume archive is missing ("missing_volume"), or: ${PDFA_PROBLEM_DESCRIPTION}`,
@@ -309,13 +309,7 @@ export const internalPaths = {
         },
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION} A file over the plan limit names \`plan\`, \`sizeBytes\` and \`limitBytes\`; a decode limit has \`code\` "input_over_limit".`),
-        '429': {
-          description: `Quota exhausted.${CONCURRENCY_LIMIT_NOTE} Or the owner's daily budget for link imports is used up ("import_budget_exceeded").`,
-          content: {
-            ...createCodedErrorResponse('', CONVERT_CODES[429]).content,
-            'application/problem+json': createProblemResponse('').content['application/problem+json'],
-          },
-        },
+        '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '415': createCodedErrorResponse('The body is not `multipart/form-data`.', ['multipart_required']),
         '500': createErrorResponse('A fault of the server, a cause the server did not classify or a typed error whose class declares a server fault, answered with the fixed `error` "The conversion failed on the server." and no `code`.'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),

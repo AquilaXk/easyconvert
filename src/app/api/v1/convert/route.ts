@@ -4,8 +4,8 @@ import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversi
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
-import { loggingOutcomes, privateTextOf, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
-import { formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -56,6 +56,9 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 
+/** The fields of the form that are read as text and change the conversion or where its result goes; none of them may be sent as a file. */
+const TEXT_FIELDS = ['sourceFormat', 'options', 'webhookUrl', 'webhookSecret'] as const;
+
 const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
 
 interface ValidatedConvertInput {
@@ -102,6 +105,9 @@ function parseConvertFormData(formData: FormData, instanceUri: string, headers: 
   if (file.size === 0) {
     return badRequest('File payload is empty (0 bytes).');
   }
+
+  const sentAsFile = fileSentAsText(formData, TEXT_FIELDS);
+  if (sentAsFile) return badRequest(`The "${sentAsFile}" field must be text, not a file.`);
 
   const targetFormatEntry = formData.get('targetFormat');
   if (!targetFormatEntry || typeof targetFormatEntry !== 'string') {
@@ -232,7 +238,8 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;
-    trace.privateText = privateTextOf(file.name, options);
+    trace.fileName = file.name;
+    trace.options = options;
 
     // Validate conversion options against SSOT JSON Schema contract BEFORE reserving quota
     if (options && Object.keys(options).length > 0) {

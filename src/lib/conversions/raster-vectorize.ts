@@ -6,6 +6,7 @@ import {
   CpuTaskTimeoutError,
   EngineUnavailableError,
   PayloadLimitError,
+  SERVER_FAULT_STATUS,
   UnsupportedOptionError,
   type ConversionOptions,
   type ConversionResult,
@@ -148,13 +149,23 @@ function traceFailure(how: string, detail = ''): ConversionFailedError {
   return new ConversionFailedError(`The SVG tracer could not trace this picture: it ${how}${detail}.`);
 }
 
+/** The tracer was stopped by SIGSEGV, which a Rust program raises only by a fault in itself: 500, not a verdict on the picture. */
+class TracerCrashedError extends ConversionFailedError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(detail = '') {
+    super(`The SVG tracer could not trace this picture: it was stopped by ${SIGSEGV}${detail}.`);
+    this.name = 'TracerCrashedError';
+  }
+}
+
 function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): unknown {
   rethrowSandboxUnavailable(error);
   if (error instanceof SandboxedTimeoutError) return new CpuTaskTimeoutError(TRACE_TASK, timeoutMs);
   // The sandbox counts SIGSEGV under a memory limit as a memory refusal, since a C program faults on an allocation it did not check.
   // A Rust program aborts instead: a failed allocation prints what ALLOCATION_FAILURE matches (std `default_alloc_error_hook`) and a
   // stack overflow prints its own message (std `stack_overflow.rs`), so a SIGSEGV of this program is most likely a fault in it, and is reported as one.
-  if (error instanceof SandboxedMemoryLimitError) return error.signal === SIGSEGV ? traceFailure(`was stopped by ${SIGSEGV}`) : memoryRefusal();
+  if (error instanceof SandboxedMemoryLimitError) return error.signal === SIGSEGV ? new TracerCrashedError() : memoryRefusal();
   if (error instanceof SandboxedBufferLimitError) {
     return error.kind === 'file-size' ? outputRefusal() : new ConversionFailedError('The SVG tracer printed more diagnostics than the limit allows.');
   }
@@ -163,8 +174,9 @@ function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): u
       return new EngineUnavailableError(ENGINE_NAME, 'vtracer could not be started');
     }
     if (ALLOCATION_FAILURE.test(error.stderr)) return memoryRefusal();
-    const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
-    return traceFailure(how, firstLine(error.stderr, sandboxDir));
+    const detail = firstLine(error.stderr, sandboxDir);
+    if (error.signal === SIGSEGV) return new TracerCrashedError(detail);
+    return traceFailure(error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`, detail);
   }
   return error;
 }

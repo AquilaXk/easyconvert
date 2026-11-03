@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
+import { OcrTextLayerLimitError } from '../src/lib/conversions/ocr-text-layer';
 import { ParquetCodecUnavailableError } from '../src/lib/conversions/parquet-format';
 import {
   ArchiveEncryptionUnavailableError,
@@ -65,7 +66,7 @@ describe('every missing-engine error shares one marker, which makes a job retrya
   it.each([
     ['EngineUnavailableError', new EngineUnavailableError('soffice'), HTTP_SERVICE_UNAVAILABLE],
     ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing'), HTTP_SERVICE_UNAVAILABLE],
-    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing'), HTTP_BAD_REQUEST],
+    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing', HTTP_SERVICE_UNAVAILABLE), HTTP_SERVICE_UNAVAILABLE],
     ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required'), HTTP_SERVICE_UNAVAILABLE],
     ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing'), HTTP_SERVICE_UNAVAILABLE],
     ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError(), HTTP_SERVICE_UNAVAILABLE],
@@ -80,6 +81,12 @@ describe('every missing-engine error shares one marker, which makes a job retrya
   it('keeps a verdict on the input final', () => {
     expect(classifyJobFailure(new UnsupportedOptionError('width 0')).retryable).toBe(false);
     expect(classifyJobFailure(new ConversionFailedError('bad input')).retryable).toBe(false);
+    expect(classifyJobFailure(new OcrLanguageUnavailableError('Unsupported OCR language')).retryable).toBe(false);
+    expect(classifyJobFailure(new OcrTextLayerLimitError('The page has more than 50000 words.'))).toEqual({
+      code: 'OcrTextLayerLimitError',
+      status: HTTP_BAD_REQUEST,
+      retryable: false,
+    });
   });
 
   it('finds no error class named like a missing tool anywhere in src that is not an EngineMissingError', () => {

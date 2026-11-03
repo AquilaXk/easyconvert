@@ -10,7 +10,7 @@ import {
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
 import { launchSandboxedBinary } from '../security/sandbox-launcher';
-import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../types';
+import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, SERVER_FAULT_STATUS } from '../types';
 import { isAvif } from './avif-colour';
 import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout } from './image-encoder-defaults';
 
@@ -275,8 +275,15 @@ export function avifencArguments(request: AvifCliRequest, inputPath: string, out
   return args;
 }
 
-/** The encoder ran and exited with a failure (as opposed to a timeout, a memory limit, a missing tool or an abort). */
-export class AvifEncoderFailedError extends ConversionFailedError {}
+/** The encoder ran and exited with a failure (as opposed to a timeout, a memory limit, a missing tool or an abort): a fault of the encoder program, 500. */
+export class AvifEncoderFailedError extends ConversionFailedError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AvifEncoderFailedError';
+  }
+}
 
 function describeFailure(err: unknown, timeoutMs: number): Error {
   rethrowSandboxUnavailable(err);

@@ -13,7 +13,8 @@ import {
   setTextRenderingMode,
   TextRenderingMode,
 } from 'pdf-lib';
-import { OcrEngineUnavailableError } from '../types';
+import { ConversionFailedError, OcrEngineUnavailableError } from '../types';
+import type { ConversionRefusalCode } from '../refusal-codes';
 import type { OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import {
   GLYPH_UNITS_PER_EM,
@@ -58,8 +59,12 @@ export class OcrGeometryUnavailableError extends OcrEngineUnavailableError {
   }
 }
 
-/** Raised when a page holds more words or characters than a text layer is allowed to: a refusal of the page (400), not a missing tool. */
-export class OcrTextLayerLimitError extends OcrEngineUnavailableError {
+/**
+ * Raised when a page holds more words or characters than a text layer is allowed to: a limit on the page (400, final), not a
+ * missing tool, so no other worker changes the answer and the queue does not run it again.
+ */
+export class OcrTextLayerLimitError extends ConversionFailedError {
+  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
   readonly status = 400;
 
   constructor(message: string) {

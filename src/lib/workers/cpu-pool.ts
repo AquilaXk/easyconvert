@@ -12,6 +12,7 @@ import {
   DecompressionLimitError,
   EngineUnavailableError,
   PayloadLimitError,
+  SERVER_FAULT_STATUS,
   UnsupportedOptionError,
 } from '../types';
 import { Woff2LimitError } from '../conversions/font-woff2-primitives';
@@ -117,7 +118,9 @@ function rehydrate(failure: WorkerFailure): Error {
   if (Constructor) return new Constructor(failure.message);
   const error = new ConversionFailedError(failure.message);
   error.name = failure.name;
-  if (failure.status !== undefined) (error as ConversionFailedError & { status?: number }).status = failure.status;
+  // An error that declares neither a status nor a refusal code (a TypeError or a RangeError of an encoder) is no verdict on the input.
+  const status = failure.status ?? (failure.refusalCode === undefined ? SERVER_FAULT_STATUS : undefined);
+  if (status !== undefined) (error as ConversionFailedError & { status?: number }).status = status;
   if (isCodeOf(CONVERSION_REFUSAL_CODES, failure.refusalCode)) (error as { refusalCode: ConversionRefusalCode }).refusalCode = failure.refusalCode;
   return error;
 }

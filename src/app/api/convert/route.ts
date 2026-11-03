@@ -23,8 +23,8 @@ import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReserve
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
-import { loggingOutcomes, privateTextOf, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
-import { formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
 import { validatePageRangeSyntax } from '@/lib/conversions';
 import {
@@ -48,6 +48,8 @@ const refusal = codedRefusal<ConversionRefusalCode>;
 
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
+/** The fields read as text that change the conversion; neither may be sent as a file, which would drop it and convert without it. */
+const TEXT_FIELDS = ['sourceFormat', 'options'] as const;
 const MULTIPART_REQUIRED = 'The request body must be multipart/form-data.';
 
 /**
@@ -182,6 +184,11 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       return refusal(400, 'target_required', 'Missing required "targetFormat" parameter.');
     }
 
+    const sentAsFile = fileSentAsText(formData, TEXT_FIELDS);
+    if (sentAsFile) {
+      return refusal(400, sentAsFile === 'options' ? 'invalid_options' : 'unknown_format', `The "${sentAsFile}" field must be text, not a file.`);
+    }
+
     const detectedDef = sourceFormatOf(file.name, formText(formData, 'sourceFormat'));
     if (!detectedDef) {
       return refusal(400, 'unknown_format', `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`);
@@ -216,7 +223,8 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       }
     }
 
-    trace.privateText = privateTextOf(file.name, options);
+    trace.fileName = file.name;
+    trace.options = options;
 
     if (!options.pages && options.page) {
       options.pages = String(options.page);

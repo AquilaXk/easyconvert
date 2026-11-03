@@ -26,8 +26,9 @@ export interface ConversionTrace {
   bytes?: number;
   /** The error that decided the answer. */
   cause?: unknown;
-  /** Text of the request that must not reach the log: the file name and the passwords, in the forms an error may quote them. */
-  privateText?: readonly string[];
+  /** The name of the uploaded file and the options as received; the text to cut out of a failure's line is read from them only when that line is written. */
+  fileName?: string;
+  options?: ConversionOptions;
 }
 
 interface ConversionOutcome {
@@ -71,14 +72,17 @@ function passwordsOf(options: ConversionOptions): unknown[] {
 
 /**
  * The text of a request that an error message might repeat: the file name, its leaf after the last `/` or `\\`, the leaf
- * without its extension, and the passwords of the options, each composed (NFC) and percent-encoded.
+ * without its extension, and the passwords of the options, each as received and composed (NFC), and percent-encoded in both
+ * forms. A message is composed before it is read, but a percent-encoded name is not, so an encoded name sent decomposed
+ * is cut only by the encoding of the decomposed form.
  */
 export function privateTextOf(fileName: string, options: ConversionOptions): string[] {
   const leaf = fileName.split(PATH_SEPARATORS).pop() ?? fileName;
-  const texts = [fileName, leaf, leaf.replace(EXTENSION, ''), ...passwordsOf(options)]
-    .filter((text): text is string => typeof text === 'string' && text.length > 0)
-    .map((text) => text.normalize('NFC'));
-  return [...new Set(texts.flatMap((text) => (text.isWellFormed() ? [text, encodeURIComponent(text)] : [text])))];
+  const received = [fileName, leaf, leaf.replace(EXTENSION, ''), ...passwordsOf(options)].filter(
+    (text): text is string => typeof text === 'string' && text.length > 0
+  );
+  const forms = received.flatMap((text) => [text, text.normalize('NFC')]);
+  return [...new Set(forms.flatMap((text) => (text.isWellFormed() ? [text, encodeURIComponent(text)] : [text])))];
 }
 
 /** One pattern for every secret, longest first, so that a name is cut whole before its stem and each text is read once. */
@@ -99,10 +103,11 @@ function sanitized(text: string, secrets: RegExp | undefined, maxChars: number):
 }
 
 /** The error of an answer: its class, and for a failure of the server its message and top frames with the secrets cut out. */
-function describeCause(cause: unknown, status: number, privateText: readonly string[]): ConversionOutcome['error'] {
+function describeCause(trace: ConversionTrace, status: number): ConversionOutcome['error'] {
+  const { cause } = trace;
   if (!(cause instanceof Error)) return { class: typeof cause };
   if (status < HTTP_INTERNAL_SERVER_ERROR) return { class: cause.name };
-  const secrets = secretPattern(privateText);
+  const secrets = secretPattern(trace.fileName === undefined ? [] : privateTextOf(trace.fileName, trace.options ?? {}));
   const frames = (cause.stack ?? '')
     .split('\n')
     .filter((line) => line.trimStart().startsWith('at '))
@@ -135,7 +140,7 @@ async function writeOutcome(route: string, trace: ConversionTrace, status: numbe
     target: trace.target,
     bytes: trace.bytes,
     durationMs: Date.now() - startedAt,
-    error: trace.cause === undefined ? undefined : describeCause(trace.cause, status, trace.privateText ?? []),
+    error: trace.cause === undefined ? undefined : describeCause(trace, status),
   };
   if (status >= HTTP_INTERNAL_SERVER_ERROR) console.error(`[${route}] failure ${JSON.stringify(outcome)}`);
   else console.warn(`[${route}] refusal ${JSON.stringify(outcome)}`);
