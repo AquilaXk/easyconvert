@@ -60,7 +60,6 @@ import {
   graphNodeCharge,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
-import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
 import { importUrlWithinBudget } from './node-url-import';
 import { holdUnitsForInputs } from './node-reservation';
 import type { GraphNode } from './types';
@@ -289,10 +288,7 @@ export async function processGraphNodeJob(
     const effectiveStorage: IStorageBackend = scope.storage;
     let outputKeys: string[] = [];
     const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
-    const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
-      pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId)),
-      job
-    );
+    const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(engine || dispatchEngine, job);
     await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
     await job.updateProgress(10);
     await graphScheduler.onNodeStarted(graphId, nodeId);

@@ -21,7 +21,7 @@ const STREAM_DECODER_FILES = new Set([
 
 /**
  * JSZip reads of a ZIP the engine wrote itself, never of uploaded bytes. `reencodeRenderedPages` opens the page images
- * that LibreOffice rendered into a ZIP inside its sandbox; their count is capped by CHAINED_PAGE_ENCODE_MAX_PAGES and
+ * that Poppler rendered into a ZIP inside its sandbox; their count is capped by PAGE_IMAGE_MAX_PAGES before the first page is drawn and
  * each page by the render's pixel limits. Changing that file would also put every conversion family into the parity gate.
  */
 const ENGINE_WRITTEN_ZIP_READS = new Set(['worker/engines.ts']);

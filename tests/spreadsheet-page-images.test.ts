@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { PayloadLimitError } from '../src/lib/types';
-import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
+import { PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
 import { withOfficePageBounds } from '../src/worker/office-suite-route';
 import { oracleTest } from './helpers/oracle-test';
@@ -16,7 +16,7 @@ import { expectSamePixels, pagesOfZip, pdfPageCount, referencePages, suitePdf } 
  * A spreadsheet that becomes page images is printed by the office suite and rasterised page by page. The pages of a real
  * worksheet are an artefact of its used range: nightly real-file run 39012667333 found workbooks of 900 to 4,600 printed
  * pages (PDF export 3 to 7 s, then about 50 ms and 0.5 MB a page), so the request spent minutes drawing pages and passed the
- * 180 s deadline on a shared runner. A request now renders at most `OFFICE_PAGE_IMAGE_MAX_PAGES` pages and refuses a larger sheet with a 413
+ * 180 s deadline on a shared runner. A request now renders at most `PAGE_IMAGE_MAX_PAGES` pages and refuses a larger sheet with a 413
  * that names the limit and the two ways out (`pages`, `multiPageOutput: "first"`). Readers other than the converter judge
  * the output: the office suite's own PDF of the same file, whose pages `pdftoppm` draws at the density the product uses, and
  * `pdfinfo` for the page counts.
@@ -50,12 +50,9 @@ describe('the PDF export of a spreadsheet that becomes the first page image', ()
   });
 
   it('is asked for by the spreadsheet bounds only for the first page of a request without a page selection', () => {
-    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' })).toMatchObject({
-      pdfExportPageRange: '1',
-      maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES,
-    });
+    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
     expect(withOfficePageBounds('ods', { multiPageOutput: 'first', pages: '2-3' }).pdfExportPageRange).toBeUndefined();
-    expect(withOfficePageBounds('xls', {})).toMatchObject({ pdfExportPageRange: undefined, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES });
+    expect(withOfficePageBounds('xls', {}).pdfExportPageRange).toBeUndefined();
   });
 });
 
@@ -81,13 +78,13 @@ describe('a spreadsheet to page images', () => {
     async () => {
       const sheet = longSheet();
       const printedPages = pdfPageCount(suitePdf(sheet, 'ods'));
-      expect(printedPages).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
+      expect(printedPages).toBeGreaterThan(PAGE_IMAGE_MAX_PAGES);
       const refusal = await dispatchConversion(sheet, 'ods', 'png', {}, 'long.ods').catch((error: unknown) => error);
       expect(refusal).toBeInstanceOf(PayloadLimitError);
       expect((refusal as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
       const message = (refusal as PayloadLimitError).message;
       expect(message).toContain(`${printedPages} pages`);
-      expect(message).toContain(`at most ${OFFICE_PAGE_IMAGE_MAX_PAGES}`);
+      expect(message).toContain(`at most ${PAGE_IMAGE_MAX_PAGES}`);
       expect(message).toContain('multiPageOutput');
     },
     TEST_TIMEOUT_MS
@@ -120,7 +117,7 @@ describe('a spreadsheet to page images', () => {
         async (ctx) => {
           const sample = await requireRealworldSample(ctx, id);
           const suite = suitePdf(sample.bytes, sample.format);
-          expect(pdfPageCount(suite)).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
+          expect(pdfPageCount(suite)).toBeGreaterThan(PAGE_IMAGE_MAX_PAGES);
           const refusal = await dispatchConversion(sample.bytes, sample.format, 'png', {}, id).catch((error: unknown) => error);
           expect(refusal).toBeInstanceOf(PayloadLimitError);
           const first = await dispatchConversion(sample.bytes, sample.format, 'png', { multiPageOutput: 'first' }, id);

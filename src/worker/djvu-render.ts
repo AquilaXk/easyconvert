@@ -4,11 +4,10 @@ import path from 'node:path';
 import { checkDjvuContainer } from '../lib/conversions/djvu-container';
 import { DJVUSED_MAX_OUTPUT_BYTES, DJVUSED_PAGE_COUNT_SCRIPT, DJVUSED_SIZE_SCRIPT, parseDjvusedPageCount, parseDjvusedSizes, type DjvuPageSize } from '../lib/conversions/djvu-report';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
-import { groupConsecutiveRanges, OFFICE_PAGE_IMAGE_MAX_PAGES, resolvePageSelection } from '../lib/conversions/page-range';
+import { boundPageImages, pageCountOfIntervals, resolvePageIntervals, type PageInterval } from '../lib/conversions/page-range';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { Semaphore } from '../lib/workers/semaphore';
 import { ConversionFailedError, CpuTaskTimeoutError, EngineUnavailableError, InvalidPageRangeError } from '../lib/types';
-import { boundRenderedPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, type SandboxedExecutionResult } from './sandbox';
 import { createConversionResult, drawnPdfTooLargeError, handOffOutput, MAX_DRAWN_PDF_BYTES_FOR_IMAGES, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions } from './worker-types';
@@ -410,8 +409,8 @@ export function drawBudgetMs(reportMs: number, drawnPixels: number, inputBytes: 
 }
 
 /** The pages as the `-page` argument of the program: `3-5,8`. */
-function pageSpecOf(pages: readonly number[]): string {
-  return groupConsecutiveRanges([...pages]).map(({ start, end }) => (start === end ? String(start) : `${start}-${end}`)).join(',');
+function pageSpecOf(pages: readonly PageInterval[]): string {
+  return pages.map(({ start, end }) => (start === end ? String(start) : `${start}-${end}`)).join(',');
 }
 
 /** The request without its page selection, for the PDF of only the selected pages. */
@@ -419,8 +418,12 @@ function withoutPageSelection(options: WorkerEngineOptions): WorkerEngineOptions
   return { ...options, page: undefined, pages: undefined };
 }
 
-function pixelsOf(sizes: readonly DjvuPageSize[], pages: readonly number[]): number {
-  return pages.reduce((sum, page) => sum + sizes[page - 1].width * sizes[page - 1].height, 0);
+function pixelsOf(sizes: readonly DjvuPageSize[], pages: readonly PageInterval[]): number {
+  let pixels = 0;
+  for (const { start, end } of pages) {
+    for (let page = start; page <= end; page++) pixels += sizes[page - 1].width * sizes[page - 1].height;
+  }
+  return pixels;
 }
 
 /**
@@ -429,13 +432,14 @@ function pixelsOf(sizes: readonly DjvuPageSize[], pages: readonly number[]): num
  */
 function drawPlanOf(job: DjvuJob, sizes: readonly DjvuPageSize[]): DrawPlan {
   const pageCount = sizes.length;
-  const every = Array.from({ length: pageCount }, (_, index) => index + 1);
+  const every = [{ start: 1, end: pageCount }];
   if (job.tgt === PDF_TARGET) return { pageSpec: undefined, pageCount, drawnPixels: pixelsOf(sizes, every), maxBytes: MAX_OUTPUT_BYTES };
-  const selected = resolvePageSelection(job.options.page, job.options.pages, pageCount, (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)) ?? every;
-  const drawn = boundRenderedPages(selected, { ...job.options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES });
+  const selected = resolvePageIntervals(job.options.page, job.options.pages, pageCount, (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)) ?? every;
+  const drawn = boundPageImages(selected, job.options.multiPageOutput);
+  const drawnCount = pageCountOfIntervals(drawn);
   return {
-    pageSpec: drawn.length === pageCount ? undefined : pageSpecOf(drawn),
-    pageCount: drawn.length,
+    pageSpec: drawnCount === pageCount ? undefined : pageSpecOf(drawn),
+    pageCount: drawnCount,
     drawnPixels: pixelsOf(sizes, drawn),
     maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES,
   };
@@ -538,6 +542,5 @@ export async function convertDjvu(job: DjvuJob): Promise<WorkerConversionResult 
     });
   }
   const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) => fs.readFileSync(await draw(tempDir)));
-  const pageOptions: WorkerEngineOptions = { ...withoutPageSelection(options), maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES };
-  return job.convertPdfPages(pdf, tgt, pageOptions, originalFilename);
+  return job.convertPdfPages(pdf, tgt, withoutPageSelection(options), originalFilename);
 }

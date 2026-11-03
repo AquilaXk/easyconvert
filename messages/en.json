@@ -1689,7 +1689,7 @@
       "spoofed_file": "The file's content does not match its extension. Check that the file is what its name says.",
       "unsupported_pair": "This file cannot be converted to the chosen format. Choose another format.",
       "option_not_supported": "One of the chosen settings does not apply to this conversion.",
-      "invalid_pages": "The page range cannot be used. Check the pages and your plan limit.",
+      "invalid_pages": "The page range cannot be used. Check the pages.",
       "password_required": "The file is protected with a password. Enter its password in the settings.",
       "invalid_password": "The password does not open this file.",
       "unsupported_method": "The archive is compressed with a method that cannot be read.",

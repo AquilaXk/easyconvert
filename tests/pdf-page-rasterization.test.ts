@@ -7,10 +7,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import {
   parsePageRanges,
-  groupConsecutiveRanges,
   validatePageRangeSyntax,
-  validateTierPageLimit,
-  TIER_MAX_PAGES,
 } from '../src/lib/conversions/page-range';
 import { InvalidPageRangeError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { convertDocument } from '../src/lib/conversions/document';
@@ -104,20 +101,7 @@ describe('WP-40: PDF Page Range Selection & Multi-Page Rasterization', () => {
     });
   });
 
-  describe('Consecutive Range Grouping', () => {
-    it('groups consecutive page numbers into contiguous intervals', () => {
-      expect(groupConsecutiveRanges([1, 2, 3, 5, 7, 8])).toEqual([
-        { start: 1, end: 3 },
-        { start: 5, end: 5 },
-        { start: 7, end: 8 },
-      ]);
-      expect(groupConsecutiveRanges([1])).toEqual([{ start: 1, end: 1 }]);
-      expect(groupConsecutiveRanges([1, 2, 3, 4])).toEqual([{ start: 1, end: 4 }]);
-      expect(groupConsecutiveRanges([])).toEqual([]);
-    });
-  });
-
-  describe('Tier Page Limits & Syntax Validation', () => {
+  describe('Page Range Syntax Validation', () => {
     it('validates syntax without total page count', () => {
       expect(() => validatePageRangeSyntax('1-5, 8, 10-')).not.toThrow();
       expect(() => validatePageRangeSyntax('0')).toThrow(InvalidPageRangeError);
@@ -125,22 +109,10 @@ describe('WP-40: PDF Page Range Selection & Multi-Page Rasterization', () => {
       expect(() => validatePageRangeSyntax('1,,3')).toThrow(InvalidPageRangeError);
     });
 
-    it('enforces tier page limits', () => {
-      expect(TIER_MAX_PAGES.free).toBe(50);
-      expect(TIER_MAX_PAGES.pro).toBe(500);
-      expect(TIER_MAX_PAGES.enterprise).toBe(2000);
-
-      expect(() => validateTierPageLimit('1-50', 'free')).not.toThrow();
-      expect(() => validateTierPageLimit('1-51', 'free')).toThrow(InvalidPageRangeError);
-      expect(() => validateTierPageLimit('51', 'free')).toThrow(InvalidPageRangeError);
-
-      expect(() => validateTierPageLimit('1-500', 'pro')).not.toThrow();
-      expect(() => validateTierPageLimit('1-501', 'pro')).toThrow(InvalidPageRangeError);
-      expect(() => validateTierPageLimit('501', 'pro')).toThrow(InvalidPageRangeError);
-
-      expect(() => validateTierPageLimit('1-2000', 'enterprise')).not.toThrow();
-      expect(() => validateTierPageLimit('1-2001', 'enterprise')).toThrow(InvalidPageRangeError);
-      expect(() => validateTierPageLimit('2001', 'enterprise')).toThrow(InvalidPageRangeError);
+    it('does not limit a page range by the plan of the caller', () => {
+      expect(() => validatePageRangeSyntax('1-5000')).not.toThrow();
+      expect(() => validatePageRangeSyntax('2001, 3000-')).not.toThrow();
+      expect(parsePageRanges('1-60', 60)).toHaveLength(60);
     });
   });
 

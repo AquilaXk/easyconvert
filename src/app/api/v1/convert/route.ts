@@ -20,7 +20,6 @@ import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-heade
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
-import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
@@ -480,7 +479,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
       inputBuffer,
       sourceDef.id,
       targetDef.id,
-      bindJobLimits(withTierPageCap(options, tierMaxPages(user.tier)), limits),
+      bindJobLimits(options, limits),
       file.name
     )
   );

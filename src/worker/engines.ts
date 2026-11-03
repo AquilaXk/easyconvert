@@ -21,7 +21,6 @@ import {
   UnsupportedRawCompressionError,
   InvalidRawSensorError,
   RawEngineRequiredError,
-  PayloadLimitError,
   PdfPasswordRequiredError,
 } from '../lib/types';
 import { convertFile, convertImage } from '../lib/conversions';
@@ -47,7 +46,7 @@ import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resourc
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { groupConsecutiveRanges, pageEntryName, resolvePageSelection } from '../lib/conversions/page-range';
+import { boundPageImages, pageEntryName, pagesOfIntervals, pagesToDraw, resolvePageIntervals, type PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -86,7 +85,7 @@ import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
-import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
+import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -1194,20 +1193,19 @@ async function convertPdfToTextWithPoppler(
   }
 }
 
-function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number): number[] {
-  const requestedPages =
-    resolvePageSelection(
-      options.page,
-      options.pages,
-      pageCount,
-      (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)
-    ) ?? Array.from({ length: pageCount }, (_, i) => i + 1);
-
-  if (requestedPages.length === 0) {
-    throw new InvalidPageRangeError('No pages selected for rendering');
-  }
-
-  return boundRenderedPages(requestedPages, options);
+/**
+ * The pages a Poppler render draws, as intervals. Output of one file per page (page images, SVG, EPS) draws at most
+ * `PAGE_IMAGE_MAX_PAGES` pages, selected or not, and a request for more is refused before any page is drawn. A single
+ * PostScript file is not page images and is not counted.
+ */
+function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number, oneFilePerPage: boolean): PageInterval[] {
+  const selected = resolvePageIntervals(
+    options.page,
+    options.pages,
+    pageCount,
+    (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)
+  ) ?? [{ start: 1, end: pageCount }];
+  return oneFilePerPage ? boundPageImages(selected, options.multiPageOutput) : pagesToDraw(selected, options.multiPageOutput);
 }
 
 function matchOutputPageFiles(
@@ -1305,7 +1303,7 @@ interface PopplerRenderParams {
    * the early run is awaited (never left running) before the job directory goes.
    */
   startEarly?: (tempDir: string, inputPath: string) => EarlyRender | null;
-  renderPages: (tempDir: string, inputPath: string, requestedPages: number[], early: EarlyRender | null) => Promise<void>;
+  renderPages: (tempDir: string, inputPath: string, intervals: PageInterval[], early: EarlyRender | null) => Promise<void>;
 }
 
 /** Pages 1 to `throughPage` are being rendered by `done` (it resolves once they are on disk, and rejects as the render would). */
@@ -1353,21 +1351,22 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
           const early = startEarly ? startEarly(tempDir, readablePath) : null;
           // An early run that fails is reported where the render would have reported it, below.
           early?.done.catch(() => undefined);
-          let requestedPages: number[];
+          let requestedIntervals: PageInterval[];
           try {
             const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, inputBuffer);
-            requestedPages = resolveRequestedPages(options, pageCount);
+            requestedIntervals = resolveRequestedPages(options, pageCount, !singleFile);
           } catch (err) {
             await early?.done.catch(() => undefined);
             throw err;
           }
-          await renderPages(tempDir, readablePath, requestedPages, early);
+          await renderPages(tempDir, readablePath, requestedIntervals, early);
 
           const files = fs.readdirSync(tempDir).filter(filterOutputFile);
           if (files.length === 0) {
             throw new Error(missingOutputError);
           }
 
+          const requestedPages = pagesOfIntervals(requestedIntervals);
           const resolvedFiles = matchOutputPageFiles(files, requestedPages);
           return finalizeMultiPageOutput({
             singleFile,
@@ -1429,8 +1428,7 @@ async function renderPdfToImageWithPoppler(
       const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
       return { throughPage, done };
     },
-    renderPages: async (tempDir, inputPath, requestedPages, early) => {
-      const intervals = groupConsecutiveRanges(requestedPages);
+    renderPages: async (tempDir, inputPath, intervals, early) => {
       const prefix = path.join(tempDir, 'page');
       const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       // Poppler draws on one thread, so the batches of pages run side by side (the early batch counted among them).
@@ -1474,9 +1472,9 @@ async function renderPdfToSvgWithPoppler(
     timeout,
     filterOutputFile: (f) => f.endsWith('.svg'),
     missingOutputError: 'pdftocairo execution completed without producing any output SVG files',
-    renderPages: async (tempDir, inputPath, requestedPages) => {
+    renderPages: async (tempDir, inputPath, intervals) => {
       let step: Promise<any> = Promise.resolve();
-      for (const p of requestedPages) {
+      for (const p of pagesOfIntervals(intervals)) {
         step = step.then(() => {
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
           const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
@@ -1545,8 +1543,6 @@ const POPPLER_DEFAULT_TIMEOUT_MS = 45_000;
 const POPPLER_MAX_TIMEOUT_MS = 120_000;
 const POPPLER_DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
-/** Pages one request may re-encode: the page images are already rendered, the encoders then run once per page. */
-const CHAINED_PAGE_ENCODE_MAX_PAGES = 500;
 
 /** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript, DXF and the metafiles. */
 function isPdfChainTarget(tgt: string): boolean {
@@ -1607,11 +1603,6 @@ async function reencodeRenderedPages(
     const entryNames = Object.keys(pages.files)
       .filter((name) => !pages.files[name].dir)
       .sort((a, b) => a.localeCompare(b));
-    if (entryNames.length > CHAINED_PAGE_ENCODE_MAX_PAGES) {
-      throw new PayloadLimitError(
-        `The document has ${entryNames.length} pages; at most ${CHAINED_PAGE_ENCODE_MAX_PAGES} can be converted to .${targetExtension} in one request. Select a page range.`
-      );
-    }
     const encoded: ZipFile[] = [];
     const renderedSuffix = `.${renderedExtension}`;
     for (const entryName of entryNames) {
@@ -1672,11 +1663,6 @@ async function convertPdfToSvgPageFormat(
   return withConversionWarnings(() => withSvgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options, (encode) => reencodeRenderedPages(rendered, SVG_FORMAT, tgt, encode, context)));
 }
 
-/** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */
-function isConsecutivePageRun(pages: readonly number[]): boolean {
-  return pages.every((page, index) => index === 0 || page === pages[index - 1] + 1);
-}
-
 /**
  * PDF pages to PostScript with pdftops. PostScript holds many pages: one file covers the selected pages, which
  * must be consecutive. EPS holds one picture, so each page becomes its own EPS file and several pages come back
@@ -1713,19 +1699,17 @@ async function convertPdfToPostScript(
     timeout,
     filterOutputFile: (f) => f.endsWith(`.${tgt}`),
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
-    renderPages: async (tempDir, inputPath, requestedPages) => {
+    renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
-        for (const page of requestedPages) {
+        for (const page of pagesOfIntervals(intervals)) {
           await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, path.join(tempDir, `page-${page}.eps`)]);
         }
         return;
       }
-      if (!isConsecutivePageRun(requestedPages)) {
+      if (intervals.length !== 1) {
         throw new InvalidPageRangeError('PostScript output holds one run of consecutive pages: select a single range such as 2-4.');
       }
-      const pages = options.multiPageOutput === 'first' ? requestedPages.slice(0, 1) : requestedPages;
-      const first = pages[0];
-      const last = pages[pages.length - 1];
+      const { start: first, end: last } = intervals[0];
       await run(tempDir, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)]);
     },
   });

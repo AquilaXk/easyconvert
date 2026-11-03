@@ -13,7 +13,6 @@ import {
 } from '../src/lib/queue/job-deadline';
 import { CONFIG_SCHEMA } from '../src/lib/config/schema';
 import { ConfigurationError, parseConfig } from '../src/lib/config';
-import { TIER_MAX_PAGES } from '../src/lib/conversions/page-range';
 
 /**
  * The deadline of a conversion job is one pure function of the owner's tier and the size of the work. These
@@ -23,7 +22,6 @@ import { TIER_MAX_PAGES } from '../src/lib/conversions/page-range';
 const MIB = 1024 * 1024;
 const FREE_BASE = 60_000;
 const FREE_MAX = 300_000;
-const PER_PAGE = 10_000;
 const PER_MIB = 2_000;
 const PER_MEDIA_SECOND = 3_000;
 
@@ -59,23 +57,21 @@ describe('jobDeadlineMs defaults', () => {
     );
   });
 
-  it('allows a document the pages it has, and the page limit of the tier when the count is unknown', () => {
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 1 })).toBe(FREE_BASE + PER_PAGE);
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 20 })).toBe(FREE_BASE + 20 * PER_PAGE);
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0 })).toBe(FREE_MAX);
-    expect(TIER_MAX_PAGES.free).toBe(50);
+  it('gives a document the maximum of its tier whatever its size, since its pages are not known before it is converted', () => {
+    for (const [tier, max] of [['free', FREE_MAX], ['pro', 1_800_000], ['enterprise', 3_600_000]] as const) {
+      expect(jobDeadlineMs({ tier, family: 'document', inputBytes: 0 }), tier).toBe(max);
+      expect(jobDeadlineMs({ tier, family: 'document', inputBytes: 3 * MIB }), tier).toBe(max);
+      expect(jobDeadlineMs({ tier, family: 'document' }), tier).toBe(max);
+    }
   });
 
-  it('never counts more pages than the tier converts', () => {
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 5000 })).toBe(
-      jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: TIER_MAX_PAGES.free })
-    );
+  it('is not changed by the settings that scale the other work, for a document', () => {
+    const tuned = jobDeadlineSettings({ JOB_DEADLINE_BASE_MS_FREE: '1000', JOB_DEADLINE_PER_MIB_MS: '1' });
+    expect(jobDeadlineMs({ tier: 'free', family: 'document', inputBytes: MIB }, tuned)).toBe(FREE_MAX);
+    expect(jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: MIB }, tuned)).toBe(1_001);
   });
 
-  it('sums the page, size and media allowances before the maximum applies', () => {
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 3 * MIB, pages: 4 })).toBe(
-      FREE_BASE + 3 * PER_MIB + 4 * PER_PAGE
-    );
+  it('sums the size and media allowances before the maximum applies', () => {
     expect(jobDeadlineMs({ tier: 'free', family: 'media', inputBytes: 5 * MIB, mediaSeconds: 30 })).toBe(
       FREE_BASE + 5 * PER_MIB + 30 * PER_MEDIA_SECOND
     );
@@ -96,21 +92,10 @@ describe('jobDeadlineMs defaults', () => {
     }
   });
 
-  it('caps the free tier at 5 minutes (QA decision 2026-10-10), which is below the page limit times the OCR page budget', () => {
+  it('caps the free tier at 5 minutes (QA decision 2026-10-10)', () => {
     expect(FREE_MAX).toBe(5 * 60_000);
-    const settings = jobDeadlineSettings();
-    expect(settings.maxMs.free).toBe(FREE_MAX);
-    // 50 pages at the 10 s OCR page budget would need 560 s: the cap wins, and the OCR (90 percent of the deadline)
-    // refuses a scan that really costs that much with a typed 413 instead of running past the cap.
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 50 })).toBe(FREE_MAX);
-    expect(jobDeadlineMs({ tier: 'free', family: 'pages', inputBytes: 0, pages: 20 })).toBe(FREE_BASE + 20 * PER_PAGE);
-    for (const tier of ['free', 'pro', 'enterprise']) {
-      const pages = TIER_MAX_PAGES[tier];
-      const settings2 = jobDeadlineSettings();
-      expect(jobDeadlineMs({ tier, family: 'pages', inputBytes: 0, pages })).toBe(
-        Math.min(settings2.baseMs[tier] + pages * 10_000, settings2.maxMs[tier])
-      );
-    }
+    expect(jobDeadlineSettings().maxMs.free).toBe(FREE_MAX);
+    expect(jobDeadlineMs({ tier: 'free', family: 'document', inputBytes: 0 })).toBe(FREE_MAX);
   });
 });
 
@@ -119,12 +104,10 @@ describe('jobDeadlineMs input checks', () => {
     ['a negative size', { inputBytes: -1 }],
     ['a size that is not finite', { inputBytes: Number.POSITIVE_INFINITY }],
     ['a size that is NaN', { inputBytes: Number.NaN }],
-    ['a page count of zero', { inputBytes: 0, pages: 0 }],
-    ['a fractional page count', { inputBytes: 0, pages: 1.5 }],
     ['a negative media length', { inputBytes: 0, mediaSeconds: -1 }],
     ['a media length that is NaN', { inputBytes: 0, mediaSeconds: Number.NaN }],
   ])('refuses %s instead of guessing', (_label, extra) => {
-    expect(() => jobDeadlineMs({ tier: 'free', family: 'pages', ...extra } as never)).toThrow(RangeError);
+    expect(() => jobDeadlineMs({ tier: 'free', family: 'document', ...extra } as never)).toThrow(RangeError);
   });
 });
 
@@ -146,7 +129,7 @@ describe('syncDeadlineMs', () => {
 describe('deadline errors', () => {
   it('are a JobDeadlineError (a RangeError), so a route can answer them without internals', () => {
     for (const make of [
-      () => jobDeadlineSettings({ JOB_DEADLINE_PER_PAGE_MS: 'x' }),
+      () => jobDeadlineSettings({ JOB_DEADLINE_PER_MIB_MS: 'x' }),
       () => jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: -1 }),
     ]) {
       try {
@@ -156,16 +139,16 @@ describe('deadline errors', () => {
         expect(error).toBeInstanceOf(JobDeadlineError);
         expect(error).toBeInstanceOf(RangeError);
         expect((error as Error).name).toBe('JobDeadlineError');
-        expect((error as Error).message).toMatch(/^(JOB_DEADLINE_PER_PAGE_MS must be an integer from 1 to 2147483647|inputBytes must be a finite number of at least 0, got -1)/);
+        expect((error as Error).message).toMatch(/^(JOB_DEADLINE_PER_MIB_MS must be an integer from 1 to 2147483647|inputBytes must be a finite number of at least 0, got -1)/);
       }
     }
   });
 });
 
 describe('jobDeadlineFamily', () => {
-  it('counts documents, presentations, spreadsheets and ebooks by page', () => {
+  it('puts documents, presentations, spreadsheets and ebooks in the document family', () => {
     for (const source of ['pdf', 'docx', 'pptx', 'xlsx', 'epub']) {
-      expect(jobDeadlineFamily(source, 'txt'), source).toBe('pages');
+      expect(jobDeadlineFamily(source, 'txt'), source).toBe('document');
     }
   });
 
@@ -204,7 +187,6 @@ describe('jobDeadlineSettings', () => {
     expect(settings).toEqual({
       baseMs: { free: 60_000, pro: 120_000, enterprise: 180_000 },
       maxMs: { free: 300_000, pro: 1_800_000, enterprise: 3_600_000 },
-      perPageMs: 10_000,
       perMibMs: 2_000,
       perMediaSecondMs: 3_000,
       syncMaxMs: 120_000,
@@ -215,21 +197,19 @@ describe('jobDeadlineSettings', () => {
     const settings = jobDeadlineSettings({
       JOB_DEADLINE_BASE_MS_FREE: '5000',
       JOB_DEADLINE_MAX_MS_FREE: '9000',
-      JOB_DEADLINE_PER_PAGE_MS: '7',
       JOB_DEADLINE_PER_MIB_MS: '11',
       JOB_DEADLINE_PER_MEDIA_SECOND_MS: '13',
       JOB_DEADLINE_BASE_MS_PRO: '  ',
     });
     expect(settings.baseMs.free).toBe(5000);
     expect(settings.maxMs.free).toBe(9000);
-    expect(settings.perPageMs).toBe(7);
     expect(settings.perMibMs).toBe(11);
     expect(settings.perMediaSecondMs).toBe(13);
     expect(settings.baseMs.pro).toBe(120_000);
   });
 
   it.each(['abc', '1.5', '-1', '0', '99999999999999999999', '1e3'])('refuses the malformed value %j instead of using a default', (value) => {
-    expect(() => jobDeadlineSettings({ JOB_DEADLINE_PER_PAGE_MS: value })).toThrow(/JOB_DEADLINE_PER_PAGE_MS/);
+    expect(() => jobDeadlineSettings({ JOB_DEADLINE_PER_MIB_MS: value })).toThrow(/JOB_DEADLINE_PER_MIB_MS/);
   });
 
   it('refuses a base above the maximum of its tier', () => {
@@ -256,7 +236,9 @@ describe('the settings are documented configuration', () => {
   const configDoc = readFileSync(path.resolve(__dirname, '..', 'docs', 'configuration.md'), 'utf8');
 
   it('declares every deadline variable in the configuration schema with the default the code uses', () => {
-    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(10);
+    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(9);
+    expect(byName.has('JOB_DEADLINE_PER_PAGE_MS')).toBe(false);
+    expect(configDoc).not.toContain('JOB_DEADLINE_PER_PAGE_MS');
     for (const [key, name] of Object.entries(JOB_DEADLINE_ENV)) {
       const spec = byName.get(name);
       expect(spec, name).toBeDefined();
@@ -286,7 +268,7 @@ describe('start-up configuration check of the deadline settings', () => {
   });
 
   it('stops the process for a malformed value, with no fallback to the default', () => {
-    expect(() => parseConfig({ JOB_DEADLINE_PER_PAGE_MS: '10s' })).toThrow(/JOB_DEADLINE_PER_PAGE_MS/);
+    expect(() => parseConfig({ JOB_DEADLINE_PER_MIB_MS: '10s' })).toThrow(/JOB_DEADLINE_PER_MIB_MS/);
   });
 
   it('accepts the defaults and a consistent override', () => {
