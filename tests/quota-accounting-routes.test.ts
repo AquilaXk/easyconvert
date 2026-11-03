@@ -201,7 +201,28 @@ describe('what a request is charged', () => {
 
       expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
       const body = await res.json();
-      expect(body.detail ?? body.error).toContain('3 conversions per day');
+      expect(body.detail ?? body.error).toBe(
+        'Daily conversion quota exceeded (3 conversions per day). It resets at midnight UTC. This request needs 1 conversion and 0 are left today.'
+      );
+    });
+
+    it('tells a free account the same allowance and the reset, and offers no plan or key to get more', async () => {
+      const client = await account('free');
+      for (let i = 0; i < FREE_DAILY_CONVERSIONS; i++) {
+        const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+        await redisKeyStore.commitQuota(unit.reservationId as string);
+      }
+      const form = new FormData();
+      form.append('file', new File([CSV], 'scores.csv'));
+      form.append('targetFormat', 'json');
+
+      const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: client.headers, body: form }));
+
+      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      const body = await res.json();
+      expect(body.detail ?? body.error).toBe(
+        `Daily conversion quota exceeded (${FREE_DAILY_CONVERSIONS} conversions per day). It resets at midnight UTC. This request needs 1 conversion and 0 are left today.`
+      );
     });
   });
 

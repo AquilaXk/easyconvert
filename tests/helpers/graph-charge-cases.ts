@@ -554,6 +554,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   async function ownerWithUnitsLeft(left: number) {
     const owner = anonymousOwner();
     const used = getAnonymousDailyLimit() - left;
+    expect(used, 'an owner with the whole day left is not an owner with units left').toBeGreaterThan(0);
     const spent = await redisKeyStore.reserveQuota(owner, used);
     expect(spent.allowed).toBe(true);
     await redisKeyStore.commitQuota(spent.reservationId!);

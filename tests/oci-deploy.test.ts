@@ -376,6 +376,15 @@ describe('nginx site file', () => {
     expect(withoutComments).toMatch(/access_log \/var\/log\/nginx\/easyconvert-edge\.log easyconvert_edge_json/);
   });
 
+  it('forwards the readiness answer but no path under /api/health/, so the smoke probe answers only on the loopback port', () => {
+    const blocks = [...withoutComments.matchAll(/^\s*location ([^{]+)\{([^}]*)\}/gm)].map((match) => ({ match: match[1].trim(), body: match[2] }));
+    const probes = blocks.find((block) => block.match === '^~ /api/health/');
+    expect(probes?.body.trim()).toBe('return 404;');
+    expect(blocks.find((block) => block.match === '= /api/health')?.body).toMatch(/proxy_pass http:\/\/easyconvert_web;/);
+    const longerPrefixes = blocks.filter((block) => /^(\^~ |= )?\/api\/health\/./.test(block.match));
+    expect(longerPrefixes).toEqual([]);
+  });
+
   it('takes its certificate from files the operator installs, not from port 80 or a stored API token', () => {
     expect(withoutComments).toMatch(/ssl_certificate \/etc\/ssl\/easyconvert\/origin\.pem;/);
     expect(withoutComments).toMatch(/ssl_certificate_key \/etc\/ssl\/easyconvert\/origin\.key;/);
@@ -869,13 +878,9 @@ exit 0`
       `echo "curl $*" >> "$STUB_LOG"
 last_up="$(grep ' up ' "$STUB_LOG" | tail -n 1)"
 case "$*" in
-  *api/convert*)
+  *api/health/conversion*)
     out=""; prev=""
-    for arg in "$@"; do
-      [ "$prev" = "-o" ] && out="$arg"
-      case "$arg" in file=@*) upload="\${arg#file=@}"; cp "\${upload%%;*}" "$STUB_UPLOAD" ;; esac
-      prev="$arg"
-    done
+    for arg in "$@"; do [ "$prev" = "-o" ] && out="$arg"; prev="$arg"; done
     case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && { echo 'body-of-the-error-page' > "$out"; printf 500; exit 22; } ;; esac
     case "$last_up" in *"$STUB_HTML_SMOKE"*) [ -n "$STUB_HTML_SMOKE" ] && { echo '<html>' > "$out"; printf 200; exit 0; } ;; esac
     printf '\\211PNG\\r\\n\\032\\n' > "$out"
@@ -912,7 +917,6 @@ exit 0`
     EASYCONVERT_HOME: home,
     STUB_LOG: log,
     STUB_IMAGES: path.join(sandbox, 'images.txt'),
-    STUB_UPLOAD: path.join(sandbox, 'upload.ppm'),
     STUB_PULLED: path.join(bin, '.pulled'),
     STUB_HANG_MARK: path.join(sandbox, 'hang.pid'),
     STUB_PAGE_COUNT: path.join(sandbox, 'page-failures'),
@@ -1029,15 +1033,12 @@ exit 0`
     expect(releases()).toEqual([]);
   });
 
-  it('converts a PPM to PNG through the web service before it moves the links', () => {
+  it('runs the smoke conversion through the probe of the web service, which takes no file and charges no allowance, before it moves the links', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
-    const smoke = calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/convert'));
+    const smoke = calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/health/conversion'));
     expect(smoke).toHaveLength(1);
-    expect(smoke[0]).toContain('targetFormat=png');
-    expect(smoke[0]).toContain('filename=smoke.ppm');
-    const upload = readFileSync(path.join(sandbox, 'upload.ppm'));
-    expect(upload.subarray(0, 11).toString('latin1')).toBe('P6\n1 1\n255\n');
-    expect(upload.length).toBe(11 + 3);
+    expect(smoke[0]).not.toMatch(/ -F | --form /);
+    expect(calls().filter((call) => call.startsWith('curl') && call.includes('/api/convert'))).toEqual([]);
   });
 
   it('checks that the pages name the host of APP_URL as canonical before it moves the links', () => {
@@ -1206,7 +1207,7 @@ exit 0`
     const up = calls().find((call) => / up -d --wait /.test(call));
     expect(up).toContain(`--project-directory ${release}`);
     expect(up).toContain(`-f ${release}/docker-compose.prod.yml`);
-    expect(calls().some((call) => call.startsWith('curl') && call.includes('/api/convert'))).toBe(true);
+    expect(calls().some((call) => call.startsWith('curl') && call.includes('/api/health/conversion'))).toBe(true);
     expect(calls().some((call) => / exec -T worker unshare -r -n -- true$/.test(call))).toBe(true);
     expect(currentRelease()).toBe(path.basename(release));
   });
@@ -1448,7 +1449,7 @@ exit 0`
 
   it('never leaves the home directory it was given', () => {
     run(['deploy', ref('1')], { env: hostEnv() });
-    expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home', 'upload.ppm']);
+    expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home']);
   });
 });
 
