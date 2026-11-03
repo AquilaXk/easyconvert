@@ -3,36 +3,6 @@ import { useTranslations } from 'next-intl';
 import { Download, Settings2, UploadCloud } from 'lucide-react';
 import type { FormatSpecification } from './format-specs';
 
-/** The guarantees of the converter pages; `dailyLimit` is the anonymous daily allowance the server enforces. */
-export function ConverterGuaranteeBar({ dailyLimit }: Readonly<{ dailyLimit: number }>) {
-  const t = useTranslations('converterPage.guarantee');
-  return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 mt-2 mb-10">
-      <div className="flex flex-wrap items-center justify-between gap-4 py-3 border-y border-rule text-xs text-ink-2">
-        <div className="flex items-center gap-2">
-          <span className="size-2 rounded-full bg-success" aria-hidden="true" />
-          <span className="font-semibold text-ink">
-            {t('pipeline')}
-          </span>
-        </div>
-        <div className="flex items-center flex-wrap gap-3 font-medium">
-          <span className="text-success font-semibold">
-            {t('free', { dailyLimit })}
-          </span>
-          <span className="text-ink-2" aria-hidden="true">
-            &bull;
-          </span>
-          <span>{t('ephemeral')}</span>
-          <span className="text-ink-2" aria-hidden="true">
-            &bull;
-          </span>
-          <span>{t('private')}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 interface ConverterWorkflowStepsProps {
   srcMeta: FormatSpecification;
   tgtMeta: FormatSpecification | null;

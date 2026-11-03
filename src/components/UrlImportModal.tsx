@@ -2,7 +2,7 @@
 
 import React, { useState, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { Globe, X, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
+import { X, Loader2, AlertCircle } from 'lucide-react';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { URL_IMPORT_MAX_BYTES } from '@/lib/plan-limits';
 import { useFormatBytes } from './i18n/format';
@@ -80,30 +80,22 @@ export default function UrlImportModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="url-import-heading"
-      className="w-[calc(100dvw-1.5rem)] max-w-md rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2 overflow-hidden"
+      className="w-[calc(100dvw-1.5rem)] max-w-3xl rounded-xs p-0 bg-surface text-ink border border-rule shadow-elev-2 overflow-hidden"
     >
       <div className="px-5 py-4 border-b border-rule flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="size-9 text-accent-ink inline-flex items-center justify-center shrink-0">
-            <Globe className="w-5 h-5" />
-          </div>
-          <div className="min-w-0">
-            <h2
-              id="url-import-heading"
-              className="text-lg text-ink"
-            >
-              {t('heading')}
-            </h2>
-            <p className="text-xs text-ink-3">
-              {t('intro', { size: formatBytes(URL_IMPORT_MAX_BYTES) })}
-            </p>
-          </div>
+        <div className="min-w-0">
+          <h2 id="url-import-heading" className="text-base font-semibold text-ink">
+            {t('heading')}
+          </h2>
+          <p className="text-xs text-ink-3">
+            {t('intro', { size: formatBytes(URL_IMPORT_MAX_BYTES) })}
+          </p>
         </div>
         <button
           type="button"
           onClick={onClose}
           aria-label={t('close')}
-          className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
+          className="min-w-[44px] min-h-[44px] -mr-2 inline-flex items-center justify-center rounded-xs text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
         >
           <X className="w-4 h-4" />
         </button>
@@ -129,12 +121,12 @@ export default function UrlImportModal({
             placeholder="https://example.com/document.pdf"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            className="w-full min-h-[44px] px-3.5 text-base bg-surface/80 border border-rule-strong rounded-sm text-ink placeholder-ink-3 focus:border-accent"
+            className="w-full min-h-[44px] px-3.5 text-base bg-surface/80 border border-rule-strong rounded-xs text-ink placeholder-ink-3 focus:border-accent"
           />
         </div>
 
         {error && (
-          <div className="flex items-start gap-2 p-3 rounded-sm bg-danger-soft border border-danger-edge text-danger text-xs">
+          <div className="flex items-start gap-2 p-3 rounded-xs bg-danger-soft border border-danger-edge text-danger text-xs">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
             <p role="alert" className="min-w-0">{error}</p>
           </div>
@@ -144,14 +136,14 @@ export default function UrlImportModal({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[44px] px-4 text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken rounded-sm transition-colors cursor-pointer"
+            className="min-h-[44px] px-4 text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken rounded-xs transition-colors cursor-pointer"
           >
             {t('cancel')}
           </button>
           <button
             type="submit"
             disabled={loading || !url.trim()}
-            className="btn-primary min-h-[44px] px-5 inline-flex items-center gap-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed rounded-sm cursor-pointer"
+            className="btn-primary min-h-[44px] px-5 inline-flex items-center gap-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed rounded-xs cursor-pointer"
           >
             {loading ? (
               <>
@@ -159,10 +151,7 @@ export default function UrlImportModal({
                 <span>{t('fetching')}</span>
               </>
             ) : (
-              <>
-                <span>{t('submit')}</span>
-                <ArrowRight className="w-4 h-4" />
-              </>
+              <span>{t('submit')}</span>
             )}
           </button>
         </div>

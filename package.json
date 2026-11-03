@@ -38,6 +38,7 @@
     "build:pdf-text-worker": "esbuild src/lib/conversions/pdf-text-worker.ts --bundle --platform=node --target=node24 --outfile=dist/pdf-text-worker.js --packages=external"
   },
   "dependencies": {
+    "@floating-ui/dom": "1.8.0",
     "@types/ioredis": "^4.28.10",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

@@ -13,7 +13,7 @@ export interface ComponentStatus {
 export type ComponentId =
   | 'wasm-simd' | 'webcodecs-vpu' | 'opfs-storage' | 'workers-pool'
   | 'pipeline-document' | 'pipeline-imaging' | 'pipeline-audio' | 'pipeline-video' | 'pipeline-ocr' | 'pipeline-archive' | 'pipeline-cad'
-  | 'privacy-zero-retention' | 'privacy-scrubbing' | 'privacy-crypto';
+  | 'privacy-in-browser' | 'privacy-scrubbing' | 'privacy-crypto';
 
 export type DiagnosticId = 'wasm' | 'webcodecs' | 'opfs' | 'workers' | 'memory-sandbox';
 
@@ -83,7 +83,7 @@ export const ENGINE_COMPONENTS: ComponentStatus[] = [
     status: 'operational',
   },
   {
-    id: 'privacy-zero-retention',
+    id: 'privacy-in-browser',
     category: 'privacy',
     status: 'operational',
   },

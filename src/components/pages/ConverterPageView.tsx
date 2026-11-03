@@ -1,11 +1,12 @@
 'use client';
 
 import React from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import Header from '@/components/Header';
-import Hero from '@/components/Hero';
+import { PairHero, QueueHeader } from '@/components/Hero';
+import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
+import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
-import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
@@ -17,7 +18,6 @@ import { buildContextualFaqs } from '@/components/converter/FormatFaqAndSteps';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import {
   ConverterBreadcrumb,
-  ConverterGuaranteeBar,
   ConverterWorkflowSteps,
   FormatSpecDeck,
 } from '@/components/converter/FormatSpecDeck';
@@ -27,17 +27,14 @@ import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 /** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
   const t = useTranslations('converterPage');
+  const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
   const getFormatDetail = useFormatDetail();
   const parsed = parseConverterSlug(slug);
-  const copy = localizeSlugCopy(tSlug, parsed.copy);
+  const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
-  const defaultTarget =
-    parsed.targetFormat && parsed.targetFormat.toLowerCase() !== 'any'
-      ? parsed.targetFormat
-      : undefined;
   const bundlePrefix = `easyconvert_${parsed.sourceFormat}_to_${parsed.targetFormat || 'files'}`;
 
   const {
@@ -51,13 +48,11 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
     handleUpdateTargetFormat,
     handleUpdateAllTargets,
     handleUpdateOptions,
-    convertSingleItem,
     handleConvertAll,
     handleDownloadAllZip,
-  } = useClientQueue({
-    defaultTarget,
-    bundlePrefix,
-  });
+  } = useClientQueue({ bundlePrefix });
+  const tiles = usePairTiles(parsed.sourceFormat, parsed.targetFormat);
+  const queueTarget = tiles.chosenTarget ?? queue[0]?.targetFormat;
 
   if (parsed.isInfoPage) {
     return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />;
@@ -113,53 +108,48 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
       />
 
       <main id="main-content" className="flex-1">
-        <Hero
-          onFilesSelected={handleFilesSelected}
-          hasActiveQueue={queue.length > 0}
-          activeSourceFormat={parsed.sourceFormat}
-          activeTargetFormat={parsed.targetFormat}
-          categoryTitle={copy.title}
-          categoryDescription={copy.description}
-        />
+        {queue.length > 0 ? (
+          <QueueHeader
+            onFilesSelected={handleFilesSelected}
+            sourceFormat={queue[0].sourceFormat}
+            targetFormat={queueTarget}
+            pageTitle={copy.title}
+          />
+        ) : (
+          <PairHero
+            onFilesSelected={handleFilesSelected}
+            dailyLimit={dailyLimit}
+            tiles={tiles}
+            title={copy.title}
+            description={copy.description}
+          />
+        )}
 
         {queue.length > 0 ? (
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-            <ConversionQueue
-              items={queue}
-              onRemoveItem={handleRemoveItem}
-              onClearAll={handleClearAll}
-              onUpdateTargetFormat={handleUpdateTargetFormat}
-              onUpdateAllTargets={handleUpdateAllTargets}
-              onUpdateOptions={handleUpdateOptions}
-              onConvertAll={() => {
-                void handleConvertAll();
-              }}
-              onConvertSingle={(id) => {
-                const target = queue.find((item) => item.id === id);
-                if (target) {
-                  void convertSingleItem(target);
-                }
-              }}
-              onAddMoreFiles={() => {
-                const input = document.getElementById('main-file-input') as HTMLInputElement | null;
-                if (input) input.click();
-              }}
-              onDownloadAllZip={() => {
-                void handleDownloadAllZip();
-              }}
-              isConverting={isConverting}
-              zipError={zipError}
-              onDismissZipError={dismissZipError}
-            />
-          </div>
+          <ConversionQueue
+            items={queue}
+            onRemoveItem={handleRemoveItem}
+            onClearAll={handleClearAll}
+            onUpdateTargetFormat={handleUpdateTargetFormat}
+            onUpdateAllTargets={handleUpdateAllTargets}
+            onUpdateOptions={handleUpdateOptions}
+            onConvertAll={() => {
+              void handleConvertAll();
+            }}
+            onAddMoreFiles={() => {
+              const input = document.getElementById(MAIN_FILE_INPUT_ID) as HTMLInputElement | null;
+              if (input) input.click();
+            }}
+            onImportFile={(file) => handleFilesSelected([file], queueTarget)}
+            onDownloadAllZip={() => {
+              void handleDownloadAllZip();
+            }}
+            isConverting={isConverting}
+            zipError={zipError}
+            onDismissZipError={dismissZipError}
+          />
         ) : (
           <>
-            <div className="w-full min-h-[50px] sm:min-h-[64px] flex items-center justify-center my-2">
-              <AdBanner slot="top-leaderboard" className="py-0" />
-            </div>
-
-            <ConverterGuaranteeBar dailyLimit={dailyLimit} />
-
             <ConverterWorkflowSteps
               srcMeta={srcMeta}
               tgtMeta={tgtMeta}
@@ -168,8 +158,6 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
             />
 
             <FormatSpecDeck srcMeta={srcMeta} tgtMeta={tgtMeta} isPair={isPair} />
-
-            <AdBanner slot="mid-content" />
 
             <FormatCrossLinks
               sourceFormat={parsed.sourceFormat}

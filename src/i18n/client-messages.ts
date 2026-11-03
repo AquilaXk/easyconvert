@@ -17,16 +17,16 @@ const WORKBENCH = ['hero', 'queue', 'options', 'formatSelector', 'formatCategori
  */
 export const PAGE_NAMESPACES = {
   layout: [],
-  home: [...CHROME, ...WORKBENCH, 'features', 'home', 'faq', 'ads'],
+  home: [...CHROME, ...WORKBENCH, 'features', 'home', 'faq'],
   converter: [
     ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',
-    'faq', 'ads', 'status', 'unitConverter', 'unitCategories', 'unitNames',
+    'faq', 'status', 'unitConverter', 'unitCategories', 'unitNames',
   ],
   auth: [...CHROME, 'auth', 'errors'],
   dashboard: [...CHROME, 'dashboard', 'errors'],
   apiDocs: [...CHROME, 'apiDocs'],
   status: [...CHROME, 'status'],
-  unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq', 'ads'],
+  unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq'],
 } as const satisfies Record<string, readonly Namespace[]>;
 
 export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;
@@ -35,7 +35,7 @@ export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;
 const PER_FORMAT: ReadonlySet<Namespace> = new Set(['formatSpecs', 'formatDescriptions']);
 
 function pickKeys(table: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
-  return Object.fromEntries(keys.filter((key) => key in table).map((key) => [key, table[key]]));
+  return Object.fromEntries(keys.filter((key) => Object.hasOwn(table, key)).map((key) => [key, table[key]]));
 }
 
 /** The messages `page`'s client components read; for a converter page, the format prose of `formatIds` only. */

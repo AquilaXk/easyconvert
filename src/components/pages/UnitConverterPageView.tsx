@@ -3,7 +3,6 @@ import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import UnitConverter from '@/components/UnitConverter';
-import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 
 /** The unit converter page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
@@ -25,10 +24,6 @@ export default function UnitConverterPageView({ dailyLimit }: Readonly<{ dailyLi
         </div>
 
         <UnitConverter />
-
-        <div className="mt-12 min-h-[50px] sm:min-h-[64px] flex items-center justify-center">
-          <AdBanner slot="mid-content" />
-        </div>
 
         <div className="mt-12">
           <FaqSection dailyLimit={dailyLimit} />

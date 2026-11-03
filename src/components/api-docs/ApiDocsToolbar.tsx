@@ -106,6 +106,9 @@ interface ApiDocsFilterToolbarProps {
   onSelectMethod: (method: string) => void;
 }
 
+/** The id of the endpoints heading, which names the endpoint list the page moves focus to once the specification loads. */
+export const ENDPOINTS_HEADING_ID = 'api-endpoints-heading';
+
 export function ApiDocsFilterToolbar({
   searchQuery,
   selectedMethod,
@@ -117,7 +120,7 @@ export function ApiDocsFilterToolbar({
   return (
     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
       <div>
-        <h2 className="text-xl sm:text-2xl text-ink">
+        <h2 id={ENDPOINTS_HEADING_ID} className="text-xl sm:text-2xl text-ink">
           {t('heading')}
         </h2>
         <p className="text-xs sm:text-sm text-ink-2 mt-0.5">

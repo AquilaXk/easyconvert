@@ -6,7 +6,7 @@
  * - Level 1: WebCodecs Hardware Media (GPU/VPU)
  * - Level 2: Zero-COOP SIMD Wasm (Wasm-vips, Tesseract OCR, pdf-lib)
  * - Level 3: OPFS Streaming VFS (100MB+ ~ GB large files)
- * - Level 4: Serverless API Fallback (Cloud Zero-Retention)
+ * - Level 4: Serverless API Fallback (Cloud)
  */
 
 import { ConversionOptions } from '../types';
@@ -26,7 +26,7 @@ export const EDGE_VIDEO_TARGET_FORMATS: ReadonlySet<string> = new Set(['mp4', 'w
 /** Sources the edge worker reads audio from: PCM WAV, or the audio track of an ISO BMFF file. */
 export const EDGE_AUDIO_SOURCE_FORMATS: ReadonlySet<string> = new Set(['wav', 'm4a', 'mp4', 'm4v', 'mov']);
 
-const SERVER_TIER_NAME = 'Cloud (Zero-Retention)';
+const SERVER_TIER_NAME = 'Cloud';
 
 export interface WebGpuCapabilities {
   hasWebGpu: boolean;
@@ -562,7 +562,7 @@ export function resolveConversionTier(
   if (options.clientEdgeMode === false) {
     return {
       tier: 'L4',
-      tierName: 'Cloud (Zero-Retention)',
+      tierName: SERVER_TIER_NAME,
       isClientEdge: false,
       reason: 'Client edge mode disabled by user options',
     };
@@ -585,7 +585,7 @@ export function resolveConversionTier(
     }
     return {
       tier: 'L4',
-      tierName: 'Cloud (Zero-Retention)',
+      tierName: SERVER_TIER_NAME,
       isClientEdge: false,
       reason: largeFileCloudReason(opfsAvailable, fitsOpfs),
     };
@@ -596,7 +596,7 @@ export function resolveConversionTier(
   if (offloadEval.shouldOffload) {
     return {
       tier: 'L4',
-      tierName: 'Cloud (Zero-Retention)',
+      tierName: SERVER_TIER_NAME,
       isClientEdge: false,
       reason: offloadEval.reason || 'Payload exceeds edge budget, offloading to serverless MicroVM',
     };
@@ -690,7 +690,7 @@ export function resolveConversionTier(
     }
     return {
       tier: 'L4',
-      tierName: 'Cloud (Zero-Retention)',
+      tierName: SERVER_TIER_NAME,
       isClientEdge: false,
       reason: 'Opus encoding requires WebCodecs AudioEncoder or native cloud worker engine',
     };
@@ -714,7 +714,7 @@ export function resolveConversionTier(
   if (tgt === 'ogg' || tgt === 'vorbis') {
     return {
       tier: 'L4',
-      tierName: 'Cloud (Zero-Retention)',
+      tierName: SERVER_TIER_NAME,
       isClientEdge: false,
       reason: 'Ogg Vorbis encoding requires native FFmpeg cloud worker engine (Fail-Closed on edge)',
     };
@@ -744,10 +744,10 @@ export function resolveConversionTier(
     };
   }
 
-  // 8. Level 4: Serverless API fallback (Fail-closed or Zero-Data Retention cloud)
+  // 8. Level 4: Serverless API fallback (fail-closed, or the server pipeline)
   return {
     tier: 'L4',
-    tierName: 'Cloud (Zero-Retention)',
+    tierName: SERVER_TIER_NAME,
     isClientEdge: false,
     reason: 'Format conversion requires cloud serverless engine',
   };

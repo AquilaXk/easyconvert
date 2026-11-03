@@ -36,15 +36,15 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
 
   describe('1. Universal 5-Tier Adaptive Resolution Matrix', () => {
     it.each([
-      { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
-      { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
+      { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud', clientEdge: false },
+      { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud', clientEdge: false },
       { src: 'wav', tgt: 'wav', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'png', tgt: 'webp', size: 100_000, opts: {}, caps: { hasCanvas: true }, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'mp4', tgt: 'webm', size: 10_000_000, opts: {}, caps: { hasWebCodecsVideo: true }, expectedTier: 'L1', expectedName: 'Edge L1 (Hardware VPU)', clientEdge: true },
       { src: 'png', tgt: 'pdf', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
       { src: 'csv', tgt: 'tsv', size: 150 * 1024 * 1024, opts: {}, caps: { hasOpfsSyncAccess: true }, expectedTier: 'L3', expectedName: 'Edge L3 (OPFS Stream)', clientEdge: true },
-      { src: 'mkv', tgt: 'avi', size: 5_000_000, opts: {}, caps: { hasWebCodecsVideo: false, hasWebCodecsAudio: false }, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
-      { src: 'csv', tgt: 'json', size: 1024, opts: { clientEdgeMode: false }, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
+      { src: 'mkv', tgt: 'avi', size: 5_000_000, opts: {}, caps: { hasWebCodecsVideo: false, hasWebCodecsAudio: false }, expectedTier: 'L4', expectedName: 'Cloud', clientEdge: false },
+      { src: 'csv', tgt: 'json', size: 1024, opts: { clientEdgeMode: false }, caps: {}, expectedTier: 'L4', expectedName: 'Cloud', clientEdge: false },
     ])('resolves $src->$tgt to $expectedTier ($expectedName)', ({ src, tgt, size, opts, caps, expectedTier, expectedName, clientEdge }) => {
       const res = resolveConversionTier(src, tgt, size, opts, caps);
       expect(res).toMatchObject({
@@ -112,8 +112,8 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
     });
   });
 
-  describe('3. Cloud Serverless Fallback with Zero-Data Retention Header', () => {
-    it('attaches X-Zero-Retention header and returns Cloud tier telemetry when cloud is permitted', async () => {
+  describe('3. Cloud Serverless Fallback without a retention header', () => {
+    it('sends the file to the server with no retention header and returns Cloud tier telemetry when cloud is permitted', async () => {
       const mockBlob = new Blob(['mock-result'], { type: 'video/mp4' });
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
         ok: true,
@@ -144,12 +144,12 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const callArgs = fetchSpy.mock.calls[0];
       expect(callArgs[0]).toBe('/api/convert');
-      expect((callArgs[1]?.headers as any)['X-Zero-Retention']).toBe('true');
+      expect(new Headers(callArgs[1]?.headers).has('X-Zero-Retention')).toBe(false);
 
       expect(onErrorSpy).not.toHaveBeenCalled();
       expect(onSuccessSpy).toHaveBeenCalledTimes(1);
       expect(onSuccessSpy.mock.calls[0][2]).toBe(false); // edgeProcessed = false
-      expect(onSuccessSpy.mock.calls[0][3]).toBe('Cloud (Zero-Retention)');
+      expect(onSuccessSpy.mock.calls[0][3]).toBe('Cloud');
     });
   });
 

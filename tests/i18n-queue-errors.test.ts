@@ -50,8 +50,7 @@ function renderedFailure(failure: ConversionFailure, locale: TestLocale): { aler
   const item: ConversionQueueItem = { ...hwpItem(), status: 'error', error: failure };
   const dom = renderDom(
     createElement(QueueItemRow, {
-      item, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-      onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
+      item, onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
     }),
     locale
   );
@@ -101,11 +100,11 @@ describe('a refusal of /api/convert reads in the page language, without the serv
 
   it('words an answer with no code it knows by its status class, never with its text', () => {
     const alertOf = (problem: Record<string, unknown>, locale: TestLocale) => renderedFailure({ code: 'server', problem }, locale).alert;
-    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 처리하지 못했어요. 파일과 설정을 확인한 뒤 다시 시도해 주세요.');
+    expect(alertOf({ error: 'Unsupported target format "xyz".', status: 400 }, 'ko')).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
     expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'ko')).toBe('문제가 생겼어요. 잠시 후 다시 시도해 주세요.');
     expect(alertOf({ error: 'Worker pool exploded.', status: 500 }, 'en')).toBe('Something went wrong on our side. Try again.');
     expect(alertOf({ success: false, error: 'Too many requests', status: 429 }, 'en')).toBe('Too many requests in a short time. Wait a moment and try again.');
-    expect(alertOf({ status: 409 }, 'en')).toBe('The request was refused. Check the file and its settings, then try again.');
+    expect(alertOf({ status: 409 }, 'en')).toBe('The request was refused. Check what you entered and the settings you chose.');
   });
 });
 
@@ -149,8 +148,8 @@ describe('the failures the client decides read in the page language', () => {
 describe('a job that failed on the worker reads as one sentence', () => {
   it('shows the generic job sentence and no HTTP status', () => {
     const failure: ConversionFailure = { code: 'jobFailed' };
-    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했어요. 다시 시도하거나 다른 형식을 골라 주세요.');
-    expect(renderedFailure(failure, 'en').alert).toBe('The conversion failed on the server. Try again, or try another format.');
+    expect(renderedFailure(failure, 'ko').alert).toBe('서버에서 변환하지 못했어요. 변환을 눌러 다시 시도하거나 다른 형식을 골라 주세요.');
+    expect(renderedFailure(failure, 'en').alert).toBe('The conversion failed on the server. Select Convert to try again, or try another format.');
   });
 
   it('words a job that hit its time limit by the code the worker recorded', () => {

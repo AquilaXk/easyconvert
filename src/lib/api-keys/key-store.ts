@@ -7,7 +7,7 @@ import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
-import { FREE_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../plan-limits';
+import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { encryptSecret, decryptSecret } from './secret-encryption';
@@ -18,13 +18,7 @@ const KEYS_FILE = path.join(STORAGE_DIR, 'api-keys.json');
 const USAGE_FILE = path.join(STORAGE_DIR, 'api-usage.json');
 const FILES_FILE = path.join(STORAGE_DIR, 'user-files.json');
 
-export const TIER_LIMITS: Record<UserTier, number> = {
-  free: FREE_DAILY_CONVERSIONS,
-  pro: 500,
-  enterprise: 10000,
-};
-
-export { getAnonymousDailyLimit };
+export { TIER_LIMITS, getAnonymousDailyLimit };
 
 const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
 let pepperWarningEmitted = false;

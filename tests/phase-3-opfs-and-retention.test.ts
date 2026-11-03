@@ -12,7 +12,7 @@ import {
 import {
   createSessionId,
   destroySessionImmediately,
-  registerZeroRetentionLifecycleHooks,
+  registerSessionCleanupOnPageExit,
 } from '../src/lib/edge/opfs/storage-gc';
 import { streamConvertWithOpfs } from '../src/lib/edge/pipelines/opfs-streaming-pipeline';
 import {
@@ -30,7 +30,7 @@ import {
   IStorageBackend,
 } from '../src/lib/storage/s3-storage';
 
-describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distributed Interfaces', () => {
+describe('Phase 3: OPFS Streaming VFS, Immediate Disposal & Distributed Interfaces', () => {
   describe('1. Level 3 OPFS Streaming VFS Chunk Transcoders', () => {
     it('accurately resolves and executes Audio PCM Endianness swap (pcm -> pcm_be)', async () => {
       const transformer = resolveChunkTransformer('pcm', 'pcm_be', { bitDepth: 16 });
@@ -187,7 +187,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
     });
   });
 
-  describe('2. Zero-Retention Immediate Physical Disk Disposal', () => {
+  describe('2. Immediate Physical Disk Disposal', () => {
     it('safely attempts physical session directory deletion via destroySessionImmediately', async () => {
       const sessionId = createSessionId();
       // In environment without navigator.storage, it fails closed gracefully and returns false
@@ -212,7 +212,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       expect(removeEntrySpy).toHaveBeenCalledWith('session-mock-123', { recursive: true });
     });
 
-    it('registers and triggers lifecycle unloader hooks for zero-retention cleanup', () => {
+    it('registers and triggers the page-exit hooks that delete the sessions left in browser storage', () => {
       const activeSessions = new Set<string>(['session-alpha', 'session-beta']);
       const listeners: Record<string, Function> = {};
 
@@ -229,7 +229,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       (globalThis as any).window = mockTarget;
 
       try {
-        const unregister = registerZeroRetentionLifecycleHooks(activeSessions);
+        const unregister = registerSessionCleanupOnPageExit(activeSessions);
         expect(mockTarget.addEventListener).toHaveBeenCalledWith('beforeunload', expect.any(Function));
         expect(mockTarget.addEventListener).toHaveBeenCalledWith('pagehide', expect.any(Function));
 
@@ -245,7 +245,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       }
     });
 
-    it('provides destroy() callback on streamConvertWithOpfs for immediate zero-retention disposal', async () => {
+    it('provides destroy() callback on streamConvertWithOpfs for immediate disposal', async () => {
       const testContent = 'id,note\n1,zero-retention streaming test buffer\n';
       const file = new File([testContent], 'test.csv', { type: 'text/csv' });
 

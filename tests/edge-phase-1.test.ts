@@ -462,7 +462,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     it('routes structured data pairs to the server data engine (Cloud L4)', () => {
       const res = resolveConversionTier('csv', 'json', 5000);
       expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
+      expect(res.tierName).toBe('Cloud');
       expect(res.isClientEdge).toBe(false);
     });
 
@@ -502,7 +502,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     it('routes user opt-out clientEdgeMode: false directly to Cloud L4', () => {
       const res = resolveConversionTier('csv', 'json', 1000, { clientEdgeMode: false });
       expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
+      expect(res.tierName).toBe('Cloud');
       expect(res.isClientEdge).toBe(false);
     });
 
@@ -519,7 +519,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
         hasOpfsSyncAccess: false,
       });
       expect(opfsUnavailable.tier).toBe('L4');
-      expect(opfsUnavailable.tierName).toBe('Cloud (Zero-Retention)');
+      expect(opfsUnavailable.tierName).toBe('Cloud');
       expect(opfsUnavailable.isClientEdge).toBe(false);
     });
   });

@@ -53,7 +53,7 @@ export interface ClientEdgeResult {
   escalationReason?: string;
 }
 
-const CLOUD_TIER_NAME = 'Cloud (Zero-Retention)';
+const CLOUD_TIER_NAME = 'Cloud';
 const CLOUD_PARTS_TIER_NAME = 'Cloud (Upload in parts)';
 
 /** Reason recorded when a tier returned no result without raising an error. */
@@ -173,7 +173,7 @@ export async function tryProcessClientEdge(
     }
   }
 
-  // 4. Level 2: Client-side Edge OCR or SIMD Wasm Execution (Zero-Data Retention)
+  // 4. Level 2: Client-side Edge OCR or SIMD Wasm Execution, in the browser with no upload
   if (resolution.tier === 'L2') {
     return await processL2Conversion(item, src, tgt, onProgress);
   }
@@ -572,7 +572,7 @@ async function processL2Conversion(
 
 /**
  * Universal client conversion executor.
- * Handles client-side Edge fast-path (Zero-Data Retention) with automatic fallback
+ * Handles client-side Edge fast-path (in the browser, with no upload) with automatic fallback
  * to server-side conversion pipeline when appropriate.
  */
 export async function executeItemConversion(
@@ -615,8 +615,8 @@ export async function executeItemConversion(
     return;
   }
 
-  // 3. Server-side conversion pipeline: one request with the Zero-Data Retention guarantee, or for a file too large
-  // for one request an upload in parts and a job (entry 137), whose input and result are deleted after the download.
+  // 3. Server-side conversion pipeline: one request, or for a file too large for one request an upload in parts and a
+  // job (entry 137); the retention rule of entry 125 deletes the input and the result.
   const inParts = needsUploadInParts(item.file.size);
   try {
     const cloudRes = inParts

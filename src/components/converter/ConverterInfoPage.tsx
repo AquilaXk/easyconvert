@@ -1,7 +1,6 @@
 import React from 'react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
-import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 import StatusDashboard from '@/components/StatusDashboard';
 import UnitConverter from '@/components/UnitConverter';
@@ -62,9 +61,6 @@ export function ConverterInfoPage({ parsed, copy, totalFormatCount, dailyLimit }
           </div>
           <UnitConverter initialSrc={parsed.sourceFormat} initialTgt={parsed.targetFormat} />
           <div className="mt-12">
-            <AdBanner slot="mid-content" />
-          </div>
-          <div className="mt-10">
             <FaqSection dailyLimit={dailyLimit} />
           </div>
         </main>

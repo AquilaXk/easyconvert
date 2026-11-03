@@ -4,77 +4,44 @@ import {
   UNIT_CONVERTER_INFO_PAGE,
   parseUnitPairSlug,
   parseUtilitySlug,
-  type FormatCopyGroup,
-  type PairCopyGroup,
+  type CategoryWord,
   type ParsedSlug,
+  type SlugName,
 } from './slug-info-pages';
 
-export type { FormatCopyGroup, PairCopyGroup, ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
+export type { CategoryWord, ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
 
-const CANONICAL_FORMAT_MAP: Record<string, string> = {
-  video: 'mp4',
-  audio: 'mp3',
-  image: 'jpg',
-  document: 'docx',
-  ebook: 'epub',
-  archive: 'zip',
-  vector: 'svg',
-  font: 'ttf',
-  cad: 'dxf',
-  spreadsheet: 'xlsx',
-  presentation: 'pptx',
-  data: 'csv',
-  word: 'docx',
-  excel: 'xlsx',
-  powerpoint: 'pptx',
-  photo: 'jpg',
-  picture: 'jpg',
-  music: 'mp3',
+/** The words a slug may name a category by instead of a format: the format its page converts and the word its title shows. */
+const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: string }>> = {
+  video: { format: 'mp4', display: 'Video' },
+  audio: { format: 'mp3', display: 'Audio' },
+  image: { format: 'jpg', display: 'Image' },
+  document: { format: 'docx', display: 'Document' },
+  ebook: { format: 'epub', display: 'Ebook' },
+  archive: { format: 'zip', display: 'Archive' },
+  vector: { format: 'svg', display: 'Vector' },
+  font: { format: 'ttf', display: 'Font' },
+  cad: { format: 'dxf', display: 'CAD' },
+  spreadsheet: { format: 'xlsx', display: 'Spreadsheet' },
+  presentation: { format: 'pptx', display: 'Presentation' },
+  data: { format: 'csv', display: 'Data' },
+  word: { format: 'docx', display: 'Word' },
+  excel: { format: 'xlsx', display: 'Excel' },
+  powerpoint: { format: 'pptx', display: 'PowerPoint' },
+  photo: { format: 'jpg', display: 'Photo' },
+  picture: { format: 'jpg', display: 'Picture' },
+  music: { format: 'mp3', display: 'Music' },
 };
 
 const OCR_SLUGS = new Set(['pdf-ocr', 'ocr-pdf', 'ocr']);
 
-const TITLE_NAME_OVERRIDES: Record<string, string> = {
-  word: 'Word',
-  excel: 'Excel',
-  powerpoint: 'PowerPoint',
-  video: 'Video',
-  audio: 'Audio',
-  image: 'Image',
-  cad: 'CAD',
-  vector: 'Vector',
-};
-
-const FORMAT_ACRONYMS: Record<string, string> = {
-  pdf: 'PDF',
-  docx: 'DOCX',
-  doc: 'DOC',
-  mp4: 'MP4',
-  mp3: 'MP3',
-  wav: 'WAV',
-  png: 'PNG',
-  jpg: 'JPG',
-  jpeg: 'JPEG',
-  cad: 'CAD',
-  ocr: 'OCR',
-  csv: 'CSV',
-  xlsx: 'XLSX',
-  svg: 'SVG',
-  xml: 'XML',
-  json: 'JSON',
-  html: 'HTML',
-};
-
-function pairCopyGroup(src: string, tgt: string): PairCopyGroup {
-  const srcCat = FORMAT_REGISTRY[src]?.category || 'document';
-  const tgtCat = FORMAT_REGISTRY[tgt]?.category || 'document';
-  const either = (...cats: string[]) => cats.includes(srcCat) || cats.includes(tgtCat);
-  if (srcCat === 'video' && tgtCat === 'audio') return 'videoToAudio';
-  if (either('audio', 'video')) return 'media';
-  if (either('image', 'vector')) return 'image';
-  if (either('archive')) return 'archive';
-  if (either('spreadsheet', 'data')) return 'data';
-  return 'document';
+/** The format a word of a slug converts and how a title names it: a category by its word, a format in capitals. */
+function readSlugWord(raw: string): { format: string; name: SlugName } {
+  if (Object.hasOwn(CATEGORY_WORDS, raw)) {
+    const id = raw as CategoryWord;
+    return { format: CATEGORY_WORDS[id].format, name: { kind: 'category', id, display: CATEGORY_WORDS[id].display } };
+  }
+  return { format: raw, name: { kind: 'format', id: raw, display: raw.toUpperCase() } };
 }
 
 function parsePairSlug(cleanSlug: string): ParsedSlug {
@@ -87,38 +54,14 @@ function parsePairSlug(cleanSlug: string): ParsedSlug {
     return unitPair;
   }
 
-  const src = CANONICAL_FORMAT_MAP[rawSrc] || rawSrc;
-  const tgt = CANONICAL_FORMAT_MAP[rawTgt] || rawTgt;
-  const srcDisplay = TITLE_NAME_OVERRIDES[rawSrc] ?? src.toUpperCase();
-  const tgtDisplay = TITLE_NAME_OVERRIDES[rawTgt] ?? tgt.toUpperCase();
-  const group = pairCopyGroup(src, tgt);
-
+  const src = readSlugWord(rawSrc);
+  const tgt = readSlugWord(rawTgt);
   return {
     isInfoPage: false,
-    sourceFormat: src,
-    targetFormat: tgt,
-    copy: { kind: 'pair', src: { id: rawSrc, display: srcDisplay }, tgt: { id: rawTgt, display: tgtDisplay }, group },
+    sourceFormat: src.format,
+    targetFormat: tgt.format,
+    copy: { kind: 'pair', src: src.name, tgt: tgt.name },
   };
-}
-
-function formatCopyGroup(src: string): FormatCopyGroup {
-  const cat = FORMAT_REGISTRY[src]?.category || 'document';
-  switch (cat) {
-    case 'audio':
-    case 'video':
-    case 'archive':
-    case 'presentation':
-    case 'ebook':
-      return cat;
-    case 'image':
-    case 'vector':
-      return 'image';
-    case 'spreadsheet':
-    case 'data':
-      return 'data';
-    default:
-      return 'document';
-  }
 }
 
 function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
@@ -127,15 +70,12 @@ function parseFormatConverterSlug(cleanSlug: string): ParsedSlug {
     return UNIT_CONVERTER_INFO_PAGE;
   }
 
-  const src = CANONICAL_FORMAT_MAP[rawFmt] || rawFmt;
-  const prefix = FORMAT_ACRONYMS[rawFmt] || `${rawFmt.charAt(0).toUpperCase()}${rawFmt.slice(1)}`;
-  const group = formatCopyGroup(src);
-
+  const { format, name } = readSlugWord(rawFmt);
   return {
     isInfoPage: false,
-    sourceFormat: src,
+    sourceFormat: format,
     targetFormat: 'any',
-    copy: { kind: 'format', name: { id: rawFmt, display: prefix }, group },
+    copy: { kind: 'format', name },
   };
 }
 

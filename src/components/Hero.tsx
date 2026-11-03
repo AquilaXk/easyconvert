@@ -1,247 +1,140 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
 import { useTranslations } from 'next-intl';
-import { getAvailableTargetFormats } from '@/lib/registry';
-import UrlImportModal from './UrlImportModal';
+import { Files, Lock, UserRound } from 'lucide-react';
+import { REGISTRY_STATS } from '@/lib/registry-stats';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
-import {
-  computeHeroSubtitle,
-  computeHeroTitle,
-  describeQueueSummary,
-  type QueueSummary,
-} from './workbench/hero-copy';
+import SourceChipPicker from './workbench/SourceChipPicker';
+import PopularConversions from './workbench/PopularConversions';
+import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
+import { useHeroUpload } from './hero/useHeroUpload';
+import type { PairTiles } from './hero/usePairTiles';
 
-export interface HeroProps {
-  onFilesSelected: (files: File[], defaultTarget?: string) => void;
-  hasActiveQueue: boolean;
-  activeSourceFormat?: string;
-  activeTargetFormat?: string;
-  initialSourceFormat?: string;
-  initialTargetFormat?: string;
-  categoryTitle?: string;
-  categoryDescription?: string;
-  activeQueueSummary?: QueueSummary;
-}
+type FilesSelected = (files: File[], target?: string) => void;
 
-function getEffectiveTargetFormat(chosen?: string, fallback?: string): string | undefined {
-  if (chosen && chosen.toLowerCase() !== 'any') return chosen.toLowerCase();
-  if (fallback && fallback.toLowerCase() !== 'any') return fallback.toLowerCase();
-  return undefined;
-}
-
-export default function Hero({
-  onFilesSelected,
-  hasActiveQueue,
-  activeSourceFormat,
-  activeTargetFormat,
-  initialSourceFormat,
-  initialTargetFormat,
-  categoryTitle,
-  categoryDescription,
-  activeQueueSummary,
-}: Readonly<HeroProps>) {
-  const t = useTranslations('hero');
-  const seedSource = activeSourceFormat ?? initialSourceFormat;
-  const seedTarget = activeTargetFormat ?? initialTargetFormat;
-  const [sourceFormat, setSourceFormat] = useState(seedSource ? seedSource.toLowerCase() : 'any');
-  const [targetFormat, setTargetFormat] = useState(seedTarget ? seedTarget.toLowerCase() : 'any');
-  const [userChangedTiles, setUserChangedTiles] = useState(false);
-  const [isUrlModalOpen, setIsUrlModalOpen] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const targetFormatRef = useRef(targetFormat);
-  const prevHasActiveQueueRef = useRef(hasActiveQueue);
-
-  useEffect(() => {
-    targetFormatRef.current = targetFormat;
-  }, [targetFormat]);
-
-  useEffect(() => {
-    if (seedSource) setSourceFormat(seedSource.toLowerCase());
-  }, [seedSource]);
-
-  useEffect(() => {
-    if (seedTarget) {
-      const normalized = seedTarget.toLowerCase();
-      setTargetFormat(normalized);
-      targetFormatRef.current = normalized;
-    }
-  }, [seedTarget]);
-
-  useEffect(() => {
-    const wasActive = prevHasActiveQueueRef.current;
-    prevHasActiveQueueRef.current = hasActiveQueue;
-    if (wasActive && !hasActiveQueue && !seedSource && !seedTarget) {
-      setSourceFormat('any');
-      setTargetFormat('any');
-      targetFormatRef.current = 'any';
-      setUserChangedTiles(false);
-    }
-  }, [hasActiveQueue, seedSource, seedTarget]);
-
-  useEffect(() => {
-    const handlePaste = (e: ClipboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      const pastedFiles = e.clipboardData?.files;
-      if (pastedFiles && pastedFiles.length > 0) {
-        e.preventDefault();
-        const files = Array.from(pastedFiles);
-        const chosen = targetFormatRef.current;
-        const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
-        onFilesSelected(files, effectiveTarget);
-      }
-    };
-    window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
-  }, [activeTargetFormat, onFilesSelected]);
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const files = Array.from(e.target.files);
-      const chosen = targetFormatRef.current;
-      const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
-      onFilesSelected(files, effectiveTarget);
-      e.target.value = '';
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const files = Array.from(e.dataTransfer.files);
-      const chosen = targetFormatRef.current;
-      const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
-      onFilesSelected(files, effectiveTarget);
-    }
-  };
-
-  const handleSourceChange = (nextSource: string) => {
-    const normalized = nextSource.toLowerCase();
-    setSourceFormat(normalized);
-    setUserChangedTiles(true);
-    if (normalized !== 'any' && targetFormat !== 'any') {
-      const isCompatible = getAvailableTargetFormats(normalized).some(
-        (fmt) => fmt.id.toLowerCase() === targetFormat.toLowerCase()
-      );
-      if (!isCompatible) {
-        setTargetFormat('any');
-        targetFormatRef.current = 'any';
-      }
-    }
-  };
-
-  const handleTargetChange = (nextTarget: string) => {
-    const normalized = nextTarget.toLowerCase();
-    setTargetFormat(normalized);
-    targetFormatRef.current = normalized;
-    setUserChangedTiles(true);
-  };
-
-  const title = computeHeroTitle(t, {
-    categoryTitle,
-    hasActiveQueue,
-    activeSourceFormat: seedSource,
-    activeTargetFormat: seedTarget,
-    sourceFormat,
-    targetFormat,
-    userChangedTiles,
-  });
-  const subtitle = computeHeroSubtitle(
-    t,
-    categoryDescription,
-    hasActiveQueue,
-    sourceFormat,
-    targetFormat,
-    userChangedTiles
+function HomeTrustRow() {
+  const t = useTranslations('hero.trust');
+  const items = [
+    { Icon: Files, text: t('formats', { count: REGISTRY_STATS.formatCount }) },
+    { Icon: Lock, text: t('encrypted') },
+    { Icon: UserRound, text: t('noSignup') },
+  ];
+  return (
+    <ul className="mt-6 flex flex-wrap justify-center lg:justify-start gap-x-[18px] gap-y-2 text-sm font-extrabold text-ink-2">
+      {items.map(({ Icon, text }) => (
+        <li key={text} className="inline-flex items-center gap-2">
+          <Icon aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
+          <span>{text}</span>
+        </li>
+      ))}
+    </ul>
   );
-  const queueSummaryText = describeQueueSummary(t, activeQueueSummary);
+}
+
+interface HomeHeroProps {
+  onFilesSelected: FilesSelected;
+  /** The conversions a day the server allows an anonymous caller, read on the server. */
+  dailyLimit: number;
+}
+
+/** The home page's hero: the title and trust row beside the upload card with the source chips, then the popular conversions. */
+export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps>) {
+  const t = useTranslations('hero');
+  const upload = useHeroUpload(onFilesSelected, undefined);
+  return (
+    <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
+      <input {...upload.fileInput} />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="lg:grid lg:grid-cols-2 lg:items-center lg:gap-14">
+          <div className="text-center lg:text-left min-w-0">
+            <h1 className="text-5xl sm:text-6xl lg:text-[78px] font-normal leading-[0.95] tracking-[-0.06em] text-ink">
+              {t('title.default')}
+            </h1>
+            <p className="mt-6 text-lg sm:text-xl leading-normal text-ink-3 max-w-xl mx-auto lg:mx-0">{t('subtitle.default')}</p>
+            <HomeTrustRow />
+          </div>
+          <div className="mt-10 lg:mt-0 min-w-0">
+            <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit}>
+              <SourceChipPicker />
+            </HeroDropzoneCard>
+          </div>
+        </div>
+        <PopularConversions />
+      </div>
+    </section>
+  );
+}
+
+interface PairHeroProps {
+  onFilesSelected: FilesSelected;
+  dailyLimit: number;
+  /** The pair the tiles name, which the page holds so that it outlives the queue. */
+  tiles: PairTiles;
+  /** The page's own title and intro, shown until the tiles name another pair. */
+  title: string;
+  description: string;
+}
+
+/**
+ * A converter page's hero: its title and intro beside the source and target tiles, and the upload card under them. Files
+ * take the target the target tile shows, and none while it shows any format.
+ */
+export function PairHero({ onFilesSelected, dailyLimit, tiles, title, description }: Readonly<PairHeroProps>) {
+  const t = useTranslations('hero');
+  const { source, target, changed } = tiles;
+  const upload = useHeroUpload(onFilesSelected, tiles.chosenTarget);
 
   return (
-    <>
-      <input
-        id="main-file-input"
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="sr-only"
-        aria-label={t('fileInputLabel')}
-        onChange={handleFileChange}
-      />
-
-      {hasActiveQueue ? (
-        <section className="py-6 sm:py-8 border-b border-rule">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{title}</h1>
-              {queueSummaryText && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-xs text-xs font-medium tabular-nums text-ink-2 border border-rule">
-                  {queueSummaryText}
-                </span>
-              )}
-            </div>
-            <p className="mt-1.5 text-sm text-ink-2 max-w-2xl">{subtitle}</p>
+    <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
+      <input {...upload.fileInput} />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
+          <div className="text-center lg:text-left lg:max-w-2xl">
+            <h1 className="text-4xl sm:text-5xl leading-none text-ink">{changed ? formatsTitle(t, source, target) : title}</h1>
+            <p className="mt-5 text-lg leading-relaxed text-ink-2">
+              {changed ? formatsSubtitle(t, source, target) : description}
+            </p>
           </div>
-        </section>
-      ) : (
-        <div>
-          <section className="pt-12 pb-24 lg:pt-16 lg:pb-28">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-              <div className="lg:grid lg:grid-cols-12 lg:items-center lg:gap-10">
-                <div className="lg:col-span-7 text-center lg:text-left">
-                  <h1 className="text-4xl sm:text-5xl text-ink leading-none">
-                    {title}
-                  </h1>
-                  <p className="mt-4 text-base text-ink-2 max-w-xl mx-auto lg:mx-0 leading-relaxed">
-                    {subtitle}
-                  </p>
-                </div>
-                <div className="lg:col-span-5 mt-7 lg:mt-0 flex justify-center lg:justify-end">
-                  <HeroFormatTiles
-                    sourceFormat={sourceFormat}
-                    targetFormat={targetFormat}
-                    onSourceChange={handleSourceChange}
-                    onTargetChange={handleTargetChange}
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <HeroDropzoneCard
-            isDragOver={isDragOver}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragOver(true);
-            }}
-            onDragLeave={(e) => {
-              e.preventDefault();
-              setIsDragOver(false);
-            }}
-            onDrop={handleDrop}
-            onOpenFileDialog={() => fileInputRef.current?.click()}
-            onOpenUrlModal={() => setIsUrlModalOpen(true)}
-          />
+          <div className="mt-8 lg:mt-0 flex justify-center shrink-0">
+            <HeroFormatTiles
+              sourceFormat={source}
+              targetFormat={target}
+              onSourceChange={tiles.changeSource}
+              onTargetChange={tiles.changeTarget}
+            />
+          </div>
         </div>
-      )}
+        <div className="mt-10 lg:mt-12 max-w-2xl mx-auto">
+          <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit} />
+        </div>
+      </div>
+    </section>
+  );
+}
 
-      {isUrlModalOpen && (
-        <UrlImportModal
-          isOpen={isUrlModalOpen}
-          onAddFile={(file) => {
-            const chosen = targetFormatRef.current;
-            const effectiveTarget = getEffectiveTargetFormat(chosen, activeTargetFormat);
-            onFilesSelected([file], effectiveTarget);
-          }}
-          onClose={() => setIsUrlModalOpen(false)}
-        />
-      )}
-    </>
+interface QueueHeaderProps {
+  onFilesSelected: FilesSelected;
+  /** The formats the title names without a page title: those of the first file in the queue. */
+  sourceFormat: string;
+  /** The target files added over the queue take: the tiles' on a converter page, else the first file's. */
+  targetFormat?: string;
+  /** The title of a converter page, which stays while its queue is shown; the home page names the first file's formats. */
+  pageTitle?: string;
+}
+
+/** The title over the file queue, and the file input and paste target that add more files to it. */
+export function QueueHeader({ onFilesSelected, sourceFormat, targetFormat, pageTitle }: Readonly<QueueHeaderProps>) {
+  const t = useTranslations('hero');
+  const upload = useHeroUpload(onFilesSelected, targetFormat || undefined);
+  return (
+    <section className="py-6 sm:py-8 border-b border-rule">
+      <input {...upload.fileInput} />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h1 className="text-3xl sm:text-4xl leading-tight text-ink">{pageTitle ?? formatsTitle(t, sourceFormat, targetFormat)}</h1>
+        <p className="mt-1.5 text-sm text-ink-2 max-w-2xl">{t('subtitle.queue')}</p>
+      </div>
+    </section>
   );
 }

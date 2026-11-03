@@ -25,7 +25,7 @@ function fileWithSecondsLeft(remainingSeconds: number): FileWithRemaining {
 }
 
 function retentionCell(remainingSeconds: number, locale: TestLocale): string {
-  const dom = renderDom(createElement(JobsHistoryPanel, { files: [fileWithSecondsLeft(remainingSeconds)], loading: false, onRefresh: noop, onDeleteFile: noop }), locale);
+  const dom = renderDom(createElement(JobsHistoryPanel, { files: [fileWithSecondsLeft(remainingSeconds)], deletingFileIds: [], loading: false, onRefresh: noop, onDeleteFile: noop }), locale);
   const cells = select(dom, 'td');
   return visibleText(cells[3]);
 }
@@ -89,13 +89,16 @@ describe('a refused dashboard request', () => {
   const mountDashboard = (locale: TestLocale, answer: (url: string, method: string) => Response | Promise<Response>): Promise<Dashboard> =>
     mountController(locale, answer, (report) => useFilesAndDlqController(true, report), (c) => c.userFiles.length === 1 && c.dlqEntries.length === 1);
 
-  const FILES_ANSWER = JSON.stringify({ files: [fileWithSecondsLeft(3_000)] });
-  const answerWith = (status: number, error: string, other: (url: string, method: string) => Response | Promise<Response> = () => new Response('{}')) =>
-    (url: string, method: string) => {
-      if (method === 'GET' && url === '/api/account/files') return new Response(FILES_ANSWER, { status: 200 });
-      if (method === 'GET') return new Response(JSON.stringify({ entries: [{ id: 'd-1' }] }), { status: 200 });
+  /** The server of the dashboard: its lists hold one file and one failed webhook until a DELETE reaches it, and every DELETE answers `status`. */
+  const answerWith = (status: number, error: string, other: (url: string, method: string) => Response | Promise<Response> = () => new Response('{}')) => {
+    let deleted = false;
+    return (url: string, method: string) => {
+      if (method === 'GET' && url === '/api/account/files') return new Response(JSON.stringify({ files: deleted ? [] : [fileWithSecondsLeft(3_000)] }), { status: 200 });
+      if (method === 'GET') return new Response(JSON.stringify({ entries: deleted ? [] : [{ id: 'd-1' }] }), { status: 200 });
+      deleted = true;
       return status === 0 ? other(url, method) : new Response(JSON.stringify(routeBody(error)), { status, headers: { 'Content-Type': 'application/json' } });
     };
+  };
 
   it.each([
     [401, 'Unauthorized: Authentication required.', '계속하려면 로그인해 주세요.', 'Sign in to continue.'],
@@ -110,6 +113,25 @@ describe('a refused dashboard request', () => {
     const en = await mountDashboard('en', answerWith(status, error));
     await en.controller.handleClearDlq();
     expect(en.reported()).toBe(english);
+  });
+
+  it('words an untyped refusal of a read with the sentence of the read, since the page sent nothing to check', async () => {
+    const refusingReads = (url: string, method: string) => {
+      if (method === 'POST') return new Response(JSON.stringify(routeBody('Bad request')), { status: 400 });
+      if (url === '/api/account/files') return new Response(JSON.stringify(routeBody('Bad request')), { status: 400 });
+      return new Response(JSON.stringify({ entries: [{ id: 'd-1' }] }), { status: 200 });
+    };
+    const reported: string[] = [];
+    const dashboard = await mountController('ko', refusingReads, (report) => useFilesAndDlqController(true, (error) => { if (error) reported.push(error); }), (c) => c.dlqEntries.length === 1);
+    await vi.waitFor(() => expect(reported).toContain('변환한 파일을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.'));
+    await dashboard.controller.handleReplayWebhook('d-1');
+    await vi.waitFor(() => expect(dashboard.controller.dlqFeedback).toBe('웹훅을 다시 전송하지 못했어요.'));
+    root?.unmount();
+
+    const keysRefused = (url: string) =>
+      url === '/api/keys' ? new Response(JSON.stringify(routeBody('Bad request')), { status: 400 }) : new Response(JSON.stringify({ success: true, usage: {} }));
+    const keys = await mountController('en', keysRefused, (report) => useApiKeysController(true, report), () => true);
+    await vi.waitFor(() => expect(keys.reported()).toBe('Could not load your API keys. Try again in a moment.'));
   });
 
   it('says a file that is already gone is gone, and drops its row', async () => {
@@ -138,28 +160,60 @@ describe('a refused dashboard request', () => {
 
   describe('an API key', () => {
     const KEY = { id: 'k-1', userId: 'u-1', name: 'build server', prefix: 'ec_live_ab', status: 'active', createdAt: 0 };
-    const keysAnswer = (revoke: Response | Promise<Response>) => (url: string, method: string) => {
-      if (method === 'DELETE') return revoke;
-      if (url === '/api/keys/usage') return new Response(JSON.stringify({ success: true, usage: {} }), { status: 200 });
-      return new Response(JSON.stringify({ success: true, keys: [KEY] }), { status: 200 });
+    const OTHER_KEY = { ...KEY, id: 'k-2', name: 'staging' };
+    /** The key routes: the list holds two keys until a revocation reaches the server, which drops `k-1` from it. */
+    const keysAnswer = (revoke: Response | Promise<Response>) => {
+      let revoked = false;
+      return (url: string, method: string) => {
+        if (method === 'DELETE') {
+          revoked = true;
+          return revoke;
+        }
+        if (url === '/api/keys/usage') return new Response(JSON.stringify({ success: true, usage: {} }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, keys: revoked ? [OTHER_KEY] : [KEY, OTHER_KEY] }), { status: 200 });
+      };
     };
     const mountKeys = (locale: TestLocale, revoke: Response | Promise<Response>) =>
-      mountController(locale, keysAnswer(revoke), (report) => useApiKeysController(true, report), (c) => c.state.apiKeys.length === 1);
+      mountController(locale, keysAnswer(revoke), (report) => useApiKeysController(true, report), (c) => c.state.apiKeys.length === 2);
     const notFound = () => new Response(JSON.stringify(routeBody('API key not found.')), { status: 404 });
 
-    it('that is already gone is said to be gone, its row leaves the list and its confirmation closes', async () => {
+    it('that the server no longer knows is said not to exist, not to be revoked, and its row leaves the list', async () => {
       const ko = await mountKeys('ko', notFound());
       ko.controller.actions.onRequestRevoke('k-1');
       await vi.waitFor(() => expect(ko.controller.state.revokingKeyId).toBe('k-1'));
       ko.controller.actions.onConfirmRevoke('k-1');
-      await vi.waitFor(() => expect(ko.controller.state.apiKeys).toHaveLength(0));
-      expect(ko.reported()).toBe('이미 폐기된 API 키예요.');
+      await vi.waitFor(() => expect(ko.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
+      expect(ko.reported()).toBe('이 API 키는 더 이상 없어요.');
       expect(ko.controller.state.revokingKeyId).toBeNull();
       root?.unmount();
       const en = await mountKeys('en', notFound());
       en.controller.actions.onConfirmRevoke('k-1');
-      await vi.waitFor(() => expect(en.controller.state.apiKeys).toHaveLength(0));
-      expect(en.reported()).toBe('The API key was already revoked.');
+      await vi.waitFor(() => expect(en.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
+      expect(en.reported()).toBe('That API key no longer exists.');
+    });
+
+    it('closes only its own confirmation when its revocation ends, not one opened for another key meanwhile', async () => {
+      let finish: (res: Response) => void = () => undefined;
+      const revoke = new Promise<Response>((resolve) => { finish = resolve; });
+      const keys = await mountKeys('en', revoke);
+      keys.controller.actions.onConfirmRevoke('k-1');
+      keys.controller.actions.onRequestRevoke('k-2');
+      await vi.waitFor(() => expect(keys.controller.state.revokingKeyId).toBe('k-2'));
+      finish(new Response(JSON.stringify({ success: true }), { status: 200 }));
+      await vi.waitFor(() => expect(keys.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
+      expect(keys.controller.state.revokingKeyId).toBe('k-2');
+    });
+
+    it('is revoked by one request however often its confirmation is pressed while the first is running', async () => {
+      let finish: (res: Response) => void = () => undefined;
+      const revoke = new Promise<Response>((resolve) => { finish = resolve; });
+      const keys = await mountKeys('en', revoke);
+      const fetchMock = vi.mocked(fetch);
+      keys.controller.actions.onConfirmRevoke('k-1');
+      keys.controller.actions.onConfirmRevoke('k-1');
+      finish(new Response(JSON.stringify({ success: true }), { status: 200 }));
+      await vi.waitFor(() => expect(keys.controller.state.apiKeys).toHaveLength(1));
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
     });
 
     it('whose revocation fails with a 500 stays listed with its confirmation open', async () => {
@@ -167,27 +221,82 @@ describe('a refused dashboard request', () => {
       ko.controller.actions.onRequestRevoke('k-1');
       ko.controller.actions.onConfirmRevoke('k-1');
       await vi.waitFor(() => expect(ko.reported()).toBe('API 키를 폐기하지 못했어요. 잠시 후 다시 시도해 주세요.'));
-      expect(ko.controller.state.apiKeys).toHaveLength(1);
+      expect(ko.controller.state.apiKeys).toHaveLength(2);
       expect(ko.controller.state.revokingKeyId).toBe('k-1');
+    });
+
+    const answerKeyRoutes = (keysList: Response, create: Response) => (url: string, method: string) => {
+      if (method === 'POST') return create;
+      if (url === '/api/keys/usage') return new Response(JSON.stringify({ success: true, usage: {} }), { status: 200 });
+      return keysList;
+    };
+    const untyped = (status: number, error: string) => new Response(JSON.stringify(routeBody(error)), { status });
+    const coded = (status: number, code: string, error: string) => new Response(JSON.stringify({ ...routeBody(error), code }), { status });
+    const listed = () => new Response(JSON.stringify({ success: true, keys: [KEY] }), { status: 200 });
+
+    it.each([
+      ['an untyped 401 (the proxy, an older server)', () => untyped(401, 'Unauthorized: Sign in or valid API key required.')],
+      ['a 401 with a code outside the closed list', () => coded(401, 'sign_in_required', 'Unauthorized: Sign in or valid API key required.')],
+    ])('says to sign in when the key list is answered with %s', async (_label, answer) => {
+      let reported: string | null = null;
+      const report = (error: string | null) => { reported = error; };
+      await mountController('ko', answerKeyRoutes(answer(), listed()), () => useApiKeysController(true, report), () => true);
+      await vi.waitFor(() => expect(reported).toBe('계속하려면 로그인해 주세요.'));
+    });
+
+    const submit = async (create: Response, locale: TestLocale = 'ko') => {
+      const keys = await mountController(locale, answerKeyRoutes(listed(), create), (report) => useApiKeysController(true, report), (c) => c.state.apiKeys.length === 1);
+      keys.controller.actions.onGenerateKey({ preventDefault: noop } as React.FormEvent);
+      await vi.waitFor(() => expect(keys.controller.state.isGeneratingKey).toBe(false));
+      await vi.waitFor(() => expect(keys.reported()).not.toBeNull());
+      return keys.reported();
+    };
+
+    it.each([
+      [429, '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.'],
+      [503, '서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.'],
+    ])('words a key creation answered with an untyped %i by the one cause it names', async (status, sentence) => {
+      expect(await submit(untyped(status, 'Too many requests'))).toBe(sentence);
+    });
+
+    it('words a key creation the route refused for its settings by the code, and an untyped 400 as "check what you entered"', async () => {
+      expect(await submit(coded(400, 'invalid_key_settings', "Invalid scope 'admin'."))).toBe('API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.');
+      root?.unmount();
+      expect(await submit(untyped(400, "Invalid scope 'admin'."))).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
+      root?.unmount();
+      expect(await submit(untyped(500, 'connect ECONNREFUSED'))).toBe('API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요.');
     });
   });
 
-  it('marks a file as being deleted until its request ends, so its button cannot send a second DELETE', async () => {
+  it('marks a file as being deleted until its request ends, so a second click on its button sends no second DELETE', async () => {
     let finish: (res: Response) => void = () => undefined;
     const pending = new Promise<Response>((resolve) => { finish = resolve; });
-    const deletes = vi.fn();
-    const dashboard = await mountDashboard('en', answerWith(0, '', (_url, method) => { deletes(method); return pending; }));
-    const button = () => select(renderDom(createElement(JobsHistoryPanel, {
-      files: dashboard.controller.userFiles, deletingFileIds: dashboard.controller.deletingFileIds, loading: false, onRefresh: noop, onDeleteFile: noop,
-    })), 'button').find((b) => attrOf(b, 'aria-label')?.startsWith('Delete'));
-    expect(button() && attrOf(button()!, 'disabled')).toBeNull();
-    const deletion = dashboard.controller.handleDeleteFile('f-1');
-    await vi.waitFor(() => expect(button() && attrOf(button()!, 'disabled')).not.toBeNull());
-    expect(deletes).toHaveBeenCalledTimes(1);
+    const answer = answerWith(0, '', () => pending);
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => answer(url, init?.method ?? 'GET'));
+    vi.stubGlobal('fetch', fetchMock);
+    function FilesTab() {
+      const files = useFilesAndDlqController(true, noop);
+      return createElement(JobsHistoryPanel, {
+        files: files.userFiles, deletingFileIds: files.deletingFileIds, loading: files.filesLoading,
+        onRefresh: noop, onDeleteFile: (id: string) => { void files.handleDeleteFile(id); },
+      });
+    }
+    const host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    root.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: createElement(FilesTab) }));
+    const button = () => host.querySelector<HTMLButtonElement>('button[aria-label^="Delete"]');
+    await vi.waitFor(() => expect(button()).not.toBeNull());
+    button()!.click();
+    await vi.waitFor(() => expect(button()!.disabled).toBe(true));
+    button()!.click();
+    const deletes = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE');
+    expect(deletes()).toHaveLength(1);
     finish(new Response('{}', { status: 200 }));
-    await deletion;
-    await vi.waitFor(() => expect(dashboard.controller.userFiles).toHaveLength(0));
-    expect(dashboard.controller.deletingFileIds).toEqual([]);
+    await vi.waitFor(() => expect(button()).toBeNull());
+    expect(deletes()).toHaveLength(1);
+    host.remove();
   });
 
   it('keeps the row and words the deletion that failed with a 500, not as a fault of the service in general', async () => {
@@ -201,10 +310,11 @@ describe('a refused dashboard request', () => {
     expect(en.reported()).toBe('Could not delete the file. Try again in a moment.');
   });
 
-  it('words an answer with a problem type of this API by that type, ahead of its status', async () => {
+  it('words a refusal whose problem type this build does not know as "check what you entered", never with its detail', async () => {
     const typed = { type: 'https://api.easyconvert.io/problems/retired-problem', status: 400, detail: 'Index entry 7 is dangling.' };
-    const dashboard = await mountDashboard('ko', (url, method) => (method === 'GET' ? answerWith(0, '')(url, method) : new Response(JSON.stringify(typed), { status: 400 })));
+    const files = answerWith(0, '');
+    const dashboard = await mountDashboard('ko', (url, method) => (method === 'GET' ? files(url, method) : new Response(JSON.stringify(typed), { status: 400 })));
     await dashboard.controller.handleDeleteFile('f-1');
-    expect(dashboard.reported()).toBe('파일을 삭제하지 못했어요. 잠시 후 다시 시도해 주세요.');
+    expect(dashboard.reported()).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
   });
 });

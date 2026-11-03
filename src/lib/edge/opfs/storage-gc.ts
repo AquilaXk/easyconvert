@@ -187,7 +187,7 @@ export async function sweepOrphanedSessions(
 
 /**
  * Immediately and physically destroys an OPFS session directory.
- * Fulfills Zero-Retention guarantee by eradicating all files and the directory handle.
+ * Deletes all its files and the directory handle.
  */
 export async function destroySessionImmediately(sessionId: string, rootDir?: any): Promise<boolean> {
   if (!sessionId || typeof sessionId !== 'string') return false;
@@ -220,10 +220,10 @@ export async function destroySessionImmediately(sessionId: string, rootDir?: any
 }
 
 /**
- * Global lifecycle hook registry for zero-retention physical cleanup.
+ * Global lifecycle hook registry that deletes the OPFS sessions left in the browser's storage.
  * Listens for browser unload/pagehide events to eradicate any remaining active session directories.
  */
-export function registerZeroRetentionLifecycleHooks(
+export function registerSessionCleanupOnPageExit(
   activeSessionIds: Set<string>,
   rootDir?: any
 ): () => void {

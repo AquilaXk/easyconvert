@@ -137,7 +137,7 @@ function SandboxArchitectureCard() {
         <div className="flex flex-wrap gap-4 pt-2 text-xs font-semibold text-accent-ink">
           <span className="flex items-center gap-1.5">
             <Check className="w-4 h-4 text-success" aria-hidden="true" />
-            <span>{t('zeroRetention')}</span>
+            <span>{t('noUpload')}</span>
           </span>
           <span className="flex items-center gap-1.5">
             <Check className="w-4 h-4 text-success" aria-hidden="true" />

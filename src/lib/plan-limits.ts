@@ -29,6 +29,13 @@ export const PAID_PLANS_ON_SALE = false;
  */
 export const FREE_DAILY_CONVERSIONS = 25;
 
+/** Conversions each account plan may run on the server each UTC day; a caller without an account has `getAnonymousDailyLimit`. */
+export const TIER_LIMITS: Readonly<Record<UserTier, number>> = {
+  free: FREE_DAILY_CONVERSIONS,
+  pro: 500,
+  enterprise: 10000,
+};
+
 /**
  * Conversions a caller without an account may run on the server each UTC day, the default of `ANONYMOUS_DAILY_LIMIT`
  * (docs/policy-decisions.md, entries 15 and 16). Browser-side conversions use no server and are not counted.

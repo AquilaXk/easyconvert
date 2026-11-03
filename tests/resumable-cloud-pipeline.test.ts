@@ -810,7 +810,7 @@ describe('the browser picks the way to the server by the size of the file', () =
     expect(executeServerlessCloudFallback).toHaveBeenCalledOnce();
     expect(vi.mocked(executeServerlessCloudFallback).mock.calls[0][4]).toBe(aborter.signal);
     expect(calls).toHaveLength(0);
-    expect(cb.onSuccess).toHaveBeenCalledWith('blob:one', 1, false, 'Cloud (Zero-Retention)', undefined);
+    expect(cb.onSuccess).toHaveBeenCalledWith('blob:one', 1, false, 'Cloud', undefined);
   });
 
   it('sends a file one byte over it in parts, reports the stage and names the tier', async () => {

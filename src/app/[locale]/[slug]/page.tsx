@@ -27,7 +27,7 @@ export async function generateMetadata({ params }: ConverterPageProps): Promise<
     getTranslations({ locale, namespace: 'meta.converter' }),
   ]);
   const parsed = pageSlug(slug);
-  const copy = localizeSlugCopy(tSlug, parsed.copy);
+  const copy = localizeSlugCopy(tSlug, parsed, locale);
   return {
     title: tMeta('title', { title: copy.title }),
     description: copy.description,

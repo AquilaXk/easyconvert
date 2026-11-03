@@ -205,7 +205,7 @@ describe('the L0 audio path keeps the source layout (issue #480)', () => {
     expect(onError).not.toHaveBeenCalled();
     expect(onSuccess).toHaveBeenCalledTimes(1);
     const [, , edgeProcessed, tierName, fallback] = onSuccess.mock.calls[0];
-    expect([edgeProcessed, tierName]).toEqual([false, 'Cloud (Zero-Retention)']);
+    expect([edgeProcessed, tierName]).toEqual([false, 'Cloud']);
     expect(fallback).toMatchObject({ fallbackFrom: 'L0', escalationReason: expect.stringMatching(/cannot write 5\.1/) });
   });
 });

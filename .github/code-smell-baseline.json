@@ -7,13 +7,6 @@
     "maxValue": 31
   },
   {
-    "file": "src/app/api/keys/[id]/route.ts",
-    "rule": "complexity",
-    "function": "PATCH",
-    "count": 1,
-    "maxValue": 32
-  },
-  {
     "file": "src/app/api/storage/file/[...key]/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "GET",
@@ -650,7 +643,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3480
+    "maxValue": 3479
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",
@@ -1827,7 +1820,7 @@
   {
     "file": "src/lib/edge/opfs/storage-gc.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "registerZeroRetentionLifecycleHooks",
+    "function": "registerSessionCleanupOnPageExit",
     "count": 2
   },
   {

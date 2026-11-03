@@ -3,31 +3,36 @@ import { useTranslations } from 'next-intl';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
 import type { FileWithRemaining } from './dashboard-types';
 import { warnBrowserFailure } from '@/lib/browser-failure';
-import { SINGLE_CAUSE_STATUS_PROBLEMS, useProblemWording } from '../i18n/error-wording';
-import { settleAlreadyGone } from './already-gone';
+import { useDashboardErrorWording } from '../i18n/error-wording';
+import { useReadSequence } from './useReadSequence';
+import { useRecordDelete } from './useRecordDelete';
 
 export function useFilesAndDlqController(
   enabled: boolean,
   onReportError: (error: string | null) => void
 ) {
   const t = useTranslations('dashboard.errors');
-  const problemWording = useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
+  const problemWording = useDashboardErrorWording();
+  const readWording = useDashboardErrorWording({ untypedRefusal: 'action' });
   const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
-  const [deletingFileIds, setDeletingFileIds] = useState<readonly string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>([]);
   const [dlqLoading, setDlqLoading] = useState(false);
   const [inspectingDlq, setInspectingDlq] = useState<WebhookDlqEntry | null>(null);
   const [replayingDlqId, setReplayingDlqId] = useState<string | null>(null);
   const [dlqFeedback, setDlqFeedback] = useState<string | null>(null);
+  const filesReads = useReadSequence();
+  const dlqReads = useReadSequence();
 
   const fetchUserFiles = useCallback(async () => {
+    const isLatest = filesReads.begin();
     setFilesLoading(true);
     try {
       const res = await fetch('/api/account/files');
       const data: unknown = await res.json().catch(() => null);
+      if (!isLatest()) return;
       if (!res.ok) {
-        onReportError(problemWording(data, res.status, t('loadFiles')));
+        onReportError(readWording(data, res.status, t('loadFiles')));
         return;
       }
       if (data && typeof data === 'object' && 'files' in data && Array.isArray(data.files)) {
@@ -35,19 +40,21 @@ export function useFilesAndDlqController(
       }
     } catch (error) {
       warnBrowserFailure('Reading the converted files failed', error);
-      onReportError(t('loadFilesNetwork'));
+      if (isLatest()) onReportError(t('loadFilesNetwork'));
     } finally {
-      setFilesLoading(false);
+      if (isLatest()) setFilesLoading(false);
     }
-  }, [onReportError, problemWording, t]);
+  }, [filesReads, onReportError, readWording, t]);
 
   const fetchDlqEntries = useCallback(async () => {
+    const isLatest = dlqReads.begin();
     setDlqLoading(true);
     try {
       const res = await fetch('/api/webhooks/dlq');
       const data: unknown = await res.json().catch(() => null);
+      if (!isLatest()) return;
       if (!res.ok) {
-        onReportError(problemWording(data, res.status, t('loadDlq')));
+        onReportError(readWording(data, res.status, t('loadDlq')));
         return;
       }
       if (data && typeof data === 'object' && 'entries' in data && Array.isArray(data.entries)) {
@@ -55,11 +62,11 @@ export function useFilesAndDlqController(
       }
     } catch (error) {
       warnBrowserFailure('Reading the failed webhooks failed', error);
-      onReportError(t('loadDlqNetwork'));
+      if (isLatest()) onReportError(t('loadDlqNetwork'));
     } finally {
-      setDlqLoading(false);
+      if (isLatest()) setDlqLoading(false);
     }
-  }, [onReportError, problemWording, t]);
+  }, [dlqReads, onReportError, readWording, t]);
 
   // The read runs when the dashboard is enabled, not again when the zone switch after hydration renews the wording.
   const readersRef = useRef({ fetchUserFiles, fetchDlqEntries });
@@ -89,26 +96,16 @@ export function useFilesAndDlqController(
     return () => clearInterval(timer);
   }, [hasActiveFiles]);
 
-  const handleDeleteFile = async (id: string) => {
-    onReportError(null);
-    setDeletingFileIds((prev) => [...prev, id]);
-    const dropRow = () => setUserFiles((prev) => prev.filter((file) => file.id !== id));
-    try {
-      const res = await fetch(`/api/account/files/${id}`, { method: 'DELETE' });
-      if (settleAlreadyGone(res.status, t('deleteFileGone'), onReportError, dropRow)) return;
-      if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        onReportError(problemWording(data, res.status, t('deleteFile')));
-        return;
-      }
-      dropRow();
-    } catch (error) {
-      warnBrowserFailure('Deleting a file failed', error);
-      onReportError(t('deleteFileNetwork'));
-    } finally {
-      setDeletingFileIds((prev) => prev.filter((pending) => pending !== id));
-    }
-  };
+  const fileDelete = useRecordDelete({
+    url: (id) => `/api/account/files/${id}`,
+    goneSentence: t('deleteFileGone'),
+    failedSentence: t('deleteFile'),
+    networkSentence: t('deleteFileNetwork'),
+    warnNetworkFailure: (error) => warnBrowserFailure('Deleting a file failed', error),
+    onReportError,
+    onRemoved: (id) => setUserFiles((prev) => prev.filter((file) => file.id !== id)),
+    refetch: fetchUserFiles,
+  });
 
   const handleReplayWebhook = async (id: string) => {
     setReplayingDlqId(id);
@@ -117,7 +114,7 @@ export function useFilesAndDlqController(
     try {
       const res = await fetch(`/api/webhooks/dlq/${id}/replay`, { method: 'POST' });
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-      setDlqFeedback(res.ok && data?.success ? t('replaySucceeded') : problemWording(data, res.status, t('replayFailed')));
+      setDlqFeedback(res.ok && data?.success ? t('replaySucceeded') : readWording(data, res.status, t('replayFailed')));
       await fetchDlqEntries();
     } catch (error) {
       warnBrowserFailure('Sending a webhook again failed', error);
@@ -127,23 +124,16 @@ export function useFilesAndDlqController(
     }
   };
 
-  const handleDeleteDlq = async (id: string) => {
-    onReportError(null);
-    try {
-      const res = await fetch(`/api/webhooks/dlq/${id}`, { method: 'DELETE' });
-      const dropRow = () => setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
-      if (settleAlreadyGone(res.status, t('deleteDlqGone'), onReportError, dropRow)) return;
-      if (!res.ok) {
-        const data: unknown = await res.json().catch(() => null);
-        onReportError(problemWording(data, res.status, t('deleteDlq')));
-        return;
-      }
-      dropRow();
-    } catch (error) {
-      warnBrowserFailure('Deleting a failed webhook failed', error);
-      onReportError(t('deleteDlqNetwork'));
-    }
-  };
+  const dlqDelete = useRecordDelete({
+    url: (id) => `/api/webhooks/dlq/${id}`,
+    goneSentence: t('deleteDlqGone'),
+    failedSentence: t('deleteDlq'),
+    networkSentence: t('deleteDlqNetwork'),
+    warnNetworkFailure: (error) => warnBrowserFailure('Deleting a failed webhook failed', error),
+    onReportError,
+    onRemoved: (id) => setDlqEntries((prev) => prev.filter((entry) => entry.id !== id)),
+    refetch: fetchDlqEntries,
+  });
 
   const handleClearDlq = async () => {
     onReportError(null);
@@ -166,10 +156,10 @@ export function useFilesAndDlqController(
 
   return {
     userFiles,
-    deletingFileIds,
+    deletingFileIds: fileDelete.pendingIds,
     filesLoading,
     fetchUserFiles,
-    handleDeleteFile,
+    handleDeleteFile: fileDelete.remove,
     dlqEntries,
     dlqLoading,
     inspectingDlq,
@@ -179,7 +169,7 @@ export function useFilesAndDlqController(
     setDlqFeedback,
     fetchDlqEntries,
     handleReplayWebhook,
-    handleDeleteDlq,
+    handleDeleteDlq: dlqDelete.remove,
     handleClearDlq,
   };
 }

@@ -29,7 +29,6 @@ const AREA_ORDER: readonly ConfigArea[] = [
   'worker',
   'limits',
   'tools',
-  'ui',
 ];
 
 const AREA_TITLES: Readonly<Record<ConfigArea, string>> = {
@@ -43,7 +42,6 @@ const AREA_TITLES: Readonly<Record<ConfigArea, string>> = {
   worker: 'Worker',
   limits: 'Limits',
   tools: 'Native tools',
-  ui: 'Page',
 };
 
 function code(text: string): string {

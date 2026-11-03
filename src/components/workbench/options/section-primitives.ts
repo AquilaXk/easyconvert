@@ -7,7 +7,7 @@ export interface SectionProps {
 }
 
 export const INPUT_CLASS =
-  'w-full min-h-[44px] px-3.5 rounded-sm text-base bg-surface/80 border border-rule-strong text-ink focus:border-accent';
+  'w-full min-h-[44px] px-3.5 rounded-xs text-base bg-surface/80 border border-rule-strong text-ink focus:border-accent';
 
 /** The field look without the platform arrow; `pr-9` keeps the longest option clear of the drawn chevron. */
 export const SELECT_CLASS = `${INPUT_CLASS} select-chevron pr-9`;

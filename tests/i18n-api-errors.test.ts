@@ -5,7 +5,6 @@ import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { POST as login } from '../src/app/api/auth/login/route';
 import { POST as register } from '../src/app/api/auth/register/route';
 import {
-  SINGLE_CAUSE_STATUS_PROBLEMS,
   useAuthErrorWording,
   useConversionFailureWording,
   useProblemWording,
@@ -150,26 +149,35 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(failure).not.toBe(korean);
   });
 
-  const useStatusWording = () => useProblemWording(SINGLE_CAUSE_STATUS_PROBLEMS);
   const UNTYPED = { success: false, error: 'File record not found or not owned by user.' };
   const ACTION = '파일을 지우지 못했어요.';
+  const CHECK_VALUES = '요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.';
 
   it.each([
     [401, '계속하려면 로그인해 주세요.'],
     [403, '이 계정으로는 할 수 없는 작업이에요.'],
     [404, '찾는 항목이 더 이상 없어요.'],
+    [405, '요청을 보내는 방식이 맞지 않아요.'],
+    [413, '파일이 한 번에 보낼 수 있는 크기보다 커요.'],
+    [415, '이 종류의 파일은 여기에 올릴 수 없어요.'],
     [429, '짧은 시간에 요청이 너무 많았어요. 잠시 후 다시 시도해 주세요.'],
     [503, '서비스를 잠시 사용할 수 없어요. 잠시 후 다시 시도해 주세요.'],
-  ])('words an answer without a problem type by the one cause its %i names, never by the server text', (status, sentence) => {
-    expect(worded(useStatusWording, 'ko', UNTYPED, status, ACTION)).toBe(sentence);
+  ])('words an answer without a problem type by the one cause its %i names by default, never by the server text', (status, sentence) => {
+    expect(worded(useProblemWording, 'ko', UNTYPED, status, ACTION)).toBe(sentence);
   });
 
-  it.each([400, 409, 413, 415, 422, 500, 502, 504])('words an answer without a problem type and a %i by the sentence of the action that failed', (status) => {
-    expect(worded(useStatusWording, 'ko', UNTYPED, status, ACTION)).toBe(ACTION);
+  it.each([400, 409, 422])('words an answer without a problem type and a %i, which has several causes, as "check what you entered", not "try again"', (status) => {
+    expect(worded(useProblemWording, 'ko', UNTYPED, status, ACTION)).toBe(CHECK_VALUES);
+    expect(worded(useProblemWording, 'en', UNTYPED, status, 'Could not delete the file.')).toBe('The request was refused. Check what you entered and the settings you chose.');
+  });
+
+  it.each([500, 502, 504])('words an answer without a problem type and a %i by the sentence of the action that failed', (status) => {
+    expect(worded(useProblemWording, 'ko', UNTYPED, status, ACTION)).toBe(ACTION);
   });
 
   it('words an answer without a problem type by the action alone when the caller gives no status map', () => {
-    for (const status of [401, 403, 404, 429, 503]) expect(worded(useProblemWording, 'ko', UNTYPED, status, ACTION), String(status)).toBe(ACTION);
+    const useWithoutMap = () => useProblemWording({ byStatus: false, untypedRefusal: 'action' });
+    for (const status of [400, 401, 403, 404, 429, 503]) expect(worded(useWithoutMap, 'ko', UNTYPED, status, ACTION), String(status)).toBe(ACTION);
   });
 
   const NGINX_BURST = { success: false, error: 'Too many requests' };
@@ -190,7 +198,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
       const noop = () => undefined;
       const queue = renderDom(createElement(ConversionQueue, {
         items: [], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop,
-        onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false, zipError: true,
+        onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop, isConverting: false, zipError: true,
       }), locale);
       return select(queue, 'p', 'role', 'alert').map(visibleText);
     };
@@ -207,9 +215,11 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(worded(useProblemWording, 'ko', down, 503)).not.toContain('redis');
   });
 
-  it('words a refusal that names no known type by the sentence of the action that failed', () => {
+  it('words a refusal that names no known type as "check what you entered", and a failure by the action that failed', () => {
     const conflict = { type: `${PROBLEM}conflict`, status: 409, detail: 'The file is still being written and cannot be deleted yet.' };
-    expect(worded(useProblemWording, 'ko', conflict, 409, '파일을 지우지 못했어요.')).toBe('파일을 지우지 못했어요.');
+    expect(worded(useProblemWording, 'ko', conflict, 409, '파일을 지우지 못했어요.')).toBe(CHECK_VALUES);
+    const broken = { type: `${PROBLEM}bad-gateway`, status: 502, detail: 'upstream /srv/engine died' };
+    expect(worded(useProblemWording, 'ko', broken, 502, '파일을 지우지 못했어요.')).toBe('파일을 지우지 못했어요.');
   });
 });
 
@@ -265,7 +275,7 @@ describe('link import refusals', () => {
   it('words an answer without a known code by its status, never with the server text', () => {
     const korean = worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 400);
     expectKorean(korean, 'unknown');
-    expect(korean).toBe('요청을 처리하지 못했어요. 파일과 설정을 확인한 뒤 다시 시도해 주세요.');
+    expect(korean).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
     expectKorean(worded(useUrlImportErrorWording, 'ko', { error: 'Upstream said no.' }, 502), 'server failure');
   });
 });

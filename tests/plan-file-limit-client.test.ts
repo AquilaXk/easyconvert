@@ -151,6 +151,7 @@ describe('the signed-in person of the viewer', () => {
 
 describe('the drop zone states the limit of the plan', () => {
   const noop = () => undefined;
+  /** The card as a page renders it, with the anonymous allowance the server read (an operator set it to 7). */
   const dropzoneText = () =>
     visibleText(
       renderDom(
@@ -160,17 +161,18 @@ describe('the drop zone states the limit of the plan', () => {
           onDragLeave: noop,
           onDrop: noop,
           onOpenFileDialog: noop,
-          onOpenUrlModal: noop,
+          onImportFile: noop,
+          dailyLimit: 7,
         })
       )
     );
 
   it.each([
-    ['anonymous', 'Up to 1 GiB per file'],
-    ['free', 'Up to 1 GiB per file'],
-    ['pro', 'Up to 5 GiB per file'],
-    ['enterprise', 'Up to 10 GiB per file'],
-  ] as const)('shows "%s" viewers %s', (plan, copy) => {
+    ['anonymous', 'Up to 1 GiB per file · 7 conversions a day · Files deleted automatically'],
+    ['free', 'Up to 1 GiB per file · 25 conversions a day · Files deleted automatically'],
+    ['pro', 'Up to 5 GiB per file · 500 conversions a day · Files deleted automatically'],
+    ['enterprise', 'Up to 10 GiB per file · 10,000 conversions a day · Files deleted automatically'],
+  ] as const)('shows "%s" viewers "%s", the allowance of their own plan', (plan, copy) => {
     shownPlan.current = plan;
     const text = dropzoneText();
     expect(text).toContain(copy);
@@ -201,12 +203,8 @@ describe('a file over the limit', () => {
     return renderDom(
       createElement(QueueItemRow, {
         item,
-        isFormatSelectorOpen: false,
-        onToggleFormatSelector: noop,
-        onCloseFormatSelector: noop,
         onSelectTargetFormat: noop,
         onOpenOptions: noop,
-        onRetry: noop,
         onRemove: noop,
       })
     );
@@ -223,9 +221,9 @@ describe('a file over the limit', () => {
     const text = visibleText(dom);
     expect(text).toContain(message);
     expect(text).not.toContain('allows files up to');
-    expect(text).toContain('Failed');
+    expect(text).not.toContain('Failed');
     expect(attrOf(select(dom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')).toBe('');
-    expect(attrOf(select(dom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')).toBe('');
+    expect(select(dom, 'button').filter((b) => visibleText(b) === 'Retry')).toEqual([]);
   });
 
   function alertOf(dom: ReturnType<typeof rowFor>): string | null {
@@ -271,12 +269,8 @@ describe('a file over the limit', () => {
     const noop = () => undefined;
     const props = {
       item,
-      isFormatSelectorOpen: false,
-      onToggleFormatSelector: noop,
-      onCloseFormatSelector: noop,
       onSelectTargetFormat: noop,
       onOpenOptions: noop,
-      onRetry: noop,
       onRemove: removed,
     };
 

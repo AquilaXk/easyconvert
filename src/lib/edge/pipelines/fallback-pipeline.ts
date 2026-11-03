@@ -6,7 +6,6 @@
  *    that cannot be executed in the local browser edge MUST NOT silently upload to cloud.
  * 2. Explicit Consent Routing: Only route to Cloud Serverless API (/api/convert)
  *    when user has not strictly enforced client-only execution.
- * 3. Zero-Data Retention Header Transmission (X-Zero-Retention: true).
  */
 
 import { ConversionFailedError, ConversionOptions, ConversionQueueItem } from '../../types';
@@ -68,7 +67,7 @@ export interface CloudConversionResult {
 }
 
 /**
- * Executes serverless cloud conversion with Zero-Data Retention guarantees.
+ * Executes serverless cloud conversion; the server keeps the result until the retention rule of entry 125 deletes it.
  */
 export async function executeServerlessCloudFallback(
   file: File | Blob,
@@ -86,9 +85,6 @@ export async function executeServerlessCloudFallback(
 
   const res = await fetch('/api/convert', {
     method: 'POST',
-    headers: {
-      'X-Zero-Retention': 'true',
-    },
     body: formData,
     signal,
   });

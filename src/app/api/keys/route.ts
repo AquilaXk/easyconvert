@@ -1,54 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionFromRequest } from '@/lib/auth/session';
-import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
+import { serverFault } from '@/lib/api/problem-details';
+import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
-import type { User } from '@/lib/auth/types';
 
 export const dynamic = 'force-dynamic';
 
-async function resolveAuthenticatedUser(
-  req: NextRequest,
-  requireAdminKey = false
-): Promise<{ user: User | null; error?: string; status: number; headers?: Record<string, string> }> {
-  const sessionUser = await getSessionFromRequest(req);
-  if (sessionUser) {
-    return { user: sessionUser, status: 200 };
-  }
-
-  const auth = await validateApiAccess(req, 0);
-  if (!auth.authorized || !auth.user) {
-    return {
-      user: null,
-      error: auth.error ?? 'Unauthorized: Sign in or valid API key required.',
-      status: auth.status ?? 401,
-      headers: authErrorHeaders(auth),
-    };
-  }
-
-  if (requireAdminKey && auth.apiKey) {
-    const hasAdminScope = auth.apiKey.scopes?.includes('*');
-    if (!hasAdminScope) {
-      return {
-        user: null,
-        error: 'Forbidden: API key lacks admin wildcard (*) scope to manage API keys.',
-        status: 403,
-      };
-    }
-  }
-
-  return { user: auth.user, status: 200 };
-}
+const MANAGE_KEYS = { action: 'manage API keys', adminKey: true };
 
 export async function GET(req: NextRequest) {
-  const auth = await resolveAuthenticatedUser(req, true);
-  if (!auth.user) {
-    return NextResponse.json(
-      { success: false, error: auth.error },
-      { status: auth.status, headers: auth.headers }
-    );
-  }
+  const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
+  if ('refused' in auth) return auth.refused;
 
   const keys = await redisKeyStore.listApiKeys(auth.user.id);
   return NextResponse.json({
@@ -122,23 +86,13 @@ function parseKeyCreationPayload(body: Record<string, unknown> | null | undefine
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await resolveAuthenticatedUser(req, true);
-  if (!auth.user) {
-    return NextResponse.json(
-      { success: false, error: auth.error },
-      { status: auth.status, headers: auth.headers }
-    );
-  }
+  const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
+  if ('refused' in auth) return auth.refused;
 
   try {
     const body = await req.json().catch(() => ({}));
     const parsed = parseKeyCreationPayload(body);
-    if (parsed.error) {
-      return NextResponse.json(
-        { success: false, error: parsed.error },
-        { status: 400 }
-      );
-    }
+    if (parsed.error) return refusal(400, 'invalid_key_settings', parsed.error);
 
     const result = await redisKeyStore.generateApiKey(auth.user.id, parsed.keyName, {
       allowedIps: parsed.allowedIps,
@@ -155,11 +109,7 @@ export async function POST(req: NextRequest) {
       warning: 'Please copy your API key now. You will not be able to see it again.',
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to generate API key';
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
+    return serverFault<DashboardRefusalCode>('keys', err, 'Failed to generate API key.', 'key_create_failed');
   }
 }
 

@@ -11,6 +11,8 @@
   --radius-sm: 12px;
   --radius-md: 16px;
   --radius-xl: 20px;
+  /* The height of the sticky header, which in-page anchors and the queue section leave room for. */
+  --header-height: 4rem;
 
   --c-canvas: 248 250 252;
   --c-surface: 255 255 255;
@@ -89,8 +91,14 @@
 @layer base {
   /* In-page anchors land below the sticky header. */
   html {
-    scroll-padding-top: 4.5rem;
+    scroll-padding-top: calc(var(--header-height) + 0.5rem);
     accent-color: rgb(var(--c-accent));
+  }
+
+  /* While the file bar is pinned to the bottom, a control that takes focus scrolls into view above it; the bar publishes
+     its measured height (`--queue-bar-height`, ConversionQueue.tsx), which changes as it stacks or shows an error. */
+  html:has([data-queue-bar]) {
+    scroll-padding-bottom: calc(var(--queue-bar-height, 0px) + 0.5rem);
   }
 
   body {

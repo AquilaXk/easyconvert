@@ -1,7 +1,7 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
 import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
-export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
+export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
   // ==========================================
   // 1. AUDIO (24 formats)
   // ==========================================
@@ -81,7 +81,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     extension: 'opus',
     mimeType: 'audio/opus',
     category: 'audio',
-    description: 'IETF standard interactive speech and high-fidelity music streaming codec.',
+    description: 'IETF standard codec for interactive speech and music streaming.',
     targetFormats: ['mp3', 'wav', 'aac', 'ogg', 'flac', 'zip', 'aiff', 'm4a', 'opus', 'wma'],
     optionsSchema: { audioBitrate: true, audioChannels: true, audioSampleRate: true },
   },
@@ -2883,7 +2883,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     targetFormats: ['html', 'pdf', 'jpg', 'png', 'csv', 'ods', 'xls', 'xlsx'],
     optionsSchema: {delimiter:true,hasHeaders:true,sheetIndex:true},
   },
-};
+});
 
 export const CATEGORY_LABELS: Record<FormatCategory, string> = {
   image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video', audio: 'Audio', ebook: 'Ebooks',

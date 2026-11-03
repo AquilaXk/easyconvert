@@ -115,11 +115,11 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const fetchCall = fetchSpy.mock.calls[0];
       expect(fetchCall[0]).toBe('/api/convert');
-      expect((fetchCall[1]?.headers as any)['X-Zero-Retention']).toBe('true');
+      expect(new Headers(fetchCall[1]?.headers).has('X-Zero-Retention')).toBe(false);
 
-      // Must succeed via Cloud Zero-Retention without throwing an unhandled client edge error
+      // Must succeed via the server without throwing an unhandled client edge error
       expect(errorOccurred).toBe(false);
-      expect(successTier).toBe('Cloud (Zero-Retention)');
+      expect(successTier).toBe('Cloud');
     });
   });
 
@@ -170,7 +170,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         hasOpfsSyncAccess: true,
       });
       expect(unsupportedResolution.tier).toBe('L4');
-      expect(unsupportedResolution.tierName).toBe('Cloud (Zero-Retention)');
+      expect(unsupportedResolution.tierName).toBe('Cloud');
       expect(unsupportedResolution.reason).toContain('cloud serverless');
 
       // Unsupported large audio file: pcm -> wav (requires non-chunked header framing)
@@ -178,7 +178,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         hasOpfsSyncAccess: true,
       });
       expect(pcmWavResolution.tier).toBe('L4');
-      expect(pcmWavResolution.tierName).toBe('Cloud (Zero-Retention)');
+      expect(pcmWavResolution.tierName).toBe('Cloud');
 
       // Supported large file: csv -> tsv with OPFS available
       const supportedResolution = resolveConversionTier('csv', 'tsv', largeSize, {}, {
@@ -660,7 +660,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(fetchSpy.mock.calls[0][0]).toBe('/api/convert');
       expect(errorOccurred).toBe(false);
-      expect(successTier).toBe('Cloud (Zero-Retention)');
+      expect(successTier).toBe('Cloud');
     });
 
     it('refuses non-edge formats with Fail-Closed error when clientEdgeMode is strictly true', async () => {

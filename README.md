@@ -4,7 +4,7 @@
 
 EasyConvert is a high-performance universal file conversion platform built with Next.js 15 (App Router), TypeScript, and a signature lavender design system. It delivers deterministic conversion across **292 file formats** and **2,156 verified conversion specifications** spanning **12 distinct categories**.
 
-Powered by authentic in-memory pure-TypeScript binary engines, distributed BullMQ job queues, and S3/OCI chunked multipart storage, EasyConvert enforces a strict zero-retention, fail-closed privacy architecture for both browser and API workflows.
+Powered by authentic in-memory pure-TypeScript binary engines, distributed BullMQ job queues, and S3/OCI chunked multipart storage, EasyConvert fails closed on malformed input and deletes files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
 
 ---
 
@@ -22,7 +22,7 @@ Powered by authentic in-memory pure-TypeScript binary engines, distributed BullM
 - **Distributed Async Job Queue**: BullMQ-ready queue system (`/api/queue/jobs`, `/api/queue/stats`) with real-time job progress tracking, retry semantics, and webhook notifications.
 - **S3 & OCI Chunked Multipart Storage**: Object storage abstraction (`/api/storage/multipart`, `/api/storage/file/[...key]`) supporting large binary file ingestion with automatic expiration.
 - **Dynamic SEO Landing Routes**: Fully rendered dynamic `/[slug]` subpages for format pairs (e.g., `/pdf-to-docx`, `/png-to-webp`, `/mp4-to-mp3`) with format parameters, FAQs, and breadcrumbs.
-- **Fail-Closed & Zero-Retention Security**: Ephemeral memory processing with instant cleanup upon job termination. Malformed payloads or unsupported formats immediately fail closed with HTTP 400 Bad Request, preventing corrupted outputs or silent fallbacks.
+- **Fail-Closed Processing and Scheduled Deletion**: Every job runs in an isolated worker, and results and uploads are deleted on the schedule above. Malformed payloads or unsupported formats immediately fail closed with HTTP 400 Bad Request, preventing corrupted outputs or silent fallbacks.
 - **Signature Lavender Design System**: High-contrast, accessible user interface featuring a signature lavender palette with seamless light and dark mode support.
 
 ---
@@ -262,7 +262,7 @@ Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by
 
 - **Deterministic Test Suite**: 21 test files containing 192 tests verifying RFC compliance, pure-TS mathematical basis functions, OLE2 CFBF structures, and memory safety.
 - **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers immediately trigger HTTP 400 Bad Request responses.
-- **Strict Zero-Retention**: No persistent file storage. Temporary buffers are allocated in ephemeral heap memory and cleared immediately upon conversion.
+- **Scheduled Deletion**: A result is kept until its first complete download plus 10 minutes, or 1 hour after conversion, and an upload until 10 minutes after its last job (policy decision 125).
 - **SonarCloud Integration**: Automated static analysis and code quality gates configured via `sonar-project.properties`.
 
 ---

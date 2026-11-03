@@ -8,25 +8,23 @@ export type SlugInfoType =
   | 'unit'
   | 'accessibility';
 
-/** The words a pair or format page's title is built from. `display` is how the English copy names it. */
-export interface SlugName {
-  id: string;
-  display: string;
-}
+/** A word a slug may name a category by instead of a format (`/video-converter`, `/word-to-pdf`). */
+export type CategoryWord =
+  | 'video' | 'audio' | 'image' | 'document' | 'ebook' | 'archive' | 'vector' | 'font' | 'cad' | 'spreadsheet'
+  | 'presentation' | 'data' | 'word' | 'excel' | 'powerpoint' | 'photo' | 'picture' | 'music';
 
-/** Which description a pair page gets, by the categories of its two formats. */
-export type PairCopyGroup = 'videoToAudio' | 'media' | 'image' | 'archive' | 'data' | 'document';
-
-/** Which description a format converter page gets, by the category of its format. */
-export type FormatCopyGroup = 'audio' | 'video' | 'image' | 'archive' | 'data' | 'presentation' | 'ebook' | 'document';
+/** How a pair or format page names one side: a format by its id in capitals, a category by the word of its title. */
+export type SlugName =
+  | { kind: 'format'; id: string; display: string }
+  | { kind: 'category'; id: CategoryWord; display: string };
 
 /** What a slug's title and description say, as data, for the web interface to word in the visitor's language. */
 export type SlugCopy =
   | { kind: 'info'; page: SlugInfoType }
   | { kind: 'ocr' }
   | { kind: 'unitPair'; src: string; tgt: string }
-  | { kind: 'pair'; src: SlugName; tgt: SlugName; group: PairCopyGroup }
-  | { kind: 'format'; name: SlugName; group: FormatCopyGroup }
+  | { kind: 'pair'; src: SlugName; tgt: SlugName }
+  | { kind: 'format'; name: SlugName }
   | { kind: 'merge'; format: string }
   | { kind: 'compress'; format: string }
   | { kind: 'saveWebsiteAsPdf' }

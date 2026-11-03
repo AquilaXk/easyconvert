@@ -343,7 +343,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
         { hasWebCodecsVideo: false, hasWebCodecsAudio: false }
       );
       expect(res.tier).toBe('L4');
-      expect(res.tierName).toBe('Cloud (Zero-Retention)');
+      expect(res.tierName).toBe('Cloud');
       expect(res.isClientEdge).toBe(false);
     });
   });

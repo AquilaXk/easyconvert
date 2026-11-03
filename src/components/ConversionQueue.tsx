@@ -1,16 +1,16 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { ArrowRight, ChevronDown, Loader2, Package, Trash2, X } from 'lucide-react';
+import { ChevronDown, CircleCheck, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
 import { getAvailableTargetFormats } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import FormatSelector from './FormatSelector';
+import FormatPickerButton from './workbench/FormatPickerButton';
 import OptionsModal from './OptionsModal';
-import AdBanner from './AdBanner';
 import QueueItemRow from './workbench/QueueItemRow';
+import FileSourceButton from './workbench/FileSourceButton';
 import { getPasswordValidationError } from './workbench/options/options-capabilities';
 
 export interface ConversionQueueProps {
@@ -21,8 +21,9 @@ export interface ConversionQueueProps {
   onUpdateAllTargets?: (targetFormat: string) => void;
   onUpdateOptions: (id: string, options: ConversionOptions) => void;
   onConvertAll: () => void;
-  onConvertSingle: (id: string) => void;
   onAddMoreFiles: () => void;
+  /** Receives a file the file bar imported from a link. */
+  onImportFile: (file: File) => void;
   onDownloadAllZip: () => void;
   isConverting: boolean;
   zipError?: boolean;
@@ -76,108 +77,125 @@ function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefiniti
 }
 
 interface QueueBatchHeaderProps {
-  itemCount: number; canBatchSelect: boolean; effectiveBusy: boolean; isBatchSelectorOpen: boolean; batchTargetLabel: string;
+  itemCount: number; canBatchSelect: boolean; effectiveBusy: boolean; batchTargetLabel: string;
   batchAvailableFormats: FormatDefinition[]; onUpdateAllTargets?: (targetFormat: string) => void;
-  onToggleBatchSelector: () => void; onCloseBatchSelector: () => void;
   onSelectBatchTarget: (fmt: string) => void; onClearAll: () => void;
 }
 
 function QueueBatchHeader({
-  itemCount, canBatchSelect, effectiveBusy, isBatchSelectorOpen, batchTargetLabel, batchAvailableFormats,
-  onUpdateAllTargets, onToggleBatchSelector, onCloseBatchSelector, onSelectBatchTarget, onClearAll,
+  itemCount, canBatchSelect, effectiveBusy, batchTargetLabel, batchAvailableFormats,
+  onUpdateAllTargets, onSelectBatchTarget, onClearAll,
 }: Readonly<QueueBatchHeaderProps>) {
   const t = useTranslations('queue');
   return (
-    <div className="px-4 sm:px-5 py-3 border-b border-rule flex flex-wrap items-center justify-between gap-3">
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
       {onUpdateAllTargets && canBatchSelect ? (
         <div className="flex items-center flex-wrap gap-2.5">
-          <span className="text-xs font-medium text-ink-2">{t('convertAllTo')}</span>
-          <div className="relative">
-            <button
-              type="button" aria-haspopup="dialog" aria-expanded={isBatchSelectorOpen} disabled={effectiveBusy} onClick={onToggleBatchSelector}
-              className="transition-colors inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-xs border border-rule bg-sunken text-sm font-semibold uppercase text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-ink-3" />
-            </button>
-            {isBatchSelectorOpen && (
-              <FormatSelector
-                availableFormats={batchAvailableFormats} selectedFormatId={batchTargetLabel}
-                onSelect={onSelectBatchTarget} onClose={onCloseBatchSelector} title={t('convertAllTitle')}
-              />
-            )}
-          </div>
+          <span className="text-sm font-medium text-ink-2">{t('convertAllTo')}</span>
+          <FormatPickerButton
+            disabled={effectiveBusy}
+            className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-surface text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            availableFormats={batchAvailableFormats} selectedFormatId={batchTargetLabel}
+            onSelect={onSelectBatchTarget} title={t('convertAllTitle')}
+          >
+            <span>{batchTargetLabel ? batchTargetLabel.toUpperCase() : t('chooseFormat')}</span>
+            <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />
+          </FormatPickerButton>
         </div>
       ) : (
-        <span className="text-xs font-medium text-ink-2">{t('filesInQueue', { count: itemCount })}</span>
+        <span className="text-sm font-medium text-ink-2">{t('filesInQueue', { count: itemCount })}</span>
       )}
       <button
         type="button" disabled={effectiveBusy} onClick={onClearAll}
-        className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-sm text-xs font-medium text-ink-2 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        className="inline-flex items-center gap-1.5 min-h-[44px] md:min-h-9 px-3 rounded-xs text-sm font-medium text-ink-2 hover:text-danger hover:bg-danger-soft transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        <Trash2 className="w-3.5 h-3.5" /><span>{t('clearAll')}</span>
+        <Trash2 aria-hidden="true" className="size-4" /><span>{t('clearAll')}</span>
       </button>
     </div>
   );
 }
 
-interface QueueFooterBarProps {
+interface QueueFileBarProps {
   statusSummary: string; zipError?: boolean; onDismissZipError?: () => void;
-  effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean;
-  onAddMoreFiles: () => void; onDownloadAllZip: () => void; onConvertAll: () => void;
+  effectiveBusy: boolean; completedCount: number; allDone: boolean; canConvert: boolean; isSettledWell: boolean;
+  onAddMoreFiles: () => void; onImportFile: (file: File) => void; onDownloadAllZip: () => void; onConvertAll: () => void;
 }
 
-function QueueFooterBar({
+/** Publishes the height of `ref`'s element as the root property `property` while it is mounted, as it changes. */
+function usePublishedHeight(ref: React.RefObject<HTMLElement | null>, property: string) {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => root.style.setProperty(property, `${element.offsetHeight}px`));
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty(property);
+    };
+  }, [ref, property]);
+}
+
+/** The bar pinned to the bottom of the viewport while the queue is on screen: the status, add more files, and convert. */
+function QueueFileBar({
   statusSummary, zipError, onDismissZipError, effectiveBusy, completedCount,
-  allDone, canConvert, onAddMoreFiles, onDownloadAllZip, onConvertAll,
-}: Readonly<QueueFooterBarProps>) {
+  allDone, canConvert, isSettledWell, onAddMoreFiles, onImportFile, onDownloadAllZip, onConvertAll,
+}: Readonly<QueueFileBarProps>) {
   const t = useTranslations('queue');
   const zipFailed = useTranslations('errors.queue')('zipFailed');
+  const barRef = useRef<HTMLDivElement>(null);
+  usePublishedHeight(barRef, '--queue-bar-height');
   return (
-    <div className="bg-surface border-t border-rule px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
-      <div className="min-w-0">
-        <output aria-live="polite" className="block text-sm text-ink-2">{statusSummary}</output>
-        {zipError && (
-          <div className="mt-1 flex items-center gap-2 text-xs text-danger">
-            <p role="alert" className="min-w-0">{zipFailed}</p>
-            {onDismissZipError && (
-              <button
-                type="button" aria-label={t('dismissZipError')} onClick={onDismissZipError}
-                className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm hover:bg-danger-soft cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="flex items-center flex-wrap sm:flex-nowrap gap-2.5 w-full sm:w-auto justify-end">
-        <button
-          type="button" disabled={effectiveBusy} onClick={onAddMoreFiles}
-          className="transition-colors min-h-[48px] px-4 rounded-xs text-ink border border-rule bg-sunken hover:border-ink-3 text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <span>{t('addMore')}</span>
-        </button>
-        {completedCount > 1 && (
-          <button
-            type="button" onClick={onDownloadAllZip}
-            className="transition-colors min-h-[48px] px-4 rounded-xs bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer"
-          >
-            <Package className="w-4 h-4" /><span>{t('downloadAll')}</span>
-          </button>
-        )}
-        {!allDone && (
-          <button
-            type="button" disabled={!canConvert} onClick={onConvertAll}
-            className="btn-primary min-h-[48px] px-6 rounded-xs text-lg font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-          >
-            {effectiveBusy ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /><span>{t('converting')}</span></>
-            ) : (
-              <><span>{t('convert')}</span><ArrowRight className="w-4 h-4" /></>
-            )}
-          </button>
-        )}
+    <div ref={barRef} data-queue-bar className="sticky bottom-0 z-30 border-t border-rule bg-surface">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row md:items-center gap-3">
+        <div className="min-w-0 md:flex-1 flex flex-col items-center md:items-start">
+          <p className="flex items-center gap-2 text-sm text-ink-3">
+            {isSettledWell && <CircleCheck aria-hidden="true" className="size-4 shrink-0" />}
+            <output aria-live="polite">{statusSummary}</output>
+          </p>
+          {zipError && (
+            <div className="mt-1 flex items-center gap-2 text-xs text-danger">
+              <p role="alert" className="min-w-0">{zipFailed}</p>
+              {onDismissZipError && (
+                <button
+                  type="button" aria-label={t('dismissZipError')} onClick={onDismissZipError}
+                  className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-xs hover:bg-danger-soft cursor-pointer"
+                >
+                  <X aria-hidden="true" className="size-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col md:flex-row md:items-center gap-2.5">
+          <FileSourceButton
+            variant="secondary"
+            label={t('addMore')}
+            disabled={effectiveBusy}
+            onPickDevice={onAddMoreFiles}
+            onImportFile={onImportFile}
+          />
+          {completedCount > 1 && (
+            <button
+              type="button" onClick={onDownloadAllZip}
+              className="transition-colors min-h-[44px] md:min-h-[40px] px-3.5 rounded-xs bg-accent-soft text-accent-ink border border-accent-edge hover:border-accent text-sm font-medium inline-flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Package aria-hidden="true" className="size-4" /><span>{t('downloadAll')}</span>
+            </button>
+          )}
+          {!allDone && (
+            <button
+              type="button" disabled={!canConvert} onClick={onConvertAll}
+              className="btn-primary min-h-[48px] px-6 rounded-xs text-lg font-medium inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {effectiveBusy ? (
+                <><Loader2 aria-hidden="true" className="size-4 animate-spin" /><span>{t('converting')}</span></>
+              ) : (
+                <span>{t('convert')}</span>
+              )}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -200,17 +218,21 @@ function deriveQueueViewState(
   const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
   const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
   const statusSummary = getQueueStatusSummary(t, items, convertibleItems, effectiveBusy);
-  return { effectiveBusy, completedCount, allDone, canConvert, statusSummary };
+  // The check mark of page B's bar stands for "ready" or "done", never beside a failure.
+  const isSettledWell = allDone || (canConvert && !convertibleItems.some((i) => i.status === 'error'));
+  return { effectiveBusy, completedCount, allDone, canConvert, isSettledWell, statusSummary };
 }
 
+/**
+ * The queue after files are picked, in the reference layout: one full-width row per file, then a bar that stays at the
+ * bottom of the viewport. The section fills the viewport, so the bar starts pinned and settles under the last row at the end.
+ */
 export default function ConversionQueue({
   items, onRemoveItem, onClearAll, onUpdateTargetFormat, onUpdateAllTargets,
-  onUpdateOptions, onConvertAll, onConvertSingle, onAddMoreFiles, onDownloadAllZip,
+  onUpdateOptions, onConvertAll, onAddMoreFiles, onImportFile, onDownloadAllZip,
   isConverting, zipError, onDismissZipError,
 }: Readonly<ConversionQueueProps>) {
   const t = useTranslations('queue');
-  const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
-  const [isBatchSelectorOpen, setIsBatchSelectorOpen] = useState(false);
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
@@ -228,40 +250,34 @@ export default function ConversionQueue({
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
-    <>
-      <div className="bg-surface/50 w-full rounded-none border border-rule overflow-visible">
+    <section aria-label={t('label')} className="min-h-[calc(100dvh-var(--header-height))] flex flex-col">
+      <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {items.length > 1 && (
           <QueueBatchHeader
-            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
+            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy}
             batchTargetLabel={batchTargetLabel} batchAvailableFormats={batchAvailableFormats} onUpdateAllTargets={onUpdateAllTargets}
-            onToggleBatchSelector={() => { setActiveFormatSelectorId(null); setIsBatchSelectorOpen((prev) => !prev); }}
-            onCloseBatchSelector={() => setIsBatchSelectorOpen(false)}
-            onSelectBatchTarget={(fmt) => { setBatchTargetLabel(fmt); onUpdateAllTargets?.(fmt); setIsBatchSelectorOpen(false); }}
+            onSelectBatchTarget={(fmt) => { setBatchTargetLabel(fmt); onUpdateAllTargets?.(fmt); }}
             onClearAll={onClearAll}
           />
         )}
-        <div className="divide-y divide-rule">
+        <ul className="flex flex-col gap-3.5">
           {items.map((item) => (
-            <QueueItemRow
-              key={item.id} item={item} isFormatSelectorOpen={activeFormatSelectorId === item.id}
-              onToggleFormatSelector={() => {
-                setIsBatchSelectorOpen(false);
-                setActiveFormatSelectorId((prev) => (prev === item.id ? null : item.id));
-              }}
-              onCloseFormatSelector={() => setActiveFormatSelectorId(null)}
-              onSelectTargetFormat={(fmt) => { onUpdateTargetFormat(item.id, fmt); setActiveFormatSelectorId(null); }}
-              onOpenOptions={() => setActiveOptionsModalId(item.id)}
-              onRetry={() => onConvertSingle(item.id)} onRemove={() => onRemoveItem(item.id)}
-            />
+            <li key={item.id}>
+              <QueueItemRow
+                item={item}
+                onSelectTargetFormat={(fmt) => onUpdateTargetFormat(item.id, fmt)}
+                onOpenOptions={() => setActiveOptionsModalId(item.id)}
+                onRemove={() => onRemoveItem(item.id)}
+              />
+            </li>
           ))}
-        </div>
-        <QueueFooterBar
-          statusSummary={view.statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}
-          effectiveBusy={view.effectiveBusy} completedCount={view.completedCount} allDone={view.allDone} canConvert={view.canConvert}
-          onAddMoreFiles={onAddMoreFiles} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
-        />
+        </ul>
       </div>
-      {view.completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
+      <QueueFileBar
+        statusSummary={view.statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}
+        effectiveBusy={view.effectiveBusy} completedCount={view.completedCount} allDone={view.allDone} canConvert={view.canConvert}
+        isSettledWell={view.isSettledWell} onAddMoreFiles={onAddMoreFiles} onImportFile={onImportFile} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
+      />
       {currentOptionsItem?.targetFormat && currentOptionsItem.size <= maxLimit && (
         <OptionsModal
           key={`${currentOptionsItem.id}:${currentOptionsItem.sourceFormat}:${currentOptionsItem.targetFormat}`}
@@ -271,6 +287,6 @@ export default function ConversionQueue({
           onClose={() => setActiveOptionsModalId(null)}
         />
       )}
-    </>
+    </section>
   );
 }

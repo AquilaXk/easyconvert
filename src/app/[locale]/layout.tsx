@@ -48,11 +48,6 @@ export async function generateMetadata({ params }: Omit<LocaleLayoutProps, 'chil
     metadataBase: siteMetadataBase(),
     title: t('title'),
     description: t('description'),
-    icons: {
-      icon: '/icon.svg',
-      shortcut: '/icon.svg',
-      apple: '/icon.svg',
-    },
   };
 }
 

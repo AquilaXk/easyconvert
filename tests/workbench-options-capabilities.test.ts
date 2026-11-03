@@ -677,8 +677,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     const maxBytes = getViewerMaxFileBytes();
     const noop = () => undefined;
     const rowNoops = {
-      isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-      onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
+      onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
     };
     const recoverableRowDom = renderDom(
       createElement(QueueItemRow, {
@@ -695,10 +694,8 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(
       attrOf(select(recoverableRowDom, 'button', 'data-testid', 'queue-options-btn')[0], 'disabled')
     ).toBeNull();
-    const recoverableRetryBtn = select(recoverableRowDom, 'button').find(
-      (b) => visibleText(b) === 'Retry'
-    )!;
-    expect(attrOf(recoverableRetryBtn, 'disabled')).toBeNull();
+    // The row converts again through the bar's Convert, as the reference row does, so it has no retry of its own.
+    expect(select(recoverableRowDom, 'button').filter((b) => visibleText(b) === 'Retry')).toEqual([]);
 
     const oversizeRowDom = renderDom(
       createElement(QueueItemRow, {
@@ -715,8 +712,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(
       attrOf(select(oversizeRowDom, 'button', 'data-testid', 'queue-options-btn')[0], 'disabled')
     ).toBe('');
-    const retryBtn = select(oversizeRowDom, 'button').find((b) => visibleText(b) === 'Retry')!;
-    expect(attrOf(retryBtn, 'disabled')).toBe('');
+    expect(select(oversizeRowDom, 'button').filter((b) => visibleText(b) === 'Retry')).toEqual([]);
     const removeBtn = select(oversizeRowDom, 'button', 'aria-label', 'Remove clip.mp4')[0];
     expect(attrOf(removeBtn, 'disabled')).toBeNull();
 
@@ -788,7 +784,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     const noop = () => undefined;
     const queueNoops = {
       onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop,
-      onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false,
+      onConvertAll: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false,
     };
     const parquetFailedQueue = renderDom(
       createElement(ConversionQueue, {
@@ -806,7 +802,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     )!;
     expect(attrOf(parquetConvertBtn, 'disabled')).toBeNull();
     expect(visibleText(select(parquetFailedQueue, 'output')[0])).toBe(
-      '1 file failed conversion. Retry or remove to continue.'
+      '1 file failed conversion. Convert again or remove to continue.'
     );
 
     const pwHarness = buildTestQueueContext([
@@ -826,8 +822,8 @@ describe('Workbench media, document, and tabular capability model', () => {
 
     const invalidZipRowDom = renderDom(
       createElement(QueueItemRow, {
-        item: zipItem, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
-        onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
+        item: zipItem,
+        onSelectTargetFormat: noop, onOpenOptions: noop, onRemove: noop,
       })
     );
     expect(
@@ -836,9 +832,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(
       attrOf(select(invalidZipRowDom, 'button', 'data-testid', 'queue-options-btn')[0], 'disabled')
     ).toBeNull();
-    expect(
-      attrOf(select(invalidZipRowDom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')
-    ).toBe('');
+    expect(select(invalidZipRowDom, 'button').filter((b) => visibleText(b) === 'Retry')).toEqual([]);
 
     const invalidZipQueueDom = renderDom(createElement(ConversionQueue, { items: [zipItem], ...queueNoops }));
     expect(
@@ -860,11 +854,10 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(
       attrOf(select(completedPlusReadyQueueDom, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')
     ).toBeNull();
-    expect(visibleText(select(completedPlusReadyQueueDom, 'output')[0])).toBe('Ready to convert 1 file');
+    expect(visibleText(select(completedPlusReadyQueueDom, 'output')[0])).toBe('1 file ready to convert');
 
     const execSpy = vi.spyOn(clientConverter, 'executeItemConversion').mockResolvedValue(undefined);
     try {
-      await pwHarness.runners.convertSingleItem('arch-1');
       await pwHarness.runners.handleConvertAll();
       expect(execSpy).not.toHaveBeenCalled();
 
@@ -914,7 +907,7 @@ describe('removing an item that is on its way to the server', () => {
       expect(harness.ctx.abortersRef.current.has('c')).toBe(true);
     });
     try {
-      await harness.runners.convertSingleItem('c');
+      await harness.runners.handleConvertAll();
       expect(seen?.aborted).toBe(false);
       expect(harness.ctx.abortersRef.current.size).toBe(0);
     } finally {

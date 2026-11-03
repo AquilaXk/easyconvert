@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/fetch-url/route';
 import { TIERS, calculateBaseCredits } from '../src/lib/pricing';
 import { parseConverterSlug } from '../src/lib/slug-parser';
-import { englishSlugCopy } from './helpers/intl';
+import { slugPageCopy } from './helpers/intl';
 
 describe('Subpages & Routes Verification', () => {
   describe('Pricing volume calculation logic & Credits Calculator', () => {
@@ -60,7 +60,7 @@ describe('Subpages & Routes Verification', () => {
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe('pdf');
       expect(parsed.targetFormat).toBe('docx');
-      expect(englishSlugCopy('pdf-to-docx').title).toBe('PDF to DOCX Converter');
+      expect(slugPageCopy('pdf-to-docx').title).toBe('PDF to DOCX Converter');
     });
 
     it('correctly parses category converter slugs like pdf-converter', () => {
@@ -68,7 +68,7 @@ describe('Subpages & Routes Verification', () => {
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe('pdf');
       expect(parsed.targetFormat).toBe('any');
-      expect(englishSlugCopy('pdf-converter').title).toBe('PDF Converter');
+      expect(slugPageCopy('pdf-converter').title).toBe('PDF Converter');
     });
 
     it('correctly parses video-converter to mp4 and any', () => {
@@ -78,8 +78,8 @@ describe('Subpages & Routes Verification', () => {
     });
 
     it('correctly parses merge and compress utility slugs', () => {
-      expect(englishSlugCopy('merge-pdf').title).toBe('Merge PDF');
-      expect(englishSlugCopy('compress-png').title).toBe('Compress PNG');
+      expect(slugPageCopy('merge-pdf').title).toBe('Merge PDF');
+      expect(slugPageCopy('compress-png').title).toBe('Compress PNG');
     });
 
     it('correctly parses website capture tools', () => {
@@ -96,7 +96,7 @@ describe('Subpages & Routes Verification', () => {
       const terms = parseConverterSlug('terms');
       expect(terms.isInfoPage).toBe(true);
       expect(terms.infoType).toBe('terms');
-      expect(englishSlugCopy('terms').title).toBe('Terms of Service');
+      expect(slugPageCopy('terms').title).toBe('Terms of Service');
 
       const privacy = parseConverterSlug('privacy');
       expect(privacy.isInfoPage).toBe(true);
