@@ -569,8 +569,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The contact page is a plain support contact: a mailto link, no form that would pretend to send a message
     const contact = renderSlug('contact');
     expect(links(contact).filter((l) => l.href.startsWith('mailto:')).map((l) => l.href)).toEqual([
-      'mailto:support@easyconvert.com',
-      'mailto:support@easyconvert.com?subject=Bug%20Report',
+      'mailto:support@aquilaxk.site',
+      'mailto:support@aquilaxk.site?subject=Bug%20Report',
     ]);
   });
 

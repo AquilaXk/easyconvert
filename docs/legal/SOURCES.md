@@ -98,7 +98,7 @@ The Korean text follows the order of PIPC-G (items 1 to 24). Items that do not a
 
 ## Open points
 
-- The privacy policy names "the operator" without a personal or business name, address or telephone number. PIPA 30(1)(6) asks for the officer's name, or a department, with a telephone number; GDPR 13(1)(a) asks for the controller's identity. QA decides what to publish.
-- The contact page shows `support@easyconvert.com`. The domain `easyconvert.com` has no mail exchanger (checked on 2026-11-03), so a message sent there reaches nobody. Every request and report path of these pages leads to the contact page, so this address must be replaced by one the operators read before the pages can be relied on.
+- The privacy policy names the operator and privacy officer, Jeong Dongin, with the contact address `support@aquilaxk.site` (QA decision 2026-11-03), for PIPA 30(1)(6) and GDPR 13(1)(a). No telephone number is published; an e-mail address is the contact the service offers.
+- The contact page and every request and report path show `support@aquilaxk.site`, an address the operator reads; the domain has mail exchangers (checked on 2026-11-03). It replaces `support@easyconvert.com`, a domain of someone else with no mail exchanger.
 - Conversion records have no deletion period (privacy section 3). PIPA 21(1) requires deletion once they are no longer needed; a period has to be chosen and implemented (issue #665).
 - The 14-day retention of the server access log is the Ubuntu default; confirm it with `cat /etc/logrotate.d/nginx` on the host.

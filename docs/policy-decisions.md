@@ -5498,7 +5498,7 @@ Legal
   - **One source of the text.** The page renders the file that `SOURCES.md` cites, so the published text and the cited text cannot drift.
 - **Trade-offs**:
   - **Not reviewed by counsel.** A clause can be wrong in a way research does not show. This is a known risk, accepted for the free launch.
-  - **The privacy policy names no person or business, and the contact page shows an address that reaches nobody.** `support@easyconvert.com` has no mail exchanger. Both are open points for QA in `SOURCES.md`; until they are fixed, a request or a report cannot reach the operators.
+  - **The operator is named, with an e-mail address and no telephone number.** The privacy officer and controller is named with `support@aquilaxk.site`, which replaces an address on a domain with no mail exchanger (QA decision 2026-11-03).
   - **Conversion records have no deletion period.** The privacy policy says so instead of promising one the code does not keep.
   - **A user on a page loaded before a terms change must reload to sign up.** The old version is refused.
 - **Alternatives rejected**:
