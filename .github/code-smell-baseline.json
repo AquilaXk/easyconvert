@@ -132,13 +132,6 @@
     "maxValue": 7
   },
   {
-    "file": "src/lib/api/contracts/schemas.ts",
-    "rule": "max-lines",
-    "function": "<module>",
-    "count": 1,
-    "maxValue": 1505
-  },
-  {
     "file": "src/lib/api/contracts/validate.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "validateOrProblem",
