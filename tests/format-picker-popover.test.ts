@@ -7,7 +7,8 @@ import FormatPickerButton from '../src/components/workbench/FormatPickerButton';
 import { getAllFormats, getAvailableTargetFormats } from '../src/lib/registry';
 import type { FormatDefinition } from '../src/lib/types';
 import { testMessages } from './helpers/intl-messages';
-import { layOutPage, moveScreen, restorePage, screen, settled } from './helpers/picker-screen';
+import { changeLayout, layOutPage, measurements, moveScreen, restorePage, screen, settled } from './helpers/picker-screen';
+import { REGISTRY_WIDE_TIMEOUT_MS } from './helpers/registry-wide-timeout';
 
 /**
  * The format picker as a person drives it: a popover under its trigger with a search field, a category column and a grid
@@ -38,14 +39,17 @@ interface PickerCase {
   /** The source whose targets the picker lists; none lists every format, as the source tile does. */
   source?: string;
   available?: FormatDefinition[];
+  /** The trigger sits in a box that clips its overflow, as a card or a scrolling list would. */
+  clipped?: boolean;
 }
 
 /** A trigger as the pages draw one; `mountCase` presses it. */
-function Harness({ selected, source, available, disabled }: Readonly<PickerCase>) {
-  return createElement(FormatPickerButton, {
+function Harness({ selected, source, available, disabled, clipped }: Readonly<PickerCase>) {
+  const button = createElement(FormatPickerButton, {
     testId: 'trigger', className: '', sourceFormat: source, availableFormats: available, selectedFormatId: selected, disabled, onSelect,
     children: 'JPG',
   });
+  return clipped ? createElement('div', { style: { overflow: 'hidden' } }, button) : button;
 }
 
 function render(picker: PickerCase) {
@@ -109,9 +113,15 @@ describe('the format picker popover', () => {
     expect(formatNames()).not.toContain('TIF');
   });
 
-  it('lists the image formats first for an image source when it is passed no list of targets', () => {
+  it('opens on the image category for an image source when it is passed no list of targets', () => {
     mountCase({ source: 'png' });
+    expect(categoryButtons()[0].getAttribute('aria-pressed')).toBe('true');
     expect(formatNames()).toEqual(expect.arrayContaining(['WEBP', 'JPG', 'AVIF']));
+  });
+
+  it('lists the formats of a category alphabetically by label, as the reference does', () => {
+    mountCase({ source: 'cr2', available: getAvailableTargetFormats('cr2') });
+    expect(formatNames()).toEqual(['AVIF', 'BMP', 'EPS', 'EXR', 'GIF', 'ICO', 'JPG', 'PNG', 'PSD', 'TIFF', 'ULTRAHDR', 'WEBP']);
   });
 
   it('says so, and lists no format, for a source with no targets', () => {
@@ -260,7 +270,7 @@ describe('the format picker popover', () => {
     expect(isClosed()).toBe(true);
   });
 
-  it('draws no format label cut short or hidden behind a hover title, so a long id such as ULTRAHDR reads whole', () => {
+  it('gives every format button the classes that wrap a long label and no hover title, so ULTRAHDR is not cut short (jsdom lays nothing out, so this pins the class contract)', () => {
     mountCase({ selected: 'ultrahdr', source: 'cr2', available: getAvailableTargetFormats('cr2') });
     const long = formatButtons().find((button) => button.textContent === 'ULTRAHDR')!;
     expect(formatButtons().filter((button) => button.title)).toEqual([]);
@@ -274,7 +284,7 @@ describe('the format picker popover', () => {
   it('shows no category column for a list of one category, so its grid takes the whole popover', () => {
     mountCase({ source: 'rar', available: getAvailableTargetFormats('rar') });
     expect(categoryButtons()).toHaveLength(0);
-    expect(formatNames()).toEqual(['ZIP', 'TAR', '7Z', 'TAR.BZ2', 'TAR.GZ']);
+    expect(formatNames()).toEqual(['7Z', 'TAR', 'TAR.BZ2', 'TAR.GZ', 'ZIP']);
   });
 
   it('keeps the category column for a list of several categories', () => {
@@ -383,14 +393,15 @@ describe('where the popover sits', () => {
     expect(popover()!.style).toMatchObject({ left: '8px', width: '304px' });
   });
 
-  it('never opens under the sticky header, and slides under it only as its trigger scrolls away', async () => {
+  it('opens under a trigger below the sticky header, and slides under the header only as its trigger scrolls away', async () => {
     screen.headerBottom = 64;
-    screen.trigger = rect(20, 20, 128, 32);
+    screen.trigger = rect(20, 70, 128, 32);
     mount();
     await settled();
-    expect(popover()!.style.top).toBe('64px');
+    expect(popover()!.style.top).toBe('104px');
     await moveScreen({ trigger: rect(20, -60, 128, 32) });
     expect(popover()!.style.top).toBe('-26px');
+    expect(popover()!.contains(document.activeElement)).toBe(true);
   });
 
   it('moves focus to the trigger, without closing, once the whole popover has scrolled out of view', async () => {
@@ -401,6 +412,81 @@ describe('where the popover sits', () => {
     await moveScreen({ trigger: rect(100, -400, 128, 32) });
     expect(popover()).not.toBeNull();
     expect(document.activeElement).toBe(trigger());
+  });
+
+  it('moves focus once the whole popover is under the sticky header, though it is still inside the screen', async () => {
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    await moveScreen({ trigger: rect(100, -332, 128, 32) });
+    expect(popover()!.style.top).toBe('-298px');
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it('keeps focus inside while any of the popover is below the sticky header', async () => {
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    await moveScreen({ trigger: rect(100, -290, 128, 32) });
+    expect(popover()!.style.top).toBe('-256px');
+    expect(popover()!.contains(document.activeElement)).toBe(true);
+  });
+
+  it('is not taken for gone by a clipping ancestor of its trigger, so opening keeps focus in the search', async () => {
+    mountCase({ source: 'png', available: getAvailableTargetFormats('png'), clipped: true });
+    await settled();
+    expect(popover()!.style.top).toBe('234px');
+    expect(document.activeElement).toBe(search());
+  });
+
+  it('leaves focus where it is, when it is outside the popover, as the popover scrolls out of view', async () => {
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    act(() => search().blur());
+    expect(document.activeElement).toBe(document.body);
+    await moveScreen({ trigger: rect(100, -400, 128, 32) });
+    expect(popover()).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('stays open when focus comes back to its trigger', async () => {
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    await moveScreen({ trigger: rect(100, -400, 128, 32) });
+    expect(document.activeElement).toBe(trigger());
+    await moveScreen({ trigger: rect(100, -399, 128, 32) });
+    expect(popover()).not.toBeNull();
+    expect(trigger().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('follows a trigger that changes size and a row above it that grows, as the observers report them', async () => {
+    screen.trigger = rect(20, 300);
+    mount();
+    await settled();
+    expect(popover()!.style.top).toBe('422px');
+    await changeLayout({ trigger: rect(20, 330) });
+    expect(popover()!.style.top).toBe('452px');
+    await changeLayout({ trigger: rect(20, 330, 112, 160) });
+    expect(popover()!.style.top).toBe('492px');
+  });
+
+  it('stops measuring the page once closed, also for a placement still in flight', async () => {
+    screen.headerBottom = 64;
+    mount();
+    await settled();
+    act(() => {
+      document.defaultView!.dispatchEvent(new Event('scroll'));
+    });
+    render({ disabled: true });
+    const closed = measurements();
+    expect(closed.observers).toBe(0);
+    await settled();
+    await moveScreen({ trigger: rect(100, -400, 128, 32) });
+    await changeLayout({ trigger: rect(100, 200, 128, 32) });
+    expect(isClosed()).toBe(true);
+    expect(measurements()).toEqual(closed);
   });
 });
 
@@ -415,8 +501,7 @@ function pickerLists(): Array<[string, PickerCase]> {
   ];
 }
 
-/** The check mounts the picker for every list in each language (304 lists), which took 8.5 s in Korean on a CI runner; the 30 s ceiling is about three and a half times that. */
-const REGISTRY_WIDE_TIMEOUT_MS = 30_000;
+/** The check mounts the picker for every list in each language (304 lists), which took 8.5 s in Korean on a CI runner. */
 
 describe('the names the picker shows', () => {
   it.each(['en', 'ko'] as const)('are unique within every list it can show, across its categories, to the eye and to a screen reader, in %s', (locale) => {

@@ -1,14 +1,14 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useLayoutEffect, useRef, useId } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef, useId } from 'react';
 import { createPortal } from 'react-dom';
-import { autoUpdate, computePosition, flip, hide, offset, platform, shift, size } from '@floating-ui/dom';
+import { autoUpdate, computePosition, detectOverflow, flip, offset, platform, shift, size, type Middleware } from '@floating-ui/dom';
 import { useTranslations } from 'next-intl';
 import type { FormatDefinition } from '@/lib/types';
 import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
 import { CATEGORY_ORDER } from '@/lib/registry-stats';
 import { canonicalFormat } from '@/lib/format-aliases';
-import { FormatSelectorBody } from './workbench/FormatSelectorView';
+import { FormatSelectorBody, formatLabel } from './workbench/FormatSelectorView';
 import { usePopoverDismiss } from './workbench/usePopoverDismiss';
 
 /** What a picker offers and reports, which the button that opens it takes as its own props. */
@@ -60,6 +60,13 @@ function resolveInitialCategory(currentFormatId: string | undefined, sourceForma
   );
 }
 
+const byLabel = (a: FormatDefinition, b: FormatDefinition) => {
+  const [labelA, labelB] = [formatLabel(a), formatLabel(b)];
+  if (labelA === labelB) return 0;
+  return labelA < labelB ? -1 : 1;
+};
+
+/** The formats of each category, alphabetically by label, as the reference lists them. */
 function groupFormatsByCategory(allFormats: FormatDefinition[]): Map<string, FormatDefinition[]> {
   const map = new Map<string, FormatDefinition[]>();
   for (const fmt of allFormats) {
@@ -68,6 +75,7 @@ function groupFormatsByCategory(allFormats: FormatDefinition[]): Map<string, For
     if (group) group.push(fmt);
     else map.set(cat, [fmt]);
   }
+  for (const group of map.values()) group.sort(byLabel);
   return map;
 }
 
@@ -99,23 +107,43 @@ async function headerInset(popover: HTMLElement): Promise<number> {
 }
 
 /**
+ * Whether the popover lies wholly outside the visible area: the viewport below the sticky header. It is the `escaped`
+ * measure of the library's `hide` middleware (`packages/core/src/middleware/hide.ts`: the overflow on a side is at least
+ * the size of the element) taken on the popover's own clipping ancestors, as `detectOverflow` does by default, instead of
+ * those of its trigger, so that a clipping ancestor of the trigger cannot hide a popover that is on screen. Left and right
+ * need no check, since `shift` keeps the popover inside them.
+ */
+const offscreen = (inset: number): Middleware => ({
+  name: 'offscreen',
+  async fn(state) {
+    const overflow = await detectOverflow(state, { padding: { top: inset } });
+    const { height } = state.rects.floating;
+    return { data: { offscreen: overflow.top >= height || overflow.bottom >= height } };
+  },
+});
+
+/**
  * Keeps the popover under its trigger as the page scrolls, the window resizes, an on-screen keyboard moves the visual
  * viewport or a row above it changes size. It places the popover as Floating UI places a fixed element: under the trigger,
  * above it when there is more room there, inside an 8 px gutter and the visual viewport below the sticky header, and no
- * taller than the room on its side. It follows the trigger off screen rather than closing, as the reference popover does;
- * the first placement alone is held below the header, so a popover never opens under it. When the popover has scrolled out
- * of view with focus inside, focus moves to the trigger.
+ * taller than the room on its side, so that the popover of a trigger on screen never starts under the header. It follows
+ * the trigger off screen rather than closing, as the reference popover does, and tells `onOffscreen` after each placement
+ * that leaves it wholly out of view.
  */
-function usePopoverPlacement(triggerRef: React.RefObject<HTMLElement | null>, popoverRef: React.RefObject<HTMLDialogElement | null>): void {
+function usePopoverPlacement(
+  triggerRef: React.RefObject<HTMLElement | null>,
+  popoverRef: React.RefObject<HTMLDialogElement | null>,
+  onOffscreen: () => void
+): void {
   useLayoutEffect(() => {
     const trigger = triggerRef.current;
     const popover = popoverRef.current;
     if (!trigger || !popover) return;
     popover.style.width = `${PANEL_WIDTH}px`;
     let alive = true;
-    let placed = false;
     const update = async () => {
       const inset = await headerInset(popover);
+      if (!alive) return;
       const padding = { top: inset, right: VIEWPORT_GUTTER, bottom: VIEWPORT_GUTTER, left: VIEWPORT_GUTTER };
       const { x, y, middlewareData } = await computePosition(trigger, popover, {
         strategy: 'fixed',
@@ -133,20 +161,19 @@ function usePopoverPlacement(triggerRef: React.RefObject<HTMLElement | null>, po
               });
             },
           }),
-          hide({ strategy: 'escaped', padding: { top: inset } }),
+          offscreen(inset),
         ],
       });
       if (!alive) return;
-      Object.assign(popover.style, { left: `${x}px`, top: `${placed ? y : Math.max(y, inset)}px` });
-      placed = true;
-      if (middlewareData.hide?.escaped && popover.contains(document.activeElement)) trigger.focus({ preventScroll: true });
+      Object.assign(popover.style, { left: `${x}px`, top: `${y}px` });
+      if (middlewareData.offscreen?.offscreen) onOffscreen();
     };
     const stopUpdating = autoUpdate(trigger, popover, update);
     return () => {
       alive = false;
       stopUpdating();
     };
-  }, [triggerRef, popoverRef]);
+  }, [triggerRef, popoverRef, onOffscreen]);
 }
 
 /**
@@ -181,7 +208,10 @@ export default function FormatSelector({
     leavesOnTab: (event) => shouldCloseOnTab(event, popoverRef.current),
     onClose,
   });
-  usePopoverPlacement(triggerRef, popoverRef);
+  const leaveOffscreenPopover = useCallback(() => {
+    if (popoverRef.current?.contains(document.activeElement)) triggerRef.current?.focus({ preventScroll: true });
+  }, [triggerRef]);
+  usePopoverPlacement(triggerRef, popoverRef, leaveOffscreenPopover);
 
   const displayedFormats = useMemo(
     () => filterDisplayedFormats(allFormats, categoriesWithFormats, activeCategory, search),

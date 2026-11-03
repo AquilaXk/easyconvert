@@ -1204,8 +1204,7 @@
       "optionsLabel": "Conversion options for {name}",
       "cancelLabel": "Cancel {name}",
       "removeLabel": "Remove {name}",
-      "options": "Options",
-      "formatName": "{format} {category, select, image {Image} document {Document} archive {Archive} video {Video} audio {Audio} ebook {Ebook} spreadsheet {Spreadsheet} presentation {Presentation} data {Data} vector {Vector} font {Font} cad {CAD} other {File}}"
+      "options": "Options"
     },
     "label": "Files to convert"
   },

@@ -114,6 +114,7 @@ export default function QueueItemRow({
   onRemove,
 }: Readonly<QueueItemRowProps>) {
   const t = useTranslations('queue.row');
+  const tFormat = useTranslations('formatSelector');
   const tPassword = useTranslations('options.password.errors');
   const formatBytes = useFormatBytes();
   const fileTooLargeMessage = useFileTooLargeMessage();
@@ -144,7 +145,7 @@ export default function QueueItemRow({
         <p className="mt-0.5 text-xs text-ink-3 truncate">
           <span className="tabular-nums">{formatBytes(item.size)}</span>
           <span aria-hidden="true">{' · '}</span>
-          <span>{t('formatName', { format: sourceLabel, category })}</span>
+          <span>{tFormat('formatName', { format: sourceLabel, category })}</span>
         </p>
       </div>
 

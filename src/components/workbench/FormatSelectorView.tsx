@@ -41,7 +41,7 @@ function formatCategoryLabel(tCategory: CategoryTranslator, category: string): s
  * shares the extension of a JPEG. A label is never cut short: the reference lets a long name overflow its button, and ours
  * wraps inside it, so ULTRAHDR and WEBPVIDEO read whole at any width and on touch.
  */
-const formatLabel = (fmt: FormatDefinition) => fmt.id.toUpperCase();
+export const formatLabel = (fmt: FormatDefinition) => fmt.id.toUpperCase();
 
 /** The format a key moves focus to from `current` in a grid of `count`, or 'search' above the first row, or null. */
 function gridTarget(key: string, current: number, count: number): number | 'search' | null {

@@ -4,6 +4,7 @@ import OptionsModal from '../src/components/OptionsModal';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { allElements, attrOf, renderDom } from './helpers/rendered-dom';
+import { REGISTRY_WIDE_TIMEOUT_MS } from './helpers/registry-wide-timeout';
 
 /**
  * The intro of a converter page, which is also its meta description: what the page converts, other targets of its source
@@ -136,8 +137,7 @@ function optionsSentence(subjects: string[]): string {
   return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
 }
 
-/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner; the 30 s ceiling is about five times that. */
-const REGISTRY_WIDE_TIMEOUT_MS = 30_000;
+/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner. */
 
 describe('the options a pair page names', () => {
   it('are the first options its dialog renders, in the dialog order, on every registered pair', () => {
