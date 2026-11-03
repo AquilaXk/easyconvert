@@ -1,7 +1,7 @@
 import type { Metadata } from 'sharp';
 import type { ConversionOptions } from '../types';
 import { rethrowSandboxUnavailable } from '../security/process-sandbox';
-import { AVIF_ENCODER_LIBRARY_CLI, AvifEncoderFailedError, type AvifCliRequest, type AvifCliRun, findAvifenc, startAvifWithCli } from './avif-cli';
+import { AVIF_ENCODER_LIBRARY_CLI, AvifEncoderFailedError, type AvifCliRequest, type AvifCliRun, exceedsAv1Side, findAvifenc, startAvifWithCli } from './avif-cli';
 import type { ContentClass } from './image-content';
 import { SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { AVIF_CLI_MAX_PIXELS, avifEncoderFor, avifPolicyFor, avifSourceBitsOf, type AvifPolicy } from './image-encoder-defaults';
@@ -149,7 +149,7 @@ export class DirectAvif {
    */
   static async start(png: Buffer, meta: Metadata, options: ConversionOptions): Promise<DirectAvif | null> {
     const { width, height } = meta;
-    if (width === undefined || height === undefined || width * height > AVIF_CLI_MAX_PIXELS) return null;
+    if (width === undefined || height === undefined || width * height > AVIF_CLI_MAX_PIXELS || exceedsAv1Side(width, height)) return null;
     const deep = meta.depth === SHARP_SIXTEEN_BIT_DEPTH;
     const grey = meta.space === 'b-w' || meta.space === 'grey16';
     const chunks = directSourceOf(png);

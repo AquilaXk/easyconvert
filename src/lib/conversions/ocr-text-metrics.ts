@@ -1,4 +1,4 @@
-import { OcrPreprocessError } from '../types';
+import { OcrPreprocessFaultError } from '../types';
 import { SAUVOLA_INK, yieldToEventLoop } from './ocr-sauvola';
 
 /**
@@ -49,10 +49,10 @@ const DEGREE_PRECISION = 1e4;
 
 function assertBinary(binary: Uint8Array, width: number, height: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
-    throw new OcrPreprocessError(`Invalid image size ${width}x${height} for text measurement.`);
+    throw new OcrPreprocessFaultError(`Invalid image size ${width}x${height} for text measurement.`);
   }
   if (binary.length !== width * height) {
-    throw new OcrPreprocessError(
+    throw new OcrPreprocessFaultError(
       `Binary buffer holds ${binary.length} bytes but a ${width}x${height} image needs ${width * height}.`
     );
   }

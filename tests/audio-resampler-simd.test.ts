@@ -106,7 +106,7 @@ describe('kernel option', () => {
     const child = path.join(__dirname, 'helpers', 'resampler-no-wasm-child.cts');
     const output = execFileSync(process.execPath, ['-r', path.join(__dirname, 'helpers', 'no-webassembly-preload.cjs'), '-r', 'tsx/cjs', child], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
     const result = JSON.parse(output.trim().split('\n').pop() ?? '{}') as Record<string, unknown>;
-    expect(result).toEqual({ webassembly: 'undefined', supported: false, kernel: 'scalar', sameSamples: true, forced: 'AudioResampleError' });
+    expect(result).toEqual({ webassembly: 'undefined', supported: false, kernel: 'scalar', sameSamples: true, forced: 'AudioResampleFaultError' });
   }, TEST_TIMEOUT_MS);
 });
 

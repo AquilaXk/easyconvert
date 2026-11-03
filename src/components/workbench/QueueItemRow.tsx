@@ -68,21 +68,25 @@ function RowError({ message, ranAndFailed }: Readonly<{ message: string; ranAndF
   );
 }
 
+/** A running row's bar: the share a stage measured, or no value (an indeterminate bar) and the stage's name while there is none. */
+function RowProgress({ item }: Readonly<{ item: ConversionQueueItem }>) {
+  const t = useTranslations('queue.row');
+  const tQueue = useTranslations('queue');
+  const label = t(item.status === 'uploading' ? 'uploadingLabel' : 'convertingLabel', { name: item.name });
+  const rounded = item.progress === undefined ? undefined : Math.round(item.progress);
+  const stageName = item.status === 'uploading' ? t('uploading') : tQueue('converting');
+  return (
+    <div className="flex items-center gap-2.5 w-36">
+      <progress value={rounded} max={100} aria-label={label} className="thread flex-1" />
+      <span className="text-xs text-accent-ink tabular-nums whitespace-nowrap">{rounded === undefined ? stageName : `${rounded}%`}</span>
+    </div>
+  );
+}
+
 function RowStatusDisplay({ item, isBusy }: Readonly<{ item: ConversionQueueItem; isBusy: boolean }>) {
   const t = useTranslations('queue.row');
   const formatBytes = useFormatBytes();
-  if (isBusy) {
-    const rounded = Math.round(item.progress);
-    return (
-      <div className="flex items-center gap-2.5 w-36">
-        <progress
-          value={rounded} max={100} aria-label={t(item.status === 'uploading' ? 'uploadingLabel' : 'convertingLabel', { name: item.name })}
-          className="thread flex-1"
-        />
-        <span className="text-xs text-accent-ink tabular-nums">{rounded}%</span>
-      </div>
-    );
-  }
+  if (isBusy) return <RowProgress item={item} />;
   if (item.status === 'completed') {
     const baseName = item.name.replace(/\.[^/.]+$/, '') || item.name;
     return (

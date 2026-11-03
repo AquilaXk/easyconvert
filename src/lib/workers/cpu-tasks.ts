@@ -8,7 +8,6 @@ import { encodePngBand, type PngBandPayload } from '../conversions/png-photo-ban
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
 import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
 import { deriveSevenZipKey, SEVENZIP_KDF_TASK, type AesKeyRequest } from '../conversions/archive-sevenzip-aes';
-import { ConversionFailedError } from '../types';
 import zlib from 'node:zlib';
 
 /**
@@ -124,7 +123,7 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
   zstdJob: (raw): HandlerResult => {
     const payload = raw as ZstdJobPayload;
     const jobs = planZstdJobs(payload.data.length, payload.level);
-    if (jobs === null) throw new ConversionFailedError(`Zstandard input of ${payload.data.length} bytes at level ${payload.level} is not split into jobs.`);
+    if (jobs === null) throw new Error(`Zstandard input of ${payload.data.length} bytes at level ${payload.level} is not split into jobs.`);
     return transferableBytes(encodeZstdJob(payload.data, payload.level, jobs, payload.index));
   },
 

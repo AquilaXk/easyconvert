@@ -1,4 +1,4 @@
-import { OcrPreprocessError } from '../types';
+import { OcrPreprocessFaultError } from '../types';
 
 /**
  * Splits a single-column text page into horizontal bands at blank rows so that the bands can be
@@ -49,7 +49,7 @@ export interface OcrBand {
 /** Counts the dark pixels of every row and every column of an 8-bit gray page. */
 export function measureInk(gray: Uint8Array, width: number, height: number): OcrInkProfile {
   if (gray.length !== width * height) {
-    throw new OcrPreprocessError(`Expected ${width * height} gray samples for a ${width}x${height} page, got ${gray.length}.`);
+    throw new OcrPreprocessFaultError(`Expected ${width * height} gray samples for a ${width}x${height} page, got ${gray.length}.`);
   }
   const rows = new Uint32Array(height);
   const columns = new Uint32Array(width);
@@ -166,11 +166,11 @@ export function sliceNetpbmRows(page: Buffer, top: number, bottom: number): Buff
   const gray = GRAY_HEADER.exec(head);
   const bitonal = gray ? null : BITONAL_HEADER.exec(head);
   const match = gray ?? bitonal;
-  if (!match) throw new OcrPreprocessError('The prepared page is not a gray or bitonal Netpbm image.');
+  if (!match) throw new OcrPreprocessFaultError('The prepared page is not a gray or bitonal Netpbm image.');
   const width = Number(match[1]);
   const height = Number(match[2]);
   if (!(top >= 0 && top < bottom && bottom <= height)) {
-    throw new OcrPreprocessError(`Rows ${top}-${bottom} are not inside a page of ${height} rows.`);
+    throw new OcrPreprocessFaultError(`Rows ${top}-${bottom} are not inside a page of ${height} rows.`);
   }
   const rowBytes = gray ? width : Math.ceil(width / BITS_PER_BYTE);
   const header = Buffer.from(gray ? `P5\n${width} ${bottom - top}\n255\n` : `P4\n${width} ${bottom - top}\n`, 'ascii');
@@ -217,7 +217,7 @@ function shiftTree(node: unknown, dy: number): void {
  */
 export function mergeBandReadings(bands: readonly OcrBand[], readings: readonly BandReading[]): BandReading {
   if (bands.length !== readings.length) {
-    throw new OcrPreprocessError(`${readings.length} readings for ${bands.length} bands.`);
+    throw new OcrPreprocessFaultError(`${readings.length} readings for ${bands.length} bands.`);
   }
   let text = '';
   const blocks: unknown[] = [];

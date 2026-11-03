@@ -6,7 +6,6 @@ import sharp from 'sharp';
 import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   ConversionOptions,
-  OcrLanguageUnavailableError,
   ConversionFailedError,
   OcrEngineUnavailableError,
   OcrPreprocessError,
@@ -541,7 +540,7 @@ async function readPreparedPage(
         return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath, bandsRead), prepared };
       }
     } catch (err: unknown) {
-      if (signal?.aborted || err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
+      if (signal?.aborted || err instanceof OcrEngineUnavailableError) {
         throw err;
       }
       // Only a failure of the WebAssembly runtime itself is answered by the native tool, and the answer is recorded.

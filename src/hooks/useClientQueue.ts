@@ -406,10 +406,10 @@ export function createConversionRunners(ctx: QueueMutationContext) {
     ctx.abortersRef.current.set(id, aborter);
     ctx.syncInFlight();
     ctx.revokeBlobUrl(current.resultUrl);
-    ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'converting', progress: 15, error: undefined, resultUrl: undefined } : i)));
+    ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'converting', progress: undefined, error: undefined, resultUrl: undefined } : i)));
     const isFresh = () => ctx.mountedRef.current && ctx.generationRef.current.get(id) === gen && ctx.queueRef.current.some((i) => i.id === id);
     const setStage = (status: 'uploading' | 'converting') => {
-      if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, status } : i)));
+      if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, status, progress: undefined } : i)));
     };
     try {
       await executeItemConversion(current, {

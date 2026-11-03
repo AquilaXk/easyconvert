@@ -16,7 +16,7 @@ import { ConversionFailedError, type ConversionJobData } from '../types';
 const SEALED_PASSWORD_KEY = 'sealedPassword';
 const SEALED_PASSWORDS_KEY = 'sealedPasswords';
 const SEALED_PROTECT_KEY = 'sealedProtectPasswords';
-const PROTECT_PASSWORD_KEYS = ['userPassword', 'ownerPassword'] as const;
+export const PROTECT_PASSWORD_KEYS = ['userPassword', 'ownerPassword'] as const;
 
 type OptionsRecord = Record<string, unknown>;
 

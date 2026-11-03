@@ -1,7 +1,4 @@
-import { ConversionFailedError, EngineUnavailableError } from '../types';
-
-const HTTP_BAD_REQUEST = 400;
-const HTTP_SERVICE_UNAVAILABLE = 503;
+import { ConversionFailedError, typedFailureOf } from '../types';
 
 /** How a failed attempt is recorded on the job and whether the queue may try the job again. */
 export interface JobFailureInfo {
@@ -13,12 +10,6 @@ export interface JobFailureInfo {
   retryable: boolean;
 }
 
-/** The status a typed failure carries itself (for example 413), when it is a number. */
-function ownStatus(err: ConversionFailedError): number | undefined {
-  const status = (err as { status?: unknown }).status;
-  return typeof status === 'number' ? status : undefined;
-}
-
 /**
  * Classifies a failed attempt. A typed conversion failure says itself whether another attempt may end otherwise
  * (`retryable`): a verdict on the input (malformed, unsupported, over a limit) is final, so retrying only repeats the
@@ -26,11 +17,7 @@ function ownStatus(err: ConversionFailedError): number | undefined {
  * Anything untyped (a dropped socket, an out-of-memory kill) says nothing about the input and stays retryable.
  */
 export function classifyJobFailure(err: unknown): JobFailureInfo {
-  if (err instanceof ConversionFailedError) {
-    const retryable = err.retryable;
-    const fallbackStatus = err instanceof EngineUnavailableError ? HTTP_SERVICE_UNAVAILABLE : HTTP_BAD_REQUEST;
-    return { code: err.name, status: ownStatus(err) ?? fallbackStatus, retryable };
-  }
+  if (err instanceof ConversionFailedError) return { code: err.name, status: typedFailureOf(err)?.status, retryable: err.retryable };
   return { retryable: true };
 }
 

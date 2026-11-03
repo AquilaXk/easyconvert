@@ -17,7 +17,7 @@ import {
   findOcrLanguage,
   resolveOcrLanguages,
 } from '../src/lib/conversions/ocr-languages';
-import { OcrLanguageUnavailableError } from '../src/lib/types';
+import { OcrLanguageDataMissingError, OcrLanguageUnknownError, typedFailureOf } from '../src/lib/types';
 import { MAGICK_BINARY, requireMagick } from './helpers/imagemagick';
 import { OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
@@ -138,11 +138,11 @@ describe('resolving a request', () => {
 
   it(`refuses more than ${OCR_MAX_LANGUAGES_PER_REQUEST} languages in one request with a 400`, () => {
     const request = 'eng+kor+jpn+deu+fra';
-    expect(() => resolveOcrLanguages(request)).toThrow(OcrLanguageUnavailableError);
+    expect(() => resolveOcrLanguages(request)).toThrow(OcrLanguageUnknownError);
     try {
       resolveOcrLanguages(request);
     } catch (err) {
-      expect((err as OcrLanguageUnavailableError).status).toBe(HTTP_BAD_REQUEST);
+      expect(typedFailureOf(err)?.status).toBe(HTTP_BAD_REQUEST);
       expect((err as Error).message).toContain(String(OCR_MAX_LANGUAGES_PER_REQUEST));
     }
   });
@@ -155,8 +155,8 @@ describe('resolving a request', () => {
       } catch (err) {
         thrown = err;
       }
-      expect(thrown, request).toBeInstanceOf(OcrLanguageUnavailableError);
-      expect((thrown as OcrLanguageUnavailableError).status, request).toBe(HTTP_BAD_REQUEST);
+      expect(thrown, request).toBeInstanceOf(OcrLanguageUnknownError);
+      expect(typedFailureOf(thrown), request).toEqual({ status: HTTP_BAD_REQUEST, code: 'option_not_supported' });
     }
   });
 });
@@ -232,8 +232,8 @@ describe('a language that is in the table but not installed', () => {
       } catch (err) {
         thrown = err;
       }
-      expect(thrown).toBeInstanceOf(OcrLanguageUnavailableError);
-      expect((thrown as OcrLanguageUnavailableError).status).toBe(HTTP_SERVICE_UNAVAILABLE);
+      expect(thrown).toBeInstanceOf(OcrLanguageDataMissingError);
+      expect(typedFailureOf(thrown)).toEqual({ status: HTTP_SERVICE_UNAVAILABLE, code: 'engine_unavailable' });
       expect((thrown as Error).message).toContain(`${missing.traineddata}.traineddata`);
 
       let unknown: unknown;
@@ -242,7 +242,8 @@ describe('a language that is in the table but not installed', () => {
       } catch (err) {
         unknown = err;
       }
-      expect((unknown as OcrLanguageUnavailableError).status).toBe(HTTP_BAD_REQUEST);
+      expect(unknown).toBeInstanceOf(OcrLanguageUnknownError);
+      expect(typedFailureOf(unknown)).toEqual({ status: HTTP_BAD_REQUEST, code: 'option_not_supported' });
     },
     PAGE_TIMEOUT_MS
   );

@@ -1,5 +1,5 @@
 import sharp, { type Sharp } from 'sharp';
-import { OcrPreprocessError } from '../types';
+import { OcrPreprocessFaultError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
 import { identityGeometry, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
@@ -156,7 +156,7 @@ interface GrayPage {
 async function toGrayPage(pipeline: Sharp): Promise<GrayPage> {
   const { data, info } = await pipeline.toColourspace('b-w').raw().toBuffer({ resolveWithObject: true });
   if (info.channels !== GRAY_CHANNELS) {
-    throw new OcrPreprocessError(`Expected one gray channel, decoded ${info.channels}.`);
+    throw new OcrPreprocessFaultError(`Expected one gray channel, decoded ${info.channels}.`);
   }
   return { data, width: info.width, height: info.height };
 }
@@ -289,7 +289,7 @@ async function decodeUprightPage(source: Buffer): Promise<DecodedPage> {
     .raw({ depth: 'uchar' })
     .toBuffer({ resolveWithObject: true });
   if (info.channels !== GRAY_CHANNELS && info.channels !== RGB_CHANNELS) {
-    throw new OcrPreprocessError(`Expected a gray or RGB page, decoded ${info.channels} channels.`);
+    throw new OcrPreprocessFaultError(`Expected a gray or RGB page, decoded ${info.channels} channels.`);
   }
   return { data, width: info.width, height: info.height, channels: info.channels };
 }
@@ -367,7 +367,7 @@ async function turnByQuarters(page: DecodedPage, degrees: OcrQuarterTurn): Promi
     .raw()
     .toBuffer({ resolveWithObject: true });
   if (info.channels !== page.channels) {
-    throw new OcrPreprocessError(`Turning the page changed its channels from ${page.channels} to ${info.channels}.`);
+    throw new OcrPreprocessFaultError(`Turning the page changed its channels from ${page.channels} to ${info.channels}.`);
   }
   return { data, width: info.width, height: info.height, channels: page.channels };
 }

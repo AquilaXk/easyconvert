@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
+import { OcrTextLayerLimitError } from '../src/lib/conversions/ocr-text-layer';
 import { ParquetCodecUnavailableError } from '../src/lib/conversions/parquet-format';
 import {
   ArchiveEncryptionUnavailableError,
@@ -11,7 +12,8 @@ import {
   EngineMissingError,
   EngineUnavailableError,
   OcrEngineUnavailableError,
-  OcrLanguageUnavailableError,
+  OcrLanguageDataMissingError,
+  OcrLanguageUnknownError,
   RawEngineRequiredError,
   UnsupportedOptionError,
 } from '../src/lib/types';
@@ -64,13 +66,13 @@ function descendsFrom(name: string, ancestor: string, classes: Map<string, { par
 describe('every missing-engine error shares one marker, which makes a job retryable', () => {
   it.each([
     ['EngineUnavailableError', new EngineUnavailableError('soffice'), HTTP_SERVICE_UNAVAILABLE],
-    ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing'), HTTP_BAD_REQUEST],
-    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing'), HTTP_BAD_REQUEST],
-    ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required'), HTTP_BAD_REQUEST],
-    ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing'), HTTP_BAD_REQUEST],
-    ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError(), HTTP_BAD_REQUEST],
-    ['ArchiveEncryptionUnavailableError', new ArchiveEncryptionUnavailableError('7z binary required'), HTTP_BAD_REQUEST],
-    ['ParquetCodecUnavailableError', new ParquetCodecUnavailableError('ZSTD needs a newer Node.js'), HTTP_BAD_REQUEST],
+    ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing'), HTTP_SERVICE_UNAVAILABLE],
+    ['OcrLanguageDataMissingError', new OcrLanguageDataMissingError('traineddata missing'), HTTP_SERVICE_UNAVAILABLE],
+    ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required'), HTTP_SERVICE_UNAVAILABLE],
+    ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing'), HTTP_SERVICE_UNAVAILABLE],
+    ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError(), HTTP_SERVICE_UNAVAILABLE],
+    ['ArchiveEncryptionUnavailableError', new ArchiveEncryptionUnavailableError('7z binary required'), HTTP_SERVICE_UNAVAILABLE],
+    ['ParquetCodecUnavailableError', new ParquetCodecUnavailableError('ZSTD needs a newer Node.js'), HTTP_SERVICE_UNAVAILABLE],
   ])('%s is an EngineMissingError and is retried', (name, error, status) => {
     expect(error).toBeInstanceOf(EngineMissingError);
     expect(error).toBeInstanceOf(ConversionFailedError);
@@ -80,6 +82,12 @@ describe('every missing-engine error shares one marker, which makes a job retrya
   it('keeps a verdict on the input final', () => {
     expect(classifyJobFailure(new UnsupportedOptionError('width 0')).retryable).toBe(false);
     expect(classifyJobFailure(new ConversionFailedError('bad input')).retryable).toBe(false);
+    expect(classifyJobFailure(new OcrLanguageUnknownError('Unsupported OCR language')).retryable).toBe(false);
+    expect(classifyJobFailure(new OcrTextLayerLimitError('The page has more than 50000 words.'))).toEqual({
+      code: 'OcrTextLayerLimitError',
+      status: HTTP_BAD_REQUEST,
+      retryable: false,
+    });
   });
 
   it('finds no error class named like a missing tool anywhere in src that is not an EngineMissingError', () => {

@@ -3,6 +3,9 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
+import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -33,12 +36,12 @@ import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-er
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { HTTP_SERVICE_UNAVAILABLE } from '@/lib/refusal-codes';
 import {
   ArchiveEntryCollisionError,
-  ConversionFailedError,
-  isUnprocessableInputError,
-  EngineUnavailableError,
+  EngineMissingError,
   PdfPostprocessError,
+  typedFailureOf,
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
@@ -49,6 +52,12 @@ const ZIP_MIME_TYPE = 'application/zip';
 export const dynamic = 'force-dynamic';
 
 const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+
+/** The fields of the form that are read as text and change the conversion or where its result goes; none of them may be sent as a file. */
+const TEXT_FIELDS = ['sourceFormat', 'options', 'webhookUrl', 'webhookSecret'] as const;
 
 const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
 
@@ -69,17 +78,21 @@ interface ReservedConversion extends ValidatedConvertInput {
   instanceUri: string;
   startTime: number;
   reply: (res: NextResponse | Response) => Promise<NextResponse | Response>;
+  trace: ConversionTrace;
 }
 
-type ParsedConvertForm = { problem: NextResponse; data?: undefined } | { data: ValidatedConvertInput; problem?: undefined };
+/** What reading a request established before it was accepted or refused: the input's size and the registry's names of its formats. */
+type RequestFacts = Pick<ConversionTrace, 'bytes' | 'source' | 'target'>;
 
-/** The validated input of a convert request, or the problem answer for the first thing wrong with it. */
-function parseConvertFormData(
-  formData: FormData,
-  instanceUri: string,
-  headers: Record<string, string>
-): ParsedConvertForm {
+type ParsedConvertForm =
+  | { facts: RequestFacts; problem: NextResponse; data?: undefined }
+  | { facts: RequestFacts; data: ValidatedConvertInput; problem?: undefined };
+
+/** The validated input of a convert request, or the problem answer for the first thing wrong with it, with the facts read on the way. */
+function parseConvertFormData(formData: FormData, instanceUri: string, headers: Record<string, string>): ParsedConvertForm {
+  const facts: RequestFacts = {};
   const badRequest = (detail: string): ParsedConvertForm => ({
+    facts,
     problem: createProblemDetailsResponse(400, detail, instanceUri, 'Bad Request', undefined, headers),
   });
   const file = formData.get('file');
@@ -88,9 +101,13 @@ function parseConvertFormData(
     return badRequest('Missing required "file" or invalid file binary in multipart request.');
   }
 
+  facts.bytes = file.size;
   if (file.size === 0) {
     return badRequest('File payload is empty (0 bytes).');
   }
+
+  const sentAsFile = fileSentAsText(formData, TEXT_FIELDS);
+  if (sentAsFile) return badRequest(`The "${sentAsFile}" field must be text, not a file.`);
 
   const targetFormatEntry = formData.get('targetFormat');
   if (!targetFormatEntry || typeof targetFormatEntry !== 'string') {
@@ -105,12 +122,14 @@ function parseConvertFormData(
   if (!sourceDef) {
     return badRequest(`Could not identify source format for file "${file.name}".`);
   }
+  facts.source = sourceDef.extension;
 
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
   const targetDef = getFormatByExtension(tgt);
   if (!targetDef) {
     return badRequest(`Unsupported target format "${targetFormat}".`);
   }
+  facts.target = targetDef.extension;
 
   if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
     return badRequest(`Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`);
@@ -130,10 +149,10 @@ function parseConvertFormData(
     }
   }
 
-  return { data: { file: file as File, sourceDef, targetDef, options } };
+  return { facts, data: { file: file as File, sourceDef, targetDef, options } };
 }
 
-export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/convert', async function POST(req: NextRequest, trace: ConversionTrace) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
@@ -194,6 +213,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const rateLimitHeaders = buildRateLimitHeaders(quota);
 
   if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
+  if (!isMultipartBody(req)) {
+    return reply(createProblemDetailsResponse(HTTP_UNSUPPORTED_MEDIA_TYPE, 'The request body must be multipart/form-data.', instanceUri, undefined, undefined, rateLimitHeaders));
+  }
 
   // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
   // the request ends; an asynchronous handoff stays counted through the job it queues.
@@ -205,8 +227,14 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders);
     }
     releaseSlot = slot.release;
-    const formData = await req.formData();
+    const body = await readMultipartForm(req);
+    if (body.malformed) {
+      trace.cause = body.malformed;
+      return reply(createProblemDetailsResponse(HTTP_BAD_REQUEST, 'The request body is not well-formed multipart/form-data.', instanceUri, undefined, undefined, rateLimitHeaders));
+    }
+    const formData = body.form;
     const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders);
+    Object.assign(trace, validation.facts);
     if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;
@@ -219,8 +247,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    const webhookUrlParam = ((formData.get('webhookUrl') as string) || '').trim() || undefined;
-    const webhookSecretParam = ((formData.get('webhookSecret') as string) || '').trim() || undefined;
+    trace.keepPrivate(file.name, options);
+
+    const webhookUrlParam = formText(formData, 'webhookUrl')?.trim() || undefined;
+    const webhookSecretParam = formText(formData, 'webhookSecret')?.trim() || undefined;
 
     if (webhookUrlParam && !webhookSecretParam) {
       return reply(createProblemDetailsResponse(
@@ -264,17 +294,16 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       instanceUri,
       startTime,
       reply,
+      trace,
     };
     return await withReservedUnit(unit.reservationId, (reserved) => convertReserved(conversion, reserved));
   } catch (err: unknown) {
+    trace.cause = err;
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
     }
     const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
     if (deadlineProblem) return deadlineProblem;
-    if (err instanceof EngineUnavailableError) {
-      return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
-    }
     if (err instanceof PdfPostprocessError) {
       return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
     }
@@ -295,15 +324,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
       return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
     }
-    if (isUnprocessableInputError(err)) {
-      // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
-      // decode (an archive's password and method errors included), a DWG release or drawing the DWG reader refuses, or a font FontForge
-      // cannot read in full: 422, not the 400 of a malformed input.
-      return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
-    }
     if (err instanceof WorkerOutputMissingError) {
-      // A server fault, not a verdict on the input: log it, answer 500 without the worker's file name.
-      console.error('[v1/convert] Worker output vanished before it was read:', err);
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
       return createProblemDetailsResponse(
         err.status,
         WORKER_OUTPUT_MISSING_DETAIL,
@@ -313,28 +335,31 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         rateLimitHeaders
       );
     }
-    if (err instanceof ConversionFailedError) {
-      // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
-      return createProblemDetailsResponse(400, err.message, instanceUri, 'Bad Request', undefined, rateLimitHeaders);
-    }
-    // Internal errors can carry sandbox paths: log the real error, answer with a generic detail.
-    console.error('[v1/convert] Conversion failed with an internal error:', err);
-    return createProblemDetailsResponse(
-      500,
-      INTERNAL_ERROR_DETAIL,
-      instanceUri,
-      'Internal Server Error',
-      undefined,
-      rateLimitHeaders
-    );
+    return typedOrServerFaultProblem(err, instanceUri, rateLimitHeaders);
   } finally {
     releaseSlot?.();
   }
-}));
+})));
+
+/**
+ * The answer of an error no named branch handles. A typed failure is answered with the status and code its class declares (the
+ * file is intact but encrypted or coded with a method no engine here decodes: 422), and a missing tool with 503. A fault of the
+ * server, a 5xx a class declares or an untyped error, gets a generic detail, since it can carry sandbox paths; the outcome line
+ * carries the error.
+ */
+function typedOrServerFaultProblem(err: unknown, instanceUri: string, headers: Record<string, string>): NextResponse {
+  const typed = typedFailureOf(err);
+  if (typed && err instanceof EngineMissingError && typed.status === HTTP_SERVICE_UNAVAILABLE) return createEngineUnavailableResponse(err, instanceUri, headers);
+  if (typed && typed.status < HTTP_INTERNAL_SERVER_ERROR) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return createProblemDetailsResponse(typed.status, detail, instanceUri, undefined, undefined, headers, undefined, { code: typed.code });
+  }
+  return createProblemDetailsResponse(typed?.status ?? HTTP_INTERNAL_SERVER_ERROR, INTERNAL_ERROR_DETAIL, instanceUri, undefined, undefined, headers);
+}
 
 /** Hands a large or `respond-async` conversion to the queue: its job owns the unit once queued, and commits it or gives it back. */
 async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
-  const { file, sourceDef, targetDef, options, user, rateLimitHeaders, instanceUri, reply } = c;
+  const { file, sourceDef, targetDef, options, user, rateLimitHeaders, instanceUri, reply, trace } = c;
   // Asynchronous zero-heap streaming handoff: pipe stream directly to storage multipart upload
   let uploadedStorageKey: string;
   try {
@@ -347,6 +372,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
     });
     uploadedStorageKey = streamResult.storageKey;
   } catch (err: unknown) {
+    trace.cause = err;
     const storageProblem = describeStorageError(err);
     if (storageProblem) {
       return reply(createProblemDetailsResponse(
@@ -421,7 +447,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
  * its answer built, the last step that can fail, so no error answers a charged conversion.
  */
 async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
-  const { req, user, file, sourceDef, targetDef, options, rateLimitHeaders, instanceUri, startTime, reply } = c;
+  const { req, user, file, sourceDef, targetDef, options, rateLimitHeaders, instanceUri, startTime, reply, trace } = c;
 
   // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
   const preferHeader = req.headers.get('prefer') || '';
@@ -435,6 +461,7 @@ async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promi
   try {
     assertNotSpoofedFile(inputBuffer, sourceDef.extension, file.name);
   } catch (err: unknown) {
+    trace.cause = err;
     return reply(createProblemDetailsResponse(
       spoofCheckStatus(err),
       (err instanceof Error && err.message) || 'File spoofing detected.',
@@ -530,7 +557,7 @@ function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse
       status: 200,
       headers: {
         'Content-Type': conversionResult.mimeType,
-        'Content-Disposition': `attachment; filename="${a.outFileName}"`,
+        'Content-Disposition': attachmentContentDisposition(a.outFileName),
         'X-Conversion-Time-Ms': a.durationMs.toString(),
         'X-File-Id': a.fileId,
         ...frameMetadataHeaders(conversionResult),

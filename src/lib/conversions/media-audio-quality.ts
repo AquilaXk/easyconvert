@@ -6,6 +6,7 @@ import {
   InvalidMediaOptionError,
   LoudnessOptions,
   LoudnessPreset,
+  SERVER_FAULT_STATUS,
 } from '../types';
 import { probeFfmpegBuild } from './media-process';
 
@@ -81,6 +82,19 @@ export class LoudnessMeasurementError extends ConversionFailedError {
   }
 }
 
+/**
+ * Raised when the measuring pass printed no report, or one that is not JSON: the tool ran and its output is not what the pass
+ * asked for, a fault of the server's tool and not of the input (a silent input prints a report, with `-inf`).
+ */
+export class LoudnessReportMissingError extends LoudnessMeasurementError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'LoudnessReportMissingError';
+  }
+}
+
 const MEASUREMENT_KEYS = ['input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset'] as const;
 type MeasurementKey = (typeof MEASUREMENT_KEYS)[number];
 /** The loudnorm report is a flat JSON object; this bounds the text the parser looks at to its tail. */
@@ -96,13 +110,13 @@ export function parseLoudnormMeasurement(stderr: string, sampleRate: number): Lo
   const tail = stderr.length > MAX_REPORT_SCAN_CHARS ? stderr.slice(-MAX_REPORT_SCAN_CHARS) : stderr;
   const blocks = tail.match(REPORT_PATTERN);
   if (!blocks) {
-    throw new LoudnessMeasurementError('The loudness measuring pass printed no report.');
+    throw new LoudnessReportMissingError('The loudness measuring pass printed no report.');
   }
   let report: Partial<Record<MeasurementKey, unknown>>;
   try {
     report = JSON.parse(blocks[blocks.length - 1]) as Partial<Record<MeasurementKey, unknown>>;
   } catch {
-    throw new LoudnessMeasurementError('The loudness measuring pass printed a report that is not valid JSON.');
+    throw new LoudnessReportMissingError('The loudness measuring pass printed a report that is not valid JSON.');
   }
   const read = (key: MeasurementKey): number => {
     const raw = report[key];

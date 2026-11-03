@@ -30,7 +30,7 @@ export interface EdgeTierFallback {
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
-  /** Called when a file sent to the server in parts moves from its upload to its conversion. */
+  /** Called when the server's part of a conversion starts a stage; the stage has no progress until it reports some. */
   onStage?: (stage: ResumableStage) => void;
   onSuccess: (
     resultUrl: string,
@@ -619,13 +619,15 @@ export async function executeItemConversion(
   // job (entry 137); the retention rule of entry 125 deletes the input and the result.
   const inParts = needsUploadInParts(item.file.size);
   try {
+    // One request sends the file and waits for the result: its conversion stage starts at once and has no measure of progress.
+    if (!inParts) callbacks.onStage?.('converting');
     const cloudRes = inParts
       ? await executeResumableCloudConversion(item.file, item.targetFormat, item.options, {
           onProgress: callbacks.onProgress,
           onStage: callbacks.onStage,
           signal,
         })
-      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress, signal);
+      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, signal);
     callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: unknown) {
     if (signal?.aborted) return;

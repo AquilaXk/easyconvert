@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from 'undici';
 import { performOcr } from '../src/lib/conversions/ocr';
-import { OcrLanguageUnavailableError, OcrEngineUnavailableError } from '../src/lib/types';
+import { OcrLanguageDataMissingError, OcrLanguageUnknownError, OcrEngineUnavailableError } from '../src/lib/types';
 
 describe('OCR Offline Language Enforcement & Zero-Egress', () => {
   let tmpDir: string;
@@ -42,7 +42,7 @@ describe('OCR Offline Language Enforcement & Zero-Egress', () => {
   it('rejects unsupported or unrecognized language codes fail-closed', async () => {
     await expect(
       performOcr(sampleImage, 'klingon')
-    ).rejects.toThrow(OcrLanguageUnavailableError);
+    ).rejects.toThrow(OcrLanguageUnknownError);
 
     await expect(
       performOcr(sampleImage, 'unsupported_lang_123')
@@ -56,7 +56,7 @@ describe('OCR Offline Language Enforcement & Zero-Egress', () => {
     // Use a language definitely not preinstalled on system
     await expect(
       performOcr(sampleImage, 'de')
-    ).rejects.toThrow(OcrLanguageUnavailableError);
+    ).rejects.toThrow(OcrLanguageDataMissingError);
 
     await expect(
       performOcr(sampleImage, 'fr')
@@ -77,8 +77,8 @@ describe('OCR Offline Language Enforcement & Zero-Egress', () => {
       thrownError = err;
     }
 
-    expect(thrownError).toBeInstanceOf(OcrLanguageUnavailableError);
-    expect((thrownError as OcrLanguageUnavailableError).name).toBe('OcrLanguageUnavailableError');
+    expect(thrownError).toBeInstanceOf(OcrLanguageDataMissingError);
+    expect((thrownError as OcrLanguageDataMissingError).name).toBe('OcrLanguageDataMissingError');
     expect((thrownError as Error).message).toBe("OCR language 'zh_tra' (chi_tra.traineddata) is not available locally.");
   });
 });

@@ -10,6 +10,7 @@ import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { DjvuComponentSizeError } from '../src/lib/conversions/djvu-container';
 import { OcrTextLayerLimitError } from '../src/lib/conversions/ocr-text-layer';
 import { ParquetCodecUnavailableError } from '../src/lib/conversions/parquet-format';
 import { SevenZipStructureError } from '../src/lib/conversions/sevenzip-reader';
@@ -23,8 +24,11 @@ import {
   ArchiveEntryCollisionError,
   DataLimitExceededError,
   EmptyAudioInputError,
+  CadExpansionLimitError,
+  CpuTaskTimeoutError,
   InvalidMediaOptionError,
   MissingVolumeError,
+  OcrLanguageUnknownError,
   PdfPasswordListError,
   RawEngineRequiredError,
   UnprocessableFontInputError,
@@ -113,7 +117,7 @@ describe('a subclass of a coded error answers its parent code', () => {
     ['SevenZipStructureError', new SevenZipStructureError('The 7z header is truncated.'), 'malformed_input'],
     ['RawEngineRequiredError', new RawEngineRequiredError('A native RAW decoder is required.'), 'engine_unavailable'],
     ['ParquetCodecUnavailableError', new ParquetCodecUnavailableError('The LZ4 codec is not available.'), 'engine_unavailable'],
-    ['OcrTextLayerLimitError', new OcrTextLayerLimitError('The text layer holds too many words.'), 'engine_unavailable'],
+    ['OcrTextLayerLimitError', new OcrTextLayerLimitError('The text layer holds too many words.'), 'input_over_limit'],
   ];
 
   it.each(cases)('names the code of %s on /api/convert', async (_, error, code) => {
@@ -173,9 +177,38 @@ describe('the API document lists, per status, the codes /api/convert answers wit
     new ArchiveEntryCollisionError('a.txt'),
     new MissingVolumeError('archive.part2.rar'),
     new ArchiveEncryptedHeaderError(),
+    new CpuTaskTimeoutError('png', 1000),
+    new CadExpansionLimitError('The drawing expands past the budget.'),
+    new DjvuComponentSizeError(20_000_000),
+    new OcrLanguageUnknownError('Unsupported or unrecognized OCR language'),
+    new OcrTextLayerLimitError('The page has more than 50000 words.'),
   ])('documents the answer to %s', async (error) => {
     const { status, body } = await convertAnswer(error);
     expect(documented(status), `${error.name} answered ${status} ${String(body.code)}`).toContain(body.code);
+  });
+
+  it('documents the 400 of a multipart body that cannot be parsed', () => {
+    expect(documented(400).filter((code) => code === 'multipart_required')).toEqual(['multipart_required']);
+  });
+
+  it('documents the 429 as the quota alone, since no link import runs on a synchronous conversion', () => {
+    expect(JSON.stringify(responses['429']).includes('import_budget_exceeded')).toBe(false);
+  });
+});
+
+describe('the API document of /api/v1/convert', () => {
+  const document = buildOpenApiDocument();
+  const v1Responses = (document.paths['/api/v1/convert'] as { post: { responses: Record<string, { description: string }> } }).post.responses;
+
+  it('names the code of a refusal in its problem schema', () => {
+    const problem = document.components.schemas.ProblemDetails as { properties: Record<string, { type: string }> };
+    expect(problem.properties.code?.type).toBe('string');
+  });
+
+  it('describes the 400 of a multipart body that cannot be parsed', () => {
+    expect(v1Responses['400'].description).toBe(
+      'Invalid input format, missing parameter, a text field such as `options` sent as a file, an unsupported conversion pair, or a body declared `multipart/form-data` that cannot be parsed.'
+    );
   });
 });
 

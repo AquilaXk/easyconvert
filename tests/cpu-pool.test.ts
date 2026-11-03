@@ -8,7 +8,7 @@ import {
   shutdownCpuPool,
   type CpuPoolOptions,
 } from '../src/lib/workers/cpu-pool';
-import { CorruptStreamError, CpuPoolOverloadedError, CpuTaskAbortedError, CpuTaskTimeoutError, EngineUnavailableError } from '../src/lib/types';
+import { CorruptStreamError, CpuPoolOverloadedError, CpuTaskAbortedError, CpuTaskTimeoutError, EngineUnavailableError, typedFailureOf } from '../src/lib/types';
 import { refusalCodeOf } from '../src/lib/refusal-codes';
 import { payloadLimitStatus } from '../src/lib/api/payload-limit';
 import { WOFF2_MAX_TABLES, Woff2LimitError } from '../src/lib/conversions/font-woff2-primitives';
@@ -128,6 +128,13 @@ describe('CpuPool', () => {
     const error = await pool.submit('typedFailure', { name: 'GlyphBudgetError', message: 'too many glyphs', refusalCode: 'input_over_limit' }).catch((e: unknown) => e);
     expect((error as Error).name).toBe('GlyphBudgetError');
     expect(refusalCodeOf(error)).toBe('input_over_limit');
+  }, TEST_TIMEOUT_MS);
+
+  it('answers an error that carries no refusal code, such as a TypeError of an encoder, as a fault of the server', async () => {
+    const pool = makePool({ size: 1 });
+    const error = await pool.submit('typedFailure', { name: 'TypeError', message: 'encoder broke' }).catch((e: unknown) => e);
+    expect((error as Error).name).toBe('TypeError');
+    expect(typedFailureOf(error)).toEqual({ status: 500, code: 'conversion_failed' });
   }, TEST_TIMEOUT_MS);
 
   it('fails the task of a thread that dies and starts a new thread for the next task', async () => {

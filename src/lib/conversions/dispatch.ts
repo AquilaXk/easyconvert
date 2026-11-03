@@ -7,7 +7,7 @@ import {
   CpuTaskTimeoutError,
   EngineUnavailableError,
   OcrEngineUnavailableError,
-  OcrLanguageUnavailableError,
+  OcrLanguageUnknownError,
   RawEngineRequiredError,
   UnsupportedTargetError,
 } from '../types';
@@ -44,7 +44,6 @@ export { requiresNativeEngine };
  * the request carries the task option that selects them: thumbnails (`thumbnail`), streaming
  * packaging (`packaging`) and subtitle extraction (`subtitles.mode === 'extract'`).
  */
-const SERVER_ERROR_STATUS = 500;
 const THUMBNAIL_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'png']);
 const PACKAGING_TARGETS: ReadonlySet<string> = new Set(['hls', 'dash']);
 const SUBTITLE_EXTRACT_TARGETS: ReadonlySet<string> = new Set(['srt', 'vtt', 'ass']);
@@ -83,7 +82,7 @@ function toEngineUnavailable(err: unknown, src: string, tgt: string): unknown {
   }
   // A language the table does not know stays a client error; one whose data is not installed here is a missing
   // engine part (503), which another worker may have.
-  if (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError && err.status < SERVER_ERROR_STATUS)) {
+  if (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnknownError)) {
     return new EngineUnavailableError('tesseract', err.message);
   }
   return err;

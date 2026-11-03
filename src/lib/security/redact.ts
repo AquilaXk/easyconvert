@@ -384,7 +384,8 @@ const FILE_URL_PREFIX = '[Ff][Ii][Ll][Ee]://';
 const PATH_ENDS: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '`', ')', ']', '}', '<', '>', ',', ';', ':', '=']);
 const PATH_QUOTES: ReadonlySet<string> = new Set(['"', "'", '`']);
 const LINE_BREAKS: ReadonlySet<string> = new Set(['\r', '\n']);
-function escapeRegExp(text: string): string {
+/** `text` as a literal of a regular expression, `u` flag included: every syntax character and `/` escaped. */
+export function escapeRegExp(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 }
 

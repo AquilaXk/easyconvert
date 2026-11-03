@@ -189,6 +189,18 @@
     border-radius: 9999px;
     background: rgb(var(--c-accent));
   }
+  /* Without a value the bar is indeterminate: a segment of the fill runs along the track until the stage ends. */
+  .thread:indeterminate {
+    background: linear-gradient(rgb(var(--c-accent)), rgb(var(--c-accent))) no-repeat rgb(var(--c-rule));
+    background-size: 40% 100%;
+    animation: thread-indeterminate 1.4s linear infinite;
+  }
+  .thread:indeterminate::-webkit-progress-bar {
+    background: transparent;
+  }
+  .thread:indeterminate::-moz-progress-bar {
+    background: transparent;
+  }
 
   /* Native range: a 3px track filled to the thumb (`--range-ratio` from 0 to 1, set by the field) and a ringed thumb. */
   .range {
@@ -318,6 +330,15 @@ html:has(dialog:modal) {
   background: rgb(var(--c-accent));
 }
 
+@keyframes thread-indeterminate {
+  from {
+    background-position: -67% 0;
+  }
+  to {
+    background-position: 167% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html:root:root,
   html:root:root:root *,
@@ -332,5 +353,11 @@ html:has(dialog:modal) {
   /* Pseudo-elements the universal selectors above do not reach, one rule per vendor. */
   .thread::-webkit-progress-value {
     transition: none;
+  }
+
+  /* A bar with no value that does not move would read as a share of the track: the whole track is filled in a quiet tone. */
+  .thread:indeterminate {
+    animation: none;
+    background: rgb(var(--c-accent-edge));
   }
 }

@@ -77,6 +77,9 @@ describe('POST /api/v1/convert with a vanished worker output', () => {
     expect(problem.detail).toBe(WORKER_OUTPUT_MISSING_DETAIL);
     expect(JSON.stringify(problem)).not.toContain(WORKER_FILE_NAME);
     expect(errors).toHaveBeenCalledOnce();
+    const line = String(errors.mock.calls[0][0]);
+    expect(line).toMatch(/^\[v1\/convert\] failure /);
+    expect(line).toContain('WorkerOutputMissingError');
     errors.mockRestore();
   });
 });

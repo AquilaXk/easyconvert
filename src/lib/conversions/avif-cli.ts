@@ -10,7 +10,7 @@ import {
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
 import { launchSandboxedBinary } from '../security/sandbox-launcher';
-import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../types';
+import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, SERVER_FAULT_STATUS } from '../types';
 import { isAvif } from './avif-colour';
 import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout } from './image-encoder-defaults';
 
@@ -275,8 +275,45 @@ export function avifencArguments(request: AvifCliRequest, inputPath: string, out
   return args;
 }
 
-/** The encoder ran and exited with a failure (as opposed to a timeout, a memory limit, a missing tool or an abort). */
-export class AvifEncoderFailedError extends ConversionFailedError {}
+/** The encoder ran and exited with a failure it blames on the picture (as opposed to a timeout, a memory limit, a missing tool or an abort): a 400. */
+export class AvifEncoderFailedError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AvifEncoderFailedError';
+  }
+}
+
+/** The encoder ended on a signal, or exited with a diagnostic that does not name the picture or an argument: a fault of the encoder program, 500. */
+export class AvifEncoderFaultError extends AvifEncoderFailedError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AvifEncoderFaultError';
+  }
+}
+
+/**
+ * Largest side of an AV1 frame: the sequence header stores width and height minus one in 16 bits. libaom checks it at
+ * `av1/av1_cx_iface.c` lines 639 and 640 (`RANGE_CHECK(cfg, g_w, 1, 65536)`, v3.8.2) and libavif for a grid cell at
+ * `src/write.c` line 1625 (v1.4.2), where the encoder answers `Invalid argument`.
+ */
+export const AV1_MAX_SIDE_PX = 65_536;
+
+/** Whether either side of a picture is over what AV1 can hold, which no encoder can write. */
+export function exceedsAv1Side(width: number, height: number): boolean {
+  return width > AV1_MAX_SIDE_PX || height > AV1_MAX_SIDE_PX;
+}
+
+/** Refuses a picture with a side over the AV1 limit, before an encoder is started. */
+export function assertAv1FrameSize(width: number, height: number): void {
+  if (exceedsAv1Side(width, height)) {
+    throw new PayloadLimitError(`Cannot encode the image as .avif: a ${width}x${height} picture has a side over the ${AV1_MAX_SIDE_PX} pixels AV1 allows`);
+  }
+}
+
+/** What `avifenc` prints when it refuses the picture or an argument (libavif `Invalid argument`, and the `invalid dimensions for AV1` diagnostic). */
+const PICTURE_REFUSAL_DIAGNOSTIC = /invalid (?:argument|dimensions)/i;
 
 function describeFailure(err: unknown, timeoutMs: number): Error {
   rethrowSandboxUnavailable(err);
@@ -291,7 +328,9 @@ function describeFailure(err: unknown, timeoutMs: number): Error {
       return new EngineUnavailableError('avifenc', 'the executable cannot be started');
     }
     console.warn(`[avif] avifenc failed with status ${String(err.exitCode)}: ${err.stderr.replace(/\s+/g, ' ').trim().slice(0, AVIFENC_DIAGNOSTIC_LOGGED_CHARS)}`);
-    return new AvifEncoderFailedError('Cannot encode the image as .avif (the AVIF encoder failed on the picture)');
+    const message = 'Cannot encode the image as .avif (the AVIF encoder failed on the picture)';
+    const refusedPicture = err.signal === null && PICTURE_REFUSAL_DIAGNOSTIC.test(err.stderr);
+    return refusedPicture ? new AvifEncoderFailedError(message) : new AvifEncoderFaultError(message);
   }
   return err instanceof Error ? err : new Error(String(err));
 }

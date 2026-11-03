@@ -1,4 +1,4 @@
-import { OcrLanguageUnavailableError } from '../types';
+import { OcrLanguageUnknownError } from '../types';
 
 /**
  * The OCR language table: every language with published Tesseract training data (the tessdata set), keyed by the
@@ -230,9 +230,9 @@ export interface ResolvedOcrLanguages {
   readonly auto: boolean;
 }
 
-function unsupported(request: string): OcrLanguageUnavailableError {
+function unsupported(request: string): OcrLanguageUnknownError {
   const names = OCR_LANGUAGES.map((language) => language.traineddata).join(', ');
-  return new OcrLanguageUnavailableError(
+  return new OcrLanguageUnknownError(
     `Unsupported or unrecognized OCR language: '${request.slice(0, MAX_LANGUAGE_REQUEST_CHARS)}'. ` +
       `Supported languages: ${OCR_AUTO_LANGUAGE}, ${names}. ` +
       `Name one language by its traineddata name, ISO 639-1 code or BCP 47 tag, or join up to ${OCR_MAX_LANGUAGES_PER_REQUEST} with '${LANGUAGE_SEPARATOR}'.`
@@ -242,7 +242,7 @@ function unsupported(request: string): OcrLanguageUnavailableError {
 /**
  * Resolves a request's language (`auto`, `ko`, `eng+kor`, `zh-Hans`) to traineddata names. An unknown code, an
  * empty part, more than OCR_MAX_LANGUAGES_PER_REQUEST parts, or `auto` combined with another language is a
- * client error (OcrLanguageUnavailableError, HTTP 400). Whether the data is installed is a separate question
+ * client error (OcrLanguageUnknownError, HTTP 400). Whether the data is installed is a separate question
  * (503), answered where the data is read.
  */
 export function resolveOcrLanguages(request: string | undefined): ResolvedOcrLanguages {
@@ -250,7 +250,7 @@ export function resolveOcrLanguages(request: string | undefined): ResolvedOcrLan
   if (text.length > MAX_LANGUAGE_REQUEST_CHARS) throw unsupported(text);
   const parts = text.split(LANGUAGE_SEPARATOR);
   if (parts.length > OCR_MAX_LANGUAGES_PER_REQUEST) {
-    throw new OcrLanguageUnavailableError(
+    throw new OcrLanguageUnknownError(
       `Too many OCR languages in '${text}': at most ${OCR_MAX_LANGUAGES_PER_REQUEST} may be joined with '${LANGUAGE_SEPARATOR}', got ${parts.length}.`
     );
   }

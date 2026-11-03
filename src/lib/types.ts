@@ -1,6 +1,6 @@
 import { PIPELINE_OPERATIONS } from './api/contracts/enums';
 import type { ConversionFailure } from './conversion-failure';
-import type { ConversionRefusalCode } from './refusal-codes';
+import { refusalCodeOf, type ConversionRefusalCode } from './refusal-codes';
 import type { VectorizeOptions } from './conversions/raster-vectorize-options';
 import type {
   AspectRatioOptions,
@@ -301,7 +301,8 @@ export interface ConversionQueueItem {
   sourceFormat: string;
   targetFormat: string;
   status: QueueItemStatus;
-  progress: number;
+  /** Percent done as a stage measured it; absent while the running stage has no measure (one request to the server). */
+  progress?: number;
   resultUrl?: string;
   resultSize?: number;
   error?: ConversionFailure;
@@ -498,6 +499,16 @@ export class OcrPreprocessError extends ConversionFailedError {
   }
 }
 
+/** A buffer, a size or a channel count of OCR page preparation disagrees with another: a broken invariant of the server's code, not a verdict on the page. */
+export class OcrPreprocessFaultError extends OcrPreprocessError {
+  readonly status = SERVER_FAULT_STATUS;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrPreprocessFaultError';
+  }
+}
+
 export class UnsupportedTargetError extends ConversionFailedError {
   readonly refusalCode: ConversionRefusalCode = 'unsupported_pair';
   constructor(message: string) {
@@ -637,17 +648,34 @@ export class DataRepresentationError extends ConversionFailedError {
   }
 }
 
-/**
- * The OCR language of a request cannot be used. 400 (the default) when the code names no language of the table
- * or joins too many; 503 when the language is known but its data is not installed here, which another worker
- * may have.
- */
-export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
-  readonly status: number;
-  constructor(message: string, status = 400) {
+/** The OCR language of a request cannot be used: its code is unknown, or its data is not installed on this worker. */
+export abstract class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
+  protected constructor(message: string) {
     super(message);
     this.name = 'OcrLanguageUnavailableError';
-    this.status = status;
+  }
+}
+
+/**
+ * The code names no language of the table, joins too many, or mixes `auto` with another: a verdict on the request
+ * (`option_not_supported`, 400) that no other worker changes, so it is final.
+ */
+export class OcrLanguageUnknownError extends OcrLanguageUnavailableError {
+  readonly refusalCode: ConversionRefusalCode = 'option_not_supported';
+  readonly retryable: boolean = false;
+  readonly status = HTTP_BAD_REQUEST;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrLanguageUnknownError';
+  }
+}
+
+/** The language is known but its data is not installed here (`engine_unavailable`, 503), which another worker may have, so it is retryable. */
+export class OcrLanguageDataMissingError extends OcrLanguageUnavailableError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrLanguageDataMissingError';
   }
 }
 
@@ -743,6 +771,31 @@ export function isUnprocessableInputError(error: unknown): error is ConversionFa
   );
 }
 
+const HTTP_BAD_REQUEST = 400;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+/** The status a class declares for a fault of the server's own code or tools, as against a verdict on the request. */
+export const SERVER_FAULT_STATUS = 500;
+
+/** What a typed failure declares about itself: the HTTP status it is answered with and its refusal code. */
+export interface TypedFailure {
+  status: number;
+  code: ConversionRefusalCode;
+}
+
+/**
+ * The status and code of a typed failure, an error whose class declares a refusal code (`ConversionFailedError`, the classes
+ * under it, and the archive errors that declare one). The status is the one its class declares; without one, a missing tool
+ * (`EngineMissingError`) is 503, since another worker may have it, and any other typed failure is a 400 refusal of the input.
+ * Undefined for an untyped error. The routes answer with this status and the queue records it as `failedStatus`.
+ */
+export function typedFailureOf(error: unknown): TypedFailure | undefined {
+  const code = refusalCodeOf(error);
+  if (code === undefined) return undefined;
+  const declared = (error as { status?: unknown }).status;
+  if (typeof declared === 'number') return { status: declared, code };
+  return { status: error instanceof EngineMissingError ? HTTP_SERVICE_UNAVAILABLE : HTTP_BAD_REQUEST, code };
+}
+
 export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;
@@ -756,10 +809,6 @@ export class EngineUnavailableError extends EngineMissingError {
   }
 }
 
-/** HTTP status of a worker output that vanished: a server fault, not a verdict on the request. */
-const WORKER_OUTPUT_MISSING_STATUS = 500;
-const INVALID_CONVERSION_OUTPUT_STATUS = 500;
-
 /** What an API answers for a vanished output; the worker's file name stays in the server log. */
 export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer available';
 
@@ -770,7 +819,7 @@ export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer 
  * redo a conversion whose storage is failing. The message names the output, never its location on disk.
  */
 export class WorkerOutputMissingError extends ConversionFailedError {
-  readonly status = WORKER_OUTPUT_MISSING_STATUS;
+  readonly status = SERVER_FAULT_STATUS;
 
   constructor(outputName: string) {
     super(`The persisted conversion output "${outputName}" is no longer available`);
@@ -783,7 +832,7 @@ export class WorkerOutputMissingError extends ConversionFailedError {
  * server fault: the job fails with 500 and the message names the formats, never the bytes.
  */
 export class InvalidConversionOutputError extends ConversionFailedError {
-  readonly status = INVALID_CONVERSION_OUTPUT_STATUS;
+  readonly status = SERVER_FAULT_STATUS;
 
   constructor(source: string, target: string) {
     super(`The conversion of the .${source} file to .${target} produced bytes that are not a .${target} file.`);
@@ -791,8 +840,10 @@ export class InvalidConversionOutputError extends ConversionFailedError {
   }
 }
 
-/** A stored artifact has a file extension the format registry does not know, so its MIME type cannot be named. */
+/** A stored artifact has a file extension the format registry does not know, so its MIME type cannot be named: a server fault. */
 export class UnknownArtifactFormatError extends ConversionFailedError {
+  readonly status = SERVER_FAULT_STATUS;
+
   constructor(artifactName: string) {
     super(`Artifact "${artifactName}" has no format registered, so its MIME type is unknown`);
     this.name = 'UnknownArtifactFormatError';
@@ -868,14 +919,16 @@ export class JobTimeoutError extends ConversionFailedError {
  * failed conversion (only successful conversions are charged); the request still counts toward the rate limit.
  */
 export class RequestAbortedError extends Error {
-  constructor() {
-    super('The client closed the connection before the conversion finished');
+  constructor(options?: ErrorOptions) {
+    super('The client closed the connection before the conversion finished', options);
     this.name = 'RequestAbortedError';
   }
 }
 
-/** A task on the CPU worker pool was cancelled by its caller. */
+/** A task on the CPU worker pool was cancelled by its caller or by the pool's shutdown: a server fault, not a verdict on the input. */
 export class CpuTaskAbortedError extends ConversionFailedError {
+  readonly status = SERVER_FAULT_STATUS;
+
   constructor(kind: string) {
     super(`The ${kind} task was cancelled`);
     this.name = 'CpuTaskAbortedError';
@@ -900,7 +953,7 @@ export class QueueUnavailableError extends EngineUnavailableError {
  * not retryable; the status is a server fault (500), not a verdict on the caller's input.
  */
 export class GraphStateCorruptError extends ConversionFailedError {
-  readonly status = 500;
+  readonly status = SERVER_FAULT_STATUS;
   constructor(message: string) {
     super(message);
     this.name = 'GraphStateCorruptError';

@@ -1126,14 +1126,9 @@ export const ProblemDetailsSchema = {
         },
       },
     },
-    success: {
-      type: 'boolean',
-      description: 'Legacy compatibility flag (always false).',
-    },
-    error: {
-      type: 'string',
-      description: 'Legacy compatibility error message mirroring detail.',
-    },
+    code: { type: 'string', description: 'The cause of a refusal of a conversion, stable across releases, when the error that decided the answer names one (for example `engine_unavailable`).' },
+    success: { type: 'boolean', description: 'Legacy compatibility flag (always false).' },
+    error: { type: 'string', description: 'Legacy compatibility error message mirroring detail.' },
   },
 } as const;
 

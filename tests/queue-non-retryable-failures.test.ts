@@ -4,12 +4,14 @@ import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { conversionQueue, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { bombPng } from './helpers/image-bombs';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
+import { OcrTextLayerLimitError } from '../src/lib/conversions/ocr-text-layer';
 import {
   CadGeometryUnavailableError,
   ComplexScriptRequiresNativeEngineError,
   EngineUnavailableError,
   OcrEngineUnavailableError,
-  OcrLanguageUnavailableError,
+  OcrLanguageDataMissingError,
+  OcrLanguageUnknownError,
   RawEngineRequiredError,
   UnsupportedOptionError,
 } from '../src/lib/types';
@@ -72,6 +74,17 @@ describe('jobs that fail on their input are not retried', () => {
     expect(job.failedCode).toBe('UnsupportedOptionError');
   });
 
+  it.each([
+    ['OcrTextLayerLimitError', new OcrTextLayerLimitError('The page has more than 50000 words.')],
+    ['OcrLanguageUnknownError', new OcrLanguageUnknownError('Unsupported or unrecognized OCR language')],
+  ])('does not retry %s, a verdict on the page or the request that no other worker changes', async (name, error) => {
+    const { calls, job } = await runFailingJob(`nonretry-${name}`, error);
+    expect(calls).toBe(1);
+    expect(job.attemptsMade).toBe(1);
+    expect(job.failedStatus).toBe(HTTP_BAD_REQUEST);
+    expect(job.failedCode).toBe(name);
+  });
+
   it('still retries a missing engine, which another worker may have', async () => {
     const { calls, job } = await runFailingJob('retry-engine', new EngineUnavailableError('soffice'));
     expect(calls).toBe(ATTEMPTS);
@@ -82,7 +95,7 @@ describe('jobs that fail on their input are not retried', () => {
 
   it.each([
     ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing')],
-    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing')],
+    ['OcrLanguageDataMissingError', new OcrLanguageDataMissingError('traineddata missing')],
     ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required')],
     ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing')],
     ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError()],

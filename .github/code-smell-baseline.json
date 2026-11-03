@@ -30,7 +30,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 40
+    "maxValue": 37
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -130,13 +130,6 @@
     "function": "verifyStandardSignatureWithDualSecrets",
     "count": 2,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/api/contracts/schemas.ts",
-    "rule": "max-lines",
-    "function": "<module>",
-    "count": 1,
-    "maxValue": 1501
   },
   {
     "file": "src/lib/api/contracts/validate.ts",

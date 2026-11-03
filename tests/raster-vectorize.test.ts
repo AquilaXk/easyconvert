@@ -20,6 +20,7 @@ import {
   EngineMissingError,
   EngineUnavailableError,
   PayloadLimitError,
+  typedFailureOf,
   UnsupportedOptionError,
 } from '../src/lib/types';
 import { craftBmp, storedRowBytes } from './helpers/bmp-craft';
@@ -244,6 +245,7 @@ describe('the tracer program, as the wrapper sees it', () => {
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(PayloadLimitError);
     expect(failure.message).toBe('The SVG tracer could not trace this picture: it was stopped by SIGSEGV.');
+    expect(typedFailureOf(failure)).toEqual({ status: 400, code: 'conversion_failed' });
   });
 
   it('runs the program without a network, under the measured memory, output, diagnostics and time limits', async () => {

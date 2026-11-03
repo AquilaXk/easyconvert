@@ -99,6 +99,11 @@ export function refusalCodeOf(error: unknown): ConversionRefusalCode | undefined
 /** The start of every problem `type` URI the API answers with (RFC 9457); the name after it is as stable as a code. */
 export const PROBLEM_TYPE_BASE = 'https://api.easyconvert.io/problems/';
 
+/** The name of the problem a `type` URI states (`storage-full` for `.../problems/storage-full`); undefined for a type of another origin. */
+export function problemNameOfType(type: string): string | undefined {
+  return type.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
+}
+
 export const HTTP_TOO_MANY_REQUESTS = 429;
 export const HTTP_SERVICE_UNAVAILABLE = 503;
 /** The problem type of a request refused because the day's conversions are used up, or too few are left for it. */
