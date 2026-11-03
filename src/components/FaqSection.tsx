@@ -6,50 +6,48 @@ import { useTranslations } from 'next-intl';
 import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
 import { useFormatBytes } from './i18n/format';
 
-export interface FaqItem {
+interface FaqItem {
   q: string;
   a: string;
 }
 
-export interface FaqSectionProps {
+interface FaqSectionProps {
   /** The anonymous daily allowance the server enforces, read on the server (`getAnonymousDailyLimit`). */
   dailyLimit: number;
-  customFaqs?: FaqItem[];
-  title?: string;
-  subtitle?: string;
 }
 
-const DEFAULT_FAQ_KEYS = ['free', 'handling', 'maxSize', 'batch', 'install'] as const;
+const FAQ_KEYS = ['free', 'handling', 'maxSize', 'batch', 'install'] as const;
 
-/** The default questions, in the page's language. The paid plans are named only once they can be bought (`PAID_PLANS_ON_SALE`). */
-function useDefaultFaqs(dailyLimit: number): FaqItem[] {
+/**
+ * The questions, in the page's language. The paid plans are named only once they can be bought (`PAID_PLANS_ON_SALE`).
+ */
+function useFaqs(dailyLimit: number): FaqItem[] {
   const t = useTranslations('faq');
   const formatBytes = useFormatBytes();
   const maxSize = formatBytes(PLAN_MAX_FILE_BYTES.free);
   const paidLimits = PAID_PLANS_ON_SALE
     ? ` ${t('paidLimits', { pro: formatBytes(PLAN_MAX_FILE_BYTES.pro), enterprise: formatBytes(PLAN_MAX_FILE_BYTES.enterprise) })}`
     : '';
-  return DEFAULT_FAQ_KEYS.map((key) => ({
+  return FAQ_KEYS.map((key) => ({
     q: t(`items.${key}.q`),
     a: t(`items.${key}.a`, { maxSize, paidLimits, dailyLimit }),
   }));
 }
 
-export default function FaqSection({ dailyLimit, customFaqs, title, subtitle }: Readonly<FaqSectionProps>) {
+export default function FaqSection({ dailyLimit }: Readonly<FaqSectionProps>) {
   const t = useTranslations('faq');
   const [openIndex, setOpenIndex] = useState<number | null>(0);
-  const defaultFaqs = useDefaultFaqs(dailyLimit);
-  const faqs = customFaqs && customFaqs.length > 0 ? customFaqs : defaultFaqs;
+  const faqs = useFaqs(dailyLimit);
 
   return (
     <section className="py-14 border-t border-rule">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h2 className="text-2xl sm:text-3xl text-ink">
-            {title || t('title')}
+            {t('title')}
           </h2>
           <p className="mt-1.5 text-sm text-ink-2">
-            {subtitle || t('subtitle')}
+            {t('subtitle')}
           </p>
         </div>
 

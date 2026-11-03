@@ -33,7 +33,7 @@ import {
   visibleText,
   type DomElement,
 } from './helpers/rendered-dom';
-import { slugPageCopy } from './helpers/intl';
+import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
 
 /**
@@ -48,7 +48,8 @@ const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
 // The pages get the allowance from the constant, and the copy checks below write the 10 of entry 15 out by hand, as a visitor
 // reads it: an oracle independent of src/lib/plan-limits.ts.
-const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+const renderSlug = (slug: string, locale: TestLocale = 'en') =>
+  renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
@@ -358,6 +359,51 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     const category = select(renderSlug('document-converter'), 'main')[0];
     expect(headings(category)).toEqual(['Document Converter', 'Select your file to convert', 'Convert from DOCX', 'Convert to DOCX']);
+  });
+
+  // The section of the format cards is named for a screen reader; it is the one place the cards are told from the headings around them.
+  const CARDS_LABEL = { en: 'Formats', ko: '형식' } as const;
+  const formatCards = (slug: string, locale: TestLocale = 'en') => {
+    const [section] = select(select(renderSlug(slug, locale), 'main')[0], 'section', 'aria-label', CARDS_LABEL[locale]);
+    return {
+      exists: section !== undefined,
+      names: section ? headings(section).map((heading) => heading.split(' ')[0]) : [],
+      hrefs: section ? links(section).map((link) => link.href.replace(/^\/ko(?=\/)/, '')) : [],
+    };
+  };
+
+  it.each(['en', 'ko'] as const)(
+    'verifies each card names and links its format by the id of the page, not by the extension of the registry entry (%s)',
+    (locale) => {
+      for (const [slug, ids] of [['raw-to-ultrahdr', ['raw', 'ultrahdr']], ['pdf-to-alto', ['pdf', 'alto']], ['pdf-to-docx', ['pdf', 'docx']]] as const) {
+        const { names, hrefs } = formatCards(slug, locale);
+        expect(names, slug).toEqual(ids.map((id) => id.toUpperCase()));
+        expect(hrefs, slug).toEqual(ids.map((id) => `/${id}-converter`));
+      }
+      for (const id of ['ultrahdr', 'alto', 'svgfont', 'webpvideo']) {
+        const { names, hrefs } = formatCards(`${id}-converter`, locale);
+        expect(names, id).toEqual([id.toUpperCase()]);
+        expect(hrefs, id).toEqual([]);
+      }
+    }
+  );
+
+  it('verifies a slug that names a category by a word shows no format card and no format in its breadcrumb', () => {
+    for (const slug of ['music-converter', 'photo-converter', 'word-converter', 'audio-converter', 'cad-converter']) {
+      expect(formatCards(slug).exists, slug).toBe(false);
+      const breadcrumb = select(renderSlug(slug), 'nav', 'aria-label', 'Breadcrumb')[0];
+      expect(links(breadcrumb).map((link) => link.href), slug).toEqual(['/']);
+      expect(select(breadcrumb, 'li').filter((item) => attrOf(item, 'aria-current') === 'page'), slug).toHaveLength(1);
+    }
+  });
+
+  it('verifies a pair of two names of one format is a format page with one card, and a format is listed once among the related conversions', () => {
+    expect(formatCards('jpeg-to-jpg')).toEqual({ exists: true, names: ['JPEG'], hrefs: [] });
+
+    const texts = links(select(renderSlug('png-converter'), 'main')[0]).map((link) => link.text);
+    expect(texts.filter((text) => text === 'JPG to PNG')).toHaveLength(1);
+    expect(texts.filter((text) => text === 'JPEG to PNG' || text === 'JFIF to PNG')).toEqual([]);
+    expect(new Set(texts).size).toBe(texts.length);
   });
 
   it('verifies the related-conversion lists of a format page offer no conversion of a format to itself or to its other name', () => {

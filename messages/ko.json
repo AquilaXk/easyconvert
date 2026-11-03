@@ -100,11 +100,11 @@
     "breadcrumb": {
       "label": "현재 위치",
       "home": "홈",
-      "converter": "{format} 변환기",
       "pair": "{src} → {tgt}"
     },
+    "formatConverter": "{format} 변환기",
     "formatCard": {
-      "link": "{format} 변환기"
+      "label": "형식"
     },
     "crossLinks": {
       "from": {
@@ -430,8 +430,7 @@
       "ebook": "전자책",
       "font": "벡터 글꼴",
       "cad": "CAD 도면",
-      "data": "구조화 데이터",
-      "fallback": "파일 형식"
+      "data": "구조화 데이터"
     },
     "fallbackName": "{ext} 형식",
     "fallbackDesc": "{name} 형식은 여러 운영체제와 변환 도구에서 널리 지원하는 파일 형식이에요."
@@ -1196,11 +1195,8 @@
       "sampleRate": "샘플레이트",
       "channels": "오디오 채널",
       "pages": "페이지 범위",
-      "orientation": "페이지 방향",
       "ocr": "문자 인식",
       "password": "비밀번호",
-      "delimiter": "구분 기호",
-      "sheet": "시트 선택",
       "compression": "압축 수준"
     }
   },

@@ -27,3 +27,24 @@ export const FORMAT_NAME_ALIASES: Readonly<Record<string, string>> = {
 export function canonicalFormat(id: string): string {
   return Object.hasOwn(FORMAT_NAME_ALIASES, id) ? FORMAT_NAME_ALIASES[id] : id;
 }
+
+/** Whether two registry ids name one format: the same id, or two names of it (JPEG and JPG, JPEG and JFIF). */
+export function isSameFormat(id: string, other: string): boolean {
+  return canonicalFormat(id) === canonicalFormat(other);
+}
+
+/**
+ * The formats of `ids` other than `own`, each named once: a name of `own` is dropped, and the names of any other
+ * format collapse to one, its canonical name when `ids` holds it and else the first name `ids` holds. The order of
+ * `ids` stays.
+ */
+export function otherFormats(own: string, ids: readonly string[]): string[] {
+  const ownFormat = canonicalFormat(own);
+  const named = new Map<string, string>();
+  for (const id of ids) {
+    const format = canonicalFormat(id);
+    if (format === ownFormat) continue;
+    if (!named.has(format) || id === format) named.set(format, id);
+  }
+  return [...named.values()];
+}

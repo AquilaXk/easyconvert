@@ -202,9 +202,7 @@ export default function Features() {
         <SecurityDataHandlingCard />
       </section>
 
-      <section>
-        <RestApiWorkflowCard />
-      </section>
+      <RestApiWorkflowCard />
     </div>
   );
 }

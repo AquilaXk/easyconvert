@@ -9,28 +9,22 @@ import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
 import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
-import { canonicalFormat } from '@/lib/format-aliases';
+import { isSameFormat, otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { parseConverterSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
-import { formatCategoryLabel, useFormatDetail } from '@/components/converter/format-specs';
+import { formatCategoryLabel } from '@/components/converter/format-specs';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import { ConverterBreadcrumb } from '@/components/converter/ConverterBreadcrumb';
 import { FormatCards } from '@/components/converter/FormatCards';
 import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
-/** Whether `format` is `other` itself or another name of it: a conversion of a format to itself is no pair to link. */
-function isSameFormat(format: string, other: string): boolean {
-  return canonicalFormat(format) === canonicalFormat(other);
-}
-
 /** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
   const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
-  const getFormatDetail = useFormatDetail();
   const parsed = parseConverterSlug(slug);
   const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
@@ -60,32 +54,26 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
 
   const srcKey = parsed.sourceFormat.toLowerCase();
   const tgtKey = parsed.targetFormat.toLowerCase();
-  const isPair = Boolean(tgtKey && tgtKey !== 'any' && tgtKey !== srcKey);
-
-  const srcMeta = getFormatDetail(srcKey);
-  const tgtMeta = isPair ? getFormatDetail(tgtKey) : null;
+  // A format converted to itself or to another name of it (JPEG to JPG) is no pair: the page describes the one format.
+  const isPair = Boolean(tgtKey && tgtKey !== 'any' && !isSameFormat(tgtKey, srcKey));
+  const isCategorySlug = parsed.copy.kind === 'format' && parsed.copy.name.kind === 'category';
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
-  const convertFromTargets = (sourceFormatRegistry?.targetFormats || [
-    'pdf',
-    'docx',
-    'png',
-    'jpg',
-    'txt',
-  ]).filter((target) => !isSameFormat(target, srcKey));
+  const convertFromTargets = otherFormats(
+    srcKey,
+    sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt']
+  );
 
   const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
-  const convertToSources = Object.entries(FORMAT_REGISTRY)
-    .filter(([key, def]) => def.targetFormats.includes(targetForReverse) && !isSameFormat(key, targetForReverse))
-    .map(([key]) => key);
+  const convertToSources = otherFormats(
+    targetForReverse,
+    Object.entries(FORMAT_REGISTRY)
+      .filter(([, def]) => def.targetFormats.includes(targetForReverse))
+      .map(([key]) => key)
+  );
 
   const categoryName = sourceFormatRegistry?.category || 'document';
   const categoryLabel = formatCategoryLabel(tDetail, categoryName);
-  const normalizedSlug = slug.toLowerCase().trim();
-  const isCategorySlug =
-    normalizedSlug === `${categoryName}-converter` ||
-    normalizedSlug === `${categoryName}s-converter` ||
-    (srcKey === categoryName.toLowerCase() && normalizedSlug.includes('-converter'));
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -144,7 +132,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
           />
         ) : (
           <>
-            {!isCategorySlug && <FormatCards srcMeta={srcMeta} tgtMeta={tgtMeta} />}
+            {!isCategorySlug && <FormatCards srcKey={srcKey} tgtKey={isPair ? tgtKey : null} />}
 
             <FormatCrossLinks
               sourceFormat={parsed.sourceFormat}

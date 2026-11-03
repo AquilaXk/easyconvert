@@ -100,11 +100,11 @@
     "breadcrumb": {
       "label": "Breadcrumb",
       "home": "Home",
-      "converter": "{format} Converter",
       "pair": "{src} to {tgt}"
     },
+    "formatConverter": "{format} Converter",
     "formatCard": {
-      "link": "{format} Converter"
+      "label": "Formats"
     },
     "crossLinks": {
       "from": {
@@ -430,8 +430,7 @@
       "ebook": "Digital E-Book",
       "font": "Vector Font",
       "cad": "CAD Drawing",
-      "data": "Structured Data",
-      "fallback": "File Format"
+      "data": "Structured Data"
     },
     "fallbackName": "{ext} Format",
     "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows."
@@ -1196,11 +1195,8 @@
       "sampleRate": "sample rate",
       "channels": "audio channels",
       "pages": "page range",
-      "orientation": "page orientation",
       "ocr": "text recognition",
       "password": "password",
-      "delimiter": "delimiter",
-      "sheet": "sheet choice",
       "compression": "compression level"
     }
   },

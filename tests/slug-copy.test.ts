@@ -1,6 +1,7 @@
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
+import { OPTION_INTRO_CATEGORIES } from '../src/components/converter/slug-copy';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { allElements, attrOf, renderDom } from './helpers/rendered-dom';
@@ -38,6 +39,8 @@ describe('the intro of a converter page', () => {
     ['mp4-to-mp3', 'en', 'Extract the sound of MP4 files as MP3 files online. Other targets include WEBM, MKV, AVI, and MOV. Options include bitrate, sample rate, and audio channels.'],
     ['docx-to-pdf', 'en', 'Convert DOCX files to PDF online. Other targets include HTML, TXT, MD, EPUB, and ODT.'],
     ['pdf-to-docx', 'en', 'Convert PDF files to DOCX online. Other targets include HTML, MD, RTF, TXT, and EPUB.'],
+    ['csv-to-xlsx', 'en', 'Convert CSV files to XLSX online. Other targets include JSON, TSV, PARQUET, HTML, and YAML.'],
+    ['jpeg-to-png', 'en', 'Convert JPEG files to PNG online. Other targets include WEBP, AVIF, TIFF, GIF, and BMP. Options include image size, quality, and metadata removal.'],
     ['video-converter', 'en', 'Convert videos online. Targets include WEBM, MKV, AVI, MOV, and MP3.'],
     ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있어요.'],
     ['ttf-converter', 'en', 'Convert TTF fonts online. Targets include WOFF, WOFF2, EOT, OTF, and SVG.'],
@@ -138,16 +141,11 @@ function optionsSentence(subjects: string[]): string {
   return `Options include ${new Intl.ListFormat('en', { type: 'conjunction' }).format(subjects)}.`;
 }
 
-/** The check renders the options dialog of every registered pair (2,486), which took 5.7 s on a CI runner. */
-
-/** The pair pages that name options are those of images, video and audio; a document, font, archive or data pair page does not. */
-const OPTION_INTRO_CATEGORIES = ['image', 'video', 'audio'];
-
 describe('the options a pair page names', () => {
   it('are the first options its dialog renders for an image, video or audio source, in the dialog order, and none for any other source', () => {
     const differing = registeredPairs.flatMap((slug) => {
       const [source, target] = slug.split('-to-');
-      const rendered = OPTION_INTRO_CATEGORIES.includes(FORMAT_REGISTRY[source].category)
+      const rendered = OPTION_INTRO_CATEGORIES.has(FORMAT_REGISTRY[source].category)
         ? subjectsTheDialogRenders(source, target).slice(0, 3)
         : [];
       const { description } = slugPageCopy(slug, 'en');

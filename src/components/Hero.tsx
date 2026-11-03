@@ -127,7 +127,13 @@ interface QueueHeaderProps {
 }
 
 /** The title over the file queue, and the file input and paste target that add more files to it. */
-export function QueueHeader({ onFilesSelected, sourceFormat, targetFormat, pageTitle, pageDescription }: Readonly<QueueHeaderProps>) {
+export function QueueHeader({
+  onFilesSelected,
+  sourceFormat,
+  targetFormat,
+  pageTitle,
+  pageDescription,
+}: Readonly<QueueHeaderProps>) {
   const t = useTranslations('hero');
   const upload = useHeroUpload(onFilesSelected, targetFormat || undefined);
   return (
