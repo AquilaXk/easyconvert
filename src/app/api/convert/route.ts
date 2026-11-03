@@ -22,7 +22,7 @@ import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReserve
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
-import { loggingOutcomes, registryFormat, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
+import { loggingOutcomes, privateTextOf, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import type { User } from '@/lib/auth/types';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -31,7 +31,6 @@ import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
   createPdfPostprocessResponse,
-  serverFault,
 } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
@@ -48,30 +47,44 @@ const refusal = codedRefusal<ConversionRefusalCode>;
 
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const HTTP_UNPROCESSABLE_CONTENT = 422;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
 
 /** The archive refusals answered as a coded 422 by the code their class declares: an entry name collision, a missing volume, an encrypted header. */
 const CODED_ARCHIVE_REFUSALS: ReadonlySet<ConversionRefusalCode> = new Set(['archive_entry_collision', 'missing_volume', 'encrypted_input']);
 
 const isMultipartBody = (req: NextRequest): boolean => (req.headers.get('content-type') ?? '').toLowerCase().includes('multipart/form-data');
 
-/** Whether a failed conversion was refused for its input (400) rather than failed on the server (500); a TypeError is a fault of the server. */
-function isValidationError(error: unknown, message: string): boolean {
-  if (error instanceof TypeError) return false;
-  return (
-    error instanceof ConversionFailedError ||
-    message.includes('payload is empty') ||
-    message.includes('Cannot convert') ||
-    message.includes('Unsupported') ||
-    message.includes('Failed to parse') ||
-    message.includes('OCR failed') ||
-    message.includes('PDF OCR') ||
-    message.includes('compression') ||
-    message.includes('Fail-Closed')
-  );
+/**
+ * The words of the plain `Error`s that engines and their libraries throw for an input they cannot convert, where no class of
+ * src/lib/types.ts types the refusal; a typed error is read by its class, never by these.
+ */
+const UNTYPED_INPUT_REFUSAL_WORDS = [
+  'payload is empty',
+  'Cannot convert',
+  'Unsupported',
+  'Failed to parse',
+  'OCR failed',
+  'PDF OCR',
+  'compression',
+  'Fail-Closed',
+] as const;
+
+/** Whether an error the conversion threw is a refusal of its input (400) rather than a fault of the server (500); a TypeError is always a fault. */
+function isInputRefusal(error: unknown): boolean {
+  if (error instanceof ConversionFailedError) return true;
+  if (!(error instanceof Error) || error instanceof TypeError) return false;
+  return UNTYPED_INPUT_REFUSAL_WORDS.some((words) => error.message.includes(words));
+}
+
+/** The 500 for an error the route did not classify: a fixed sentence, since the error can name a path or a program's output; the outcome line carries the error. */
+function serverFaultAnswer(error: unknown, trace: ConversionTrace): NextResponse {
+  trace.cause = error;
+  return codedRefusal(HTTP_INTERNAL_SERVER_ERROR, undefined, UNCLASSIFIED_FAILURE);
 }
 
 /** The answer for an error a conversion threw: its problem type or status, and the code of its cause. */
-function conversionErrorResponse(error: unknown, instanceUri: string): NextResponse {
+function conversionErrorResponse(error: unknown, instanceUri: string, trace: ConversionTrace): NextResponse {
+  trace.cause = error;
   const deadlineProblem = deadlineErrorResponse(error, instanceUri);
   if (deadlineProblem) return deadlineProblem;
   if (error instanceof EngineUnavailableError) {
@@ -100,13 +113,12 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
     return refusal(HTTP_UNPROCESSABLE_CONTENT, code, error.message);
   }
   if (error instanceof WorkerOutputMissingError) {
-    // A server fault, not a verdict on the input: answer 500 without the worker's file name.
-    console.error('[convert] Worker output vanished before it was read:', error);
+    // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
     return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
   }
   const message = error instanceof Error ? error.message : UNCLASSIFIED_FAILURE;
-  if (isValidationError(error, message)) return refusal(400, code ?? 'conversion_failed', message);
-  return serverFault('convert', error, UNCLASSIFIED_FAILURE);
+  if (isInputRefusal(error)) return refusal(400, code ?? 'conversion_failed', message);
+  return serverFaultAnswer(error, trace);
 }
 
 export const POST = loggingOutcomes('convert', withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest, trace: ConversionTrace) {
@@ -151,12 +163,18 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
-    const formData = await req.formData();
+    let formData: FormData;
+    try {
+      formData = await req.formData();
+    } catch (error: unknown) {
+      trace.cause = error;
+      return refusal(400, 'multipart_required', 'The request body must be multipart/form-data.');
+    }
     const file = formData.get('file') as File | null;
     const targetFormat = formData.get('targetFormat') as string | null;
     const optionsRaw = formData.get('options') as string | null;
 
-    trace.target = registryFormat(targetFormat);
+    trace.target = targetFormat ? getFormatByExtension(targetFormat)?.extension : undefined;
     if (!file) {
       return refusal(400, 'file_required', 'Missing required "file" in multipart request.');
     }
@@ -212,6 +230,8 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
       }
     }
 
+    trace.privateText = privateTextOf(file.name, options);
+
     if (!options.pages && options.page) {
       options.pages = String(options.page);
     }
@@ -242,26 +262,30 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
         inputBytes: inputBuffer.length,
       })
     );
-    const result = await runUnderDeadline(req, deadlineMs, (limits) =>
-      dispatchConversion(
-        inputBuffer,
-        detectedDef.extension,
-        tgt,
-        bindJobLimits(withTierPageCap(options, tierMaxPages(caller.tier)), limits),
-        file.name
-      )
-    );
+    let result: Awaited<ReturnType<typeof dispatchConversion>>;
+    try {
+      result = await runUnderDeadline(req, deadlineMs, (limits) =>
+        dispatchConversion(
+          inputBuffer,
+          detectedDef.extension,
+          tgt,
+          bindJobLimits(withTierPageCap(options, tierMaxPages(caller.tier)), limits),
+          file.name
+        )
+      );
+    } catch (error: unknown) {
+      return conversionErrorResponse(error, instanceUri, trace);
+    }
 
-    const duration = Date.now() - startTime;
-
-    // The answer is built before the unit is charged, so an answer that cannot be built charges nothing.
+    // Past the conversion every error is a fault of the server, whatever its words say. The answer is built before the unit is
+    // committed, so an answer that cannot be built is not charged.
     const answer = new NextResponse(new Uint8Array(result.buffer), {
       status: 200,
       headers: {
         'Content-Type': result.mimeType,
         'Content-Disposition': attachmentContentDisposition(result.filename),
         'Content-Length': result.size.toString(),
-        'X-Conversion-Time-Ms': duration.toString(),
+        'X-Conversion-Time-Ms': (Date.now() - startTime).toString(),
         'X-Engine-Used': result.engineUsed,
         ...frameMetadataHeaders(result),
         ...droppedStreamsHeaders(result),
@@ -271,7 +295,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
     await unit.commit();
     return answer;
   } catch (error: unknown) {
-    return conversionErrorResponse(error, instanceUri);
+    return serverFaultAnswer(error, trace);
   } finally {
     releaseSlot?.();
   }

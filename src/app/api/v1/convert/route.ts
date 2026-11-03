@@ -4,7 +4,7 @@ import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversi
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
-import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
+import { loggingOutcomes, privateTextOf, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -74,16 +74,18 @@ interface ReservedConversion extends ValidatedConvertInput {
   reply: (res: NextResponse | Response) => Promise<NextResponse | Response>;
 }
 
-type ParsedConvertForm = { problem: NextResponse; data?: undefined } | { data: ValidatedConvertInput; problem?: undefined };
+/** What reading a request established before it was accepted or refused: the input's size and the registry's names of its formats. */
+type RequestFacts = Pick<ConversionTrace, 'bytes' | 'source' | 'target'>;
 
-/** The validated input of a convert request, or the problem answer for the first thing wrong with it; `trace` gets what was read. */
-function parseConvertFormData(
-  formData: FormData,
-  instanceUri: string,
-  headers: Record<string, string>,
-  trace: ConversionTrace
-): ParsedConvertForm {
+type ParsedConvertForm =
+  | { facts: RequestFacts; problem: NextResponse; data?: undefined }
+  | { facts: RequestFacts; data: ValidatedConvertInput; problem?: undefined };
+
+/** The validated input of a convert request, or the problem answer for the first thing wrong with it, with the facts read on the way. */
+function parseConvertFormData(formData: FormData, instanceUri: string, headers: Record<string, string>): ParsedConvertForm {
+  const facts: RequestFacts = {};
   const badRequest = (detail: string): ParsedConvertForm => ({
+    facts,
     problem: createProblemDetailsResponse(400, detail, instanceUri, 'Bad Request', undefined, headers),
   });
   const file = formData.get('file');
@@ -92,7 +94,7 @@ function parseConvertFormData(
     return badRequest('Missing required "file" or invalid file binary in multipart request.');
   }
 
-  trace.bytes = file.size;
+  facts.bytes = file.size;
   if (file.size === 0) {
     return badRequest('File payload is empty (0 bytes).');
   }
@@ -110,14 +112,14 @@ function parseConvertFormData(
   if (!sourceDef) {
     return badRequest(`Could not identify source format for file "${file.name}".`);
   }
-  trace.source = sourceDef.extension;
+  facts.source = sourceDef.extension;
 
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
   const targetDef = getFormatByExtension(tgt);
   if (!targetDef) {
     return badRequest(`Unsupported target format "${targetFormat}".`);
   }
-  trace.target = targetDef.extension;
+  facts.target = targetDef.extension;
 
   if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
     return badRequest(`Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`);
@@ -137,7 +139,7 @@ function parseConvertFormData(
     }
   }
 
-  return { data: { file: file as File, sourceDef, targetDef, options } };
+  return { facts, data: { file: file as File, sourceDef, targetDef, options } };
 }
 
 export const POST = loggingOutcomes('v1/convert', withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest, trace: ConversionTrace) {
@@ -213,10 +215,12 @@ export const POST = loggingOutcomes('v1/convert', withinSingleRequest(admittingN
     }
     releaseSlot = slot.release;
     const formData = await req.formData();
-    const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders, trace);
+    const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders);
+    Object.assign(trace, validation.facts);
     if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;
+    trace.privateText = privateTextOf(file.name, options);
 
     // Validate conversion options against SSOT JSON Schema contract BEFORE reserving quota
     if (options && Object.keys(options).length > 0) {
@@ -274,6 +278,7 @@ export const POST = loggingOutcomes('v1/convert', withinSingleRequest(admittingN
     };
     return await withReservedUnit(unit.reservationId, (reserved) => convertReserved(conversion, reserved));
   } catch (err: unknown) {
+    trace.cause = err;
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
     }
@@ -309,8 +314,7 @@ export const POST = loggingOutcomes('v1/convert', withinSingleRequest(admittingN
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof WorkerOutputMissingError) {
-      // A server fault, not a verdict on the input: log it, answer 500 without the worker's file name.
-      console.error('[v1/convert] Worker output vanished before it was read:', err);
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
       return createProblemDetailsResponse(
         err.status,
         WORKER_OUTPUT_MISSING_DETAIL,
@@ -324,8 +328,7 @@ export const POST = loggingOutcomes('v1/convert', withinSingleRequest(admittingN
       // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
       return createProblemDetailsResponse(400, err.message, instanceUri, 'Bad Request', undefined, rateLimitHeaders);
     }
-    // Internal errors can carry sandbox paths: log the real error, answer with a generic detail.
-    console.error('[v1/convert] Conversion failed with an internal error:', err);
+    // Internal errors can carry sandbox paths: answer with a generic detail; the outcome line carries the error.
     return createProblemDetailsResponse(
       500,
       INTERNAL_ERROR_DETAIL,

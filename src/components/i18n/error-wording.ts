@@ -3,7 +3,7 @@ import { useFormatter, useMessages, useTranslations, type Messages } from 'next-
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { PLAN_MAX_FILE_BYTES, URL_IMPORT_MAX_BYTES, maxFileBytes, type Plan } from '@/lib/plan-limits';
 import {
-  AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, DASHBOARD_REFUSAL_CODES, PROBLEM_TYPE_BASE, URL_IMPORT_ERROR_CODES, isCodeOf,
+  AUTH_ERROR_CODES, CONVERSION_REFUSAL_CODES, DASHBOARD_REFUSAL_CODES, URL_IMPORT_ERROR_CODES, isCodeOf, problemNameOfType,
 } from '@/lib/refusal-codes';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { useFileTooLargeMessage, useFormatBytes } from './format';
@@ -59,7 +59,7 @@ const SINGLE_CAUSE_STATUS_PROBLEMS: StatusProblems = {
 function problemNameOf(answer: Answer, status: number, byStatus: boolean): string | undefined {
   const type = textField(answer, 'type');
   if (type === undefined) return byStatus ? SINGLE_CAUSE_STATUS_PROBLEMS[status] : undefined;
-  return type.startsWith(PROBLEM_TYPE_BASE) ? type.slice(PROBLEM_TYPE_BASE.length) : undefined;
+  return problemNameOfType(type);
 }
 
 interface LimitWords {

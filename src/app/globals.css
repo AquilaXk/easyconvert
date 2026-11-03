@@ -354,4 +354,10 @@ html:has(dialog:modal) {
   .thread::-webkit-progress-value {
     transition: none;
   }
+
+  /* A bar with no value that does not move would read as a share of the track: the whole track is filled in a quiet tone. */
+  .thread:indeterminate {
+    animation: none;
+    background: rgb(var(--c-accent-edge));
+  }
 }

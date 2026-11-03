@@ -1,7 +1,9 @@
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
+import * as clientConverter from '../src/lib/client-converter';
 import { executeItemConversion } from '../src/lib/client-converter';
+import { createConversionRunners, type QueueMutationContext } from '../src/hooks/useClientQueue';
 import type { ConversionQueueItem } from '../src/lib/types';
 import { allElements, attrOf, renderDom, visibleText } from './helpers/rendered-dom';
 import type { TestLocale } from './helpers/intl-messages';
@@ -32,6 +34,7 @@ const progressOf = (overrides: Partial<ConversionQueueItem>, locale: TestLocale)
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('a conversion sent to the server in one request', () => {
@@ -72,5 +75,52 @@ describe('the status of a running row', () => {
 
     expect(attrOf(bar, 'value')).toBe('40');
     expect(text).toContain('40%');
+  });
+});
+
+describe('the queue runner when the server takes over from the browser', () => {
+  it('starts the server stage without the share the browser measured and shows the share a later stage reports', async () => {
+    const queueRef = { current: [item({ status: 'ready' })] };
+    const ctx: QueueMutationContext = {
+      mountedRef: { current: true },
+      queueRef,
+      generationRef: { current: new Map() },
+      inFlightIdsRef: { current: new Set() },
+      abortersRef: { current: new Map() },
+      blobUrlsRef: { current: new Set() },
+      timersRef: { current: new Set() },
+      batchGenRef: { current: 0 },
+      batchRunningRef: { current: false },
+      updateQueue: (action) => {
+        queueRef.current = typeof action === 'function' ? action(queueRef.current) : action;
+      },
+      revokeBlobUrl: () => undefined,
+      isItemBusy: () => false,
+      syncInFlight: () => undefined,
+      setIsBatchRunning: () => undefined,
+      setInFlightCount: () => undefined,
+      setZipError: () => undefined,
+    };
+    const seen: Array<{ status: string; progress: number | undefined }> = [];
+    const snapshot = () => seen.push({ status: queueRef.current[0].status, progress: queueRef.current[0].progress });
+    vi.spyOn(clientConverter, 'executeItemConversion').mockImplementation(async (_item, callbacks) => {
+      snapshot();
+      callbacks.onProgress(60);
+      snapshot();
+      callbacks.onStage?.('converting');
+      snapshot();
+      callbacks.onStage?.('uploading');
+      callbacks.onProgress(25);
+      snapshot();
+    });
+
+    await createConversionRunners(ctx).handleConvertAll();
+
+    expect(seen).toEqual([
+      { status: 'converting', progress: undefined },
+      { status: 'converting', progress: 60 },
+      { status: 'converting', progress: undefined },
+      { status: 'uploading', progress: 25 },
+    ]);
   });
 });

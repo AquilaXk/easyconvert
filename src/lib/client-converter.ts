@@ -570,12 +570,6 @@ async function processL2Conversion(
   }
 }
 
-/** Sends the file in one request that answers the result: its conversion stage starts at once and has no measure of progress. */
-function convertInOneRequest(item: ConversionQueueItem, callbacks: ConvertItemCallbacks, signal?: AbortSignal) {
-  callbacks.onStage?.('converting');
-  return executeServerlessCloudFallback(item.file, item.targetFormat, item.options, signal);
-}
-
 /**
  * Universal client conversion executor.
  * Handles client-side Edge fast-path (in the browser, with no upload) with automatic fallback
@@ -625,13 +619,15 @@ export async function executeItemConversion(
   // job (entry 137); the retention rule of entry 125 deletes the input and the result.
   const inParts = needsUploadInParts(item.file.size);
   try {
+    // One request sends the file and waits for the result: its conversion stage starts at once and has no measure of progress.
+    if (!inParts) callbacks.onStage?.('converting');
     const cloudRes = inParts
       ? await executeResumableCloudConversion(item.file, item.targetFormat, item.options, {
           onProgress: callbacks.onProgress,
           onStage: callbacks.onStage,
           signal,
         })
-      : await convertInOneRequest(item, callbacks, signal);
+      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, signal);
     callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: unknown) {
     if (signal?.aborted) return;
