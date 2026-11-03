@@ -1194,6 +1194,7 @@
     "row": {
       "uploadingLabel": "{name} 업로드 중",
       "convertingLabel": "{name} 변환 중",
+      "uploading": "업로드 중...",
       "done": "완료",
       "download": "다운로드",
       "failed": "실패",

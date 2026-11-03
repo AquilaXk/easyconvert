@@ -30,7 +30,7 @@ export interface EdgeTierFallback {
 
 export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
-  /** Called when a file sent to the server in parts moves from its upload to its conversion. */
+  /** Called when the server's part of a conversion starts a stage; the stage has no progress until it reports some. */
   onStage?: (stage: ResumableStage) => void;
   onSuccess: (
     resultUrl: string,
@@ -570,6 +570,12 @@ async function processL2Conversion(
   }
 }
 
+/** Sends the file in one request that answers the result: its conversion stage starts at once and has no measure of progress. */
+function convertInOneRequest(item: ConversionQueueItem, callbacks: ConvertItemCallbacks, signal?: AbortSignal) {
+  callbacks.onStage?.('converting');
+  return executeServerlessCloudFallback(item.file, item.targetFormat, item.options, signal);
+}
+
 /**
  * Universal client conversion executor.
  * Handles client-side Edge fast-path (in the browser, with no upload) with automatic fallback
@@ -625,7 +631,7 @@ export async function executeItemConversion(
           onStage: callbacks.onStage,
           signal,
         })
-      : await executeServerlessCloudFallback(item.file, item.targetFormat, item.options, callbacks.onProgress, signal);
+      : await convertInOneRequest(item, callbacks, signal);
     callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
   } catch (err: unknown) {
     if (signal?.aborted) return;

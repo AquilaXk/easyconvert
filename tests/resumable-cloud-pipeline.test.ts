@@ -808,7 +808,7 @@ describe('the browser picks the way to the server by the size of the file', () =
     await executeItemConversion(itemOfSize(SINGLE_REQUEST_FILE_MAX_BYTES), cb, aborter.signal);
 
     expect(executeServerlessCloudFallback).toHaveBeenCalledOnce();
-    expect(vi.mocked(executeServerlessCloudFallback).mock.calls[0][4]).toBe(aborter.signal);
+    expect(vi.mocked(executeServerlessCloudFallback).mock.calls[0][3]).toBe(aborter.signal);
     expect(calls).toHaveLength(0);
     expect(cb.onSuccess).toHaveBeenCalledWith('blob:one', 1, false, 'Cloud', undefined);
   });

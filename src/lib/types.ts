@@ -301,7 +301,8 @@ export interface ConversionQueueItem {
   sourceFormat: string;
   targetFormat: string;
   status: QueueItemStatus;
-  progress: number;
+  /** Percent done as a stage measured it; absent while the running stage has no measure (one request to the server). */
+  progress?: number;
   resultUrl?: string;
   resultSize?: number;
   error?: ConversionFailure;

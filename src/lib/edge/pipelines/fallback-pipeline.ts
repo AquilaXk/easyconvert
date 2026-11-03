@@ -73,7 +73,6 @@ export async function executeServerlessCloudFallback(
   file: File | Blob,
   targetFormat: string,
   options: ConversionOptions = {},
-  onProgress?: (progress: number) => void,
   signal?: AbortSignal
 ): Promise<CloudConversionResult> {
   const formData = new FormData();
@@ -81,15 +80,11 @@ export async function executeServerlessCloudFallback(
   formData.append('targetFormat', targetFormat);
   formData.append('options', JSON.stringify(options));
 
-  onProgress?.(30);
-
   const res = await fetch('/api/convert', {
     method: 'POST',
     body: formData,
     signal,
   });
-
-  onProgress?.(80);
 
   if (!res.ok) {
     throw serverRefusal(await res.json().catch(() => ({})), res.status, 'Serverless cloud conversion failed.');
@@ -100,8 +95,6 @@ export async function executeServerlessCloudFallback(
     throw new ConversionFailedError('This runtime cannot create a download URL for the converted file.');
   }
   const url = URL.createObjectURL(blob);
-
-  onProgress?.(100);
 
   return {
     blob,

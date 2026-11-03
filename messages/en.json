@@ -1194,6 +1194,7 @@
     "row": {
       "uploadingLabel": "Uploading {name}",
       "convertingLabel": "Converting {name}",
+      "uploading": "Uploading...",
       "done": "Done",
       "download": "Download",
       "failed": "Failed",
