@@ -760,6 +760,10 @@
     },
     "converter": {
       "title": "{title} | EasyConvert"
+    },
+    "notFound": {
+      "title": "Page not found | EasyConvert",
+      "description": "Sorry, the page you are looking for could not be found."
     }
   },
   "options": {
@@ -1028,7 +1032,6 @@
     "imageResizer": "Image Resizer",
     "websiteScreenshot": "Website Screenshot",
     "mp4Remuxer": "MP4 Remuxer",
-    "losslessPng": "Lossless PNG",
     "vectorConverter": "Vector Converter",
     "securityArchitecture": "Security Architecture",
     "aboutUs": "About Us",
@@ -1376,7 +1379,7 @@
   },
   "notFound": {
     "code": "404",
-    "title": "The page could not be found.",
+    "title": "The route {route} could not be found.",
     "description": "Sorry, the page you are looking for could not be found."
   },
   "urlImport": {

@@ -589,7 +589,8 @@ esac
     expect(webService.security_opt).toContain('no-new-privileges:true');
     expect(boot).toMatch(/^\s+--security-opt no-new-privileges:true \\$/m);
     const seccomp = webService.security_opt?.find((option) => option.startsWith('seccomp='))?.replace('seccomp=./', '');
-    expect(boot).toContain(`SECCOMP="$(cd "$(dirname "$0")/.." && pwd)/${seccomp}"`);
+    expect(boot).toContain('ROOT="$(cd "$(dirname "$0")/.." && pwd)"');
+    expect(boot).toContain(`SECCOMP="$ROOT/${seccomp}"`);
     for (const mount of ['/tmp', '/home/easyconvert', '/app/.next/cache']) {
       expect(boot, mount).toMatch(new RegExp(`--tmpfs ${mount.replaceAll('/', '\\/').replaceAll('.', '\\.')}:[^ ]*\\bnoexec\\b`));
     }
@@ -1675,6 +1676,7 @@ esac`
     );
     stub('curl', 'echo "curl $*" >> "$STUB_LOG"; printf \'%s\' "${STUB_STATUS:-200}"');
     stub('sleep', 'exit 0');
+    stub('node', 'echo "node $*" >> "$STUB_LOG"; exit "${STUB_PAGES_EXIT:-0}"');
   });
 
   afterAll(() => {
@@ -1696,6 +1698,21 @@ esac`
     expect(calls().find((call) => call.startsWith('docker run'))).toContain('--publish 127.0.0.1::3000 ');
     expect(calls().find((call) => call.startsWith('curl'))).toContain(`http://127.0.0.1:${HOST_PORT}/`);
     expect(removed()).toBe(true);
+  });
+
+  it('then asks the same server for pages that exist and paths that do not, and fails, removing the container, when that check fails', () => {
+    const passed = boot();
+    expect(calls().find((call) => call.startsWith('node'))).toBe(`node ${path.join(ROOT, 'scripts', 'check-built-statuses.mjs')} http://127.0.0.1:${HOST_PORT}`);
+    expect(passed.status, passed.stderr).toBe(0);
+
+    const failed = boot({ STUB_PAGES_EXIT: '1' });
+    expect(failed.status).not.toBe(0);
+    expect(removed()).toBe(true);
+  });
+
+  it('does not run the page check when the home page does not answer 200', () => {
+    boot({ STUB_STATUS: '500' });
+    expect(calls().some((call) => call.startsWith('node'))).toBe(false);
   });
 
   it.each([

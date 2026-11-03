@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createElement, type ComponentType } from 'react';
-import { CATEGORY_WORDS, parseConverterSlug, type CategoryWord } from '../src/lib/slug-parser';
+import { CATEGORY_WORDS, type CategoryWord } from '../src/lib/category-words';
+import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
@@ -50,7 +51,7 @@ const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 // The pages get the allowance from the constant, and the copy checks below write the 10 of entry 15 out by hand, as a visitor
 // reads it: an oracle independent of src/lib/plan-limits.ts.
 const renderSlug = (slug: string, locale: TestLocale = 'en') =>
-  renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
+  renderDom(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);

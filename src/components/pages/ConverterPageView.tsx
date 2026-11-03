@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import { notFound } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import { PairHero, QueueHeader } from '@/components/Hero';
@@ -12,7 +11,8 @@ import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import { otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
-import { offersConversion, parseConverterSlug } from '@/lib/slug-parser';
+import { offersConversion } from '@/lib/category-words';
+import type { ParsedSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import { formatCategoryLabel } from '@/components/converter/format-specs';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
@@ -21,12 +21,11 @@ import { FormatCards } from '@/components/converter/FormatCards';
 import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
-/** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
-export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
+/** A converter or information page, as the server's page parsed its slug; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
+export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlug; dailyLimit: number }>) {
   const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
-  const parsed = parseConverterSlug(slug) ?? notFound();
   const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 

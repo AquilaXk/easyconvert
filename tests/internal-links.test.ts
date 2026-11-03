@@ -12,7 +12,9 @@ import { COMMON_TARGETS } from '../src/components/workbench/SourceChipPicker';
 import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
 import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { CATEGORY_WORDS, parseConverterSlug } from '../src/lib/slug-parser';
+import { CATEGORY_WORDS } from '../src/lib/category-words';
+import { parseConverterSlug } from '../src/lib/slug-parser';
+import { parsedSlug } from './helpers/intl';
 import { links, renderDom, type DomElement } from './helpers/rendered-dom';
 import type { TestLocale } from './helpers/intl-messages';
 
@@ -89,7 +91,7 @@ describe('the links the site renders lead to pages that exist', () => {
     const dead: string[] = [];
     let checked = 0;
     for (const slug of slugs) {
-      const hrefs = render(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
+      const hrefs = render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
       checked += hrefs.length;
       dead.push(...deadLinks(hrefs).map((href) => `/${slug} links ${href}`));
     }
@@ -98,9 +100,9 @@ describe('the links the site renders lead to pages that exist', () => {
   }, 120_000);
 
   it.each(LOCALES)('holds for pair pages, utility pages and site pages in %s', (locale) => {
-    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-png', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'lbs-to-kg', 'terms', 'accessibility'];
+    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'lbs-to-kg', 'terms', 'accessibility'];
     const dead = slugs.flatMap((slug) =>
-      deadLinks(render(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale)).map((href) => `/${slug} links ${href}`)
+      deadLinks(render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale)).map((href) => `/${slug} links ${href}`)
     );
     expect(dead).toEqual([]);
   });

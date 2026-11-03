@@ -208,6 +208,27 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
 const handleRootLocale = createIntlMiddleware(routing);
 const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
 
+/** What reading a URL drops from the decoded path: a tab or a line break anywhere, and a space or control character at the end. */
+const DROPPED_BY_URL_PARSING = /[\t\n\r]|[\u0000-\u0020]$/;
+
+/**
+ * The page's answer in the visitor's language. next-intl rewrites to the decoded path read back as a URL, which drops what
+ * `DROPPED_BY_URL_PARSING` names, so `/pdf-to-jpg%20` would reach the page as `/pdf-to-jpg` and answer 200 for another path.
+ * The rewrite then keeps the path as it came, and the slug page reads the whole slug.
+ */
+function pageLocaleAnswer(request: NextRequest): NextResponse {
+  const response = handlePageLocale(request);
+  const rewrite = response.headers.get('x-middleware-rewrite');
+  if (!rewrite || !DROPPED_BY_URL_PARSING.test(decodeURI(request.nextUrl.pathname))) return response;
+
+  const target = new URL(rewrite);
+  const [, locale] = target.pathname.split('/');
+  const received = request.nextUrl.pathname;
+  target.pathname = received.startsWith(`/${locale}/`) ? received : `/${locale}${received}`;
+  response.headers.set('x-middleware-rewrite', target.toString());
+  return response;
+}
+
 /**
  * The root's answer: the home page in the visitor's language (the cookie the language selector wrote, then
  * Accept-Language). It differs by those two headers, so it says so and stays out of shared caches. next-intl writes the
@@ -239,7 +260,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
     return problemResponse(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', 'API routes take no language prefix.', pathname);
   }
   if (!isApiPath(pathname)) {
-    return pathname === '/' ? rootLocaleAnswer(request) : handlePageLocale(request);
+    return pathname === '/' ? rootLocaleAnswer(request) : pageLocaleAnswer(request);
   }
 
   const isHealthProbe = pathname === HEALTH_PATH && HEALTH_METHODS.has(request.method.toUpperCase());

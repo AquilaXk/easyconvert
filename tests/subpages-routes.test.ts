@@ -79,7 +79,7 @@ describe('Subpages & Routes Verification', () => {
 
     it('correctly parses merge and compress utility slugs', () => {
       expect(slugPageCopy('merge-pdf').title).toBe('Merge PDF');
-      expect(slugPageCopy('compress-png').title).toBe('Compress PNG');
+      expect(slugPageCopy('compress-pdf').title).toBe('Compress PDF');
     });
 
     it('correctly parses website capture tools', () => {

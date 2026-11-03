@@ -760,6 +760,10 @@
     },
     "converter": {
       "title": "{title} | EasyConvert"
+    },
+    "notFound": {
+      "title": "페이지를 찾을 수 없어요 | EasyConvert",
+      "description": "죄송해요, 찾으시는 페이지가 없어요."
     }
   },
   "options": {
@@ -1028,7 +1032,6 @@
     "imageResizer": "이미지 크기 조정",
     "websiteScreenshot": "웹사이트 스크린샷",
     "mp4Remuxer": "MP4 리먹서",
-    "losslessPng": "무손실 PNG",
     "vectorConverter": "벡터 변환기",
     "securityArchitecture": "보안 구조",
     "aboutUs": "서비스 소개",
@@ -1376,8 +1379,8 @@
   },
   "notFound": {
     "code": "페이지 없음",
-    "title": "페이지를 찾을 수 없어요.",
-    "description": "찾으시는 페이지를 찾을 수 없어요."
+    "title": "{route} 경로를 찾을 수 없어요.",
+    "description": "죄송해요, 찾으시는 페이지가 없어요."
   },
   "urlImport": {
     "heading": "URL로 파일 추가",

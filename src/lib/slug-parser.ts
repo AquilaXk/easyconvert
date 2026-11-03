@@ -1,32 +1,17 @@
 import { FORMAT_REGISTRY } from './registry';
 import { isSameFormat } from './format-aliases';
+import { CATEGORY_WORDS, isCategoryWord, offersConversion } from './category-words';
 import {
   INFO_PAGE_MAP,
   UNIT_CONVERTER_INFO_PAGE,
   parseUnitPairSlug,
   parseUtilitySlug,
-  type CategoryWord,
   type ParsedSlug,
   type SlugName,
 } from './slug-info-pages';
 
-export type { CategoryWord, ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
-
-/** The words a slug names a category by, the categories of the registry: the format its page converts and the word its title shows. */
-export const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: string }>> = {
-  video: { format: 'mp4', display: 'Video' },
-  audio: { format: 'mp3', display: 'Audio' },
-  image: { format: 'jpg', display: 'Image' },
-  document: { format: 'docx', display: 'Document' },
-  ebook: { format: 'epub', display: 'Ebook' },
-  archive: { format: 'zip', display: 'Archive' },
-  vector: { format: 'svg', display: 'Vector' },
-  font: { format: 'ttf', display: 'Font' },
-  cad: { format: 'dxf', display: 'CAD' },
-  spreadsheet: { format: 'xlsx', display: 'Spreadsheet' },
-  presentation: { format: 'pptx', display: 'Presentation' },
-  data: { format: 'csv', display: 'Data' },
-};
+export type { ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
+export type { CategoryWord } from './category-words';
 
 const OCR_SLUG = 'pdf-ocr';
 const CONVERTER_SUFFIX = '-converter';
@@ -34,7 +19,7 @@ const PAIR_SEPARATOR = '-to-';
 
 /** The page of one format or category, the converter of anything it can be converted to. */
 function formatPage(format: string, name: SlugName): ParsedSlug {
-  return { isInfoPage: false, sourceFormat: format, targetFormat: 'any', copy: { kind: 'format', name } };
+  return { isInfoPage: false, sourceFormat: format, targetFormat: 'any', copy: { kind: 'format', name }, canonicalPath: `/${name.id}${CONVERTER_SUFFIX}` };
 }
 
 /**
@@ -52,44 +37,16 @@ function parsePairSlug(cleanSlug: string): ParsedSlug | null {
 
   if (!offersConversion(source, target)) return null;
   if (isSameFormat(source, target)) return formatPage(source, { kind: 'format', id: source, display: source.toUpperCase() });
-  return { isInfoPage: false, sourceFormat: source, targetFormat: target, copy: { kind: 'pair', src: source, tgt: target } };
+  return { isInfoPage: false, sourceFormat: source, targetFormat: target, copy: { kind: 'pair', src: source, tgt: target }, canonicalPath: `/${source}${PAIR_SEPARATOR}${target}` };
 }
 
 function parseFormatConverterSlug(cleanSlug: string): ParsedSlug | null {
   const word = cleanSlug.slice(0, -CONVERTER_SUFFIX.length);
   if (word === 'unit') return UNIT_CONVERTER_INFO_PAGE;
-  if (Object.hasOwn(CATEGORY_WORDS, word)) {
-    const id = word as CategoryWord;
-    return formatPage(CATEGORY_WORDS[id].format, { kind: 'category', id, display: CATEGORY_WORDS[id].display });
+  if (isCategoryWord(word)) {
+    return formatPage(CATEGORY_WORDS[word].format, { kind: 'category', id: word, display: CATEGORY_WORDS[word].display });
   }
-  return isRegistered(word) ? formatPage(word, { kind: 'format', id: word, display: word.toUpperCase() }) : null;
-}
-
-/** A slug as the parser reads it: lowercased, without leading slashes or surrounding space. */
-function normalizeSlug(slug: string): string {
-  return slug.toLowerCase().replace(/^\/+/, '').trim();
-}
-
-/**
- * The one canonical path of a converter slug page, however its slug was cased. A slug read as the page of a format
- * (`/jpeg-converter`, and `/jpeg-to-jpg` or `/pdf-to-pdf`, which are that page) names the converter path of that format, so
- * the pages that show the same content are copies of one URL.
- */
-export function canonicalSlugPath(slug: string, { copy }: ParsedSlug): string {
-  return copy.kind === 'format' ? `/${copy.name.id}${CONVERTER_SUFFIX}` : `/${normalizeSlug(slug)}`;
-}
-
-const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
-
-/** Whether two names are formats of the registry, not category words, and the registry lists the conversion between them: the pair has a page. */
-export function offersConversion(source: string, target: string): boolean {
-  return (
-    isRegistered(source) &&
-    isRegistered(target) &&
-    !Object.hasOwn(CATEGORY_WORDS, source) &&
-    !Object.hasOwn(CATEGORY_WORDS, target) &&
-    FORMAT_REGISTRY[source].targetFormats.includes(target)
-  );
+  return Object.hasOwn(FORMAT_REGISTRY, word) ? formatPage(word, { kind: 'format', id: word, display: word.toUpperCase() }) : null;
 }
 
 const DOTTED_FORMAT_PREFIX = 'tar.';
@@ -107,13 +64,15 @@ export const DOTTED_FORMAT_SUFFIXES: readonly string[] = Object.keys(FORMAT_REGI
  * decides: the slug page answers 404 for null. A page exists for a site page, `pdf-ocr`, the converter of a registered
  * format or a category of the registry, a pair of two registered formats the registry converts, a utility page of a format
  * it works on, and a pair of units. A name the site does not know, `any`, a category word in a pair and a conversion the
- * registry does not list have none.
+ * registry does not list have none. The slug is read exactly as it came: a space, a tab, a line break or a slash around it
+ * makes it another path, and so no page. Lowercasing is the one tolerance, so `/PDF-to-JPG` shows the page of `/pdf-to-jpg`,
+ * which it names as its canonical (`canonicalPath`).
  */
 export function parseConverterSlug(slug: string): ParsedSlug | null {
-  const cleanSlug = normalizeSlug(slug);
+  const cleanSlug = slug.toLowerCase();
 
   if (cleanSlug === OCR_SLUG) {
-    return { isInfoPage: false, sourceFormat: 'pdf', targetFormat: 'pdf', copy: { kind: 'ocr' } };
+    return { isInfoPage: false, sourceFormat: 'pdf', targetFormat: 'pdf', copy: { kind: 'ocr' }, canonicalPath: `/${OCR_SLUG}` };
   }
   if (Object.hasOwn(INFO_PAGE_MAP, cleanSlug)) return INFO_PAGE_MAP[cleanSlug];
   if (cleanSlug.includes(PAIR_SEPARATOR)) return parsePairSlug(cleanSlug);

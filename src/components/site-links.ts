@@ -101,7 +101,6 @@ export const DIRECTORY_CATEGORIES = [
     key: 'clientEdge',
     links: [
       { key: 'mp4Remuxer', href: '/mp4-converter' },
-      { key: 'losslessPng', href: '/compress-png' },
       { key: 'vectorConverter', href: '/vector-converter' },
       { key: 'securityArchitecture', href: '/security' },
     ],

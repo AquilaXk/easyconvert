@@ -43,15 +43,11 @@ describe('Phase 1: Fail-Closed Enforcement & Schema Sync', () => {
   });
 
   it('registers /pdf-ocr in slug-parser with correct metadata', () => {
-    const parsed = parsedSlug('/pdf-ocr');
+    const parsed = parsedSlug('pdf-ocr');
     expect(parsed.isInfoPage).toBe(false);
     expect(parsed.sourceFormat).toBe('pdf');
     expect(parsed.targetFormat).toBe('pdf');
-    expect(slugPageCopy('/pdf-ocr').title).toBe('PDF OCR Converter');
-
-    const parsedNoSlash = parsedSlug('pdf-ocr');
-    expect(parsedNoSlash.sourceFormat).toBe('pdf');
-    expect(parsedNoSlash.targetFormat).toBe('pdf');
+    expect(slugPageCopy('pdf-ocr').title).toBe('PDF OCR Converter');
   });
 
   it('synchronizes ocrEnabled and ocrLanguage across all primary image formats in FORMAT_REGISTRY', () => {

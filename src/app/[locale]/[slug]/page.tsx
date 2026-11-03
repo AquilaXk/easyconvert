@@ -6,7 +6,7 @@ import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
-import { canonicalSlugPath, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
+import { parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
 
 interface ConverterPageProps {
@@ -30,7 +30,7 @@ export async function generateMetadata({ params }: ConverterPageProps): Promise<
   return {
     title: tMeta('title', { title: copy.title }),
     description: copy.description,
-    alternates: localeAlternates(locale, canonicalSlugPath(slug, parsed)),
+    alternates: localeAlternates(locale, parsed.canonicalPath),
   };
 }
 
@@ -41,7 +41,7 @@ export default async function ConverterPage({ params }: Readonly<ConverterPagePr
 
   return (
     <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
-      <ConverterPageView slug={slug} dailyLimit={getAnonymousDailyLimit()} />
+      <ConverterPageView parsed={parsed} dailyLimit={getAnonymousDailyLimit()} />
     </PageMessages>
   );
 }
