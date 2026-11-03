@@ -22,6 +22,7 @@ import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReserve
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { loggingOutcomes, registryFormat, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import type { User } from '@/lib/auth/types';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -108,7 +109,7 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
   return serverFault('convert', error, UNCLASSIFIED_FAILURE);
 }
 
-export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = loggingOutcomes('convert', withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest, trace: ConversionTrace) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/convert';
 
@@ -133,11 +134,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const caller = auth.user;
   const unit = await reserveConversionUnit(caller);
   if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
-  return withReservedUnit(unit.reservationId, (reserved) => convertFile(req, caller, reserved, instanceUri, startTime));
-}));
+  return withReservedUnit(unit.reservationId, (reserved) => convertFile(req, caller, reserved, instanceUri, startTime, trace));
+})));
 
 /** Converts the file of an authenticated request whose unit is reserved; the unit is charged only once the conversion succeeded. */
-async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, instanceUri: string, startTime: number): Promise<NextResponse> {
+async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, instanceUri: string, startTime: number, trace: ConversionTrace): Promise<NextResponse> {
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
   try {
@@ -155,9 +156,11 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
     const targetFormat = formData.get('targetFormat') as string | null;
     const optionsRaw = formData.get('options') as string | null;
 
+    trace.target = registryFormat(targetFormat);
     if (!file) {
       return refusal(400, 'file_required', 'Missing required "file" in multipart request.');
     }
+    trace.bytes = file.size;
 
     if (file.size === 0) {
       return refusal(400, 'empty_file', 'Conversion payload is empty. File buffer has 0 bytes.');
@@ -179,6 +182,7 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
     if (!detectedDef) {
       return refusal(400, 'unknown_format', `Could not determine file format from filename "${file.name}". Ensure it has a valid extension.`);
     }
+    trace.source = detectedDef.extension;
 
     const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
     const availableTargets = getAvailableTargetFormats(detectedDef.extension).map((d) => d.extension);

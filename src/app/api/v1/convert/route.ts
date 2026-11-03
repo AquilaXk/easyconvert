@@ -4,6 +4,7 @@ import { validateApiAccess, authErrorHeaders, conversionsUsedUp, reserveConversi
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
+import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -75,11 +76,12 @@ interface ReservedConversion extends ValidatedConvertInput {
 
 type ParsedConvertForm = { problem: NextResponse; data?: undefined } | { data: ValidatedConvertInput; problem?: undefined };
 
-/** The validated input of a convert request, or the problem answer for the first thing wrong with it. */
+/** The validated input of a convert request, or the problem answer for the first thing wrong with it; `trace` gets what was read. */
 function parseConvertFormData(
   formData: FormData,
   instanceUri: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  trace: ConversionTrace
 ): ParsedConvertForm {
   const badRequest = (detail: string): ParsedConvertForm => ({
     problem: createProblemDetailsResponse(400, detail, instanceUri, 'Bad Request', undefined, headers),
@@ -90,6 +92,7 @@ function parseConvertFormData(
     return badRequest('Missing required "file" or invalid file binary in multipart request.');
   }
 
+  trace.bytes = file.size;
   if (file.size === 0) {
     return badRequest('File payload is empty (0 bytes).');
   }
@@ -107,12 +110,14 @@ function parseConvertFormData(
   if (!sourceDef) {
     return badRequest(`Could not identify source format for file "${file.name}".`);
   }
+  trace.source = sourceDef.extension;
 
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
   const targetDef = getFormatByExtension(tgt);
   if (!targetDef) {
     return badRequest(`Unsupported target format "${targetFormat}".`);
   }
+  trace.target = targetDef.extension;
 
   if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
     return badRequest(`Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`);
@@ -135,7 +140,7 @@ function parseConvertFormData(
   return { data: { file: file as File, sourceDef, targetDef, options } };
 }
 
-export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = loggingOutcomes('v1/convert', withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest, trace: ConversionTrace) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
@@ -208,7 +213,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     }
     releaseSlot = slot.release;
     const formData = await req.formData();
-    const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders);
+    const validation = parseConvertFormData(formData, instanceUri, rateLimitHeaders, trace);
     if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;
@@ -332,7 +337,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   } finally {
     releaseSlot?.();
   }
-}));
+})));
 
 /** Hands a large or `respond-async` conversion to the queue: its job owns the unit once queued, and commits it or gives it back. */
 async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
