@@ -401,6 +401,22 @@ export const internalPaths = {
       },
     },
   },
+  '/api/health/conversion': {
+    get: {
+      ...INTERNAL,
+      summary: 'Deploy Smoke Conversion',
+      description:
+        'The check the deploy runs after a release starts: a one-pixel PPM of the route\'s own, converted to PNG through the conversion dispatcher, so the native engines run in their sandbox. ' +
+        'It reads nothing of the request and charges no daily allowance. The host proxy does not forward it; only the loopback port of the web service answers it.',
+      operationId: 'getSmokeConversion',
+      security: PUBLIC_ACCESS,
+      responses: {
+        '200': binaryResponse('The one-pixel PNG.', 'image/png'),
+        '500': createProblemResponse('The conversion failed on the server.'),
+        '504': createProblemResponse('The conversion did not finish within 30 seconds.'),
+      },
+    },
+  },
   '/api/queue/jobs': {
     post: {
       ...INTERNAL,
