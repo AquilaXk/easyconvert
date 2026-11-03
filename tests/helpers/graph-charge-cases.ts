@@ -554,6 +554,7 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
   async function ownerWithUnitsLeft(left: number) {
     const owner = anonymousOwner();
     const used = getAnonymousDailyLimit() - left;
+    expect(used, 'an owner with the whole day left is not an owner with units left').toBeGreaterThan(0);
     const spent = await redisKeyStore.reserveQuota(owner, used);
     expect(spent.allowed).toBe(true);
     await redisKeyStore.commitQuota(spent.reservationId!);
@@ -577,9 +578,9 @@ export function itChargesAGraphOnlyThroughItsScheduler(track: (userId: string) =
     expect(converted).not.toHaveBeenCalled();
   }, GRAPH_TIMEOUT_MS + 10_000);
 
-  it('charges a convert node that receives five files five units, beside the unpacking, with ten conversions left', async () => {
+  it('charges a convert node that receives five files five units, beside the unpacking, with exactly the six it needs left', async () => {
     const converted = vi.spyOn(dispatchEngine, 'convert');
-    const { owner, used } = await ownerWithUnitsLeft(10);
+    const { owner, used } = await ownerWithUnitsLeft(1 + 5);
     const queued = await queueGraph(await fiveFilesIntoConvert(), used + 1 + 5, { owner, reservedUnits: 2 });
     await queued.ended('completed');
     expect(converted).toHaveBeenCalledTimes(5);

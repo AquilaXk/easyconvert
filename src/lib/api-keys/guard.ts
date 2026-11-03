@@ -3,7 +3,7 @@ import { RESERVATION_LEASE } from './reservation-ledger';
 import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
-import { getAnonymousDailyLimit } from '../plan-limits';
+import { dailyConversions, planOfCaller, type PlanCaller } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
@@ -55,13 +55,12 @@ const WILDCARD_SCOPE = '*';
 const HTTP_BAD_REQUEST = 400;
 const QUOTA_ENGINE_OFFLINE = 'Service Unavailable: distributed quota engine is temporarily offline';
 
-/** The refusal text of an anonymous caller, naming the allowance the key store enforces (`ANONYMOUS_DAILY_LIMIT`). */
-function anonymousQuotaExceeded(): string {
-  return `Daily conversion quota exceeded for anonymous usage (${getAnonymousDailyLimit()} conversions per day). Please sign in or use an API key.`;
-}
-
-function tierQuotaExceeded(tier: string): string {
-  return `Daily conversion quota exceeded for tier '${tier}'. Please upgrade or wait for the midnight UTC reset.`;
+/**
+ * The refusal text of a caller whose conversions of the day are used up: the allowance the key store enforces for its plan
+ * (`ANONYMOUS_DAILY_LIMIT` without an account) and when it resets.
+ */
+function quotaExceeded(caller: PlanCaller): string {
+  return `Daily conversion quota exceeded (${dailyConversions(planOfCaller(caller))} conversions per day). It resets at midnight UTC.`;
 }
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
@@ -210,7 +209,7 @@ interface QuotaCheck {
 /** Why the quota of a caller could not be reserved: the quota store is offline (503), or the conversions of the day are used up (429). */
 type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining'>;
 
-/** The refusal of `userId` for a quota check that did not allow it; an anonymous caller is told how to get more. */
+/** The refusal of `userId` for a quota check that did not allow it. */
 function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
   const anonymous = isAnonymousUserId(userId);
   if (quota.serviceUnavailable) {
@@ -222,7 +221,7 @@ function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {
     };
   }
   return {
-    error: anonymous ? anonymousQuotaExceeded() : quota.error ?? '',
+    error: quota.error ?? '',
     status: HTTP_TOO_MANY_REQUESTS,
     remaining: quota.remaining,
     problemType: QUOTA_EXCEEDED_PROBLEM_TYPE,
@@ -243,7 +242,7 @@ async function checkQuotaAndReserve(userId: string, tier: string, need: QuotaNee
       }
       return {
         allowed: false,
-        error: tierQuotaExceeded(tier),
+        error: quotaExceeded({ id: userId, tier }),
         remaining: reservation.remaining,
       };
     }
@@ -259,7 +258,7 @@ async function checkQuotaAndReserve(userId: string, tier: string, need: QuotaNee
   try {
     const quota = await redisKeyStore.getQuotaUsage(userId);
     if (need === ONE_UNIT_LEFT && quota.remaining < 1) {
-      return { allowed: false, error: tierQuotaExceeded(tier), remaining: 0 };
+      return { allowed: false, error: quotaExceeded({ id: userId, tier }), remaining: 0 };
     }
     return {
       allowed: true,
@@ -538,7 +537,7 @@ function conversionsNeeded(units: number): string {
 
 /** The refusal of a request of `user` that needs `requiredUnits` conversions on a day with `usage.remaining` left. */
 export function conversionsUsedUp(user: User, usage: QuotaUsage, requiredUnits: number): ConversionRefusal {
-  const allowance = isAnonymousUserId(user.id) ? anonymousQuotaExceeded() : tierQuotaExceeded(user.tier);
+  const allowance = quotaExceeded(user);
   const left = Math.max(0, usage.remaining);
   const error = `${allowance} This request needs ${conversionsNeeded(requiredUnits)} and ${left} ${left === 1 ? 'is' : 'are'} left today.`;
   return { reason: 'used-up', error, usage: { ...usage, remaining: left }, requiredUnits };

@@ -7,6 +7,11 @@ import { JobsHistoryPanel } from '../src/components/dashboard/JobsHistoryPanel';
 import { useFilesAndDlqController } from '../src/components/dashboard/useDashboardResources';
 import { useApiKeysController } from '../src/components/dashboard/useDashboardController';
 import type { FileWithRemaining } from '../src/components/dashboard/dashboard-types';
+import { AccountQuotaPanel } from '../src/components/dashboard/AccountQuotaPanel';
+import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
+import type { QuotaUsage } from '../src/lib/api-keys/types';
+import type { User } from '../src/lib/auth/types';
+import { FREE_DAILY_CONVERSIONS, TIER_LIMITS } from '../src/lib/plan-limits';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
@@ -16,6 +21,15 @@ import { testMessages, type TestLocale } from './helpers/intl-messages';
  */
 
 const noop = () => undefined;
+
+const keysPanelState = {
+  apiKeys: [], quota: null, newKeyName: '', generatedSecret: null, isGeneratingKey: false, showGenerateForm: false,
+  copiedKey: false, revokingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const,
+};
+const keysPanelActions = {
+  onOpenGenerateForm: noop, onCloseGenerateForm: noop, onDismissGeneratedSecret: noop, onNameChange: noop, onToggleScope: noop,
+  onExpiryChange: noop, onGenerateKey: noop, onRequestRevoke: noop, onConfirmRevoke: noop, onCopy: noop,
+};
 
 function fileWithSecondsLeft(remainingSeconds: number): FileWithRemaining {
   return {
@@ -316,5 +330,26 @@ describe('a refused dashboard request', () => {
     const dashboard = await mountDashboard('ko', (url, method) => (method === 'GET' ? files(url, method) : new Response(JSON.stringify(typed), { status: 400 })));
     await dashboard.controller.handleDeleteFile('f-1');
     expect(dashboard.reported()).toBe('요청을 처리하지 못했어요. 입력한 내용과 고른 설정을 확인해 주세요.');
+  });
+});
+
+describe('the daily count on the dashboard', () => {
+  const freeUser = { id: 'u-free', email: 'free@example.com', name: 'Free', tier: 'free' } as User;
+  const proUser = { ...freeUser, id: 'u-pro', tier: 'pro' } as User;
+  const overLimit = { tier: 'free' as const, dailyLimit: FREE_DAILY_CONVERSIONS, usedToday: FREE_DAILY_CONVERSIONS + 5, remaining: 0, resetAt: 0 };
+
+  const usageCount = (user: User, quota: QuotaUsage | null) =>
+    visibleText(select(renderDom(createElement(AccountQuotaPanel, { user, quota, apiKeys: [] })), 'div').find((div) => /^[\d,]+ \/ [\d,]+$/.test(visibleText(div)))!);
+
+  it("states the allowance of the account's own plan while the usage has not loaded", () => {
+    expect(usageCount(proUser, null)).toBe(`0 / ${TIER_LIMITS.pro}`);
+    expect(usageCount(freeUser, null)).toBe(`0 / ${TIER_LIMITS.free}`);
+  });
+
+  it('never shows more conversions used than the day allows, for a count made under a larger allowance before a deploy', () => {
+    expect(usageCount(freeUser, overLimit)).toBe(`${FREE_DAILY_CONVERSIONS} / ${FREE_DAILY_CONVERSIONS}`);
+    const strip = renderDom(createElement(ApiKeysPanel, { state: { ...keysPanelState, quota: overLimit }, actions: keysPanelActions }));
+    const used = select(strip, 'span').find((span) => /text-accent-ink/.test(attrOf(span, 'class') ?? ''));
+    expect(visibleText(used!)).toBe(String(FREE_DAILY_CONVERSIONS));
   });
 });

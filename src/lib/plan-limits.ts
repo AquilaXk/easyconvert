@@ -24,10 +24,10 @@ export interface PlanCaller {
 export const PAID_PLANS_ON_SALE = false;
 
 /**
- * Conversions a free account may run on the server each UTC day (`TIER_LIMITS.free`). A caller without an account has
- * the same allowance (QA decision of 2026-11-02), but each number keeps its own name so either can change alone.
+ * Conversions a free account may run on the server each UTC day (`TIER_LIMITS.free`): the 10 of the free plan of the
+ * converter the product is measured against (QA decision of 2026-11-03, entry 15 of docs/policy-decisions.md).
  */
-export const FREE_DAILY_CONVERSIONS = 25;
+export const FREE_DAILY_CONVERSIONS = 10;
 
 /** Conversions each account plan may run on the server each UTC day; a caller without an account has `getAnonymousDailyLimit`. */
 export const TIER_LIMITS: Readonly<Record<UserTier, number>> = {
@@ -38,14 +38,20 @@ export const TIER_LIMITS: Readonly<Record<UserTier, number>> = {
 
 /**
  * Conversions a caller without an account may run on the server each UTC day, the default of `ANONYMOUS_DAILY_LIMIT`
- * (docs/policy-decisions.md, entries 15 and 16). Browser-side conversions use no server and are not counted.
+ * (docs/policy-decisions.md, entries 15 and 16). QA set it equal to the free account's on 2026-11-03; it is its own
+ * literal so that either can change alone. Browser-side conversions use no server and are not counted.
  */
-export const ANONYMOUS_DAILY_CONVERSIONS = FREE_DAILY_CONVERSIONS;
+export const ANONYMOUS_DAILY_CONVERSIONS = 10;
 
 /** The anonymous allowance the server enforces: `ANONYMOUS_DAILY_LIMIT` when the operator sets a positive integer. */
 export function getAnonymousDailyLimit(): number {
   const parsed = parseInt(process.env.ANONYMOUS_DAILY_LIMIT ?? '', 10);
   return parsed > 0 ? parsed : ANONYMOUS_DAILY_CONVERSIONS;
+}
+
+/** Conversions `plan` may run on the server each UTC day: the anonymous allowance the server reads, or the account plan's. */
+export function dailyConversions(plan: Plan): number {
+  return plan === 'anonymous' ? getAnonymousDailyLimit() : TIER_LIMITS[plan];
 }
 
 const MIB = 1024 * 1024;

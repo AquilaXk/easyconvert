@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { testMessages } from './helpers/intl-messages';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 
 vi.mock('../src/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => createElement('a', { href, ...rest }, children),
@@ -69,7 +70,7 @@ const uploadCard = (host: HTMLElement) => host.querySelector('.border-dashed')!.
 describe('the home hero', () => {
   it('hands on picked, dropped and pasted files with no target, and a drop on the card padding is not left to the browser', async () => {
     const onFilesSelected = vi.fn();
-    const host = await mount(createElement(HomeHero, { onFilesSelected, dailyLimit: 25 }));
+    const host = await mount(createElement(HomeHero, { onFilesSelected, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
     const picked = file();
     pick(host, [picked]);
     const dropped = file();
@@ -82,7 +83,7 @@ describe('the home hero', () => {
 
   it('leaves a paste into a text field to the field', async () => {
     const onFilesSelected = vi.fn();
-    await mount(createElement('div', null, createElement('textarea'), createElement(HomeHero, { onFilesSelected, dailyLimit: 25 })));
+    await mount(createElement('div', null, createElement('textarea'), createElement(HomeHero, { onFilesSelected, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS })));
     paste(document.querySelector('textarea')!, [file()]);
     expect(onFilesSelected).not.toHaveBeenCalled();
   });
@@ -93,7 +94,7 @@ describe('a converter page hero', () => {
     const onFilesSelected = vi.fn();
     function PngToJpgPage() {
       const tiles = usePairTiles('png', 'jpg');
-      return createElement(PairHero, { onFilesSelected, dailyLimit: 25, tiles, title: 'PNG to JPG Converter', description: 'Convert PNG files to JPG online.' });
+      return createElement(PairHero, { onFilesSelected, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, tiles, title: 'PNG to JPG Converter', description: 'Convert PNG files to JPG online.' });
     }
     const host = await mount(createElement(PngToJpgPage));
     const dropped = file();

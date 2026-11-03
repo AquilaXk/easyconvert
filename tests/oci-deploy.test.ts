@@ -317,6 +317,14 @@ describe('Dockerfile.web', () => {
     expect(finalStage).toMatch(/^LABEL easyconvert\.anonymous-daily-limit="\$\{ANONYMOUS_DAILY_LIMIT\}"$/m);
   });
 
+  it('declares the smoke probe its server answers, the one the deploy knows, where the deploy reads it back', () => {
+    const finalStage = web.slice(web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
+    const declared = /^LABEL easyconvert\.smoke-probe="([^"]+)"$/m.exec(finalStage)?.[1];
+    expect(declared).toBe('/api/health/conversion');
+    expect(existsSync(path.join(ROOT, 'src', 'app', `${declared}`, 'route.ts'))).toBe(true);
+    expect(read('deploy/oci/deploy.sh')).toMatch(new RegExp(`^SMOKE_PROBE_PATH='${declared}'$`, 'm'));
+  });
+
   it('is built on the worker image, runs as its non-root user and starts Next.js', () => {
     expect(web).toMatch(/^FROM \$\{WORKER_IMAGE\} AS web$/m);
     expect(web).not.toMatch(/^USER root/m);
@@ -374,6 +382,15 @@ describe('nginx site file', () => {
     expect(readTimeout).toBeGreaterThan(syncDeadlineSeconds);
     expect(withoutComments).toMatch(/log_format easyconvert_edge_json escape=json/);
     expect(withoutComments).toMatch(/access_log \/var\/log\/nginx\/easyconvert-edge\.log easyconvert_edge_json/);
+  });
+
+  it('forwards the readiness answer but no path under /api/health/, so the smoke probe answers only on the loopback port', () => {
+    const blocks = [...withoutComments.matchAll(/^\s*location ([^{]+)\{([^}]*)\}/gm)].map((match) => ({ match: match[1].trim(), body: match[2] }));
+    const probes = blocks.find((block) => block.match === '^~ /api/health/');
+    expect(probes?.body.trim()).toBe('return 404;');
+    expect(blocks.find((block) => block.match === '= /api/health')?.body).toMatch(/proxy_pass http:\/\/easyconvert_web;/);
+    const longerPrefixes = blocks.filter((block) => /^(\^~ |= )?\/api\/health\/./.test(block.match));
+    expect(longerPrefixes).toEqual([]);
   });
 
   it('takes its certificate from files the operator installs, not from port 80 or a stored API token', () => {
@@ -828,6 +845,11 @@ case "$1" in
         ref="\${@: -1}"
         case "$*" in
           *anonymous-daily-limit*) [ -n "\${STUB_WEB_INSPECT_FAIL:-}" ] && exit 1; echo "\${STUB_WEB_ALLOWANCE:-}" ;;
+          *smoke-probe*)
+            [ -n "\${STUB_PROBE_INSPECT_FAIL:-}" ] && exit 1
+            tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")"
+            for f in $STUB_NO_PROBE; do [ "$tag" = "$f" ] && { echo; exit 0; }; done
+            echo "\${STUB_PROBE_LABEL:-/api/health/conversion}" ;;
           *Labels*)
             case "$ref" in *@sha256:*) tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")" ;; *) tag="\${ref##*:}" ;; esac
             echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:$tag")}" ;;
@@ -869,15 +891,22 @@ exit 0`
       `echo "curl $*" >> "$STUB_LOG"
 last_up="$(grep ' up ' "$STUB_LOG" | tail -n 1)"
 case "$*" in
-  *api/convert*)
+  *--resolve*)
+    printf '%s' "\${STUB_PUBLIC_STATUS:-404}"
+    exit 0 ;;
+  *api/health/conversion*)
     out=""; prev=""
-    for arg in "$@"; do
-      [ "$prev" = "-o" ] && out="$arg"
-      case "$arg" in file=@*) upload="\${arg#file=@}"; cp "\${upload%%;*}" "$STUB_UPLOAD" ;; esac
-      prev="$arg"
-    done
+    for arg in "$@"; do [ "$prev" = "-o" ] && out="$arg"; prev="$arg"; done
+    for f in $STUB_NO_PROBE; do case "$last_up" in *"$f"*) echo 'not-found-page' > "$out"; printf 404; exit 22 ;; esac; done
     case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && { echo 'body-of-the-error-page' > "$out"; printf 500; exit 22; } ;; esac
     case "$last_up" in *"$STUB_HTML_SMOKE"*) [ -n "$STUB_HTML_SMOKE" ] && { echo '<html>' > "$out"; printf 200; exit 0; } ;; esac
+    printf '\\211PNG\\r\\n\\032\\n' > "$out"
+    printf 200
+    exit 0 ;;
+  *api/convert*)
+    out=""; prev=""
+    for arg in "$@"; do [ "$prev" = "-o" ] && out="$arg"; prev="$arg"; done
+    case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && { echo 'body-of-the-error-page' > "$out"; printf 500; exit 22; } ;; esac
     printf '\\211PNG\\r\\n\\032\\n' > "$out"
     printf 200
     exit 0 ;;
@@ -912,7 +941,6 @@ exit 0`
     EASYCONVERT_HOME: home,
     STUB_LOG: log,
     STUB_IMAGES: path.join(sandbox, 'images.txt'),
-    STUB_UPLOAD: path.join(sandbox, 'upload.ppm'),
     STUB_PULLED: path.join(bin, '.pulled'),
     STUB_HANG_MARK: path.join(sandbox, 'hang.pid'),
     STUB_PAGE_COUNT: path.join(sandbox, 'page-failures'),
@@ -1029,15 +1057,95 @@ exit 0`
     expect(releases()).toEqual([]);
   });
 
-  it('converts a PPM to PNG through the web service before it moves the links', () => {
+  it('runs the smoke conversion through the probe of the web service, which takes no file and charges no allowance, before it moves the links', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
-    const smoke = calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/convert'));
+    const smoke = calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/health/conversion'));
     expect(smoke).toHaveLength(1);
-    expect(smoke[0]).toContain('targetFormat=png');
-    expect(smoke[0]).toContain('filename=smoke.ppm');
-    const upload = readFileSync(path.join(sandbox, 'upload.ppm'));
-    expect(upload.subarray(0, 11).toString('latin1')).toBe('P6\n1 1\n255\n');
-    expect(upload.length).toBe(11 + 3);
+    expect(smoke[0]).not.toMatch(/ -F | --form /);
+    expect(calls().filter((call) => call.startsWith('curl') && call.includes('/api/convert'))).toEqual([]);
+  });
+
+  const convertSmokes = (): string[] => calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/convert'));
+  const expectConvertSmoke = (smoke: string | undefined): void => {
+    expect(smoke).toMatch(/ -F file=@\S+\/smoke\.ppm;filename=smoke\.ppm -F targetFormat=png /);
+  };
+
+  it('deploys a ref whose web image declares no smoke probe with the conversion through /api/convert that it was built for', () => {
+    const result = run(['deploy', ref('a')], { env: hostEnv({ STUB_NO_PROBE: ref('a') }) });
+    expect(result.status, result.stderr).toBe(0);
+    expect(convertSmokes()).toHaveLength(1);
+    expectConvertSmoke(convertSmokes()[0]);
+    expect(calls().filter((call) => call.startsWith('curl') && call.includes('8090/api/health/conversion'))).toEqual([]);
+  });
+
+  it('rolls back to a release whose web image declares no smoke probe, smoking it through /api/convert', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    writeFileSync(log, '');
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_NO_PROBE: ref('a'), STUB_FAIL_SMOKE: ref('b') }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`rolled back to ${good}`);
+    expect(result.stderr).not.toContain('also failed');
+    expect(currentRelease()).toBe(good);
+    expect(convertSmokes()).toHaveLength(1);
+    expectConvertSmoke(convertSmokes()[0]);
+  });
+
+  it('rolls back by hand to a release whose web image declares no smoke probe, smoking it through /api/convert', () => {
+    expect(run(['deploy', ref('1')], { env: hostEnv() }).status).toBe(0);
+    const first = currentRelease();
+    expect(run(['deploy', ref('2')], { env: hostEnv() }).status).toBe(0);
+    const second = currentRelease();
+    writeFileSync(log, '');
+    const result = run(['rollback'], { env: hostEnv({ STUB_NO_PROBE: ref('1') }) });
+    expect(result.status, result.stderr).toBe(0);
+    expect(currentRelease()).toBe(first);
+    expect(path.basename(readlinkSync(path.join(home, 'previous')))).toBe(second);
+    expect(convertSmokes()).toHaveLength(1);
+    expectConvertSmoke(convertSmokes()[0]);
+  });
+
+  it('reconciles a current release whose web image declares no smoke probe, smoking it through /api/convert', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    writeFileSync(log, '');
+    const result = run(['reconcile'], { env: hostEnv({ STUB_NO_PROBE: ref('a') }) });
+    expect(result.status, result.stderr).toBe(0);
+    expect(convertSmokes()).toHaveLength(1);
+    expectConvertSmoke(convertSmokes()[0]);
+  });
+
+  it.each([
+    ['names a smoke probe this deploy.sh does not know', { STUB_PROBE_LABEL: '/api/health/other' }],
+    ['cannot be read', { STUB_PROBE_INSPECT_FAIL: '1' }],
+  ])('refuses a release whose smoke probe %s, and smokes it no other way', (_, knob) => {
+    const result = run(['deploy', ref('a')], { env: hostEnv(knob) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('smoke probe');
+    expect(calls().filter((call) => call.startsWith('curl') && /8090\/api\/(convert|health\/)/.test(call))).toEqual([]);
+    expect(releases()).toEqual([]);
+  });
+
+  it('asks the public site, through the nginx of this host, for the smoke probe and moves the links only on its 404', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const publicChecks = calls().filter((call) => call.startsWith('curl') && call.includes('--resolve'));
+    expect(publicChecks).toHaveLength(1);
+    expect(publicChecks[0]).toContain('--resolve convert.example.test:443:127.0.0.1 ');
+    expect(publicChecks[0]).toMatch(/ https:\/\/convert\.example\.test\/api\/health\/conversion$/);
+  });
+
+  it.each([
+    ['forwards the smoke probe', '200'],
+    ['does not answer', '000'],
+    ['answers with another refusal', '403'],
+  ])('rolls back a release when the public site %s', (_, status) => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_PUBLIC_STATUS: status }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`HTTP status ${status}`);
+    expect(result.stderr).toContain('rolling back');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
   });
 
   it('checks that the pages name the host of APP_URL as canonical before it moves the links', () => {
@@ -1106,6 +1214,7 @@ exit 0`
     expect(result.stderr).toContain('smoke conversion');
     expect(currentRelease()).toBe(good);
     expect(releases()).toEqual([good]);
+    expect(convertSmokes()).toEqual([]);
     expect(calls().filter((call) => / logs /.test(call)).map((call) => call.split(' logs ')[1])).toEqual(['--no-color --tail 80 web worker']);
   });
 
@@ -1206,7 +1315,7 @@ exit 0`
     const up = calls().find((call) => / up -d --wait /.test(call));
     expect(up).toContain(`--project-directory ${release}`);
     expect(up).toContain(`-f ${release}/docker-compose.prod.yml`);
-    expect(calls().some((call) => call.startsWith('curl') && call.includes('/api/convert'))).toBe(true);
+    expect(calls().some((call) => call.startsWith('curl') && call.includes('/api/health/conversion'))).toBe(true);
     expect(calls().some((call) => / exec -T worker unshare -r -n -- true$/.test(call))).toBe(true);
     expect(currentRelease()).toBe(path.basename(release));
   });
@@ -1448,7 +1557,7 @@ exit 0`
 
   it('never leaves the home directory it was given', () => {
     run(['deploy', ref('1')], { env: hostEnv() });
-    expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home', 'upload.ppm']);
+    expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home']);
   });
 });
 

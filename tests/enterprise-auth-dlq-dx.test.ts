@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { validateApiAccess, extractClientIp } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { TIER_LIMITS } from '../src/lib/plan-limits';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { userStore } from '../src/lib/auth/user-store';
 import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
@@ -88,7 +89,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
     });
 
     it('enforces quota exhaustion when daily tier limit is exceeded', async () => {
-      // Free tier user (limit 25)
+      // Free tier user
       const freeUser = await userStore.createUser({
         email: `free_${Date.now()}@example.com`,
         name: 'Free User',
@@ -100,12 +101,11 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         headers: { Authorization: `Bearer ${keyResult.secretKey}` },
       });
 
-      // Reserve 25 units
-      const fillRes = await redisKeyStore.recordUsage(freeUser.id, 25);
+      const fillRes = await redisKeyStore.recordUsage(freeUser.id, TIER_LIMITS.free);
       expect(fillRes.allowed).toBe(true);
       expect(fillRes.remaining).toBe(0);
 
-      // 26th unit must be rejected by validateApiAccess
+      // The unit after the day's allowance must be rejected by validateApiAccess
       const auth = await validateApiAccess(req, 1);
       expect(auth.authorized).toBe(false);
       expect(auth.status).toBe(429);
@@ -120,8 +120,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       });
 
       const keyResult = await redisKeyStore.generateApiKey(freeUser.id, 'Free Key Exhausted');
-      // Exhaust all 25 units
-      await redisKeyStore.recordUsage(freeUser.id, 25);
+      await redisKeyStore.recordUsage(freeUser.id, TIER_LIMITS.free);
       const usage = await redisKeyStore.getQuotaUsage(freeUser.id);
       expect(usage.remaining).toBe(0);
 

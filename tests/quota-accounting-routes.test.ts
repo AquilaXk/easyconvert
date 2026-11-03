@@ -40,7 +40,7 @@ import { allConversionQueues, attachJobLifecycleListeners, processConversionJob 
 import { graphScheduler } from '../src/lib/queue/graph';
 import { storageProvider } from '../src/lib/storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, FREE_DAILY_CONVERSIONS, TIER_LIMITS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { gzipRemote } from './helpers/gzip-remote';
 
@@ -59,7 +59,7 @@ const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-lim
 const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://api.easyconvert.io/problems/graph-without-conversion';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
-const DAY_ALLOWANCE = 25;
+const DAY_ALLOWANCE = ANONYMOUS_DAILY_CONVERSIONS;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -181,10 +181,17 @@ describe('what a request is charged', () => {
   });
 
   describe('the anonymous allowance', () => {
-    it('is 25 conversions a day when nothing configures it', () => {
+    // The two tests below pin the published numbers of entry 15 by hand, as an oracle independent of src/lib/plan-limits.ts;
+    // every other test reads the constants.
+    it('is 10 conversions a day when nothing configures it', () => {
       vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '');
-      expect(getAnonymousDailyLimit()).toBe(25);
-      expect(ANONYMOUS_DAILY_CONVERSIONS).toBe(25);
+      expect(getAnonymousDailyLimit()).toBe(10);
+      expect(ANONYMOUS_DAILY_CONVERSIONS).toBe(10);
+    });
+
+    it('is the same 10 for a free account, and a paid plan keeps its own', () => {
+      expect(FREE_DAILY_CONVERSIONS).toBe(10);
+      expect(TIER_LIMITS).toEqual({ free: 10, pro: 500, enterprise: 10000 });
     });
 
     it('names the configured limit in the refusal, not a literal', async () => {
@@ -196,7 +203,28 @@ describe('what a request is charged', () => {
 
       expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
       const body = await res.json();
-      expect(body.detail ?? body.error).toContain('3 conversions per day');
+      expect(body.detail ?? body.error).toBe(
+        'Daily conversion quota exceeded (3 conversions per day). It resets at midnight UTC. This request needs 1 conversion and 0 are left today.'
+      );
+    });
+
+    it('tells a free account the same allowance and the reset, and offers no plan or key to get more', async () => {
+      const client = await account('free');
+      for (let i = 0; i < FREE_DAILY_CONVERSIONS; i++) {
+        const unit = await redisKeyStore.reserveQuota(client.userId, 1);
+        await redisKeyStore.commitQuota(unit.reservationId as string);
+      }
+      const form = new FormData();
+      form.append('file', new File([CSV], 'scores.csv'));
+      form.append('targetFormat', 'json');
+
+      const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: client.headers, body: form }));
+
+      expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      const body = await res.json();
+      expect(body.detail ?? body.error).toBe(
+        `Daily conversion quota exceeded (${FREE_DAILY_CONVERSIONS} conversions per day). It resets at midnight UTC. This request needs 1 conversion and 0 are left today.`
+      );
     });
   });
 
@@ -655,7 +683,7 @@ describe('what a request is charged', () => {
   });
 
   describe('/api/v1/jobs', () => {
-    const FREE_DAY_ALLOWANCE = 25;
+    const FREE_DAY_ALLOWANCE = FREE_DAILY_CONVERSIONS;
     let worker: Worker<ConversionJobData, ConversionJobResult> | undefined;
 
     afterEach(async () => {
