@@ -2,12 +2,15 @@ import { createElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { getAccessFallbackHTTPStatus, isHTTPAccessFallbackError } from 'next/dist/client/components/http-access-fallback/http-access-fallback';
 import ConverterPage, { generateMetadata } from '../src/app/[locale]/[slug]/page';
-import UnknownPathPage from '../src/app/[locale]/[...rest]/page';
+import UnknownPathPage, { generateMetadata as unknownPathMetadata } from '../src/app/[locale]/[...rest]/page';
 import { generateMetadata as notFoundMetadata } from '../src/app/[locale]/not-found';
 import NotFoundPageView from '../src/components/pages/NotFoundPageView';
 import { CATEGORY_WORDS, isCategoryWord } from '../src/lib/category-words';
+import { MERGE_FORMATS } from '../src/lib/jobs/graph-operations';
+import { OPTIMIZABLE_FORMATS } from '../src/lib/jobs/optimize-formats';
 import { routing } from '../src/i18n/routing';
-import { FORMAT_NAME_ALIASES, isSameFormat } from '../src/lib/format-aliases';
+import { FORMAT_NAME_ALIASES, isSameFormat, offersConversion } from '../src/lib/format-aliases';
+import { displayRoute, MAX_ROUTE_CHARS } from '../src/lib/display-route';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { allElements, attrOf, headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
@@ -64,6 +67,7 @@ const NO_PAGE: Record<string, readonly string[]> = {
   'a utility page of a format its operation does not run': [
     'merge-xyz', 'merge-docx', 'merge-jpg', 'merge-txt', 'compress-gif', 'compress-docx', 'compress-xyz', 'compress-png', 'compress-jpg', 'merge-', 'compress-',
   ],
+  'a name that lowercases to a page name only by Unicode rules (the Kelvin sign is the capital of k)': ['lbs-to-\u212Ag', '\u212Ag-to-lbs', 'm\u212Av-to-mp4', 'm\u212Av-converter'],
   'a path that names a file': ['backup.zip', 'foo-to-bar.php', 'x.php-converter', 'zip-to-x.tar.gz', 'pdf-to-docx.php'],
   'a page name with a space, a tab, a line break or a slash around it': [
     'pdf-to-jpg ', ' pdf-to-jpg', '\tpdf-to-jpg', 'pdf-to-jpg\n', '\npdf-to-jpg\r', '/pdf-to-jpg', '//pdf-to-jpg', 'pdf-ocr ', ' terms', 'merge-pdf\t', 'pdf-converter ', ' video-converter',
@@ -107,8 +111,9 @@ describe('a path the site does not offer is answered 404 in every locale', () =>
     });
   }
 
-  it('answers 404 from the catch-all page that a path of two or more segments under a locale reaches', async () => {
+  it('answers 404 from the catch-all page that a path of two or more segments under a locale reaches, and from its metadata', async () => {
     expect(await statusOf(() => UnknownPathPage())).toBe(404);
+    expect(await statusOf(() => unknownPathMetadata())).toBe(404);
   });
 
   it('answers 404 for a slug under a language the site does not have', async () => {
@@ -168,6 +173,19 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
     expect(parseConverterSlug('presentation-converter')).toMatchObject({ copy: { kind: 'format', name: { kind: 'category', id: 'presentation' } } });
   });
 
+  it('gives merge and compress pages to the formats of the job graph operation behind them that the registry converts to themselves, and no other', () => {
+    const operations = { merge: MERGE_FORMATS, compress: new Set(OPTIMIZABLE_FORMATS) };
+    const wrong: string[] = [];
+    for (const [utility, formats] of Object.entries(operations)) {
+      for (const id of ids) {
+        if (Boolean(parseConverterSlug(`${utility}-${id}`)) !== (formats.has(id) && offersConversion(id, id))) wrong.push(`${utility}-${id}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    expect(parseConverterSlug('compress-png')).toBeNull();
+    expect(parseConverterSlug('compress-pdf')).not.toBeNull();
+  });
+
   it('names a registered source, and a registered target when there is one, for every page that is not an information page', () => {
     const slugs = [
       ...ids.map((id) => `${id}-converter`),
@@ -222,10 +240,33 @@ describe('the page a path with no page shows', () => {
     ['en', '/foo/bar', 'foo/bar'],
     ['ko', '/ko/foo/bar', 'foo/bar'],
     ['en', '/pdf-to-jpg/extra', 'pdf-to-jpg/extra'],
-    ['ko', '/ko/%ED%95%9C%EA%B8%80', '%ED%95%9C%EA%B8%80'],
   ] as const)('names the route of %s path %s as %s', (locale, pathname, route) => {
     const main = select(render(locale, pathname), 'main')[0];
     expect(headings(main)).toEqual([WORDING[locale].title(route)]);
+  });
+
+  it.each([
+    ['/%ED%95%9C%EA%B8%80', '한글'],
+    ['/foo/bar', 'foo/bar'],
+    ['/a%20b', 'a b'],
+    ['/%3Cb%3Ex', '<b>x'],
+    ['/%E0%A4%A', '%E0%A4%A'],
+    ['/a%00b', 'a%00b'],
+    ['/a%0Ab', 'a%0Ab'],
+    ['/a%E2%80%AEb', 'a%E2%80%AEb'],
+    ['/a%E2%81%A6b', 'a%E2%81%A6b'],
+    ['/a%C2%85b', 'a%C2%85b'],
+    ['/' + 'x'.repeat(MAX_ROUTE_CHARS), 'x'.repeat(MAX_ROUTE_CHARS)],
+    ['/' + 'x'.repeat(MAX_ROUTE_CHARS + 1), 'x'.repeat(MAX_ROUTE_CHARS) + '\u2026'],
+    ['/' + '%ED%95%9C'.repeat(MAX_ROUTE_CHARS + 50), '한'.repeat(MAX_ROUTE_CHARS) + '\u2026'],
+    ['/' + '%F0%9F%98%80'.repeat(MAX_ROUTE_CHARS + 1), '\u{1F600}'.repeat(MAX_ROUTE_CHARS) + '\u2026'],
+  ])('shows the route of %s as %j: decoded for reading, raw when it holds a control or direction character or does not decode, and capped', (pathname, shown) => {
+    expect(displayRoute(pathname)).toBe(shown);
+  });
+
+  it('shows a Korean route as the visitor typed it, not percent-encoded', () => {
+    const main = select(render('ko', '/ko/%ED%95%9C%EA%B8%80'), 'main')[0];
+    expect(headings(main)).toEqual([WORDING.ko.title('한글')]);
   });
 
   it('keeps the skip link target of the layout', () => {

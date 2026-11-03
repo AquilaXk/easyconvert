@@ -5,12 +5,13 @@ import { useTranslations } from 'next-intl';
 import BrandLogo from '@/components/BrandLogo';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
+import { displayRoute } from '@/lib/display-route';
 
 /** What a path the site offers no page at shows: a thin header with the logo, then centred a small code, one heading that names the route, and one sentence. */
 export default function NotFoundPageView() {
   const t = useTranslations('notFound');
   const tHeader = useTranslations('header');
-  const route = usePathname().slice(1);
+  const route = displayRoute(usePathname());
   // The framework's error shell renders this document, so the theme script of the layout has not run; the hook applies the stored theme.
   useThemeToggle();
 

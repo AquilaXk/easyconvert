@@ -8,27 +8,55 @@
 //
 //   node scripts/check-built-statuses.mjs <base url>
 
+import { readFileSync } from 'node:fs';
+
 const [baseUrl] = process.argv.slice(2);
 const REQUEST_TIMEOUT_MS = 15_000;
 
-const NOT_FOUND_TITLE = { en: 'Page not found | EasyConvert', ko: '페이지를 찾을 수 없어요 | EasyConvert' };
+const messages = Object.fromEntries(
+  ['en', 'ko'].map((locale) => [locale, JSON.parse(readFileSync(new URL(`../messages/${locale}.json`, import.meta.url), 'utf8')).meta])
+);
+const localeOf = (path) => (/^\/ko(?:\/|$)/i.test(path) ? 'ko' : 'en');
+
+/** A path the site offers no page at: 404, noindex, and the 404 page's own title in the language of the path, not the layout's. */
+const notFound = (path) => ({ path, status: 404, noindex: true, title: messages[localeOf(path)].notFound.title });
+/** A path the locale routing never sees (a name with a dot, `/api`): 404 and noindex from the framework's own page, which has no title. */
+const outsideLocales = (path) => ({ path, status: 404, noindex: true });
+const page = (path, status = 200) => ({ path, status, noindex: false });
+
+/** The routes of the app that are pages of their own, and the status each answers (the account page redirects to the dashboard). */
+const ROUTES = [
+  ['/dashboard/api-keys', 200],
+  ['/api-docs', 200],
+  ['/status', 200],
+  ['/unit-converter', 200],
+  ['/auth', 200],
+  ['/account', 307],
+];
 
 /**
- * Each path and what the server must answer: the status, whether its robots tag says noindex, and for a 404 the title the
- * page names itself by, in the language of the path. The title is the 404 page's own, not the home page's from the layout.
+ * Each path and what the server must answer. A 404 also holds nothing of the layout's title anywhere in the document, the
+ * flight payload that the browser hydrates from included, since a payload that names the home page retitles the tab after load.
+ * A single-segment path with a dot, or the name of an API prefix, never reaches the locale routing and must be 404, never 500.
  */
 const EXPECTED = [
-  { path: '/nonexistent-page-xyz', status: 404, noindex: true, title: NOT_FOUND_TITLE.en },
-  { path: '/foo/bar', status: 404, noindex: true, title: NOT_FOUND_TITLE.en },
-  { path: '/pdf-to-jpg/extra', status: 404, noindex: true, title: NOT_FOUND_TITLE.en },
-  { path: '/pdf-to-jpg%20', status: 404, noindex: true, title: NOT_FOUND_TITLE.en },
-  { path: '/%09pdf-to-jpg', status: 404, noindex: true, title: NOT_FOUND_TITLE.en },
-  { path: '/compress-png', status: 404, noindex: true, title: NOT_FOUND_TITLE.en },
-  { path: '/ko/nonexistent-page-xyz', status: 404, noindex: true, title: NOT_FOUND_TITLE.ko },
-  { path: '/ko/foo/bar', status: 404, noindex: true, title: NOT_FOUND_TITLE.ko },
-  { path: '/ko/pdf-to-jpg%20', status: 404, noindex: true, title: NOT_FOUND_TITLE.ko },
-  { path: '/pdf-to-jpg', status: 200, noindex: false },
-  { path: '/ko/pdf-to-jpg', status: 200, noindex: false },
+  notFound('/nonexistent-page-xyz'),
+  notFound('/foo/bar'),
+  notFound('/pdf-to-jpg/extra'),
+  notFound('/pdf-to-jpg%20'),
+  notFound('/%09pdf-to-jpg'),
+  notFound('/en/pdf-to-jpg%20'),
+  outsideLocales('/robots.txt'),
+  outsideLocales('/foo.html'),
+  outsideLocales('/api'),
+  notFound('/ko/nonexistent-page-xyz'),
+  notFound('/ko/foo/bar'),
+  notFound('/ko/pdf-to-jpg%20'),
+  notFound('/KO/pdf-to-jpg%20'),
+  page('/pdf-to-jpg'),
+  page('/ko/pdf-to-jpg'),
+  ...ROUTES.map(([path, status]) => page(path, status)),
+  ...ROUTES.map(([path]) => notFound(`${path}/x`)),
 ];
 
 function fail(lines) {
@@ -51,16 +79,25 @@ function isNoindex(headers, html) {
 async function answerOf(path) {
   const response = await fetch(new URL(path, baseUrl), { redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const html = await response.text();
-  return { status: response.status, title: /<title>([^<]*)<\/title>/.exec(html)?.[1], noindex: isNoindex(response.headers, html) };
+  return { status: response.status, title: /<title>([^<]*)<\/title>/.exec(html)?.[1], noindex: isNoindex(response.headers, html), html };
+}
+
+/** What a path answered that differs from what it must, one phrase each. */
+function faultsOf(expected, answer) {
+  const faults = [];
+  if (answer.status !== expected.status) faults.push(`status ${answer.status}, expected ${expected.status}`);
+  if (answer.noindex !== expected.noindex) faults.push(`noindex ${answer.noindex}, expected ${expected.noindex}`);
+  if (expected.title !== undefined && answer.title !== expected.title) faults.push(`title ${answer.title}, expected ${expected.title}`);
+  const layoutTitle = messages[localeOf(expected.path)].site.title;
+  if (expected.status === 404 && answer.html.includes(layoutTitle)) faults.push(`the document names the title of the layout "${layoutTitle}", which retitles the tab after load`);
+  return faults;
 }
 
 const failures = [];
 for (const expected of EXPECTED) {
   const answer = await answerOf(expected.path).catch((error) => fail([`${expected.path}: ${error.message}`]));
-  const wrongTitle = expected.title !== undefined && answer.title !== expected.title;
-  if (answer.status !== expected.status || answer.noindex !== expected.noindex || wrongTitle) {
-    failures.push(`${expected.path}: status ${answer.status}, noindex ${answer.noindex}, title ${answer.title}; expected status ${expected.status}, noindex ${expected.noindex}${expected.title ? `, title ${expected.title}` : ''}`);
-  }
+  const faults = faultsOf(expected, answer);
+  if (faults.length > 0) failures.push(`${expected.path}: ${faults.join('; ')}`);
 }
 if (failures.length > 0) fail(failures);
 console.log(`${EXPECTED.length} paths answered as a visitor and a crawler need on ${new URL(baseUrl).origin}`);

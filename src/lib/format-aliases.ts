@@ -1,3 +1,6 @@
+import { isCategoryWord } from './category-words';
+import { FORMAT_REGISTRY } from './registry';
+
 /**
  * Registry formats that are another name of the same format (an extension spelled two ways), keyed by the alias and naming
  * the format it stands for. A list of targets names each format once: "JPG" covers JPEG and JFIF, "TIFF" covers TIF.
@@ -55,5 +58,22 @@ export function otherFormats(ids: readonly string[], own: readonly string[]): st
   return collapseAliases(
     ids.filter((id) => !ownFormats.has(canonicalFormat(id))),
     (id) => id
+  );
+}
+
+const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
+
+/**
+ * Whether two names are formats of the registry, not category words, and the registry lists the conversion between them: the
+ * pair has a page. A category word stands for a format only as a representative, so `presentation`, a format of the registry
+ * that is also the word of a category, has the converter page of the category and no pair page of its own.
+ */
+export function offersConversion(source: string, target: string): boolean {
+  return (
+    isRegistered(source) &&
+    isRegistered(target) &&
+    !isCategoryWord(source) &&
+    !isCategoryWord(target) &&
+    FORMAT_REGISTRY[source].targetFormats.includes(target)
   );
 }

@@ -1,5 +1,4 @@
 import type { FormatCategory } from './types';
-import { FORMAT_REGISTRY } from './registry';
 
 /** A word a slug names a category of the registry by (`/video-converter`): the id of the category. */
 export type CategoryWord = FormatCategory;
@@ -21,20 +20,3 @@ export const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; dis
 };
 
 export const isCategoryWord = (word: string): word is CategoryWord => Object.hasOwn(CATEGORY_WORDS, word);
-
-const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
-
-/**
- * Whether two names are formats of the registry, not category words, and the registry lists the conversion between them: the
- * pair has a page. A category word stands for a format only as a representative, so `presentation`, a format of the registry
- * that is also the word of a category, has the converter page of the category and no pair page of its own.
- */
-export function offersConversion(source: string, target: string): boolean {
-  return (
-    isRegistered(source) &&
-    isRegistered(target) &&
-    !isCategoryWord(source) &&
-    !isCategoryWord(target) &&
-    FORMAT_REGISTRY[source].targetFormats.includes(target)
-  );
-}

@@ -106,6 +106,19 @@ describe('locale routing of pages', () => {
     expect((await answer('/%ED%95%9C%EA%B8%80')).rewrite).toBe(`${ORIGIN}/en/%ED%95%9C%EA%B8%80`);
   });
 
+  it('keeps a path with whitespace under a language prefix as it came, and sends it to no other page', async () => {
+    for (const [asked, locale, page] of [
+      ['/en/pdf-to-jpg%20', 'en', 'pdf-to-jpg%20'],
+      ['/EN/pdf-to-jpg%20', 'en', 'pdf-to-jpg%20'],
+      ['/en/%09pdf-to-jpg', 'en', '%09pdf-to-jpg'],
+      ['/ko/pdf-to-jpg%20', 'ko', 'pdf-to-jpg%20'],
+      ['/KO/pdf-to-jpg%20', 'ko', 'pdf-to-jpg%20'],
+      ['/ko/pdf-to-jpg%0A?from=a', 'ko', 'pdf-to-jpg%0A?from=a'],
+    ] as const) {
+      expect(await answer(asked), asked).toMatchObject({ status: 200, location: null, rewrite: `${ORIGIN}/${locale}/${page}` });
+    }
+  });
+
   it('negotiates the language from Accept-Language on the root only', async () => {
     expect(await answer('/', KOREAN_BROWSER)).toMatchObject({ status: 307, location: `${ORIGIN}/ko` });
     const shared = await answer('/png-to-jpg', KOREAN_BROWSER);

@@ -24,7 +24,12 @@ afterEach(() => {
   document.body.replaceChildren();
   document.documentElement.classList.remove('dark');
   localStorage.clear();
+  vi.unstubAllGlobals();
 });
+
+function systemPrefersDark(dark: boolean): void {
+  vi.stubGlobal('matchMedia', (query: string) => ({ matches: dark && query === '(prefers-color-scheme: dark)', media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
+}
 
 async function mount(): Promise<void> {
   const host = document.createElement('div');
@@ -42,8 +47,22 @@ describe('the 404 page follows the theme the visitor chose', () => {
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
-  it('is light for a visitor whose stored theme is light', async () => {
+  it('is light for a visitor whose stored theme is light, whatever the document started as', async () => {
+    document.documentElement.classList.add('dark');
     localStorage.setItem('theme', 'light');
+    systemPrefersDark(true);
+    await mount();
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+  });
+
+  it('is dark for a visitor with no stored theme whose system prefers dark, as every other page is', async () => {
+    systemPrefersDark(true);
+    await mount();
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+  });
+
+  it('is light for a visitor with no stored theme whose system prefers light', async () => {
+    systemPrefersDark(false);
     await mount();
     expect(document.documentElement.classList.contains('dark')).toBe(false);
   });

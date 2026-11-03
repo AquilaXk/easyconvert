@@ -14,6 +14,14 @@ function readStoredTheme(): string | null {
   }
 }
 
+function systemPrefersDark(): boolean {
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  } catch {
+    return false;
+  }
+}
+
 function writeStoredTheme(theme: string): void {
   try {
     localStorage.setItem('theme', theme);
@@ -28,7 +36,7 @@ export function useThemeToggle() {
   useEffect(() => {
     const stored = readStoredTheme();
     const hasDarkClass = document.documentElement.classList.contains('dark');
-    const next = stored ? stored === 'dark' : hasDarkClass;
+    const next = stored ? stored === 'dark' : hasDarkClass || systemPrefersDark();
     setIsDark(next);
     document.documentElement.classList.toggle('dark', next);
 

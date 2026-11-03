@@ -64,7 +64,11 @@ for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
   status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:$PORT/" || true)"
   if [ "$status" = 200 ]; then
     echo "boot check: the home page answered 200 after $attempt attempt(s)"
-    node "$ROOT/scripts/check-built-statuses.mjs" "http://127.0.0.1:$PORT"
+    if ! node "$ROOT/scripts/check-built-statuses.mjs" "http://127.0.0.1:$PORT"; then
+      echo "boot check: the server answered a path wrongly; its last output follows" >&2
+      docker logs --tail 40 "$NAME" >&2
+      exit 1
+    fi
     exit 0
   fi
   sleep 2

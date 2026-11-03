@@ -4,25 +4,32 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
+import { testMessages } from './helpers/intl-messages';
 
 /**
  * The check of a running server (docs/policy-decisions.md, entry 145) is run against servers that answer as the site does and
- * as a regression would: a junk path answered 200, a 404 under /ko with the home page's title, a 404 that no crawler is told
- * to skip, and a page that exists answered 404.
+ * as a regression would: a junk path answered 200, a file path or an API prefix answered 500, a prefixed path redirected to a
+ * page, a 404 under /ko with the home page's title in its head or only in the payload the browser hydrates from, a 404 that no
+ * crawler is told to skip, and a page that exists answered 404.
  */
 
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'check-built-statuses.mjs');
 const run = promisify(execFile);
 const servers: Server[] = [];
 
-const PAGES = new Set(['/pdf-to-jpg', '/ko/pdf-to-jpg']);
+const PAGES = new Set(['/pdf-to-jpg', '/ko/pdf-to-jpg', '/dashboard/api-keys', '/api-docs', '/status', '/unit-converter', '/auth']);
+const REDIRECTS = new Set(['/account']);
 
-const html = (title: string, robots: boolean) =>
-  `<!DOCTYPE html><html><head><title>${title}</title>${robots ? '<meta name="robots" content="noindex"/>' : ''}</head><body></body></html>`;
+const titles = (pathname: string) => testMessages(/^\/ko\//i.test(pathname) ? 'ko' : 'en').meta;
+
+const html = (title: string, robots: boolean, payload = '') =>
+  `<!DOCTYPE html><html><head><title>${title}</title>${robots ? '<meta name="robots" content="noindex"/>' : ''}</head><body>${payload}</body></html>`;
 
 interface Faults {
-  soft404?: string;
+  /** The status a path answers instead of its own, by the path as requested. */
+  answers?: Record<string, number>;
   homeTitle?: boolean;
+  payloadTitle?: boolean;
   noRobots?: boolean;
   pageGone?: boolean;
 }
@@ -30,11 +37,13 @@ interface Faults {
 async function serve(faults: Faults = {}): Promise<string> {
   const server = createServer((request, response) => {
     const pathname = decodeURIComponent(request.url ?? '/');
-    const exists = PAGES.has(pathname) && !faults.pageGone;
-    const status = exists || pathname === faults.soft404 ? 200 : 404;
-    const notFoundTitle = pathname.startsWith('/ko/') ? '페이지를 찾을 수 없어요 | EasyConvert' : 'Page not found | EasyConvert';
+    const exists = (PAGES.has(pathname) && !faults.pageGone) || REDIRECTS.has(pathname);
+    const status = faults.answers?.[pathname] ?? (REDIRECTS.has(pathname) ? 307 : exists ? 200 : 404);
+    const { notFound, site } = titles(pathname);
     response.writeHead(status, { 'content-type': 'text/html' });
-    response.end(html(status === 404 && !faults.homeTitle ? notFoundTitle : 'EasyConvert | Online File Converter', status === 404 && !faults.noRobots));
+    const missing = status === 404;
+    const payload = missing && faults.payloadTitle ? `<script>self.__next_f.push([1,"{\\"title\\":\\"${site.title}\\"}"])</script>` : '';
+    response.end(html(missing && !faults.homeTitle ? notFound.title : site.title, missing && !faults.noRobots, payload));
   });
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -62,15 +71,23 @@ describe('the built server answers a path the site does not offer with 404 and a
   });
 
   it.each([
-    ['a junk slug answered 200', { soft404: '/nonexistent-page-xyz' }, '/nonexistent-page-xyz'],
-    ['a path of several segments answered 200', { soft404: '/foo/bar' }, '/foo/bar'],
-    ['a path under /ko answered 200', { soft404: '/ko/nonexistent-page-xyz' }, '/ko/nonexistent-page-xyz'],
-    ['a page with a space after it answered 200', { soft404: '/pdf-to-jpg ' }, '/pdf-to-jpg%20'],
-    ['a page with a tab before it answered 200', { soft404: '/\tpdf-to-jpg' }, '/%09pdf-to-jpg'],
-    ['a utility page the service does not run answered 200', { soft404: '/compress-png' }, '/compress-png'],
+    ['a junk slug answered 200', { answers: { '/nonexistent-page-xyz': 200 } }, '/nonexistent-page-xyz'],
+    ['a path of several segments answered 200', { answers: { '/foo/bar': 200 } }, '/foo/bar'],
+    ['a path under /ko answered 200', { answers: { '/ko/nonexistent-page-xyz': 200 } }, '/ko/nonexistent-page-xyz'],
+    ['a page with a space after it answered 200', { answers: { '/pdf-to-jpg ': 200 } }, '/pdf-to-jpg%20'],
+    ['a page with a tab before it answered 200', { answers: { '/\tpdf-to-jpg': 200 } }, '/%09pdf-to-jpg'],
+    ['a page with a space after it under /en redirected to the page', { answers: { '/en/pdf-to-jpg ': 307 } }, '/en/pdf-to-jpg%20'],
+    ['a page with a space after it under /KO redirected to the page', { answers: { '/KO/pdf-to-jpg ': 307 } }, '/KO/pdf-to-jpg%20'],
+    ['a file path answered 500', { answers: { '/robots.txt': 500 } }, '/robots.txt'],
+    ['a dotted name answered 500', { answers: { '/foo.html': 500 } }, '/foo.html'],
+    ['an API prefix answered 500', { answers: { '/api': 500 } }, '/api'],
+    ['a route of the app with a segment after it answered 200', { answers: { '/dashboard/api-keys/x': 200 } }, '/dashboard/api-keys/x'],
     ['a 404 that carries the title of the home page', { homeTitle: true }, '/ko/foo/bar'],
+    ['a 404 whose payload names the title of the home page', { payloadTitle: true }, '/ko/foo/bar'],
     ['a 404 that carries no noindex', { noRobots: true }, '/foo/bar'],
     ['a page that exists answered 404', { pageGone: true }, '/pdf-to-jpg'],
+    ['a route of the app answered 404', { pageGone: true }, '/api-docs'],
+    ['the account page answered 200 instead of its redirect', { answers: { '/account': 200 } }, '/account'],
   ] as const)('fails %s and names the path', async (_label, faults, named) => {
     const result = await check(await serve(faults));
     expect(result.status).toBe(1);

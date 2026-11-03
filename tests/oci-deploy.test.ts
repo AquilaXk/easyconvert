@@ -1707,6 +1707,7 @@ esac`
 
     const failed = boot({ STUB_PAGES_EXIT: '1' });
     expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('the log of the container');
     expect(removed()).toBe(true);
   });
 

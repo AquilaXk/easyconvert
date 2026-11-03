@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import createIntlMiddleware from 'next-intl/middleware';
-import { routing } from '@/i18n/routing';
+import { routing, type AppLocale } from '@/i18n/routing';
 import {
   CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
   ClientIpError,
@@ -211,20 +211,30 @@ const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: fal
 /** What reading a URL drops from the decoded path: a tab or a line break anywhere, and a space or control character at the end. */
 const DROPPED_BY_URL_PARSING = /[\t\n\r]|(?:[\u0000-\u0020]$)/;
 
+/** A path split into the language it names by its first segment, in any case (`/KO/x`), and the path after it; a path with none names the default language. */
+function splitLocalePrefix(pathname: string): { locale: AppLocale; path: string } {
+  const [, first = '', ...rest] = pathname.split('/');
+  const locale = routing.locales.find((candidate) => candidate === first.toLowerCase());
+  return locale ? { locale, path: `/${rest.join('/')}` } : { locale: routing.defaultLocale, path: pathname };
+}
+
 /**
  * The page's answer in the visitor's language. next-intl rewrites to the decoded path read back as a URL, which drops what
  * `DROPPED_BY_URL_PARSING` names, so `/pdf-to-jpg%20` would reach the page as `/pdf-to-jpg` and answer 200 for another path.
- * The rewrite then keeps the path as it came, and the slug page reads the whole slug.
+ * It also redirects a path with a superfluous or capitalised language prefix (`/en/x`, `/KO/x`) to the decoded path, which
+ * is the same page. A path with such a character is therefore answered here, ahead of any redirect: next-intl negotiates
+ * the language for the path in its canonical form, and the rewrite then keeps the path as it came, so the page reads the
+ * whole slug and answers 404.
  */
 function pageLocaleAnswer(request: NextRequest): NextResponse {
-  const response = handlePageLocale(request);
-  const rewrite = response.headers.get('x-middleware-rewrite');
-  if (!rewrite || !DROPPED_BY_URL_PARSING.test(decodeURI(request.nextUrl.pathname))) return response;
-
-  const target = new URL(rewrite);
-  const [, locale] = target.pathname.split('/');
   const received = request.nextUrl.pathname;
-  target.pathname = received.startsWith(`/${locale}/`) ? received : `/${locale}${received}`;
+  if (!DROPPED_BY_URL_PARSING.test(decodeURI(received))) return handlePageLocale(request);
+
+  const { locale, path } = splitLocalePrefix(received);
+  const canonical = new URL(`${locale === routing.defaultLocale ? '' : `/${locale}`}${path}${request.nextUrl.search}`, request.url);
+  const response = handlePageLocale(new NextRequest(canonical, request));
+  const target = new URL(response.headers.get('x-middleware-rewrite') ?? canonical);
+  target.pathname = `/${locale}${path}`;
   response.headers.set('x-middleware-rewrite', target.toString());
   return response;
 }

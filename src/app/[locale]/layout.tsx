@@ -36,6 +36,14 @@ interface LocaleLayoutProps {
   params: Promise<{ locale: string }>;
 }
 
+/**
+ * The locales are the only values of this segment. A single-segment path that is none (`/robots.txt`, `/foo.html`, `/api`)
+ * never meets the locale middleware, so its first segment reaches this layout as the locale; with `dynamicParams` off the
+ * framework answers 404 for it without rendering the static page under a locale. Rendered, the 404 page's metadata reads the
+ * request's locale from the headers, which a static render may not, and the answer was a 500.
+ */
+export const dynamicParams = false;
+
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
 }
