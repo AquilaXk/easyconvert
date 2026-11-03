@@ -14,6 +14,7 @@ import FaqSection from '../src/components/FaqSection';
 import StatusDashboard from '../src/components/StatusDashboard';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
+import HomePageView from '../src/components/pages/HomePageView';
 import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
 import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
 import type { ConversionQueueItem } from '../src/lib/types';
@@ -88,9 +89,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const header = render(Header, {});
     const hrefs = hrefsOf(header);
 
-    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works', '/api-docs', '/dashboard'])).toEqual([]);
+    expect(missingFrom(hrefs, ['/#format-catalog', '/api-docs', '/dashboard'])).toEqual([]);
     // Bare fragments only resolve on the home page.
-    expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
+    expect(presentIn(hrefs, ['#format-catalog'])).toEqual([]);
   });
 
   it('verifies Header offers sign-in through /auth only, with no link to the retired login and register routes', () => {
@@ -99,7 +100,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(links(header)).toEqual([
       { text: 'EasyConvert', href: '/' },
       { text: 'Formats', href: '/#format-catalog' },
-      { text: 'How It Works', href: '/#how-it-works' },
       { text: 'API Docs', href: '/api-docs' },
       { text: 'Dashboard', href: '/dashboard' },
       { text: 'English', href: '/' },
@@ -132,8 +132,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const footer = render(Footer, {});
     const hrefs = hrefsOf(footer);
 
-    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works'])).toEqual([]);
-    expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
+    expect(missingFrom(hrefs, ['/#format-catalog'])).toEqual([]);
+    expect(presentIn(hrefs, ['#format-catalog'])).toEqual([]);
     // Obsolete pricing and api links should not exist
     expect(hrefs.filter((href) => href.includes('/pricing') || href.includes('/api/v2'))).toEqual([]);
 
@@ -329,6 +329,26 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'DOCX Converter', href: '/docx-converter' },
     ]);
     expect(phrasesPresent(visibleText(main), ['Three steps', 'How to Convert', 'Specification', 'MIME', 'Frequently Asked', 'Pick a target format', 'Pick a source format', 'Choose an output format'])).toEqual([]);
+  });
+
+  it('verifies the home page holds the title, the upload card, the format directory, the security card and the API card, and no steps, questions or link to them', () => {
+    const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+    const main = select(home, 'main')[0];
+
+    const sections = allElements(main).filter((element) => element.tagName === 'h1' || element.tagName === 'h2');
+    expect(sections.map(visibleText)).toEqual([
+      'File Converter',
+      'Select your file to convert',
+      'Supported Format Directory',
+      'Security & Data Handling',
+      'REST API & Batch Workflows',
+    ]);
+    const text = visibleText(main);
+    expect(phrasesPresent(text, ['How Conversion Works', 'Frequently Asked', 'Add source files', 'Select an extension'])).toEqual([]);
+    // The limits line under the upload card is the one place the home page states the allowance.
+    expect(text).toContain('10 conversions a day');
+    expect(allElements(home).filter((element) => attrOf(element, 'id') === 'how-it-works')).toEqual([]);
+    expect(presentIn(hrefsOf(home), ['/#how-it-works'])).toEqual([]);
   });
 
   it('verifies a format page describes its one format without a link to itself, and a category page describes none', () => {

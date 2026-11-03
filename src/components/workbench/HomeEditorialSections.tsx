@@ -82,7 +82,7 @@ export function RestApiWorkflowCard() {
   };
 
   return (
-    <div className="border-t border-rule lg:col-span-8 min-w-0 pt-6 sm:pt-7">
+    <div className="border-t border-rule min-w-0 pt-6 sm:pt-7">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="max-w-2xl">
           <h2 className="text-2xl sm:text-3xl text-ink">
@@ -145,47 +145,6 @@ export function RestApiWorkflowCard() {
         >
           {t('manageKeys')}
         </Link>
-      </div>
-    </div>
-  );
-}
-
-export function HowConversionWorksCard() {
-  const t = useTranslations('home.howItWorks');
-  return (
-    <div className="border-t border-rule lg:col-span-4 min-w-0 pt-6 sm:pt-7">
-      <h2 className="text-2xl text-ink">
-        {t('heading')}
-      </h2>
-      <p className="mt-1.5 text-sm text-ink-2">
-        {t('intro')}
-      </p>
-
-      <div className="mt-5 divide-y divide-rule">
-        <div className="py-4 first:pt-0">
-          <h3 className="text-sm font-bold text-ink">{t('add.heading')}</h3>
-          <p className="mt-1 text-xs text-ink-2 leading-relaxed">
-            {t('add.body')}
-          </p>
-        </div>
-
-        <div className="py-4">
-          <h3 className="text-sm font-bold text-ink">
-            {t('pick.heading')}
-          </h3>
-          <p className="mt-1 text-xs text-ink-2 leading-relaxed">
-            {t('pick.body')}
-          </p>
-        </div>
-
-        <div className="py-4 last:pb-0">
-          <h3 className="text-sm font-bold text-ink">
-            {t('download.heading')}
-          </h3>
-          <p className="mt-1 text-xs text-ink-2 leading-relaxed">
-            {t('download.body')}
-          </p>
-        </div>
       </div>
     </div>
   );

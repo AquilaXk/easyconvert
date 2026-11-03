@@ -362,7 +362,6 @@
     "directoryHeading": "Supported Format Directory",
     "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
     "extensionsHeading": "{category} Extensions ({count})",
-    "extensionsHint": "Select an extension to open its converter",
     "pairsHeading": "Common {category} Pairs",
     "pairs": {
       "png-webp": "Web image compression with alpha support",
@@ -639,22 +638,6 @@
       "copy": "Copy",
       "reference": "OpenAPI 3.1 Reference",
       "manageKeys": "Manage API Keys"
-    },
-    "howItWorks": {
-      "heading": "How Conversion Works",
-      "intro": "Three direct steps without account walls or watermarks.",
-      "add": {
-        "heading": "1. Add source files",
-        "body": "Select files from your device, drag them onto the workbench, paste from clipboard, or import from a public link."
-      },
-      "pick": {
-        "heading": "2. Pick format & options",
-        "body": "Choose any compatible target extension and optionally tune codecs, dimensions, page ranges, or delimiters."
-      },
-      "download": {
-        "heading": "3. Convert & download",
-        "body": "Download converted files individually as soon as they finish, or bundle multi-file batches into one ZIP archive."
-      }
     }
   },
   "infoPages": {
@@ -1025,7 +1008,6 @@
     "mergePdf": "Merge PDF",
     "systemStatus": "System Status",
     "formats": "Formats",
-    "howItWorks": "How It Works",
     "apiDocs": "API Docs",
     "dashboard": "Dashboard",
     "mp4Converter": "MP4 Converter",

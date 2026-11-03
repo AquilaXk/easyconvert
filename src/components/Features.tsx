@@ -6,11 +6,7 @@ import { ArrowRight } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import type { FormatCategory } from '@/lib/types';
 import { CategoryRegistryStat, REGISTRY_STATS } from '@/lib/registry-stats';
-import {
-  HowConversionWorksCard,
-  RestApiWorkflowCard,
-  SecurityDataHandlingCard,
-} from './workbench/HomeEditorialSections';
+import { RestApiWorkflowCard, SecurityDataHandlingCard } from './workbench/HomeEditorialSections';
 
 /** A common pair of a category; its one-line summary is `features.pairs.<from>-<to>` in the messages. */
 interface PopularPair {
@@ -140,14 +136,9 @@ function FormatDirectoryCard({
 
       <div className="pt-5 space-y-6">
         <div>
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <h3 className="text-sm font-bold text-ink">
-              {t('extensionsHeading', { category: activeLabel, count: activeCategory.count })}
-            </h3>
-            <span className="text-xs text-ink-3">
-              {t('extensionsHint')}
-            </span>
-          </div>
+          <h3 className="mb-3 text-sm font-bold text-ink">
+            {t('extensionsHeading', { category: activeLabel, count: activeCategory.count })}
+          </h3>
           <div className="flex flex-wrap gap-2">
             {activeCategory.formats.map((fmt) => (
               <Link
@@ -211,12 +202,8 @@ export default function Features() {
         <SecurityDataHandlingCard />
       </section>
 
-      <section
-        id="how-it-works"
-        className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
-      >
+      <section>
         <RestApiWorkflowCard />
-        <HowConversionWorksCard />
       </section>
     </div>
   );

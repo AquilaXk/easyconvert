@@ -362,7 +362,6 @@
     "directoryHeading": "지원 파일 형식",
     "directoryIntro": "{categories}개 분류, {formats}개 형식, 변환 조합 {pairs}개를 살펴보세요.",
     "extensionsHeading": "{category} 확장자 ({count})",
-    "extensionsHint": "확장자를 누르면 해당 변환기가 열려요",
     "pairsHeading": "자주 쓰는 {category} 변환",
     "pairs": {
       "png-webp": "투명도를 유지하는 웹 이미지 압축",
@@ -639,22 +638,6 @@
       "copy": "복사",
       "reference": "OpenAPI 3.1 문서",
       "manageKeys": "API 키 관리"
-    },
-    "howItWorks": {
-      "heading": "변환 방법",
-      "intro": "회원가입이나 워터마크 없이 세 단계로 끝나요.",
-      "add": {
-        "heading": "1. 원본 파일 추가",
-        "body": "기기에서 파일을 선택하거나, 작업 영역에 끌어다 놓거나, 클립보드에서 붙여 넣거나, 공개된 링크에서 가져오세요."
-      },
-      "pick": {
-        "heading": "2. 형식과 옵션 선택",
-        "body": "원하는 대상 형식을 고르고, 필요하면 코덱, 크기, 페이지 범위, 구분 기호를 조정하세요."
-      },
-      "download": {
-        "heading": "3. 변환하고 다운로드",
-        "body": "변환이 끝난 파일을 바로 하나씩 다운로드하거나, 여러 파일을 ZIP 파일 하나로 묶어 받으세요."
-      }
     }
   },
   "infoPages": {
@@ -1025,7 +1008,6 @@
     "mergePdf": "PDF 병합",
     "systemStatus": "시스템 상태",
     "formats": "파일 형식",
-    "howItWorks": "이용 방법",
     "apiDocs": "API 문서",
     "dashboard": "대시보드",
     "mp4Converter": "MP4 변환기",

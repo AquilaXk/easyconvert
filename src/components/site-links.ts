@@ -25,7 +25,6 @@ export const TOOL_ROUTES = [
 
 export const PRIMARY_LINKS = [
   { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
-  { key: 'howItWorks', href: { pathname: '/', hash: 'how-it-works' } },
   { key: 'apiDocs', href: '/api-docs' },
   { key: 'dashboard', href: '/dashboard' },
 ] as const satisfies readonly SiteLink[];
@@ -113,7 +112,6 @@ export const DIRECTORY_CATEGORIES = [
 
 export const SECONDARY_LINKS = [
   { key: 'aboutUs', href: '/about' },
-  { key: 'howItWorks', href: { pathname: '/', hash: 'how-it-works' } },
   { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
   { key: 'apiDocs', href: '/api-docs' },
   { key: 'privacy', href: '/privacy' },

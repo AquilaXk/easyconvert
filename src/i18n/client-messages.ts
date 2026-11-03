@@ -17,7 +17,7 @@ const WORKBENCH = ['hero', 'queue', 'options', 'formatSelector', 'formatCategori
  */
 export const PAGE_NAMESPACES = {
   layout: [],
-  home: [...CHROME, ...WORKBENCH, 'features', 'home', 'faq'],
+  home: [...CHROME, ...WORKBENCH, 'features', 'home'],
   converter: [
     ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',
     'faq', 'status', 'unitConverter', 'unitCategories', 'unitNames',
