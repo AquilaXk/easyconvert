@@ -17,6 +17,7 @@ import { attachmentContentDisposition } from '../src/lib/api/content-disposition
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { UnsupportedTargetError } from '../src/lib/types';
 
 /**
@@ -108,6 +109,18 @@ describe('a unit that cannot be committed', () => {
 
     expect(res.status).toBe(HTTP_INTERNAL_SERVER_ERROR);
     expect(loggedLines()).toEqual([expect.stringMatching(/^\[convert\] failure /)]);
+  });
+
+  it('charges nothing: the reservation is given back when its lease ends', async () => {
+    vi.spyOn(redisKeyStore, 'commitQuota').mockRejectedValueOnce(new Error(REFUSAL_WORDS));
+    const client = visitor();
+    const before = await client.remaining();
+
+    await post(client.headers, pdfForm());
+    const leaseEnd = Date.now() + RESERVATION_LEASE.provisionalMs + 1;
+    vi.spyOn(Date, 'now').mockReturnValue(leaseEnd);
+
+    expect(await client.remaining()).toBe(before);
   });
 });
 

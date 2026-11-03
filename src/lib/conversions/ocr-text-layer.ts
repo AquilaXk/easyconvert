@@ -58,8 +58,10 @@ export class OcrGeometryUnavailableError extends OcrEngineUnavailableError {
   }
 }
 
-/** Raised when a page holds more words or characters than a text layer is allowed to. */
+/** Raised when a page holds more words or characters than a text layer is allowed to: a refusal of the page (400), not a missing tool. */
 export class OcrTextLayerLimitError extends OcrEngineUnavailableError {
+  readonly status = 400;
+
   constructor(message: string) {
     super(message);
     this.name = 'OcrTextLayerLimitError';

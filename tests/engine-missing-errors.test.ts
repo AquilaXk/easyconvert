@@ -64,13 +64,13 @@ function descendsFrom(name: string, ancestor: string, classes: Map<string, { par
 describe('every missing-engine error shares one marker, which makes a job retryable', () => {
   it.each([
     ['EngineUnavailableError', new EngineUnavailableError('soffice'), HTTP_SERVICE_UNAVAILABLE],
-    ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing'), HTTP_BAD_REQUEST],
+    ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing'), HTTP_SERVICE_UNAVAILABLE],
     ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing'), HTTP_BAD_REQUEST],
-    ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required'), HTTP_BAD_REQUEST],
-    ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing'), HTTP_BAD_REQUEST],
-    ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError(), HTTP_BAD_REQUEST],
-    ['ArchiveEncryptionUnavailableError', new ArchiveEncryptionUnavailableError('7z binary required'), HTTP_BAD_REQUEST],
-    ['ParquetCodecUnavailableError', new ParquetCodecUnavailableError('ZSTD needs a newer Node.js'), HTTP_BAD_REQUEST],
+    ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required'), HTTP_SERVICE_UNAVAILABLE],
+    ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing'), HTTP_SERVICE_UNAVAILABLE],
+    ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError(), HTTP_SERVICE_UNAVAILABLE],
+    ['ArchiveEncryptionUnavailableError', new ArchiveEncryptionUnavailableError('7z binary required'), HTTP_SERVICE_UNAVAILABLE],
+    ['ParquetCodecUnavailableError', new ParquetCodecUnavailableError('ZSTD needs a newer Node.js'), HTTP_SERVICE_UNAVAILABLE],
   ])('%s is an EngineMissingError and is retried', (name, error, status) => {
     expect(error).toBeInstanceOf(EngineMissingError);
     expect(error).toBeInstanceOf(ConversionFailedError);

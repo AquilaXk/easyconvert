@@ -138,6 +138,7 @@ export const conversionPaths = {
         ),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${REQUEST_PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
+        '415': createProblemResponse('The body is not `multipart/form-data`.'),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),

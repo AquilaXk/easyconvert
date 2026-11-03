@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PdfAValidationError, type EngineUnavailableError, type PdfPostprocessError } from '../types';
+import { PdfAValidationError, type EngineMissingError, type PdfPostprocessError } from '../types';
 import { PROBLEM_TYPE_BASE } from '../refusal-codes';
 
 /**
@@ -140,11 +140,11 @@ export function createProblemDetailsResponse(
 }
 
 /**
- * Maps an EngineUnavailableError to HTTP 503: the pair is supported, but the native engine it
- * needs is not installed on this deployment.
+ * Maps a missing tool (an `EngineMissingError` answered 503) to HTTP 503: the pair is supported, but the engine, binary
+ * or codec it needs is not installed on this deployment.
  */
 export function createEngineUnavailableResponse(
-  error: EngineUnavailableError,
+  error: EngineMissingError,
   instance: string,
   extraHeaders?: Record<string, string>
 ): NextResponse {
@@ -154,7 +154,9 @@ export function createEngineUnavailableResponse(
     instance,
     'Engine Unavailable',
     ENGINE_UNAVAILABLE_PROBLEM_TYPE,
-    extraHeaders
+    extraHeaders,
+    undefined,
+    { code: error.refusalCode }
   );
 }
 

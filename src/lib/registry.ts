@@ -2896,7 +2896,7 @@ export const CATEGORIES: { id: FormatCategory; label: string; count: number }[] 
 
 export function getFormatByExtension(ext: string): FormatDefinition | undefined {
   const cleanExt = ext.toLowerCase().replace(/^\./, '').trim();
-  return FORMAT_REGISTRY[cleanExt];
+  return Object.hasOwn(FORMAT_REGISTRY, cleanExt) ? FORMAT_REGISTRY[cleanExt] : undefined;
 }
 
 export function detectFormatFromFilename(filename: string): FormatDefinition | undefined {

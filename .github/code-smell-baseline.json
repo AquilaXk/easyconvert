@@ -30,7 +30,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 40
+    "maxValue": 37
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",

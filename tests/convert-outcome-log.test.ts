@@ -13,13 +13,19 @@ vi.mock('@/lib/api-keys/guard', async (importOriginal) => {
   return { ...actual, validateApiAccess: vi.fn(actual.validateApiAccess) };
 });
 
+vi.mock('@/lib/storage/retention-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/storage/retention-service')>();
+  return { ...actual, admitsNewFiles: vi.fn(actual.admitsNewFiles) };
+});
+
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { validateApiAccess } from '../src/lib/api-keys/guard';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { admitsNewFiles } from '../src/lib/storage/retention-service';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
-import { UnsupportedTargetError } from '../src/lib/types';
+import { ImportBudgetExceededError, UnsupportedTargetError } from '../src/lib/types';
 
 /**
  * Every refusal and failure of the convert routes leaves one line in the server log: its status, code, formats, size,
@@ -39,12 +45,12 @@ interface LoggedOutcome {
   bytes?: number;
   durationMs: number;
   requestId: string;
-  error?: { class: string; message: string; frames: string[] };
+  error?: { class: string; message?: string; frames?: string[] };
 }
 
-function pdfForm(target: string, options?: Record<string, unknown>): FormData {
+function pdfForm(target: string, options?: Record<string, unknown>, fileName = `${PRIVATE_NAME}.pdf`): FormData {
   const form = new FormData();
-  form.append('file', new File([new Uint8Array(PDF)], `${PRIVATE_NAME}.pdf`, { type: 'application/pdf' }));
+  form.append('file', new File([new Uint8Array(PDF)], fileName, { type: 'application/pdf' }));
   form.append('targetFormat', target);
   if (options) form.append('options', JSON.stringify(options));
   return form;
@@ -102,19 +108,70 @@ describe('POST /api/convert', () => {
     const [line] = outcomesOf(error, '[convert] failure ');
     expect(line.outcome).toMatchObject({ status: 500, source: 'pdf', target: 'docx', bytes: PDF.length });
     expect(line.outcome.error).toMatchObject({ class: 'RangeError', message: 'Invalid length while reading [redacted] opened with [redacted]' });
-    expect(line.outcome.error?.frames.length).toBeGreaterThan(0);
+    expect(line.outcome.error?.frames?.length).toBeGreaterThan(0);
     expect(JSON.stringify([...error.mock.calls, ...warn.mock.calls])).not.toMatch(new RegExp(`${PRIVATE_NAME}|${PASSWORD}`));
   });
 
-  it('logs a typed refusal of the conversion with the class of its error', async () => {
-    vi.mocked(dispatchConversion).mockRejectedValueOnce(new UnsupportedTargetError(`No writer for ${PRIVATE_NAME}`));
+  it('logs a typed refusal of the conversion by its code and class, without the message', async () => {
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new UnsupportedTargetError('No writer for the text "Quarterly results"'));
 
     const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx') }));
 
     expect(res.status).toBe(400);
     const [line] = outcomesOf(warn, '[convert] refusal ');
-    expect(line.outcome).toMatchObject({ status: 400, code: 'unsupported_pair', error: { class: 'UnsupportedTargetError', message: 'No writer for [redacted]' } });
+    expect(line.outcome).toMatchObject({ status: 400, code: 'unsupported_pair' });
+    expect(line.outcome.error).toEqual({ class: 'UnsupportedTargetError' });
+    expect(line.raw).not.toContain('Quarterly');
     expect(error.mock.calls).toHaveLength(0);
+  });
+
+  it.each(['a.pdf', '1.pdf'])('keeps a message whole when the name %s and the password are shorter than three characters', async (fileName) => {
+    const message = 'Invalid array length at offset 4096 (page 12)';
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError(message));
+
+    await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx', { password: 'e' }, fileName) }));
+
+    const [line] = outcomesOf(error, '[convert] failure ');
+    expect(line.outcome.error?.message).toBe(message);
+    expect(line.raw).not.toContain('[r[');
+  });
+
+  it('cuts a short name out where it stands alone', async () => {
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError("cannot open '/tmp/job/a.zip' on page 3"));
+
+    await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx', {}, 'a.pdf') }));
+
+    const [line] = outcomesOf(error, '[convert] failure ');
+    expect(line.outcome.error?.message).toBe("cannot open '/tmp/job/[redacted].zip' on page 3");
+  });
+
+  it('cuts out the passwords a PDF is protected with', async () => {
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new RangeError('qpdf rejected owner-pass-77 and user-pass-42'));
+
+    await convertRoute(
+      new NextRequest('http://localhost/api/convert', {
+        method: 'POST',
+        headers: VISITOR,
+        body: pdfForm('docx', { protect: { userPassword: 'user-pass-42', ownerPassword: 'owner-pass-77' } }),
+      })
+    );
+
+    const [line] = outcomesOf(error, '[convert] failure ');
+    expect(line.outcome.error?.message).toBe('qpdf rejected [redacted] and [redacted]');
+  });
+
+  it('cuts out the leaf of a name sent with a path, in its composed, decomposed and percent-encoded forms', async () => {
+    const stem = '홍길동 이력서';
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(
+      new RangeError(`open ${encodeURIComponent(stem)}.zip, then ${stem.normalize('NFD')}, then ${stem}`)
+    );
+
+    await convertRoute(
+      new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx', {}, `C:\\Users\\kim\\${stem.normalize('NFD')}.pdf`) })
+    );
+
+    const [line] = outcomesOf(error, '[convert] failure ');
+    expect(line.outcome.error?.message).toBe('open [redacted].zip, then [redacted], then [redacted]');
   });
 
   it('logs a failure once for an error thrown before the handler reached its own error handling, and throws it again', async () => {
@@ -223,6 +280,35 @@ describe('answers that turn a caller away before any work', () => {
     const res = await v1ConvertRoute(new NextRequest('http://localhost/api/v1/convert', { method: 'POST', body: pdfForm('docx') }));
 
     expect(res.status).toBe(401);
+    expect(warn.mock.calls).toHaveLength(0);
+    expect(error.mock.calls).toHaveLength(0);
+  });
+
+  it('leave no line for a rate limit, which no error decided', async () => {
+    vi.mocked(validateApiAccess).mockResolvedValueOnce({ authorized: false, status: 429, error: 'Too many requests' });
+
+    const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx') }));
+
+    expect(res.status).toBe(429);
+    expect(warn.mock.calls).toHaveLength(0);
+    expect(error.mock.calls).toHaveLength(0);
+  });
+
+  it('leave a line for a 429 that a typed error of the conversion decided', async () => {
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new ImportBudgetExceededError('no bytes left today'));
+
+    const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx') }));
+
+    expect(res.status).toBe(429);
+    expect(outcomesOf(warn, '[convert] refusal ')).toHaveLength(1);
+  });
+
+  it('leave no line for the 503 of a full disk', async () => {
+    vi.mocked(admitsNewFiles).mockResolvedValueOnce(false);
+
+    const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', headers: VISITOR, body: pdfForm('docx') }));
+
+    expect(res.status).toBe(503);
     expect(warn.mock.calls).toHaveLength(0);
     expect(error.mock.calls).toHaveLength(0);
   });
