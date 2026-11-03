@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/convert/route';
 import { convertFile } from '../src/lib/conversions/index';
-import { parseConverterSlug } from '../src/lib/slug-parser';
-import { slugPageCopy } from './helpers/intl';
+import { parsedSlug, slugPageCopy } from './helpers/intl';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 
 // Self-contained standard PDF-1.4 blank page without dependencies
@@ -43,18 +42,16 @@ describe('Phase 1: Fail-Closed Enforcement & Schema Sync', () => {
     expect(json.error).toMatch(/PDF OCR failed/);
   });
 
-  it('registers /pdf-ocr and /ocr-pdf in slug-parser with correct metadata', () => {
-    const parsed = parseConverterSlug('/pdf-ocr');
+  it('registers /pdf-ocr in slug-parser with correct metadata', () => {
+    const parsed = parsedSlug('/pdf-ocr');
     expect(parsed.isInfoPage).toBe(false);
     expect(parsed.sourceFormat).toBe('pdf');
     expect(parsed.targetFormat).toBe('pdf');
     expect(slugPageCopy('/pdf-ocr').title).toBe('PDF OCR Converter');
 
-    const parsedNoSlash = parseConverterSlug('pdf-ocr');
+    const parsedNoSlash = parsedSlug('pdf-ocr');
     expect(parsedNoSlash.sourceFormat).toBe('pdf');
     expect(parsedNoSlash.targetFormat).toBe('pdf');
-
-    expect(slugPageCopy('ocr-pdf').title).toBe('PDF OCR Converter');
   });
 
   it('synchronizes ocrEnabled and ocrLanguage across all primary image formats in FORMAT_REGISTRY', () => {

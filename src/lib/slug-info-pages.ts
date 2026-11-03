@@ -1,3 +1,7 @@
+import type { FormatCategory } from './types';
+import { MERGE_FORMATS } from './jobs/graph-operations';
+import { FORMAT_REGISTRY } from './registry';
+
 export type SlugInfoType =
   | 'terms'
   | 'privacy'
@@ -8,12 +12,10 @@ export type SlugInfoType =
   | 'unit'
   | 'accessibility';
 
-/** A word a slug may name a category by instead of a format (`/video-converter`, `/word-to-pdf`). */
-export type CategoryWord =
-  | 'video' | 'audio' | 'image' | 'document' | 'ebook' | 'archive' | 'vector' | 'font' | 'cad' | 'spreadsheet'
-  | 'presentation' | 'data' | 'word' | 'excel' | 'powerpoint' | 'photo' | 'picture' | 'music';
+/** A word a slug names a category of the registry by (`/video-converter`): the id of the category. */
+export type CategoryWord = FormatCategory;
 
-/** How a pair or format page names one side: a format by its id in capitals, a category by the word of its title. */
+/** How a format page names what it converts: a format by its id in capitals, a category by the word of its title. */
 export type SlugName =
   | { kind: 'format'; id: string; display: string }
   | { kind: 'category'; id: CategoryWord; display: string };
@@ -23,13 +25,12 @@ export type SlugCopy =
   | { kind: 'info'; page: SlugInfoType }
   | { kind: 'ocr' }
   | { kind: 'unitPair'; src: string; tgt: string }
-  | { kind: 'pair'; src: SlugName; tgt: SlugName }
+  | { kind: 'pair'; src: string; tgt: string }
   | { kind: 'format'; name: SlugName }
   | { kind: 'merge'; format: string }
   | { kind: 'compress'; format: string }
   | { kind: 'saveWebsiteAsPdf' }
-  | { kind: 'websiteScreenshot'; format: string }
-  | { kind: 'generic'; name: string };
+  | { kind: 'websiteScreenshot'; format: string };
 
 export interface ParsedSlug {
   isInfoPage: boolean;
@@ -114,25 +115,23 @@ export function parseUnitPairSlug(rawSrc: string, rawTgt: string): ParsedSlug | 
   };
 }
 
-export function parseUtilitySlug(cleanSlug: string): ParsedSlug | null {
-  if (cleanSlug.startsWith('merge-')) {
-    const fmt = cleanSlug.split('-').pop() || 'pdf';
-    return {
-      isInfoPage: false,
-      sourceFormat: fmt,
-      targetFormat: fmt,
-      copy: { kind: 'merge', format: fmt },
-    };
-  }
+/** What each utility page works on: a merge joins what a merge node of a job graph takes, a compress page rewrites a PDF or re-encodes an image. */
+const UTILITY_FORMATS = {
+  merge: MERGE_FORMATS,
+  compress: new Set(['pdf', 'png', 'jpg']),
+} as const satisfies Record<'merge' | 'compress', ReadonlySet<string>>;
 
-  if (cleanSlug.startsWith('compress-')) {
-    const fmt = cleanSlug.split('-').pop() || 'pdf';
-    return {
-      isInfoPage: false,
-      sourceFormat: fmt,
-      targetFormat: fmt,
-      copy: { kind: 'compress', format: fmt },
-    };
+/** The format a utility slug names, when the utility works on it and the registry converts it to itself, as the page does. */
+function utilityFormat(utility: keyof typeof UTILITY_FORMATS, slug: string): string | null {
+  const format = slug.slice(`${utility}-`.length);
+  return UTILITY_FORMATS[utility].has(format) && FORMAT_REGISTRY[format]?.targetFormats.includes(format) ? format : null;
+}
+
+export function parseUtilitySlug(cleanSlug: string): ParsedSlug | null {
+  for (const utility of ['merge', 'compress'] as const) {
+    if (!cleanSlug.startsWith(`${utility}-`)) continue;
+    const format = utilityFormat(utility, cleanSlug);
+    return format ? { isInfoPage: false, sourceFormat: format, targetFormat: format, copy: { kind: utility, format } } : null;
   }
 
   if (cleanSlug === 'save-website-as-pdf') {

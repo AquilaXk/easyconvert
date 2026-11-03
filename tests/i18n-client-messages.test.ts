@@ -22,6 +22,7 @@ const VIEWS: Record<Exclude<ClientMessagesPage, 'layout'>, string> = {
   apiDocs: 'src/components/pages/ApiDocsPageView.tsx',
   status: 'src/components/pages/StatusPageView.tsx',
   unitConverter: 'src/components/pages/UnitConverterPageView.tsx',
+  notFound: 'src/components/pages/NotFoundPageView.tsx',
 };
 
 function resolveImport(fromFile: string, specifier: string): string | undefined {

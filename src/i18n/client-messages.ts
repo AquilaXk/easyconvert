@@ -27,6 +27,7 @@ export const PAGE_NAMESPACES = {
   apiDocs: [...CHROME, 'apiDocs'],
   status: [...CHROME, 'status'],
   unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq'],
+  notFound: CHROME.filter((namespace) => namespace !== 'footer'),
 } as const satisfies Record<string, readonly Namespace[]>;
 
 export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;

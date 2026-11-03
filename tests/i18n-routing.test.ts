@@ -10,7 +10,8 @@ import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
 import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { CATEGORY_WORDS, DOTTED_FORMAT_SUFFIXES, canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
+import { DOTTED_FORMAT_SUFFIXES, canonicalSlugPath, parseConverterSlug } from '../src/lib/slug-parser';
+import { parsedSlug } from './helpers/intl';
 
 /**
  * Locale routing as a visitor meets it: English at the unprefixed paths, Korean under /ko, the visitor's language
@@ -191,11 +192,11 @@ describe('page metadata names every language', () => {
   });
 });
 
-describe('converter slug pages name one canonical URL, and unknown ones are not indexed', () => {
+describe('converter slug pages name one canonical URL', () => {
   it('names the lowercased slug as the canonical path', () => {
-    expect(canonicalSlugPath('PNG-to-JPG')).toBe('/png-to-jpg');
-    expect(canonicalSlugPath('Zip-To-Tar.GZ')).toBe('/zip-to-tar.gz');
-    expect(canonicalSlugPath('png-to-jpg')).toBe('/png-to-jpg');
+    for (const [slug, canonical] of [['PNG-to-JPG', '/png-to-jpg'], ['Zip-To-Tar.GZ', '/zip-to-tar.gz'], ['png-to-jpg', '/png-to-jpg']]) {
+      expect(canonicalSlugPath(slug, parsedSlug(slug))).toBe(canonical);
+    }
   });
 
   it.each([
@@ -204,13 +205,8 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     ['en', 'pdf-to-pdf', '/pdf-converter', '/ko/pdf-converter'],
     ['ko', 'pdf-to-pdf', '/ko/pdf-converter', '/pdf-converter'],
     ['en', 'Jfif-To-JPG', '/jfif-converter', '/ko/jfif-converter'],
-    ['en', 'video-to-mp4', '/video-to-mp4', '/ko/video-to-mp4'],
     ['ko', 'png-to-jpg', '/ko/png-to-jpg', '/png-to-jpg'],
     ['en', 'Video-Converter', '/video-converter', '/ko/video-converter'],
-    ['en', 'video-to-video', '/video-converter', '/ko/video-converter'],
-    ['ko', 'Image-To-Photo', '/ko/image-converter', '/image-converter'],
-    ['en', 'ocr', '/pdf-ocr', '/ko/pdf-ocr'],
-    ['ko', 'ocr-pdf', '/ko/pdf-ocr', '/pdf-ocr'],
     ['en', 'pdf-ocr', '/pdf-ocr', '/ko/pdf-ocr'],
   ])('names the page of the parsed format as the canonical of %s %s, and the other locale as its alternate', async (locale, slug, canonical, other) => {
     const { alternates } = await generateMetadata({ params: Promise.resolve({ locale, slug }) });
@@ -218,31 +214,26 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     expect(alternates).toEqual({ canonical, languages: { en: english, ko: korean, 'x-default': english } });
   });
 
-  // The slugs the parser reads as the page of their source: two names of one format, a registry format converted to itself,
-  // and two category words for one format. Each starts with the word whose page it is.
-  const registered = (id: string) => Object.hasOwn(FORMAT_REGISTRY, id);
+  // The slugs the parser reads as the page of their source: two names of one format that the registry lists a conversion
+  // between, and a registry format converted to itself. Each starts with the word whose page it is.
   const aliasSlugs = Object.entries(FORMAT_NAME_ALIASES)
-    .filter(([alias, format]) => registered(alias) && registered(format))
-    .flatMap(([alias, format]) => [`${alias}-to-${format}`, `${format}-to-${alias}`]);
+    .flatMap(([alias, format]) => [`${alias}-to-${format}`, `${format}-to-${alias}`])
+    .filter((slug) => parseConverterSlug(slug));
   const selfTargetSlugs = Object.entries(FORMAT_REGISTRY)
     .filter(([id, { targetFormats }]) => targetFormats.includes(id))
     .map(([id]) => `${id}-to-${id}`);
-  const words = Object.entries(CATEGORY_WORDS);
-  const categoryPairSlugs = words.flatMap(([word, { format }]) =>
-    words.filter(([, other]) => other.format === format).map(([otherWord]) => `${word}-to-${otherWord}`)
-  );
 
-  it('sweeps every slug read as the page of its source and finds it a copy of an indexable page that is its own canonical', async () => {
-    const swept = [...aliasSlugs, ...selfTargetSlugs, ...categoryPairSlugs];
-    expect(aliasSlugs.length).toBeGreaterThan(14);
+  it('sweeps every slug read as the page of its source and finds it a copy of a page that is its own canonical', async () => {
+    const swept = [...aliasSlugs, ...selfTargetSlugs];
+    expect(aliasSlugs.length).toBeGreaterThan(10);
     expect(selfTargetSlugs.length).toBeGreaterThan(60);
-    expect(categoryPairSlugs.length).toBeGreaterThan(18);
     const metadataOf = (locale: string, slug: string) => generateMetadata({ params: Promise.resolve({ locale, slug }) });
     const broken: string[] = [];
     for (const slug of swept) {
       const canonical = `/${slug.split('-to-')[0]}-converter`;
-      if (canonicalSlugPath(slug) !== canonical || canonicalSlugPath(canonical) !== canonical || !isIndexableSlug(parseConverterSlug(canonical))) {
-        broken.push(`${slug}: canonical ${canonicalSlugPath(slug)}`);
+      const [page, canonicalPage] = [parseConverterSlug(slug), parseConverterSlug(canonical)];
+      if (!page || !canonicalPage || canonicalSlugPath(slug, page) !== canonical || canonicalSlugPath(canonical, canonicalPage) !== canonical) {
+        broken.push(`${slug}: canonical ${page && canonicalSlugPath(slug, page)}`);
         continue;
       }
       for (const locale of routing.locales) {
@@ -253,24 +244,6 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
       }
     }
     expect(broken).toEqual([]);
-  });
-
-  it('indexes pages of registered formats and the site pages, and no page a slug only names', () => {
-    for (const slug of ['png-to-jpg', 'zip-to-tar.gz', 'video-to-gif', 'pdf-converter', 'terms', 'pdf-ocr', 'lbs-to-kg', 'merge-pdf', 'website-png-screenshot']) {
-      expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(true);
-    }
-    for (const slug of ['hello-world', 'foo-to-bar', 'png-to-xyz', 'xyz-converter', 'merge-xyz']) {
-      expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(false);
-    }
-  });
-
-  it('reads a slug with a dot as a file, except the dot of a registered dotted format id', () => {
-    for (const slug of ['backup.zip', 'wp-login.php', 'index.html', 'a.b-c', 'foo-to-bar.php', 'x.php-converter', 'zip-to-tar.gz.php', 'zip-to-x.tar.gz']) {
-      expect(isFileSlug(slug), slug).toBe(true);
-    }
-    for (const slug of ['zip-to-tar.gz', 'tar.gz-to-zip', 'tar.xz-converter', 'Zip-To-Tar.GZ', 'TAR.BZ2-to-zip', 'hello-world', 'png-to-jpg']) {
-      expect(isFileSlug(slug), slug).toBe(false);
-    }
   });
 
   it('answers 404 from the page for a dotted path that reached it under a locale, and renders a dotted format id', async () => {
