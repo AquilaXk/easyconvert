@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { testMessages } from './helpers/intl-messages';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 
 vi.mock('../src/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => createElement('a', { href, ...rest }, children),
@@ -60,7 +61,7 @@ async function mountPage(slug: string): Promise<HTMLElement> {
   root.render(
     createElement(NextIntlClientProvider, {
       locale: 'en', messages: testMessages('en'), timeZone: 'UTC',
-      children: createElement(ConverterPageView, { slug, dailyLimit: 25 }),
+      children: createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }),
     })
   );
   await vi.waitFor(() => expect(host.querySelector('[data-testid=hero-target-format-btn]')).not.toBeNull());

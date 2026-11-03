@@ -18,6 +18,14 @@ const EXPIRY_DAYS_BY_OPTION: Record<Exclude<KeyExpiryOption, 'never'>, number> =
   '1y': 365,
 };
 
+/**
+ * Conversions used today as the dashboard shows them. A count made under a larger allowance (before a deploy lowered it) can
+ * pass the limit; the day still ends at the limit.
+ */
+export function displayedUsage(usedToday: number, dailyLimit: number): number {
+  return Math.min(usedToday, dailyLimit);
+}
+
 export function resolveExpiryTimestamp(expiry: KeyExpiryOption, nowMs: number): number | undefined {
   if (expiry === 'never') {
     return undefined;

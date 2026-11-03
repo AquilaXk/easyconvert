@@ -45,6 +45,8 @@ import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/
 const rootDir = path.resolve(__dirname, '..');
 const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
 
+// The pages get the allowance from the constant, and the copy checks below write the 10 of entry 15 out by hand, as a visitor
+// reads it: an oracle independent of src/lib/plan-limits.ts.
 const renderSlug = (slug: string) => renderDom(createElement(ConverterPageView, { slug, dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
 const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
 const noop = () => undefined;
@@ -160,9 +162,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
       '2. Acceptable Use',
       '3. Service Availability & Free Use',
     ]);
-    expect(phrasesPresent(text, ['10 daily conversions', 'credits with prioritized throughput'])).toEqual([]);
+    expect(phrasesPresent(text, ['credits with prioritized throughput'])).toEqual([]);
     expect(phrasesPresent(text, ['unlimited conversions'])).toEqual([]);
-    expect(phrasesMissing(text, ['free for up to 25 a day without an account'])).toEqual([]);
+    expect(phrasesMissing(text, ['free for up to 10 a day without an account'])).toEqual([]);
   });
 
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
@@ -363,8 +365,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
-    expect(phrasesMissing(text, ['Up to 1 GiB per file', '25 conversions a day', 'Files deleted automatically'])).toEqual([]);
-    expect(phrasesPresent(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
+    expect(phrasesMissing(text, ['Up to 1 GiB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
   it('verifies StatusDashboard purges fake uptime stats, fake incident logs, and fake modals', () => {
@@ -423,7 +425,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
     const regions = select(faq, 'div', 'role', 'region');
     expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
-    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 25 conversions a day on our servers, each file up to 1 GiB\./);
+    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 10 conversions a day on our servers, each file up to 1 GiB\./);
     expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
   });
 

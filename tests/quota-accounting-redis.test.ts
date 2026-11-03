@@ -39,7 +39,7 @@ import { spendImportBytes } from './helpers/import-budget';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
-import { URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, URL_IMPORT_MAX_BYTES, type Plan } from '../src/lib/plan-limits';
 import { acquireSyncSlot, syncSlotsInUse, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import { QueueUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
@@ -60,7 +60,8 @@ const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JOB_TIMEOUT_MS = 300;
 const JOB_RUNS_FOR_MS = 5000;
-const DAY_ALLOWANCE = 25;
+/** The suite unsets ANONYMOUS_DAILY_LIMIT, so it counts against the default allowance. */
+const DAY_ALLOWANCE = ANONYMOUS_DAILY_CONVERSIONS;
 const FREE_CONCURRENCY = 5;
 const UPLOAD_BUDGET_PROBLEM = 'https://api.easyconvert.io/problems/upload-budget-exceeded';
 const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-limit';
@@ -281,7 +282,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     await worker.close();
   }, 15000);
 
-  it('refuses the 26th anonymous conversion of the day and not the 25th', async () => {
+  it("refuses the anonymous conversion after the day's allowance, and none before it", async () => {
     const statuses: number[] = [];
     for (let i = 0; i < DAY_ALLOWANCE + 1; i++) statuses.push((await convertCsv()).status);
 

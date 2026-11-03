@@ -5,6 +5,8 @@ import { Link } from '@/i18n/navigation';
 import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, QuotaUsage } from '@/lib/api-keys/types';
+import { TIER_LIMITS } from '@/lib/plan-limits';
+import { displayedUsage } from './dashboard-types';
 
 interface AccountQuotaPanelProps {
   user: User;
@@ -17,8 +19,8 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
   const format = useFormatter();
   const tierLabel = useTierLabel();
   const activeKeyCount = apiKeys.filter((key) => key.status === 'active').length;
-  const dailyLimit = quota?.dailyLimit ?? 25;
-  const usedToday = quota?.usedToday ?? 0;
+  const dailyLimit = quota?.dailyLimit ?? TIER_LIMITS[user.tier];
+  const usedToday = displayedUsage(quota?.usedToday ?? 0, dailyLimit);
   const remaining = quota?.remaining ?? dailyLimit;
 
   return (
