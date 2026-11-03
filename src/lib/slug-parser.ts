@@ -34,6 +34,7 @@ export const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; dis
   music: { format: 'mp3', display: 'Music' },
 };
 
+const OCR_PATH = '/pdf-ocr';
 const OCR_SLUGS = new Set(['pdf-ocr', 'ocr-pdf', 'ocr']);
 
 /** The format a word of a slug converts and how a title names it: a category by its word, a format in capitals. */
@@ -51,9 +52,10 @@ function formatPage({ format, name }: { format: string; name: SlugName }): Parse
 }
 
 /**
- * A pair of a format and itself or another name of it (`jpeg-to-jpg`) converts nothing: its page is the page of its source.
- * A category word stands for a format only as a representative (`video` for MP4), so `video-to-mp4` converts videos to MP4
- * and stays a pair page: only two format words can be one format.
+ * A pair of two words for one format (`jpeg-to-jpg`, `pdf-to-pdf`) or of two category words for one format
+ * (`video-to-video`, `image-to-photo`) converts nothing: its page is the page of its source. A category word stands for a
+ * format only as a representative (`video` for MP4), so `video-to-mp4` converts videos to MP4 and stays a pair page: a
+ * category word and a format word are never one format.
  */
 function parsePairSlug(cleanSlug: string): ParsedSlug {
   const parts = cleanSlug.split('-to-');
@@ -67,7 +69,7 @@ function parsePairSlug(cleanSlug: string): ParsedSlug {
 
   const src = readSlugWord(rawSrc);
   const tgt = readSlugWord(rawTgt);
-  if (src.name.kind === 'format' && tgt.name.kind === 'format' && isSameFormat(src.format, tgt.format)) return formatPage(src);
+  if (src.name.kind === tgt.name.kind && isSameFormat(src.format, tgt.format)) return formatPage(src);
   return {
     isInfoPage: false,
     sourceFormat: src.format,
@@ -92,12 +94,14 @@ function normalizeSlug(slug: string): string {
 
 /**
  * The one canonical path of a converter slug page, however its slug was cased. A slug read as the page of a format
- * (`/jpeg-converter`, and `/jpeg-to-jpg` or `/pdf-to-pdf`, which are that page) names the converter path of that format, so
- * the pages that show the same content are copies of one URL.
+ * (`/jpeg-converter`, and `/jpeg-to-jpg`, `/pdf-to-pdf` or `/video-to-video`, which are that page) names the converter path
+ * of that format, and the slugs of the OCR page (`/ocr`, `/ocr-pdf`) name `/pdf-ocr`, so the pages that show the same
+ * content are copies of one URL.
  */
 export function canonicalSlugPath(slug: string): string {
   const { copy } = parseConverterSlug(slug);
-  return copy.kind === 'format' ? `/${copy.name.id}-converter` : `/${normalizeSlug(slug)}`;
+  if (copy.kind === 'format') return `/${copy.name.id}-converter`;
+  return copy.kind === 'ocr' ? OCR_PATH : `/${normalizeSlug(slug)}`;
 }
 
 const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);

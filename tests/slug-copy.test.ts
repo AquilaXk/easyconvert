@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
 import { isSameFormat } from '../src/lib/format-aliases';
+import { CATEGORY_WORDS } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { allElements, attrOf, renderDom } from './helpers/rendered-dom';
@@ -25,11 +26,7 @@ const registeredPairs = Object.keys(FORMAT_REGISTRY).flatMap((source) =>
     .map(({ id }) => `${source}-to-${id}`)
 );
 const formatPages = Object.keys(FORMAT_REGISTRY).map((id) => `${id}-converter`);
-const CATEGORY_WORDS = [
-  'video', 'audio', 'image', 'document', 'ebook', 'archive', 'vector', 'font', 'cad', 'spreadsheet', 'presentation', 'data',
-  'word', 'excel', 'powerpoint', 'photo', 'picture', 'music',
-];
-const categoryPages = CATEGORY_WORDS.map((word) => `${word}-converter`);
+const categoryPages = Object.keys(CATEGORY_WORDS).map((word) => `${word}-converter`);
 const categoryPairs = ['video-to-gif', 'video-to-mp3', 'video-to-audio', 'image-to-pdf', 'word-to-pdf', 'pdf-to-word', 'pdf-to-image'];
 
 describe('the intro of a converter page', () => {

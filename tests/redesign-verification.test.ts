@@ -427,6 +427,28 @@ describe('Redesign & Free Static Architecture Verification', () => {
     }
   );
 
+  // A slug whose target is "any" names no target: its page is the page of its source, not a pair with a card "ANY".
+  it.each(['en', 'ko'] as const)('verifies a slug that converts a format to "any" shows one card and the breadcrumb of its source, not a pair (%s)', (locale) => {
+    for (const slug of ['pdf-to-any', 'png-to-any', 'video-to-any']) {
+      const { sourceFormat } = parseConverterSlug(slug);
+      const cards = formatCards(slug, locale);
+      expect(cards.names, slug).toHaveLength(1);
+      expect(cards.names.join(' ').toLowerCase(), slug).not.toContain('any');
+      const breadcrumb = (name: string) => select(renderSlug(name, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
+      expect(links(breadcrumb(slug)), slug).toEqual(links(breadcrumb(`${sourceFormat}-converter`)));
+      expect(visibleText(breadcrumb(slug)).toLowerCase(), slug).not.toContain('any');
+    }
+  });
+
+  it('verifies a pair of two category words for one format reads as the page of its source category, and any other category pair stays a pair', () => {
+    for (const [slug, word] of [['video-to-video', 'video'], ['image-to-photo', 'image'], ['photo-to-picture', 'photo'], ['document-to-word', 'document'], ['word-to-document', 'word']] as const) {
+      expect(parseConverterSlug(slug), slug).toMatchObject({ targetFormat: 'any', copy: { kind: 'format', name: { kind: 'category', id: word } } });
+    }
+    for (const slug of ['video-to-audio', 'word-to-excel', 'image-to-pdf', 'video-to-mp4', 'mp4-to-video']) {
+      expect(parseConverterSlug(slug).copy.kind, slug).toBe('pair');
+    }
+  });
+
   it('verifies a pair of a category word and the format it stands for stays a pair page, in either order, and is not read as the page of one format', () => {
     for (const [word, { format, display }] of Object.entries(CATEGORY_WORDS)) {
       expect(parseConverterSlug(`${word}-to-${format}`), `${word}-to-${format}`).toMatchObject({

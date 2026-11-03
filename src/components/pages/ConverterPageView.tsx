@@ -54,7 +54,7 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
 
   const srcKey = parsed.sourceFormat.toLowerCase();
   const tgtKey = parsed.targetFormat.toLowerCase();
-  const isPair = parsed.copy.kind !== 'format' && tgtKey !== srcKey;
+  const isPair = parsed.copy.kind !== 'format' && tgtKey !== 'any' && tgtKey !== srcKey;
   const isCategorySlug = parsed.copy.kind === 'format' && parsed.copy.name.kind === 'category';
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
