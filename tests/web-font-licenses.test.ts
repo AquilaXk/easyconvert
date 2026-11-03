@@ -23,7 +23,7 @@ const LICENCE = {
 };
 /**
  * The two files the interface ships, cut from one source by scripts/subset-web-font.py. Each has a fixed budget: Latin is the
- * only file an English page loads (42,604 bytes on 2026-11-02), Hangul is loaded by a page that draws a syllable (71,632 on 2026-11-03).
+ * only file an English page loads (42,648 bytes on 2026-11-03), Hangul is loaded by a page that draws a syllable (73,120 on 2026-11-03).
  */
 const FONT_FILES = {
   latin: { file: 'EasyConvertSans-latin.woff2', budgetBytes: 48 * 1024 },
@@ -50,11 +50,16 @@ function declaredHangulRanges(): Array<[number, number]> {
   });
 }
 
+/** The texts the pages draw: the messages and the legal pages rendered from docs/legal. */
+const LEGAL_DIR = node_path.join(REPO_ROOT, 'docs', 'legal');
+const drawnTexts = [
+  ...['ko', 'en'].map((locale) => node_path.join(REPO_ROOT, 'messages', `${locale}.json`)),
+  ...node_fs.readdirSync(LEGAL_DIR).filter((name) => /\.(en|ko)\.md$/.test(name)).map((name) => node_path.join(LEGAL_DIR, name)),
+];
 const messageCodePoints = new Set(
-  ['ko', 'en'].flatMap((locale) => {
-    const messages = node_fs.readFileSync(node_path.join(REPO_ROOT, 'messages', `${locale}.json`), 'utf8');
-    return [...messages].map((character) => character.codePointAt(0)!).filter((codePoint) => codePoint > 0x20 && codePoint !== 0x7f);
-  }),
+  drawnTexts.flatMap((file) =>
+    [...node_fs.readFileSync(file, 'utf8')].map((character) => character.codePointAt(0)!).filter((codePoint) => codePoint > 0x20 && codePoint !== 0x7f),
+  ),
 );
 const inHangulRange = (codePoint: number) => declaredHangulRanges().some(([low, high]) => codePoint >= low && codePoint <= high);
 
