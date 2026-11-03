@@ -60,7 +60,7 @@ async function mountPage(slug: string): Promise<HTMLElement> {
   root.render(
     createElement(NextIntlClientProvider, {
       locale: 'en', messages: testMessages('en'), timeZone: 'UTC',
-      children: createElement(ConverterPageView, { slug, dailyLimit: 25 }),
+      children: createElement(ConverterPageView, { slug, dailyLimit: 10 }),
     })
   );
   await vi.waitFor(() => expect(host.querySelector('[data-testid=hero-target-format-btn]')).not.toBeNull());

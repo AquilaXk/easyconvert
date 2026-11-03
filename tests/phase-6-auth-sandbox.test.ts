@@ -358,7 +358,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       const user = await userStore.createUser({
         email: 'quota-tester@example.com',
         name: 'Quota Tester',
-        tier: 'free', // 25 daily units
+        tier: 'free', // 10 daily units
       });
       testUserId = user.id;
     });
@@ -376,12 +376,12 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
     });
 
     it('deducts quota directly and enforces tier boundaries', async () => {
-      // Free tier has 25 units limit
-      const deduction1 = await keyStore.deductQuota(testUserId, 10);
+      // Free tier has 10 units limit
+      const deduction1 = await keyStore.deductQuota(testUserId, 4);
       expect(deduction1.allowed).toBe(true);
-      expect(deduction1.remaining).toBe(15);
+      expect(deduction1.remaining).toBe(6);
 
-      const deduction2 = await keyStore.deductQuota(testUserId, 15);
+      const deduction2 = await keyStore.deductQuota(testUserId, 6);
       expect(deduction2.allowed).toBe(true);
       expect(deduction2.remaining).toBe(0);
 
@@ -412,7 +412,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       const res = await keyStore.reserveQuota(testUserId, 5);
       expect(res.allowed).toBe(true);
       expect(res.reservationId).toBeDefined();
-      expect(res.remaining).toBe(20);
+      expect(res.remaining).toBe(5);
       expect((await keyStore.getQuotaUsage(testUserId)).usedToday).toBe(5);
 
       // Phase 2a: Commit reservation; the units stay charged and a rollback after it gives nothing back
@@ -429,16 +429,16 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       // Reserve 8 units
       const res = await keyStore.reserveQuota(testUserId, 8);
       expect(res.allowed).toBe(true);
-      expect(res.remaining).toBe(17);
+      expect(res.remaining).toBe(2);
 
       // Rollback reservation
       const rolledBack = await keyStore.rollbackQuota(res.reservationId!);
       expect(rolledBack).toBe(true);
       expect(await keyStore.rollbackQuota(res.reservationId!)).toBe(false);
 
-      // Remaining should be restored to 25
+      // Remaining should be restored to 10
       const probe = await keyStore.reserveQuota(testUserId, 0);
-      expect(probe.remaining).toBe(25);
+      expect(probe.remaining).toBe(10);
     });
 
     describe('a reservation whose lease ends after its UTC day', () => {
@@ -469,7 +469,7 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
 
         expect(keyStore.cleanExpiredReservations()).toBe(1);
         expect(await usedOnTheDayItWasMade()).toBe(0);
-        expect((await keyStore.getQuotaUsage(testUserId)).remaining).toBe(25);
+        expect((await keyStore.getQuotaUsage(testUserId)).remaining).toBe(10);
       });
 
       it('refunds an expired reservation to the day it was made on, never to the day it expired on', async () => {
@@ -484,41 +484,41 @@ describe('Phase 6: Distributed Auth & Worker Sandbox Hardening', () => {
       });
 
       it('is cleaned by the next reserveQuota without a manual clean', async () => {
-        const fullRes = await keyStore.reserveQuota(testUserId, 25);
+        const fullRes = await keyStore.reserveQuota(testUserId, 10);
         expect(fullRes.allowed).toBe(true);
         expect((await keyStore.reserveQuota(testUserId, 1)).allowed).toBe(false);
         vi.setSystemTime(NEXT_DAY);
 
         const afterExpiry = await keyStore.reserveQuota(testUserId, 5);
         expect(afterExpiry.allowed).toBe(true);
-        expect(afterExpiry.remaining).toBe(20);
+        expect(afterExpiry.remaining).toBe(5);
         expect(await usedOnTheDayItWasMade()).toBe(0);
       });
     });
 
     it('unifies keyStore and redisKeyStore state and eliminates decoupled disk overwrites', async () => {
       const { keyStore: defaultKeyStore, KeyStore } = await import('../src/lib/api-keys/key-store');
-      // Reserve 10 units via redisKeyStore
-      const res = await keyStore.reserveQuota(testUserId, 10);
+      // Reserve 4 units via redisKeyStore
+      const res = await keyStore.reserveQuota(testUserId, 4);
       expect(res.allowed).toBe(true);
 
       // Verify that defaultKeyStore immediately sees the reservation
       const defaultUsage = await defaultKeyStore.getQuotaUsage(testUserId);
-      expect(defaultUsage.usedToday).toBe(10);
-      expect(defaultUsage.remaining).toBe(15);
+      expect(defaultUsage.usedToday).toBe(4);
+      expect(defaultUsage.remaining).toBe(6);
 
-      // Record additional 5 units via defaultKeyStore
-      await defaultKeyStore.recordUsage(testUserId, 5);
+      // Record additional 2 units via defaultKeyStore
+      await defaultKeyStore.recordUsage(testUserId, 2);
 
-      // redisKeyStore must immediately reflect the combined 15 units
+      // redisKeyStore must immediately reflect the combined 6 units
       const redisUsage = await keyStore.getQuotaUsage(testUserId);
-      expect(redisUsage.usedToday).toBe(15);
-      expect(redisUsage.remaining).toBe(10);
+      expect(redisUsage.usedToday).toBe(6);
+      expect(redisUsage.remaining).toBe(4);
 
-      // A fresh instance loaded from disk must also reflect 15, not clobbered
+      // A fresh instance loaded from disk must also reflect 6, not clobbered
       const diskStore = new KeyStore();
       const diskUsage = await diskStore.getQuotaUsage(testUserId);
-      expect(diskUsage.usedToday).toBe(15);
+      expect(diskUsage.usedToday).toBe(6);
     });
 
     it('executes atomic RESERVE_QUOTA_LUA_SCRIPT, SETTLE_TO_QUOTA_LUA_SCRIPT and DEDUCT_QUOTA_LUA_SCRIPT via redis.eval', async () => {

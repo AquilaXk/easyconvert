@@ -24,8 +24,8 @@ import { createProblemDetailsResponse } from '../src/lib/api/problem-details';
 import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-headers';
 import { skipUnless } from './helpers/strict-skip';
 
-/** Daily quotas of the account tiers (hand-written from the pricing table: free 25, pro 500, enterprise 10,000). */
-const FREE_DAILY_LIMIT = 25;
+/** Daily quotas of the account tiers (hand-written from the pricing table: free 10, pro 500, enterprise 10,000). */
+const FREE_DAILY_LIMIT = 10;
 const PRO_DAILY_LIMIT = 500;
 
 let userCounter = 0;
@@ -373,8 +373,8 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const user = await createUniqueTestUser('free');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Quota Exhaust Key');
 
-      // Exhaust daily quota for free tier (25 units)
-      await redisKeyStore.recordUsage(user.id, 25);
+      // Exhaust daily quota for free tier (10 units)
+      await redisKeyStore.recordUsage(user.id, 10);
 
       const form = new FormData();
       form.append('file', new File(['1,2,3'], 'data.csv', { type: 'text/csv' }));

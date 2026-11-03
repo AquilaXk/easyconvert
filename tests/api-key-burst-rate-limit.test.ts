@@ -14,7 +14,7 @@ import type { UserTier } from '../src/lib/auth/types';
 // Decided per-tier burst design for #242 (authored independently of the guard constants).
 const FREE_BURST_CAPACITY = 20;
 const PRO_BURST_CAPACITY = 100;
-const FREE_DAILY_LIMIT = 25;
+const FREE_DAILY_LIMIT = 10;
 // One missing token at 2 tokens/s (free) or 20 tokens/s (pro) is < 1 s, so Retry-After rounds up to 1 s.
 const EXPECTED_BURST_RETRY_AFTER_SECONDS = 1;
 // Fixed clock: 12:00:00 UTC is exactly 12 h (43,200 s) before the next UTC-midnight quota reset.
@@ -160,14 +160,14 @@ describe('Per-key burst rate limit and Retry-After (#242)', () => {
       const now = FIXED_NOW.getTime();
       const base = { tier: 'free' as const, dailyLimit: FREE_DAILY_LIMIT };
 
-      const exhausted = buildRateLimitHeaders({ ...base, usedToday: 25, remaining: 0, resetAt: now + 90_500 });
+      const exhausted = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now + 90_500 });
       expect(exhausted['Retry-After']).toBe('91');
       expect(exhausted['RateLimit-Reset']).toBe('91');
 
-      const resetInPast = buildRateLimitHeaders({ ...base, usedToday: 25, remaining: 0, resetAt: now - 5_000 });
+      const resetInPast = buildRateLimitHeaders({ ...base, usedToday: FREE_DAILY_LIMIT, remaining: 0, resetAt: now - 5_000 });
       expect(resetInPast['Retry-After']).toBe('1');
 
-      const available = buildRateLimitHeaders({ ...base, usedToday: 22, remaining: 3, resetAt: now + 90_500 });
+      const available = buildRateLimitHeaders({ ...base, usedToday: 7, remaining: 3, resetAt: now + 90_500 });
       expect(Object.keys(available)).not.toContain('Retry-After');
       expect(available['RateLimit-Remaining']).toBe('3');
     });

@@ -107,9 +107,9 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(korean).not.toContain('계정 없이');
   });
 
-  /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of the day's 25 are left. */
+  /** The 429 of a job that needs `requiredUnits` conversions when `remaining` of the day's 10 are left. */
   async function conversionsShort(requiredUnits: number, remaining: number) {
-    const usage = { tier: 'free' as const, dailyLimit: 25, usedToday: 25 - remaining, remaining, resetAt: Date.now() };
+    const usage = { tier: 'free' as const, dailyLimit: 10, usedToday: 10 - remaining, remaining, resetAt: Date.now() };
     const refusal = { reason: 'used-up' as const, error: 'Daily conversion quota exceeded.', usage, requiredUnits };
     return bodyOf(conversionRefusalResponse(refusal, '/api/v1/jobs'));
   }
@@ -125,7 +125,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
 
   it('words a job refused once the day has no conversion left by the daily limit', async () => {
     const { status, body } = await conversionsShort(1, 0);
-    expect(worded(useProblemWording, 'ko', body, status)).toBe('오늘 변환 한도 25회를 모두 썼어요. 내일 다시 시도해 주세요.');
+    expect(worded(useProblemWording, 'ko', body, status)).toBe('오늘 변환 한도 10회를 모두 썼어요. 내일 다시 시도해 주세요.');
   });
 
   it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {

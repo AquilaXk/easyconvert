@@ -40,7 +40,7 @@ import { allConversionQueues, attachJobLifecycleListeners, processConversionJob 
 import { graphScheduler } from '../src/lib/queue/graph';
 import { storageProvider } from '../src/lib/storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS, FREE_DAILY_CONVERSIONS, TIER_LIMITS, getAnonymousDailyLimit, type Plan } from '../src/lib/plan-limits';
 import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities';
 import { gzipRemote } from './helpers/gzip-remote';
 
@@ -59,7 +59,7 @@ const CONCURRENCY_PROBLEM = 'https://api.easyconvert.io/problems/concurrency-lim
 const GRAPH_WITHOUT_CONVERSION_PROBLEM = 'https://api.easyconvert.io/problems/graph-without-conversion';
 const CSV = 'name,score\nAlice,100\nBob,95\n';
 /** The test configuration lifts the limit for every suite; this one counts against the real allowance. */
-const DAY_ALLOWANCE = 25;
+const DAY_ALLOWANCE = 10;
 const NOT_A_PNG = 'this is plain text, not a PNG picture';
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -181,10 +181,15 @@ describe('what a request is charged', () => {
   });
 
   describe('the anonymous allowance', () => {
-    it('is 25 conversions a day when nothing configures it', () => {
+    it('is 10 conversions a day when nothing configures it', () => {
       vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '');
-      expect(getAnonymousDailyLimit()).toBe(25);
-      expect(ANONYMOUS_DAILY_CONVERSIONS).toBe(25);
+      expect(getAnonymousDailyLimit()).toBe(10);
+      expect(ANONYMOUS_DAILY_CONVERSIONS).toBe(10);
+    });
+
+    it('is the same 10 for a free account, and a paid plan keeps its own', () => {
+      expect(FREE_DAILY_CONVERSIONS).toBe(10);
+      expect(TIER_LIMITS).toEqual({ free: 10, pro: 500, enterprise: 10000 });
     });
 
     it('names the configured limit in the refusal, not a literal', async () => {
@@ -655,7 +660,7 @@ describe('what a request is charged', () => {
   });
 
   describe('/api/v1/jobs', () => {
-    const FREE_DAY_ALLOWANCE = 25;
+    const FREE_DAY_ALLOWANCE = 10;
     let worker: Worker<ConversionJobData, ConversionJobResult> | undefined;
 
     afterEach(async () => {

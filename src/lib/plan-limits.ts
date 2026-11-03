@@ -25,9 +25,10 @@ export const PAID_PLANS_ON_SALE = false;
 
 /**
  * Conversions a free account may run on the server each UTC day (`TIER_LIMITS.free`). A caller without an account has
- * the same allowance (QA decision of 2026-11-02), but each number keeps its own name so either can change alone.
+ * the same allowance, the 10 of the free plan of the converter the product is measured against (QA decision of
+ * 2026-11-03, entry 15 of docs/policy-decisions.md), but each number keeps its own name so either can change alone.
  */
-export const FREE_DAILY_CONVERSIONS = 25;
+export const FREE_DAILY_CONVERSIONS = 10;
 
 /** Conversions each account plan may run on the server each UTC day; a caller without an account has `getAnonymousDailyLimit`. */
 export const TIER_LIMITS: Readonly<Record<UserTier, number>> = {

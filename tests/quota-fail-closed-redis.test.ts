@@ -99,12 +99,12 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
 
     it('enforces boundary conditions and deducts quota correctly in local in-memory fallback', async () => {
       const store = new RedisKeyStore({ isolated: true });
-      // Free tier default limit is 25
+      // Free tier default limit is 10
       const withinLimit = await store.deductQuota('local-user-1', 5);
       expect(withinLimit.allowed).toBe(true);
-      expect(withinLimit.remaining).toBe(20);
+      expect(withinLimit.remaining).toBe(5);
 
-      const exactBoundary = await store.deductQuota('local-user-1', 20);
+      const exactBoundary = await store.deductQuota('local-user-1', 5);
       expect(exactBoundary.allowed).toBe(true);
       expect(exactBoundary.remaining).toBe(0);
 
@@ -139,11 +139,11 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
   });
 
   describe('Anonymous Client Daily Quota & IP Rate Limiting', () => {
-    it('verifies anonymous daily limit defaults to 25 conversions per day when unconfigured', () => {
+    it('verifies anonymous daily limit defaults to 10 conversions per day when unconfigured', () => {
       const original = process.env.ANONYMOUS_DAILY_LIMIT;
       try {
         delete process.env.ANONYMOUS_DAILY_LIMIT;
-        expect(getAnonymousDailyLimit()).toBe(25);
+        expect(getAnonymousDailyLimit()).toBe(10);
       } finally {
         if (original) process.env.ANONYMOUS_DAILY_LIMIT = original;
       }

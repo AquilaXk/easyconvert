@@ -33,11 +33,11 @@ describe('the allowance a page states', () => {
     vi.unstubAllEnvs();
   });
 
-  it.each(PAGES)('is the one the server enforces on %s: the configured limit, else 25', async (_name, render) => {
+  it.each(PAGES)('is the one the server enforces on %s: the configured limit, else 10', async (_name, render) => {
     vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '30');
     expect(dailyLimitOf(await render())).toBe(30);
 
     vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '');
-    expect(dailyLimitOf(await render())).toBe(25);
+    expect(dailyLimitOf(await render())).toBe(10);
   });
 });

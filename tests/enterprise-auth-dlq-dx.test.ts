@@ -88,7 +88,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
     });
 
     it('enforces quota exhaustion when daily tier limit is exceeded', async () => {
-      // Free tier user (limit 25)
+      // Free tier user (limit 10)
       const freeUser = await userStore.createUser({
         email: `free_${Date.now()}@example.com`,
         name: 'Free User',
@@ -100,12 +100,12 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         headers: { Authorization: `Bearer ${keyResult.secretKey}` },
       });
 
-      // Reserve 25 units
-      const fillRes = await redisKeyStore.recordUsage(freeUser.id, 25);
+      // Reserve 10 units
+      const fillRes = await redisKeyStore.recordUsage(freeUser.id, 10);
       expect(fillRes.allowed).toBe(true);
       expect(fillRes.remaining).toBe(0);
 
-      // 26th unit must be rejected by validateApiAccess
+      // 11th unit must be rejected by validateApiAccess
       const auth = await validateApiAccess(req, 1);
       expect(auth.authorized).toBe(false);
       expect(auth.status).toBe(429);
@@ -120,8 +120,8 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       });
 
       const keyResult = await redisKeyStore.generateApiKey(freeUser.id, 'Free Key Exhausted');
-      // Exhaust all 25 units
-      await redisKeyStore.recordUsage(freeUser.id, 25);
+      // Exhaust all 10 units
+      await redisKeyStore.recordUsage(freeUser.id, 10);
       const usage = await redisKeyStore.getQuotaUsage(freeUser.id);
       expect(usage.remaining).toBe(0);
 

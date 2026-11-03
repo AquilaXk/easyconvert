@@ -281,13 +281,13 @@ describe('Auth & API Key Infrastructure', () => {
       expect(initialQuota.usedToday).toBe(0);
       expect(initialQuota.remaining).toBe(TIER_LIMITS.free);
 
-      // Record 10 conversions
-      const step1 = await keyStore.recordUsage(userRecord.id, 10);
+      // Record 4 conversions
+      const step1 = await keyStore.recordUsage(userRecord.id, 4);
       expect(step1.allowed).toBe(true);
-      expect(step1.remaining).toBe(15);
+      expect(step1.remaining).toBe(6);
 
-      // Record 15 more conversions (reaches limit 25)
-      const step2 = await keyStore.recordUsage(userRecord.id, 15);
+      // Record 6 more conversions (reaches limit 10)
+      const step2 = await keyStore.recordUsage(userRecord.id, 6);
       expect(step2.allowed).toBe(true);
       expect(step2.remaining).toBe(0);
 
@@ -441,8 +441,8 @@ describe('Auth & API Key Infrastructure', () => {
       });
       const usageRes = await usageGetHandler(usageReq);
       const usageData = await usageRes.json();
-      expect(usageData.usage.dailyLimit).toBe(25);
-      expect(usageData.usage.remaining).toBe(25);
+      expect(usageData.usage.dailyLimit).toBe(10);
+      expect(usageData.usage.remaining).toBe(10);
 
       // 4. Revoke key
       const deleteKeyReq = new NextRequest(`http://localhost:3000/api/keys/${generatedKeyId}`, {
@@ -496,7 +496,7 @@ describe('Auth & API Key Infrastructure', () => {
       // Verify quota was decremented
       const quota = await keyStore.getQuotaUsage(user.id);
       expect(quota.usedToday).toBe(1);
-      expect(quota.remaining).toBe(24);
+      expect(quota.remaining).toBe(9);
 
       // Verify file was recorded in user conversion files
       const userFiles = await keyStore.listUserFiles(user.id);
@@ -538,7 +538,7 @@ describe('Auth & API Key Infrastructure', () => {
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Batch Key');
 
       // Exhaust quota manually
-      await keyStore.recordUsage(user.id, 25);
+      await keyStore.recordUsage(user.id, 10);
 
       const file = new File(['1,2,3'], 'numbers.csv', { type: 'text/csv' });
       const formData = new FormData();
@@ -636,7 +636,7 @@ describe('Auth & API Key Infrastructure', () => {
       // CRITICAL: Ensure quota was NOT consumed by the 3 failed requests
       const usage = await keyStore.getQuotaUsage(user.id);
       expect(usage.usedToday).toBe(0);
-      expect(usage.remaining).toBe(25);
+      expect(usage.remaining).toBe(10);
     });
 
     it('OAuth callback strictly rejects missing or invalid state parameter to prevent CSRF', async () => {
@@ -700,7 +700,7 @@ describe('Auth & API Key Infrastructure', () => {
       );
 
       // Leave exactly 1 unit left
-      await keyStore.recordUsage(user.id, 24);
+      await keyStore.recordUsage(user.id, 9);
 
       // Simulate 5 simultaneous requests trying to claim the last 1 unit
       const results = await Promise.all([
@@ -715,7 +715,7 @@ describe('Auth & API Key Infrastructure', () => {
       expect(allowedCount).toBe(1);
 
       const finalQuota = await keyStore.getQuotaUsage(user.id);
-      expect(finalQuota.usedToday).toBe(25);
+      expect(finalQuota.usedToday).toBe(10);
       expect(finalQuota.remaining).toBe(0);
     });
 
@@ -821,17 +821,17 @@ describe('Auth & API Key Infrastructure', () => {
       // Attempt negative units
       const negResult = await keyStore.recordUsage(user.id, -5);
       expect(negResult.allowed).toBe(true);
-      expect(negResult.remaining).toBe(25);
+      expect(negResult.remaining).toBe(10);
 
       // Confirm usage was NOT decremented below 0
       const quotaAfterNeg = await keyStore.getQuotaUsage(user.id);
       expect(quotaAfterNeg.usedToday).toBe(0);
-      expect(quotaAfterNeg.remaining).toBe(25);
+      expect(quotaAfterNeg.remaining).toBe(10);
 
       // Zero units check
       const zeroResult = await keyStore.recordUsage(user.id, 0);
       expect(zeroResult.allowed).toBe(true);
-      expect(zeroResult.remaining).toBe(25);
+      expect(zeroResult.remaining).toBe(10);
     });
 
     it('enforces fail-closed behavior for OAuth URL generation in production without credentials', async () => {

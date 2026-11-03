@@ -162,7 +162,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     ]);
     expect(phrasesPresent(text, ['10 daily conversions', 'credits with prioritized throughput'])).toEqual([]);
     expect(phrasesPresent(text, ['unlimited conversions'])).toEqual([]);
-    expect(phrasesMissing(text, ['free for up to 25 a day without an account'])).toEqual([]);
+    expect(phrasesMissing(text, ['free for up to 10 a day without an account'])).toEqual([]);
   });
 
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
@@ -363,8 +363,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
-    expect(phrasesMissing(text, ['Up to 1 GiB per file', '25 conversions a day', 'Files deleted automatically'])).toEqual([]);
-    expect(phrasesPresent(text, ['Free, 25 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
+    expect(phrasesMissing(text, ['Up to 1 GiB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
   it('verifies StatusDashboard purges fake uptime stats, fake incident logs, and fake modals', () => {
@@ -423,7 +423,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
     const regions = select(faq, 'div', 'role', 'region');
     expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
-    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 25 conversions a day on our servers, each file up to 1 GiB\./);
+    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 10 conversions a day on our servers, each file up to 1 GiB\./);
     expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
   });
 

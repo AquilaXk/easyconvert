@@ -169,7 +169,7 @@ describe('the drop zone states the limit of the plan', () => {
 
   it.each([
     ['anonymous', 'Up to 1 GiB per file · 7 conversions a day · Files deleted automatically'],
-    ['free', 'Up to 1 GiB per file · 25 conversions a day · Files deleted automatically'],
+    ['free', 'Up to 1 GiB per file · 10 conversions a day · Files deleted automatically'],
     ['pro', 'Up to 5 GiB per file · 500 conversions a day · Files deleted automatically'],
     ['enterprise', 'Up to 10 GiB per file · 10,000 conversions a day · Files deleted automatically'],
   ] as const)('shows "%s" viewers "%s", the allowance of their own plan', (plan, copy) => {
