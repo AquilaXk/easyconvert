@@ -5,7 +5,7 @@ import { Link } from '@/i18n/navigation';
 import { useTierLabel } from '../i18n/format';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, QuotaUsage } from '@/lib/api-keys/types';
-import { FREE_DAILY_CONVERSIONS } from '@/lib/plan-limits';
+import { TIER_LIMITS } from '@/lib/plan-limits';
 
 interface AccountQuotaPanelProps {
   user: User;
@@ -18,8 +18,9 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
   const format = useFormatter();
   const tierLabel = useTierLabel();
   const activeKeyCount = apiKeys.filter((key) => key.status === 'active').length;
-  const dailyLimit = quota?.dailyLimit ?? FREE_DAILY_CONVERSIONS;
-  const usedToday = quota?.usedToday ?? 0;
+  const dailyLimit = quota?.dailyLimit ?? TIER_LIMITS[user.tier];
+  // A count made under a larger allowance (before a deploy lowered it) can pass the limit; the day still ends at the limit.
+  const usedToday = Math.min(quota?.usedToday ?? 0, dailyLimit);
   const remaining = quota?.remaining ?? dailyLimit;
 
   return (
