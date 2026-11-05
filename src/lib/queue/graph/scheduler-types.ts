@@ -103,7 +103,7 @@ export interface IGraphScheduler {
   /** The output keys of the nodes `nodeIds`, each key once. */
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;
   /** The ids of the graphs `userId` owns. */
-  graphsOfUser?(userId: string): Promise<string[]>;
+  graphsOfUser(userId: string): Promise<string[]>;
   /** Removes every stored record of `graphId`. */
-  deleteGraph?(graphId: string): Promise<void>;
+  deleteGraph(graphId: string): Promise<boolean>;
 }

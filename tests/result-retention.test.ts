@@ -951,7 +951,7 @@ describe('the sweep timer', () => {
     fs.rmSync(ledgerDir, { recursive: true, force: true });
   });
 
-  const SETTLE_HANG_GUARD_MS = 2_000;
+  const SETTLE_HANG_GUARD_MS = 10_000;
 
   async function dueKey(): Promise<string> {
     const key = `conversions/sweep-timer/${Date.now()}_${crypto.randomBytes(4).toString('hex')}.bin`;

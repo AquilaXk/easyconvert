@@ -91,11 +91,9 @@ function secondsUntilUtcMidnight(): number {
  */
 export class RedisKeyStore extends KeyStore {
   private static sharedLedger: MemoryReservationLedger | undefined;
-  protected static sharedTokenBuckets = new Map<string, { tokens: number; lastRefill: number }>();
   private readonly memoryLedger: MemoryReservationLedger;
   /** The ledger in Redis, made once for the client it was made with. */
   private redisLedger: { client: Redis; ledger: RedisReservationLedger } | undefined;
-  private readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
   private readonly keyPrefix: string;
   private redisClient: Redis | null = null;
 
@@ -129,7 +127,6 @@ export class RedisKeyStore extends KeyStore {
     this.memoryLedger = isIsolated
       ? new MemoryReservationLedger(this.dailyUsage, persist)
       : (RedisKeyStore.sharedLedger ??= new MemoryReservationLedger(this.dailyUsage, persist));
-    this.tokenBuckets = isIsolated ? new Map() : RedisKeyStore.sharedTokenBuckets;
     this.redisClient = client ?? null;
   }
 
@@ -555,6 +552,9 @@ export class RedisKeyStore extends KeyStore {
     if (this.redisClient) {
       try {
         const keyData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
+        if (keyData.userId && keyData.userId !== userId) {
+          return false;
+        }
         if (keyData.keyHash) {
           await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.keyHash);
         }
@@ -562,7 +562,8 @@ export class RedisKeyStore extends KeyStore {
           await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.previousKeyHash);
         }
         await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
-        await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`);
+        await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`, `${this.keyPrefix}rate:apikey:${keyId}`);
+        this.tokenBuckets.delete(`apikey:${keyId}`);
       } catch (err) {
         console.warn('[RedisKeyStore] Redis deleteApiKey failed:', err);
       }

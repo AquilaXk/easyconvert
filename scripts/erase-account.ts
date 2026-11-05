@@ -13,8 +13,8 @@ export interface AccountErasurePlan {
   userId: string;
   email: string;
   apiKeyIds: string[];
-  credentialIds?: string[];
-  graphIds?: string[];
+  credentialIds: string[];
+  graphIds: string[];
   jobs: { id: string; state: JobState }[];
   storedKeys: string[];
   deadLetters: number;
@@ -44,19 +44,11 @@ async function accountTaggedKeys(userId: string): Promise<string[]> {
     keys.push(...batch);
     cursor = next;
   } while (cursor !== '0');
-  return keys.sort();
+  return keys.sort((a, b) => a.localeCompare(b));
 }
 
-async function accountGraphIds(
-  userId: string,
-  jobs: readonly { id: string; data?: { graphId?: string } }[]
-): Promise<string[]> {
-  const ids = new Set<string>(await graphScheduler.graphsOfUser?.(userId));
-  for (const job of jobs) {
-    const graphId = job.data?.graphId || (job.id.includes(':') ? job.id.split(':')[0] : undefined);
-    if (graphId) ids.add(graphId);
-  }
-  return [...ids].sort();
+function accountGraphIds(userId: string): Promise<string[]> {
+  return graphScheduler.graphsOfUser(userId);
 }
 
 async function accountStoredKeys(
@@ -71,7 +63,7 @@ async function accountStoredKeys(
   ];
   const ledger = getRetentionLedger();
   const keys = ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key);
-  return keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix))).sort();
+  return keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix))).sort((a, b) => a.localeCompare(b));
 }
 
 /** What erasing the account `idOrEmail` deletes, or undefined when there is no such account. Changes nothing. */
@@ -79,19 +71,19 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
   const account = await findAccount(idOrEmail);
   if (!account) return undefined;
   const userId = account.id;
-  const [keys, credentials, jobs, letters, taggedKeys] = await Promise.all([
+  const [keys, credentialIds, graphIds, jobs, letters, taggedKeys] = await Promise.all([
     redisKeyStore.listApiKeys(userId),
     credentialsVault.listByUser(userId),
+    accountGraphIds(userId),
     conversionQueue.getJobsByUser(userId, undefined, MAX_JOBS_PER_RUN, 0),
-    webhookDispatcher.getDlqEntries(userId),
+    webhookDispatcher.getDlqEntries(userId, { includeExpired: true }),
     accountTaggedKeys(userId),
   ]);
-  const graphIds = await accountGraphIds(userId, jobs);
   return {
     userId,
     email: account.email,
     apiKeyIds: keys.map((key) => key.id),
-    credentialIds: credentials.map((cred) => cred.id),
+    credentialIds,
     graphIds,
     jobs: jobs.map((job) => ({ id: job.id, state: job.state })),
     storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
@@ -102,8 +94,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
 
 export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountErasureOutcome> {
   const { userId } = plan;
-  const graphIds = plan.graphIds ?? (await accountGraphIds(userId, plan.jobs));
-  for (const graphId of graphIds) {
+  for (const graphId of plan.graphIds) {
     await graphScheduler.cancelGraph(graphId, 'The account was deleted');
   }
   for (const job of plan.jobs) {
@@ -115,8 +106,8 @@ export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountEra
       runningJobIds.push(job.id);
     }
   }
-  for (const graphId of graphIds) {
-    await graphScheduler.deleteGraph?.(graphId);
+  for (const graphId of plan.graphIds) {
+    await graphScheduler.deleteGraph(graphId);
     await storageProvider.deleteByPrefix?.(`results/${graphId}/`);
   }
   const ledger = getRetentionLedger();
@@ -125,8 +116,7 @@ export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountEra
     await ledger.forget(key);
   }
   await storageProvider.deleteByPrefix?.(`conversions/${userId}/`);
-  const credentialIds = plan.credentialIds ?? (await credentialsVault.listByUser(userId)).map((cred) => cred.id);
-  for (const credentialId of credentialIds) {
+  for (const credentialId of plan.credentialIds) {
     await credentialsVault.delete(credentialId, userId);
   }
   for (const keyId of plan.apiKeyIds) {
@@ -145,8 +135,8 @@ function describe(plan: AccountErasurePlan): string {
   return [
     `account ${plan.userId} (${plan.email})`,
     `api keys: ${plan.apiKeyIds.length}`,
-    `storage credentials: ${(plan.credentialIds ?? []).length}`,
-    `graphs: ${(plan.graphIds ?? []).length}`,
+    `storage credentials: ${plan.credentialIds.length}`,
+    `graphs: ${plan.graphIds.length}`,
     `jobs: ${plan.jobs.length}${plan.jobs.length === MAX_JOBS_PER_RUN ? ' (the first batch; run again)' : ''}`,
     `stored files: ${plan.storedKeys.length}`,
     `webhook dead letters: ${plan.deadLetters}`,

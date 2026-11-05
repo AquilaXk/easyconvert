@@ -273,9 +273,10 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     return JSON.parse(JSON.stringify(data.state));
   }
 
-  async forgetEndedGraph(graphId: string): Promise<void> {
+  forgetEndedGraph(graphId: string): Promise<void> {
     const data = this.graphs.get(graphId);
     if (data) forgetWebhookSecret(data.state);
+    return Promise.resolve();
   }
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
@@ -296,15 +297,17 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     return [...new Set(targetIds.flatMap((id) => data.state.nodes[id]?.outputs ?? []))];
   }
 
-  async graphsOfUser(userId: string): Promise<string[]> {
-    return [...this.graphs.values()]
-      .filter((data) => data.state.ownerUserId === userId)
-      .map((data) => data.state.graphId)
-      .sort();
+  graphsOfUser(userId: string): Promise<string[]> {
+    return Promise.resolve(
+      [...this.graphs.values()]
+        .filter((data) => data.state.ownerUserId === userId)
+        .map((data) => data.state.graphId)
+        .sort((a, b) => a.localeCompare(b))
+    );
   }
 
-  async deleteGraph(graphId: string): Promise<void> {
-    this.graphs.delete(graphId);
+  deleteGraph(graphId: string): Promise<boolean> {
+    return Promise.resolve(this.graphs.delete(graphId));
   }
 
   private async enqueueNodeJob(
@@ -324,8 +327,11 @@ function endedGraph(data: InternalGraphData): EndedGraph {
     graphId: data.state.graphId,
     reservationId: data.state.reservationId,
     inputKeys: graphInputKeys(data.state.graph.nodes),
-    readState: async () => data.state,
-    forget: async () => forgetWebhookSecret(data.state),
+    readState: () => Promise.resolve(data.state),
+    forget: () => {
+      forgetWebhookSecret(data.state);
+      return Promise.resolve();
+    },
   };
 }
 

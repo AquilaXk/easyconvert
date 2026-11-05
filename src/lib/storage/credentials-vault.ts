@@ -351,10 +351,9 @@ export class CredentialsVault {
       }
     }
 
-    for (const [id, envelope] of this.inMemoryStore.entries()) {
+    for (const envelope of this.inMemoryStore.values()) {
       if (envelope.userId === userId) {
         if (envelope.expiresAt && now > envelope.expiresAt) {
-          this.inMemoryStore.delete(id);
           continue;
         }
         results.push({
@@ -371,8 +370,39 @@ export class CredentialsVault {
     return results;
   }
 
-  async listByUser(userId: string): Promise<CredentialSummary[]> {
-    return this.list(userId);
+  async listByUser(userId: string): Promise<string[]> {
+    if (!userId) return [];
+    if (this.redisClient) {
+      return this.redisIdsOfUser(this.redisClient, userId);
+    }
+    const ids: string[] = [];
+    for (const envelope of this.inMemoryStore.values()) {
+      if (envelope.userId === userId) {
+        ids.push(envelope.id);
+      }
+    }
+    return ids.sort((a, b) => a.localeCompare(b));
+  }
+
+  private async redisIdsOfUser(redis: Redis, userId: string): Promise<string[]> {
+    try {
+      const ids = new Set<string>();
+      let cursor = '0';
+      do {
+        const [next, keys] = await redis.scan(cursor, 'MATCH', `${VAULT_PREFIX}*`, 'COUNT', 500);
+        for (const key of keys) {
+          const raw = await redis.get(key);
+          if (!raw) continue;
+          const envelope = JSON.parse(raw) as StoredCredentialEnvelope;
+          if (envelope.userId === userId) ids.add(envelope.id);
+        }
+        cursor = next;
+      } while (cursor !== '0');
+      return [...ids].sort((a, b) => a.localeCompare(b));
+    } catch (err) {
+      console.error('[CredentialsVault] Redis listByUser failed:', err);
+      throw new CredentialsVaultPersistenceError({ cause: err, saving: false });
+    }
   }
 
   /**

@@ -94,12 +94,14 @@ export class KeyStore {
   protected static sharedKeyHashIndex = new Map<string, string>();
   protected static sharedDailyUsage = new Map<string, number>();
   protected static sharedUserFiles = new Map<string, UserConversionFile>();
+  protected static sharedTokenBuckets = new Map<string, { tokens: number; lastRefill: number }>();
   protected static sharedInitialized = false;
 
   protected readonly keys: Map<string, ApiKey>;
   protected readonly keyHashIndex: Map<string, string>; // hash -> keyId
   protected readonly dailyUsage: Map<string, number>; // userId:YYYY-MM-DD -> count
   protected readonly userFiles: Map<string, UserConversionFile>; // fileId -> file
+  protected readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
   protected initialized: boolean;
 
   constructor(isolated = false) {
@@ -108,12 +110,14 @@ export class KeyStore {
       this.keyHashIndex = new Map();
       this.dailyUsage = new Map();
       this.userFiles = new Map();
+      this.tokenBuckets = new Map();
       this.initialized = false;
     } else {
       this.keys = KeyStore.sharedKeys;
       this.keyHashIndex = KeyStore.sharedKeyHashIndex;
       this.dailyUsage = KeyStore.sharedDailyUsage;
       this.userFiles = KeyStore.sharedUserFiles;
+      this.tokenBuckets = KeyStore.sharedTokenBuckets;
       this.initialized = KeyStore.sharedInitialized;
     }
   }
@@ -440,6 +444,7 @@ export class KeyStore {
     if (key.previousKeyHash) {
       this.keyHashIndex.delete(key.previousKeyHash);
     }
+    this.tokenBuckets.delete(`apikey:${keyId}`);
     this.persist();
     return true;
   }
@@ -622,6 +627,7 @@ export class KeyStore {
     this.keyHashIndex.clear();
     this.dailyUsage.clear();
     this.userFiles.clear();
+    this.tokenBuckets.clear();
     this.initialized = true;
     if (this.keys === KeyStore.sharedKeys) {
       KeyStore.sharedInitialized = true;

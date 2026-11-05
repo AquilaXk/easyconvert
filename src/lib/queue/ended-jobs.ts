@@ -73,6 +73,45 @@ async function readEndedFields(
   );
 }
 
+function isFinishedBy(finishedOnRaw: string | null, threshold: number): boolean {
+  const finishedOn = Number(finishedOnRaw || 0);
+  return finishedOn > 0 && finishedOn <= threshold;
+}
+
+async function deleteEndedJob(
+  client: Redis,
+  keys: QueueKeySpace,
+  stateKey: string,
+  id: string,
+  userId: string | undefined
+): Promise<void> {
+  await client.srem(stateKey, id);
+  await client.del(keys.jobKey(id));
+  if (userId) await client.zrem(keys.userJobsKey(userId), id);
+}
+
+async function removeSetEntriesBefore(
+  client: Redis,
+  keys: QueueKeySpace,
+  stateKey: string,
+  threshold: number,
+  limit: number
+): Promise<string[]> {
+  const removed: string[] = [];
+  const ids = await client.smembers(stateKey);
+  for (const { id, finishedOnRaw, dataRaw } of await readEndedFields(client, keys, ids)) {
+    if (finishedOnRaw === null && dataRaw === null && (await client.exists(keys.jobKey(id))) === 0) {
+      await client.srem(stateKey, id);
+      continue;
+    }
+    if (removed.length < limit && isFinishedBy(finishedOnRaw, threshold)) {
+      await deleteEndedJob(client, keys, stateKey, id, ownerOf(parsedData(dataRaw)));
+      removed.push(id);
+    }
+  }
+  return removed;
+}
+
 /**
  * Removes up to `limit` jobs of the set `stateKey` that ended at or before `threshold`, with their entry in the index of
  * their user, and answers their ids; with `trimDeadLetters`, also the dead letters recorded by then (BullMQ Queue.clean).
@@ -85,25 +124,7 @@ export async function removeEndedBefore(
   limit: number,
   trimDeadLetters: boolean
 ): Promise<string[]> {
-  const removed: string[] = [];
-  if (limit > 0) {
-    const ids = await client.smembers(stateKey);
-    for (const { id, finishedOnRaw, dataRaw } of await readEndedFields(client, keys, ids)) {
-      const jobKey = keys.jobKey(id);
-      if (finishedOnRaw === null && dataRaw === null && (await client.exists(jobKey)) === 0) {
-        await client.srem(stateKey, id);
-        continue;
-      }
-      if (removed.length >= limit) continue;
-      const finishedOn = Number(finishedOnRaw || 0);
-      if (finishedOn <= 0 || finishedOn > threshold) continue;
-      const userId = ownerOf(parsedData(dataRaw));
-      await client.srem(stateKey, id);
-      await client.del(jobKey);
-      if (userId) await client.zrem(keys.userJobsKey(userId), id);
-      removed.push(id);
-    }
-  }
+  const removed = limit > 0 ? await removeSetEntriesBefore(client, keys, stateKey, threshold, limit) : [];
   if (trimDeadLetters) await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, String(threshold));
   return removed;
 }
@@ -119,9 +140,7 @@ export async function keepNewestEnded(client: Redis, keys: QueueKeySpace, stateK
   }));
   ended.sort((a, b) => b.finishedOn - a.finishedOn);
   for (const job of ended.slice(count)) {
-    await client.srem(stateKey, job.id);
-    await client.del(keys.jobKey(job.id));
-    if (job.userId) await client.zrem(keys.userJobsKey(job.userId), job.id);
+    await deleteEndedJob(client, keys, stateKey, job.id, job.userId);
   }
 }
 

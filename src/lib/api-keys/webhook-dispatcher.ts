@@ -791,12 +791,19 @@ export class WebhookDispatcher {
   /**
    * Lists the DLQ entries owned by `ownerUserId`, newest first. Also purges ownerless entries.
    */
-  public async getDlqEntries(ownerUserId: string): Promise<WebhookDlqEntry[]> {
+  public async getDlqEntries(
+    ownerUserId: string,
+    options?: { includeExpired?: boolean }
+  ): Promise<WebhookDlqEntry[]> {
     const entries = await this.readAllDlqEntries();
     await this.purgeOwnerlessEntries(entries);
     const now = Date.now();
     return entries
-      .filter((entry) => isDlqEntryOwnedBy(entry, ownerUserId) && !isDlqEntryExpired(entry, now))
+      .filter(
+        (entry) =>
+          isDlqEntryOwnedBy(entry, ownerUserId) &&
+          (options?.includeExpired || !isDlqEntryExpired(entry, now))
+      )
       .sort((a, b) => b.failedAt - a.failedAt);
   }
 

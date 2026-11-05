@@ -325,24 +325,24 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
 
   async graphsOfUser(userId: string): Promise<string[]> {
     const prefix = `${this.keyPrefix}graph:{`;
-    const graphIds: string[] = [];
+    const graphIds = new Set<string>();
     let cursor = '0';
     do {
       const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${prefix}*}`, 'COUNT', 500);
       for (const key of keys) {
         if (!key.endsWith('}')) continue;
         if ((await this.redisClient.hget(key, 'owner')) === userId) {
-          graphIds.push(key.slice(prefix.length, -1));
+          graphIds.add(key.slice(prefix.length, -1));
         }
       }
       cursor = next;
     } while (cursor !== '0');
-    return graphIds.sort();
+    return [...graphIds].sort((a, b) => a.localeCompare(b));
   }
 
-  async deleteGraph(graphId: string): Promise<void> {
+  async deleteGraph(graphId: string): Promise<boolean> {
     const k = this.graphKeys(graphId);
-    await this.redisClient.del(k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox);
+    return (await this.redisClient.del(k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox)) > 0;
   }
 }
 

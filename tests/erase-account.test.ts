@@ -22,6 +22,7 @@ async function accountWithRecords(label: string) {
   const user = await redisUserStore.createUser({ email: `${label}_${crypto.randomUUID()}@erase.test`, name: label, acceptedTermsVersion: TERMS_VERSION });
   createdUsers.push(user.id);
   const { key } = await redisKeyStore.generateApiKey(user.id, `${label} key`, { acceptedTermsVersion: TERMS_VERSION });
+  await redisKeyStore.checkTokenBucketRateLimit(`apikey:${key.id}`, { capacity: 1, refillRate: 0, cost: 1 });
   await redisKeyStore.deductQuota(user.id, 2);
   await redisKeyStore.recordUserFile({
     userId: user.id,
@@ -118,7 +119,7 @@ describe('erasing one account', () => {
       credentialIds: [credentialId],
       graphIds: [graphId],
       storedKeys,
-      deadLetters: 1,
+      deadLetters: 2,
     });
     expect(plan!.jobs.map((job) => job.id)).toEqual(expect.arrayContaining([jobId, `${graphId}:upload`]));
 
@@ -139,6 +140,7 @@ describe('erasing one account', () => {
     expect(await redisUserStore.findById(erased.user.id)).toBeNull();
     expect(await redisUserStore.findByEmail(erased.user.email)).toBeNull();
     expect(await redisKeyStore.listApiKeys(erased.user.id)).toEqual([]);
+    expect((await redisKeyStore.checkTokenBucketRateLimit(`apikey:${erased.keyId}`, { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(true);
     expect(await redisKeyStore.listUserFiles(erased.user.id)).toEqual([]);
     expect(await credentialsVault.listByUser(erased.user.id)).toEqual([]);
     expect(await conversionQueue.getJob(erased.jobId)).toBeUndefined();
@@ -149,18 +151,20 @@ describe('erasing one account', () => {
       expect(await storageProvider.getObject(key)).toBeUndefined();
       expect(await getRetentionLedger().get(key)).toBeUndefined();
     }
-    expect(await webhookDispatcher.getDlqEntries(erased.user.id)).toEqual([]);
+    expect(await webhookDispatcher.getDlqEntries(erased.user.id, { includeExpired: true })).toEqual([]);
     expect((await redisKeyStore.getQuotaUsage(erased.user.id)).usedToday).toBe(0);
     expect(await planAccountErasure(erased.user.id)).toBeUndefined();
 
     expect(await redisUserStore.findById(kept.user.id)).not.toBeNull();
     expect((await redisKeyStore.listApiKeys(kept.user.id)).map((key) => key.id)).toEqual([kept.keyId]);
+    expect((await redisKeyStore.checkTokenBucketRateLimit(`apikey:${kept.keyId}`, { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(false);
     expect(await redisKeyStore.listUserFiles(kept.user.id)).toHaveLength(1);
-    expect((await credentialsVault.listByUser(kept.user.id)).map((cred) => cred.id)).toEqual([kept.credentialId]);
+    expect(await credentialsVault.listByUser(kept.user.id)).toEqual([kept.credentialId]);
     expect((await conversionQueue.getJob(kept.jobId))?.state).toBe('waiting');
     expect((await graphScheduler.getGraphState(kept.graphId))?.status).toBe('running');
     expect((await resourceQueues.light.getDlqEntries?.())?.some((entry) => entry.jobId === kept.jobId)).toBe(true);
     expect(await webhookDispatcher.getDlqEntries(kept.user.id)).toHaveLength(1);
+    expect(await webhookDispatcher.getDlqEntries(kept.user.id, { includeExpired: true })).toHaveLength(2);
     expect(await webhookDispatcher.purgeExpiredDlqEntries()).toBe(1);
     expect((await redisKeyStore.getQuotaUsage(kept.user.id)).usedToday).toBe(2);
     await eraseAccount((await planAccountErasure(kept.user.id))!);
