@@ -2,7 +2,8 @@ import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import OptionsModal from '../src/components/OptionsModal';
 import { isSameFormat } from '../src/lib/format-aliases';
-import { CATEGORY_WORDS } from '../src/lib/slug-parser';
+import { CATEGORY_WORDS } from '../src/lib/category-words';
+import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { slugPageCopy, type TestLocale } from './helpers/intl';
 import { allElements, attrOf, renderDom } from './helpers/rendered-dom';
@@ -20,14 +21,15 @@ const INTRO_MAX = 160;
 
 const firstSentence = (text: string) => text.split(/(?<=[.요])\s/)[0];
 
-const registeredPairs = Object.keys(FORMAT_REGISTRY).flatMap((source) =>
-  getAvailableTargetFormats(source)
-    .filter(({ id }) => !isSameFormat(id, source))
-    .map(({ id }) => `${source}-to-${id}`)
-);
+const registeredPairs = Object.keys(FORMAT_REGISTRY)
+  .flatMap((source) =>
+    getAvailableTargetFormats(source)
+      .filter(({ id }) => !isSameFormat(id, source))
+      .map(({ id }) => `${source}-to-${id}`)
+  )
+  .filter((slug) => parseConverterSlug(slug)?.copy.kind === 'pair');
 const formatPages = Object.keys(FORMAT_REGISTRY).map((id) => `${id}-converter`);
 const categoryPages = Object.keys(CATEGORY_WORDS).map((word) => `${word}-converter`);
-const categoryPairs = ['video-to-gif', 'video-to-mp3', 'video-to-audio', 'image-to-pdf', 'word-to-pdf', 'pdf-to-word', 'pdf-to-image'];
 
 describe('the intro of a converter page', () => {
   it.each([
@@ -43,18 +45,14 @@ describe('the intro of a converter page', () => {
     ['ttf-converter', 'en', 'Convert TTF fonts online. Targets include WOFF, WOFF2, EOT, OTF, and SVG.'],
     ['ttf-converter', 'ko', 'TTF 글꼴 파일을 온라인에서 변환해요. WOFF, WOFF2, EOT, OTF, SVG 등으로 바꿀 수 있어요.'],
     ['dxf-converter', 'en', 'Convert DXF drawings online. Targets include PDF, SVG, PNG, ZIP, and JPG.'],
-    ['xyz-to-abc', 'en', 'Convert XYZ files to ABC online.'],
   ] as const)('of %s in %s says what it converts, other targets and the options', (slug, locale, intro) => {
     expect(slugPageCopy(slug, locale).description).toBe(intro);
   });
 
   it.each([
-    ['video-to-audio', 'en', 'Extract the sound of videos as audio files online.'],
-    ['video-to-audio', 'ko', '동영상 파일의 소리를 오디오 파일로 온라인에서 추출해요.'],
-    ['video-to-gif', 'en', 'Convert videos to GIF online.'],
-    ['word-to-pdf', 'en', 'Convert Word documents to PDF online.'],
-    ['word-to-pdf', 'ko', 'Word 파일을 PDF 형식으로 온라인에서 변환해요.'],
-    ['pdf-to-image', 'en', 'Convert PDF files to images online.'],
+    ['video-converter', 'en', 'Convert videos online.'],
+    ['video-converter', 'ko', '동영상 파일을 온라인에서 변환해요.'],
+    ['document-converter', 'en', 'Convert documents online.'],
     ['image-converter', 'en', 'Convert images online.'],
     ['image-converter', 'ko', '이미지 파일을 온라인에서 변환해요.'],
   ] as const)('of the category page %s in %s names the category once', (slug, locale, lead) => {
@@ -62,7 +60,7 @@ describe('the intro of a converter page', () => {
   });
 
   it.each(LOCALES)('in %s keeps the first sentence within 120 characters and the intro within 160 on every page', (locale) => {
-    const over = [...registeredPairs, ...formatPages, ...categoryPages, ...categoryPairs].flatMap((slug) => {
+    const over = [...registeredPairs, ...formatPages, ...categoryPages].flatMap((slug) => {
       const { description } = slugPageCopy(slug, locale);
       const lead = firstSentence(description);
       return lead.length > FIRST_SENTENCE_MAX || description.length > INTRO_MAX ? [`${slug}: ${description}`] : [];
@@ -78,14 +76,6 @@ describe('the intro of a converter page', () => {
       return !lead.includes(id.toUpperCase()) || (ownNoun && /document/i.test(lead));
     });
     expect(misnamed).toEqual([]);
-  });
-
-  it.each([
-    ['constructor-to-pdf', 'Convert CONSTRUCTOR files to PDF online.'],
-    ['__proto__-converter', 'Convert __PROTO__ files online.'],
-    ['pdf-to-constructor', 'Convert PDF files to CONSTRUCTOR online.'],
-  ])('of %s, which names a property of every object, reads as any unregistered format does', (slug, lead) => {
-    expect(firstSentence(slugPageCopy(slug, 'en').description)).toBe(lead);
   });
 
   it('finds no targets for a name that is a property of every object', () => {

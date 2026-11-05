@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseConverterSlug } from '../src/lib/slug-parser';
-import { slugPageCopy } from './helpers/intl';
+import { parsedSlug, slugPageCopy } from './helpers/intl';
 import { UNIT_CATEGORIES, convertValue } from '../src/components/UnitConverter';
 import sharp from 'sharp';
 import { createElement } from 'react';
@@ -201,14 +200,14 @@ describe('Unit Converter Multi-Category Mathematical Accuracy', () => {
 
 describe('Slug Parser Integration for Status and Unit Converter', () => {
   it('correctly maps status slug to informational status page', () => {
-    const parsed = parseConverterSlug('status');
+    const parsed = parsedSlug('status');
     expect(parsed.isInfoPage).toBe(true);
     expect(parsed.infoType).toBe('status');
     expect(slugPageCopy('status').title).toBe('System Status');
   });
 
   it('correctly maps unit-converter slug to unit page', () => {
-    const parsed = parseConverterSlug('unit-converter');
+    const parsed = parsedSlug('unit-converter');
     expect(parsed.isInfoPage).toBe(true);
     expect(parsed.infoType).toBe('unit');
     expect(parsed.sourceFormat).toBe('lbs');
@@ -216,19 +215,19 @@ describe('Slug Parser Integration for Status and Unit Converter', () => {
   });
 
   it('correctly routes format pair slugs like lbs-to-kg to unit converter', () => {
-    const lbsToKg = parseConverterSlug('lbs-to-kg');
+    const lbsToKg = parsedSlug('lbs-to-kg');
     expect(lbsToKg.isInfoPage).toBe(true);
     expect(lbsToKg.infoType).toBe('unit');
     expect(lbsToKg.sourceFormat).toBe('lbs');
     expect(lbsToKg.targetFormat).toBe('kg');
 
-    const kgToLbs = parseConverterSlug('kg-to-lbs');
+    const kgToLbs = parsedSlug('kg-to-lbs');
     expect(kgToLbs.isInfoPage).toBe(true);
     expect(kgToLbs.infoType).toBe('unit');
     expect(kgToLbs.sourceFormat).toBe('kg');
     expect(kgToLbs.targetFormat).toBe('lbs');
 
-    const feetToMeters = parseConverterSlug('feet-to-meters');
+    const feetToMeters = parsedSlug('feet-to-meters');
     expect(feetToMeters.isInfoPage).toBe(true);
     expect(feetToMeters.infoType).toBe('unit');
     expect(feetToMeters.sourceFormat).toBe('feet');

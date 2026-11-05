@@ -6,33 +6,31 @@ import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import PageMessages from '@/i18n/PageMessages';
 import { localeAlternates } from '@/i18n/metadata';
 import { resolvePageLocale } from '@/i18n/page';
-import { canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
+import { parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
 
 interface ConverterPageProps {
   params: Promise<{ locale: string; slug: string }>;
 }
 
-/** The parsed slug of a converter page; a slug that names a file is answered 404. */
+/** The parsed slug of a page of the site; a path the site offers no page at is answered 404. */
 function pageSlug(slug: string): ParsedSlug {
-  if (isFileSlug(slug)) notFound();
-  return parseConverterSlug(slug);
+  return parseConverterSlug(slug) ?? notFound();
 }
 
 export async function generateMetadata({ params }: ConverterPageProps): Promise<Metadata> {
   const { slug } = await params;
   const locale = await resolvePageLocale(params);
+  const parsed = pageSlug(slug);
   const [tSlug, tMeta] = await Promise.all([
     getTranslations({ locale, namespace: 'slugPages' }),
     getTranslations({ locale, namespace: 'meta.converter' }),
   ]);
-  const parsed = pageSlug(slug);
   const copy = localizeSlugCopy(tSlug, parsed, locale);
   return {
     title: tMeta('title', { title: copy.title }),
     description: copy.description,
-    alternates: localeAlternates(locale, canonicalSlugPath(slug)),
-    ...(isIndexableSlug(parsed) ? {} : { robots: { index: false } }),
+    alternates: localeAlternates(locale, parsed.canonicalPath),
   };
 }
 
@@ -43,7 +41,7 @@ export default async function ConverterPage({ params }: Readonly<ConverterPagePr
 
   return (
     <PageMessages page="converter" formatIds={[parsed.sourceFormat, parsed.targetFormat]}>
-      <ConverterPageView slug={slug} dailyLimit={getAnonymousDailyLimit()} />
+      <ConverterPageView parsed={parsed} dailyLimit={getAnonymousDailyLimit()} />
     </PageMessages>
   );
 }

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { POST } from '../src/app/api/fetch-url/route';
 import { TIERS, calculateBaseCredits } from '../src/lib/pricing';
 import { parseConverterSlug } from '../src/lib/slug-parser';
-import { slugPageCopy } from './helpers/intl';
+import { parsedSlug, slugPageCopy } from './helpers/intl';
 
 describe('Subpages & Routes Verification', () => {
   describe('Pricing volume calculation logic & Credits Calculator', () => {
@@ -56,7 +56,7 @@ describe('Subpages & Routes Verification', () => {
 
   describe('Real Dynamic Converter Slug Parser', () => {
     it('correctly parses format pairs like pdf-to-docx', () => {
-      const parsed = parseConverterSlug('pdf-to-docx');
+      const parsed = parsedSlug('pdf-to-docx');
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe('pdf');
       expect(parsed.targetFormat).toBe('docx');
@@ -64,7 +64,7 @@ describe('Subpages & Routes Verification', () => {
     });
 
     it('correctly parses category converter slugs like pdf-converter', () => {
-      const parsed = parseConverterSlug('pdf-converter');
+      const parsed = parsedSlug('pdf-converter');
       expect(parsed.isInfoPage).toBe(false);
       expect(parsed.sourceFormat).toBe('pdf');
       expect(parsed.targetFormat).toBe('any');
@@ -72,51 +72,50 @@ describe('Subpages & Routes Verification', () => {
     });
 
     it('correctly parses video-converter to mp4 and any', () => {
-      const parsed = parseConverterSlug('video-converter');
+      const parsed = parsedSlug('video-converter');
       expect(parsed.sourceFormat).toBe('mp4');
       expect(parsed.targetFormat).toBe('any');
     });
 
     it('correctly parses merge and compress utility slugs', () => {
       expect(slugPageCopy('merge-pdf').title).toBe('Merge PDF');
-      expect(slugPageCopy('compress-png').title).toBe('Compress PNG');
+      expect(slugPageCopy('compress-pdf').title).toBe('Compress PDF');
     });
 
     it('correctly parses website capture tools', () => {
-      const webPdf = parseConverterSlug('save-website-as-pdf');
+      const webPdf = parsedSlug('save-website-as-pdf');
       expect(webPdf.sourceFormat).toBe('html');
       expect(webPdf.targetFormat).toBe('pdf');
 
-      const webPng = parseConverterSlug('website-png-screenshot');
+      const webPng = parsedSlug('website-png-screenshot');
       expect(webPng.sourceFormat).toBe('html');
       expect(webPng.targetFormat).toBe('png');
     });
 
     it('correctly identifies informational pages without treating them as file formats', () => {
-      const terms = parseConverterSlug('terms');
+      const terms = parsedSlug('terms');
       expect(terms.isInfoPage).toBe(true);
       expect(terms.infoType).toBe('terms');
       expect(slugPageCopy('terms').title).toBe('Terms of Service');
 
-      const privacy = parseConverterSlug('privacy');
+      const privacy = parsedSlug('privacy');
       expect(privacy.isInfoPage).toBe(true);
       expect(privacy.infoType).toBe('privacy');
 
-      const contact = parseConverterSlug('contact');
+      const contact = parsedSlug('contact');
       expect(contact.isInfoPage).toBe(true);
       expect(contact.infoType).toBe('contact');
 
-      const about = parseConverterSlug('about');
+      const about = parsedSlug('about');
       expect(about.isInfoPage).toBe(true);
       expect(about.infoType).toBe('about');
 
-      const security = parseConverterSlug('security');
+      const security = parsedSlug('security');
       expect(security.isInfoPage).toBe(true);
       expect(security.infoType).toBe('security');
 
       // forgot-password is completely purged as EasyConvert has zero auth/accounts
-      const forgot = parseConverterSlug('forgot-password');
-      expect(forgot.infoType).toBeUndefined();
+      expect(parseConverterSlug('forgot-password')).toBeNull();
     });
   });
 

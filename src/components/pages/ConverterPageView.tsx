@@ -11,7 +11,7 @@ import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import { otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
-import { parseConverterSlug } from '@/lib/slug-parser';
+import { offersConversion, type ParsedSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import { formatCategoryLabel } from '@/components/converter/format-specs';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
@@ -20,12 +20,11 @@ import { FormatCards } from '@/components/converter/FormatCards';
 import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
-/** A converter or information page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
-export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug: string; dailyLimit: number }>) {
+/** A converter or information page, as the server's page parsed its slug; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
+export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlug; dailyLimit: number }>) {
   const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const tDetail = useTranslations('formatDetail');
-  const parsed = parseConverterSlug(slug);
   const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
@@ -58,17 +57,15 @@ export default function ConverterPageView({ slug, dailyLimit }: Readonly<{ slug:
   const isCategorySlug = parsed.copy.kind === 'format' && parsed.copy.name.kind === 'category';
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
-  const convertFromTargets = otherFormats(sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt'], [srcKey]);
+  const convertFromTargets = otherFormats(sourceFormatRegistry.targetFormats, [srcKey]);
 
   const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
   const convertToSources = otherFormats(
-    Object.entries(FORMAT_REGISTRY)
-      .filter(([, def]) => def.targetFormats.includes(targetForReverse))
-      .map(([key]) => key),
+    Object.keys(FORMAT_REGISTRY).filter((key) => offersConversion(key, targetForReverse)),
     [targetForReverse]
   );
 
-  const categoryName = sourceFormatRegistry?.category || 'document';
+  const categoryName = sourceFormatRegistry.category;
   const categoryLabel = formatCategoryLabel(tDetail, categoryName);
 
   return (

@@ -760,6 +760,10 @@
     },
     "converter": {
       "title": "{title} | EasyConvert"
+    },
+    "notFound": {
+      "title": "페이지를 찾을 수 없어요 | EasyConvert",
+      "description": "주소를 다시 확인해 주세요."
     }
   },
   "options": {
@@ -1009,15 +1013,13 @@
     "apiDocs": "API 문서",
     "dashboard": "대시보드",
     "mp4Converter": "MP4 변환기",
-    "videoToGif": "동영상 → GIF 변환",
+    "mp4ToGif": "MP4 → GIF 변환",
     "movToMp4": "MOV → MP4 변환",
     "mp3Converter": "MP3 변환기",
     "mp4ToMp3": "MP4 → MP3 변환",
-    "videoToMp3": "동영상 → MP3 변환",
     "jpgToPdf": "JPG → PDF 변환",
     "pdfToJpg": "PDF → JPG 변환",
     "heicToJpg": "HEIC → JPG 변환",
-    "imageToPdf": "이미지 → PDF 변환",
     "pdfToWord": "PDF → Word 변환",
     "epubToPdf": "EPUB → PDF 변환",
     "documentConverter": "문서 변환기",
@@ -1030,7 +1032,6 @@
     "imageResizer": "이미지 크기 조정",
     "websiteScreenshot": "웹사이트 스크린샷",
     "mp4Remuxer": "MP4 리먹서",
-    "losslessPng": "무손실 PNG",
     "vectorConverter": "벡터 변환기",
     "securityArchitecture": "보안 구조",
     "aboutUs": "서비스 소개",
@@ -1094,7 +1095,7 @@
       "title": "{src} → {tgt} 변환기",
       "lead": {
         "extractAudio": "{src} 파일의 소리를 {tgtFiles} 파일로 온라인에서 추출해요.",
-        "convert": "{src} 파일을 {tgtKind, select, category {{tgtFiles}} other {{tgt}}} 형식으로 온라인에서 변환해요."
+        "convert": "{src} 파일을 {tgt} 형식으로 온라인에서 변환해요."
       }
     },
     "format": {
@@ -1115,13 +1116,7 @@
         "cad": "CAD 도면",
         "spreadsheet": "스프레드시트",
         "presentation": "프레젠테이션",
-        "data": "데이터",
-        "word": "Word",
-        "excel": "Excel",
-        "powerpoint": "PowerPoint",
-        "photo": "사진",
-        "picture": "그림",
-        "music": "음악"
+        "data": "데이터"
       },
       "kind": {
         "audio": "{name} 오디오",
@@ -1154,18 +1149,11 @@
       "title": "웹사이트 {format} 스크린샷",
       "description": "공개된 웹 페이지를 주소로 불러와 {format} 이미지로 캡처해요."
     },
-    "generic": {
-      "title": "{name} 변환기",
-      "description": "{name} 파일을 온라인에서 변환해요."
-    },
     "names": {
       "Video": "동영상",
       "Audio": "오디오",
       "Image": "이미지",
       "Vector": "벡터",
-      "Word": "Word",
-      "Excel": "Excel",
-      "PowerPoint": "PowerPoint",
       "Document": "문서",
       "Spreadsheet": "스프레드시트",
       "Archive": "압축 파일",
@@ -1173,9 +1161,6 @@
       "Ebook": "전자책",
       "Data": "데이터",
       "Font": "글꼴",
-      "Photo": "사진",
-      "Picture": "그림",
-      "Music": "음악",
       "CAD": "CAD"
     },
     "related": {
@@ -1391,6 +1376,11 @@
   "unitConverterPage": {
     "heading": "통합 단위 변환기",
     "intro": "물리 단위와 디지털 단위 10개 분류를 양방향으로 계산하고, 여러 단위를 한 번에 비교하는 환산표도 보여 줘요."
+  },
+  "notFound": {
+    "code": "페이지 없음",
+    "title": "{route} 경로를 찾을 수 없어요.",
+    "description": "주소를 다시 확인해 주세요."
   },
   "urlImport": {
     "heading": "URL로 파일 추가",

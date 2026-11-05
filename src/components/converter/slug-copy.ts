@@ -45,22 +45,15 @@ const OPTION_SUBJECTS: ReadonlyArray<[OptionSubject, (sections: VisibleOptionsSe
   ['compression', (s) => s.showArchive],
 ];
 
-/** The word of a title (Video, Word, Spreadsheet) in the page's language; a format reads as its id in capitals. */
+/** The word of a title (Video, Spreadsheet) in the page's language; a format reads as its id in capitals. */
 function nameOf(t: SlugCopyTranslator, name: SlugName): string {
-  const key = `names.${name.display}` as NameKey;
-  return t.has(key) ? t(key) : name.display;
+  return name.kind === 'category' ? t(`names.${name.display}` as NameKey) : name.display;
 }
 
-/** The files a name stands for: "videos" for a category, "PNG files" for a format. */
-function filesOf(t: SlugCopyTranslator, name: SlugName): string {
-  return name.kind === 'category' ? t(`files.category.${name.id}`) : t('files.format', { name: name.display });
-}
-
-/** What a format page converts: "videos" for a category, "TTF fonts" for a registered format, "XYZ files" otherwise. */
-function formatPageFiles(t: SlugCopyTranslator, name: SlugName, source: string): string {
-  const category = FORMAT_REGISTRY[source]?.category;
-  if (name.kind === 'category' || !category) return filesOf(t, name);
-  return t(`files.kind.${category}`, { name: name.display });
+/** What a format page converts: "videos" for a category, "TTF fonts" for a format, by the noun of its family. */
+function formatPageFiles(t: SlugCopyTranslator, name: SlugName): string {
+  if (name.kind === 'category') return t(`files.category.${name.id}`);
+  return t(`files.kind.${FORMAT_REGISTRY[name.id].category}`, { name: name.display });
 }
 
 /**
@@ -122,10 +115,11 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
         }),
       };
     case 'pair': {
-      const names = { src: filesOf(t, copy.src), tgt: nameOf(t, copy.tgt), tgtFiles: filesOf(t, copy.tgt), tgtKind: copy.tgt.kind };
-      const extractsAudio = FORMAT_REGISTRY[source]?.category === 'video' && FORMAT_REGISTRY[target]?.category === 'audio';
-      const sourceCategory = FORMAT_REGISTRY[source]?.category;
-      const subjects = sourceCategory && OPTION_INTRO_CATEGORIES.has(sourceCategory)
+      const [src, tgt] = [copy.src.toUpperCase(), copy.tgt.toUpperCase()];
+      const names = { src: t('files.format', { name: src }), tgt, tgtFiles: t('files.format', { name: tgt }) };
+      const sourceCategory = FORMAT_REGISTRY[source].category;
+      const extractsAudio = sourceCategory === 'video' && FORMAT_REGISTRY[target].category === 'audio';
+      const subjects = OPTION_INTRO_CATEGORIES.has(sourceCategory)
         ? optionSubjects(source, target).map((subject) => t(`subjects.${subject}`))
         : [];
       const description = introOf(
@@ -134,11 +128,11 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
         (formats) => t('related.pair', { formats: LIST_OF[locale](formats) }),
         subjects.length > 0 ? [t('options', { subjects: LIST_OF[locale](subjects), count: subjects.length })] : []
       );
-      return { title: t('pair.title', { src: nameOf(t, copy.src), tgt: names.tgt }), description };
+      return { title: t('pair.title', { src, tgt }), description };
     }
     case 'format': {
       const description = introOf(
-        t('format.lead', { files: formatPageFiles(t, copy.name, source) }),
+        t('format.lead', { files: formatPageFiles(t, copy.name) }),
         relatedTargets(source, source),
         (formats) => t('related.format', { formats: LIST_OF[locale](formats) }),
         []
@@ -156,7 +150,5 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
         title: t('websiteScreenshot.title', { format: copy.format.toUpperCase() }),
         description: t('websiteScreenshot.description', { format: copy.format.toUpperCase() }),
       };
-    case 'generic':
-      return { title: t('generic.title', { name: copy.name }), description: t('generic.description', { name: copy.name }) };
   }
 }

@@ -40,7 +40,7 @@ export const DIRECTORY_CATEGORIES = [
     key: 'video',
     links: [
       { key: 'mp4Converter', href: '/mp4-converter' },
-      { key: 'videoToGif', href: '/video-to-gif' },
+      { key: 'mp4ToGif', href: '/mp4-to-gif' },
       { key: 'movToMp4', href: '/mov-to-mp4' },
       { key: 'videoConverter', href: '/video-converter' },
     ],
@@ -50,7 +50,6 @@ export const DIRECTORY_CATEGORIES = [
     links: [
       { key: 'mp3Converter', href: '/mp3-converter' },
       { key: 'mp4ToMp3', href: '/mp4-to-mp3' },
-      { key: 'videoToMp3', href: '/video-to-mp3' },
       { key: 'audioConverter', href: '/audio-converter' },
     ],
   },
@@ -60,7 +59,6 @@ export const DIRECTORY_CATEGORIES = [
       { key: 'jpgToPdf', href: '/jpg-to-pdf' },
       { key: 'pdfToJpg', href: '/pdf-to-jpg' },
       { key: 'heicToJpg', href: '/heic-to-jpg' },
-      { key: 'imageToPdf', href: '/image-to-pdf' },
       { key: 'imageConverter', href: '/image-converter' },
     ],
   },
@@ -103,7 +101,6 @@ export const DIRECTORY_CATEGORIES = [
     key: 'clientEdge',
     links: [
       { key: 'mp4Remuxer', href: '/mp4-converter' },
-      { key: 'losslessPng', href: '/compress-png' },
       { key: 'vectorConverter', href: '/vector-converter' },
       { key: 'securityArchitecture', href: '/security' },
     ],
