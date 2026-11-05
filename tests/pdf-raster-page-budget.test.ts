@@ -18,8 +18,14 @@ import { planPageRender } from '../src/lib/conversions/pdf-page-render';
 import { UnsupportedOptionError } from '../src/lib/types';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { oracleTest } from './helpers/oracle-test';
+import { buildPdf } from './helpers/pdf-craft';
 
 vi.setConfig({ testTimeout: 120_000 });
+
+function corruptPdfXref(pdf: Buffer): Buffer {
+  const text = pdf.toString('latin1').replace(/xref\s+\d+\s+\d+/, 'xref\nbrokenxref');
+  return Buffer.from(text, 'latin1');
+}
 
 async function withPdftoppmSpy<T>(run: (wasInvoked: () => boolean) => Promise<T>): Promise<T> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdftoppm-spy-'));
@@ -125,6 +131,84 @@ describe('PDF page rasterization pixel budgets', () => {
     const rotatedFrames = await readPdfPageFrames(Buffer.from(await rotatedDoc.save()));
     expect(renderedSizePixels(rotatedFrames[0], 300)).toEqual({ width: 2500, height: 1250 });
     expect(() => assertPdfRasterPageBudget(rotatedFrames, [2], 300)).toThrow(PdfPageFrameError);
+
+    const rotatedHugeDoc = await PDFDocument.create();
+    const rotatedHugePage = rotatedHugeDoc.addPage([3000, 14_400]);
+    rotatedHugePage.setRotation(degrees(90));
+    const rotatedHugePdf = Buffer.from(await rotatedHugeDoc.save());
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(rotatedHugePdf, 'pdf', 'png', { dpi: 600 }, 'rotated-huge.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect((error as InputPixelLimitError).width).toBe(120_000);
+      expect((error as InputPixelLimitError).height).toBe(25_000);
+      expect(wasInvoked()).toBe(false);
+    });
+
+    const nonNumericRotateDoc = await PDFDocument.create();
+    const nonNumericRotatePage = nonNumericRotateDoc.addPage([600, 600]);
+    nonNumericRotatePage.node.set(PDFName.of('Rotate'), PDFString.of('90'));
+    const nonNumericRotatePdf = Buffer.from(await nonNumericRotateDoc.save());
+    await expect(readPdfPageFrames(nonNumericRotatePdf)).rejects.toThrow(/\/Rotate/);
+  });
+
+  it('refuses damaged-xref PDFs and malformed page catalogs before pdftoppm starts', async () => {
+    const rawSignedPdf = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 +14400 14400.]' },
+        ],
+        1
+      ).buffer
+    );
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(rawSignedPdf, 'pdf', 'png', { dpi: 600 }, 'damaged-huge.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect((error as InputPixelLimitError).width).toBe(120_000);
+      expect((error as InputPixelLimitError).height).toBe(120_000);
+      expect(wasInvoked()).toBe(false);
+    });
+
+    const rawUserUnitPdf = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /UserUnit 25' },
+        ],
+        1
+      ).buffer
+    );
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(rawUserUnitPdf, 'pdf', 'png', { dpi: 600 }, 'damaged-unit.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect((error as InputPixelLimitError).width).toBe(125_000);
+      expect((error as InputPixelLimitError).height).toBe(125_000);
+      expect(wasInvoked()).toBe(false);
+    });
+
+    const damagedFortyA4 = corruptPdfXref(await createPdfWithPages(40, [595.28, 841.89]));
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(damagedFortyA4, 'pdf', 'png', { dpi: 600 }, 'damaged-forty.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
+      expect(wasInvoked()).toBe(false);
+    });
+
+    const jsActionPagesCatalog = buildPdf(
+      [
+        { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+        { id: 2, dict: '/S /JavaScript /JS (func=function(){};func();)' },
+        { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 200 100]' },
+      ],
+      1
+    ).buffer;
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(jsActionPagesCatalog, 'pdf', 'png', { dpi: 300 }, 'bad-catalog.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(PdfPageFrameError);
+      expect(wasInvoked()).toBe(false);
+    });
   });
 
   it('refuses a 40-page A4 PDF at 600 DPI exceeding the 400 MP aggregate budget before pdftoppm starts', async () => {

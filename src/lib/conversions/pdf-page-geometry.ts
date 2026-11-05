@@ -88,8 +88,25 @@ export function normaliseLeafPageCatalog(doc: PDFDocument): void {
   }
 }
 
-const RAW_PAGE_BOX_PATTERN =
-  /\/(?:MediaBox|CropBox)\s*\[\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\]/g;
+const RAW_NUMBER_TOKEN = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
+const RAW_PAGE_BOX_PATTERN = new RegExp(
+  `\\/(?:MediaBox|CropBox)\\s*\\[\\s*(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s*\\]`,
+  'g'
+);
+const RAW_USER_UNIT_PATTERN = new RegExp(`\\/UserUnit\\s+(${RAW_NUMBER_TOKEN})`, 'g');
+
+function readPageCropBox(page: PDFPage, pageNumber: number): PdfBox {
+  let crop: ReturnType<typeof page.getCropBox>;
+  try {
+    crop = page.getCropBox();
+  } catch (err) {
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  if (!(crop.width > 0) || !(crop.height > 0) || !Number.isFinite(crop.x) || !Number.isFinite(crop.y)) {
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has an empty or unreadable CropBox.`);
+  }
+  return { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height };
+}
 
 function readPageUserUnit(page: PDFPage, pageNumber: number): number | undefined {
   const unitObj = page.node.lookup(PDFName.of('UserUnit'));
@@ -104,43 +121,25 @@ function readPageUserUnit(page: PDFPage, pageNumber: number): number | undefined
   return rawUnit === 1 ? undefined : rawUnit;
 }
 
-function readPageCropAndUnit(
-  page: PDFPage,
-  pageNumber: number
-): { cropBox: PdfBox; angle: number; userUnit?: number } {
-  let crop: ReturnType<typeof page.getCropBox>;
+function readPageRotation(page: PDFPage, pageNumber: number): OcrQuarterTurn {
   let angle: number;
   try {
-    crop = page.getCropBox();
     angle = page.getRotation().angle;
   } catch (err) {
-    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has an unreadable /Rotate entry (${err instanceof Error ? err.message : String(err)}).`);
   }
-  if (!(crop.width > 0) || !(crop.height > 0) || !Number.isFinite(crop.x) || !Number.isFinite(crop.y)) {
-    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has an empty or unreadable CropBox.`);
-  }
-  const userUnit = readPageUserUnit(page, pageNumber);
-  return {
-    cropBox: { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height },
-    angle,
-    ...(userUnit === undefined ? {} : { userUnit }),
-  };
+  return normalizePdfRotation(angle);
 }
 
-function assertRawPdfBoxesWithinPageLimit(pdf: Buffer | Uint8Array, dpi: number): void {
-  const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
-  const text = Buffer.isBuffer(pdf) ? pdf.toString('latin1') : Buffer.from(pdf.buffer, pdf.byteOffset, pdf.byteLength).toString('latin1');
-  for (const match of text.matchAll(RAW_PAGE_BOX_PATTERN)) {
-    const w = Math.abs(Number(match[3]) - Number(match[1]));
-    const h = Math.abs(Number(match[4]) - Number(match[2]));
-    if (!(w > 0) || !(h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
-    const widthPx = Math.ceil((w * dpi) / POINTS_PER_INCH);
-    const heightPx = Math.ceil((h * dpi) / POINTS_PER_INCH);
-    const pixels = widthPx * heightPx;
-    if (!Number.isFinite(pixels) || pixels > perPageLimit) {
-      throw new InputPixelLimitError(perPageLimit, widthPx, heightPx, `PDF page at ${dpi} DPI`);
-    }
-  }
+function readPageFrame(page: PDFPage, pageNumber: number): PdfPageFrame {
+  const cropBox = readPageCropBox(page, pageNumber);
+  const userUnit = readPageUserUnit(page, pageNumber);
+  const rotation = readPageRotation(page, pageNumber);
+  return {
+    cropBox,
+    rotation,
+    ...(userUnit === undefined ? {} : { userUnit }),
+  };
 }
 
 /** The frame of every page of a PDF, in page order. */
@@ -158,14 +157,7 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
   } catch (err) {
     throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
-  return pages.map((page, index) => {
-    const { cropBox, angle, userUnit } = readPageCropAndUnit(page, index + 1);
-    return {
-      cropBox,
-      rotation: normalizePdfRotation(angle),
-      ...(userUnit === undefined ? {} : { userUnit }),
-    };
-  });
+  return pages.map((page, index) => readPageFrame(page, index + 1));
 }
 
 /** Size in points of the page as displayed: the CropBox, with width and height swapped by a quarter turn. */
@@ -183,6 +175,100 @@ export function renderedSizePixels(frame: PdfPageFrame, dpi: number): { width: n
   return { width: Math.ceil((size.width * dpi) / POINTS_PER_INCH), height: Math.ceil((size.height * dpi) / POINTS_PER_INCH) };
 }
 
+function assertPageWithinPixelLimit(frame: PdfPageFrame, pageNumber: number, dpi: number, perPageLimit: number): number {
+  const { width: widthPx, height: heightPx } = renderedSizePixels(frame, dpi);
+  const pixels = widthPx * heightPx;
+  if (!Number.isFinite(pixels) || pixels > perPageLimit) {
+    throw new InputPixelLimitError(perPageLimit, widthPx, heightPx, `PDF page ${pageNumber} at ${dpi} DPI`);
+  }
+  return pixels;
+}
+
+function assertAggregatePixelLimit(totalPixels: number, pageCount: number, dpi: number): void {
+  if (!Number.isFinite(totalPixels) || totalPixels > MAX_RASTER_AGGREGATE_PIXELS) {
+    throw new InputPixelLimitError(
+      MAX_RASTER_AGGREGATE_PIXELS,
+      undefined,
+      undefined,
+      `${pageCount} selected PDF pages at ${dpi} DPI (${totalPixels} pixels in total)`
+    );
+  }
+}
+
+function checkPageFrameWithBudget(page: PDFPage, pageNumber: number, dpi: number, perPageLimit: number): number {
+  const cropBox = readPageCropBox(page, pageNumber);
+  let userUnit: number | undefined;
+  let rotation: OcrQuarterTurn = 0;
+  let frameError: unknown;
+  try {
+    userUnit = readPageUserUnit(page, pageNumber);
+    rotation = readPageRotation(page, pageNumber);
+  } catch (err) {
+    frameError = err;
+  }
+  const pixels = assertPageWithinPixelLimit(
+    { cropBox, rotation, ...(userUnit === undefined ? {} : { userUnit }) },
+    pageNumber,
+    dpi,
+    perPageLimit
+  );
+  if (frameError !== undefined) {
+    throw frameError;
+  }
+  return pixels;
+}
+
+function maxRawUserUnit(text: string): number {
+  let unit = 1;
+  for (const match of text.matchAll(RAW_USER_UNIT_PATTERN)) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed > unit) {
+      unit = parsed;
+    }
+  }
+  return unit;
+}
+
+function extractRawPdfBoxes(text: string, unit: number): PdfPageFrame[] {
+  const frames: PdfPageFrame[] = [];
+  for (const match of text.matchAll(RAW_PAGE_BOX_PATTERN)) {
+    const w = Math.abs(Number(match[3]) - Number(match[1]));
+    const h = Math.abs(Number(match[4]) - Number(match[2]));
+    if (!(w > 0) || !(h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+    frames.push({
+      cropBox: { x0: 0, y0: 0, x1: w, y1: h },
+      rotation: 0,
+      ...(unit > 1 ? { userUnit: unit } : {}),
+    });
+  }
+  return frames;
+}
+
+function assertRawPdfBoxesWithinPageLimit(
+  pdf: Buffer | Uint8Array,
+  selectPageNumbers: (pageCount: number) => readonly number[],
+  dpi: number
+): void {
+  const text = Buffer.isBuffer(pdf) ? pdf.toString('latin1') : Buffer.from(pdf.buffer, pdf.byteOffset, pdf.byteLength).toString('latin1');
+  const frames = extractRawPdfBoxes(text, maxRawUserUnit(text));
+  if (frames.length === 0) return;
+  const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
+  for (let i = 0; i < frames.length; i++) {
+    assertPageWithinPixelLimit(frames[i], i + 1, dpi, perPageLimit);
+  }
+  const selected = selectPageNumbers(frames.length).filter((pageNum) => pageNum >= 1 && pageNum <= frames.length);
+  let totalPixels = 0;
+  for (const pageNum of selected) {
+    const { width: widthPx, height: heightPx } = renderedSizePixels(frames[pageNum - 1], dpi);
+    totalPixels += widthPx * heightPx;
+  }
+  assertAggregatePixelLimit(totalPixels, selected.length, dpi);
+}
+
+function isTruncatedObjectRefError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('Invalid object ref:');
+}
+
 export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageNumbers: readonly number[], dpi: number): void {
   const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
   let totalPixels = 0;
@@ -191,21 +277,9 @@ export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageN
     if (!frame) {
       throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
     }
-    const { width, height } = renderedSizePixels(frame, dpi);
-    const pixels = width * height;
-    if (!Number.isFinite(pixels) || pixels > perPageLimit) {
-      throw new InputPixelLimitError(perPageLimit, width, height, `PDF page ${pageNumber} at ${dpi} DPI`);
-    }
-    totalPixels += pixels;
+    totalPixels += assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
   }
-  if (!Number.isFinite(totalPixels) || totalPixels > MAX_RASTER_AGGREGATE_PIXELS) {
-    throw new InputPixelLimitError(
-      MAX_RASTER_AGGREGATE_PIXELS,
-      undefined,
-      undefined,
-      `${pageNumbers.length} selected PDF pages at ${dpi} DPI (${totalPixels} pixels in total)`
-    );
-  }
+  assertAggregatePixelLimit(totalPixels, pageNumbers.length, dpi);
 }
 
 export async function checkPdfRasterPageBudget(
@@ -213,14 +287,26 @@ export async function checkPdfRasterPageBudget(
   selectPageNumbers: (pageCount: number) => readonly number[],
   dpi: number
 ): Promise<void> {
+  let doc: PDFDocument;
+  try {
+    doc = await PDFDocument.load(pdf, { updateMetadata: false });
+  } catch {
+    assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
+    return;
+  }
   let pages: PDFPage[];
   try {
-    const doc = await PDFDocument.load(pdf, { updateMetadata: false });
     normaliseLeafPageCatalog(doc);
     pages = doc.getPages();
-  } catch {
-    assertRawPdfBoxesWithinPageLimit(pdf, dpi);
-    return;
+  } catch (err) {
+    if (err instanceof PdfPageFrameError) {
+      throw err;
+    }
+    if (isTruncatedObjectRefError(err)) {
+      assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
+      return;
+    }
+    throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
   if (pages.length === 0) return;
   const pageNumbers = selectPageNumbers(pages.length);
@@ -231,25 +317,9 @@ export async function checkPdfRasterPageBudget(
     if (!page) {
       throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
     }
-    const { cropBox, angle, userUnit } = readPageCropAndUnit(page, pageNumber);
-    const unit = Math.max(1, userUnit ?? 1);
-    const unrotatedWidthPx = Math.ceil((width(cropBox) * unit * dpi) / POINTS_PER_INCH);
-    const unrotatedHeightPx = Math.ceil((height(cropBox) * unit * dpi) / POINTS_PER_INCH);
-    const pixels = unrotatedWidthPx * unrotatedHeightPx;
-    if (!Number.isFinite(pixels) || pixels > perPageLimit) {
-      throw new InputPixelLimitError(perPageLimit, unrotatedWidthPx, unrotatedHeightPx, `PDF page ${pageNumber} at ${dpi} DPI`);
-    }
-    normalizePdfRotation(angle);
-    totalPixels += pixels;
+    totalPixels += checkPageFrameWithBudget(page, pageNumber, dpi, perPageLimit);
   }
-  if (!Number.isFinite(totalPixels) || totalPixels > MAX_RASTER_AGGREGATE_PIXELS) {
-    throw new InputPixelLimitError(
-      MAX_RASTER_AGGREGATE_PIXELS,
-      undefined,
-      undefined,
-      `${pageNumbers.length} selected PDF pages at ${dpi} DPI (${totalPixels} pixels in total)`
-    );
-  }
+  assertAggregatePixelLimit(totalPixels, pageNumbers.length, dpi);
 }
 
 /**
