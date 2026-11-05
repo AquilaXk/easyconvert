@@ -115,8 +115,13 @@ class JpegCatalog {
   private async open(lib: PdfLib): Promise<PDFDocument | null> {
     if (this.document === undefined) {
       try {
-        this.document = await lib.PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
-        normaliseLeafPageCatalogWithLib(this.document, lib);
+        const doc = await lib.PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
+        if (normaliseLeafPageCatalogWithLib(doc, lib)) {
+          doc.getPages();
+          this.document = doc;
+        } else {
+          this.document = null;
+        }
       } catch {
         this.document = null;
       }

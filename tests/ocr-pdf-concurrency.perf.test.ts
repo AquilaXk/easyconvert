@@ -198,11 +198,13 @@ describe('recognizing the pages of a scanned PDF', () => {
         })
       );
       const pages = Array.from({ length: FOUR_PAGES }, () => ({ buffer: fixtureImage('en_a', 'clean300') }));
+      const multiBandPage = fs.readFileSync(path.join(__dirname, '..', 'bench', 'corpus', 'scan.png'));
       const warmSpy = vi.spyOn(pool, 'warm');
       const prevEnv = process.env[OCR_PAGE_CONCURRENCY_ENV];
       try {
         process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
         await recognizePdfPages(pages, 'eng', undefined, false);
+        await recognizePdfPages([{ buffer: multiBandPage }], 'eng', undefined, false);
         expect(peak).toBe(1);
         expect(warmSpy).not.toHaveBeenCalled();
         delete process.env[OCR_PAGE_CONCURRENCY_ENV];

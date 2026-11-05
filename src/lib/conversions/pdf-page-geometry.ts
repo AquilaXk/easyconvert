@@ -78,7 +78,9 @@ export function normalizePdfRotation(angle: number): OcrQuarterTurn {
 }
 
 export function normaliseLeafPageCatalog(doc: PDFDocument): void {
-  normaliseLeafPageCatalogWithLib(doc, { PDFCatalog, PDFName, PDFPageLeaf, PDFPageTree, PDFRef });
+  if (!normaliseLeafPageCatalogWithLib(doc, { PDFCatalog, PDFName, PDFPageLeaf, PDFPageTree, PDFRef })) {
+    throw new PdfPageFrameError('Invalid PDF: the /Pages entry of the catalog is missing or is not a page tree dictionary typed /Type /Pages.');
+  }
 }
 
 /** The frame of every page of a PDF, in page order. */
@@ -90,9 +92,6 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
     throw new PdfPageFrameError(`Invalid PDF: the page boxes could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
   normaliseLeafPageCatalog(doc);
-  if (!(doc.catalog.lookup(PDFName.of('Pages')) instanceof PDFPageTree)) {
-    throw new PdfPageFrameError('Invalid PDF: the /Pages entry of the catalog is missing or is not a page tree dictionary typed /Type /Pages.');
-  }
   let pages: PDFPage[];
   try {
     pages = doc.getPages();

@@ -216,15 +216,18 @@ export interface PdfTextJobResult {
 
 export type PdfLeafCatalogLib = Pick<typeof import('pdf-lib'), 'PDFCatalog' | 'PDFName' | 'PDFPageLeaf' | 'PDFPageTree' | 'PDFRef'>;
 
-export function normaliseLeafPageCatalogWithLib(doc: PDFDocument, lib: PdfLeafCatalogLib): void {
-  if (!(doc.catalog instanceof lib.PDFCatalog)) return;
-  const pagesRef = doc.catalog.get(lib.PDFName.of('Pages'));
-  const pagesEntry = doc.catalog.lookup(lib.PDFName.of('Pages'));
+export function normaliseLeafPageCatalogWithLib(doc: PDFDocument, lib: PdfLeafCatalogLib): boolean {
+  if (!(doc.catalog instanceof lib.PDFCatalog)) return false;
+  const pagesName = lib.PDFName.of('Pages');
+  const pagesRef = doc.catalog.get(pagesName);
+  const pagesEntry = doc.catalog.lookup(pagesName);
   if (pagesRef instanceof lib.PDFRef && pagesEntry instanceof lib.PDFPageLeaf && !pagesEntry.has(lib.PDFName.of('Kids'))) {
     const tree = lib.PDFPageTree.withContext(doc.context);
     tree.pushLeafNode(pagesRef);
     const treeRef = doc.context.register(tree);
     pagesEntry.set(lib.PDFName.of('Parent'), treeRef);
-    doc.catalog.set(lib.PDFName.of('Pages'), treeRef);
+    doc.catalog.set(pagesName, treeRef);
+    return true;
   }
+  return pagesEntry instanceof lib.PDFPageTree;
 }
