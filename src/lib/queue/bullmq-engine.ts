@@ -523,16 +523,18 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   _onJobCompleted(job: Job<T, R>, _result: R): boolean {
-    job.state = 'completed';
-    job.finishedOn = job.finishedOn || Date.now();
-    this.keepEndedJobs(job, 'completed', keepJobsOf(job.opts?.removeOnComplete));
-    return true;
+    return this.finishJob(job, 'completed', job.opts?.removeOnComplete);
   }
 
   _onJobFailed(job: Job<T, R>, _err: any): boolean {
-    job.state = 'failed';
+    return this.finishJob(job, 'failed', job.opts?.removeOnFail);
+  }
+
+  private finishJob(job: Job<T, R>, state: 'completed' | 'failed', keepOpt: boolean | number | KeepJobs | undefined): boolean {
+    if (!this.jobs.has(job.id)) return false;
+    job.state = state;
     job.finishedOn = job.finishedOn || Date.now();
-    this.keepEndedJobs(job, 'failed', keepJobsOf(job.opts?.removeOnFail));
+    this.keepEndedJobs(job, state, keepJobsOf(keepOpt));
     return true;
   }
 
@@ -541,9 +543,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       this.removeJob(job);
       return;
     }
-    if (keep.age !== undefined) {
-      this.removeEndedBefore(state, Date.now() - keep.age * 1000, Number.POSITIVE_INFINITY);
-    }
+    if (keep.age !== undefined) void this.clean(keep.age * 1000, Number.POSITIVE_INFINITY, state);
     if (keep.count !== undefined && keep.count > 0) {
       const older = Array.from(this.jobs.values())
         .filter((j) => j.state === state)
@@ -577,7 +577,9 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
   async remove(id: string): Promise<boolean> {
     const job = this.jobs.get(id);
-    if (!job || job.state === 'active') return false;
+    if (job?.state === 'active') return false;
+    this.dlq = this.dlq.filter((entry) => entry.jobId !== id);
+    if (!job) return false;
     this.waitingIds = this.waitingIds.filter((wid) => wid !== id);
     this.delayedIds = this.delayedIds.filter((did) => did !== id);
     const timer = this.delayTimers.get(id);
@@ -1816,7 +1818,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (!client) return this.memoryFallback.remove(id);
     await this.assertRedisConnected();
     try {
-      return await removeStoredJob(client, this.keySpace, id);
+      return await removeStoredJob(client, this.keySpace, id, true);
     } catch (err) {
       throw this.toQueueUnavailable(err);
     }

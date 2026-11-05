@@ -419,11 +419,12 @@ if (origConversionQueueRequeue) {
 
 const origConversionQueueClean = conversionQueue.clean.bind(conversionQueue);
 conversionQueue.clean = async (grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled') => {
-  const [direct, ...otherLists] = await Promise.all([
-    origConversionQueueClean(grace, limit, type),
-    ...Object.values(resourceQueues).map((q) => q.clean(grace, limit, type)),
-  ]);
-  return direct.concat(...otherLists).slice(0, limit);
+  const removed: string[] = [];
+  for (const q of [{ clean: origConversionQueueClean }, ...Object.values(resourceQueues)]) {
+    if (removed.length >= limit) break;
+    removed.push(...(await q.clean(grace, limit - removed.length, type)));
+  }
+  return removed;
 };
 
 const origConversionQueueRemove = conversionQueue.remove.bind(conversionQueue);

@@ -602,13 +602,19 @@ export class KeyStore {
     return true;
   }
 
-  /** Removes the daily conversion counts of `userId` kept in this process (`<userId>:<day>`), and answers how many it removed. */
+  /** Removes the daily conversion counts and file listings of `userId` kept in this process, and answers how many it removed. */
   public forgetUsage(userId: string): number {
     this.ensureInitialized();
     const owned = [...this.dailyUsage.keys()].filter((dateKey) => dateKey.startsWith(`${userId}:`));
     owned.forEach((dateKey) => this.dailyUsage.delete(dateKey));
-    if (owned.length > 0) this.persist();
-    return owned.length;
+    const ownedFiles = [...this.userFiles.entries()].filter(([, file]) => file.userId === userId);
+    for (const [id, file] of ownedFiles) {
+      if (file.storageKey) globalSharedObjects.delete(file.storageKey);
+      this.userFiles.delete(id);
+    }
+    const removed = owned.length + ownedFiles.length;
+    if (removed > 0) this.persist();
+    return removed;
   }
 
   public resetStore() {

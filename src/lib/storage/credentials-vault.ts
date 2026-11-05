@@ -351,9 +351,10 @@ export class CredentialsVault {
       }
     }
 
-    for (const envelope of this.inMemoryStore.values()) {
+    for (const [id, envelope] of this.inMemoryStore.entries()) {
       if (envelope.userId === userId) {
         if (envelope.expiresAt && now > envelope.expiresAt) {
+          this.inMemoryStore.delete(id);
           continue;
         }
         results.push({
@@ -368,6 +369,10 @@ export class CredentialsVault {
     }
 
     return results;
+  }
+
+  async listByUser(userId: string): Promise<CredentialSummary[]> {
+    return this.list(userId);
   }
 
   /**

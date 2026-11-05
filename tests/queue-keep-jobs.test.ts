@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Queue, type JobOptions } from '../src/lib/queue/bullmq-engine';
+import { conversionQueue, resourceQueues } from '../src/lib/queue/conversion-queue';
+import { enqueueConversionJob, endedJobRetentionMs } from '../src/lib/queue/enqueue';
 
 const AGE_SECONDS = 60;
 
@@ -49,5 +51,70 @@ describe('In-process queue: ended jobs kept as KeepJobs says', () => {
 
     expect(await queue.clean(AGE_SECONDS * 1000, 10, 'failed')).toEqual([failed.id]);
     expect(await queue.getDlqEntries()).toEqual([]);
+  });
+
+  it('delegates completion and failure through conversionQueue to the owning resourceQueue so KeepJobs runs on it', async () => {
+    const completedResult = (jobId: string) => ({
+      jobId,
+      status: 'completed' as const,
+      resultKey: `results/${jobId}/0/out.json`,
+      downloadUrl: `/api/storage/file/results%2F${jobId}%2F0%2Fout.json`,
+      filename: 'out.json',
+      mimeType: 'application/json',
+      size: 2,
+      durationMs: 1,
+    });
+    const oldCompleted = await enqueueConversionJob(
+      resourceQueues.light,
+      'convert',
+      { jobId: '', originalFilename: 'old-ok.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: 'u-routed' },
+      { attempts: 1 },
+      { tier: 'free', inputBytes: 4 }
+    );
+    const poppedOldOk = await conversionQueue._popNextWaiting?.();
+    expect(poppedOldOk?.id).toBe(oldCompleted.id);
+    expect(await conversionQueue._onJobCompleted?.(poppedOldOk!, completedResult(oldCompleted.id))).toBe(true);
+    oldCompleted.state = 'completed';
+    oldCompleted.finishedOn = Date.now() - endedJobRetentionMs() - 1000;
+
+    const latestCompleted = await enqueueConversionJob(
+      resourceQueues.light,
+      'convert',
+      { jobId: '', originalFilename: 'new-ok.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: 'u-routed' },
+      { attempts: 1 },
+      { tier: 'free', inputBytes: 4 }
+    );
+    const poppedNewOk = await conversionQueue._popNextWaiting?.();
+    expect(poppedNewOk?.id).toBe(latestCompleted.id);
+    expect(await conversionQueue._onJobCompleted?.(poppedNewOk!, completedResult(latestCompleted.id))).toBe(true);
+    expect(await resourceQueues.light.getJob(oldCompleted.id)).toBeUndefined();
+    await conversionQueue.remove(latestCompleted.id);
+
+    const oldFailed = await enqueueConversionJob(
+      resourceQueues.light,
+      'convert',
+      { jobId: '', originalFilename: 'old-fail.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: 'u-routed' },
+      { attempts: 1 },
+      { tier: 'free', inputBytes: 4 }
+    );
+    const poppedOldFail = await conversionQueue._popNextWaiting?.();
+    expect(poppedOldFail?.id).toBe(oldFailed.id);
+    expect(await conversionQueue._onJobFailed?.(poppedOldFail!, new Error('failed'))).toBe(true);
+    oldFailed.state = 'failed';
+    oldFailed.finishedOn = Date.now() - endedJobRetentionMs() - 1000;
+
+    const latestFailed = await enqueueConversionJob(
+      resourceQueues.light,
+      'convert',
+      { jobId: '', originalFilename: 'new-fail.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: 'u-routed' },
+      { attempts: 1 },
+      { tier: 'free', inputBytes: 4 }
+    );
+    const poppedNewFail = await conversionQueue._popNextWaiting?.();
+    expect(poppedNewFail?.id).toBe(latestFailed.id);
+    expect(await conversionQueue._onJobFailed?.(poppedNewFail!, new Error('failed'))).toBe(true);
+    expect(await resourceQueues.light.getJob(oldFailed.id)).toBeUndefined();
+    await conversionQueue.remove(latestFailed.id);
+    expect(await conversionQueue.getJobsByUser('u-routed')).toEqual([]);
   });
 });

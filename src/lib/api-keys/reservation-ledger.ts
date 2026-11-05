@@ -173,6 +173,14 @@ export class MemoryReservationLedger implements ReservationLedger {
     this.reservations.clear();
   }
 
+  /** Forgets every reservation of `owner`. */
+  forgetOwner(owner: string): void {
+    const prefix = `${owner}:`;
+    for (const [id, reservation] of this.reservations) {
+      if (reservation.dateKey.startsWith(prefix)) this.reservations.delete(id);
+    }
+  }
+
   /** Gives back the units of every lease that ended by `now`; answers how many it gave back. */
   reclaim(now: number = Date.now()): number {
     let reclaimed = 0;

@@ -39,7 +39,7 @@ export interface RedisGraphSchedulerOptions {
 }
 
 /** The Redis commands this scheduler sends. */
-const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem']);
+const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem', 'del', 'hget', 'scan']);
 const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
 
 /**
@@ -323,6 +323,27 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     return [...new Set(values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : [])))];
   }
 
+  async graphsOfUser(userId: string): Promise<string[]> {
+    const prefix = `${this.keyPrefix}graph:{`;
+    const graphIds: string[] = [];
+    let cursor = '0';
+    do {
+      const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${prefix}*}`, 'COUNT', 500);
+      for (const key of keys) {
+        if (!key.endsWith('}')) continue;
+        if ((await this.redisClient.hget(key, 'owner')) === userId) {
+          graphIds.push(key.slice(prefix.length, -1));
+        }
+      }
+      cursor = next;
+    } while (cursor !== '0');
+    return graphIds.sort();
+  }
+
+  async deleteGraph(graphId: string): Promise<void> {
+    const k = this.graphKeys(graphId);
+    await this.redisClient.del(k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox);
+  }
 }
 
 /** The input keys a script returned for an ended graph; a corrupt list is logged and none are released. */

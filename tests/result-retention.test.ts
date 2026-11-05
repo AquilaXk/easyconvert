@@ -951,7 +951,7 @@ describe('the sweep timer', () => {
     fs.rmSync(ledgerDir, { recursive: true, force: true });
   });
 
-  const SETTLE_HANG_GUARD_MS = 10_000;
+  const SETTLE_HANG_GUARD_MS = 2_000;
 
   async function dueKey(): Promise<string> {
     const key = `conversions/sweep-timer/${Date.now()}_${crypto.randomBytes(4).toString('hex')}.bin`;
@@ -977,8 +977,29 @@ describe('the sweep timer', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    const baseLedger = new FileRetentionLedger(ledgerDir);
+    let holdFirstSweep = true;
+    setRetentionLedger({
+      get: (key) => baseLedger.get(key),
+      update: async (key, change) => {
+        if (key === 'hold') {
+          await gate;
+          change({ key, createdAt: 0, deleteAt: 0, goneAt: 1, received: [] });
+          return undefined;
+        }
+        return baseLedger.update(key, change);
+      },
+      forget: (key) => baseLedger.forget(key),
+      collectDue: async (now, limit) => {
+        const due = await baseLedger.collectDue(now, limit);
+        if (!holdFirstSweep) return due;
+        holdFirstSweep = false;
+        return [...due, 'hold'];
+      },
+      liveRecords: () => baseLedger.liveRecords(),
+    });
     const deletions: string[] = [];
-    const storage = { deleteObject: async (key: string) => (deletions.push(key), await gate, true) };
+    const storage = { deleteObject: async (key: string) => (deletions.push(key), true) };
     const first = await dueKey();
 
     startRetentionSweep(storage);

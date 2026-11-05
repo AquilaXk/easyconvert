@@ -3,15 +3,18 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { graphScheduler } from '../src/lib/queue/graph/scheduler';
 import { CANCELLABLE_JOB_STATES, type JobState } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
+import { credentialsVault } from '../src/lib/storage/credentials-vault';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
-import { deleteResult } from '../src/lib/storage/retention-service';
 
 export interface AccountErasurePlan {
   userId: string;
   email: string;
   apiKeyIds: string[];
+  credentialIds?: string[];
+  graphIds?: string[];
   jobs: { id: string; state: JobState }[];
   storedKeys: string[];
   deadLetters: number;
@@ -44,10 +47,31 @@ async function accountTaggedKeys(userId: string): Promise<string[]> {
   return keys.sort();
 }
 
-async function accountStoredKeys(userId: string, jobIds: readonly string[]): Promise<string[]> {
-  const prefixes = [`conversions/${userId}/`, ...jobIds.map((id) => `results/${id}/`)];
-  const records = await getRetentionLedger().liveRecords();
-  return records.map((record) => record.key).filter((key) => prefixes.some((prefix) => key.startsWith(prefix))).sort();
+async function accountGraphIds(
+  userId: string,
+  jobs: readonly { id: string; data?: { graphId?: string } }[]
+): Promise<string[]> {
+  const ids = new Set<string>(await graphScheduler.graphsOfUser?.(userId));
+  for (const job of jobs) {
+    const graphId = job.data?.graphId || (job.id.includes(':') ? job.id.split(':')[0] : undefined);
+    if (graphId) ids.add(graphId);
+  }
+  return [...ids].sort();
+}
+
+async function accountStoredKeys(
+  userId: string,
+  jobIds: readonly string[],
+  graphIds: readonly string[]
+): Promise<string[]> {
+  const prefixes = [
+    `conversions/${userId}/`,
+    ...jobIds.map((id) => `results/${id}/`),
+    ...graphIds.map((id) => `results/${id}/`),
+  ];
+  const ledger = getRetentionLedger();
+  const keys = ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key);
+  return keys.filter((key) => prefixes.some((prefix) => key.startsWith(prefix))).sort();
 }
 
 /** What erasing the account `idOrEmail` deletes, or undefined when there is no such account. Changes nothing. */
@@ -55,18 +79,22 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
   const account = await findAccount(idOrEmail);
   if (!account) return undefined;
   const userId = account.id;
-  const [keys, jobs, letters, taggedKeys] = await Promise.all([
+  const [keys, credentials, jobs, letters, taggedKeys] = await Promise.all([
     redisKeyStore.listApiKeys(userId),
+    credentialsVault.listByUser(userId),
     conversionQueue.getJobsByUser(userId, undefined, MAX_JOBS_PER_RUN, 0),
     webhookDispatcher.getDlqEntries(userId),
     accountTaggedKeys(userId),
   ]);
+  const graphIds = await accountGraphIds(userId, jobs);
   return {
     userId,
     email: account.email,
     apiKeyIds: keys.map((key) => key.id),
+    credentialIds: credentials.map((cred) => cred.id),
+    graphIds,
     jobs: jobs.map((job) => ({ id: job.id, state: job.state })),
-    storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id)),
+    storedKeys: await accountStoredKeys(userId, jobs.map((job) => job.id), graphIds),
     deadLetters: letters.length,
     taggedKeys,
   };
@@ -74,15 +102,33 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
 
 export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountErasureOutcome> {
   const { userId } = plan;
+  const graphIds = plan.graphIds ?? (await accountGraphIds(userId, plan.jobs));
+  for (const graphId of graphIds) {
+    await graphScheduler.cancelGraph(graphId, 'The account was deleted');
+  }
   for (const job of plan.jobs) {
     if (CANCELLABLE_JOB_STATES.has(job.state)) await conversionQueue.cancelJob(job.id, 'The account was deleted');
   }
   const runningJobIds: string[] = [];
   for (const job of plan.jobs) {
-    if (!(await conversionQueue.remove(job.id))) runningJobIds.push(job.id);
+    if (!(await conversionQueue.remove(job.id)) && (await conversionQueue.getJob(job.id))) {
+      runningJobIds.push(job.id);
+    }
   }
-  for (const key of plan.storedKeys) await deleteResult(storageProvider, key);
+  for (const graphId of graphIds) {
+    await graphScheduler.deleteGraph?.(graphId);
+    await storageProvider.deleteByPrefix?.(`results/${graphId}/`);
+  }
+  const ledger = getRetentionLedger();
+  for (const key of plan.storedKeys) {
+    await Promise.resolve(storageProvider.deleteObject(key)).catch(() => false);
+    await ledger.forget(key);
+  }
   await storageProvider.deleteByPrefix?.(`conversions/${userId}/`);
+  const credentialIds = plan.credentialIds ?? (await credentialsVault.listByUser(userId)).map((cred) => cred.id);
+  for (const credentialId of credentialIds) {
+    await credentialsVault.delete(credentialId, userId);
+  }
   for (const keyId of plan.apiKeyIds) {
     await redisKeyStore.deleteApiKey(userId, keyId);
     await getWebhookSecretStore().deleteSecretRecord(userId, keyId);
@@ -91,7 +137,7 @@ export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountEra
   redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
   if (client && plan.taggedKeys.length > 0) await client.del(...plan.taggedKeys);
-  if (runningJobIds.length === 0) await redisUserStore.deleteUser(userId);
+  if (runningJobIds.length === 0 && plan.jobs.length < MAX_JOBS_PER_RUN) await redisUserStore.deleteUser(userId);
   return { runningJobIds };
 }
 
@@ -99,6 +145,8 @@ function describe(plan: AccountErasurePlan): string {
   return [
     `account ${plan.userId} (${plan.email})`,
     `api keys: ${plan.apiKeyIds.length}`,
+    `storage credentials: ${(plan.credentialIds ?? []).length}`,
+    `graphs: ${(plan.graphIds ?? []).length}`,
     `jobs: ${plan.jobs.length}${plan.jobs.length === MAX_JOBS_PER_RUN ? ' (the first batch; run again)' : ''}`,
     `stored files: ${plan.storedKeys.length}`,
     `webhook dead letters: ${plan.deadLetters}`,

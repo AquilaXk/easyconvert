@@ -100,9 +100,10 @@ describe('the terms state the free allowance and no paid plan', () => {
 });
 
 describe('the legal texts', () => {
-  it('refuse a text without a title or without a section, instead of rendering an empty page', () => {
+  it('refuse a text without a title, an introduction or a section, instead of rendering an empty page', () => {
     expect(() => readLegalPage('Only a paragraph.', 'en')).toThrow(/title/);
     expect(() => readLegalPage('# Title\n\nAn introduction and no section.', 'en')).toThrow(/section/);
+    expect(() => readLegalPage('# Title\n\n## 1. One\n\nNo intro.', 'en')).toThrow(/introductory paragraph/);
     expect(readLegalPage('# Title\n\nIntro.\n\n## 1. One\n\nSee the [contact page](/contact).', 'ko').bodyHtml).toContain('href="/ko/contact"');
   });
 

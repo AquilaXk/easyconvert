@@ -48,6 +48,31 @@ export interface QueueKeySpace {
   stateKeys: readonly [string, string, string, string, string, string];
 }
 
+async function readEndedFields(
+  client: Redis,
+  keys: QueueKeySpace,
+  ids: readonly string[]
+): Promise<{ id: string; finishedOnRaw: string | null; dataRaw: string | null }[]> {
+  if (ids.length === 0) return [];
+  if (typeof client.pipeline === 'function') {
+    const pipeline = client.pipeline();
+    for (const id of ids) pipeline.hmget(keys.jobKey(id), 'finishedOn', 'data');
+    const results = (await pipeline.exec()) ?? [];
+    return ids.map((id, index) => {
+      const [err, row] = results[index] ?? [];
+      if (err) throw err;
+      const [finishedOnRaw = null, dataRaw = null] = Array.isArray(row) ? (row as (string | null)[]) : [];
+      return { id, finishedOnRaw, dataRaw };
+    });
+  }
+  return Promise.all(
+    ids.map(async (id) => {
+      const [finishedOnRaw = null, dataRaw = null] = await client.hmget(keys.jobKey(id), 'finishedOn', 'data');
+      return { id, finishedOnRaw, dataRaw };
+    })
+  );
+}
+
 /**
  * Removes up to `limit` jobs of the set `stateKey` that ended at or before `threshold`, with their entry in the index of
  * their user, and answers their ids; with `trimDeadLetters`, also the dead letters recorded by then (BullMQ Queue.clean).
@@ -61,16 +86,23 @@ export async function removeEndedBefore(
   trimDeadLetters: boolean
 ): Promise<string[]> {
   const removed: string[] = [];
-  for (const id of await client.smembers(stateKey)) {
-    if (removed.length >= limit) break;
-    const jobKey = keys.jobKey(id);
-    const finishedOn = Number((await client.hget(jobKey, 'finishedOn')) || 0);
-    if (finishedOn <= 0 || finishedOn > threshold) continue;
-    const userId = ownerOf(parsedData(await client.hget(jobKey, 'data')));
-    await client.srem(stateKey, id);
-    await client.del(jobKey);
-    if (userId) await client.zrem(keys.userJobsKey(userId), id);
-    removed.push(id);
+  if (limit > 0) {
+    const ids = await client.smembers(stateKey);
+    for (const { id, finishedOnRaw, dataRaw } of await readEndedFields(client, keys, ids)) {
+      const jobKey = keys.jobKey(id);
+      if (finishedOnRaw === null && dataRaw === null && (await client.exists(jobKey)) === 0) {
+        await client.srem(stateKey, id);
+        continue;
+      }
+      if (removed.length >= limit) continue;
+      const finishedOn = Number(finishedOnRaw || 0);
+      if (finishedOn <= 0 || finishedOn > threshold) continue;
+      const userId = ownerOf(parsedData(dataRaw));
+      await client.srem(stateKey, id);
+      await client.del(jobKey);
+      if (userId) await client.zrem(keys.userJobsKey(userId), id);
+      removed.push(id);
+    }
   }
   if (trimDeadLetters) await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, String(threshold));
   return removed;
@@ -80,12 +112,11 @@ export async function removeEndedBefore(
 export async function keepNewestEnded(client: Redis, keys: QueueKeySpace, stateKey: string, count: number): Promise<void> {
   const ids = await client.smembers(stateKey);
   if (ids.length <= count) return;
-  const ended = await Promise.all(
-    ids.map(async (id) => {
-      const [finishedOn, data] = await client.hmget(keys.jobKey(id), 'finishedOn', 'data');
-      return { id, finishedOn: Number(finishedOn || 0), userId: ownerOf(parsedData(data)) };
-    })
-  );
+  const ended = (await readEndedFields(client, keys, ids)).map(({ id, finishedOnRaw, dataRaw }) => ({
+    id,
+    finishedOn: Number(finishedOnRaw || 0),
+    userId: ownerOf(parsedData(dataRaw)),
+  }));
   ended.sort((a, b) => b.finishedOn - a.finishedOn);
   for (const job of ended.slice(count)) {
     await client.srem(stateKey, job.id);
@@ -106,8 +137,10 @@ export async function dropEndedData(client: Redis, keys: QueueKeySpace, id: stri
 }
 
 /** Removes job `id` from every state and from its user's index unless it is active (BullMQ removeJob-2.lua); whether it did. */
-export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: string): Promise<boolean> {
+export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: string, removeDlq: boolean = false): Promise<boolean> {
   const userJobsKey = keys.userJobsKey(ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data'))));
-  const scriptKeys = [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
+  const scriptKeys = removeDlq
+    ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey]
+    : [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
   return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
 }

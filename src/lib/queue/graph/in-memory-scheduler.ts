@@ -296,6 +296,17 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     return [...new Set(targetIds.flatMap((id) => data.state.nodes[id]?.outputs ?? []))];
   }
 
+  async graphsOfUser(userId: string): Promise<string[]> {
+    return [...this.graphs.values()]
+      .filter((data) => data.state.ownerUserId === userId)
+      .map((data) => data.state.graphId)
+      .sort();
+  }
+
+  async deleteGraph(graphId: string): Promise<void> {
+    this.graphs.delete(graphId);
+  }
+
   private async enqueueNodeJob(
     graphId: string,
     nodeId: NodeId,

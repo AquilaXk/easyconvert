@@ -637,6 +637,16 @@ export class RedisKeyStore extends KeyStore {
     return { allowed: true, remaining: res.remaining };
   }
 
+  public override forgetUsage(userId: string): number {
+    this.memoryLedger.forgetOwner(userId);
+    for (const key of this.tokenBuckets.keys()) {
+      if (key === userId || key.startsWith(`${userId}:`) || key.endsWith(`:${userId}`)) {
+        this.tokenBuckets.delete(key);
+      }
+    }
+    return super.forgetUsage(userId);
+  }
+
   public override resetStore() {
     this.memoryLedger.clear();
     this.tokenBuckets.clear();

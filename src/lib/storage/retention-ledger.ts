@@ -37,6 +37,8 @@ export interface RetentionLedger {
    * that deletion is not the order of either store, so a limit taken first would pick the wrong results.
    */
   liveRecords(): Promise<RetentionRecord[]>;
+  /** Every key the ledger holds a record of, live or gone. */
+  allKeys?(): Promise<string[]>;
 }
 
 const RECORD_SUFFIX = '.json';
@@ -249,6 +251,11 @@ export class FileRetentionLedger implements RetentionLedger {
     const { records } = await this.scan();
     return records.filter((record) => record.goneAt === undefined);
   }
+
+  async allKeys(): Promise<string[]> {
+    const { records } = await this.scan();
+    return records.map((record) => record.key);
+  }
 }
 
 /** Namespace of the retention keys in a Redis that the queue and the key store share. */
@@ -346,6 +353,17 @@ export class RedisRetentionLedger implements RetentionLedger {
       }
     }
     return records;
+  }
+
+  async allKeys(): Promise<string[]> {
+    const keys = new Set<string>(await this.redis.zrange(REDIS_DUE_SET, '0', '-1'));
+    let cursor = '0';
+    do {
+      const [next, batch] = await this.redis.scan(cursor, 'MATCH', `${REDIS_RECORD_PREFIX}*`, 'COUNT', 500);
+      for (const recordKey of batch) keys.add(recordKey.slice(REDIS_RECORD_PREFIX.length));
+      cursor = next;
+    } while (cursor !== '0');
+    return [...keys];
   }
 }
 

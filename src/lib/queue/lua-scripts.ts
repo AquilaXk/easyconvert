@@ -487,10 +487,22 @@ export const REMOVE_JOB_LUA_SCRIPT = `
 -- KEYS[1]: job hash key
 -- KEYS[2..7]: waiting, delayed, active, completed, failed and cancelled keys
 -- KEYS[8]: the index of the job's user (a placeholder key when it has none)
+-- KEYS[9]: dead-letter list (optional)
 -- ARGV[1]: job id
 -- Returns 1 after removing the job, 0 when it is active (its attempt is still running) or unknown.
 local state = redis.call('HGET', KEYS[1], 'state')
-if not state or state == 'active' then
+if state == 'active' then
+  return 0
+end
+if KEYS[9] and KEYS[9] ~= '' then
+  for _, raw in ipairs(redis.call('LRANGE', KEYS[9], 0, -1)) do
+    local ok, letter = pcall(cjson.decode, raw)
+    if ok and type(letter) == 'table' and letter.jobId == ARGV[1] then
+      redis.call('LREM', KEYS[9], 0, raw)
+    end
+  end
+end
+if not state then
   return 0
 end
 local t = redis.call('TYPE', KEYS[2])

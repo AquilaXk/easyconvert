@@ -51,10 +51,12 @@ export function readLegalPage(markdown: string, locale: AppLocale): LegalPageCon
   const firstSection = afterTitle.findIndex((token) => isHeading(token, 'h2'));
   if (firstSection < 0) throw new Error('A legal text needs at least one `##` section.');
   const intro = afterTitle.slice(0, firstSection);
+  const introParagraphAt = intro.findIndex((token) => token.type === 'paragraph_open');
+  if (introParagraphAt < 0) throw new Error('A legal text needs an introductory paragraph.');
   const body = afterTitle.slice(firstSection);
   return {
     title: plainText(tokens[titleAt + 1]),
-    summary: plainText(intro[intro.findIndex((token) => token.type === 'paragraph_open') + 1]),
+    summary: plainText(intro[introParagraphAt + 1]),
     introHtml: renderMarkdownTokens(intro),
     sections: body.flatMap((token, index) =>
       isHeading(token, 'h2') ? [{ id: token.attrGet('id') ?? '', title: plainText(body[index + 1]) }] : []

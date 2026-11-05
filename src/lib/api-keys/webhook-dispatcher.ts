@@ -821,7 +821,9 @@ export class WebhookDispatcher {
    * Removes every DLQ entry owned by `ownerUserId`; other owners' entries are untouched.
    */
   public async clearDlq(ownerUserId: string): Promise<void> {
-    const owned = await this.getDlqEntries(ownerUserId);
+    const entries = await this.readAllDlqEntries();
+    await this.purgeOwnerlessEntries(entries);
+    const owned = entries.filter((entry) => isDlqEntryOwnedBy(entry, ownerUserId));
     await this.removeDlqEntries(owned.map((entry) => entry.id));
   }
 
