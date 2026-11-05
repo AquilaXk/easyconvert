@@ -4,6 +4,7 @@ import { assertInputPixels } from './image-input-limits';
 import { pdfjsImageToPng } from './pdf-rasterizer';
 import type { OperatorListLike } from './pdf-text-content';
 import {
+  normaliseLeafPageCatalogWithLib,
   PDF_CONTENT_MAX_IMAGE_BYTES,
   PDF_CONTENT_MAX_PAGE_STREAM_BYTES,
   PDF_CONTENT_MAX_PICTURES,
@@ -114,9 +115,8 @@ class JpegCatalog {
   private async open(lib: PdfLib): Promise<PDFDocument | null> {
     if (this.document === undefined) {
       try {
-        const { normaliseLeafPageCatalog } = await import('./pdf-page-geometry');
         this.document = await lib.PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
-        normaliseLeafPageCatalog(this.document);
+        normaliseLeafPageCatalogWithLib(this.document, lib);
       } catch {
         this.document = null;
       }

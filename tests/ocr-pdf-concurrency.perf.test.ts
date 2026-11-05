@@ -198,14 +198,21 @@ describe('recognizing the pages of a scanned PDF', () => {
         })
       );
       const pages = Array.from({ length: FOUR_PAGES }, () => ({ buffer: fixtureImage('en_a', 'clean300') }));
+      const warmSpy = vi.spyOn(pool, 'warm');
+      const prevEnv = process.env[OCR_PAGE_CONCURRENCY_ENV];
       try {
-        await recognizePdfPages(pages, 'eng', 1, false);
+        process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
+        await recognizePdfPages(pages, 'eng', undefined, false);
         expect(peak).toBe(1);
+        expect(warmSpy).not.toHaveBeenCalled();
+        delete process.env[OCR_PAGE_CONCURRENCY_ENV];
         peak = 0;
         meeting = workersMeeting(OCR_POOL_MAX_WORKERS_PER_KEY);
         await recognizePdfPages(pages, 'eng', ocrPageConcurrency(), false);
         expect(peak).toBe(OCR_POOL_MAX_WORKERS_PER_KEY);
       } finally {
+        if (prevEnv === undefined) delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+        else process.env[OCR_PAGE_CONCURRENCY_ENV] = prevEnv;
         vi.restoreAllMocks();
         await shutdownOcrWorkerPool();
       }

@@ -1,7 +1,8 @@
-import { PDFDocument, PDFName, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
+import { PDFCatalog, PDFDocument, PDFName, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 import { mapBoxToSource, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
+import { normaliseLeafPageCatalogWithLib } from './pdf-text-types';
 
 /**
  * How a rendered PDF page relates to the PDF page it was rendered from, so that boxes the recognizer reports in
@@ -77,15 +78,7 @@ export function normalizePdfRotation(angle: number): OcrQuarterTurn {
 }
 
 export function normaliseLeafPageCatalog(doc: PDFDocument): void {
-  const pagesRef = doc.catalog.get(PDFName.of('Pages'));
-  const pagesEntry = doc.catalog.lookup(PDFName.of('Pages'));
-  if (pagesRef instanceof PDFRef && pagesEntry instanceof PDFPageLeaf && !pagesEntry.has(PDFName.of('Kids'))) {
-    const tree = PDFPageTree.withContext(doc.context);
-    tree.pushLeafNode(pagesRef);
-    const treeRef = doc.context.register(tree);
-    pagesEntry.set(PDFName.of('Parent'), treeRef);
-    doc.catalog.set(PDFName.of('Pages'), treeRef);
-  }
+  normaliseLeafPageCatalogWithLib(doc, { PDFCatalog, PDFName, PDFPageLeaf, PDFPageTree, PDFRef });
 }
 
 /** The frame of every page of a PDF, in page order. */

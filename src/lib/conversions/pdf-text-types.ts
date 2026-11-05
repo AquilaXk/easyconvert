@@ -1,3 +1,4 @@
+import type { PDFDocument } from 'pdf-lib';
 import { ConversionFailedError, CorruptStreamError, DecompressionLimitError, EncryptedOfficeDocumentError, PayloadLimitError, type PdfPageAnalysis } from '../types';
 import { PdfStructureError } from './pdf-document';
 import type { OcrResult } from './ocr-pdf-combiner';
@@ -211,4 +212,19 @@ export interface PdfTextJobResult {
   content: PdfPageContent[];
   /** The document's fonts; items refer to them by index. */
   fonts: PdfContentFont[];
+}
+
+export type PdfLeafCatalogLib = Pick<typeof import('pdf-lib'), 'PDFCatalog' | 'PDFName' | 'PDFPageLeaf' | 'PDFPageTree' | 'PDFRef'>;
+
+export function normaliseLeafPageCatalogWithLib(doc: PDFDocument, lib: PdfLeafCatalogLib): void {
+  if (!(doc.catalog instanceof lib.PDFCatalog)) return;
+  const pagesRef = doc.catalog.get(lib.PDFName.of('Pages'));
+  const pagesEntry = doc.catalog.lookup(lib.PDFName.of('Pages'));
+  if (pagesRef instanceof lib.PDFRef && pagesEntry instanceof lib.PDFPageLeaf && !pagesEntry.has(lib.PDFName.of('Kids'))) {
+    const tree = lib.PDFPageTree.withContext(doc.context);
+    tree.pushLeafNode(pagesRef);
+    const treeRef = doc.context.register(tree);
+    pagesEntry.set(lib.PDFName.of('Parent'), treeRef);
+    doc.catalog.set(lib.PDFName.of('Pages'), treeRef);
+  }
 }
