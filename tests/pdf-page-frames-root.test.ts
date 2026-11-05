@@ -7,13 +7,6 @@ import { oracleTest } from './helpers/oracle-test';
 import { buildPdf, HELVETICA_FONT, textContent } from './helpers/pdf-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
-/**
- * The frames of a PDF are read from its page tree. A catalog whose /Pages entry is a single /Type /Page leaf (without
- * /Kids) is normalized as a 1-page tree; any other non-page-tree /Pages entry (<< /Type /Catalog /Pages << >> >>,
- * /Type /Annot, or a /Type /Page dictionary that also carries /Kids) has no valid page tree and is refused with a
- * message that names the page tree rather than a parser TypeError.
- */
-
 const CATALOG_ID = 1;
 const PAGES_ID = 2;
 const PAGE_ID = 3;

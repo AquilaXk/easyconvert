@@ -135,7 +135,6 @@ export function recognizePdfPages(
   detectOrientation?: boolean
 ): Promise<OcrResult[]> {
   return mapWithConcurrency(pages, concurrency, (page) =>
-    // Several pages are read side by side, one engine run each, so a page is not also cut into bands.
     performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation, pages.length < 2 && concurrency > 1)
   );
 }
