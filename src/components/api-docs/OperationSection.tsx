@@ -5,7 +5,6 @@ import { DOC, richText } from './doc-text';
 import FieldList from './FieldList';
 import { renderInlineCode } from './openapi-types';
 
-/** The solid method label of the endpoint line, a colour of the palette for each method. */
 const METHOD_CLASSES: Readonly<Record<string, string>> = {
   get: 'bg-success',
   post: 'bg-info',
@@ -46,7 +45,6 @@ function Bodies({ bodies }: Readonly<{ bodies: readonly DocBody[] }>) {
   ));
 }
 
-/** One operation of a reference page: its endpoint, who may call it, its parameters, body, answers and an example. */
 export default function OperationSection({ operation, origin }: Readonly<{ operation: DocOperation; origin: string }>) {
   const t = useTranslations('apiDocs');
   const { anchor } = operation;

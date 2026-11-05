@@ -79,7 +79,6 @@ function substitutePathParams(
   return result;
 }
 
-/** The origin requests go to: the site's own; without one (a build with no `APP_ORIGIN`) the URL stays root-relative. */
 export function resolveBaseUrl(serverUrl?: string, runtimeOrigin?: string): string {
   const origin = stripTrailingSlashes(runtimeOrigin?.trim() ?? '');
   const trimmed = serverUrl?.trim();

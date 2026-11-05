@@ -9,7 +9,6 @@ import { resolvePageLocale } from '@/i18n/page';
 
 type TopicParams = Promise<{ locale: string; topic: string }>;
 
-/** Every topic is prerendered; any other segment under `/api-docs/` is a 404. */
 export const dynamicParams = false;
 
 export function generateStaticParams() {

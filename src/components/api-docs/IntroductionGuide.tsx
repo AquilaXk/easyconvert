@@ -11,7 +11,6 @@ import { DOC, richText } from './doc-text';
 import FieldList from './FieldList';
 import { authenticationSample } from './guide-samples';
 
-/** The statuses a request of the public API can be answered with, in the order the errors section lists them. */
 const ERROR_STATUSES = ['400', '401', '403', '404', '409', '413', '415', '422', '429', '500', '503', '504'] as const;
 
 export default function IntroductionGuide({ origin }: Readonly<{ origin: string }>) {

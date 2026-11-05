@@ -12,10 +12,6 @@ import TopicNav from '@/components/api-docs/TopicNav';
 import { API_DOC_TOPIC_BY_SLUG, type ApiDocTopicSlug } from '@/components/api-docs/topics';
 import { siteMetadataBase } from '@/i18n/metadata';
 
-/**
- * A page of the API documentation, laid out as the reference documentation is: the topics on the left, the written page in
- * the middle and "On this page" on the right. Every request it shows goes to the site's own origin.
- */
 export default function ApiDocsPageView({ topic }: Readonly<{ topic: ApiDocTopicSlug }>) {
   const t = useTranslations('apiDocs');
   const entry = API_DOC_TOPIC_BY_SLUG[topic];

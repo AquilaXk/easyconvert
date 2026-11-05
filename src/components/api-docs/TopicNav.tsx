@@ -18,7 +18,6 @@ import { API_DOC_TOPICS, apiDocsHref, type ApiDocGroup, type ApiDocTopicSlug } f
 
 const GROUPS: readonly ApiDocGroup[] = ['gettingStarted', 'reference'];
 
-/** The icon in front of each topic, as the reference navigation puts one before each page. */
 const TOPIC_ICONS: Readonly<Record<ApiDocTopicSlug, LucideIcon>> = {
   introduction: House,
   quickstart: Zap,
@@ -68,7 +67,6 @@ function TopicList({ current, tall }: Readonly<{ current: ApiDocTopicSlug; tall:
   );
 }
 
-/** The topics of the documentation: a sticky column from 1024 px, a collapsed menu under it. */
 export default function TopicNav({ current }: Readonly<{ current: ApiDocTopicSlug }>) {
   const t = useTranslations('apiDocs.nav');
   return (

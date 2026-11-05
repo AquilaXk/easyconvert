@@ -5614,3 +5614,20 @@ Legal
 - **Verified by**: `tests/api-key-pepper-rotation.test.ts`, `tests/config-schema.test.ts`, `tests/oci-deploy.test.ts`, `tests/pdfa-1b-dates.test.ts`, `tests/pdfa-verapdf-gate.test.ts`, and `tests/dispatch-pdf-postprocess.test.ts`.
 - **Revisit when**: LibreOffice upstream stops emitting `0000-00-00` XMP dates on `SelectPdfVersion=1` exports, or `KEY_ENCRYPTION_KEY` becomes mandatory in production independently of `KEY_HASH_PEPPER`.
 
+## 150. The API documentation is a written multi-topic reference generated from the OpenAPI 3.1 contract, and README format and conversion counts are enforced by a generated registry snapshot
+
+- **Status**: Implemented (issue #467, epic #762), decided 2026-11-05 (QA request).
+- **Decision**:
+  - **Topic-based `/api-docs` reference backed by `buildOpenApiDocument()`.** `/api-docs` (`IntroductionGuide`) and `/api-docs/[topic]` (`quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`) render a three-column written reference (`TopicNav`, prose + `OperationSection` + `FieldList` + `CodeBlock`, and `TableOfContents`) directly from the public operations of `buildOpenApiDocument()`. Operations serving only the web interface or account settings (`x-internal`, API key CRUD, storage credentials, and webhook dead-letter replay) are excluded from `/api-docs`, and every request sample targets the site's own origin with `$EASYCONVERT_API_KEY`.
+  - **Shared synchronous conversion and inline data-URI byte bounds.** `SYNC_CONVERSION_MAX_BYTES` (`10 MiB`) and `DATA_URI_MAX_BYTES` (`5 MiB`) live in `src/lib/api/file-size-limit.ts` and are shared by `src/app/api/v1/convert/route.ts`, `src/lib/api/contracts/schemas.ts`, and `IntroductionGuide.tsx`.
+  - **Deterministic registry stats snapshot and README drift guard.** `scripts/registry-stats.ts` (`npm run docs:generate`) computes category counts, total format counts, and directed conversion pair counts from `FORMAT_REGISTRY` (`src/lib/registry.ts`), writes `docs/generated/registry-stats.json`, and updates the `<!-- registry-stats:start -->...<!-- registry-stats:end -->` tables and headline figures in `README.md` and `README.ko.md`. `tests/readme-registry-drift.test.ts` fails if `docs/generated/registry-stats.json`, `README.md`, or `README.ko.md` drift from `FORMAT_REGISTRY` or reintroduce removed module names (`media-encoder.ts`, `bullmq-engine.ts`).
+- **Why**:
+  - **Keep public API documentation and README claims locked to the code.** Generating operation sections from `buildOpenApiDocument()` and gating README format/pair counts against `FORMAT_REGISTRY` prevents documentation drift as formats and schemas evolve.
+- **Trade-offs**:
+  - **Adding or removing a format in `src/lib/registry.ts` requires running `npm run docs:generate`.** Caught immediately by `tests/readme-registry-drift.test.ts` in CI.
+- **Alternatives rejected**:
+  - **Client-side interactive API console with editable server URL and token inputs on `/api-docs`.** Clutters the reference layout and duplicates the dashboard and `curl` snippets.
+- **Verified by**: `tests/api-docs-pages.test.ts`, `tests/api-docs-curl-builder.test.ts`, `tests/api-docs-openapi-parity.test.ts`, and `tests/readme-registry-drift.test.ts`.
+- **Revisit when**: a new public `/api/v1/*` operation is added to `buildOpenApiDocument()` (add it to `API_DOC_TOPICS` in `src/components/api-docs/topics.ts`).
+
+

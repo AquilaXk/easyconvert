@@ -1,6 +1,5 @@
 import type { HttpMethod } from './openapi-types';
 
-/** One operation of the OpenAPI document shown on a topic page, with the anchor of its section. */
 export interface ApiDocOperationRef {
   readonly anchor: string;
   readonly method: HttpMethod;
@@ -15,11 +14,6 @@ interface ApiDocTopicEntry {
   readonly operations: readonly ApiDocOperationRef[];
 }
 
-/**
- * The pages of the API documentation, in the order of the topic navigation. A guide page has no operations; a reference
- * page shows each of its operations from the OpenAPI document. Operations that serve the web application or the account
- * (`x-internal`, key management, storage credentials, webhook dead letters) are on no page.
- */
 export const API_DOC_TOPICS = [
   { slug: 'introduction', group: 'gettingStarted', operations: [] },
   { slug: 'quickstart', group: 'gettingStarted', operations: [] },
@@ -84,14 +78,12 @@ export type ApiDocTopic = (typeof API_DOC_TOPICS)[number];
 export type ApiDocTopicSlug = ApiDocTopic['slug'];
 export type ApiDocAnchor = ApiDocTopic['operations'][number]['anchor'];
 
-/** The topics that have a page of their own under `/api-docs/`; the introduction is `/api-docs` itself. */
 export const API_DOC_SUBPAGES = API_DOC_TOPICS.filter((topic) => topic.slug !== 'introduction');
 
 export function apiDocsHref(slug: ApiDocTopicSlug): string {
   return slug === 'introduction' ? '/api-docs' : `/api-docs/${slug}`;
 }
 
-/** The topic a route segment names, or undefined for a segment that names none. */
 export function findApiDocTopic(slug: string): ApiDocTopic | undefined {
   return API_DOC_TOPICS.find((topic) => topic.slug === slug);
 }

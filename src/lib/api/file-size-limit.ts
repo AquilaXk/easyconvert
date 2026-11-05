@@ -5,10 +5,8 @@ import { partBodyVerdict, singleRequestVerdict, type BodyLengthVerdict } from '.
 
 const MIB = 1024 * 1024;
 
-/** The largest file `POST /api/v1/convert` converts while the request waits; a larger one is queued as a job (202). */
 export const SYNC_CONVERSION_MAX_BYTES = 10 * MIB;
 
-/** The largest result the JSON answer of `POST /api/v1/convert` also carries as a `data:` URI. */
 export const DATA_URI_MAX_BYTES = 5 * MIB;
 
 /**

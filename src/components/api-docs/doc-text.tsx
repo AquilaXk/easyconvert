@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { Link } from '@/i18n/navigation';
 import { apiDocsHref, type ApiDocTopicSlug } from './topics';
 
-/** The text styles of the documentation, measured on the reference documentation (entry 147 of docs/policy-decisions.md). */
 export const DOC = {
   p: 'my-5 leading-7 text-pretty',
   h2: 'text-2xl font-bold text-ink mt-12 mb-6',
@@ -18,7 +17,6 @@ export const DOC = {
   td: 'py-3 px-4 text-sm align-top border-b border-rule',
 } as const;
 
-/** The tags the documentation's messages use: inline code, a link to another page of the docs or the dashboard, a link out. */
 export const richText = {
   code: (chunks: ReactNode) => <code className={DOC.code}>{chunks}</code>,
   strong: (chunks: ReactNode) => <strong className="font-semibold text-ink">{chunks}</strong>,

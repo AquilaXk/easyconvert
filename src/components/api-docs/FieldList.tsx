@@ -6,7 +6,6 @@ import { renderInlineCode } from './openapi-types';
 
 const CHIP = 'rounded-xs bg-sunken text-ink-2 px-1.5 py-0.5';
 
-/** Properties, parameters or headers, one row each: name, where it goes, type, required, description, child properties. */
 export default function FieldList({ fields }: Readonly<{ fields: readonly DocField[] }>) {
   const t = useTranslations('apiDocs.operation');
   return (

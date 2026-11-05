@@ -9,10 +9,6 @@ import { testMessages, type TestLocale } from './helpers/intl-messages';
 
 const ORIGIN = 'https://convert.example.org';
 
-/**
- * Operations the OpenAPI document publishes that no page of the documentation shows, each with why. A new public operation
- * fails the coverage test until a page shows it or this table says why it does not.
- */
 const LEFT_OUT: Readonly<Record<string, string>> = {
   'GET /api/keys': 'key management lives on the dashboard',
   'POST /api/keys': 'key management lives on the dashboard',

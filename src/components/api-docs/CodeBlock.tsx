@@ -3,7 +3,6 @@
 import { Check, Copy } from 'lucide-react';
 import { useCopyFeedback } from '@/hooks/useCopyFeedback';
 
-/** A code sample with a copy button in its corner, as the reference documentation shows one. */
 export default function CodeBlock({ code, copyLabel, copiedLabel }: Readonly<{ code: string; copyLabel: string; copiedLabel: string }>) {
   const { copiedKey, copyText } = useCopyFeedback(2000);
   const copied = copiedKey !== null;

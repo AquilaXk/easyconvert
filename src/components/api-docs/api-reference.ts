@@ -14,7 +14,6 @@ import type { ApiDocAnchor, ApiDocOperationRef } from './topics';
 
 type SchemaMap = Record<string, OpenApiSchemaObject>;
 
-/** A property, parameter or header as the reference lists it: name, type, whether it is required, and its children. */
 export interface DocField {
   readonly name: string;
   readonly type: string;
@@ -36,10 +35,8 @@ export interface DocResponse {
   readonly bodies: readonly DocBody[];
 }
 
-/** Who may call an operation: anyone, anyone with an optional API key, or only with an API key holding `scopes`. */
 export type DocAccess = { readonly kind: 'public' } | { readonly kind: 'key' | 'optionalKey'; readonly scopes: readonly string[] };
 
-/** A reference operation of a topic, named by its anchor. */
 export type DocOperationRef = ApiDocOperationRef & { readonly anchor: ApiDocAnchor };
 
 export interface DocOperation extends DocOperationRef {
@@ -51,13 +48,11 @@ export interface DocOperation extends DocOperationRef {
   readonly curl: string;
 }
 
-/** Nesting the reference lists before it stops: the job graph refers to itself through its tasks. */
 const MAX_FIELD_DEPTH = 4;
 
 const SPEC = buildOpenApiDocument() as unknown as OpenApiSpec;
 const SCHEMAS: SchemaMap = SPEC.components?.schemas ?? {};
 
-/** The object whose properties `schema` lists: the schema itself, or the items of an array of objects. */
 function objectShape(schema: OpenApiSchemaObject | undefined): OpenApiSchemaObject | undefined {
   const effective = unwrapPrimarySchema(dereferenceSchema(schema, SCHEMAS));
   if (!effective) return undefined;
@@ -85,7 +80,6 @@ export function schemaFields(schema: OpenApiSchemaObject | undefined, depth = 0)
   });
 }
 
-/** The type a field is listed with: a file part reads `binary`, as the reference names an upload field. */
 function typeLabel(schema: OpenApiSchemaObject | undefined): string {
   return schema?.format === 'binary' ? 'binary' : formatSchemaType(schema, primarySchemaType(schema));
 }
@@ -126,7 +120,6 @@ function documentedOperation(ref: ApiDocOperationRef): OpenApiOperation {
   return operation;
 }
 
-/** The section of `ref` on its topic page, read from the OpenAPI document. */
 export function docOperation(ref: DocOperationRef, origin: string): DocOperation {
   const operation = documentedOperation(ref);
   const responses = Object.entries(operation.responses ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -159,7 +152,6 @@ export function docOperation(ref: DocOperationRef, origin: string): DocOperation
   };
 }
 
-/** The fields of a problem details answer, which every refused request of the public API carries. */
 export function problemDetailsFields(): DocField[] {
   return schemaFields({ $ref: '#/components/schemas/ProblemDetails' });
 }

@@ -447,12 +447,10 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
 async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
   const { req, user, file, sourceDef, targetDef, options, rateLimitHeaders, instanceUri, startTime, reply, trace } = c;
 
-  // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
   const preferHeader = req.headers.get('prefer') || '';
   const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
   if (isPreferAsync || file.size > SYNC_CONVERSION_MAX_BYTES) return queueReserved(c, unit);
 
-  // Synchronous execution path for payloads <= 10MB without respond-async preference
   const inputBuffer = Buffer.from(await file.arrayBuffer());
 
   // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing

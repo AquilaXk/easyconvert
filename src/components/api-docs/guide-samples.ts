@@ -1,5 +1,3 @@
-/** The requests the guide pages show, sent to the site's own origin with the key read from an environment variable. */
-
 const KEY_HEADER = '-H "x-api-key: $EASYCONVERT_API_KEY"';
 
 export function authenticationSample(origin: string): string {

@@ -11,10 +11,6 @@ export interface TocItem {
 
 const flatIds = (items: readonly TocItem[]): string[] => items.flatMap((item) => [item.id, ...flatIds(item.children ?? [])]);
 
-/**
- * The heading the reader is at: the last heading above the top quarter of the viewport, as the reference table of contents
- * marks it. The headings are read again on each scroll frame, so a section that grows (an opened list) moves the mark.
- */
 function useCurrentHeading(ids: readonly string[]): string | undefined {
   const [current, setCurrent] = useState<string | undefined>(ids[0]);
   useEffect(() => {
@@ -65,7 +61,6 @@ function TocList({ items, current, nested, tall }: Readonly<{ items: readonly To
   );
 }
 
-/** "On this page": a sticky list from 1024 px, a collapsed bar under it, as the reference places it. */
 export default function TableOfContents({ title, items }: Readonly<{ title: string; items: readonly TocItem[] }>) {
   const [ids] = useState(() => flatIds(items));
   const current = useCurrentHeading(ids);
