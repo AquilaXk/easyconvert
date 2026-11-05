@@ -158,6 +158,23 @@ describe('first-party Edge OCR assets and worker configuration', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(terminate).toHaveBeenCalledTimes(1);
+
+    createWorker.mockRejectedValueOnce(undefined);
+    await expect(runClientEdgeOcr(file, { ocrEnabled: true, ocrLanguage: 'eng' })).rejects.toThrow(
+      /Edge OCR engine failed: worker failed to start/
+    );
+
+    createWorker.mockResolvedValueOnce({
+      recognize: async () => {
+        throw new Error('recognition boom');
+      },
+      terminate: async () => {
+        throw new Error('terminate boom');
+      },
+    });
+    await expect(runClientEdgeOcr(file, { ocrEnabled: true, ocrLanguage: 'eng' })).rejects.toThrow(
+      /Edge OCR engine failed: recognition boom/
+    );
   });
 
   it('matches every pinned entry in ocr-assets.manifest.json against the installed files in node_modules', () => {
@@ -312,10 +329,16 @@ describe('first-party Edge OCR assets and worker configuration', () => {
       expect(res.headers.get('x-middleware-rewrite'), assetPath).toBeNull();
     }
 
-    for (const nonAssetPath of ['/_assets/foo', '/_assets/ocr', '/_assets/ocr/7.0.0']) {
+    for (const [nonAssetPath, expectedRewrite] of [
+      ['/_assets/foo', 'http://localhost:3000/en/_assets/foo'],
+      ['/_assets/ocr', 'http://localhost:3000/en/_assets/ocr'],
+      ['/_assets/ocr/7.0.0', 'http://localhost:3000/en/_assets/ocr/7.0.0'],
+      ['/_assets/ocr/7.0.0//', 'http://localhost:3000/en/_assets/ocr/7.0.0'],
+      ['/_assets/ocr/7.0.0//worker.min.js', 'http://localhost:3000/en/_assets/ocr/7.0.0/worker.min.js'],
+    ] as const) {
       expect(matched(nonAssetPath), nonAssetPath).toBe(true);
       const res = await middleware(new NextRequest(`http://localhost:3000${nonAssetPath}`));
-      expect(res.headers.get('x-middleware-rewrite'), nonAssetPath).toBe(`http://localhost:3000/en${nonAssetPath}`);
+      expect(res.headers.get('x-middleware-rewrite'), nonAssetPath).toBe(expectedRewrite);
     }
 
     for (const phase of [PHASE_PRODUCTION_SERVER, PHASE_PRODUCTION_BUILD]) {

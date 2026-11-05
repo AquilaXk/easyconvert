@@ -258,7 +258,7 @@ function rootLocaleAnswer(request: NextRequest): NextResponse {
   return response;
 }
 
-const OCR_ASSET_PATH_PREFIX = /^\/_assets\/ocr\/[^/]+\/.+/;
+const OCR_ASSET_PATH_PREFIX = /^\/_assets\/ocr\/[^/]+(?:\/[^/]+)+$/;
 
 function isApiPath(pathname: string): boolean {
   return pathname.startsWith('/api/') || OCR_ASSET_PATH_PREFIX.test(pathname);

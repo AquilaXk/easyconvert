@@ -45,7 +45,9 @@ export function isClientEdgeOcrSupported(): boolean {
 }
 
 function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof Error) return err.message;
+  if (err === undefined || err === null || err === '') return 'worker failed to start';
+  return String(err);
 }
 
 /**
@@ -112,7 +114,7 @@ async function recognizeImage(
       const input = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : file;
       ({ data } = await Promise.race([worker.recognize(input, {}, { blocks: true }), startFailed]));
     } finally {
-      await worker.terminate();
+      await worker.terminate().catch(() => undefined);
     }
   } catch (err: unknown) {
     if (err instanceof EdgeOcrError) throw err;

@@ -11,6 +11,7 @@ export const OCR_ASSET_CSP =
   "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'";
 export const OCR_ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 export const MAX_TRAINEDDATA_BYTES = 128 * 1024 * 1024;
+export const MAX_CACHED_ASSET_BYTES = 64 * 1024 * 1024;
 
 const TRAINEDDATA_SUFFIX = '.traineddata';
 const CANONICAL_LANG_PATTERN = /^[a-z0-9_]+$/;
@@ -30,16 +31,52 @@ export type VerifiedOcrAssetResponse =
       detail: string;
     };
 
-const verifiedAssetCache = new Map<string, VerifiedOcrAssetSuccess>();
+interface CachedAssetEntry {
+  size: number;
+  mtimeMs: number;
+  asset: VerifiedOcrAssetSuccess;
+}
 
-function rememberVerifiedAsset(key: string, asset: VerifiedOcrAssetSuccess): VerifiedOcrAssetSuccess {
-  if (verifiedAssetCache.size >= MAX_CACHED_ASSETS && !verifiedAssetCache.has(key)) {
-    const oldestKey = verifiedAssetCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      verifiedAssetCache.delete(oldestKey);
-    }
+const verifiedAssetCache = new Map<string, CachedAssetEntry>();
+let cachedAssetBytes = 0;
+
+function evictCachedAsset(filePath: string): void {
+  const existing = verifiedAssetCache.get(filePath);
+  if (!existing) return;
+  cachedAssetBytes = Math.max(0, cachedAssetBytes - existing.asset.body.byteLength);
+  verifiedAssetCache.delete(filePath);
+}
+
+function getCachedVerifiedAsset(filePath: string, stat: fs.Stats): VerifiedOcrAssetSuccess | undefined {
+  const existing = verifiedAssetCache.get(filePath);
+  if (!existing) return undefined;
+  if (existing.size === stat.size && existing.mtimeMs === stat.mtimeMs) {
+    return existing.asset;
   }
-  verifiedAssetCache.set(key, asset);
+  evictCachedAsset(filePath);
+  return undefined;
+}
+
+function rememberVerifiedAsset(
+  filePath: string,
+  stat: fs.Stats,
+  asset: VerifiedOcrAssetSuccess
+): VerifiedOcrAssetSuccess {
+  evictCachedAsset(filePath);
+  const byteLength = asset.body.byteLength;
+  if (byteLength > MAX_CACHED_ASSET_BYTES) {
+    return asset;
+  }
+  while (
+    verifiedAssetCache.size > 0 &&
+    (verifiedAssetCache.size >= MAX_CACHED_ASSETS || cachedAssetBytes + byteLength > MAX_CACHED_ASSET_BYTES)
+  ) {
+    const oldestKey = verifiedAssetCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    evictCachedAsset(oldestKey);
+  }
+  verifiedAssetCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, asset });
+  cachedAssetBytes += byteLength;
   return asset;
 }
 
@@ -79,15 +116,14 @@ function loadManifestAsset(
   let bytes: Buffer;
   try {
     stat = fs.statSync(fullPath);
-    const cacheKey = `manifest:${fullPath}:${stat.size}:${stat.mtimeMs}`;
-    const cached = verifiedAssetCache.get(cacheKey);
+    const cached = getCachedVerifiedAsset(fullPath, stat);
     if (cached) return cached;
     bytes = fs.readFileSync(fullPath);
     const sha256 = sha256Hex(bytes);
     if (bytes.length !== entry.size || sha256 !== entry.sha256) {
       throw new EdgeOcrError(`OCR asset '${name}' failed SHA-256 manifest verification.`);
     }
-    return rememberVerifiedAsset(cacheKey, {
+    return rememberVerifiedAsset(fullPath, stat, {
       status: 200,
       body: bytes,
       contentType: 'application/javascript; charset=utf-8',
@@ -136,8 +172,7 @@ function loadTraineddataAsset(rawLang: string): VerifiedOcrAssetResponse {
     if (stat.size > MAX_TRAINEDDATA_BYTES) {
       throw invalidTraineddataError(rawLang);
     }
-    const cacheKey = `traineddata:${diskPath}:${stat.size}:${stat.mtimeMs}`;
-    const cached = verifiedAssetCache.get(cacheKey);
+    const cached = getCachedVerifiedAsset(diskPath, stat);
     if (cached) return cached;
     diskBytes = fs.readFileSync(diskPath);
     if (diskBytes.length > MAX_TRAINEDDATA_BYTES) {
@@ -152,7 +187,7 @@ function loadTraineddataAsset(rawLang: string): VerifiedOcrAssetResponse {
       throw invalidTraineddataError(rawLang, err);
     }
     verifyTraineddataBuffer(uncompressed, rawLang);
-    return rememberVerifiedAsset(cacheKey, {
+    return rememberVerifiedAsset(diskPath, stat, {
       status: 200,
       body: uncompressed,
       contentType: 'application/octet-stream',
