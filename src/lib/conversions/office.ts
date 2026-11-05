@@ -7530,7 +7530,7 @@ async function viaPdf(pdf: Buffer, tgt: string, options: ConversionOptions, base
   if (tgt === 'pdf') return { buffer: pdf, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdf.length };
   const { convertFile } = await import('./index');
   const extractText = async (ocrEnabled: boolean) =>
-    (await convertFile(pdf, 'pdf', 'txt', { ...options, ocrEnabled }, `${baseName}.pdf`)).buffer.toString('utf-8').trim();
+    (await convertFile(pdf, 'pdf', 'txt', { ...options, ocrEnabled, libreOfficeFilter: undefined }, `${baseName}.pdf`)).buffer.toString('utf-8').trim();
   // The text layer first; pages that are pictures have none, so they are read with OCR.
   let text = await extractText(false);
   if (text === '') text = await extractText(true);

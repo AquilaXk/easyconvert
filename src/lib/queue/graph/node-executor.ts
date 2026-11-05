@@ -155,10 +155,16 @@ async function processIntermediatePdfArtifacts(
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const transformedBuf = await transformFn(stored.buffer);
-      const outFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), 'output.pdf');
-      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
-      await storage.saveObject(outKey, transformedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
-      return outKey;
+      return saveIntermediateNodeOutput(
+        storage,
+        { graphId, nodeId, index },
+        {
+          buffer: transformedBuf,
+          mimeType: registryMimeType('pdf'),
+          filename: stored.filename || path.basename(inputKey),
+          fallbackFilename: 'output.pdf',
+        }
+      );
     })
   );
 }
@@ -187,13 +193,14 @@ async function convertGraphNodeInputs(
     nodeId: string;
     inputArtifacts: string[];
     storage: IStorageBackend;
-    engine: IConversionEngine;
+    engine: ConversionEnginePort;
     attemptSignal: AbortSignal;
   },
   spec: {
     targetFormat: string;
-    options: Record<string, unknown>;
+    options: Parameters<ConversionEnginePort['convert']>[3];
     fallbackFilename: string;
+    outputFilenameOverride?: string;
     mimeTypeOverride?: string;
   }
 ): Promise<string[]> {
@@ -214,7 +221,7 @@ async function convertGraphNodeInputs(
         {
           buffer: convRes.buffer,
           mimeType: spec.mimeTypeOverride ?? convRes.mimeType,
-          filename: convRes.filename,
+          filename: spec.outputFilenameOverride ?? convRes.filename,
           fallbackFilename: spec.fallbackFilename,
         }
       )
@@ -435,37 +442,29 @@ export async function processGraphNodeJob(
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const srcExt = artifactExtension(stored.filename, inputKey);
-          const targetFormat = requireTargetFormat(node, nodeId);
-          if (!THUMBNAIL_FORMATS.has(targetFormat)) {
-            throw new ConversionFailedError(`Thumbnail node "${nodeId}" cannot produce "${targetFormat}"`);
-          }
-          const width = node.options?.thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX;
-          const height = node.options?.thumbnail?.height ?? DEFAULT_THUMBNAIL_EDGE_PX;
-          const convRes = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            targetFormat,
-            {
-              ...(node.options || {}),
-              thumbnail: undefined,
-              width,
-              height,
-              fit: 'inside',
-            },
-            stored.filename
-          );
-          const outFilename = `thumbnail.${targetFormat}`;
-          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, INTERMEDIATE_TTL_MS);
-          outputKeys.push(outKey);
+        const targetFormat = requireTargetFormat(node, nodeId);
+        if (!THUMBNAIL_FORMATS.has(targetFormat)) {
+          throw new ConversionFailedError(`Thumbnail node "${nodeId}" cannot produce "${targetFormat}"`);
         }
+        const width = node.options?.thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX;
+        const height = node.options?.thumbnail?.height ?? DEFAULT_THUMBNAIL_EDGE_PX;
+        outputKeys.push(
+          ...(await convertGraphNodeInputs(
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            {
+              targetFormat,
+              options: {
+                ...(node.options || {}),
+                thumbnail: undefined,
+                width,
+                height,
+                fit: 'inside',
+              },
+              outputFilenameOverride: `thumbnail.${targetFormat}`,
+              fallbackFilename: `thumbnail.${targetFormat}`,
+            }
+          ))
+        );
         break;
       }
 

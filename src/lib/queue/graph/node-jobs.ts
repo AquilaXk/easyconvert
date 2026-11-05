@@ -55,8 +55,11 @@ const COMPOUND_TAR_EXT_PATTERN = /\.(?:tar\.(?:gz|bz2|bz|xz|7z|lz|lzma|lzo|z))$/
 
 function splitPreservedExtension(filename: string): { stem: string; ext: string } {
   const compoundMatch = filename.match(COMPOUND_TAR_EXT_PATTERN);
-  const rawExt = compoundMatch ? compoundMatch[0] : path.posix.extname(filename);
-  if (rawExt.length > 0 && rawExt.length <= MAX_PRESERVED_EXTENSION_LENGTH && rawExt.length < filename.length) {
+  let rawExt = compoundMatch ? compoundMatch[0] : path.posix.extname(filename);
+  if (!rawExt && filename.startsWith('.')) {
+    rawExt = filename;
+  }
+  if (rawExt.length > 0 && rawExt.length <= MAX_PRESERVED_EXTENSION_LENGTH) {
     return { stem: filename.slice(0, filename.length - rawExt.length), ext: rawExt };
   }
   return { stem: filename, ext: '' };

@@ -2206,14 +2206,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 94
+    "maxValue": 92
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 454
+    "maxValue": 446
   },
   {
     "file": "src/lib/queue/node-processor.ts",

@@ -263,6 +263,8 @@ describe('/api/storage/file owner access (#249)', () => {
     expect(key).toBe(`results/${graphId}/conv/0/evil_name.json`);
     expect(sanitizeNodeOutputFilename('..')).toBe('output.bin');
     expect(sanitizeNodeOutputFilename('\r\n\0')).toBe('output.bin');
+    expect(sanitizeNodeOutputFilename('.pdf')).toBe('output.bin');
+    expect(sanitizeNodeOutputFilename('.tar.gz')).toBe('output.bin');
     expect(sanitizeNodeOutputFilename('....pdf')).toBe('output.bin');
     expect(sanitizeNodeOutputFilename(`${'_'.repeat(255)}a`)).toBe('output.bin');
     expect(sanitizeNodeOutputFilename('a/b\\c.txt')).toBe('c.txt');

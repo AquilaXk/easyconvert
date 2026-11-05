@@ -2922,7 +2922,7 @@ export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinit
   if (!source) return [];
   return source.targetFormats
     .map((targetId) => getFormatByExtension(targetId))
-    .filter((def): def is FormatDefinition => Boolean(def) && def.available !== false);
+    .filter((def): def is FormatDefinition => def !== undefined && def.available !== false);
 }
 
 /** ISO base media `ftyp` box layout (ISO/IEC 14496-12 section 4.3): size, type, major brand, minor version, compatible brands. */
