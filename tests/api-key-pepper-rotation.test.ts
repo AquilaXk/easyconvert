@@ -56,11 +56,12 @@ function createFakeRedis() {
     smembers: vi.fn(async (key: string) => Array.from(sets.get(key) ?? [])),
     eval: vi.fn(async (script: string, numKeys: number, ...args: string[]) => {
       if (script === RECORD_VERIFIED_KEY_LUA_SCRIPT && numKeys === 2) {
-        const [keyRecordName, hashIndexName, lastUsedAt, data, newHash, oldHash, keyId] = args;
+        const [keyRecordName, hashIndexName, lastUsedAt, data, newHash, oldHash, keyId, hashField] = args;
         const record = hashes.get(keyRecordName);
         if (!record || Object.keys(record).length === 0) return 0;
         if (newHash) {
-          hashes.set(keyRecordName, { ...record, keyHash: newHash, data, lastUsedAt });
+          const targetField = hashField || 'keyHash';
+          hashes.set(keyRecordName, { ...record, [targetField]: newHash, data, lastUsedAt });
           const idx = hashes.get(hashIndexName) ?? {};
           idx[newHash] = keyId;
           if (oldHash && oldHash !== newHash) {
@@ -223,7 +224,8 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
       expect.any(String),
       hashV2,
       hashV1,
-      key.id
+      key.id,
+      'keyHash'
     );
 
     expect(fakeRedis.hashes.get(`${prefix}apikey_hashes`)?.[hashV2]).toBe(key.id);
@@ -266,14 +268,24 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const oldVerify = await store.verifyApiKey(oldSecretKey);
     expect(oldVerify.valid).toBe(true);
     expect(oldVerify.key?.keyHash).toBe(expectedNewHash);
+    expect(oldVerify.key?.previousKeyHash).toBe(hmacSha256(PEPPER_V2, oldSecretKey));
     expect(oldVerify.key?.webhookSecret).toBe(WEBHOOK_SECRET);
 
     delete process.env.KEY_HASH_PEPPER_PREVIOUS;
+
+    const oldVerifyAfterRetiringV1 = await store.verifyApiKey(oldSecretKey);
+    expect(oldVerifyAfterRetiringV1.valid).toBe(true);
+    expect(oldVerifyAfterRetiringV1.key?.keyHash).toBe(expectedNewHash);
 
     const newVerifyAfterRetiringV1 = await store.verifyApiKey(newSecretKey);
     expect(newVerifyAfterRetiringV1.valid).toBe(true);
     expect(newVerifyAfterRetiringV1.key?.keyHash).toBe(expectedNewHash);
     expect(newVerifyAfterRetiringV1.key?.webhookSecret).toBe(WEBHOOK_SECRET);
+
+    const rotatedSecond = await store.rotateApiKey(testUser.id, key.id, { gracePeriodSeconds: 3600 });
+    expect(rotatedSecond).not.toBeNull();
+    const expiredFirstSecretVerify = await store.verifyApiKey(oldSecretKey);
+    expect(expiredFirstSecretVerify.valid).toBe(false);
 
     const listed = await store.listApiKeys(testUser.id);
     expect(listed.find((item) => item.id === key.id)?.webhookSecret).toBe(WEBHOOK_SECRET);

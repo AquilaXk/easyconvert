@@ -454,9 +454,9 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
   const canonicalPdfModDate = formatPdfDate(modInstant);
   const canonicalXmpModDate = formatXmpDate(modInstant);
 
-  const createInInfoValidWithTz = parsedCreation !== null && creationHasExplicitTz;
-  const modInInfoValidWithTz = !hasModDateInInfo || (parsedMod !== null && modHasExplicitTz);
-  const needsInfoRewrite = !infoDict || !createInInfoValidWithTz || !modInInfoValidWithTz;
+  const createInInfoCanonical = parsedCreation !== null && rawCreationDate === canonicalPdfCreateDate;
+  const modInInfoCanonical = !hasModDateInInfo || (parsedMod !== null && rawModDate === canonicalPdfModDate);
+  const needsInfoRewrite = !infoDict || !createInInfoCanonical || !modInInfoCanonical;
 
   const updatedXmpText =
     oldXmpText !== null

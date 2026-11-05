@@ -293,10 +293,10 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
         const corruptedXmpExport = Buffer.from(
           rawExport
             .toString('latin1')
-            .replace(/<xmp:CreateDate>[^<]{25}<\/xmp:CreateDate>/, '<xmp:CreateDate>0000-00-00T00:00:00+09:00</xmp:CreateDate>')
-            .replace(/<xmp:ModifyDate>[^<]{25}<\/xmp:ModifyDate>/, '<xmp:ModifyDate>0000-00-00T00:00:00+09:00</xmp:ModifyDate>'),
+            .replace(/<xmp:(CreateDate|ModifyDate)>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/g, '<xmp:$1>0000-00-00T00:00:00'),
           'latin1'
         );
+        expect(corruptedXmpExport.equals(rawExport)).toBe(false);
 
         const normalised = await normalisePdfADates(corruptedXmpExport);
         expect(normalised.length).toBe(rawExport.length);

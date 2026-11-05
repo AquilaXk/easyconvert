@@ -283,8 +283,23 @@ export class KeyStore {
     if (key.keyHash === currentHash) {
       return secretMigrated;
     }
-    this.keyHashIndex.delete(key.keyHash);
+    if (key.keyHash !== key.previousKeyHash) {
+      this.keyHashIndex.delete(key.keyHash);
+    }
     key.keyHash = currentHash;
+    this.keyHashIndex.set(currentHash, key.id);
+    return true;
+  }
+
+  protected migratePreviousKeyHash(key: ApiKey, currentHash: string): boolean {
+    const secretMigrated = this.reencryptWebhookSecret(key);
+    if (!key.previousKeyHash || key.previousKeyHash === currentHash) {
+      return secretMigrated;
+    }
+    if (key.previousKeyHash !== key.keyHash) {
+      this.keyHashIndex.delete(key.previousKeyHash);
+    }
+    key.previousKeyHash = currentHash;
     this.keyHashIndex.set(currentHash, key.id);
     return true;
   }
@@ -323,9 +338,12 @@ export class KeyStore {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
-    const matchedPreviousKey = Boolean(
-      key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash)
-    );
+    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
+    const matchedPreviousKey =
+      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+    if (!matchedCurrentKey && !matchedPreviousKey) {
+      return { valid: false, error: 'Invalid or non-existent API key' };
+    }
     if (matchedPreviousKey) {
       if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
         return { valid: false, error: 'Previous API key has expired following key rotation' };
@@ -343,7 +361,7 @@ export class KeyStore {
     }
 
     if (matchedPreviousKey) {
-      this.reencryptWebhookSecret(key);
+      this.migratePreviousKeyHash(key, candidates.currentHash);
     } else {
       this.migrateKeyHash(key, candidates.currentHash);
     }
@@ -405,11 +423,16 @@ export class KeyStore {
     const gracePeriodSeconds = Math.max(0, Math.min(options.gracePeriodSeconds ?? 3600, 7 * 24 * 3600));
     const graceExpiresAt = Date.now() + gracePeriodSeconds * 1000;
 
+    const outgoingPreviousHash = key.previousKeyHash;
+    if (outgoingPreviousHash && outgoingPreviousHash !== key.keyHash && outgoingPreviousHash !== newKeyHash) {
+      this.keyHashIndex.delete(outgoingPreviousHash);
+    }
     key.previousKeyHash = key.keyHash;
     key.graceExpiresAt = graceExpiresAt;
     key.keyHash = newKeyHash;
     key.prefix = prefix;
 
+    this.keyHashIndex.set(key.previousKeyHash, key.id);
     this.keyHashIndex.set(newKeyHash, key.id);
     this.persist();
 
