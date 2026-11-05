@@ -114,7 +114,9 @@ class JpegCatalog {
   private async open(lib: PdfLib): Promise<PDFDocument | null> {
     if (this.document === undefined) {
       try {
+        const { normaliseLeafPageCatalog } = await import('./pdf-page-geometry');
         this.document = await lib.PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
+        normaliseLeafPageCatalog(this.document);
       } catch {
         this.document = null;
       }

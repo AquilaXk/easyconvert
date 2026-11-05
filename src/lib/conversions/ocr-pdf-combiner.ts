@@ -29,7 +29,7 @@ import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './o
 import type { OcrOrientation } from './ocr-osd';
 import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
 import { mapOcrResultToSource } from './ocr-geometry';
-import { unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
+import { normaliseLeafPageCatalog, unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
 import { placeWords, writeTextLayer } from './ocr-text-layer';
 import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
 
@@ -1595,7 +1595,7 @@ export async function createLosslessSandwichPdfFromPdf(
   pageOcrResults: Map<number, OcrResult>
 ): Promise<Buffer> {
   const doc = await PDFDocument.load(originalPdfBuffer);
-
+  normaliseLeafPageCatalog(doc);
   const numPages = doc.getPageCount();
   for (let i = 0; i < numPages; i++) {
     const pageNum = i + 1;

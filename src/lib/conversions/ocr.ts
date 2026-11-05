@@ -136,7 +136,7 @@ export function recognizePdfPages(
 ): Promise<OcrResult[]> {
   return mapWithConcurrency(pages, concurrency, (page) =>
     // Several pages are read side by side, one engine run each, so a page is not also cut into bands.
-    performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation, pages.length < 2)
+    performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation, pages.length < 2 && concurrency > 1)
   );
 }
 
@@ -600,8 +600,8 @@ function withPreparation(
 function planPageBands(pool: OcrWorkerPool, spec: OcrWorkerSpec, prepared: OcrPreprocessResult): OcrBand[] | null {
   if (!prepared.ink) return null;
   const { profile, lineHeightPx } = prepared.ink;
-  const wanted = Math.min(OCR_BAND_MAX_BANDS, os.availableParallelism(), OCR_POOL_MAX_WORKERS_PER_KEY);
-  if (planBands(profile, lineHeightPx, wanted) === null) return null;
+  const wanted = Math.min(OCR_BAND_MAX_BANDS, os.availableParallelism(), OCR_POOL_MAX_WORKERS_PER_KEY, ocrPageConcurrency());
+  if (wanted < 2 || planBands(profile, lineHeightPx, wanted) === null) return null;
   const idle = pool.idleWorkers(spec);
   if (idle < 2) {
     pool.warm(spec, wanted);

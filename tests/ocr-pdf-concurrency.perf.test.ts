@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -106,6 +106,18 @@ describe('mapWithConcurrency', () => {
 });
 
 describe('ocrPageConcurrency', () => {
+  let previous: string | undefined;
+
+  beforeEach(() => {
+    previous = process.env[OCR_PAGE_CONCURRENCY_ENV];
+    delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+    else process.env[OCR_PAGE_CONCURRENCY_ENV] = previous;
+  });
+
   it('is the pool capacity, capped at the in-flight limit and never below one', () => {
     expect(ocrPageConcurrency()).toBe(Math.min(OCR_POOL_MAX_WORKERS_TOTAL, OCR_MAX_INFLIGHT_PAGES));
     expect(ocrPageConcurrency(100)).toBe(OCR_MAX_INFLIGHT_PAGES);
@@ -113,20 +125,14 @@ describe('ocrPageConcurrency', () => {
   });
 
   it('honours a positive integer EASYCONVERT_OCR_PAGE_CONCURRENCY without exceeding the upper bound', () => {
-    const previous = process.env[OCR_PAGE_CONCURRENCY_ENV];
-    try {
-      process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
-      expect(ocrPageConcurrency()).toBe(1);
-      process.env[OCR_PAGE_CONCURRENCY_ENV] = '2';
-      expect(ocrPageConcurrency()).toBe(2);
-      process.env[OCR_PAGE_CONCURRENCY_ENV] = '99';
-      expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
-      process.env[OCR_PAGE_CONCURRENCY_ENV] = '0';
-      expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
-    } finally {
-      if (previous === undefined) delete process.env[OCR_PAGE_CONCURRENCY_ENV];
-      else process.env[OCR_PAGE_CONCURRENCY_ENV] = previous;
-    }
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
+    expect(ocrPageConcurrency()).toBe(1);
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '2';
+    expect(ocrPageConcurrency()).toBe(2);
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '99';
+    expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '0';
+    expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
   });
 });
 

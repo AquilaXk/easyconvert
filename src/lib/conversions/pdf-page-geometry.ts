@@ -76,6 +76,18 @@ export function normalizePdfRotation(angle: number): OcrQuarterTurn {
   return turned as OcrQuarterTurn;
 }
 
+export function normaliseLeafPageCatalog(doc: PDFDocument): void {
+  const pagesRef = doc.catalog.get(PDFName.of('Pages'));
+  const pagesEntry = doc.catalog.lookup(PDFName.of('Pages'));
+  if (pagesRef instanceof PDFRef && pagesEntry instanceof PDFPageLeaf && !pagesEntry.has(PDFName.of('Kids'))) {
+    const tree = PDFPageTree.withContext(doc.context);
+    tree.pushLeafNode(pagesRef);
+    const treeRef = doc.context.register(tree);
+    pagesEntry.set(PDFName.of('Parent'), treeRef);
+    doc.catalog.set(PDFName.of('Pages'), treeRef);
+  }
+}
+
 /** The frame of every page of a PDF, in page order. */
 export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPageFrame[]> {
   let doc: PDFDocument;
@@ -84,19 +96,15 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
   } catch (err) {
     throw new PdfPageFrameError(`Invalid PDF: the page boxes could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
-  const pagesRef = doc.catalog.get(PDFName.of('Pages'));
-  const pagesEntry = doc.catalog.lookup(PDFName.of('Pages'));
-  let pages: PDFPage[];
-  if (pagesEntry instanceof PDFPageTree) {
-    try {
-      pages = doc.getPages();
-    } catch (err) {
-      throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
-    }
-  } else if (pagesEntry instanceof PDFPageLeaf) {
-    pages = [PDFPage.of(pagesEntry, pagesRef instanceof PDFRef ? pagesRef : PDFRef.of(0), doc)];
-  } else {
+  normaliseLeafPageCatalog(doc);
+  if (!(doc.catalog.lookup(PDFName.of('Pages')) instanceof PDFPageTree)) {
     throw new PdfPageFrameError('Invalid PDF: the /Pages entry of the catalog is missing or is not a page tree dictionary typed /Type /Pages.');
+  }
+  let pages: PDFPage[];
+  try {
+    pages = doc.getPages();
+  } catch (err) {
+    throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
   return pages.map((page, index) => {
     let crop: ReturnType<typeof page.getCropBox>;
