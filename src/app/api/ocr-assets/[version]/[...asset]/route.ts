@@ -9,10 +9,22 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const HTTP_NOT_MODIFIED = 304;
 const HTTP_NOT_FOUND = 404;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 const PROBLEM_NOT_FOUND = 'https://api.easyconvert.io/problems/not-found';
 const PROBLEM_OCR_ASSET_INTEGRITY = 'https://api.easyconvert.io/problems/ocr-asset-integrity-failed';
+
+function matchesIfNoneMatch(ifNoneMatch: string | null, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const trimmed = ifNoneMatch.trim();
+  if (trimmed === '*') return true;
+  const weakEtag = `W/${etag}`;
+  return trimmed
+    .split(',')
+    .map((token) => token.trim())
+    .some((token) => token === etag || token === weakEtag);
+}
 
 function problemJson(status: number, type: string, title: string, detail: string, instance: string): NextResponse {
   return new NextResponse(
@@ -45,7 +57,20 @@ export async function GET(
     if (res.status === HTTP_NOT_FOUND) {
       return problemJson(HTTP_NOT_FOUND, PROBLEM_NOT_FOUND, 'Not Found', res.detail, request.nextUrl.pathname);
     }
-    return new NextResponse(new Uint8Array(res.body), {
+    const etag = `"sha256-${res.sha256}"`;
+    if (matchesIfNoneMatch(request.headers.get('if-none-match'), etag)) {
+      return new NextResponse(null, {
+        status: HTTP_NOT_MODIFIED,
+        headers: {
+          'Cache-Control': OCR_ASSET_CACHE_CONTROL,
+          'Content-Security-Policy': OCR_ASSET_CSP,
+          'X-Content-Type-Options': 'nosniff',
+          ETag: etag,
+        },
+      });
+    }
+    const bodyView = new Uint8Array(res.body.buffer, res.body.byteOffset, res.body.byteLength);
+    return new NextResponse(bodyView, {
       status: 200,
       headers: {
         'Content-Type': res.contentType,
@@ -53,7 +78,7 @@ export async function GET(
         'Cache-Control': OCR_ASSET_CACHE_CONTROL,
         'Content-Security-Policy': OCR_ASSET_CSP,
         'X-Content-Type-Options': 'nosniff',
-        ETag: `"sha256-${res.sha256}"`,
+        ETag: etag,
       },
     });
   } catch (err: unknown) {

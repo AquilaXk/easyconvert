@@ -1,21 +1,22 @@
 import fs from 'node:fs';
+import { builtinModules } from 'node:module';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC_ROOT = path.join(process.cwd(), 'src');
-const EDGE_OCR_DIR = path.join(SRC_ROOT, 'lib', 'edge-ocr') + path.sep;
-const CONVERSIONS_DIR = path.join(SRC_ROOT, 'lib', 'conversions') + path.sep;
 const EDGE_OCR_ENTRY = path.join(SRC_ROOT, 'lib', 'edge-ocr', 'index.ts');
 const COMBINER_ENTRY = path.join(SRC_ROOT, 'lib', 'conversions', 'ocr-pdf-combiner.ts');
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.json', '/index.ts', '/index.tsx'];
-const NODE_BUILTINS = new Set([
-  'assert', 'buffer', 'child_process', 'crypto', 'dns', 'events', 'fs', 'fs/promises', 'http', 'https',
-  'net', 'os', 'path', 'stream', 'tls', 'url', 'util', 'worker_threads', 'zlib',
-]);
+const NODE_BUILTINS = new Set(builtinModules.map((mod) => mod.replace(/^node:/, '')));
 const SERVER_ONLY_PACKAGES = new Set(['sharp', 'ioredis', 'pdfkit', 'harfbuzzjs']);
 // Value imports only: `import type` and `export type` are erased before bundling.
 const IMPORT_PATTERN = /(?:^|\n)\s*(?:import|export)\s+(?!type\b)(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/g;
 const DYNAMIC_IMPORT_PATTERN = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+function packageRootName(specifier: string): string {
+  const parts = specifier.split('/');
+  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
 
 function resolveLocal(fromFile: string, specifier: string): string | null {
   let base: string;
@@ -42,12 +43,18 @@ function forbiddenImportsReachableFrom(entry: string): string[] {
     const specifiers = [...source.matchAll(IMPORT_PATTERN), ...source.matchAll(DYNAMIC_IMPORT_PATTERN)].map((m) => m[1]);
     for (const specifier of specifiers) {
       const bare = specifier.replace(/^node:/, '');
-      if (specifier.startsWith('node:') || NODE_BUILTINS.has(bare) || SERVER_ONLY_PACKAGES.has(specifier)) {
+      const pkgRoot = packageRootName(bare);
+      if (
+        specifier.startsWith('node:') ||
+        NODE_BUILTINS.has(bare) ||
+        NODE_BUILTINS.has(pkgRoot) ||
+        SERVER_ONLY_PACKAGES.has(pkgRoot)
+      ) {
         found.push(`${path.relative(process.cwd(), file)} -> ${specifier}`);
         continue;
       }
       const local = resolveLocal(file, specifier);
-      if (local && (local.startsWith(EDGE_OCR_DIR) || local.startsWith(CONVERSIONS_DIR))) {
+      if (local && local.startsWith(SRC_ROOT + path.sep)) {
         pending.push(local);
       }
     }

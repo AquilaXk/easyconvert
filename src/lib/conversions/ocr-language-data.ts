@@ -14,6 +14,36 @@ import { OCR_LANGUAGES, ocrLanguageCode, type OcrLanguage } from './ocr-language
 
 const TRAINEDDATA_SUFFIX = '.traineddata';
 const GZIP_SUFFIX = '.gz';
+const TRAINEDDATA_COUNT_BYTES = 4;
+const TRAINEDDATA_OFFSET_BYTES = 8;
+const TRAINEDDATA_MAX_ENTRIES = 64;
+const TRAINEDDATA_ABSENT_OFFSET = -1n;
+
+export const TRAINEDDATA_HEADER_PROBE_BYTES =
+  TRAINEDDATA_COUNT_BYTES + TRAINEDDATA_MAX_ENTRIES * TRAINEDDATA_OFFSET_BYTES;
+
+export function isValidTraineddataHeader(header: Buffer, totalByteSize: number = header.length): boolean {
+  if (header.length < TRAINEDDATA_COUNT_BYTES || totalByteSize < TRAINEDDATA_COUNT_BYTES) {
+    return false;
+  }
+  const entries = header.readInt32LE(0);
+  const tableEnd = TRAINEDDATA_COUNT_BYTES + entries * TRAINEDDATA_OFFSET_BYTES;
+  if (entries < 1 || entries > TRAINEDDATA_MAX_ENTRIES || tableEnd > header.length || tableEnd > totalByteSize) {
+    return false;
+  }
+  let presentComponents = 0;
+  const minOffset = BigInt(tableEnd);
+  const maxOffset = BigInt(totalByteSize);
+  for (let i = 0; i < entries; i++) {
+    const offset = header.readBigInt64LE(TRAINEDDATA_COUNT_BYTES + i * TRAINEDDATA_OFFSET_BYTES);
+    if (offset === TRAINEDDATA_ABSENT_OFFSET) continue;
+    presentComponents++;
+    if (offset < minOffset || offset >= maxOffset) {
+      return false;
+    }
+  }
+  return presentComponents > 0;
+}
 
 const SYSTEM_TESSDATA_DIRS: readonly string[] = [
   '/usr/share/tesseract-ocr/5/tessdata',

@@ -258,8 +258,10 @@ function rootLocaleAnswer(request: NextRequest): NextResponse {
   return response;
 }
 
+const OCR_ASSET_PATH_PREFIX = /^\/_assets\/ocr\/[^/]+\/.+/;
+
 function isApiPath(pathname: string): boolean {
-  return pathname.startsWith('/api/');
+  return pathname.startsWith('/api/') || OCR_ASSET_PATH_PREFIX.test(pathname);
 }
 
 function isLocalePrefixedApiPath(pathname: string): boolean {
@@ -426,6 +428,6 @@ export const config = {
   // 404 without reaching `src/app/[locale]/page.tsx` with an unknown `locale` parameter (`NoFallbackError`).
   matcher: [
     '/api/:path*',
-    '/((?!api/|_next/|_vercel/|_assets/|fonts/|screenshots/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$).*)',
+    '/((?!api/|_next/|_vercel/|fonts/|screenshots/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$).*)',
   ],
 };

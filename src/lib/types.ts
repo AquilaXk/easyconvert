@@ -1,4 +1,4 @@
-import { PIPELINE_OPERATIONS } from './api/contracts/enums';
+import type { PIPELINE_OPERATIONS } from './api/contracts/enums';
 import type { ConversionFailure } from './conversion-failure';
 import { refusalCodeOf, type ConversionRefusalCode } from './refusal-codes';
 import type { VectorizeOptions } from './conversions/raster-vectorize-options';

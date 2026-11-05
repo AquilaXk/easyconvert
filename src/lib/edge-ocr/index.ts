@@ -1,5 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
-import { ConversionOptions, ConversionQueueItem } from '../types';
+import type { ConversionOptions, ConversionQueueItem } from '../types';
 import { injectInvisibleTextLayer, parseTesseractBlocks, OcrResult } from '../conversions/ocr-pdf-combiner';
 import { calibrateOcrResult, characterWeightedConfidence } from '../conversions/ocr-calibration';
 import { resolveImageDpi } from '../conversions/ocr-dpi';
@@ -74,29 +74,48 @@ async function recognizeImage(
   let data: { text?: string; blocks?: unknown[] | null };
   try {
     const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(language, 1, {
+    let failStart: (reason: Error) => void = () => undefined;
+    const startFailed = new Promise<never>((_, reject) => {
+      failStart = reject;
+    });
+    const started = Tesseract.createWorker(language, 1, {
       workerPath: EDGE_OCR_WORKER_PATH,
       corePath: EDGE_OCR_CORE_PATH,
       langPath: EDGE_OCR_LANG_PATH,
       gzip: false,
       workerBlobURL: false,
       cacheMethod: 'none',
-      // Failures already reject the pending job; without a handler the worker also rethrows
-      // them from its message listener as an uncaught exception.
-      errorHandler: () => undefined,
+      errorHandler: (err: unknown) => {
+        failStart(
+          new EdgeOcrError(`Edge OCR worker for '${language}' failed: ${describeError(err)}`, {
+            cause: err,
+          })
+        );
+      },
       logger: (m) => {
         if (m.status === 'recognizing text' && typeof m.progress === 'number') {
           onProgress?.(Math.round(35 + m.progress * 45));
         }
       },
     });
+    let worker: Awaited<typeof started>;
+    try {
+      worker = await Promise.race([started, startFailed]);
+    } catch (err: unknown) {
+      void started.then(
+        (late) => late.terminate().catch(() => undefined),
+        () => undefined
+      );
+      throw err;
+    }
     try {
       const input = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : file;
-      ({ data } = await worker.recognize(input, {}, { blocks: true }));
+      ({ data } = await Promise.race([worker.recognize(input, {}, { blocks: true }), startFailed]));
     } finally {
       await worker.terminate();
     }
   } catch (err: unknown) {
+    if (err instanceof EdgeOcrError) throw err;
     throw new EdgeOcrError(`Edge OCR engine failed: ${describeError(err)}`, { cause: err });
   }
 

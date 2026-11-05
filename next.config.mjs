@@ -17,8 +17,8 @@ const nextConfig = {
   async rewrites() {
     return [
       {
-        source: '/_assets/ocr/:version/:asset*',
-        destination: '/api/ocr-assets/:version/:asset*',
+        source: '/_assets/ocr/:version/:asset+',
+        destination: '/api/ocr-assets/:version/:asset+',
       },
     ];
   },

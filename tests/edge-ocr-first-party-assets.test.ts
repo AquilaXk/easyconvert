@@ -13,7 +13,7 @@ vi.mock('tesseract.js', () => ({ default: { createWorker }, createWorker }));
 
 import nextConfigFactory from '../next.config.mjs';
 import { GET as getOcrAsset } from '../src/app/api/ocr-assets/[version]/[...asset]/route';
-import { locateLanguageData, resetInstalledTraineddata } from '../src/lib/conversions/ocr-language-data';
+import { resetInstalledTraineddata } from '../src/lib/conversions/ocr-language-data';
 import {
   EDGE_OCR_ASSET_BASE_PATH,
   EDGE_OCR_ASSET_VERSION,
@@ -30,7 +30,7 @@ import {
   verifyTraineddataBuffer,
 } from '../src/lib/edge-ocr/assets';
 import ocrAssetsManifest from '../src/lib/edge-ocr/ocr-assets.manifest.json';
-import { config as middlewareConfig } from '../src/middleware';
+import { config as middlewareConfig, middleware } from '../src/middleware';
 
 const RECOGNIZED_BLOCKS = [
   {
@@ -132,6 +132,34 @@ describe('first-party Edge OCR assets and worker configuration', () => {
     expect(createWorker).not.toHaveBeenCalled();
   });
 
+  it('rejects with EdgeOcrError instead of hanging when Tesseract.createWorker reports a language load failure via errorHandler', async () => {
+    const terminate = vi.fn(async () => undefined);
+    let resolveLateWorker: ((w: { recognize: () => Promise<never>; terminate: typeof terminate }) => void) | undefined;
+    createWorker.mockImplementation(
+      (_lang: string, _oem: number, opts: { errorHandler?: (err: unknown) => void }) =>
+        new Promise((resolve) => {
+          resolveLateWorker = resolve;
+          queueMicrotask(() => {
+            opts.errorHandler?.(new Error('Failed to load language eng (404)'));
+          });
+        })
+    );
+
+    const file = await makeScanFile();
+    await expect(runClientEdgeOcr(file, { ocrEnabled: true, ocrLanguage: 'eng' })).rejects.toThrow(
+      /Edge OCR worker for 'eng' failed: Failed to load language eng \(404\)/
+    );
+
+    resolveLateWorker?.({
+      recognize: async () => {
+        throw new Error('unreachable');
+      },
+      terminate,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(terminate).toHaveBeenCalledTimes(1);
+  });
+
   it('matches every pinned entry in ocr-assets.manifest.json against the installed files in node_modules', () => {
     const tesseractPkg = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), 'node_modules/tesseract.js/package.json'), 'utf-8')
@@ -205,18 +233,15 @@ describe('first-party Edge OCR assets and worker configuration', () => {
     }
   });
 
-  it('serves verified traineddata, rejects unknown languages or versions with 404, and rejects corrupted traineddata with 500', async () => {
+  it('serves verified traineddata, answers 304 on matching If-None-Match, rejects unknown languages or versions with 404, and rejects corrupted traineddata with 500', async () => {
     const validTraineddata = buildValidTraineddataBuffer();
     expect(() => verifyTraineddataBuffer(validTraineddata, 'eng')).not.toThrow();
 
     const tempTessdata = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-tessdata-'));
     try {
-      const existingEng = locateLanguageData('eng');
-      if (!existingEng) {
-        fs.writeFileSync(path.join(tempTessdata, 'eng.traineddata'), validTraineddata);
-        process.env.TESSDATA_PREFIX = tempTessdata;
-        resetInstalledTraineddata();
-      }
+      fs.writeFileSync(path.join(tempTessdata, 'eng.traineddata'), validTraineddata);
+      process.env.TESSDATA_PREFIX = tempTessdata;
+      resetInstalledTraineddata();
 
       const okReq = new NextRequest('http://localhost:3000/api/ocr-assets/7.0.0/tessdata/eng.traineddata');
       const okRes = await getOcrAsset(okReq, {
@@ -225,8 +250,20 @@ describe('first-party Edge OCR assets and worker configuration', () => {
       expect(okRes.status).toBe(200);
       expect(okRes.headers.get('content-type')).toBe('application/octet-stream');
       expect(okRes.headers.get('content-security-policy')).toBe(OCR_ASSET_CSP);
+      const etag = okRes.headers.get('etag');
+      expect(etag).toMatch(/^"sha256-[0-9a-f]{64}"$/);
       const servedBytes = Buffer.from(await okRes.arrayBuffer());
       expect(() => verifyTraineddataBuffer(servedBytes, 'eng')).not.toThrow();
+
+      const conditionalReq = new NextRequest('http://localhost:3000/api/ocr-assets/7.0.0/tessdata/eng.traineddata', {
+        headers: { 'if-none-match': etag! },
+      });
+      const conditionalRes = await getOcrAsset(conditionalReq, {
+        params: Promise.resolve({ version: '7.0.0', asset: ['tessdata', 'eng.traineddata'] }),
+      });
+      expect(conditionalRes.status).toBe(304);
+      expect(conditionalRes.headers.get('etag')).toBe(etag);
+      expect((await conditionalRes.arrayBuffer()).byteLength).toBe(0);
 
       const unknownLangReq = new NextRequest(
         'http://localhost:3000/api/ocr-assets/7.0.0/tessdata/xx_unknown.traineddata'
@@ -260,21 +297,34 @@ describe('first-party Edge OCR assets and worker configuration', () => {
     }
   });
 
-  it('skips /_assets/ocr/... in the locale middleware matcher and rewrites it to /api/ocr-assets/... in next.config.mjs', async () => {
+  it('routes /_assets/ocr/:version/:asset+ through the API middleware without a locale rewrite while routing non-asset /_assets paths to the locale 404 handler', async () => {
     const matchers = middlewareConfig.matcher.map((source) => new RegExp(tryToParsePath(source).regexStr!));
     const matched = (pathname: string) => matchers.some((matcher) => matcher.test(pathname));
 
-    expect(matched('/_assets/ocr/7.0.0/worker.min.js')).toBe(false);
-    expect(matched('/_assets/ocr/7.0.0/tesseract-core-simd-lstm.wasm.js')).toBe(false);
-    expect(matched('/_assets/ocr/7.0.0/tessdata/eng.traineddata')).toBe(false);
+    for (const assetPath of [
+      '/_assets/ocr/7.0.0/worker.min.js',
+      '/_assets/ocr/7.0.0/tesseract-core-simd-lstm.wasm.js',
+      '/_assets/ocr/7.0.0/tessdata/eng.traineddata',
+    ]) {
+      expect(matched(assetPath), assetPath).toBe(true);
+      const res = await middleware(new NextRequest(`http://localhost:3000${assetPath}`));
+      expect(res.status, assetPath).toBe(200);
+      expect(res.headers.get('x-middleware-rewrite'), assetPath).toBeNull();
+    }
+
+    for (const nonAssetPath of ['/_assets/foo', '/_assets/ocr', '/_assets/ocr/7.0.0']) {
+      expect(matched(nonAssetPath), nonAssetPath).toBe(true);
+      const res = await middleware(new NextRequest(`http://localhost:3000${nonAssetPath}`));
+      expect(res.headers.get('x-middleware-rewrite'), nonAssetPath).toBe(`http://localhost:3000/en${nonAssetPath}`);
+    }
 
     for (const phase of [PHASE_PRODUCTION_SERVER, PHASE_PRODUCTION_BUILD]) {
       const cfg = await nextConfigFactory(phase);
       const rewrites = await cfg.rewrites?.();
       expect(rewrites).toEqual([
         {
-          source: '/_assets/ocr/:version/:asset*',
-          destination: '/api/ocr-assets/:version/:asset*',
+          source: '/_assets/ocr/:version/:asset+',
+          destination: '/api/ocr-assets/:version/:asset+',
         },
       ]);
     }
