@@ -155,7 +155,7 @@ async function processIntermediatePdfArtifacts(
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const transformedBuf = await transformFn(stored.buffer);
-      const outFilename = stored.filename || path.basename(inputKey);
+      const outFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), 'output.pdf');
       const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
       await storage.saveObject(outKey, transformedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
       return outKey;
@@ -187,8 +187,9 @@ async function processIntermediatePdfParts(
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const output = await transformFn(stored.buffer, stored.filename || path.basename(inputKey));
-      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, output.filename);
-      await storage.saveObject(outKey, output.buffer, registryMimeType(output.formatId), output.filename, INTERMEDIATE_TTL_MS);
+      const safeName = sanitizeNodeOutputFilename(output.filename, `output.${output.formatId}`);
+      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, safeName);
+      await storage.saveObject(outKey, output.buffer, registryMimeType(output.formatId), safeName, INTERMEDIATE_TTL_MS);
       return outKey;
     })
   );
@@ -375,7 +376,7 @@ export async function processGraphNodeJob(
           // An output that is not smaller is not an optimisation: the input is kept and said to be unchanged.
           const gained = optRes.optimized && optRes.buffer.length < stored.buffer.length;
           const outBuffer = gained ? optRes.buffer : stored.buffer;
-          const outFilename = stored.filename || path.basename(inputKey);
+          const outFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `optimized.${srcExt}`);
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
           await effectiveStorage.saveObject(outKey, outBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);

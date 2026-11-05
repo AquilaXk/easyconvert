@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getFormatByExtension } from '@/lib/registry';
+import { assertAllowedLibreOfficeFilter } from '@/lib/conversions/pdf-export-options';
 import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
 import type { FailurePolicy } from '@/lib/queue/graph/types';
@@ -618,9 +619,7 @@ export function validateJobGraph(
       }
       case 'convert': {
         inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
-        if (target) {
-          checkConversion(nodeId, getTaskDependencies(node)[0], firstInputFormat(node), target, errors);
-        }
+        checkConvertNode(nodeId, node, getTaskDependencies(node)[0], firstInputFormat(node), target, errors);
         break;
       }
       case 'ocr': {
@@ -728,6 +727,45 @@ function checkPdfProtectNode(
       message: err instanceof Error ? err.message : 'Invalid pdf.protect options.',
       code: 'INVALID_NODE_OPTIONS',
     });
+  }
+}
+
+function checkConvertNode(
+  nodeId: string,
+  node: { options?: { protect?: unknown; libreOfficeFilter?: unknown } & Record<string, unknown> },
+  inputId: string | undefined,
+  sourceFmt: string,
+  target: string | undefined,
+  errors: GraphValidationErrorDetail[]
+): void {
+  if (target) {
+    checkConversion(nodeId, inputId, sourceFmt, target, errors);
+  }
+  if (node.options?.protect !== undefined) {
+    try {
+      validatePdfProtectOptions(node.options.protect);
+    } catch (err) {
+      errors.push({
+        path: `nodes.${nodeId}.options.protect`,
+        message: err instanceof Error ? err.message : 'Invalid pdf.protect options.',
+        code: 'INVALID_NODE_OPTIONS',
+      });
+    }
+  }
+  const filter = node.options?.libreOfficeFilter;
+  if (filter !== undefined && filter !== '' && target) {
+    try {
+      if (typeof filter !== 'string') {
+        throw new Error('libreOfficeFilter must be a string.');
+      }
+      assertAllowedLibreOfficeFilter(target, filter);
+    } catch (err) {
+      errors.push({
+        path: `nodes.${nodeId}.options.libreOfficeFilter`,
+        message: err instanceof Error ? err.message : 'Invalid libreOfficeFilter option.',
+        code: 'INVALID_NODE_OPTIONS',
+      });
+    }
   }
 }
 

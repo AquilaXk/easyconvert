@@ -262,7 +262,9 @@ describe('/api/storage/file owner access (#249)', () => {
     const key = storeObject(nodeOutputKey('results', graphId, 'conv', 0, '../../secret/evil\r\nname.json'));
     expect(key).toBe(`results/${graphId}/conv/0/evil_name.json`);
     expect(sanitizeNodeOutputFilename('..')).toBe('output.bin');
+    expect(sanitizeNodeOutputFilename('\r\n\0')).toBe('output.bin');
     expect(sanitizeNodeOutputFilename('a/b\\c.txt')).toBe('c.txt');
+    expect(sanitizeNodeOutputFilename(`${'a'.repeat(260)}.pdf`)).toBe(`${'a'.repeat(251)}.pdf`);
 
     const ownerRes = await download(key, sessionHeaders(alice));
     expect(ownerRes.status).toBe(200);

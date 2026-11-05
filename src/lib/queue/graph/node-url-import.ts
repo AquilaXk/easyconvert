@@ -18,7 +18,7 @@ import {
 import { maxFileBytes, planOfCaller, type Plan } from '../../plan-limits';
 import { tierForOwner } from '../enqueue';
 import { tierMaxDeadlineMs } from '../job-deadline';
-import { nodeOutputKey } from './node-jobs';
+import { nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Largest body an import.url node accepts; override with GRAPH_URL_IMPORT_MAX_BYTES. */
@@ -118,7 +118,7 @@ async function importUrlArtifact(request: {
   const limited = pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), metered, () => undefined);
 
   const urlName = path.basename(new URL(url).pathname);
-  const filename = urlName && urlName !== '/' ? urlName : `${nodeId}.bin`;
+  const filename = sanitizeNodeOutputFilename(urlName && urlName !== '/' ? urlName : `${nodeId}.bin`, `${nodeId}.bin`);
   const key = nodeOutputKey('intermediate', graphId, nodeId, 0, filename);
   const mimeType = response.headers.get('content-type') || 'application/octet-stream';
   try {

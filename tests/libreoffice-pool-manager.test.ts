@@ -288,6 +288,28 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       await pool.releaseWorker(w1);
       await expect(queuedWaiter).rejects.toThrow(/ENOSPC: failed to create replacement sandbox dir/);
     });
+
+    it('drains and rejects all queued waiters when a cold spawn fails with zero remaining workers', async () => {
+      const pool = new LibreOfficePoolManager({
+        maxWorkers: 1,
+        acquireTimeoutMs: 10_000,
+        enabled: true,
+      });
+      activePools.push(pool);
+
+      vi.spyOn(pool, 'createWorker').mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        throw new Error('ENOMEM: cold worker creation failed');
+      });
+
+      const p1 = pool.acquireWorker();
+      const p2 = pool.acquireWorker();
+      const p3 = pool.acquireWorker();
+
+      await expect(p1).rejects.toThrow(/ENOMEM: cold worker creation failed/);
+      await expect(p2).rejects.toThrow(/ENOMEM: cold worker creation failed/);
+      await expect(p3).rejects.toThrow(/ENOMEM: cold worker creation failed/);
+    });
   });
 
   describe('4. Conversion Execution & Profile Sandbox Security', () => {
@@ -361,6 +383,14 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       const dummy = Buffer.from('test');
       await expect(pool.convert(dummy, 'docx; rm -rf /', 'pdf')).rejects.toThrow(/Invalid format identifier/);
       await expect(pool.convert(dummy, 'docx', 'pdf && malicious')).rejects.toThrow(/Invalid format identifier/);
+
+      const wBefore = await pool.acquireWorker();
+      await pool.releaseWorker(wBefore);
+      const totalBefore = pool.getStats().totalJobsProcessed;
+      await expect(
+        pool.convert(dummy, 'docx', 'pdf', { libreOfficeFilter: 'custom_filter' })
+      ).rejects.toThrow(UnsupportedOptionError);
+      expect(pool.getStats().totalJobsProcessed).toBe(totalBefore);
     });
   });
 

@@ -2056,14 +2056,14 @@
     "rule": "complexity",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 104
+    "maxValue": 103
   },
   {
     "file": "src/lib/jobs/graph.ts",
     "rule": "max-lines-per-function",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 373
+    "maxValue": 371
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",

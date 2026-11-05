@@ -49,16 +49,25 @@ export function assertSealedFor(graphId: string, graph: SealedJobGraph): void {
 export type NodeOutputArea = 'intermediate' | 'results';
 
 const CONTROL_OR_SEPARATOR_CHARS = /[\0-\x1f\x7f\\/]+/g;
+const MAX_NODE_OUTPUT_FILENAME_LENGTH = 255;
+const MAX_PRESERVED_EXTENSION_LENGTH = 32;
 
 export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'output.bin'): string {
   const base = path.posix
     .basename(String(rawFilename || '').replace(/\\/g, '/'))
     .replace(CONTROL_OR_SEPARATOR_CHARS, '_')
     .trim();
-  if (!base || base === '.' || base === '..') {
+  if (!base || !/[^\s._]/.test(base)) {
     return fallback;
   }
-  return base.slice(0, 255);
+  if (base.length <= MAX_NODE_OUTPUT_FILENAME_LENGTH) {
+    return base;
+  }
+  const ext = path.posix.extname(base);
+  if (ext.length > 0 && ext.length <= MAX_PRESERVED_EXTENSION_LENGTH) {
+    return `${base.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH - ext.length)}${ext}`;
+  }
+  return base.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH);
 }
 
 /**

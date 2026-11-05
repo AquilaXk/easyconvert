@@ -55,6 +55,7 @@ import {
   protectPdf,
   convertToPdfA,
 } from './pdf-postprocess';
+import { validatePdfProtectOptions } from './pdf-postprocess/protect';
 import {
   convertHwpx,
   parseHwpxDocument,
@@ -629,6 +630,9 @@ async function convertFileInScope(
  */
 export function assertPdfPostProcessOptions(options: ConversionOptions): void {
   assertPdfExportOptions(options);
+  if (options.protect !== undefined) {
+    validatePdfProtectOptions(options.protect);
+  }
   if (resolvePdfAConformance(options) && options.protect) {
     // ISO 19005 forbids encryption in PDF/A files.
     throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');

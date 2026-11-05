@@ -12,6 +12,7 @@ import {
   getQpdfBinaryPath,
 } from '../src/lib/conversions/pdf-postprocess';
 import { validatePdfProtectOptions } from '../src/lib/conversions/pdf-postprocess/protect';
+import { assertPdfPostProcessOptions } from '../src/lib/conversions';
 import { validateJobGraph } from '../src/lib/jobs/graph';
 import { getAvailableTargetFormats } from '../src/lib/registry';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
@@ -295,6 +296,11 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
       ).toThrow(/Unsupported modify permission/);
       expect(() => validatePdfProtectOptions({ userPassword: 'a'.repeat(257) })).toThrow(/exceeds maximum length of 256/);
       expect(() => validatePdfProtectOptions({ userPassword: 'bad\npassword' })).toThrow(/invalid newline or null characters/);
+      expect(() =>
+        assertPdfPostProcessOptions({
+          protect: { userPassword: 'ok', permissions: { print: 'full\n--modify=all' as any } },
+        })
+      ).toThrow(/Unsupported print permission/);
 
       await expect(
         protectPdf(pdf, { userPassword: 'ok', permissions: { print: 'full\n--modify=all' as any } })
@@ -312,6 +318,24 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
       } as any);
       expect(badGraphResult.valid).toBe(false);
       expect(badGraphResult.errors.map((e) => e.message).join(' ')).toMatch(/Unsupported print permission/);
+
+      const badConvertGraphResult = validateJobGraph({
+        nodes: {
+          in: { op: 'import.upload', storageKey: 'uploads/doc.docx' },
+          conv: {
+            op: 'convert',
+            input: 'in',
+            targetFormat: 'pdf',
+            options: {
+              libreOfficeFilter: 'MS Excel 97',
+              protect: { userPassword: 'ok', permissions: { modify: 'all\n--extract=y' as any } },
+            },
+          },
+        },
+      } as any);
+      expect(badConvertGraphResult.valid).toBe(false);
+      expect(badConvertGraphResult.errors.map((e) => e.message).join(' ')).toMatch(/Unsupported modify permission/);
+      expect(badConvertGraphResult.errors.map((e) => e.message).join(' ')).toMatch(/Unsupported LibreOffice export filter/);
 
       expect(getAvailableTargetFormats('__proto__')).toEqual([]);
       expect(getAvailableTargetFormats('constructor')).toEqual([]);

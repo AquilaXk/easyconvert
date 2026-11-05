@@ -246,14 +246,24 @@ export class LibreOfficePoolManager {
   public async init(): Promise<void> {
     if (!this.enabled || this.isShuttingDown) return;
 
-    const toWarm = Math.max(0, this.minWorkers - this.workers.length);
-    for (let i = 0; i < toWarm; i++) {
+    while (
+      !this.isShuttingDown &&
+      this.workers.length + this.spawningWorkers < this.minWorkers &&
+      this.workers.length + this.spawningWorkers < this.maxWorkers
+    ) {
+      this.spawningWorkers++;
       try {
         const worker = await this.createWorker();
+        if (this.isShuttingDown) {
+          await this.destroyWorker(worker);
+          return;
+        }
         this.workers.push(worker);
       } catch (err) {
         console.warn('[LibreOfficePoolManager] Warning: failed to pre-warm initial worker:', err);
         break;
+      } finally {
+        this.spawningWorkers--;
       }
     }
   }
@@ -433,13 +443,24 @@ export class LibreOfficePoolManager {
     // 2. Spawn a new worker if under maxWorkers limit
     if (this.workers.length + this.spawningWorkers < this.maxWorkers) {
       this.spawningWorkers++;
+      let spawnFailure: unknown;
       try {
         const newWorker = await this.createWorker();
+        if (this.isShuttingDown) {
+          await this.destroyWorker(newWorker);
+          throw new Error('LibreOfficePoolManager has been shut down.');
+        }
         newWorker.state = 'BUSY';
         this.workers.push(newWorker);
         return newWorker;
+      } catch (err) {
+        spawnFailure = err;
+        throw err;
       } finally {
         this.spawningWorkers--;
+        if (spawnFailure !== undefined) {
+          this.rejectQueuedWaitersOnSpawnFailure(spawnFailure);
+        }
       }
     }
 
@@ -535,8 +556,13 @@ export class LibreOfficePoolManager {
 
     // Spawn a fresh replacement worker
     this.spawningWorkers++;
+    let spawnFailure: unknown;
     try {
       const replacement = await this.createWorker();
+      if (this.isShuttingDown) {
+        await this.destroyWorker(replacement);
+        return;
+      }
       this.workers.push(replacement);
 
       if (this.queue.length > 0) {
@@ -547,15 +573,24 @@ export class LibreOfficePoolManager {
       }
     } catch (err) {
       console.warn('[LibreOfficePoolManager] Warning: failed to spawn replacement worker:', err);
-      const failure = err instanceof Error ? err : new Error(String(err));
-      if (this.queue.length > 0) {
-        const next = this.queue.shift()!;
-        clearTimeout(next.timer);
-        next.reject(failure);
-      }
+      spawnFailure = err;
     } finally {
       this.spawningWorkers--;
+      if (spawnFailure !== undefined) {
+        this.rejectQueuedWaitersOnSpawnFailure(spawnFailure);
+      }
     }
+  }
+
+  private rejectQueuedWaitersOnSpawnFailure(err: unknown): void {
+    const failure = err instanceof Error ? err : new Error(String(err));
+    if (this.queue.length === 0) return;
+    const drainAll = this.workers.length === 0 && this.spawningWorkers === 0;
+    do {
+      const next = this.queue.shift()!;
+      clearTimeout(next.timer);
+      next.reject(failure);
+    } while (drainAll && this.queue.length > 0);
   }
 
   /**
@@ -647,6 +682,7 @@ export class LibreOfficePoolManager {
   ): Promise<WorkerConversionResult | null> {
     const src = validateFormat(sourceFormat);
     const tgt = validateFormat(targetFormat);
+    const filterSpec = resolveLibreOfficeFilter(tgt, src, options);
 
     if (options.signal?.aborted) {
       throw options.signal.reason || new Error('The operation was aborted');
@@ -678,7 +714,7 @@ export class LibreOfficePoolManager {
         '--nologo',
         `-env:UserInstallation=file://${worker.userProfileDir}`,
         '--convert-to',
-        resolveLibreOfficeFilter(tgt, src, options),
+        filterSpec,
         '--outdir',
         jobSubdir,
         inputPath,

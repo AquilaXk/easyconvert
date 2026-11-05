@@ -45,11 +45,7 @@ function bzip2Payload(src: string, archive: Buffer, limits: ArchiveExtractionLim
     payload = decompressBzip2(archive, cap);
   } catch (err) {
     if (err instanceof DecompressionLimitError) {
-      throw new DecompressionLimitError(
-        cap < limits.MAX_UNCOMPRESSED_SIZE
-          ? `Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`
-          : `Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-      );
+      throw new DecompressionLimitError(unpackedBytesCapError(archive.length, limits).message);
     }
     throw err;
   }
