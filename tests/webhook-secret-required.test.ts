@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import { NextRequest } from 'next/server';
 import { POST as createKeyRoute } from '../src/app/api/keys/route';
+import { PATCH as patchKeyRoute } from '../src/app/api/keys/[id]/route';
 import { POST as jobsRoute } from '../src/app/api/v1/jobs/route';
 import { POST as convertRoute } from '../src/app/api/v1/convert/route';
 import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
@@ -287,5 +288,170 @@ describe('Security: Webhook secret enforcement', () => {
       await testQueue.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it('rejects private, loopback, or non-http(s) webhookUrl at key creation, key update, and job submission', async () => {
+    const badUrls = [
+      'http://127.0.0.1:8080/hook',
+      'http://169.254.169.254/latest/meta-data/',
+      'ftp://example.com/hook',
+      'https://user:pass@example.com/hook',
+    ];
+
+    for (const badUrl of badUrls) {
+      const createRes = await createKeyRoute(
+        new NextRequest('http://localhost:3000/api/keys', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: `easyconvert_session=${sessionToken}`,
+          },
+          body: JSON.stringify({
+            acceptedTermsVersion: TERMS_VERSION,
+            name: 'SSRF Key',
+            webhookUrl: badUrl,
+            webhookSecret: 'secret_123',
+          }),
+        })
+      );
+      expect(createRes.status, badUrl).toBe(400);
+      const createJson = await createRes.json();
+      expect(createJson.code, badUrl).toBe('invalid_key_settings');
+    }
+
+    const validKey = await redisKeyStore.generateApiKey(testUser.id, 'Updatable Key', {
+      scopes: ['convert:write'],
+    });
+
+    const patchRes = await patchKeyRoute(
+      new NextRequest(`http://localhost:3000/api/keys/${validKey.key.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
+        body: JSON.stringify({
+          webhookUrl: 'http://127.0.0.1:9000/internal',
+          webhookSecret: 'secret_123',
+        }),
+      }),
+      { params: Promise.resolve({ id: validKey.key.id }) }
+    );
+    expect(patchRes.status).toBe(400);
+
+    const patchMissingSecretRes = await patchKeyRoute(
+      new NextRequest(`http://localhost:3000/api/keys/${validKey.key.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
+        body: JSON.stringify({
+          webhookUrl: 'https://example.com/hook',
+        }),
+      }),
+      { params: Promise.resolve({ id: validKey.key.id }) }
+    );
+    expect(patchMissingSecretRes.status).toBe(400);
+
+    const patchValidRes = await patchKeyRoute(
+      new NextRequest(`http://localhost:3000/api/keys/${validKey.key.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
+        body: JSON.stringify({
+          webhookUrl: 'https://example.com/hook',
+          webhookSecret: 'secret_123',
+        }),
+      }),
+      { params: Promise.resolve({ id: validKey.key.id }) }
+    );
+    expect(patchValidRes.status).toBe(200);
+
+    const patchClearSecretOnlyRes = await patchKeyRoute(
+      new NextRequest(`http://localhost:3000/api/keys/${validKey.key.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `easyconvert_session=${sessionToken}`,
+        },
+        body: JSON.stringify({
+          webhookSecret: '',
+        }),
+      }),
+      { params: Promise.resolve({ id: validKey.key.id }) }
+    );
+    expect(patchClearSecretOnlyRes.status).toBe(400);
+
+    const jobRes = await jobsRoute(
+      new NextRequest('http://localhost:3000/api/v1/jobs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${validKey.secretKey}`,
+        },
+        body: JSON.stringify({
+          filename: 'document.txt',
+          targetFormat: 'pdf',
+          inputBufferBase64: Buffer.from('Hello').toString('base64'),
+          webhookUrl: 'http://127.0.0.1:9000/internal',
+          webhookSecret: 'secret_123',
+        }),
+      })
+    );
+    expect(jobRes.status).toBe(400);
+
+    const formData = new FormData();
+    formData.append('file', new Blob(['sample content'], { type: 'text/plain' }), 'sample.txt');
+    formData.append('targetFormat', 'pdf');
+    formData.append('webhookUrl', 'http://169.254.169.254/latest/meta-data/');
+    formData.append('webhookSecret', 'secret_123');
+
+    const convertRes = await convertRoute(
+      new NextRequest('http://localhost:3000/api/v1/convert', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${validKey.secretKey}`,
+          prefer: 'respond-async',
+        },
+        body: formData,
+      })
+    );
+    expect(convertRes.status).toBe(400);
+  });
+
+  it('refuses to follow 3xx webhook redirects and routes redirect responses immediately to DLQ', async () => {
+    let fetchCalls = 0;
+    let passedInit: RequestInit | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      fetchCalls++;
+      passedInit = init;
+      return new Response('redirecting', {
+        status: 302,
+        headers: { location: 'http://127.0.0.1:8080/internal-admin' },
+      });
+    });
+
+    const result = await webhookDispatcher.dispatch(
+      'https://93.184.215.14/webhook',
+      'job.completed',
+      { jobId: 'job_redirect_test' },
+      'webhook_secret_xyz',
+      { ownerUserId: testUser.id, maxRetries: 3 }
+    );
+
+    expect(passedInit?.redirect).toBe('manual');
+    expect(fetchCalls).toBe(1);
+    expect(result.success).toBe(false);
+    expect(result.finalStatusCode).toBe(302);
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0].error).toContain('Webhook redirect (302) is not followed.');
+
+    const dlqEntries = await webhookDispatcher.getDlqEntries(testUser.id);
+    const dlqEntry = dlqEntries.find((e) => e.originalDeliveryId === result.id);
+    expect(dlqEntry).toBeDefined();
+    expect(dlqEntry?.finalStatusCode).toBe(302);
   });
 });

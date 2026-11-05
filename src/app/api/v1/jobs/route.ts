@@ -21,6 +21,7 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
+import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
 import {
   validateJobGraph,
@@ -297,6 +298,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         }
       }
     }
+
+    const resolvedWebhook = resolveEffectiveWebhook(webhookUrl, webhookSecret, auth.apiKey?.webhookUrl, auth.apiKey?.webhookSecret);
+    if (resolvedWebhook.error) return await fail(400, resolvedWebhook.error);
+    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret } = resolvedWebhook;
 
     // Normalize page / pages option and validate the page range syntax
     if (options) {
@@ -586,18 +591,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
           `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`
         );
       }
-    }
-
-    // Fall back to API Key configured webhook URL/Secret if not overridden in request
-    const effectiveWebhookUrl = webhookUrl || auth.apiKey?.webhookUrl;
-    const effectiveWebhookSecret = webhookSecret || auth.apiKey?.webhookSecret;
-
-    if (webhookUrl && !webhookSecret) {
-      return await fail(400, 'webhookSecret is required when webhookUrl is provided.');
-    }
-
-    if (effectiveWebhookUrl && !effectiveWebhookSecret) {
-      return await fail(400, 'webhookSecret is required when webhookUrl is provided.');
     }
 
     const unit = await reserveConversionUnit(auth.user, reservedUnits);

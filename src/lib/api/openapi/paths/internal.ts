@@ -299,11 +299,16 @@ export const internalPaths = {
       responses: {
         '200': sessionUserResponse('Account created and signed in.'),
         '400': createCodedErrorResponse(
-          'Invalid JSON, email, or password length; terms of service not accepted (`terms_not_accepted`), or accepted in an earlier version from a page loaded before they changed (`terms_outdated`).',
-          ['invalid_json', 'invalid_email', 'password_length', 'terms_not_accepted', 'terms_outdated']
+          'Invalid JSON, email, or password length; terms of service not accepted (`terms_not_accepted`), accepted in an earlier version (`terms_outdated`), or a client address the forwarding headers do not name (`client_address_unknown`).',
+          ['invalid_json', 'invalid_email', 'password_length', 'terms_not_accepted', 'terms_outdated', 'client_address_unknown']
         ),
         '409': createCodedErrorResponse('Email address already registered.', ['account_exists']),
+        '429': {
+          ...createProblemResponse('Too many registration attempts (problem type `rate-limited`, `code` "login_locked", the wait in `retryAfterSeconds`); see `Retry-After`.'),
+          headers: { 'Retry-After': { schema: { type: 'integer' } } },
+        },
         '500': createErrorResponse('Registration failed on the server (fixed `error`, no `code`).'),
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
       },
     },
   },

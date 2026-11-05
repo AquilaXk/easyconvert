@@ -27,12 +27,15 @@ import {
   resetLoginRateLimiterStore,
   LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL,
   LOGIN_MAX_FAILED_ATTEMPTS_PER_IP,
+  REGISTER_MAX_ATTEMPTS_PER_IP,
 } from '../src/lib/auth/login-rate-limiter';
 import { GET as googleUrlHandler } from '../src/app/api/auth/google/url/route';
 import { GET as googleCallbackHandler } from '../src/app/api/auth/google/callback/route';
 import { POST as loginHandler } from '../src/app/api/auth/login/route';
+import { POST as registerHandler } from '../src/app/api/auth/register/route';
 import { POST as logoutHandler } from '../src/app/api/auth/logout/route';
 import { hashPassword } from '../src/lib/auth/crypto';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 import type { SessionPayload } from '../src/lib/auth/types';
 
 /** The failed-login window of the account lockout, in seconds (5 minutes). */
@@ -47,6 +50,7 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
   afterEach(() => {
     delete process.env.APP_ORIGIN;
     delete process.env.NEXT_PUBLIC_APP_URL;
+    delete process.env.APP_URL;
     delete process.env.JWT_SECRET;
   });
 
@@ -249,15 +253,21 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
       }
     });
 
-    it('GET /api/auth/google/callback rejects mismatched cookie state (Login CSRF defense)', async () => {
+    it('GET /api/auth/google/callback rejects missing or mismatched cookie state (Login CSRF defense)', async () => {
       const session = await createOAuthSession();
       const attackerState = 'attacker_forged_state_token_1234';
+
+      const reqMissingCookie = new NextRequest(
+        `http://localhost:3000/api/auth/google/callback?code=mock_code_${session.state}&state=${session.state}`
+      );
+      const resMissingCookie = await googleCallbackHandler(reqMissingCookie);
+      expect(resMissingCookie.status).toBe(307);
+      expect(resMissingCookie.headers.get('location') || '').toContain('error=invalid_oauth_state');
 
       const req = new NextRequest(
         `http://localhost:3000/api/auth/google/callback?code=mock_code_${session.state}&state=${session.state}`,
         {
           headers: {
-            // Victim browser has a cookie from an attacker-initiated flow
             cookie: `${OAUTH_STATE_COOKIE_NAME}=${attackerState}`,
           },
         }
@@ -269,17 +279,42 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
       expect(location).toContain('error=invalid_oauth_state');
     });
 
-    it('resolves canonical APP_ORIGIN and prevents Host header injection', () => {
-      process.env.APP_ORIGIN = 'https://easyconvert.com';
+    it('resolves canonical APP_ORIGIN and ignores untrusted Host and X-Forwarded-Host headers', async () => {
+      delete process.env.APP_ORIGIN;
+      delete process.env.NEXT_PUBLIC_APP_URL;
+      delete process.env.APP_URL;
       const maliciousReq = new NextRequest('http://attacker.example.com/api/auth/google/url', {
         headers: {
           host: 'attacker.example.com',
           'x-forwarded-host': 'malicious-proxy.net',
+          'x-forwarded-proto': 'https',
         },
       });
 
-      const origin = getAppOrigin(maliciousReq);
-      expect(origin).toBe('https://easyconvert.com');
+      expect(getAppOrigin()).toBe('http://localhost:3000');
+      const urlRes = await googleUrlHandler(maliciousReq);
+      const urlJson = await urlRes.json();
+      expect(urlJson.url).toContain('http://localhost:3000/api/auth/google/callback');
+      expect(urlJson.url).not.toContain('attacker.example.com');
+      expect(urlJson.url).not.toContain('malicious-proxy.net');
+
+      const maliciousCallbackReq = new NextRequest(
+        'http://attacker.example.com/api/auth/google/callback?error=access_denied',
+        {
+          headers: {
+            host: 'attacker.example.com',
+            'x-forwarded-host': 'malicious-proxy.net',
+          },
+        }
+      );
+      const callbackRes = await googleCallbackHandler(maliciousCallbackReq);
+      expect(callbackRes.status).toBe(307);
+      const callbackLoc = callbackRes.headers.get('location') || '';
+      expect(callbackLoc.startsWith('http://localhost:3000/')).toBe(true);
+      expect(callbackLoc).not.toContain('attacker.example.com');
+
+      process.env.APP_ORIGIN = 'https://easyconvert.com/';
+      expect(getAppOrigin()).toBe('https://easyconvert.com');
     });
   });
 
@@ -456,6 +491,52 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
       const check = await checkLoginRateLimit(ip, user.email);
       expect(check.allowed).toBe(true);
       expect(check.retryAfterSeconds).toBe(0);
+    });
+
+    it('blocks rapid successive registration attempts per IP with HTTP 429 and Retry-After', async () => {
+      process.env.TRUSTED_PROXIES = '10.0.0.0/8';
+      try {
+        const ip = '198.51.100.99';
+        for (let i = 0; i < REGISTER_MAX_ATTEMPTS_PER_IP; i++) {
+          const req = new NextRequest('http://localhost:3000/api/auth/register', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-forwarded-for': ip,
+            },
+            body: JSON.stringify({
+              email: `reg_spam_${i}_${Date.now()}@example.com`,
+              password: 'ValidPassword123!',
+              acceptedTermsVersion: TERMS_VERSION,
+            }),
+          });
+          const res = await registerHandler(req);
+          expect(res.status).toBe(200);
+        }
+
+        const lockedReq = new NextRequest('http://localhost:3000/api/auth/register', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-forwarded-for': ip,
+          },
+          body: JSON.stringify({
+            email: `reg_spam_blocked_${Date.now()}@example.com`,
+            password: 'ValidPassword123!',
+            acceptedTermsVersion: TERMS_VERSION,
+          }),
+        });
+        const lockedRes = await registerHandler(lockedReq);
+        expect(lockedRes.status).toBe(429);
+        const retryAfter = lockedRes.headers.get('Retry-After');
+        expect(retryAfter).toMatch(/^\d+$/);
+        expect(Number(retryAfter)).toBeGreaterThan(0);
+        const body = await lockedRes.json();
+        expect(body.status).toBe(429);
+        expect(body.type).toBe('https://api.easyconvert.io/problems/rate-limited');
+      } finally {
+        delete process.env.TRUSTED_PROXIES;
+      }
     });
   });
 });

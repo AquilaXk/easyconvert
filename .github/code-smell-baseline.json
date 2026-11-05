@@ -30,7 +30,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 37
+    "maxValue": 32
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -43,7 +43,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 175
+    "maxValue": 170
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -57,7 +57,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 502
+    "maxValue": 497
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -94,12 +94,6 @@
   {
     "file": "src/lib/api-keys/webhook-dispatcher.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "dispatch",
-    "count": 2
-  },
-  {
-    "file": "src/lib/api-keys/webhook-dispatcher.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "enqueueDelivery",
     "count": 1
   },
@@ -108,14 +102,7 @@
     "rule": "complexity",
     "function": "dispatch",
     "count": 1,
-    "maxValue": 40
-  },
-  {
-    "file": "src/lib/api-keys/webhook-dispatcher.ts",
-    "rule": "max-lines-per-function",
-    "function": "dispatch",
-    "count": 1,
-    "maxValue": 260
+    "maxValue": 34
   },
   {
     "file": "src/lib/api-keys/webhook-dispatcher.ts",
