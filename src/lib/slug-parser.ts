@@ -25,12 +25,6 @@ function formatPage(format: string, name: SlugName): SlugPage {
   return { isInfoPage: false, sourceFormat: format, targetFormat: 'any', copy: { kind: 'format', name } };
 }
 
-/**
- * The page of a pair of two format names that the registry converts (`png-to-jpg`), and of no other pair. A category word
- * stands for a format only as a representative (`video` for MP4), so a pair that holds one, like `any`, a name the registry
- * does not know and a conversion it does not list (`mp3-to-pdf`, `jpg-to-jpeg`), is no page. A pair of two names of one
- * format that the registry lists (`jpeg-to-jpg`, `pdf-to-pdf`) converts nothing, so its page is the page of its source.
- */
 function parsePairSlug(cleanSlug: string): SlugPage | null {
   const [source, target, ...rest] = cleanSlug.split(PAIR_SEPARATOR);
   if (target === undefined || rest.length > 0) return null;
@@ -52,7 +46,6 @@ function parseFormatConverterSlug(cleanSlug: string): SlugPage | null {
   return Object.hasOwn(FORMAT_REGISTRY, word) ? formatPage(word, { kind: 'format', id: word, display: word.toUpperCase() }) : null;
 }
 
-/** The slug with `A` to `Z` lowercased and every other character as it came; the case folding of Unicode would read the Kelvin sign as `k`. */
 const lowercaseAscii = (slug: string): string => slug.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
 
 function parseCleanSlug(cleanSlug: string): SlugPage | null {

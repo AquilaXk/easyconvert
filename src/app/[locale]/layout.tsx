@@ -36,11 +36,6 @@ interface LocaleLayoutProps {
   params: Promise<{ locale: string }>;
 }
 
-/**
- * The locales are the only values of this segment. Every non-asset path goes through the locale middleware, which rewrites
- * unprefixed paths under the default locale, and keeping `dynamicParams` off ensures the static pages under `[locale]` are
- * never rendered for any other segment.
- */
 export const dynamicParams = false;
 
 export function generateStaticParams() {

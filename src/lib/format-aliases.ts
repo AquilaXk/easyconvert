@@ -28,7 +28,6 @@ export function canonicalFormat(id: string): string {
   return Object.hasOwn(FORMAT_NAME_ALIASES, id) ? FORMAT_NAME_ALIASES[id] : id;
 }
 
-/** Whether two registry ids name one format, either the same id or two names of it (JPEG and JPG, JPEG and JFIF). */
 export function isSameFormat(id: string, other: string): boolean {
   return canonicalFormat(id) === canonicalFormat(other);
 }

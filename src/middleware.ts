@@ -208,7 +208,6 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
 const handleRootLocale = createIntlMiddleware(routing);
 const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
 
-/** What reading a URL drops from the decoded path, namely a tab or a line break anywhere, and a space or control character at the end. */
 const DROPPED_BY_URL_PARSING = /[\t\n\r]|(?:[\u0000-\u0020]$)/;
 
 function hasDroppedUrlChar(pathname: string): boolean {
@@ -263,7 +262,6 @@ function isApiPath(pathname: string): boolean {
   return pathname.startsWith('/api/');
 }
 
-/** `/ko/api/...` and `/ko/api` have no page because the API takes no language prefix. */
 function isLocalePrefixedApiPath(pathname: string): boolean {
   const [, first, second] = pathname.split('/');
   return (routing.locales as readonly string[]).includes(first) && second === 'api';

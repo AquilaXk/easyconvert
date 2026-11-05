@@ -30,7 +30,6 @@ function writeStoredTheme(theme: string): void {
   }
 }
 
-/** Whether the document is dark for the stored theme preference (`null` when none is stored) and the system preference. */
 export function themeFor(stored: string | null, systemDark: boolean): boolean {
   return stored ? stored === 'dark' : systemDark;
 }

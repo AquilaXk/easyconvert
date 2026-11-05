@@ -20,7 +20,6 @@ export function offersConversion(source: string, target: string): boolean {
   );
 }
 
-/** Whether a format can be converted to itself on a utility page (merge or compress), where the upload and output share one format. */
 export function isSelfConvertible(format: string): boolean {
   return offersConversion(format, format);
 }
@@ -35,7 +34,6 @@ export type SlugInfoType =
   | 'unit'
   | 'accessibility';
 
-/** How a format page names what it converts, either a format by its id in capitals or a category by the word of its title. */
 export type SlugName =
   | { kind: 'format'; id: string; display: string }
   | { kind: 'category'; id: CategoryWord; display: string };
@@ -122,7 +120,6 @@ export function parseUnitPairSlug(rawSrc: string, rawTgt: string): SlugPage | nu
 
 const selfConvertible = (formats: Iterable<string>): ReadonlySet<string> => new Set([...formats].filter(isSelfConvertible));
 
-/** What each utility page works on. A merge joins what a merge node of a job graph takes, and a compress page runs the optimiser of the job graph, which only some formats have. */
 const UTILITY_FORMATS = {
   merge: selfConvertible(MERGE_FORMATS),
   compress: selfConvertible(OPTIMIZABLE_FORMATS),

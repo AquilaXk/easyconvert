@@ -20,7 +20,6 @@ const localeOf = (path) => (/^\/ko(?:\/|$)/i.test(path) ? 'ko' : 'en');
 
 /** A path the site offers no page at: 404, noindex, and the 404 page's own title in the language of the path, not the layout's. */
 const notFound = (path) => ({ path, status: 404, noindex: true, title: messages[localeOf(path)].notFound.title });
-/** A path with a malformed percent escape: 400 Bad Request, never an uncaught URIError (500). */
 const badRequest = (path) => ({ path, status: 400 });
 const page = (path, status = 200) => ({ path, status, noindex: false });
 
@@ -34,12 +33,6 @@ const ROUTES = [
   ['/account', 307],
 ];
 
-/**
- * Each path and what the server must answer. A 404 also holds nothing of the layout's title anywhere in the document, the
- * flight payload that the browser hydrates from included, since a payload that names the home page retitles the tab after load.
- * Dotted paths that are not static assets and `/api` go through the locale middleware and answer 404 from the slug or catch-all
- * page without throwing a `NoFallbackError`, and malformed percent escapes answer 400 without throwing `URIError`.
- */
 const EXPECTED = [
   notFound('/nonexistent-page-xyz'),
   notFound('/foo/bar'),
