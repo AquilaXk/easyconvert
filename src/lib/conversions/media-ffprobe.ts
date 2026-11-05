@@ -22,12 +22,9 @@ import { readWavPcmInfo } from './wav-header';
 
 let cachedFfprobeBin: string | null = null;
 function getInternalFfprobe(): string | null {
-  if (cachedFfprobeBin !== null) return cachedFfprobeBin || null;
   const envPath = process.env.FFPROBE_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    cachedFfprobeBin = envPath;
-    return envPath;
-  }
+  if (envPath) return fs.existsSync(envPath) ? envPath : null;
+  if (cachedFfprobeBin !== null) return cachedFfprobeBin || null;
   const fixedLocations = [
     '/usr/bin/ffprobe',
     '/usr/local/bin/ffprobe',
@@ -69,8 +66,7 @@ const BITS_PER_KILOBIT = 1000;
  */
 export function findFfprobeBinary(ffmpegBin?: string | null): FfprobePath | null {
   const override = process.env.FFPROBE_PATH;
-  // An explicit override that names no file means ffprobe is not installed; do not search elsewhere.
-  if (override && !fs.existsSync(override)) return null;
+  if (override) return fs.existsSync(override) ? (override as FfprobePath) : null;
   if (ffmpegBin) {
     const sibling = path.join(path.dirname(ffmpegBin), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
     if (fs.existsSync(sibling)) {

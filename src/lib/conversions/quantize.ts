@@ -255,7 +255,8 @@ export function quantizeNeuQuant(
     pix += step;
 
     if (i % delta === 0) {
-      alpha -= Math.floor(alpha / (30 + (effectiveSampleFactor - 1) / 3));
+      const decaySampleFactor = Math.min(30, effectiveSampleFactor);
+      alpha -= Math.floor(alpha / (30 + (decaySampleFactor - 1) / 3));
       radius = Math.max(1, radius - 1);
     }
   }
@@ -465,6 +466,22 @@ export function ciede2000(c1: LabColor, c2: LabColor, kL = 1, kC = 1, kH = 1): n
   );
 }
 
+function createPaletteLookup(
+  computeIndex: (c: RgbColor) => number
+): (c: RgbColor) => number {
+  const cacheKeys = new Int32Array(65536).fill(-1);
+  const cacheValues = new Uint16Array(65536);
+  return (c: RgbColor): number => {
+    const rgb24 = (c.r << 16) | (c.g << 8) | c.b;
+    const slot = ((rgb24 * 2654435761) >>> 16) & 0xffff;
+    if (cacheKeys[slot] === rgb24) return cacheValues[slot];
+    const found = computeIndex(c);
+    cacheKeys[slot] = rgb24;
+    cacheValues[slot] = found;
+    return found;
+  };
+}
+
 export function applyFloydSteinbergDither(
   rgbBuffer: Buffer,
   width: number,
@@ -474,20 +491,15 @@ export function applyFloydSteinbergDither(
   dither: boolean,
   useOklab: boolean = true
 ): Uint8Array {
+  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   const indexed = new Uint8Array(width * height);
   const precomputedOklab = useOklab ? palette.map((p) => srgbToOklab(p.r, p.g, p.b)) : undefined;
-  const lookup = new Int16Array(32768).fill(-1);
 
-  const getClosest = (c: RgbColor): number => {
-    const key = ((c.r >> 3) << 10) | ((c.g >> 3) << 5) | (c.b >> 3);
-    const cached = lookup[key];
-    if (cached !== -1) return cached;
-    const found = useOklab
+  const getClosest = createPaletteLookup((c: RgbColor) =>
+    useOklab
       ? findClosestPaletteIndexOklab(c, palette, precomputedOklab)
-      : findClosestPaletteIndex(c, palette);
-    lookup[key] = found;
-    return found;
-  };
+      : findClosestPaletteIndex(c, palette)
+  );
 
   if (!dither) {
     for (let i = 0; i < width * height; i++) {
@@ -884,10 +896,11 @@ export function applyBlueNoiseDither(
   palette: RgbColor[],
   strength = 1.0
 ): Uint8Array {
+  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   const indexed = new Uint8Array(width * height);
   const channels = rgbBuffer.length >= width * height * 4 ? 4 : 3;
 
-  const getClosest = (c: RgbColor): number => {
+  const getClosest = createPaletteLookup((c: RgbColor): number => {
     let minDist = Infinity;
     let bestIdx = 0;
     for (let i = 0; i < palette.length; i++) {
@@ -902,9 +915,8 @@ export function applyBlueNoiseDither(
       }
     }
     return bestIdx;
-  };
+  });
 
-  // The 64x64 void-and-cluster mask (Ulichney 1993) as thresholds in [-0.5, 0.5), built on first use.
   const mask = blueNoiseCentred();
   const noiseScale = strength * 32.0;
 

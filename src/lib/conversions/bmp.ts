@@ -510,12 +510,26 @@ function decodeBitmap(buf: Buffer, base: number, pixelOffset: number | null, opt
   return { raw, width, height: rows, channels: RGBA_CHANNELS, hasAlpha, icc };
 }
 
+export function isBmp(buf: Buffer): boolean {
+  return buf.length >= FILE_HEADER_BYTES + 4 && buf.toString('ascii', 0, 2) === FILE_SIGNATURE;
+}
+
+export function assertBmpHeaderWithinLimit(buf: Buffer, budget?: PixelBudget): { width: number; height: number } {
+  if (!isBmp(buf)) {
+    throw new BmpDecodeError('Invalid BMP file: missing BM header signature.');
+  }
+  const { width, rows } = readHeader(buf, FILE_HEADER_BYTES, {});
+  assertInputPixels(width, rows);
+  if (budget) assertPixelBudget(width, rows, budget);
+  return { width, height: rows };
+}
+
 /**
  * Decodes a BMP file (`BM` file header, then the DIB header, colour table and pixels) to 8-bit RGBA. A `budget` lower than the input
  * limit is checked from the header too, before anything is allocated.
  */
 export function decodeBmp(buf: Buffer, budget?: PixelBudget): DecodedBmp {
-  if (buf.length < FILE_HEADER_BYTES + 4 || buf.toString('ascii', 0, 2) !== FILE_SIGNATURE) {
+  if (!isBmp(buf)) {
     throw new BmpDecodeError('Invalid BMP file: missing BM header signature.');
   }
   const pixelOffset = buf.readUInt32LE(PIXEL_OFFSET_FIELD);

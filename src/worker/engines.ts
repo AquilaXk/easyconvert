@@ -63,7 +63,7 @@ import {
   computePackagingTimeoutMs,
   plannedRungCount,
   DEFAULT_MEDIA_TIER_MAX_MS,
-  isEncodedImageMediaSource,
+  assertMediaImageWithinLimit, isEncodedImageMediaSource,
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
@@ -88,7 +88,7 @@ import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
-import { InputPixelLimitError, assertEncodedImageWithinLimit } from '../lib/conversions/image-input-limits';
+import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
 import { PdfPageFrameError, checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -483,10 +483,9 @@ export async function convertWithNativeFfmpeg(
 
   try {
     return await withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
-      const media = openMediaInput(resolveInputContext(input, src, tempDir).inputPath, src);
-      if (isEncodedImageMediaSource(src)) {
-        await assertEncodedImageWithinLimit(fs.readFileSync(media.path));
-      }
+      const { inputPath } = resolveInputContext(input, src, tempDir);
+      if (isEncodedImageMediaSource(src)) await assertMediaImageWithinLimit(fs.readFileSync(inputPath));
+      const media = openMediaInput(inputPath, src);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
       const durationSeconds = probeMediaDuration(media, options, ffmpegBin);

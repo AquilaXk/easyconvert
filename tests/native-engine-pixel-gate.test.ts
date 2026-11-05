@@ -20,7 +20,7 @@ import {
 } from '../src/worker/engines';
 import { TAG } from '../src/worker/raw-dng-image-data';
 import { pptxWithPicture } from './helpers/embedded-image-docs';
-import { bombGif, bombPng, bombTiff, bombWebp } from './helpers/image-bombs';
+import { bombBmp, bombGif, bombPng, bombTiff, bombWebp } from './helpers/image-bombs';
 import { expectNoHang } from './helpers/timing';
 
 const HTTP_PAYLOAD_TOO_LARGE = 413;
@@ -122,6 +122,42 @@ function bombTiffWithPanasonicFlag(width: number, height: number): Buffer {
   return out;
 }
 
+function bombTiffWith3872PreviewAndSubIfd(subWidth: number, subHeight: number): Buffer {
+  const ifd0Entries = 3;
+  const subIfdOffset = 8 + 2 + ifd0Entries * 12 + 4;
+  const subIfdEntries = 2;
+  const out = Buffer.alloc(subIfdOffset + 2 + subIfdEntries * 12 + 4);
+  out.write('II', 0, 'ascii');
+  out.writeUInt16LE(42, 2);
+  out.writeUInt32LE(8, 4);
+  out.writeUInt16LE(ifd0Entries, 8);
+  const rootEntries: Array<[number, number, number, number]> = [
+    [TAG.imageWidth, 4, 1, 3_872],
+    [TAG.imageLength, 4, 1, 2_592],
+    [TAG.subIfds, 4, 1, subIfdOffset],
+  ];
+  rootEntries.forEach(([tag, type, count, value], i) => {
+    const at = 10 + i * 12;
+    out.writeUInt16LE(tag, at);
+    out.writeUInt16LE(type, at + 2);
+    out.writeUInt32LE(count, at + 4);
+    out.writeUInt32LE(value, at + 8);
+  });
+  out.writeUInt16LE(subIfdEntries, subIfdOffset);
+  const childEntries: Array<[number, number, number, number]> = [
+    [TAG.imageWidth, 4, 1, subWidth],
+    [TAG.imageLength, 4, 1, subHeight],
+  ];
+  childEntries.forEach(([tag, type, count, value], i) => {
+    const at = subIfdOffset + 2 + i * 12;
+    out.writeUInt16LE(tag, at);
+    out.writeUInt16LE(type, at + 2);
+    out.writeUInt32LE(count, at + 4);
+    out.writeUInt32LE(value, at + 8);
+  });
+  return out;
+}
+
 async function expectFastPixelLimitRejection(
   run: () => Promise<unknown> | unknown,
   expectedLimit: number,
@@ -212,6 +248,17 @@ describe('native RAW pre-decode sensor pixel gate', () => {
     );
     expect(invocationsOf('dcraw_emu')).toEqual([]);
   });
+
+  it('refuses an over-budget RAW SubIFD when IFD0 has width 3872 before spawning dcraw_emu', async () => {
+    const raw = bombTiffWith3872PreviewAndSubIfd(8_200, 8_200);
+    await expectFastPixelLimitRejection(
+      () => convertWithNativeRaw(raw, 'dng', 'png', { throwOnUnavailable: true }, 'preview3872.dng'),
+      RAW_SENSOR_PIXEL_BUDGET.maxPixels,
+      8_200,
+      8_200
+    );
+    expect(invocationsOf('dcraw_emu')).toEqual([]);
+  });
 });
 
 describe('native LibreOffice embedded picture pixel gate', () => {
@@ -226,20 +273,27 @@ describe('native LibreOffice embedded picture pixel gate', () => {
     expect(invocationsOf('soffice')).toEqual([]);
   });
 
-  it('refuses a PPTX with an over-limit WebP picture before spawning soffice', async () => {
-    const pptx = await pptxWithPicture('bomb.webp', bombWebp(16_383, 16_383));
+  it('refuses a PPTX with an over-limit WebP or BMP picture before spawning soffice', async () => {
+    const webpPptx = await pptxWithPicture('bomb.webp', bombWebp(16_383, 16_383));
     await expectFastPixelLimitRejection(
-      () => convertWithHeadlessOffice(pptx, 'pptx', 'pdf', { throwOnUnavailable: true }, 'deck.pptx'),
+      () => convertWithHeadlessOffice(webpPptx, 'pptx', 'pdf', { throwOnUnavailable: true }, 'deck.pptx'),
       DEFAULT_MAX_INPUT_PIXELS,
       16_383,
       16_383
+    );
+    const bmpPptx = await pptxWithPicture('bomb.bmp', bombBmp(15_000, 15_000));
+    await expectFastPixelLimitRejection(
+      () => convertWithHeadlessOffice(bmpPptx, 'pptx', 'pdf', { throwOnUnavailable: true }, 'deck.pptx'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
     );
     expect(invocationsOf('soffice')).toEqual([]);
   });
 });
 
 describe('native FFmpeg image and video stream pixel gate', () => {
-  it('refuses an over-limit GIF in convertWithNativeFfmpeg and convertMedia without spawning ffmpeg', async () => {
+  it('refuses an over-limit GIF or BMP in convertWithNativeFfmpeg and convertMedia without spawning ffmpeg', async () => {
     const gif = bombGif(15_000, 15_000);
     await expectFastPixelLimitRejection(
       () => convertWithNativeFfmpeg(gif, 'gif', 'mp4', { throwOnUnavailable: true }, 'bomb.gif'),
@@ -249,6 +303,19 @@ describe('native FFmpeg image and video stream pixel gate', () => {
     );
     await expectFastPixelLimitRejection(
       () => convertMedia(gif, 'gif', 'mp4', {}, 'bomb.gif'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
+    );
+    const bmp = bombBmp(15_000, 15_000);
+    await expectFastPixelLimitRejection(
+      () => convertWithNativeFfmpeg(bmp, 'bmp', 'mp4', { throwOnUnavailable: true }, 'bomb.bmp'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
+    );
+    await expectFastPixelLimitRejection(
+      () => convertMedia(bmp, 'bmp', 'mp4', {}, 'bomb.bmp'),
       DEFAULT_MAX_INPUT_PIXELS,
       15_000,
       15_000
@@ -283,6 +350,18 @@ describe('native FFmpeg image and video stream pixel gate', () => {
     );
     await expectFastPixelLimitRejection(
       () => convertMedia(mp4, 'mp4', 'webm', {}, 'bomb.mp4'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
+    );
+    await expectFastPixelLimitRejection(
+      () => convertMedia(mp4, 'mp4', 'jpg', { thumbnail: { at: ['00:00:01.000'] } }, 'bomb.mp4'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
+    );
+    await expectFastPixelLimitRejection(
+      () => convertWithNativeFfmpeg(mp4, 'mp4', 'gif', { duration: 5, throwOnUnavailable: true }, 'bomb.mp4'),
       DEFAULT_MAX_INPUT_PIXELS,
       15_000,
       15_000

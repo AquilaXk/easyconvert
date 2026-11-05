@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import JSZip from 'jszip';
 import sharp from 'sharp';
+import { assertBmpHeaderWithinLimit, isBmp } from '../lib/conversions/bmp';
 import { InflateBudget } from '../lib/conversions/bounded-inflate';
 import { assertEmbeddableImageWithinLimit, assertInputPixels, isPngOrJpeg, rethrowInputPixelLimit } from '../lib/conversions/image-input-limits';
 import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
@@ -20,9 +21,17 @@ import type { WorkerVfsPayload } from './worker-types';
  * binary workbook or document, whether the file is encrypted.
  */
 
-/** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
-const OFFICE_MEDIA_PREFIXES = ['word/media/', 'ppt/media/', 'xl/media/', 'Pictures/', 'Data/'];
+const OFFICE_MEDIA_PREFIXES = ['word/media/', 'ppt/media/', 'xl/media/', 'pictures/', 'data/', 'thumbnails/', 'media/'];
+const OFFICE_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.tif', '.tiff', '.bmp', '.dib'];
+
+function isOfficeMediaEntry(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    OFFICE_MEDIA_PREFIXES.some((prefix) => lower.startsWith(prefix)) ||
+    OFFICE_IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext))
+  );
+}
 /**
  * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
  * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
@@ -79,8 +88,12 @@ export async function assertOfficeEmbeddedImagesWithinLimit(input: Buffer | Work
   }
   const budget = new InflateBudget(maxDocumentMediaBytes());
   for (const [name, entry] of Object.entries(zip.files)) {
-    if (entry.dir || !OFFICE_MEDIA_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+    if (entry.dir || !isOfficeMediaEntry(name)) continue;
     const bytes = await readZipEntryBytes(entry, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget });
+    if (isBmp(bytes)) {
+      assertBmpHeaderWithinLimit(bytes);
+      continue;
+    }
     await assertEmbeddableImageWithinLimit(bytes);
     if (!isPngOrJpeg(bytes)) {
       try {

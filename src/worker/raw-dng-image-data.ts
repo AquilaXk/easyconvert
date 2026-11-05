@@ -340,10 +340,7 @@ const ENTRY_HANDLERS: ReadonlyMap<number, EntryHandler> = new Map<number, EntryH
     walk.pixelAspect = pixelAspectOf(walk.reader, entry) ?? walk.pixelAspect;
   }],
   [TAG.subIfds, (walk, directory, entry) => {
-    if (directory.width === A100_WIDTH) {
-      refuseUnmodelledLayout(walk);
-      return;
-    }
+    if (directory.width === A100_WIDTH) refuseUnmodelledLayout(walk);
     visitSubIfds(walk, entry);
   }],
   [TAG.fujiTable, (walk, _directory, entry) => {
@@ -576,8 +573,11 @@ export function assertRawSensorPixels(filePath: string): void {
     };
     for (const directory of walk.directories) {
       checkSize(directory.width, directory.height);
-      const size = rawSize(reader, directory);
-      if (size !== null) checkSize(size.width, size.height);
+      const area = directory.entries.get(TAG.activeArea);
+      if (area !== undefined) {
+        const [top, left, bottom, right] = ints(reader, area, 4);
+        checkSize((right - left) || directory.width, (bottom - top) || directory.height);
+      }
     }
   } finally {
     fs.closeSync(fd);
