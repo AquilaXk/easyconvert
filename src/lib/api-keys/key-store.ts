@@ -146,8 +146,18 @@ export class KeyStore {
       if (fs.existsSync(keysFile)) {
         const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
         for (const k of list) {
+          const existing = this.keys.get(k.id);
+          if (existing) {
+            this.keyHashIndex.delete(existing.keyHash);
+            if (existing.previousKeyHash) {
+              this.keyHashIndex.delete(existing.previousKeyHash);
+            }
+          }
           this.keys.set(k.id, k);
           this.keyHashIndex.set(k.keyHash, k.id);
+          if (k.previousKeyHash) {
+            this.keyHashIndex.set(k.previousKeyHash, k.id);
+          }
         }
       }
 
@@ -257,8 +267,18 @@ export class KeyStore {
       try {
         const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
         for (const k of list) {
+          const existing = this.keys.get(k.id);
+          if (existing) {
+            this.keyHashIndex.delete(existing.keyHash);
+            if (existing.previousKeyHash) {
+              this.keyHashIndex.delete(existing.previousKeyHash);
+            }
+          }
           this.keys.set(k.id, k);
           this.keyHashIndex.set(k.keyHash, k.id);
+          if (k.previousKeyHash) {
+            this.keyHashIndex.set(k.previousKeyHash, k.id);
+          }
         }
         keyId = this.lookupKeyId(candidateHashes);
       } catch {}

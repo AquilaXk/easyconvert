@@ -437,6 +437,13 @@ export class RedisKeyStore extends KeyStore {
 
     key.lastUsedAt = Date.now();
     const existing = this.keys.get(key.id);
+    const localDiffers =
+      !existing ||
+      existing.keyHash !== key.keyHash ||
+      existing.previousKeyHash !== key.previousKeyHash ||
+      existing.status !== key.status ||
+      existing.webhookSecret !== key.webhookSecret ||
+      existing.graceExpiresAt !== key.graceExpiresAt;
     if (existing) {
       this.keyHashIndex.delete(existing.keyHash);
       if (existing.previousKeyHash) {
@@ -448,10 +455,12 @@ export class RedisKeyStore extends KeyStore {
     if (key.previousKeyHash) {
       this.keyHashIndex.set(key.previousKeyHash, key.id);
     }
+    if (migrated || localDiffers) {
+      this.persist();
+    }
 
     if (!this.redisClient) return;
     if (migrated) {
-      this.persist();
       const hashFieldArg = prevHashChanged ? 'previousKeyHash' : 'keyHash';
       const newHashArg = keyHashChanged
         ? key.keyHash
@@ -520,7 +529,10 @@ export class RedisKeyStore extends KeyStore {
 
             if (key.status !== 'active') {
               const local = this.keys.get(keyId);
-              if (local) local.status = 'revoked';
+              if (local && local.status !== 'revoked') {
+                local.status = 'revoked';
+                this.persist();
+              }
               return { valid: false, error: 'API key has been revoked' };
             }
 
@@ -531,40 +543,37 @@ export class RedisKeyStore extends KeyStore {
             const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
             const matchedPreviousKey =
               !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
-            if (!matchedCurrentKey && !matchedPreviousKey) {
-              await this.syncKeyFromRedis(keyId);
-              return { valid: false, error: 'Invalid or non-existent API key' };
-            }
-
-            if (matchedPreviousKey) {
-              if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
-                return { valid: false, error: 'Previous API key has expired following key rotation' };
+            if (matchedCurrentKey || matchedPreviousKey) {
+              if (matchedPreviousKey) {
+                if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
+                  return { valid: false, error: 'Previous API key has expired following key rotation' };
+                }
               }
+
+              if (key.allowedIps && key.allowedIps.length > 0 && clientIp && !isIpAllowed(clientIp, key.allowedIps)) {
+                return { valid: false, error: 'Client IP address is not permitted by API key IP whitelist' };
+              }
+
+              const userRecord = await redisUserStore.findById(key.userId);
+              if (!userRecord) {
+                return { valid: false, error: 'User associated with API key not found' };
+              }
+
+              if (hashData.lastExpiryNotifiedAt) {
+                key.lastExpiryNotifiedAt = Number(hashData.lastExpiryNotifiedAt);
+              }
+
+              await this.recordVerifiedKeyInRedis(keyId, key, candidates, matchedPreviousKey);
+
+              return {
+                valid: true,
+                key: {
+                  ...key,
+                  webhookSecret: decryptSecret(key.webhookSecret),
+                },
+                user: redisUserStore.sanitizeUser(userRecord),
+              };
             }
-
-            if (key.allowedIps && key.allowedIps.length > 0 && clientIp && !isIpAllowed(clientIp, key.allowedIps)) {
-              return { valid: false, error: 'Client IP address is not permitted by API key IP whitelist' };
-            }
-
-            const userRecord = await redisUserStore.findById(key.userId);
-            if (!userRecord) {
-              return { valid: false, error: 'User associated with API key not found' };
-            }
-
-            if (hashData.lastExpiryNotifiedAt) {
-              key.lastExpiryNotifiedAt = Number(hashData.lastExpiryNotifiedAt);
-            }
-
-            await this.recordVerifiedKeyInRedis(keyId, key, candidates, matchedPreviousKey);
-
-            return {
-              valid: true,
-              key: {
-                ...key,
-                webhookSecret: decryptSecret(key.webhookSecret),
-              },
-              user: redisUserStore.sanitizeUser(userRecord),
-            };
           }
         }
         const staleIds = new Set<string>();
@@ -602,7 +611,10 @@ export class RedisKeyStore extends KeyStore {
         if (remoteStatus === 'revoked') {
           localResult.key.status = 'revoked';
           const cached = this.keys.get(localResult.key.id);
-          if (cached) cached.status = 'revoked';
+          if (cached && cached.status !== 'revoked') {
+            cached.status = 'revoked';
+            this.persist();
+          }
           return { valid: false, error: 'API key has been revoked' };
         }
       } catch {}
@@ -649,8 +661,10 @@ export class RedisKeyStore extends KeyStore {
         if (parsed.previousKeyHash) {
           this.keyHashIndex.set(parsed.previousKeyHash, keyId);
         }
+        this.persist();
       } else if (existing) {
         this.keys.delete(keyId);
+        this.persist();
       }
     } catch {}
   }
