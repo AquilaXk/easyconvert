@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ManifestError, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
 import { parseRegressionManifest, REGRESSION_COLUMNS, serializeRegressionManifest } from '../bench/realworld/regression/manifest';
 import { allocate, selectStratified, sizeClassOf, stratumOf, type StratumCandidate } from '../bench/realworld/regression/stratify';
+import { carryEmptyInputMarks } from '../scripts/regression-corpus-manifest';
 
 /**
  * The regression corpus manifest and the stratified draw. Manifests are written out by hand here; the expected allocations are
@@ -179,4 +180,40 @@ describe('regression manifest file', () => {
     const loose = file('web-1.doc', { origin: { kind: 'file', url: 'https://example.invalid/x.doc' } });
     expect(() => serializeRegressionManifest(manifestOf([loose]))).toThrow(/zip/);
   });
+
+  it('round-trips emptyInputs for files marked emptyInput and refuses an unknown file id or a blank reason', () => {
+    const reason = 'The one page has a 0-byte /Contents stream and only a /Subtype /3D annotation with an empty appearance.';
+    const withEmpty = manifestOf([
+      files[0],
+      files[1],
+      { ...files[2], emptyInput: true, emptyInputReason: reason },
+    ]);
+    const serialized = serializeRegressionManifest(withEmpty);
+    expect(serialized).toContain(`"emptyInputs": {"cc-0000007.pdf":${JSON.stringify(reason)}},`);
+    const parsed = parseRegressionManifest(serialized);
+    const byId = new Map(parsed.files.map((f) => [f.id, f]));
+    expect(byId.get('cc-0000007.pdf')).toMatchObject({ emptyInput: true, emptyInputReason: reason });
+    expect(byId.get('gd-000001.doc')?.emptyInput).toBeUndefined();
+    expect(() => parseRegressionManifest(JSON.stringify({ ...JSON.parse(written), emptyInputs: { 'missing.pdf': reason } }))).toThrow(ManifestError);
+    expect(() => parseRegressionManifest(JSON.stringify({ ...JSON.parse(written), emptyInputs: { 'cc-0000007.pdf': '   ' } }))).toThrow(ManifestError);
+  });
+
+  it('carries forward emptyInput marks onto regenerated entries only when sha256 matches', () => {
+    const reason = 'The one page has a 0-byte /Contents stream and only a /Subtype /3D annotation with an empty appearance.';
+    const previous = [
+      files[0],
+      { ...files[1], emptyInput: true, emptyInputReason: reason },
+      { ...files[2], emptyInput: true, emptyInputReason: reason },
+    ];
+    const next = [
+      files[0],
+      { ...files[1], sha256: SHA('9') },
+      files[2],
+    ];
+    const carried = carryEmptyInputMarks(next, previous);
+    expect(carried[0].emptyInput).toBeUndefined();
+    expect(carried[1].emptyInput).toBeUndefined();
+    expect(carried[2]).toMatchObject({ emptyInput: true, emptyInputReason: reason });
+  });
 });
+

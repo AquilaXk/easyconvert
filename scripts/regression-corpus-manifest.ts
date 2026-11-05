@@ -19,7 +19,7 @@ import { Readable } from 'node:stream';
 import { createGunzip } from 'node:zlib';
 import { download, mapLimit, sha256 } from '../bench/realworld/fetch';
 import { fetchBytes, fetchSize, fetchStream } from '../bench/realworld/http';
-import { readManifest, type CorpusManifest, type CorpusSource } from '../bench/realworld/manifest';
+import { readManifest, type CorpusFile, type CorpusManifest, type CorpusSource } from '../bench/realworld/manifest';
 import { crawlArchiveUrl, CRAWL_METADATA_URL, csvRecords, govdocsArchiveUrl, pdfinfoRecords } from '../bench/realworld/regression/build';
 import {
   type ArchiveIndex,
@@ -35,7 +35,7 @@ import {
   type Profile,
   profiledCandidates,
 } from '../bench/realworld/regression/candidates';
-import { REGRESSION_MANIFEST_PATH, serializeRegressionManifest } from '../bench/realworld/regression/manifest';
+import { readRegressionManifest, REGRESSION_MANIFEST_PATH, serializeRegressionManifest } from '../bench/realworld/regression/manifest';
 import { hasMacros, producerOf } from '../bench/realworld/regression/producer';
 import { renderCorpusStats } from '../bench/realworld/regression/stats';
 import { selectStratified } from '../bench/realworld/regression/stratify';
@@ -158,10 +158,25 @@ async function runProfile(work: string, limit: number | undefined, reverse: bool
   });
 }
 
+export function carryEmptyInputMarks(files: readonly CorpusFile[], previousFiles: readonly CorpusFile[]): CorpusFile[] {
+  const previousMarks = new Map(previousFiles.filter((file) => file.emptyInput === true).map((file) => [file.id, file]));
+  return files.map((file) => {
+    const previous = previousMarks.get(file.id);
+    return previous !== undefined && previous.sha256 === file.sha256
+      ? { ...file, emptyInput: true, emptyInputReason: previous.emptyInputReason }
+      : file;
+  });
+}
+
 function runSelect(work: string): void {
   const profiles = new Map(readProfiles(jsonPath(work, 'profile.jsonl')).map((profile) => [profile.id, profile]));
   const chosen = selectStratified(profiledCandidates(allCandidates(work), profiles), BUDGETS);
-  const manifest: CorpusManifest = { schema: 1, sources: SOURCES, files: chosen.map((candidate) => corpusFileOf(candidate, candidate.profile.sha256, candidate.profile.producer)) };
+  const previousFiles = fs.existsSync(REGRESSION_MANIFEST_PATH) ? readRegressionManifest(REGRESSION_MANIFEST_PATH).files : [];
+  const files = carryEmptyInputMarks(
+    chosen.map((candidate) => corpusFileOf(candidate, candidate.profile.sha256, candidate.profile.producer)),
+    previousFiles
+  );
+  const manifest: CorpusManifest = { schema: 1, sources: SOURCES, files };
   fs.writeFileSync(REGRESSION_MANIFEST_PATH, serializeRegressionManifest(manifest));
   console.log(`wrote ${manifest.files.length} files to ${REGRESSION_MANIFEST_PATH}`);
   console.log(renderCorpusStats(manifest.files));
@@ -185,7 +200,9 @@ async function main(): Promise<void> {
   else throw new ArgumentError('usage: index|profile|select --work DIR');
 }
 
-main().catch((error: unknown) => {
-  console.error(`regression-corpus-manifest failed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(error instanceof ArgumentError ? 2 : 1);
-});
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    console.error(`regression-corpus-manifest failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(error instanceof ArgumentError ? 2 : 1);
+  });
+}

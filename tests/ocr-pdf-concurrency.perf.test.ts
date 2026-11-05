@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import { performSmartMultiPagePdfOcr, recognizePdfPages, shutdownOcrWorkerPool }
 import {
   mapWithConcurrency,
   OCR_MAX_INFLIGHT_PAGES,
+  OCR_PAGE_CONCURRENCY_ENV,
   ocrPageConcurrency,
 } from '../src/lib/conversions/ocr-page-batch';
 import {
@@ -105,10 +106,33 @@ describe('mapWithConcurrency', () => {
 });
 
 describe('ocrPageConcurrency', () => {
+  let previous: string | undefined;
+
+  beforeEach(() => {
+    previous = process.env[OCR_PAGE_CONCURRENCY_ENV];
+    delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+  });
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+    else process.env[OCR_PAGE_CONCURRENCY_ENV] = previous;
+  });
+
   it('is the pool capacity, capped at the in-flight limit and never below one', () => {
     expect(ocrPageConcurrency()).toBe(Math.min(OCR_POOL_MAX_WORKERS_TOTAL, OCR_MAX_INFLIGHT_PAGES));
     expect(ocrPageConcurrency(100)).toBe(OCR_MAX_INFLIGHT_PAGES);
     expect(ocrPageConcurrency(0)).toBe(1);
+  });
+
+  it('honours a positive integer EASYCONVERT_OCR_PAGE_CONCURRENCY without exceeding the upper bound', () => {
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
+    expect(ocrPageConcurrency()).toBe(1);
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '2';
+    expect(ocrPageConcurrency()).toBe(2);
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '99';
+    expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
+    process.env[OCR_PAGE_CONCURRENCY_ENV] = '0';
+    expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
   });
 });
 
@@ -174,14 +198,23 @@ describe('recognizing the pages of a scanned PDF', () => {
         })
       );
       const pages = Array.from({ length: FOUR_PAGES }, () => ({ buffer: fixtureImage('en_a', 'clean300') }));
+      const multiBandPage = fs.readFileSync(path.join(__dirname, '..', 'bench', 'corpus', 'scan.png'));
+      const warmSpy = vi.spyOn(pool, 'warm');
+      const prevEnv = process.env[OCR_PAGE_CONCURRENCY_ENV];
       try {
-        await recognizePdfPages(pages, 'eng', 1, false);
+        process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
+        await recognizePdfPages(pages, 'eng', undefined, false);
+        await recognizePdfPages([{ buffer: multiBandPage }], 'eng', undefined, false);
         expect(peak).toBe(1);
+        expect(warmSpy).not.toHaveBeenCalled();
+        delete process.env[OCR_PAGE_CONCURRENCY_ENV];
         peak = 0;
         meeting = workersMeeting(OCR_POOL_MAX_WORKERS_PER_KEY);
         await recognizePdfPages(pages, 'eng', ocrPageConcurrency(), false);
         expect(peak).toBe(OCR_POOL_MAX_WORKERS_PER_KEY);
       } finally {
+        if (prevEnv === undefined) delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+        else process.env[OCR_PAGE_CONCURRENCY_ENV] = prevEnv;
         vi.restoreAllMocks();
         await shutdownOcrWorkerPool();
       }

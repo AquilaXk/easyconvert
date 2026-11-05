@@ -25,6 +25,7 @@ interface RegressionManifestJson {
   sources: CorpusSource[];
   archives: ArchiveRecord[];
   columns: string[];
+  emptyInputs?: Record<string, string>;
   files: Row[];
 }
 
@@ -47,6 +48,7 @@ export function serializeRegressionManifest(manifest: CorpusManifest): string {
     const [source, url] = key.split(' ');
     return { url, source };
   });
+  const emptyInputs = Object.fromEntries(files.filter((file) => file.emptyInput === true).map((file) => [file.id, file.emptyInputReason ?? '']));
   const rows = files.map((file) => JSON.stringify(rowOf(file, archives)));
   return [
     '{',
@@ -54,6 +56,7 @@ export function serializeRegressionManifest(manifest: CorpusManifest): string {
     `"sources": ${JSON.stringify(manifest.sources)},`,
     `"archives": ${JSON.stringify(archiveRecords)},`,
     `"columns": ${JSON.stringify(REGRESSION_COLUMNS)},`,
+    ...(Object.keys(emptyInputs).length === 0 ? [] : [`"emptyInputs": ${JSON.stringify(emptyInputs)},`]),
     '"files": [',
     rows.join(',\n'),
     ']',
@@ -64,10 +67,16 @@ export function serializeRegressionManifest(manifest: CorpusManifest): string {
 
 function expand(json: RegressionManifestJson): CorpusManifest {
   if (JSON.stringify(json.columns) !== JSON.stringify(REGRESSION_COLUMNS)) throw new ManifestError(`regression manifest columns are ${JSON.stringify(json.columns)}, expected ${JSON.stringify(REGRESSION_COLUMNS)}`);
+  const emptyInputs = json.emptyInputs ?? {};
+  const ids = new Set(json.files.map((row) => row[0]));
+  for (const id of Object.keys(emptyInputs)) {
+    if (!ids.has(id)) throw new ManifestError(`${id}: emptyInputs names a file that is not in the manifest`);
+  }
   const files = json.files.map((row): CorpusFile => {
     const [id, format, archiveIndex, entry, offset, compressedSize, method, size, sha256, producer] = row;
     const archive = json.archives[archiveIndex];
     if (archive === undefined) throw new ManifestError(`${id}: archive ${archiveIndex} is not in the archive list`);
+    const emptyInputReason = Object.hasOwn(emptyInputs, id) ? emptyInputs[id] : undefined;
     return {
       id,
       source: archive.source,
@@ -76,6 +85,7 @@ function expand(json: RegressionManifestJson): CorpusManifest {
       sha256,
       origin: { kind: 'zip', archive: archive.url, entry, offset, compressedSize, method },
       ...(producer === '' ? {} : { producer }),
+      ...(emptyInputReason === undefined ? {} : { emptyInput: true, emptyInputReason }),
     };
   });
   return { schema: MANIFEST_SCHEMA, sources: json.sources, files };

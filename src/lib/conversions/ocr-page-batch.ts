@@ -12,15 +12,12 @@ import { OCR_POOL_MAX_WORKERS_TOTAL } from './ocr-worker-pool';
  * budget of one request; the pool and CLI limits below it bound it further.
  */
 export const OCR_MAX_INFLIGHT_PAGES = 4;
+export const OCR_PAGE_CONCURRENCY_ENV = 'EASYCONVERT_OCR_PAGE_CONCURRENCY';
 
-/**
- * Pages in flight at once: no more than the pool can hold workers (OCR_POOL_MAX_WORKERS_TOTAL), and
- * no more than OCR_MAX_INFLIGHT_PAGES. One language set runs on fewer workers than that, so a page
- * past the workers waits already prepared: while the workers recognize, the next pages are decoded
- * and prepared, which is where a single-threaded step would otherwise leave them idle.
- */
 export function ocrPageConcurrency(poolCapacity: number = OCR_POOL_MAX_WORKERS_TOTAL): number {
-  return Math.max(1, Math.min(poolCapacity, OCR_MAX_INFLIGHT_PAGES));
+  const upper = Math.max(1, Math.min(poolCapacity, OCR_MAX_INFLIGHT_PAGES));
+  const override = Number(process.env[OCR_PAGE_CONCURRENCY_ENV]);
+  return Number.isInteger(override) && override > 0 ? Math.min(upper, override) : upper;
 }
 
 /**

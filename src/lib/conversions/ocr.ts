@@ -135,8 +135,7 @@ export function recognizePdfPages(
   detectOrientation?: boolean
 ): Promise<OcrResult[]> {
   return mapWithConcurrency(pages, concurrency, (page) =>
-    // Several pages are read side by side, one engine run each, so a page is not also cut into bands.
-    performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation, pages.length < 2)
+    performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation, pages.length < 2 && concurrency > 1)
   );
 }
 
@@ -179,10 +178,10 @@ export async function recognizeRenderedPdfPages(
   const renderer = await openPdfPageRenderer(pdf, pages, options.dpi);
   try {
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
-    // With several pages the pages run side by side and each is read whole; bands are for a lone page.
-    const bandsAllowed = indices.length < 2 && options.parallelBands !== false;
+    const concurrency = ocrPageConcurrency();
+    const bandsAllowed = indices.length < 2 && options.parallelBands !== false && concurrency > 1;
     const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs, options.signal);
-    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), (index) =>
+    const recognized = await mapWithConcurrency(indices, concurrency, (index) =>
       budget.guardPage(renderer.plan.pageNumbers[index], async (signal) => {
         const rendered = await renderer.render(index, signal);
         // A page that was refused while it was being drawn costs no reading.
@@ -600,8 +599,8 @@ function withPreparation(
 function planPageBands(pool: OcrWorkerPool, spec: OcrWorkerSpec, prepared: OcrPreprocessResult): OcrBand[] | null {
   if (!prepared.ink) return null;
   const { profile, lineHeightPx } = prepared.ink;
-  const wanted = Math.min(OCR_BAND_MAX_BANDS, os.availableParallelism(), OCR_POOL_MAX_WORKERS_PER_KEY);
-  if (planBands(profile, lineHeightPx, wanted) === null) return null;
+  const wanted = Math.min(OCR_BAND_MAX_BANDS, os.availableParallelism(), OCR_POOL_MAX_WORKERS_PER_KEY, ocrPageConcurrency());
+  if (wanted < 2 || planBands(profile, lineHeightPx, wanted) === null) return null;
   const idle = pool.idleWorkers(spec);
   if (idle < 2) {
     pool.warm(spec, wanted);

@@ -212,14 +212,14 @@ describe('plan step', () => {
     expect(out.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
-  it.skipIf(skipUnless('bash', bash.status === 0))('plans a night of four shards for the other days', () => {
+  it.skipIf(skipUnless('bash', bash.status === 0))('plans a night of eight shards for the other days', () => {
     const out = planFor('schedule', '17 3 * * 1-6', '');
     expect(out.mode).toBe('nightly');
-    expect(out.shards).toBe('[1,2,3,4]');
+    expect(out.shards).toBe('[1,2,3,4,5,6,7,8]');
   });
 
   it.skipIf(skipUnless('bash', bash.status === 0))('takes the mode of a manual run from its input', () => {
     expect(planFor('workflow_dispatch', '', 'full').count).toBe('16');
-    expect(planFor('workflow_dispatch', '', 'nightly').count).toBe('4');
+    expect(planFor('workflow_dispatch', '', 'nightly').count).toBe('8');
   });
 });

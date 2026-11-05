@@ -4,8 +4,10 @@
  * never poisons the jobs after it.
  */
 import { fork, type ChildProcess } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
+import { OCR_PAGE_CONCURRENCY_ENV } from '../../src/lib/conversions/ocr-page-batch';
 import { ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
 import { crashDetail, isTypedRefusal, type Verdict } from './verdict';
 
@@ -43,6 +45,10 @@ export function scaledDeadlineMs(baseMs: number, pages: number): number {
   return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * ocrPageBudgetMs()));
 }
 
+export function childOcrPageConcurrency(workers: number, cpus: number = os.availableParallelism()): number {
+  return Math.max(1, Math.floor(cpus / Math.max(1, workers)));
+}
+
 /** A job the pool runs: what the job server needs, and optionally its own deadline in place of the pool's. */
 export type PoolJob = Omit<JobRequest, 'id'> & { deadlineMs?: number };
 
@@ -73,7 +79,10 @@ interface Slot {
 function spawnChild(options: PoolOptions): Promise<ChildProcess> {
   const child = fork(CHILD_SCRIPT, [], {
     execArgv: ['--import', 'tsx', `--max-old-space-size=${options.heapMb}`],
-    env: options.env,
+    env: {
+      ...options.env,
+      [OCR_PAGE_CONCURRENCY_ENV]: options.env[OCR_PAGE_CONCURRENCY_ENV] ?? String(childOcrPageConcurrency(options.workers)),
+    },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     detached: true,
   });
