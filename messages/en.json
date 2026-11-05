@@ -102,7 +102,7 @@
         "413": "The file or the request is over a limit; the detail names the limit.",
         "415": "The body is not of the type the endpoint takes.",
         "422": "The request is well formed but cannot be done: a protected document, a file whose content does not match its format, or an <code>Idempotency-Key</code> reused with another request.",
-        "429": "The daily allowance is used up, the key sent requests too fast, or too many conversions are running. See <code>Retry-After</code>.",
+        "429": "The daily allowance is used up, the key exceeded its request rate, or too many conversions are running. See <code>Retry-After</code>.",
         "500": "The conversion failed on the server. Nothing is charged.",
         "503": "The conversion needs an engine this server does not have.",
         "504": "The conversion ran past its time limit. Send it as a job instead."
@@ -110,7 +110,7 @@
       "limits": "The daily allowance and the conversions at once count for the account, whichever key it uses; the request rate counts for each key.",
       "dailyAllowance1": "An account on the free plan runs {daily} conversions a day on the server; the count starts again at midnight UTC. Only a conversion that finishes counts: a refused, failed or cancelled conversion is not charged.",
       "dailyAllowance2": "Each conversion answer carries <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code> and <code>RateLimit-Reset</code> (the seconds until the count starts again). When none is left, a conversion is answered 429 with <code>Retry-After</code>. The <usage>Usage</usage> endpoint reads the same numbers.",
-      "requestRate": "A key on the free plan sends up to {burst} requests at once and {perSecond} a second after that. A faster request is answered 429 with <code>Retry-After</code>.",
+      "requestRate": "A key on the free plan sends up to {burst} requests at once and {perSecond} a second after that. A request over that rate is answered 429 with <code>Retry-After</code>.",
       "concurrentConversions": "An account on the free plan has up to {concurrent} conversions queued or running at once. Another one is answered 429 with <code>Retry-After</code> and takes nothing from the allowance.",
       "fileSize1": "One request carries at most {requestMax} of file and form fields. A file up to {fileMax} is uploaded in parts through <uploads>Uploads</uploads> and converted by a <jobs>job</jobs>.",
       "fileSize2": "<code>POST /api/v1/convert</code> converts a file of up to {syncMax} while the request waits; a larger file is queued as a job and answered 202."

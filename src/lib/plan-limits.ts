@@ -29,6 +29,14 @@ export const PAID_PLANS_ON_SALE = false;
  */
 export const FREE_DAILY_CONVERSIONS = 10;
 
+export const DEFAULT_FREE_CONCURRENCY = 5;
+
+export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, { capacity: number; refillRate: number }>> = {
+  free: { capacity: 20, refillRate: 2 },
+  pro: { capacity: 100, refillRate: 20 },
+  enterprise: { capacity: 500, refillRate: 100 },
+};
+
 /** Conversions each account plan may run on the server each UTC day; a caller without an account has `getAnonymousDailyLimit`. */
 export const TIER_LIMITS: Readonly<Record<UserTier, number>> = {
   free: FREE_DAILY_CONVERSIONS,

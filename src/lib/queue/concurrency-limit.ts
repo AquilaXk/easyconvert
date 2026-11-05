@@ -1,5 +1,6 @@
 import type { NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '../api/problem-details';
+import { DEFAULT_FREE_CONCURRENCY } from '../plan-limits';
 import { conversionQueue } from './conversion-queue';
 import { readIntegerSetting } from './job-deadline';
 
@@ -14,7 +15,7 @@ import { readIntegerSetting } from './job-deadline';
  */
 
 export const CONCURRENCY_LIMIT_ENV = 'CONVERSION_CONCURRENCY_FREE';
-export const DEFAULT_FREE_CONCURRENCY = 5;
+export { DEFAULT_FREE_CONCURRENCY };
 export const CONCURRENCY_LIMIT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/concurrency-limit';
 /** Seconds a refused caller is told to wait before trying again. */
 export const CONCURRENCY_RETRY_AFTER_SECONDS = 5;

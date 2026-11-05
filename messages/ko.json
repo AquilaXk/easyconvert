@@ -44,12 +44,12 @@
       "formats": {
         "nav": "형식",
         "title": "형식",
-        "lead": "형식과 형식 사이의 변환 목록을 봐요."
+        "lead": "형식과 형식 사이의 변환 목록을 확인해요."
       },
       "ocr-languages": {
         "nav": "OCR 언어",
         "title": "OCR 언어",
-        "lead": "문자 인식이 읽을 수 있는 언어 목록을 봐요."
+        "lead": "문자 인식이 읽을 수 있는 언어 목록을 확인해요."
       },
       "archives": {
         "nav": "압축 파일",
@@ -76,10 +76,10 @@
         "file-size": "파일 크기"
       },
       "lead1": "EasyConvert API 버전 1(<code>/api/v1</code> 아래 경로)의 문서예요. 파일과 대상 형식을 보내면 변환된 파일을 돌려받아요.",
-      "lead2": "이 페이지에서는 기본 URL, 인증, 오류, 한도를 다뤄요. 엔드포인트는 메뉴에 있어요. 첫 요청을 보내려면 <quickstart>빠른 시작</quickstart>을 따라 해 보세요.",
+      "lead2": "이 페이지에서는 기본 URL, 인증, 오류, 한도를 설명해요. 엔드포인트는 메뉴에 있어요. 첫 요청을 보내려면 <quickstart>빠른 시작</quickstart>을 따라 해 보세요.",
       "lead3": "모든 엔드포인트는 <openapi>OpenAPI 문서</openapi>(JSON)에도 있어요. API 클라이언트나 코드 생성기가 이 문서를 읽을 수 있어요.",
       "baseUrl": "API의 기본 URL은 <code>{origin}</code>이에요. 이 문서의 모든 경로는 여기서 시작해요. 예를 들면 <code>{origin}/api/v1/convert</code>예요.",
-      "authentication": "요청에는 API 키를 담아요. 키가 필요 없는 엔드포인트는 몇 개뿐이고, 해당 페이지에 따로 적어 두었어요.",
+      "authentication": "요청에는 API 키를 담아요. 키가 필요 없는 엔드포인트는 해당 페이지에 따로 적어 두었어요.",
       "apiKeys1": "로그인한 뒤 대시보드의 <keys>API 키</keys> 페이지에서 키를 만들어요. 키는 <code>ec_live_</code>로 시작하고, 만들 때 한 번만 보여요.",
       "apiKeys2": "키는 <code>x-api-key</code> 헤더에 담거나, <code>Authorization</code> 헤더에 bearer 토큰으로 담아요.",
       "apiKeys3": "키는 IP 주소나 CIDR 범위로 제한할 수 있고, 만료일을 둘 수 있어요. 다른 주소에서 온 요청이나 만료되거나 폐기된 키로 보낸 요청은 거절돼요.",
@@ -92,9 +92,9 @@
         "storage:download": "이 키로 변환한 결과 다운로드"
       },
       "errors1": "거절되거나 실패한 요청에는 400 이상의 상태 코드와 <code>application/problem+json</code> 형식의 문제 상세 본문(RFC 9457)이 와요.",
-      "errors2": "<code>type</code>이 원인을 알려 주고, 원인에 따라 필드가 더 붙어요. 하루 변환 횟수를 다 썼을 때의 <code>dailyLimit</code>와 <code>remaining</code>이 그 예예요. <downloads>다운로드</downloads>와 <usage>사용량</usage>은 대신 <code>success</code>가 false이고 <code>error</code> 문장이 담긴 JSON으로 응답해요. 상태 코드의 뜻은 다음과 같아요.",
+      "errors2": "<code>type</code>이 원인을 알려 주고, 원인에 따라 필드가 더 붙어요. 하루 변환 횟수를 다 사용했을 때의 <code>dailyLimit</code>와 <code>remaining</code>이 그 예예요. <downloads>다운로드</downloads>와 <usage>사용량</usage>은 대신 <code>success</code>가 false이고 <code>error</code> 문장이 담긴 JSON으로 응답해요. 상태 코드의 의미는 다음과 같아요.",
       "statuses": {
-        "400": "요청 형식이 잘못됐어요. 필드가 빠졌거나, 모르는 형식이거나, 제공하지 않는 변환이에요.",
+        "400": "요청 형식이 잘못됐어요. 필드가 누락됐거나, 모르는 형식이거나, 제공하지 않는 변환이에요.",
         "401": "API 키가 없거나, 모르는 키이거나, 만료되거나 폐기된 키예요.",
         "403": "키에 그 권한 범위가 없거나, 키가 허용하지 않는 주소에서 온 요청이에요.",
         "404": "작업, 업로드, 파일이 없거나 다른 계정의 것이에요.",
@@ -102,7 +102,7 @@
         "413": "파일이나 요청이 한도를 넘었어요. 상세 내용에 한도가 적혀 있어요.",
         "415": "엔드포인트가 받는 형식의 본문이 아니에요.",
         "422": "형식은 맞지만 처리할 수 없어요. 보호된 문서, 내용이 형식과 맞지 않는 파일, 다른 요청에 다시 쓴 <code>Idempotency-Key</code>가 그 예예요.",
-        "429": "하루 변환 횟수를 다 썼거나, 키가 요청을 너무 빨리 보냈거나, 진행 중인 변환이 너무 많아요. <code>Retry-After</code>를 확인해 주세요.",
+        "429": "하루 변환 횟수를 다 사용했거나, 키의 요청 속도가 한도를 넘었거나, 진행 중인 변환이 너무 많아요. <code>Retry-After</code>를 확인해 주세요.",
         "500": "서버에서 변환이 실패했어요. 횟수는 차감되지 않아요.",
         "503": "이 서버에 없는 엔진이 필요한 변환이에요.",
         "504": "변환이 제한 시간을 넘겼어요. 작업으로 보내 주세요."
@@ -122,18 +122,18 @@
         "convert-a-large-file": "큰 파일 변환하기",
         "download-the-result": "결과 다운로드하기"
       },
-      "lead": "이 안내에서는 API로 파일을 보내고 변환된 파일을 저장해요. 먼저 요청 하나로, 다음에는 업로드와 작업으로 해 봐요. 명령은 curl을 쓰고, 키는 <code>EASYCONVERT_API_KEY</code> 환경 변수에서 읽어요.",
+      "lead": "이 안내에서는 API로 파일을 보내고 변환된 파일을 저장해요. 먼저 요청 하나로, 다음에는 업로드와 작업으로 진행해요. 명령은 curl을 사용하고, 키는 <code>EASYCONVERT_API_KEY</code> 환경 변수에서 읽어요.",
       "createKey1": "로그인한 뒤 대시보드의 <keys>API 키</keys> 페이지를 열어요. <code>convert:write</code>, <code>convert:read</code>, <code>storage:download</code> 권한 범위로 키를 만들어요.",
       "createKey2": "키는 한 번만 보이니 보일 때 복사해 두세요. 키는 서버에만 두고, 웹 페이지나 앱에는 넣지 마세요.",
       "convert1": "파일과 대상 형식을 폼으로 <code>POST /api/v1/convert</code>에 보내요. <code>Accept: application/octet-stream</code>을 보내면 변환된 파일이 그대로 와요.",
       "convert2": "이 헤더가 없으면 결과의 이름, 크기, <code>downloadUrl</code>이 담긴 JSON이 와요. <downloads>다운로드</downloads>를 참고해 주세요.",
-      "convert3": "크기가 {syncMax}보다 큰 파일은 요청을 보낸 채로 변환하지 않아요. 작업으로 대기열에 들어가고, <code>jobId</code>와 <code>statusUrl</code>이 담긴 202로 응답해요. 그다음은 아래처럼 작업으로 이어가요.",
+      "convert3": "크기가 {syncMax}보다 큰 파일은 요청을 보낸 채로 변환하지 않아요. 작업으로 대기열에 들어가고, <code>jobId</code>와 <code>statusUrl</code>이 담긴 202로 응답해요. 그다음은 아래 안내와 같이 작업으로 이어가요.",
       "large1": "요청 하나에는 {requestMax}까지 담을 수 있어요. 더 큰 파일은 나눠 올린 뒤 작업으로 변환해요.",
       "largeStep1": "직접 업로드를 시작해요. 응답에 조각마다 올릴 URL이 있어요.",
-      "largeStep2": "조각마다 그 URL로 <code>PUT</code>을 보내고, 응답의 <code>ETag</code>를 모아 둬요.",
+      "largeStep2": "조각마다 그 URL로 <code>PUT</code>을 보내고, 응답의 <code>ETag</code>를 모아 두어요.",
       "largeStep3": "조각 번호와 ETag로 업로드를 완료해요. 응답에 파일의 <code>storageKey</code>가 있어요.",
       "large2": "올린 파일로 작업을 만들어요.",
-      "large3": "<code>jobId</code>가 담긴 202로 응답해요. <code>status</code>가 <code>completed</code>나 <code>failed</code>가 될 때까지 작업을 확인해요. 끝난 작업은 <code>result.downloadUrl</code>에 파일 경로를 알려 줘요. 작업에 <code>webhookUrl</code>을 보내면 그 주소로 알림이 가서 따로 확인하지 않아도 돼요.",
+      "large3": "<code>jobId</code>가 담긴 202로 응답해요. <code>status</code>가 <code>completed</code>나 <code>failed</code>로 끝날 때까지 작업을 확인해요. 끝난 작업은 <code>result.downloadUrl</code>에 파일 경로를 알려 줘요. 작업에 <code>webhookUrl</code>을 보내면 그 주소로 알림이 가서 따로 확인하지 않아도 돼요.",
       "download1": "키를 담아 <code>downloadUrl</code>에서 결과를 다운로드해요.",
       "download2": "결과는 끝까지 다운로드한 뒤 곧 삭제되고, 아무도 받지 않아도 얼마 뒤 삭제돼요. 준비되면 바로 저장해 주세요."
     },
@@ -145,7 +145,7 @@
       "errors": "오류",
       "example": "요청 예시",
       "status": "상태",
-      "meaning": "뜻",
+      "meaning": "의미",
       "required": "필수",
       "childProperties": "하위 속성 보기",
       "mediaType": "<code>{mediaType}</code> 본문:",
@@ -172,7 +172,7 @@
       },
       "create-a-job": {
         "title": "작업 만들기",
-        "lead": "변환을 대기열에 넣고 작업 ID로 바로 응답해요. 변환은 따로 진행돼요. <uploads>업로드</uploads>로 올린 파일(<code>storageKey</code>)이나 요청을 보낸 채로 기다리기 어려운 변환에 써요. <code>webhookUrl</code>을 보내면 작업이 끝날 때 그 주소로 <code>job.completed</code>나 <code>job.failed</code>를 보내요."
+        "lead": "변환을 대기열에 넣고 작업 ID로 바로 응답해요. 변환은 따로 진행돼요. <uploads>업로드</uploads>로 올린 파일(<code>storageKey</code>)이나 요청을 보낸 채로 기다리기 어려운 변환에 사용해요. <code>webhookUrl</code>을 보내면 작업이 끝날 때 그 주소로 <code>job.completed</code>나 <code>job.failed</code>를 보내요."
       },
       "show-a-job": {
         "title": "작업 확인하기",

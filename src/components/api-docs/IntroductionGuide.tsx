@@ -1,10 +1,14 @@
 import { useTranslations } from 'next-intl';
-import { API_KEY_BURST_LIMITS } from '@/lib/api-keys/guard';
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
 import { SYNC_CONVERSION_MAX_BYTES } from '@/lib/api/file-size-limit';
 import { formatBytes } from '@/lib/format-bytes';
-import { FREE_DAILY_CONVERSIONS, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
-import { concurrencyLimitFor } from '@/lib/queue/concurrency-limit';
+import {
+  API_KEY_BURST_LIMITS,
+  DEFAULT_FREE_CONCURRENCY,
+  FREE_DAILY_CONVERSIONS,
+  PLAN_MAX_FILE_BYTES,
+  SINGLE_REQUEST_FILE_MAX_BYTES,
+} from '@/lib/plan-limits';
 import { problemDetailsFields } from './api-reference';
 import CodeBlock from './CodeBlock';
 import { DOC, richText } from './doc-text';
@@ -23,7 +27,7 @@ export default function IntroductionGuide({ origin }: Readonly<{ origin: string 
     daily: FREE_DAILY_CONVERSIONS,
     burst: API_KEY_BURST_LIMITS.free.capacity,
     perSecond: API_KEY_BURST_LIMITS.free.refillRate,
-    concurrent: concurrencyLimitFor('free') ?? 0,
+    concurrent: DEFAULT_FREE_CONCURRENCY,
     requestMax: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES),
     fileMax: formatBytes(PLAN_MAX_FILE_BYTES.free),
     syncMax: formatBytes(SYNC_CONVERSION_MAX_BYTES),
