@@ -600,7 +600,6 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return await fail(400, 'webhookSecret is required when webhookUrl is provided.');
     }
 
-    // Phase 1: Atomically reserve quota BEFORE enqueueing to BullMQ
     const unit = await reserveConversionUnit(auth.user, reservedUnits);
     if (!unit.reserved) return reply(conversionRefusalResponse(unit.refusal, instanceUri));
 

@@ -128,7 +128,6 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
     const oversize = fileSizeLimitProblem(user, inputBytes, instanceUri);
     if (oversize) return oversize;
 
-    // Add conversion task to BullMQ Distributed Queue
     const job = await handOffConversionJob(
       unit,
       conversionQueue,
