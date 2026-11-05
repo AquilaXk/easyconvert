@@ -1,11 +1,12 @@
 import sharp, { type Metadata, type Sharp, type SharpOptions } from 'sharp';
 import { ConversionFailedError } from '../types';
-import type { ConversionRefusalCode } from '../refusal-codes';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   INPUT_PIXEL_LIMIT_HTTP_STATUS,
+  InputPixelLimitError,
   MAX_INPUT_PIXELS_CEILING,
   MAX_INPUT_PIXELS_ENV,
+  maxInputPixels,
 } from './image-input-limit-config';
 
 /**
@@ -14,32 +15,17 @@ import {
  * The limit itself and its rationale are in `image-input-limit-config.ts`.
  */
 
-export { DEFAULT_MAX_INPUT_PIXELS, INPUT_PIXEL_LIMIT_HTTP_STATUS, MAX_INPUT_PIXELS_CEILING, MAX_INPUT_PIXELS_ENV };
+export {
+  DEFAULT_MAX_INPUT_PIXELS,
+  INPUT_PIXEL_LIMIT_HTTP_STATUS,
+  InputPixelLimitError,
+  MAX_INPUT_PIXELS_CEILING,
+  MAX_INPUT_PIXELS_ENV,
+  maxInputPixels,
+};
 
 /** Message sharp (libvips) raises when its own `limitInputPixels` check fails. */
 const NATIVE_PIXEL_LIMIT_MESSAGE = 'Input image exceeds pixel limit';
-
-/**
- * An image that declares more pixels than the input limit, or than the budget of the conversion path it
- * needs (`scope` names that path); the API answers HTTP 413 and states the limit.
- */
-export class InputPixelLimitError extends ConversionFailedError {
-  readonly refusalCode: ConversionRefusalCode = 'input_over_limit';
-  readonly status = INPUT_PIXEL_LIMIT_HTTP_STATUS;
-  readonly limit: number;
-  readonly width?: number;
-  readonly height?: number;
-
-  constructor(limit: number, width?: number, height?: number, scope?: string) {
-    const declared = width === undefined || height === undefined ? 'more pixels than the limit' : `${width}x${height} pixels (${width * height} pixels)`;
-    const bound = scope === undefined ? `the input limit of ${limit} pixels` : `the limit of ${limit} pixels for ${scope}`;
-    super(`The input image declares ${declared}, over ${bound}`);
-    this.name = 'InputPixelLimitError';
-    this.limit = limit;
-    this.width = width;
-    this.height = height;
-  }
-}
 
 /** A pixel budget for a conversion path that holds the whole picture in process memory, several times over. */
 export interface PixelBudget {
@@ -75,39 +61,6 @@ export const HDR_FLOAT_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, scop
  * 30 B per pixel. 36 megapixels (the OpenEXR decoder's limit) keeps a job near 1.1 GB.
  */
 export const HDR_TONE_MAP_PIXEL_BUDGET: PixelBudget = { maxPixels: 36_000_000, scope: 'HDR tone mapping' };
-
-/** A whole number of pixels in plain decimal digits: no sign, exponent, fraction or radix prefix. */
-const DECIMAL_PIXEL_COUNT = /^\d{1,64}$/;
-
-/** Override values already parsed (by their exact text), so each is parsed and, when malformed, reported once. */
-const parsedOverrides = new Map<string, number>();
-
-function parseOverride(raw: string): number {
-  const text = raw.trim();
-  const value = DECIMAL_PIXEL_COUNT.test(text) ? Number(text) : 0;
-  if (value >= 1) return Math.min(value, MAX_INPUT_PIXELS_CEILING);
-  console.warn(
-    `${MAX_INPUT_PIXELS_ENV}=${JSON.stringify(raw)} is not a positive whole number of pixels; using the default of ${DEFAULT_MAX_INPUT_PIXELS} pixels.`
-  );
-  return DEFAULT_MAX_INPUT_PIXELS;
-}
-
-/**
- * The input pixel limit in force: the default, or `EASYCONVERT_MAX_INPUT_PIXELS` when it holds a positive
- * whole number of pixels in decimal digits. A larger value is lowered to the ceiling. A malformed value is
- * reported once in the log and replaced by the default, so a typo never disables the guard and never fails
- * every request.
- */
-export function maxInputPixels(env: Record<string, string | undefined> = process.env): number {
-  const raw = env[MAX_INPUT_PIXELS_ENV];
-  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_INPUT_PIXELS;
-  let value = parsedOverrides.get(raw);
-  if (value === undefined) {
-    value = parseOverride(raw);
-    parsedOverrides.set(raw, value);
-  }
-  return value;
-}
 
 /** True when `pixels` is over `limit`; a count that is not a finite number is over every limit. */
 function exceeds(pixels: number, limit: number): boolean {

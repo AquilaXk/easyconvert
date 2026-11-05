@@ -131,6 +131,7 @@ Engines
 131. [The Vorbis encoder of the worker image takes frames of any size, so that FFmpeg 9 hands it a whole frame at a time, and the stream it writes stays the same](#131-the-vorbis-encoder-of-the-worker-image-takes-frames-of-any-size-so-that-ffmpeg-9-hands-it-a-whole-frame-at-a-time-and-the-stream-it-writes-stays-the-same)
 135. [djvulibre is built from its Debian source with two patches: a shared file is searched once for a page component or a shape dictionary, a thread that cannot start fails the drawing, a run has 64 tasks or does not start, a worker runs two at once, and the budget counts 128 pixels a byte](#135-djvulibre-is-built-from-its-debian-source-with-two-patches-a-shared-file-is-searched-once-for-a-page-component-or-a-shape-dictionary-a-thread-that-cannot-start-fails-the-drawing-a-run-has-64-tasks-or-does-not-start-a-worker-runs-two-at-once-and-the-budget-counts-128-pixels-a-byte)
 151. [LibreOffice PDF/A conversion runs asynchronously inside the process sandbox and every PDF/A output is gated on veraPDF validation](#151-libreoffice-pdfa-conversion-runs-asynchronously-inside-the-process-sandbox-and-every-pdfa-output-is-gated-on-verapdf-validation)
+152. [PDF page rasterization is bounded by page dimensions, `/UserUnit`, `/Rotate`, and DPI before Poppler starts (`100` MP per page, `400` MP per request)](#152-pdf-page-rasterization-is-bounded-by-page-dimensions-userunit-rotate-and-dpi-before-poppler-starts-100-mp-per-page-400-mp-per-request)
 
 Usage limits
 
@@ -5647,4 +5648,20 @@ Legal
   - **Keeping `execFileSync` in `convertToPdfA`.** Blocks the Node.js event loop for the entire LibreOffice Draw import/export duration and bypasses `executeSandboxedBinary`'s async timeout and buffer management.
 - **Verified by**: `tests/pdfa-validator-execution.test.ts`, `tests/pdfa-validator-failure-detail.test.ts`, `tests/pdfa-fail-closed.test.ts`, `tests/pdf-header-offset-tools.test.ts`, `tests/pdfa-verapdf-gate.test.ts`, and `tests/pdfa-1b-dates.test.ts`.
 - **Revisit when**: LibreOffice PDF/A conversion moves to a persistent pre-warmed worker pool or an in-process PDF/A writer replaces the Draw round-trip.
+
+## 152. PDF page rasterization is bounded by page dimensions, `/UserUnit`, `/Rotate`, and DPI before Poppler starts (`100` MP per page, `400` MP per request)
+
+- **Status**: Implemented (issues #515 and #761), decided 2026-11-05.
+- **Decision**:
+  - **Pre-spawn PDF page rasterization pixel budgets.** `readPdfPageFrames`, `displayedSizePoints`, `renderedSizePixels`, `assertPdfRasterPageBudget`, and `checkPdfRasterPageBudget` in `src/lib/conversions/pdf-page-geometry.ts` compute the rendered pixel dimensions of each selected PDF page from its effective `/CropBox` (or `/MediaBox`), `/Rotate` quarter turn, and `/UserUnit` multiplier (ISO 32000-1 section 7.7.3.3, positive `PDFNumber`, floored at `1.0` so `/UserUnit < 1` cannot understate the unscaled `/CropBox` rasterized by `pdftoppm`) at the requested `dpi` (`Math.ceil((widthPt * Math.max(1, userUnit) * dpi) / 72)` by `Math.ceil((heightPt * Math.max(1, userUnit) * dpi) / 72)`).
+  - **Per-page and aggregate pixel caps.** Every selected page must stay within `MAX_RASTER_PAGE_PIXELS` (`100_000_000` pixels, `DEFAULT_MAX_INPUT_PIXELS` in `src/lib/conversions/image-input-limit-config.ts`, or `maxInputPixels()` when lowered via `EASYCONVERT_MAX_INPUT_PIXELS`), and the sum of rendered pixels across all selected pages in one request must stay within `MAX_RASTER_AGGREGATE_PIXELS` (`400_000_000` pixels, `MAX_AGGREGATE_PAGE_PIXELS` in `src/lib/conversions/image-limits.ts`). Exceeding either bound throws `InputPixelLimitError` (HTTP 413) before `pdftoppm` is spawned in both `executePopplerRender` (`src/worker/engines.ts`) and `planPageRender` (`src/lib/conversions/pdf-page-render.ts`), and `renderPdfToImageWithPoppler` validates `resolvePdfRasterDpi(options)` (`72` to `600` DPI) before checking binary availability or spawning `pdftoppm`.
+- **Why**:
+  - **Prevent large-page or high-`/UserUnit` PDFs from allocating multi-gigabyte rasters inside `pdftoppm`.** An architectural PDF (`14,400` by `14,400` pt, 200 by 200 inches) or a normal page with `/UserUnit 25` rendered at `600` DPI expands to `120,000` by `120,000` (`14.4` GP) or `125,000` by `125,000` (`15.625` GP), which previously started `pdftoppm` before hitting output file or memory limits.
+- **Trade-offs**:
+  - **Large-format engineering drawings must be rendered at a lower DPI (`72` to `150` DPI) or converted to vector targets (`svg`, `dxf`).** The error message states the page number, rendered pixel dimensions, and pixel limit so callers can lower `dpi` or select a smaller page range.
+- **Alternatives rejected**:
+  - **Relying only on `PPM_PAGE_MAX_BYTES` or `prlimit --as` after `pdftoppm` starts.** Wastes worker CPU and memory on pages whose geometry already proves the raster exceeds the image pixel budget.
+- **Verified by**: `tests/pdf-raster-page-budget.test.ts`, `tests/pdf-page-rasterization.test.ts`, `tests/pdf-page-frames-root.test.ts`, and `tests/poppler-ppm-png.test.ts`.
+- **Revisit when**: streaming tiled PDF page rendering is introduced for large-format architectural sheets.
+
 
