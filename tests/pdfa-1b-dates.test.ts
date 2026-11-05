@@ -170,7 +170,7 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
 
   it('replaces LibreOffice 24.2 zero XMP dates (0000-00-00) and preserves stream length via XMP padding', async () => {
     const input = await buildSyntheticLibreOfficePdfA1b({
-      infoCreationDate: 'D:20261105045104Z',
+      infoCreationDate: "D:20261105045104Z'",
       xmpCreateDate: '0000-00-00T00:00:00+09:00',
       xmpModifyDate: '0000-00-00T00:00:00+09:00',
       xmpMetadataDate: '0000-00-00T00:00:00+09:00',

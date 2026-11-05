@@ -112,7 +112,7 @@ function parsePdfTimezoneSuffix(suffix: string): { tz: TimezoneOffset; explicit:
   if (suffix === '') {
     return { tz: { offsetSign: 'Z', offsetHours: 0, offsetMinutes: 0 }, explicit: false };
   }
-  if (suffix === 'Z' || suffix === "Z00'00'" || suffix === "Z00'00") {
+  if (suffix === 'Z' || suffix === "Z'" || suffix === "Z00'00'" || suffix === "Z00'00") {
     return { tz: { offsetSign: 'Z', offsetHours: 0, offsetMinutes: 0 }, explicit: true };
   }
   const match = PDF_TZ_OFFSET_PATTERN.exec(suffix);
@@ -438,6 +438,8 @@ function decodeCatalogXmp(doc: PDFDocument): CatalogXmpState {
 }
 
 interface ResolvedPdfDates {
+  rawCreationDate: string | undefined;
+  rawModDate: string | undefined;
   canonicalPdfCreateDate: string;
   canonicalXmpCreateDate: string;
   canonicalPdfModDate: string;
@@ -520,6 +522,8 @@ function resolveCanonicalDates(
   const modInInfoCanonical = !hasModDateInInfo || (parsedMod !== null && rawModDate === canonicalPdfModDate);
 
   return {
+    rawCreationDate,
+    rawModDate,
     canonicalPdfCreateDate,
     canonicalXmpCreateDate,
     canonicalPdfModDate,
@@ -529,25 +533,58 @@ function resolveCanonicalDates(
   };
 }
 
+function patchInfoDateTokenInPlace(
+  pdf: Buffer,
+  key: 'CreationDate' | 'ModDate',
+  rawValue: string | undefined,
+  canonicalValue: string
+): Buffer | null {
+  if (rawValue === canonicalValue) {
+    return pdf;
+  }
+  if (!rawValue || rawValue.length < canonicalValue.length || !/^D:[0-9Z'+-]+$/.test(rawValue)) {
+    return null;
+  }
+  for (const sep of ['', ' ']) {
+    const needle = Buffer.from(`/${key}${sep}(${rawValue})`, 'latin1');
+    const offset = pdf.indexOf(needle);
+    if (offset >= 0 && !pdf.subarray(offset + 1).includes(needle)) {
+      const copy = Buffer.from(pdf);
+      const pad = ' '.repeat(rawValue.length - canonicalValue.length);
+      Buffer.from(`/${key}${sep}(${canonicalValue})${pad}`, 'latin1').copy(copy, offset);
+      return copy;
+    }
+  }
+  return null;
+}
+
 function tryInPlaceXmpPatch(
   pdf: Buffer,
+  hasInfoDict: boolean,
+  dates: ResolvedPdfDates,
   xmpState: CatalogXmpState,
   updatedXmpText: string
 ): Buffer | null {
-  if (!xmpState.hasUncompressedRawMetadata || xmpState.oldXmpBytes === null || xmpState.oldXmpText === null) {
+  if (!hasInfoDict || !xmpState.hasUncompressedRawMetadata || xmpState.oldXmpBytes === null || xmpState.oldXmpText === null) {
     return null;
   }
+  let working = patchInfoDateTokenInPlace(pdf, 'CreationDate', dates.rawCreationDate, dates.canonicalPdfCreateDate);
+  if (!working) return null;
+  if (dates.hasModDateInInfo) {
+    working = patchInfoDateTokenInPlace(working, 'ModDate', dates.rawModDate, dates.canonicalPdfModDate);
+    if (!working) return null;
+  }
   if (updatedXmpText === xmpState.oldXmpText) {
-    return pdf;
+    return working;
   }
   const sameLengthXmp = adjustXmpPaddingToLength(updatedXmpText, xmpState.oldXmpBytes.length);
   if (!sameLengthXmp) return null;
 
-  const offset = pdf.indexOf(xmpState.oldXmpBytes);
-  if (offset < 0 || pdf.subarray(offset + 1).includes(xmpState.oldXmpBytes)) {
+  const offset = working.indexOf(xmpState.oldXmpBytes);
+  if (offset < 0 || working.subarray(offset + 1).includes(xmpState.oldXmpBytes)) {
     return null;
   }
-  const copy = Buffer.from(pdf);
+  const copy = Buffer.from(working);
   sameLengthXmp.copy(copy, offset);
   return copy;
 }
@@ -608,10 +645,8 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
         )
       : defaultPdfAXmpPacket(dates.canonicalXmpCreateDate, dates.canonicalXmpModDate);
 
-  if (!dates.needsInfoRewrite) {
-    const patchedInPlace = tryInPlaceXmpPatch(pdf, xmpState, updatedXmpText);
-    if (patchedInPlace) return patchedInPlace;
-  }
+  const patchedInPlace = tryInPlaceXmpPatch(pdf, Boolean(infoDict), dates, xmpState, updatedXmpText);
+  if (patchedInPlace) return patchedInPlace;
 
   applyRebuiltPdfMetadata(doc, pdf, infoDict, dates, updatedXmpText);
 
