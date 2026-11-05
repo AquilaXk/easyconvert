@@ -381,7 +381,7 @@ export class RedisKeyStore extends KeyStore {
     const result = await super.generateApiKey(userId, name, options);
     if (this.redisClient) {
       try {
-        const key = result.key;
+        const key = this.keys.get(result.key.id) ?? result.key;
         const keyPrefix = this.keyPrefix;
         const hashPayload = {
           id: key.id,
@@ -399,6 +399,35 @@ export class RedisKeyStore extends KeyStore {
       }
     }
     return result;
+  }
+
+  private async recordVerifiedKeyInRedis(
+    keyId: string,
+    key: ApiKey,
+    candidates: { hashes: string[]; currentHash: string }
+  ): Promise<void> {
+    const matchedPreviousKey = Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+    const oldKeyHash = key.keyHash;
+    const migrated = !matchedPreviousKey && this.migrateKeyHash(key, candidates.currentHash);
+
+    key.lastUsedAt = Date.now();
+    this.keys.set(key.id, key);
+
+    if (!this.redisClient) return;
+    if (migrated) {
+      this.persist();
+      await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, candidates.currentHash, key.id);
+      await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, oldKeyHash);
+      await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
+        keyHash: key.keyHash,
+        data: JSON.stringify(key),
+        lastUsedAt: String(key.lastUsedAt),
+      });
+      return;
+    }
+    this.redisClient
+      .hset(`${this.keyPrefix}apikeys:${keyId}`, 'lastUsedAt', String(key.lastUsedAt))
+      .catch(() => {});
   }
 
   public override async verifyApiKey(
@@ -420,7 +449,6 @@ export class RedisKeyStore extends KeyStore {
             const key = JSON.parse(hashData.data) as ApiKey;
             key.status = (hashData.status as 'active' | 'revoked') || key.status;
 
-            // Enforce multi-instance instant revocation
             if (key.status !== 'active') {
               const local = this.keys.get(keyId);
               if (local) local.status = 'revoked';
@@ -450,14 +478,7 @@ export class RedisKeyStore extends KeyStore {
               key.lastExpiryNotifiedAt = Number(hashData.lastExpiryNotifiedAt);
             }
 
-            // Asynchronously record lastUsedAt
-            key.lastUsedAt = Date.now();
-            this.redisClient
-              .hset(`${this.keyPrefix}apikeys:${keyId}`, 'lastUsedAt', String(key.lastUsedAt))
-              .catch(() => {});
-
-            // Update local memory cache
-            this.keys.set(key.id, key);
+            await this.recordVerifiedKeyInRedis(keyId, key, candidates);
 
             return {
               valid: true,
@@ -515,15 +536,16 @@ export class RedisKeyStore extends KeyStore {
     const result = await super.rotateApiKey(userId, keyId, options);
     if (result && this.redisClient) {
       try {
+        const storedKey = this.keys.get(keyId) ?? result.key;
         await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
-          data: JSON.stringify(result.key),
-          keyHash: result.key.keyHash,
-          previousKeyHash: result.key.previousKeyHash || '',
+          data: JSON.stringify(storedKey),
+          keyHash: storedKey.keyHash,
+          previousKeyHash: storedKey.previousKeyHash || '',
           graceExpiresAt: String(result.graceExpiresAt),
         });
-        await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, result.key.keyHash, keyId);
-        if (result.key.previousKeyHash) {
-          await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, result.key.previousKeyHash, keyId);
+        await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, storedKey.keyHash, keyId);
+        if (storedKey.previousKeyHash) {
+          await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, storedKey.previousKeyHash, keyId);
         }
       } catch (err) {
         console.warn('[RedisKeyStore] Redis rotateApiKey sync failed:', err);
@@ -540,7 +562,8 @@ export class RedisKeyStore extends KeyStore {
     const updated = await super.updateApiKey(userId, keyId, updates);
     if (updated && this.redisClient) {
       try {
-        await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'data', JSON.stringify(updated));
+        const storedKey = this.keys.get(keyId) ?? updated;
+        await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'data', JSON.stringify(storedKey));
       } catch (err) {
         console.warn('[RedisKeyStore] Redis updateApiKey sync failed:', err);
       }

@@ -621,6 +621,16 @@ const SCHEMA_ENTRIES = [
     roles: WEB,
   },
   {
+    name: 'KEY_HASH_PEPPER_PREVIOUS',
+    area: 'secrets',
+    description:
+      'The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.',
+    kind: KEY_SECRET,
+    requiredInProduction: false,
+    secret: true,
+    roles: WEB,
+  },
+  {
     name: 'KEY_ENCRYPTION_KEY',
     area: 'secrets',
     description:

@@ -52,13 +52,25 @@ export function decryptSecret(cipherText: string | undefined): string | undefine
   }
 
   const [ivB64, tagB64, encB64] = parts;
-  const key = getEncryptionKey();
   const iv = Buffer.from(ivB64, 'base64');
   const tag = Buffer.from(tagB64, 'base64');
   const enc = Buffer.from(encB64, 'base64');
 
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(tag);
-  const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
-  return decrypted.toString('utf8');
+  const candidateKeys = [getEncryptionKey()];
+  if (!process.env.KEY_ENCRYPTION_KEY && process.env.KEY_HASH_PEPPER_PREVIOUS) {
+    candidateKeys.push(crypto.createHash('sha256').update(process.env.KEY_HASH_PEPPER_PREVIOUS).digest());
+  }
+
+  let lastError: unknown;
+  for (const key of candidateKeys) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      decipher.setAuthTag(tag);
+      const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
+      return decrypted.toString('utf8');
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }

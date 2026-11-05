@@ -21,6 +21,7 @@ const FILES_FILE = path.join(STORAGE_DIR, 'user-files.json');
 export { TIER_LIMITS, getAnonymousDailyLimit };
 
 const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
+const KEY_HASH_PEPPER_PREVIOUS_ENV = 'KEY_HASH_PEPPER_PREVIOUS';
 let pepperWarningEmitted = false;
 
 /**
@@ -59,19 +60,19 @@ export function hashApiKeySecret(secret: string): string {
 }
 
 export interface ApiKeyHashCandidates {
-  /** Lookup order: the current (peppered when configured) hash first, then the legacy SHA-256. */
   hashes: string[];
-  /** Hash a legacy-hashed key is migrated to after a successful verification, if different. */
   currentHash: string;
 }
 
 export function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
   const currentHash = hashApiKeySecret(secret);
-  const legacyHash = sha256(secret);
-  if (currentHash === legacyHash) {
-    return { hashes: [currentHash], currentHash };
+  const candidates: string[] = [currentHash];
+  const previousPepper = process.env[KEY_HASH_PEPPER_PREVIOUS_ENV];
+  if (previousPepper) {
+    candidates.push(hmacSha256(previousPepper, secret));
   }
-  return { hashes: [currentHash, legacyHash], currentHash };
+  candidates.push(sha256(secret));
+  return { hashes: Array.from(new Set(candidates)), currentHash };
 }
 
 export function getUtcDateKey(): string {
@@ -249,16 +250,17 @@ export class KeyStore {
     return keyId;
   }
 
-  /**
-   * Re-indexes a key verified through its legacy SHA-256 hash under the current (peppered) hash.
-   */
-  private migrateKeyHash(key: ApiKey, currentHash: string): void {
+  protected migrateKeyHash(key: ApiKey, currentHash: string): boolean {
     if (key.keyHash === currentHash) {
-      return;
+      return false;
     }
     this.keyHashIndex.delete(key.keyHash);
     key.keyHash = currentHash;
     this.keyHashIndex.set(currentHash, key.id);
+    if (key.webhookSecret && !process.env.KEY_ENCRYPTION_KEY) {
+      key.webhookSecret = encryptSecret(decryptSecret(key.webhookSecret));
+    }
+    return true;
   }
 
   private validateKeyConstraints(key: ApiKey, clientIp?: string): string | null {
