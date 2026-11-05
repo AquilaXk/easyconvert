@@ -277,6 +277,31 @@ function countRawPdfPages(text: string, boxCount: number): number {
   return Math.min(count, MAX_RAW_FALLBACK_PAGES);
 }
 
+function findMinimalFallbackPageCount(
+  selectPageNumbers: (pageCount: number) => readonly number[],
+  minPageCount: number
+): number | null {
+  let low = minPageCount;
+  let high = MAX_RAW_FALLBACK_PAGES;
+  let candidate: number | null = null;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    try {
+      selectPageNumbers(mid);
+      candidate = mid;
+      high = mid - 1;
+    } catch (err) {
+      if (err instanceof PayloadLimitError) {
+        candidate = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+  }
+  return candidate;
+}
+
 function resolveFallbackSelectedPages(
   selectPageNumbers: (pageCount: number) => readonly number[],
   pageCount: number
@@ -288,12 +313,9 @@ function resolveFallbackSelectedPages(
       throw err;
     }
     if (pageCount < MAX_RAW_FALLBACK_PAGES) {
-      try {
-        return selectPageNumbers(MAX_RAW_FALLBACK_PAGES);
-      } catch (retryErr) {
-        if (retryErr instanceof PayloadLimitError) {
-          throw retryErr;
-        }
+      const retryCount = findMinimalFallbackPageCount(selectPageNumbers, pageCount + 1);
+      if (retryCount !== null) {
+        return selectPageNumbers(retryCount);
       }
     }
     return [];

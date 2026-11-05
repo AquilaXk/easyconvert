@@ -11,12 +11,14 @@ import {
   MAX_RASTER_PAGE_PIXELS,
   PdfPageFrameError,
   assertPdfRasterPageBudget,
+  checkPdfRasterPageBudget,
   readPdfPageFrames,
   renderedSizePixels,
 } from '../src/lib/conversions/pdf-page-geometry';
+import { boundPageImages, pagesOfIntervals, resolvePageIntervals } from '../src/lib/conversions/page-range';
 import { planPageRender } from '../src/lib/conversions/pdf-page-render';
-import { PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
-import { executeWorkerConversion } from '../src/worker/engines';
+import { InvalidPageRangeError, PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
+import { convertWithNativePoppler, executeWorkerConversion } from '../src/worker/engines';
 import { oracleTest } from './helpers/oracle-test';
 import { buildPdf } from './helpers/pdf-craft';
 
@@ -253,8 +255,29 @@ describe('PDF page rasterization pixel budgets', () => {
       );
       expect(error).toBeInstanceOf(InputPixelLimitError);
       expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
+      const directError = await convertWithNativePoppler(singleBoxDamagedA4, 'pdf', 'png', { pages: '1-40', dpi: 600 }, 'range-forty.pdf').catch(
+        (err: unknown) => err
+      );
+      expect(directError).toBeInstanceOf(InputPixelLimitError);
       expect(wasInvoked()).toBe(false);
     });
+    for (const openSpec of ['2-', '9960-']) {
+      await expect(
+        checkPdfRasterPageBudget(
+          singleBoxDamagedA4,
+          (count) =>
+            pagesOfIntervals(
+              boundPageImages(
+                resolvePageIntervals(undefined, openSpec, count, (p, c) => new InvalidPageRangeError(`Page ${p} > ${c}`)) ?? [
+                  { start: 1, end: count },
+                ],
+                undefined
+              )
+            ),
+          600
+        )
+      ).resolves.toBeUndefined();
+    }
 
     const unparseablePageObjectPdf = Buffer.from(
       '%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] /PieceInfo <<\nendobj\ntrailer\n<< /Size 4 /Root 1 0 R >>\n%%EOF\n',
