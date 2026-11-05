@@ -285,6 +285,19 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
       expect(inspected.xmpCreateDate).toBe('2026-11-05T06:07:08Z');
       expect(inspected.xmpModifyDate).toBe('2026-11-05T06:07:08Z');
       expect(decodeTestXmpDate(inspected.xmpCreateDate!)).toEqual(decodeTestPdfDate(inspected.infoCreationDate!));
+
+      const numericHostile = await buildSyntheticLibreOfficePdfA1b({
+        infoCreationDate: hostileDate,
+        infoModDate: 'D:00000000000000Z',
+        xmpCreateDate: '0000-00-00T00:00:00+09:00',
+        xmpModifyDate: '0000-00-00T00:00:00+09:00',
+        xmpMetadataDate: '0000-00-00T00:00:00+09:00',
+      });
+      const normalisedNumeric = await normalisePdfADates(numericHostile, fallbackNow);
+      const inspectedNumeric = await inspectPdfDatesAndMetadata(normalisedNumeric);
+      expect(inspectedNumeric.hasTrailerId).toBe(true);
+      expect(inspectedNumeric.infoCreationDate).toBe('D:20261105060708Z');
+      expect(inspectedNumeric.infoModDate).toBe('D:20261105060708Z');
     }
   });
 

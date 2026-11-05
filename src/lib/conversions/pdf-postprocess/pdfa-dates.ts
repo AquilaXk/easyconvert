@@ -445,7 +445,7 @@ interface ResolvedPdfDates {
   canonicalPdfModDate: string;
   canonicalXmpModDate: string;
   hasModDateInInfo: boolean;
-  needsInfoRewrite: boolean;
+  canPatchInfoInPlace: boolean;
 }
 
 function selectCreationInstant(
@@ -518,8 +518,10 @@ function resolveCanonicalDates(
   const canonicalPdfModDate = formatPdfDate(modInstant);
   const canonicalXmpModDate = formatXmpDate(modInstant);
 
-  const createInInfoCanonical = parsedCreation !== null && rawCreationDate === canonicalPdfCreateDate;
-  const modInInfoCanonical = !hasModDateInInfo || (parsedMod !== null && rawModDate === canonicalPdfModDate);
+  const canPatchInfoInPlace =
+    Boolean(infoDict) &&
+    parsedCreation !== null &&
+    (!hasModDateInInfo || parsedMod !== null);
 
   return {
     rawCreationDate,
@@ -529,7 +531,7 @@ function resolveCanonicalDates(
     canonicalPdfModDate,
     canonicalXmpModDate,
     hasModDateInInfo,
-    needsInfoRewrite: !infoDict || !createInInfoCanonical || !modInInfoCanonical,
+    canPatchInfoInPlace,
   };
 }
 
@@ -560,13 +562,22 @@ function patchInfoDateTokenInPlace(
 
 function tryInPlaceXmpPatch(
   pdf: Buffer,
-  hasInfoDict: boolean,
   dates: ResolvedPdfDates,
   xmpState: CatalogXmpState,
   updatedXmpText: string
 ): Buffer | null {
-  if (!hasInfoDict || !xmpState.hasUncompressedRawMetadata || xmpState.oldXmpBytes === null || xmpState.oldXmpText === null) {
+  if (!dates.canPatchInfoInPlace || !xmpState.hasUncompressedRawMetadata || xmpState.oldXmpBytes === null || xmpState.oldXmpText === null) {
     return null;
+  }
+  let sameLengthXmp: Buffer | null = null;
+  let xmpOffset = -1;
+  if (updatedXmpText !== xmpState.oldXmpText) {
+    sameLengthXmp = adjustXmpPaddingToLength(updatedXmpText, xmpState.oldXmpBytes.length);
+    if (!sameLengthXmp) return null;
+    xmpOffset = pdf.indexOf(xmpState.oldXmpBytes);
+    if (xmpOffset < 0 || pdf.subarray(xmpOffset + 1).includes(xmpState.oldXmpBytes)) {
+      return null;
+    }
   }
   let working = patchInfoDateTokenInPlace(pdf, 'CreationDate', dates.rawCreationDate, dates.canonicalPdfCreateDate);
   if (!working) return null;
@@ -574,18 +585,11 @@ function tryInPlaceXmpPatch(
     working = patchInfoDateTokenInPlace(working, 'ModDate', dates.rawModDate, dates.canonicalPdfModDate);
     if (!working) return null;
   }
-  if (updatedXmpText === xmpState.oldXmpText) {
+  if (!sameLengthXmp) {
     return working;
   }
-  const sameLengthXmp = adjustXmpPaddingToLength(updatedXmpText, xmpState.oldXmpBytes.length);
-  if (!sameLengthXmp) return null;
-
-  const offset = working.indexOf(xmpState.oldXmpBytes);
-  if (offset < 0 || working.subarray(offset + 1).includes(xmpState.oldXmpBytes)) {
-    return null;
-  }
-  const copy = Buffer.from(working);
-  sameLengthXmp.copy(copy, offset);
+  const copy = working === pdf ? Buffer.from(pdf) : working;
+  sameLengthXmp.copy(copy, xmpOffset);
   return copy;
 }
 
@@ -645,7 +649,7 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
         )
       : defaultPdfAXmpPacket(dates.canonicalXmpCreateDate, dates.canonicalXmpModDate);
 
-  const patchedInPlace = tryInPlaceXmpPatch(pdf, Boolean(infoDict), dates, xmpState, updatedXmpText);
+  const patchedInPlace = tryInPlaceXmpPatch(pdf, dates, xmpState, updatedXmpText);
   if (patchedInPlace) return patchedInPlace;
 
   applyRebuiltPdfMetadata(doc, pdf, infoDict, dates, updatedXmpText);
