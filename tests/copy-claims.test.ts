@@ -49,7 +49,7 @@ const UNMEASURED_CLAIMS: Readonly<Record<TestLocale, readonly RegExp[]>> = {
 
 /** Each message that states a true property of a format or codec in one of the words above, by key. */
 const FORMAT_FACTS: ReadonlySet<string> = new Set([
-  'features.pairs.flac-mp3', 'options.audio.codecs.flac', 'siteLinks.losslessPng', 'status.components.pipeline-audio.description',
+  'features.pairs.flac-mp3', 'options.audio.codecs.flac', 'status.components.pipeline-audio.description',
   'formatSpecs.flac.desc', 'formatSpecs.gif.desc', 'formatSpecs.m4a.desc', 'formatSpecs.png.desc', 'formatSpecs.svg.desc',
   'formatSpecs.webp.desc',
   'formatDescriptions.alac', 'formatDescriptions.ape', 'formatDescriptions.arc', 'formatDescriptions.flac', 'formatDescriptions.pdfa',

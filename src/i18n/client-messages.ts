@@ -28,6 +28,7 @@ export const PAGE_NAMESPACES = {
   status: [...CHROME, 'status'],
   legal: [...CHROME],
   unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq'],
+  notFound: ['header', 'notFound'],
 } as const satisfies Record<string, readonly Namespace[]>;
 
 export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;

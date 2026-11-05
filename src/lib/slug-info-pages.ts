@@ -1,3 +1,29 @@
+import { MERGE_FORMATS } from './jobs/graph-operations';
+import { OPTIMIZABLE_FORMATS } from './jobs/optimize-formats';
+import { isCategoryWord, type CategoryWord } from './category-words';
+import { FORMAT_REGISTRY } from './registry';
+
+const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
+
+/**
+ * Whether two names are formats of the registry, not category words, and the registry lists the conversion between them.
+ * A category word stands for a format only as a representative, so `presentation`, a format of the registry that is also
+ * the word of a category, has the converter page of the category and no pair page of its own.
+ */
+export function offersConversion(source: string, target: string): boolean {
+  return (
+    isRegistered(source) &&
+    isRegistered(target) &&
+    !isCategoryWord(source) &&
+    !isCategoryWord(target) &&
+    FORMAT_REGISTRY[source].targetFormats.includes(target)
+  );
+}
+
+export function isSelfConvertible(format: string): boolean {
+  return offersConversion(format, format);
+}
+
 export type SlugInfoType =
   | 'contact'
   | 'about'
@@ -6,12 +32,6 @@ export type SlugInfoType =
   | 'unit'
   | 'accessibility';
 
-/** A word a slug may name a category by instead of a format (`/video-converter`, `/word-to-pdf`). */
-export type CategoryWord =
-  | 'video' | 'audio' | 'image' | 'document' | 'ebook' | 'archive' | 'vector' | 'font' | 'cad' | 'spreadsheet'
-  | 'presentation' | 'data' | 'word' | 'excel' | 'powerpoint' | 'photo' | 'picture' | 'music';
-
-/** How a pair or format page names one side: a format by its id in capitals, a category by the word of its title. */
 export type SlugName =
   | { kind: 'format'; id: string; display: string }
   | { kind: 'category'; id: CategoryWord; display: string };
@@ -21,15 +41,15 @@ export type SlugCopy =
   | { kind: 'info'; page: SlugInfoType }
   | { kind: 'ocr' }
   | { kind: 'unitPair'; src: string; tgt: string }
-  | { kind: 'pair'; src: SlugName; tgt: SlugName }
+  | { kind: 'pair'; src: string; tgt: string }
   | { kind: 'format'; name: SlugName }
   | { kind: 'merge'; format: string }
   | { kind: 'compress'; format: string }
   | { kind: 'saveWebsiteAsPdf' }
-  | { kind: 'websiteScreenshot'; format: string }
-  | { kind: 'generic'; name: string };
+  | { kind: 'websiteScreenshot'; format: string };
 
-export interface ParsedSlug {
+/** What a slug is as a page, before the path the page is at is named. */
+export interface SlugPage {
   isInfoPage: boolean;
   infoType?: SlugInfoType;
   sourceFormat: string;
@@ -37,45 +57,43 @@ export interface ParsedSlug {
   copy: SlugCopy;
 }
 
-export const INFO_PAGE_MAP: Record<string, ParsedSlug> = {
-  contact: {
-    isInfoPage: true,
-    infoType: 'contact',
-    copy: { kind: 'info', page: 'contact' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
-  about: {
-    isInfoPage: true,
-    infoType: 'about',
-    copy: { kind: 'info', page: 'about' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
-  security: {
-    isInfoPage: true,
-    infoType: 'security',
-    copy: { kind: 'info', page: 'security' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
-  status: {
-    isInfoPage: true,
-    infoType: 'status',
-    copy: { kind: 'info', page: 'status' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
-  accessibility: {
-    isInfoPage: true,
-    infoType: 'accessibility',
-    copy: { kind: 'info', page: 'accessibility' },
-    sourceFormat: 'pdf',
-    targetFormat: 'docx',
-  },
-};
+export interface ParsedSlug extends SlugPage {
+  /** The one path the page is at, in lowercase; a page that is a copy of another (`/jpeg-to-jpg`) names the path of the page it copies. */
+  canonicalPath: string;
+}
 
-export const UNIT_CONVERTER_INFO_PAGE: ParsedSlug = {
+/** The path a page is at, from what its copy says it is. */
+export function canonicalPathOf(copy: SlugCopy): string {
+  switch (copy.kind) {
+    case 'info':
+      return copy.page === 'unit' ? '/unit-converter' : `/${copy.page}`;
+    case 'ocr':
+      return '/pdf-ocr';
+    case 'unitPair':
+    case 'pair':
+      return `/${copy.src}-to-${copy.tgt}`;
+    case 'format':
+      return `/${copy.name.id}-converter`;
+    case 'merge':
+    case 'compress':
+      return `/${copy.kind}-${copy.format}`;
+    case 'saveWebsiteAsPdf':
+      return '/save-website-as-pdf';
+    case 'websiteScreenshot':
+      return `/website-${copy.format}-screenshot`;
+  }
+}
+
+const INFO_PAGES = ['contact', 'about', 'security', 'status', 'accessibility'] as const;
+
+export const INFO_PAGE_MAP: Readonly<Record<string, SlugPage>> = Object.fromEntries(
+  INFO_PAGES.map((page) => [
+    page,
+    { isInfoPage: true, infoType: page, copy: { kind: 'info', page }, sourceFormat: 'pdf', targetFormat: 'docx' } satisfies SlugPage,
+  ])
+);
+
+export const UNIT_CONVERTER_INFO_PAGE: SlugPage = {
   isInfoPage: true,
   infoType: 'unit',
   copy: { kind: 'info', page: 'unit' },
@@ -85,7 +103,7 @@ export const UNIT_CONVERTER_INFO_PAGE: ParsedSlug = {
 
 const UNIT_PAIR_SLUGS = new Set(['lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet']);
 
-export function parseUnitPairSlug(rawSrc: string, rawTgt: string): ParsedSlug | null {
+export function parseUnitPairSlug(rawSrc: string, rawTgt: string): SlugPage | null {
   if (!UNIT_PAIR_SLUGS.has(`${rawSrc}-to-${rawTgt}`)) {
     return null;
   }
@@ -98,25 +116,20 @@ export function parseUnitPairSlug(rawSrc: string, rawTgt: string): ParsedSlug | 
   };
 }
 
-export function parseUtilitySlug(cleanSlug: string): ParsedSlug | null {
-  if (cleanSlug.startsWith('merge-')) {
-    const fmt = cleanSlug.split('-').pop() || 'pdf';
-    return {
-      isInfoPage: false,
-      sourceFormat: fmt,
-      targetFormat: fmt,
-      copy: { kind: 'merge', format: fmt },
-    };
-  }
+const selfConvertible = (formats: Iterable<string>): ReadonlySet<string> => new Set([...formats].filter(isSelfConvertible));
 
-  if (cleanSlug.startsWith('compress-')) {
-    const fmt = cleanSlug.split('-').pop() || 'pdf';
-    return {
-      isInfoPage: false,
-      sourceFormat: fmt,
-      targetFormat: fmt,
-      copy: { kind: 'compress', format: fmt },
-    };
+const UTILITY_FORMATS = {
+  merge: selfConvertible(MERGE_FORMATS),
+  compress: selfConvertible(OPTIMIZABLE_FORMATS),
+} as const satisfies Record<'merge' | 'compress', ReadonlySet<string>>;
+
+export function parseUtilitySlug(cleanSlug: string): SlugPage | null {
+  for (const utility of ['merge', 'compress'] as const) {
+    if (!cleanSlug.startsWith(`${utility}-`)) continue;
+    const format = cleanSlug.slice(`${utility}-`.length);
+    return UTILITY_FORMATS[utility].has(format)
+      ? { isInfoPage: false, sourceFormat: format, targetFormat: format, copy: { kind: utility, format } }
+      : null;
   }
 
   if (cleanSlug === 'save-website-as-pdf') {

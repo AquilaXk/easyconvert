@@ -9,13 +9,16 @@
 # the worker seccomp profile, and noexec tmpfs where production mounts its scratch (/tmp and /home/easyconvert) and the build cache.
 # The AppArmor profile is left out: it is loaded on the production host only. The secrets are random values made for this run, the
 # storage is local, and there is no Redis, so the check proves that the server starts and serves a page, not that it converts.
+# Once the home page answers 200, scripts/check-built-statuses.mjs asks the same server for pages that exist and paths that do not,
+# and requires 404 with noindex for each of the latter (entry 145).
 # Docker picks a free port on the loopback address, so the check never collides with another server on the runner.
 set -euo pipefail
 
 IMAGE="${1:?usage: boot-web-image.sh <image>}"
 NAME="easyconvert-boot-check-$$"
 ATTEMPTS="${BOOT_CHECK_ATTEMPTS:-60}"
-SECCOMP="$(cd "$(dirname "$0")/.." && pwd)/docker/seccomp-worker.json"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SECCOMP="$ROOT/docker/seccomp-worker.json"
 
 if ! [[ "$ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
   echo "boot check: BOOT_CHECK_ATTEMPTS must be a whole number of at least 1, not '$ATTEMPTS'" >&2
@@ -61,6 +64,11 @@ for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
   status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:$PORT/" || true)"
   if [ "$status" = 200 ]; then
     echo "boot check: the home page answered 200 after $attempt attempt(s)"
+    if ! node "$ROOT/scripts/check-built-statuses.mjs" "http://127.0.0.1:$PORT"; then
+      echo "boot check: the server answered a path wrongly; its last output follows" >&2
+      docker logs --tail 40 "$NAME" >&2
+      exit 1
+    fi
     exit 0
   fi
   sleep 2

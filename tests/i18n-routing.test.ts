@@ -8,9 +8,10 @@ import ConverterPage, { generateMetadata } from '../src/app/[locale]/[slug]/page
 import { config, middleware } from '../src/middleware';
 import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
-import { FORMAT_NAME_ALIASES } from '../src/lib/format-aliases';
+import { canonicalFormat, isSameFormat } from '../src/lib/format-aliases';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { CATEGORY_WORDS, DOTTED_FORMAT_SUFFIXES, canonicalSlugPath, isFileSlug, isIndexableSlug, parseConverterSlug } from '../src/lib/slug-parser';
+import { parseConverterSlug } from '../src/lib/slug-parser';
+import { parsedSlug } from './helpers/intl';
 
 /**
  * Locale routing as a visitor meets it: English at the unprefixed paths, Korean under /ko, the visitor's language
@@ -38,6 +39,7 @@ async function answer(pathname: string, headers: Record<string, string> = {}) {
     status: res.status,
     location: res.headers.get('location'),
     rewrite: res.headers.get('x-middleware-rewrite'),
+    requestLocale: res.headers.get('x-middleware-request-x-next-intl-locale'),
     setCookie: res.headers.get('set-cookie'),
     link: res.headers.get('link'),
     vary: res.headers.get('vary'),
@@ -92,6 +94,43 @@ describe('locale routing of pages', () => {
     expect((await answer('/tar.gz-to-zip')).rewrite).toBe(`${ORIGIN}/en/tar.gz-to-zip`);
     expect((await answer('/ko/zip-to-tar.gz')).status).toBe(200);
     expect(await answer('/en/zip-to-tar.gz')).toMatchObject({ status: 307, location: `${ORIGIN}/zip-to-tar.gz` });
+  });
+
+  it('hands the page the path as it came when it holds a space, a tab or a line break, which URL parsing would drop from the decoded path', async () => {
+    expect((await answer('/pdf-to-jpg%20')).rewrite).toBe(`${ORIGIN}/en/pdf-to-jpg%20`);
+    expect((await answer('/%09pdf-to-jpg')).rewrite).toBe(`${ORIGIN}/en/%09pdf-to-jpg`);
+    expect((await answer('/pdf-to-jpg%0A')).rewrite).toBe(`${ORIGIN}/en/pdf-to-jpg%0A`);
+    expect((await answer('/pdf%0D-to-jpg')).rewrite).toBe(`${ORIGIN}/en/pdf%0D-to-jpg`);
+    expect((await answer('/ko/pdf-to-jpg%20')).rewrite).toBe(`${ORIGIN}/ko/pdf-to-jpg%20`);
+    expect((await answer('/pdf-to-jpg%20?from=a')).rewrite).toBe(`${ORIGIN}/en/pdf-to-jpg%20?from=a`);
+    expect((await answer('/foo%20bar')).rewrite).toBe(`${ORIGIN}/en/foo%20bar`);
+    expect((await answer('/%ED%95%9C%EA%B8%80')).rewrite).toBe(`${ORIGIN}/en/%ED%95%9C%EA%B8%80`);
+  });
+
+  it('keeps a path with whitespace under a language prefix as it came, and sends it to no other page', async () => {
+    for (const [asked, locale, page] of [
+      ['/en/pdf-to-jpg%20', 'en', 'pdf-to-jpg%20'],
+      ['/EN/pdf-to-jpg%20', 'en', 'pdf-to-jpg%20'],
+      ['/en/%09pdf-to-jpg', 'en', '%09pdf-to-jpg'],
+      ['/ko/pdf-to-jpg%20', 'ko', 'pdf-to-jpg%20'],
+      ['/KO/pdf-to-jpg%20', 'ko', 'pdf-to-jpg%20'],
+      ['/ko/pdf-to-jpg%0A?from=a', 'ko', 'pdf-to-jpg%0A?from=a'],
+    ] as const) {
+      expect(await answer(asked), asked).toMatchObject({
+        status: 200,
+        location: null,
+        rewrite: `${ORIGIN}/${locale}/${page}`,
+        requestLocale: locale,
+      });
+    }
+  });
+
+  it('passes a path with a malformed percent escape through without throwing, so the server answers 400 instead of 500', async () => {
+    for (const malformed of ['/%E0%A4%A', '/ko/%E0%A4%A', '/en/%E0%A4%A', '/pdf-to-jpg%E0%A4%A', '/%c0%ae%c0%ae/etc', '/ko/%c0%ae']) {
+      expect(matched(malformed), malformed).toBe(true);
+      const res = await answer(malformed);
+      expect(res, malformed).toMatchObject({ status: 200, location: null, rewrite: null });
+    }
   });
 
   it('negotiates the language from Accept-Language on the root only', async () => {
@@ -161,19 +200,25 @@ describe('API routes are not locale routed', () => {
     for (const pathname of ['/', '/ko', '/png-to-jpg', '/ko/png-to-jpg', '/api-docs', '/ko/api-docs', '/api/health', '/api/v1/jobs']) {
       expect(matched(pathname), pathname).toBe(true);
     }
-    const assets = ['/_next/static/chunks/main.js', '/_vercel/insights', '/.well-known/security.txt', '/favicon.ico'];
+    const assets = ['/_next/static/chunks/main.js', '/_vercel/insights', '/favicon.ico', '/icon.svg', '/apple-icon.png'];
     for (const pathname of [...assets, ...publicPaths()]) {
       expect(matched(pathname), pathname).toBe(false);
     }
   });
 
-  it('leaves every other path with a dot to the file routes, so a probe for a file never renders a page', () => {
+  it('routes non-asset dotted paths and bare /api through the locale middleware so they answer 404 without a NoFallbackError', async () => {
     const probes = [
-      '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz', '/index.html', '/a.JS',
-      '/robots.TXT', '/ko/wp-login.php', '/ko/backup.zip', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz',
-      '/ko/.env', '/ZIP-to-TAR.GZIP', '/ko/zip-to-TAR.GZ.PHP',
+      '/robots.txt', '/foo.html', '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz',
+      '/index.html', '/a.JS', '/robots.TXT', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz', '/ZIP-to-TAR.GZIP', '/api',
     ];
-    for (const pathname of probes) expect(matched(pathname), pathname).toBe(false);
+    for (const pathname of probes) {
+      expect(matched(pathname), pathname).toBe(true);
+      expect((await answer(pathname)).rewrite, pathname).toBe(`${ORIGIN}/en${pathname}`);
+    }
+    for (const pathname of ['/ko/robots.txt', '/ko/wp-login.php', '/ko/backup.zip', '/ko/.env', '/ko/zip-to-TAR.GZ.PHP']) {
+      expect(matched(pathname), pathname).toBe(true);
+      expect((await answer(pathname)).status, pathname).toBe(200);
+    }
   });
 });
 
@@ -191,11 +236,11 @@ describe('page metadata names every language', () => {
   });
 });
 
-describe('converter slug pages name one canonical URL, and unknown ones are not indexed', () => {
+describe('converter slug pages name one canonical URL', () => {
   it('names the lowercased slug as the canonical path', () => {
-    expect(canonicalSlugPath('PNG-to-JPG')).toBe('/png-to-jpg');
-    expect(canonicalSlugPath('Zip-To-Tar.GZ')).toBe('/zip-to-tar.gz');
-    expect(canonicalSlugPath('png-to-jpg')).toBe('/png-to-jpg');
+    for (const [slug, canonical] of [['PNG-to-JPG', '/png-to-jpg'], ['Zip-To-Tar.GZ', '/zip-to-tar.gz'], ['png-to-jpg', '/png-to-jpg']]) {
+      expect(parsedSlug(slug).canonicalPath).toBe(canonical);
+    }
   });
 
   it.each([
@@ -204,13 +249,8 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     ['en', 'pdf-to-pdf', '/pdf-converter', '/ko/pdf-converter'],
     ['ko', 'pdf-to-pdf', '/ko/pdf-converter', '/pdf-converter'],
     ['en', 'Jfif-To-JPG', '/jfif-converter', '/ko/jfif-converter'],
-    ['en', 'video-to-mp4', '/video-to-mp4', '/ko/video-to-mp4'],
     ['ko', 'png-to-jpg', '/ko/png-to-jpg', '/png-to-jpg'],
     ['en', 'Video-Converter', '/video-converter', '/ko/video-converter'],
-    ['en', 'video-to-video', '/video-converter', '/ko/video-converter'],
-    ['ko', 'Image-To-Photo', '/ko/image-converter', '/image-converter'],
-    ['en', 'ocr', '/pdf-ocr', '/ko/pdf-ocr'],
-    ['ko', 'ocr-pdf', '/ko/pdf-ocr', '/pdf-ocr'],
     ['en', 'pdf-ocr', '/pdf-ocr', '/ko/pdf-ocr'],
   ])('names the page of the parsed format as the canonical of %s %s, and the other locale as its alternate', async (locale, slug, canonical, other) => {
     const { alternates } = await generateMetadata({ params: Promise.resolve({ locale, slug }) });
@@ -218,31 +258,27 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     expect(alternates).toEqual({ canonical, languages: { en: english, ko: korean, 'x-default': english } });
   });
 
-  // The slugs the parser reads as the page of their source: two names of one format, a registry format converted to itself,
-  // and two category words for one format. Each starts with the word whose page it is.
-  const registered = (id: string) => Object.hasOwn(FORMAT_REGISTRY, id);
-  const aliasSlugs = Object.entries(FORMAT_NAME_ALIASES)
-    .filter(([alias, format]) => registered(alias) && registered(format))
-    .flatMap(([alias, format]) => [`${alias}-to-${format}`, `${format}-to-${alias}`]);
-  const selfTargetSlugs = Object.entries(FORMAT_REGISTRY)
-    .filter(([id, { targetFormats }]) => targetFormats.includes(id))
-    .map(([id]) => `${id}-to-${id}`);
-  const words = Object.entries(CATEGORY_WORDS);
-  const categoryPairSlugs = words.flatMap(([word, { format }]) =>
-    words.filter(([, other]) => other.format === format).map(([otherWord]) => `${word}-to-${otherWord}`)
+  // The slugs the parser reads as the page of their source: every conversion the registry lists between two names of one
+  // format (`jpeg-to-jpg`, `tar.bz-to-tar.bz2`) and every format converted to itself. Each starts with the word whose page it is.
+  const ids = Object.keys(FORMAT_REGISTRY);
+  const sameFormatSlugs = ids.flatMap((source) =>
+    FORMAT_REGISTRY[source].targetFormats.filter((target) => isSameFormat(source, target)).map((target) => `${source}-to-${target}`)
+  );
+  const namesOfOneFormat = Object.groupBy(ids, canonicalFormat);
+  const listedAmongNames = Object.values(namesOfOneFormat).flatMap((names = []) =>
+    names.flatMap((source) => names.filter((target) => FORMAT_REGISTRY[source].targetFormats.includes(target)).map((target) => `${source}-to-${target}`))
   );
 
-  it('sweeps every slug read as the page of its source and finds it a copy of an indexable page that is its own canonical', async () => {
-    const swept = [...aliasSlugs, ...selfTargetSlugs, ...categoryPairSlugs];
-    expect(aliasSlugs.length).toBeGreaterThan(14);
-    expect(selfTargetSlugs.length).toBeGreaterThan(60);
-    expect(categoryPairSlugs.length).toBeGreaterThan(18);
+  it('sweeps every slug read as the page of its source and finds it a copy of a page that is its own canonical', async () => {
+    expect(sameFormatSlugs).toEqual(expect.arrayContaining(['tar.bz-to-tar.bz2', 'tbz-to-tar.bz2', 'jpeg-to-jpg', 'jfif-to-jpg', 'pdf-to-pdf']));
+    expect(sameFormatSlugs.toSorted()).toEqual(listedAmongNames.toSorted());
     const metadataOf = (locale: string, slug: string) => generateMetadata({ params: Promise.resolve({ locale, slug }) });
     const broken: string[] = [];
-    for (const slug of swept) {
+    for (const slug of sameFormatSlugs) {
       const canonical = `/${slug.split('-to-')[0]}-converter`;
-      if (canonicalSlugPath(slug) !== canonical || canonicalSlugPath(canonical) !== canonical || !isIndexableSlug(parseConverterSlug(canonical))) {
-        broken.push(`${slug}: canonical ${canonicalSlugPath(slug)}`);
+      const [page, canonicalPage] = [parseConverterSlug(slug), parseConverterSlug(canonical.slice(1))];
+      if (page?.canonicalPath !== canonical || canonicalPage?.canonicalPath !== canonical) {
+        broken.push(`${slug}: canonical ${page?.canonicalPath}`);
         continue;
       }
       for (const locale of routing.locales) {
@@ -255,24 +291,6 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
     expect(broken).toEqual([]);
   });
 
-  it('indexes pages of registered formats and the site pages, and no page a slug only names', () => {
-    for (const slug of ['png-to-jpg', 'zip-to-tar.gz', 'video-to-gif', 'pdf-converter', 'contact', 'pdf-ocr', 'lbs-to-kg', 'merge-pdf', 'website-png-screenshot']) {
-      expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(true);
-    }
-    for (const slug of ['hello-world', 'foo-to-bar', 'png-to-xyz', 'xyz-converter', 'merge-xyz']) {
-      expect(isIndexableSlug(parseConverterSlug(slug)), slug).toBe(false);
-    }
-  });
-
-  it('reads a slug with a dot as a file, except the dot of a registered dotted format id', () => {
-    for (const slug of ['backup.zip', 'wp-login.php', 'index.html', 'a.b-c', 'foo-to-bar.php', 'x.php-converter', 'zip-to-tar.gz.php', 'zip-to-x.tar.gz']) {
-      expect(isFileSlug(slug), slug).toBe(true);
-    }
-    for (const slug of ['zip-to-tar.gz', 'tar.gz-to-zip', 'tar.xz-converter', 'Zip-To-Tar.GZ', 'TAR.BZ2-to-zip', 'hello-world', 'png-to-jpg']) {
-      expect(isFileSlug(slug), slug).toBe(false);
-    }
-  });
-
   it('answers 404 from the page for a dotted path that reached it under a locale, and renders a dotted format id', async () => {
     const statusOf = async (locale: string, slug: string) => {
       try {
@@ -283,20 +301,9 @@ describe('converter slug pages name one canonical URL, and unknown ones are not 
         throw error;
       }
     };
-    for (const [locale, slug] of [['ko', 'foo-to-bar.php'], ['ko', 'x.php-converter'], ['en', 'foo-to-bar.php'], ['ko', 'backup.zip']]) {
+    for (const [locale, slug] of [['ko', 'foo-to-bar.php'], ['ko', 'x.php-converter'], ['en', 'foo-to-bar.php'], ['ko', 'backup.zip'], ['en', 'robots.txt'], ['en', 'foo.html']]) {
       expect(await statusOf(locale, slug), `/${locale}/${slug}`).toBe(404);
     }
     for (const slug of ['zip-to-tar.gz', 'Zip-To-Tar.GZ']) expect(await statusOf('ko', slug), `/ko/${slug}`).toBe(200);
-  });
-
-  it('allows in the middleware matcher exactly the dotted ids of the registry, in any case', () => {
-    const dottedIds = Object.keys(FORMAT_REGISTRY).filter((id) => id.includes('.'));
-    expect(dottedIds.map((id) => id.split('.')[0])).toEqual(dottedIds.map(() => 'tar'));
-    expect([...DOTTED_FORMAT_SUFFIXES].sort()).toEqual(dottedIds.map((id) => id.slice('tar.'.length)).sort());
-    const anyCase = (text: string) => text.replace(/[a-z]/g, (letter) => `[${letter}${letter.toUpperCase()}]`);
-    const suffixes = [...DOTTED_FORMAT_SUFFIXES].sort((a, b) => b.length - a.length || a.localeCompare(b)).map(anyCase).join('|');
-    expect(config.matcher[1]).toBe(
-      `/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-]${anyCase('tar')})\\.|\\.(?!(?:${suffixes})(?:-|$)))).*)`
-    );
   });
 });

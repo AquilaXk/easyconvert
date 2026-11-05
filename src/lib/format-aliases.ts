@@ -1,6 +1,6 @@
 /**
  * Registry formats that are another name of the same format (an extension spelled two ways), keyed by the alias and naming
- * the format it stands for. A list of targets names each format once: "JPG" covers JPEG and JFIF, "TIFF" covers TIF.
+ * the format it stands for. A list of targets names each format once, so "JPG" covers JPEG and JFIF and "TIFF" covers TIF.
  */
 export const FORMAT_NAME_ALIASES: Readonly<Record<string, string>> = {
   jpeg: 'jpg',
@@ -28,13 +28,12 @@ export function canonicalFormat(id: string): string {
   return Object.hasOwn(FORMAT_NAME_ALIASES, id) ? FORMAT_NAME_ALIASES[id] : id;
 }
 
-/** Whether two registry ids name one format: the same id, or two names of it (JPEG and JPG, JPEG and JFIF). */
 export function isSameFormat(id: string, other: string): boolean {
   return canonicalFormat(id) === canonicalFormat(other);
 }
 
 /**
- * Each format of `items` once, by its own name: an item that is another name of a format whose own name is also in
+ * Each format of `items` once, by its own name. An item that is another name of a format whose own name is also in
  * `items` is dropped, an id the list holds twice stays where it first stood, and the others stay in place, so a format
  * whose own name is absent keeps every name it has.
  */

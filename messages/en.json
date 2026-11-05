@@ -743,6 +743,10 @@
     },
     "legal": {
       "title": "{title} | EasyConvert"
+    },
+    "notFound": {
+      "title": "Page not found | EasyConvert",
+      "description": "Sorry, the page you are looking for could not be found."
     }
   },
   "options": {
@@ -992,15 +996,13 @@
     "apiDocs": "API Docs",
     "dashboard": "Dashboard",
     "mp4Converter": "MP4 Converter",
-    "videoToGif": "Video to GIF",
+    "mp4ToGif": "MP4 to GIF",
     "movToMp4": "MOV to MP4",
     "mp3Converter": "MP3 Converter",
     "mp4ToMp3": "MP4 to MP3",
-    "videoToMp3": "Video to MP3",
     "jpgToPdf": "JPG to PDF",
     "pdfToJpg": "PDF to JPG",
     "heicToJpg": "HEIC to JPG",
-    "imageToPdf": "Image to PDF",
     "pdfToWord": "PDF to Word",
     "epubToPdf": "EPUB to PDF",
     "documentConverter": "Document Converter",
@@ -1013,7 +1015,6 @@
     "imageResizer": "Image Resizer",
     "websiteScreenshot": "Website Screenshot",
     "mp4Remuxer": "MP4 Remuxer",
-    "losslessPng": "Lossless PNG",
     "vectorConverter": "Vector Converter",
     "securityArchitecture": "Security Architecture",
     "aboutUs": "About Us",
@@ -1071,7 +1072,7 @@
       "title": "{src} to {tgt} Converter",
       "lead": {
         "extractAudio": "Extract the sound of {src} as {tgtFiles} online.",
-        "convert": "Convert {src} to {tgtKind, select, category {{tgtFiles}} other {{tgt}}} online."
+        "convert": "Convert {src} to {tgt} online."
       }
     },
     "format": {
@@ -1092,13 +1093,7 @@
         "cad": "CAD drawings",
         "spreadsheet": "spreadsheets",
         "presentation": "presentations",
-        "data": "data files",
-        "word": "Word documents",
-        "excel": "Excel spreadsheets",
-        "powerpoint": "PowerPoint presentations",
-        "photo": "photos",
-        "picture": "pictures",
-        "music": "music files"
+        "data": "data files"
       },
       "kind": {
         "audio": "{name} audio files",
@@ -1131,18 +1126,11 @@
       "title": "Website {format} Screenshot",
       "description": "Capture a public web page as a {format} image from its address."
     },
-    "generic": {
-      "title": "{name} Converter",
-      "description": "Convert {name} files online."
-    },
     "names": {
       "Video": "Video",
       "Audio": "Audio",
       "Image": "Image",
       "Vector": "Vector",
-      "Word": "Word",
-      "Excel": "Excel",
-      "PowerPoint": "PowerPoint",
       "Document": "Document",
       "Spreadsheet": "Spreadsheet",
       "Archive": "Archive",
@@ -1150,9 +1138,6 @@
       "Ebook": "Ebook",
       "Data": "Data",
       "Font": "Font",
-      "Photo": "Photo",
-      "Picture": "Picture",
-      "Music": "Music",
       "CAD": "CAD"
     },
     "related": {
@@ -1368,6 +1353,11 @@
   "unitConverterPage": {
     "heading": "Universal Unit Converter",
     "intro": "Convert measurements across 10 physical and digital categories with bidirectional calculations and multi-unit reference tables."
+  },
+  "notFound": {
+    "code": "404",
+    "title": "The route {route} could not be found.",
+    "description": "Sorry, the page you are looking for could not be found."
   },
   "urlImport": {
     "heading": "Add File from URL",

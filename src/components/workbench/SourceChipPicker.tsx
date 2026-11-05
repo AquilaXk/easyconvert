@@ -9,7 +9,7 @@ import { Link } from '@/i18n/navigation';
  * most, as that layout lists them: at most ten, each format once by its own name, and only targets the registry has
  * (tests/home-source-chips.test.ts holds both). "See all formats" leads to the format page for the rest.
  */
-const COMMON_TARGETS: Readonly<Record<string, readonly string[]>> = {
+export const COMMON_TARGETS: Readonly<Record<string, readonly string[]>> = {
   pdf: ['docx', 'txt', 'html', 'jpg', 'png', 'rtf', 'epub', 'pptx', 'xlsx'],
   docx: ['pdf', 'doc', 'odt', 'rtf', 'txt', 'html', 'epub'],
   doc: ['pdf', 'docx', 'odt', 'rtf', 'txt', 'html'],

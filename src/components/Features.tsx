@@ -16,7 +16,7 @@ interface PopularPair {
 
 type PairSummaryKey = `pairs.${keyof Messages['features']['pairs']}`;
 
-const POPULAR_PAIRS_BY_CATEGORY: Record<FormatCategory, ReadonlyArray<PopularPair>> = {
+export const POPULAR_PAIRS_BY_CATEGORY: Record<FormatCategory, ReadonlyArray<PopularPair>> = {
   image: [
     { from: 'png', to: 'webp' },
     { from: 'heic', to: 'jpg' },
