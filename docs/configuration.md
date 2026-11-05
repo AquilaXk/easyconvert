@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 128 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 129 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -83,6 +83,7 @@ Generate a secret with `openssl rand -hex 32`.
 | Variable | Type and rule | Default | Required in production | Process |
 | --- | --- | --- | --- | --- |
 | `KEY_HASH_PEPPER` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web |
+| `KEY_HASH_PEPPER_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web |
 | `KEY_ENCRYPTION_KEY` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web, worker |
 | `WEBHOOK_SECRET_KEK` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | yes | web |
 | `STORAGE_VAULT_KEY` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web, worker |
@@ -90,6 +91,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `JOB_SECRET_KEK_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded), no surrounding whitespace in production; secret, never logged | none | no | web, worker |
 
 - `KEY_HASH_PEPPER`: Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also the second fallback key of API key secret encryption.
+- `KEY_HASH_PEPPER_PREVIOUS`: The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.
 - `KEY_ENCRYPTION_KEY`: Key that encrypts API key webhook secrets at rest; falls back to KEY_HASH_PEPPER, then JWT_SECRET. Also the second fallback key of the credential vault.
 - `WEBHOOK_SECRET_KEK`: Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The worker dispatches webhooks and needs it too once the deployment sends them.
 - `STORAGE_VAULT_KEY`: Master key of the vault that holds customer storage credentials; falls back to KEY_ENCRYPTION_KEY, then JWT_SECRET.

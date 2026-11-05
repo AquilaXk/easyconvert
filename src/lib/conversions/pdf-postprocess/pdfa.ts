@@ -22,6 +22,7 @@ import {
 import { pdfFromHeader } from '../../format-signatures';
 import { resolveBinaryPath } from './utils';
 import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
+import { normalisePdfADates } from './pdfa-dates';
 
 /**
  * Locate LibreOffice binary on the host or in container.
@@ -322,9 +323,12 @@ export async function convertToPdfA(
     if (!fs.existsSync(outputPdf)) {
       throw new PdfPostprocessError('PDF/A conversion failed: output file was not generated.');
     }
-    const resultBuffer = fs.readFileSync(outputPdf);
+    let resultBuffer: Buffer = fs.readFileSync(outputPdf);
     if (resultBuffer.equals(pdfBuffer)) {
       throw new PdfPostprocessError('PDF/A conversion failed: the document was not converted.');
+    }
+    if (conformance === 'pdfa-1b') {
+      resultBuffer = await normalisePdfADates(resultBuffer);
     }
 
     const { pdfaValidated } = await verifyPdfA(resultBuffer, conformance);

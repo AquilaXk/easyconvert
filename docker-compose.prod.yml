@@ -204,6 +204,7 @@ services:
       <<: *app-environment
       JWT_SECRET: ${JWT_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
       KEY_HASH_PEPPER: ${KEY_HASH_PEPPER:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+      KEY_HASH_PEPPER_PREVIOUS:
       WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
       GOOGLE_CLIENT_ID:
       GOOGLE_CLIENT_SECRET:

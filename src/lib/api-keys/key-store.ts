@@ -10,17 +10,22 @@ import { isIpAllowed } from './ip-utils';
 import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
-import { encryptSecret, decryptSecret } from './secret-encryption';
+import { encryptSecret, decryptSecret, reencryptSecretIfNeeded } from './secret-encryption';
 import type { ApiKeyRotateOptions, ApiKeyRotateResult, ApiKeyUpdateOptions } from './types';
 
-const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
-const KEYS_FILE = path.join(STORAGE_DIR, 'api-keys.json');
-const USAGE_FILE = path.join(STORAGE_DIR, 'api-usage.json');
-const FILES_FILE = path.join(STORAGE_DIR, 'user-files.json');
+const MODULE_STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
+
+function resolveStorageDir(): string {
+  if ('mock' in process.cwd) {
+    return path.resolve(process.cwd(), '.easyconvert');
+  }
+  return MODULE_STORAGE_DIR;
+}
 
 export { TIER_LIMITS, getAnonymousDailyLimit };
 
 const KEY_HASH_PEPPER_ENV = 'KEY_HASH_PEPPER';
+const KEY_HASH_PEPPER_PREVIOUS_ENV = 'KEY_HASH_PEPPER_PREVIOUS';
 let pepperWarningEmitted = false;
 
 /**
@@ -59,19 +64,19 @@ export function hashApiKeySecret(secret: string): string {
 }
 
 export interface ApiKeyHashCandidates {
-  /** Lookup order: the current (peppered when configured) hash first, then the legacy SHA-256. */
   hashes: string[];
-  /** Hash a legacy-hashed key is migrated to after a successful verification, if different. */
   currentHash: string;
 }
 
 export function apiKeyHashCandidates(secret: string): ApiKeyHashCandidates {
   const currentHash = hashApiKeySecret(secret);
-  const legacyHash = sha256(secret);
-  if (currentHash === legacyHash) {
-    return { hashes: [currentHash], currentHash };
+  const candidates: string[] = [currentHash];
+  const previousPepper = process.env[KEY_HASH_PEPPER_PREVIOUS_ENV];
+  if (previousPepper) {
+    candidates.push(hmacSha256(previousPepper, secret));
   }
-  return { hashes: [currentHash, legacyHash], currentHash };
+  candidates.push(sha256(secret));
+  return { hashes: Array.from(new Set(candidates)), currentHash };
 }
 
 export function getUtcDateKey(): string {
@@ -103,8 +108,16 @@ export class KeyStore {
   protected readonly userFiles: Map<string, UserConversionFile>; // fileId -> file
   protected readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
   protected initialized: boolean;
+  private readonly storageDir: string;
+  private readonly keysFile: string;
+  private readonly usageFile: string;
+  private readonly filesFile: string;
 
   constructor(isolated = false) {
+    this.storageDir = resolveStorageDir();
+    this.keysFile = path.join(this.storageDir, 'api-keys.json');
+    this.usageFile = path.join(this.storageDir, 'api-usage.json');
+    this.filesFile = path.join(this.storageDir, 'user-files.json');
     if (isolated) {
       this.keys = new Map();
       this.keyHashIndex = new Map();
@@ -122,6 +135,29 @@ export class KeyStore {
     }
   }
 
+  protected upsertKeyInMemory(key: ApiKey): void {
+    const existing = this.keys.get(key.id);
+    if (existing) {
+      this.keyHashIndex.delete(existing.keyHash);
+      if (existing.previousKeyHash) {
+        this.keyHashIndex.delete(existing.previousKeyHash);
+      }
+    }
+    this.keys.set(key.id, key);
+    this.keyHashIndex.set(key.keyHash, key.id);
+    if (key.previousKeyHash) {
+      this.keyHashIndex.set(key.previousKeyHash, key.id);
+    }
+  }
+
+  protected reloadKeysFromDisk(): void {
+    if (!fs.existsSync(this.keysFile)) return;
+    const list: ApiKey[] = JSON.parse(fs.readFileSync(this.keysFile, 'utf-8'));
+    for (const k of list) {
+      this.upsertKeyInMemory(k);
+    }
+  }
+
   protected ensureInitialized() {
     if (this.initialized) return;
     this.initialized = true;
@@ -130,50 +166,41 @@ export class KeyStore {
     }
 
     try {
-      if (fs.existsSync(KEYS_FILE)) {
-        const list: ApiKey[] = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf-8'));
-        for (const k of list) {
-          this.keys.set(k.id, k);
-          this.keyHashIndex.set(k.keyHash, k.id);
-        }
-      }
+      this.reloadKeysFromDisk();
 
-      if (fs.existsSync(USAGE_FILE)) {
-        const usageObj: Record<string, number> = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf-8'));
+      if (fs.existsSync(this.usageFile)) {
+        const usageObj: Record<string, number> = JSON.parse(fs.readFileSync(this.usageFile, 'utf-8'));
         for (const [key, val] of Object.entries(usageObj)) {
           this.dailyUsage.set(key, val);
         }
       }
 
-      if (fs.existsSync(FILES_FILE)) {
-        const filesList: UserConversionFile[] = JSON.parse(fs.readFileSync(FILES_FILE, 'utf-8'));
+      if (fs.existsSync(this.filesFile)) {
+        const filesList: UserConversionFile[] = JSON.parse(fs.readFileSync(this.filesFile, 'utf-8'));
         for (const f of filesList) {
           this.userFiles.set(f.id, f);
         }
       }
-    } catch {
-      // In-memory fallback
-    }
+    } catch {}
   }
 
   protected persist() {
+    this.ensureInitialized();
     try {
-      if (!fs.existsSync(STORAGE_DIR)) {
-        fs.mkdirSync(STORAGE_DIR, { recursive: true });
+      if (!fs.existsSync(this.storageDir)) {
+        fs.mkdirSync(this.storageDir, { recursive: true });
       }
 
-      fs.writeFileSync(KEYS_FILE, JSON.stringify(Array.from(this.keys.values()), null, 2), 'utf-8');
+      fs.writeFileSync(this.keysFile, JSON.stringify(Array.from(this.keys.values()), null, 2), 'utf-8');
 
       const usageObj: Record<string, number> = {};
       for (const [key, val] of this.dailyUsage.entries()) {
         usageObj[key] = val;
       }
-      fs.writeFileSync(USAGE_FILE, JSON.stringify(usageObj, null, 2), 'utf-8');
+      fs.writeFileSync(this.usageFile, JSON.stringify(usageObj, null, 2), 'utf-8');
 
-      fs.writeFileSync(FILES_FILE, JSON.stringify(Array.from(this.userFiles.values()), null, 2), 'utf-8');
-    } catch {
-      // Ignore in sandbox/read-only
-    }
+      fs.writeFileSync(this.filesFile, JSON.stringify(Array.from(this.userFiles.values()), null, 2), 'utf-8');
+    } catch {}
   }
 
   public async generateApiKey(
@@ -236,29 +263,51 @@ export class KeyStore {
 
   private findOrReloadKeyId(candidateHashes: readonly string[]): string | undefined {
     let keyId = this.lookupKeyId(candidateHashes);
-    if (!keyId && fs.existsSync(KEYS_FILE)) {
+    if (!keyId && fs.existsSync(this.keysFile)) {
       try {
-        const list: ApiKey[] = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf-8'));
-        for (const k of list) {
-          this.keys.set(k.id, k);
-          this.keyHashIndex.set(k.keyHash, k.id);
-        }
+        this.reloadKeysFromDisk();
         keyId = this.lookupKeyId(candidateHashes);
       } catch {}
     }
     return keyId;
   }
 
-  /**
-   * Re-indexes a key verified through its legacy SHA-256 hash under the current (peppered) hash.
-   */
-  private migrateKeyHash(key: ApiKey, currentHash: string): void {
-    if (key.keyHash === currentHash) {
-      return;
+  protected reencryptWebhookSecret(key: ApiKey): boolean {
+    if (!key.webhookSecret) {
+      return false;
     }
-    this.keyHashIndex.delete(key.keyHash);
+    const { cipherText, reencrypted } = reencryptSecretIfNeeded(key.webhookSecret);
+    if (reencrypted) {
+      key.webhookSecret = cipherText;
+      return true;
+    }
+    return false;
+  }
+
+  protected migrateKeyHash(key: ApiKey, currentHash: string): boolean {
+    const secretMigrated = this.reencryptWebhookSecret(key);
+    if (key.keyHash === currentHash) {
+      return secretMigrated;
+    }
+    if (key.keyHash !== key.previousKeyHash) {
+      this.keyHashIndex.delete(key.keyHash);
+    }
     key.keyHash = currentHash;
     this.keyHashIndex.set(currentHash, key.id);
+    return true;
+  }
+
+  protected migratePreviousKeyHash(key: ApiKey, currentHash: string): boolean {
+    const secretMigrated = this.reencryptWebhookSecret(key);
+    if (!key.previousKeyHash || key.previousKeyHash === currentHash) {
+      return secretMigrated;
+    }
+    if (key.previousKeyHash !== key.keyHash) {
+      this.keyHashIndex.delete(key.previousKeyHash);
+    }
+    key.previousKeyHash = currentHash;
+    this.keyHashIndex.set(currentHash, key.id);
+    return true;
   }
 
   private validateKeyConstraints(key: ApiKey, clientIp?: string): string | null {
@@ -295,7 +344,13 @@ export class KeyStore {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
-    if (key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash)) {
+    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
+    const matchedPreviousKey =
+      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+    if (!matchedCurrentKey && !matchedPreviousKey) {
+      return { valid: false, error: 'Invalid or non-existent API key' };
+    }
+    if (matchedPreviousKey) {
       if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
         return { valid: false, error: 'Previous API key has expired following key rotation' };
       }
@@ -311,8 +366,9 @@ export class KeyStore {
       return { valid: false, error: 'User associated with API key not found' };
     }
 
-    // Only migrate hash if verifying against current secret
-    if (!key.previousKeyHash || !candidates.hashes.includes(key.previousKeyHash)) {
+    if (matchedPreviousKey) {
+      this.migratePreviousKeyHash(key, candidates.currentHash);
+    } else {
       this.migrateKeyHash(key, candidates.currentHash);
     }
     key.lastUsedAt = Date.now();
@@ -358,6 +414,13 @@ export class KeyStore {
       return null;
     }
 
+    const plainWebhookSecret = key.webhookSecret
+      ? reencryptSecretIfNeeded(key.webhookSecret)
+      : { plainText: undefined, cipherText: undefined, reencrypted: false };
+    if (plainWebhookSecret.reencrypted) {
+      key.webhookSecret = plainWebhookSecret.cipherText;
+    }
+
     const rawRandom = crypto.randomBytes(24).toString('hex');
     const newSecretKey = `ec_live_${rawRandom}`;
     const newKeyHash = hashApiKeySecret(newSecretKey);
@@ -366,18 +429,23 @@ export class KeyStore {
     const gracePeriodSeconds = Math.max(0, Math.min(options.gracePeriodSeconds ?? 3600, 7 * 24 * 3600));
     const graceExpiresAt = Date.now() + gracePeriodSeconds * 1000;
 
+    const outgoingPreviousHash = key.previousKeyHash;
+    if (outgoingPreviousHash && outgoingPreviousHash !== key.keyHash && outgoingPreviousHash !== newKeyHash) {
+      this.keyHashIndex.delete(outgoingPreviousHash);
+    }
     key.previousKeyHash = key.keyHash;
     key.graceExpiresAt = graceExpiresAt;
     key.keyHash = newKeyHash;
     key.prefix = prefix;
 
+    this.keyHashIndex.set(key.previousKeyHash, key.id);
     this.keyHashIndex.set(newKeyHash, key.id);
     this.persist();
 
     return {
       key: {
         ...key,
-        webhookSecret: decryptSecret(key.webhookSecret),
+        webhookSecret: plainWebhookSecret.plainText,
       },
       newSecretKey,
       graceExpiresAt,
@@ -406,6 +474,8 @@ export class KeyStore {
     }
     if (updates.webhookSecret !== undefined) {
       key.webhookSecret = encryptSecret(updates.webhookSecret);
+    } else {
+      this.reencryptWebhookSecret(key);
     }
     if (updates.scopes !== undefined) {
       key.scopes = updates.scopes;
@@ -450,6 +520,7 @@ export class KeyStore {
   }
 
   public markKeyExpiryNotified(keyId: string, timestamp: number): void {
+    this.ensureInitialized();
     const k = this.keys.get(keyId);
     if (k) {
       k.lastExpiryNotifiedAt = timestamp;
@@ -634,12 +705,10 @@ export class KeyStore {
     }
 
     try {
-      if (fs.existsSync(KEYS_FILE)) fs.unlinkSync(KEYS_FILE);
-      if (fs.existsSync(USAGE_FILE)) fs.unlinkSync(USAGE_FILE);
-      if (fs.existsSync(FILES_FILE)) fs.unlinkSync(FILES_FILE);
-    } catch {
-      // Ignore
-    }
+      if (fs.existsSync(this.keysFile)) fs.unlinkSync(this.keysFile);
+      if (fs.existsSync(this.usageFile)) fs.unlinkSync(this.usageFile);
+      if (fs.existsSync(this.filesFile)) fs.unlinkSync(this.filesFile);
+    } catch {}
   }
 }
 

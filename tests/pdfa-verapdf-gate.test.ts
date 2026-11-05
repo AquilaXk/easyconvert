@@ -32,12 +32,7 @@ const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unav
 const VERAPDF_TIMEOUT_MS = 120_000;
 /** veraPDF flavour that validates each requested level. */
 const FLAVOUR: Record<PdfAConformance, string> = { 'pdfa-1b': '1b', 'pdfa-2b': '2b', 'pdfa-3b': '3b' };
-/**
- * PDF/A-1b is not in this list: LibreOffice 24.2 writes a different Info CreationDate and
- * xmp:CreateDate in PDF/A-1 output (rule 6.7.3-1), so a 1b export is judged by the conditional
- * test at the end of the file instead of being expected to pass.
- */
-const LEVELS: PdfAConformance[] = ['pdfa-2b', 'pdfa-3b'];
+const LEVELS: PdfAConformance[] = ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'];
 /** Rule 6.2.11.4.1 test 1 of ISO 19005-2: every font program is embedded. A standard font is not. */
 const FONT_NOT_EMBEDDED_RULE = '6.2.11.4.1-1';
 const KOREAN_PARAGRAPHS = ['한글 문서 보관 테스트입니다.', '국제 표준 보존 형식으로 변환합니다.'];
@@ -272,18 +267,21 @@ describe('POST /api/v1/convert with a PDF/A request', () => {
         { timeout: VERAPDF_TIMEOUT_MS, stdio: 'ignore' }
       );
       const expected = runVerapdf(path.join(outDir, 'korean.pdf'), '1b');
+      const remainingFailedRules = expected.failedRules.filter((rule) => rule !== '6.7.3-1');
 
       const res = await v1ConvertPost(convertRequest(koreanDocx, 'korean.docx', 'pdf', { pdfa: { conformance: 'pdfa-1b' } }));
 
-      if (expected.compliant) {
+      if (remainingFailedRules.length === 0) {
         expect(res.status).toBe(HTTP_OK);
+        const body = Buffer.from(await res.arrayBuffer());
+        expect(runVerapdf(writePdf('korean-v1.pdf', body), '1b')).toEqual({ compliant: true, failedRules: [] });
         return;
       }
       expect(res.status).toBe(HTTP_UNPROCESSABLE);
       expect(res.headers.get('content-type')).toContain('application/problem+json');
       const problem = await res.json();
-      expect([...problem.failedRules].sort()).toEqual([...expected.failedRules].sort());
-      expect(problem.detail).toContain(expected.failedRules[0]);
+      expect([...problem.failedRules].sort()).toEqual([...remainingFailedRules].sort());
+      expect(problem.detail).toContain(remainingFailedRules[0]);
     },
     CONVERT_TIMEOUT_MS
   );

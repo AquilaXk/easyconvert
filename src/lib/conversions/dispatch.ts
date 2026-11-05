@@ -15,7 +15,7 @@ import { SandboxedTimeoutError } from '../security/process-sandbox';
 import { requiresNativeEngine } from './native-engine-pairs';
 import { OFFICE_SUITE_SOURCE_FORMATS } from './office/office-suite-sources';
 import { checkConversionOutput } from './output-check';
-import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
+import { applyPdfPostProcessing, assertPdfPostProcessOptions, normalisePdfADates, verifyPdfA } from './index';
 import { directPdfAExportConformance, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { assertConversionOptionsObject } from './options-guard';
 import {
@@ -119,6 +119,10 @@ async function postProcessNativePdf(
   const processed: WorkerConversionResult = { ...result, buffer: result.buffer };
   await applyPdfPostProcessing(processed, options, { pdfaExported: exportedAs !== null });
   if (exportedAs) {
+    if (exportedAs === 'pdfa-1b') {
+      processed.buffer = await normalisePdfADates(processed.buffer);
+      processed.size = processed.buffer.length;
+    }
     const verdict = await verifyPdfA(processed.buffer, exportedAs);
     processed.metadata = { ...processed.metadata, ...pdfaMetadata(verdict.pdfaValidated, verdict.conformanceLevel) };
   }
