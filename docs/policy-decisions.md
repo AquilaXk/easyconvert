@@ -5703,3 +5703,18 @@ Security
   - **Keeping `cdn.jsdelivr.net` with Subresource Integrity.** Web `new Worker(url)` and `importScripts(url)` inside a Worker do not support HTML `integrity` attributes, so only first-party serving with server-side SHA-256 verification and `script-src 'self'` CSP enforces both origin and digest integrity.
 - **Verified by**: `tests/edge-ocr-first-party-assets.test.ts`, `tests/edge-ocr-browser-imports.test.ts`, `tests/edge-ocr-fail-closed.test.ts`, and `tests/ocr-language-propagation.test.ts`.
 - **Revisit when**: Web Workers and `importScripts()` standardize native SRI enforcement across all supported browsers.
+
+## 155. Complete startup configuration schema coverage across literal and computed environment variables
+
+- **Status**: Implemented (issue #564 and epic #761), decided 2026-11-06.
+- **Decision**:
+  - **Ten computed environment variables added to `CONFIG_SCHEMA` (`src/lib/config/schema.ts`).** `MALLOC_ARENA_MAX` (`runtime`, integer `1..INT32_MAX`), `SANDBOX_LAUNCHER` (`security`, enum `auto` or `off`, default `auto`), `VIPS_CONCURRENCY` (`limits`, integer `1..INT32_MAX`, computed default), `EASYCONVERT_OCR_PAGE_CONCURRENCY` (`limits`, integer `1..INT32_MAX`, default `4` matching `OCR_MAX_INFLIGHT_PAGES`), `FLUIDSYNTH_PATH` (`tools`, executable), `MIDI_SOUNDFONT_PATH` (`tools`, path), `LBZIP2_PATH` (`tools`, executable), `LIBDEFLATE_GZIP_PATH` (`tools`, executable), `XZ_PATH` (`tools`, executable), and `QPDF_RUNNER_LIB` (`tools`, path) are declared in `CONFIG_SCHEMA` and generated into `docs/configuration.md` and `docs/configuration.example.env` via `npm run config:docs`.
+  - **Automated source scan for computed environment variable names (`tests/config-schema.test.ts`).** In addition to scanning literal `process.env.NAME` reads across `src/`, `tests/config-schema.test.ts` scans all `src/` files for `*_ENV` and `*_VARIABLE` string constants, `*_ENV_VARS` and `*_VARIABLES` string arrays, `(process.)?env['NAME']` subscript accesses, and `env.NAME` property accesses on typed environment objects, and asserts that every discovered variable is present in both `CONFIG_SCHEMA` and the test's `computed` inventory, alongside `KEY_HASH_PEPPER_PREVIOUS` secret and `EASYCONVERT_OCR_PAGE_CONCURRENCY` default assertions.
+- **Why**:
+  - **Prevent computed environment variable constants from bypassing startup validation and generated documentation.** Modules that stored an environment variable name in a module constant (`SANDBOX_LAUNCHER_ENV`, `IMAGE_THREADS_ENV`, `MALLOC_ARENA_ENV`, `OCR_PAGE_CONCURRENCY_ENV`, `QPDF_RUNNER_LIB_ENV`, `LBZIP2_ENV`, `LIBDEFLATE_GZIP_ENV`, `XZ_ENV`, `PROGRAM_PATH_VARIABLE`, `SOUNDFONT_PATH_VARIABLE`) were not matched by the literal `process.env.NAME` regex, allowing ten operational and tool variables to remain undocumented in `docs/configuration.md` and `docs/configuration.example.env` and unparsed by `parseConfig`.
+- **Trade-offs**:
+  - **Any new `*_ENV` or `*_VARIABLE` constant in `src/` must be registered in `src/lib/config/schema.ts` and regenerated with `npm run config:docs`.** Enforced by `tests/config-schema.test.ts` and `tests/config-docs-drift.test.ts`.
+- **Alternatives rejected**:
+  - **Maintaining only a manual list of computed environment variable names in `tests/config-schema.test.ts`.** Manual lists drift whenever a new module defines an `*_ENV` constant without updating the test.
+- **Verified by**: `tests/config-schema.test.ts`, `tests/config-docs-drift.test.ts`, `tests/config-startup.test.ts`, and `tests/oci-deploy.test.ts`.
+- **Revisit when**: a new pattern for reading environment variables is introduced in `src/`.

@@ -13,6 +13,7 @@ import {
 import { ConfigurationError, loadConfig, parseConfig, resetConfigCache } from '../src/lib/config';
 import { MAX_TRUSTED_RANGES, parseClientIpConfig } from '../src/lib/security/client-ip';
 import { DEFAULT_MAX_INPUT_PIXELS } from '../src/lib/conversions/image-input-limit-config';
+import { OCR_MAX_INFLIGHT_PAGES, OCR_PAGE_CONCURRENCY_ENV } from '../src/lib/conversions/ocr-page-batch';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { PDF_TEXT_DEADLINE_MS } from '../src/lib/conversions/pdf-text-types';
 import { DEFAULT_MAX_IN_MEMORY_BYTES } from '../src/lib/storage/errors';
@@ -444,6 +445,7 @@ describe('schema', () => {
       'OCI_SIGNING_SECRET',
       'KEY_ENCRYPTION_KEY',
       'KEY_HASH_PEPPER',
+      'KEY_HASH_PEPPER_PREVIOUS',
       'WEBHOOK_SECRET_KEK',
       'JWT_SECRET',
       'STORAGE_VAULT_KEY',
@@ -467,7 +469,14 @@ describe('schema', () => {
       expect(byName.get(name)?.kind, name).toEqual({ type: 'secret', minBytes: 32, trim: true, rejectSurroundingWhitespace: false });
     }
     // JWT, pepper, key-encryption key, webhook KEK and vault key reach createHash/createHmac/hkdf as the raw string.
-    for (const name of ['JWT_SECRET', 'KEY_HASH_PEPPER', 'KEY_ENCRYPTION_KEY', 'WEBHOOK_SECRET_KEK', 'STORAGE_VAULT_KEY']) {
+    for (const name of [
+      'JWT_SECRET',
+      'KEY_HASH_PEPPER',
+      'KEY_HASH_PEPPER_PREVIOUS',
+      'KEY_ENCRYPTION_KEY',
+      'WEBHOOK_SECRET_KEK',
+      'STORAGE_VAULT_KEY',
+    ]) {
       expect(byName.get(name)?.kind, name).toEqual({ type: 'secret', minBytes: 32, trim: false, rejectSurroundingWhitespace: false });
     }
   });
@@ -478,6 +487,7 @@ describe('schema', () => {
     expect(defaults.get('EASYCONVERT_MAX_INPUT_PIXELS')).toBe(DEFAULT_MAX_INPUT_PIXELS);
     expect(defaults.get('EASYCONVERT_PDF_TEXT_DEADLINE_MS')).toBe(PDF_TEXT_DEADLINE_MS);
     expect(defaults.get('EASYCONVERT_OCR_PAGE_BUDGET_MS')).toBe(OCR_PAGE_BUDGET_MS);
+    expect(defaults.get(OCR_PAGE_CONCURRENCY_ENV)).toBe(OCR_MAX_INFLIGHT_PAGES);
     expect(defaults.get('MAX_IN_MEMORY_BYTES')).toBe(DEFAULT_MAX_IN_MEMORY_BYTES);
     expect(defaults.get(XLS_MAX_GRID_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_GRID_CELLS);
     expect(defaults.get(XLS_MAX_PDF_TEXT_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_PDF_TEXT_CELLS);
@@ -531,33 +541,33 @@ describe('schema', () => {
   it('covers the variables the source reads through computed names', () => {
     const names = new Set(CONFIG_SCHEMA.map((spec) => spec.name));
     const computed = [
-      // key-store.ts KEY_HASH_PEPPER_ENV, s3.ts S3_DEV_ENDPOINT_ALLOWLIST_ENV, libreoffice-pool.ts, image-input-limits.ts, pdf-text-host.ts, ocr-work-budget.ts
       'KEY_HASH_PEPPER',
+      'KEY_HASH_PEPPER_PREVIOUS',
       'BYOS_S3_DEV_ENDPOINT_ALLOWLIST',
       'LIBREOFFICE_POOL_READINESS_TIMEOUT_MS',
       'EASYCONVERT_MAX_INPUT_PIXELS',
       'EASYCONVERT_PDF_TEXT_DEADLINE_MS',
-      // ocr-work-budget.ts
       'EASYCONVERT_OCR_PAGE_BUDGET_MS',
-      // spreadsheet-limits.ts
+      'EASYCONVERT_OCR_PAGE_CONCURRENCY',
+      'VIPS_CONCURRENCY',
+      'MALLOC_ARENA_MAX',
       'EASYCONVERT_XLS_MAX_GRID_CELLS',
       'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
       'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
       'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
-      // office/media-limits.ts
       'EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES',
-      // job-secret-seal.ts
       'JOB_SECRET_KEK',
       'JOB_SECRET_KEK_PREVIOUS',
-      // api-keys/guard.ts readPositiveIntEnv
+      'SANDBOX_LAUNCHER',
+      'HTML_IMAGE_FETCH',
       'ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY',
       'ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE',
-      // security/client-ip.ts
+      'CONVERSION_CONCURRENCY_FREE',
       'TRUSTED_PROXIES',
       'TRUSTED_CDN',
       'TRUSTED_CDN_RANGES',
       'TRUSTED_PROXY_HEADER',
-      // storage/storage-config.ts
+      'NODE_ENV',
       'STORAGE_DRIVER',
       'STORAGE_SIGNING_SECRET',
       'S3_SIGNING_SECRET',
@@ -566,6 +576,8 @@ describe('schema', () => {
       'NEXT_PHASE',
       'OCI_ACCESS_KEY_ID',
       'OCI_SECRET_ACCESS_KEY',
+      'OCI_BUCKET',
+      'OCI_BUCKET_NAME',
       'S3_ENDPOINT',
       'S3_REGION',
       'S3_BUCKET',
@@ -577,18 +589,59 @@ describe('schema', () => {
       'AWS_SECRET_ACCESS_KEY',
       'AWS_REGION',
       'AWS_BUCKET_NAME',
-      // pdf-postprocess and pdf-fonts resolveBinaryPath(envVarName)
+      'RESULT_UNDELIVERED_TTL_SECONDS',
+      'RESULT_DELIVERED_GRACE_SECONDS',
+      'RESULT_DISK_HIGH_PERCENT',
+      'RESULT_DISK_LOW_PERCENT',
+      'RESULT_DISK_REFUSE_PERCENT',
       'QPDF_PATH',
+      'QPDF_RUNNER',
+      'QPDF_RUNNER_PATH',
+      'QPDF_RUNNER_LIB',
       'VERAPDF_PATH',
       'FC_LIST_PATH',
-      // worker/engines.ts NATIVE_BINARY_ENV_VARS
+      'FLUIDSYNTH_PATH',
+      'MIDI_SOUNDFONT_PATH',
+      'LBZIP2_PATH',
+      'LIBDEFLATE_GZIP_PATH',
+      'XZ_PATH',
+      'AVIFENC_PATH',
+      'MAGICK_PATH',
+      'MAGICK_POLICY_DIR',
+      'OPJ_DECOMPRESS_PATH',
+      'CAD_CONVERT_PATH',
+      'DWG2DXF_PATH',
+      'VTRACER_PATH',
+      'FONTFORGE_PATH',
       'SOFFICE_PATH',
       'PS2PDF_PATH',
-      // scripts/worker-healthcheck.js
       'WORKER_HEARTBEAT_MAX_STALE_MS',
       'CHECK_REDIS',
     ];
     expect(computed.filter((name) => !names.has(name))).toEqual([]);
+
+    const computedSet = new Set(computed);
+    const scannedComputed = new Set<string>();
+    for (const file of sourceFiles(path.resolve(__dirname, '..', 'src'))) {
+      if (file.includes(`${path.sep}lib${path.sep}config${path.sep}`)) continue;
+      const content = readFileSync(file, 'utf8');
+      for (const match of content.matchAll(/(?:const|let)\s+[A-Z0-9_]+(?:_ENV|_VARIABLE)\s*=\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) {
+        scannedComputed.add(match[1]);
+      }
+      for (const match of content.matchAll(/(?:const|let)\s+[A-Z0-9_]+(?:_ENV_VARS|_VARIABLES)\b[^;]*?\[([^\]]+)\]/gs)) {
+        for (const inner of match[1].matchAll(/['"]([A-Z][A-Z0-9_]*)['"]/g)) {
+          scannedComputed.add(inner[1]);
+        }
+      }
+      for (const match of content.matchAll(/(?:process\.)?env\[['"]([A-Z][A-Z0-9_]*)['"]\]/g)) {
+        scannedComputed.add(match[1]);
+      }
+      for (const match of content.matchAll(/\b(?<!process\.)env\.([A-Z][A-Z0-9_]*)/g)) {
+        scannedComputed.add(match[1]);
+      }
+    }
+    expect([...scannedComputed].filter((name) => !names.has(name)).sort()).toEqual([]);
+    expect([...scannedComputed].filter((name) => !computedSet.has(name)).sort()).toEqual([]);
   });
 
   it('declares each alternative group over variables that exist', () => {

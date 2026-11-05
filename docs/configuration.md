@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 129 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 139 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -28,6 +28,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `PATH` | text | none | no | web, worker |
 | `KUBERNETES_SERVICE_HOST` | text | none | no | web, worker |
 | `CONTAINER_SANDBOX` | text | none | no | web, worker |
+| `MALLOC_ARENA_MAX` | integer, 1 to 2147483647 | none | no | web, worker |
 
 - `NODE_ENV`: Runtime mode. Only the value `production` switches on production start-up validation and production-only behaviour; any other value is treated as development.
 - `NEXT_PHASE`: Set by Next.js. During `next build` (`phase-production-build`) production requirements are not enforced.
@@ -35,6 +36,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `PATH`: Directories searched for the native conversion tools and handed to sandboxed child processes.
 - `KUBERNETES_SERVICE_HOST`: Set by Kubernetes. Any non-empty value marks the process as already container-isolated.
 - `CONTAINER_SANDBOX`: Any non-empty value declares that the process already runs inside a container sandbox.
+- `MALLOC_ARENA_MAX`: glibc allocator arena limit per process. When set (for example to `2` in the worker container), the image pipeline may lease up to 8 threads instead of the unbounded-heap cap of 2.
 
 ### Network and public URLs
 
@@ -53,6 +55,7 @@ Generate a secret with `openssl rand -hex 32`.
 | Variable | Type and rule | Default | Required in production | Process |
 | --- | --- | --- | --- | --- |
 | `STRICT_SANDBOX` | `true` or `false` | `false` | no | web, worker |
+| `SANDBOX_LAUNCHER` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `HTML_IMAGE_FETCH` | one of `on`, `off` (any case) | `on` | no | web, worker |
 | `TRUSTED_PROXIES` | comma-separated IPv4/IPv6 addresses or CIDR ranges or `none`, at most 256 entries | none | no | web |
 | `TRUSTED_CDN` | one of `cloudflare` (any case) | none | no | web |
@@ -60,6 +63,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `TRUSTED_PROXY_HEADER` | one of `x-forwarded-for`, `forwarded` (any case) | none | no | web |
 
 - `STRICT_SANDBOX`: Set to `true` to refuse running native tools without the strict process sandbox.
+- `SANDBOX_LAUNCHER`: Whether sandboxed native tools are started by the persistent low-heap launcher process instead of forked directly from the worker. `auto` (the default) uses the launcher when available and falls back to a direct start; `off` always starts programs directly.
 - `HTML_IMAGE_FETCH`: Whether the public http and https images of an HTML page are fetched and embedded when it is converted to PDF. `on` (the default) fetches them in a separate, credential-free child process that needs outbound TCP 80 and 443 to public addresses (see docker/AIRGAP.md for the network policy). `off` for deployments without egress: no image is fetched, and each external image is left out of the PDF with a warning (a request with `requireResources` is refused).
 - `TRUSTED_PROXIES`: Comma-separated IPv4/IPv6 addresses or CIDR ranges of the reverse proxies in front of the server, or `none` for a directly exposed server. Production should declare one of TRUSTED_PROXIES or TRUSTED_CDN; the edge middleware answers API requests with 503 until it does (docs/client-ip-trust.md).
 - `TRUSTED_CDN`: Name of the CDN whose edge ranges are trusted to forward client addresses.
@@ -211,8 +215,10 @@ Generate a secret with `openssl rand -hex 32`.
 | `MAX_IN_MEMORY_BYTES` | integer, at least 1 | `536870912` | no | web, worker |
 | `GRAPH_URL_IMPORT_MAX_BYTES` | integer, at least 1 | `5368709120` | no | web, worker |
 | `EASYCONVERT_MAX_INPUT_PIXELS` | integer, at least 1 | `100000000` | no | web, worker |
+| `VIPS_CONCURRENCY` | integer, 1 to 2147483647 | 1 outside an encode; up to 8 (2 when MALLOC_ARENA_MAX is unset) during an AVIF encode or OCR page preparation | no | web, worker |
 | `EASYCONVERT_PDF_TEXT_DEADLINE_MS` | integer, 1 to 2147483647 | `60000` | no | web, worker |
 | `EASYCONVERT_OCR_PAGE_BUDGET_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
+| `EASYCONVERT_OCR_PAGE_CONCURRENCY` | integer, 1 to 2147483647 | `4` | no | web, worker |
 | `JOB_DEADLINE_BASE_MS_FREE` | integer, 1 to 3600000 | `60000` | no | web, worker |
 | `JOB_DEADLINE_BASE_MS_PRO` | integer, 1 to 3600000 | `120000` | no | web, worker |
 | `JOB_DEADLINE_BASE_MS_ENTERPRISE` | integer, 1 to 3600000 | `180000` | no | web, worker |
@@ -237,8 +243,10 @@ Generate a secret with `openssl rand -hex 32`.
 - `MAX_IN_MEMORY_BYTES`: Largest stored object, in bytes, that may be read into memory instead of streamed.
 - `GRAPH_URL_IMPORT_MAX_BYTES`: Largest body, in bytes, that an `import.url` graph node downloads.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.
+- `VIPS_CONCURRENCY`: Threads the image pipeline leases per operation. When unset, non-encode operations use 1 thread and AVIF encodes and OCR page preparations lease up to 8 threads (2 when MALLOC_ARENA_MAX is unset).
 - `EASYCONVERT_PDF_TEXT_DEADLINE_MS`: Milliseconds the PDF text extraction may run before it is stopped.
 - `EASYCONVERT_OCR_PAGE_BUDGET_MS`: Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job's own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.
+- `EASYCONVERT_OCR_PAGE_CONCURRENCY`: Most pages of one scanned PDF that text recognition (OCR) prepares and recognizes at once, capped at the built-in per-document ceiling of 4 and the OCR worker pool size.
 - `JOB_DEADLINE_BASE_MS_FREE`: Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.
 - `JOB_DEADLINE_BASE_MS_PRO`: Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.
 - `JOB_DEADLINE_BASE_MS_ENTERPRISE`: Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.
@@ -267,6 +275,8 @@ Generate a secret with `openssl rand -hex 32`.
 | `QPDF_RUNNER` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `FFMPEG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FFPROBE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `FLUIDSYNTH_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `MIDI_SOUNDFONT_PATH` | file or directory path | none | no | web, worker |
 | `AVIFENC_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `MAGICK_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `OPJ_DECOMPRESS_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -275,6 +285,9 @@ Generate a secret with `openssl rand -hex 32`.
 | `P7Z_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `ZIP_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `UNRAR_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `LBZIP2_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `LIBDEFLATE_GZIP_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `XZ_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `SOFFICE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `PDFINFO_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `PDFTOPPM_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -291,6 +304,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `VTRACER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAD_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `QPDF_RUNNER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `QPDF_RUNNER_LIB` | file or directory path | none | no | web, worker |
 | `FONTFORGE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `RSVG_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSERACT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -303,6 +317,8 @@ Generate a secret with `openssl rand -hex 32`.
 - `QPDF_RUNNER`: Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.
 - `FFMPEG_PATH`: Path of the ffmpeg executable; searched in the standard locations when unset.
 - `FFPROBE_PATH`: Path of the ffprobe executable.
+- `FLUIDSYNTH_PATH`: Path of the FluidSynth `fluidsynth` executable that renders MIDI files to WAV; searched in the standard locations when unset.
+- `MIDI_SOUNDFONT_PATH`: Path of the General MIDI SoundFont (`.sf2` or `.sf3`) handed to FluidSynth; searched in the standard locations when unset.
 - `AVIFENC_PATH`: Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.
 - `MAGICK_PATH`: Absolute path of the ImageMagick executable (`magick`, or `convert` of version 6) that decodes HEIC, HEIF, PSD, XCF, TGA, PCX, DDS, PNM and old-style JPEG TIFF pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.
 - `OPJ_DECOMPRESS_PATH`: Absolute path of the OpenJPEG `opj_decompress` executable that decodes JPEG 2000 (JP2, J2K) pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.
@@ -311,6 +327,9 @@ Generate a secret with `openssl rand -hex 32`.
 - `P7Z_PATH`: Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.
 - `ZIP_PATH`: Path of the Info-ZIP `zip` executable.
 - `UNRAR_PATH`: Path of the `unrar` executable.
+- `LBZIP2_PATH`: Path of the `lbzip2` executable that compresses bzip2 streams of up to two blocks; searched in the standard locations when unset.
+- `LIBDEFLATE_GZIP_PATH`: Path of the `libdeflate-gzip` executable that compresses raw deflate streams; searched in the standard locations when unset.
+- `XZ_PATH`: Path of the `xz` executable that compresses and decompresses XZ streams; searched in the standard locations when unset.
 - `SOFFICE_PATH`: Path of the LibreOffice `soffice` executable.
 - `PDFINFO_PATH`: Path of the poppler `pdfinfo` executable.
 - `PDFTOPPM_PATH`: Path of the poppler `pdftoppm` executable.
@@ -327,6 +346,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `VTRACER_PATH`: Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).
 - `CAD_CONVERT_PATH`: Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).
 - `QPDF_RUNNER_PATH`: Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.
+- `QPDF_RUNNER_LIB`: Path of the libqpdf shared library handed to `qpdf-runner` (`-l`); the runner loads the system libqpdf when unset.
 - `FONTFORGE_PATH`: Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).
 - `RSVG_CONVERT_PATH`: Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.
 - `TESSERACT_PATH`: Path of the `tesseract` executable.
