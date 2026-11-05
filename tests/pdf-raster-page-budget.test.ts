@@ -15,7 +15,7 @@ import {
   renderedSizePixels,
 } from '../src/lib/conversions/pdf-page-geometry';
 import { planPageRender } from '../src/lib/conversions/pdf-page-render';
-import { UnsupportedOptionError } from '../src/lib/types';
+import { PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { oracleTest } from './helpers/oracle-test';
 import { buildPdf } from './helpers/pdf-craft';
@@ -207,7 +207,8 @@ describe('PDF page rasterization pixel budgets', () => {
         [
           { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
           { id: 2, dict: `/Type /Pages /Kids [${inheritedKids}] /Count 40 /MediaBox [0 0 595.28 841.89]` },
-          ...Array.from({ length: 40 }, (_, idx) => ({ id: idx + 3, dict: '/Type /Page /Parent 2 0 R' })),
+          ...Array.from({ length: 39 }, (_, idx) => ({ id: idx + 3, dict: '/Type /Page /Parent 2 0 R' })),
+          { id: 42, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 10 10]' },
         ],
         1
       ).buffer
@@ -219,6 +220,23 @@ describe('PDF page rasterization pixel budgets', () => {
       expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
       expect(wasInvoked()).toBe(false);
     });
+
+    const hugeCountPdf = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 5000000000' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 10 10]' },
+        ],
+        1
+      ).buffer
+    );
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(hugeCountPdf, 'pdf', 'png', { dpi: 300 }, 'huge-count.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(PayloadLimitError);
+      expect(wasInvoked()).toBe(false);
+    });
+    await expect(planPageRender(hugeCountPdf, undefined, 300)).rejects.toThrow(PayloadLimitError);
 
     const unparseablePageObjectPdf = Buffer.from(
       '%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] /PieceInfo <<\nendobj\ntrailer\n<< /Size 4 /Root 1 0 R >>\n%%EOF\n',

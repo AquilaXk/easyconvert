@@ -1,5 +1,5 @@
-import { PDFCatalog, PDFDocument, PDFName, PDFNull, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
-import { ConversionFailedError } from '../types';
+import { PDFArray, PDFCatalog, PDFDocument, PDFName, PDFNull, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
+import { ConversionFailedError, PayloadLimitError } from '../types';
 import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limits';
 import { MAX_AGGREGATE_PAGE_PIXELS } from './image-limits';
 import { mapBoxToSource, normaliseLeafPageCatalogWithLib, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
@@ -197,7 +197,19 @@ function assertAggregatePixelLimit(totalPixels: number, pageCount: number, dpi: 
   }
 }
 
-function checkPageFrameWithBudget(page: PDFPage, pageNumber: number, dpi: number, perPageLimit: number): number {
+const MAX_RAW_FALLBACK_PAGES = 10_000;
+
+export interface CheckedPdfRasterBudget {
+  pageNumbers: number[];
+  frames: PdfPageFrame[];
+}
+
+function checkPageFrameWithBudget(
+  page: PDFPage,
+  pageNumber: number,
+  dpi: number,
+  perPageLimit: number
+): { frame: PdfPageFrame; pixels: number } {
   const cropBox = readPageCropBox(page, pageNumber);
   let userUnit: number | undefined;
   let rotation: OcrQuarterTurn = 0;
@@ -212,16 +224,16 @@ function checkPageFrameWithBudget(page: PDFPage, pageNumber: number, dpi: number
   } catch (err) {
     frameError ??= err;
   }
-  const pixels = assertPageWithinPixelLimit(
-    { cropBox, rotation, ...(userUnit === undefined ? {} : { userUnit }) },
-    pageNumber,
-    dpi,
-    perPageLimit
-  );
+  const frame: PdfPageFrame = {
+    cropBox,
+    rotation,
+    ...(userUnit === undefined ? {} : { userUnit }),
+  };
+  const pixels = assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
   if (frameError !== undefined) {
     throw frameError;
   }
-  return pixels;
+  return { frame, pixels };
 }
 
 function maxRawUserUnit(text: string): number {
@@ -257,12 +269,12 @@ function countRawPdfPages(text: string, boxCount: number): number {
     count = leafMatches.length;
   }
   for (const match of text.matchAll(RAW_PAGE_COUNT_PATTERN)) {
-    const parsed = Number.parseInt(match[1], 10);
+    const parsed = Math.min(Number.parseInt(match[1], 10), MAX_RAW_FALLBACK_PAGES);
     if (Number.isFinite(parsed) && parsed > count) {
       count = parsed;
     }
   }
-  return count;
+  return Math.min(count, MAX_RAW_FALLBACK_PAGES);
 }
 
 function resolveFallbackSelectedPages(
@@ -271,7 +283,10 @@ function resolveFallbackSelectedPages(
 ): readonly number[] {
   try {
     return selectPageNumbers(pageCount).filter((pageNum) => pageNum >= 1 && pageNum <= pageCount);
-  } catch {
+  } catch (err) {
+    if (err instanceof PayloadLimitError) {
+      throw err;
+    }
     return Array.from({ length: pageCount }, (_, idx) => idx + 1);
   }
 }
@@ -285,32 +300,56 @@ function assertRawPdfBoxesWithinPageLimit(
   const frames = extractRawPdfBoxes(text, maxRawUserUnit(text));
   if (frames.length === 0) return;
   const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
+  let maxFramePixels = 0;
   for (let i = 0; i < frames.length; i++) {
-    assertPageWithinPixelLimit(frames[i], i + 1, dpi, perPageLimit);
+    const pixels = assertPageWithinPixelLimit(frames[i], i + 1, dpi, perPageLimit);
+    if (pixels > maxFramePixels) {
+      maxFramePixels = pixels;
+    }
   }
   const pageCount = countRawPdfPages(text, frames.length);
   const selected = resolveFallbackSelectedPages(selectPageNumbers, pageCount);
   let totalPixels = 0;
   for (const pageNum of selected) {
-    const frame = frames[pageNum - 1] ?? frames[frames.length - 1];
-    const { width: widthPx, height: heightPx } = renderedSizePixels(frame, dpi);
-    totalPixels += widthPx * heightPx;
+    if (frames.length >= pageCount) {
+      const { width: widthPx, height: heightPx } = renderedSizePixels(frames[pageNum - 1], dpi);
+      totalPixels += widthPx * heightPx;
+    } else {
+      totalPixels += maxFramePixels;
+    }
   }
   assertAggregatePixelLimit(totalPixels, selected.length, dpi);
+}
+
+function isMissingRef(doc: PDFDocument, ref: unknown): boolean {
+  return ref instanceof PDFRef && doc.context.lookup(ref) === undefined;
+}
+
+function hasUnresolvedKidsInTree(doc: PDFDocument, tree: PDFPageTree, visited: Set<PDFRef>): boolean {
+  const kidsEntry = tree.get(PDFName.of('Kids'));
+  if (isMissingRef(doc, kidsEntry)) return true;
+  const kids = doc.context.lookup(kidsEntry);
+  if (!(kids instanceof PDFArray)) return false;
+  for (let idx = 0; idx < kids.size(); idx++) {
+    const kidRef = kids.get(idx);
+    if (!(kidRef instanceof PDFRef) || visited.has(kidRef)) continue;
+    visited.add(kidRef);
+    const kid = doc.context.lookup(kidRef);
+    if (kid === undefined) return true;
+    if (kid instanceof PDFPageTree && hasUnresolvedKidsInTree(doc, kid, visited)) return true;
+  }
+  return false;
 }
 
 function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
   if (!(doc.catalog instanceof PDFCatalog)) return false;
   const pagesRef = doc.catalog.get(PDFName.of('Pages'));
-  if (pagesRef instanceof PDFRef && doc.context.lookup(pagesRef) === undefined) return true;
+  if (isMissingRef(doc, pagesRef)) return true;
   const tree = doc.catalog.lookup(PDFName.of('Pages'));
   if (!(tree instanceof PDFPageTree)) return false;
-  const kids = tree.Kids();
-  for (let idx = 0; idx < kids.size(); idx++) {
-    const kid = kids.get(idx);
-    if (kid instanceof PDFRef && doc.context.lookup(kid) === undefined) return true;
-  }
-  return false;
+  const visited = new Set<PDFRef>();
+  if (pagesRef instanceof PDFRef) visited.add(pagesRef);
+  return hasUnresolvedKidsInTree(doc, tree, visited);
 }
 
 export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageNumbers: readonly number[], dpi: number): void {
@@ -330,17 +369,17 @@ export async function checkPdfRasterPageBudget(
   pdf: Buffer | Uint8Array,
   selectPageNumbers: (pageCount: number) => readonly number[],
   dpi: number
-): Promise<void> {
+): Promise<CheckedPdfRasterBudget | undefined> {
   let doc: PDFDocument;
   try {
     doc = await PDFDocument.load(pdf, { updateMetadata: false, throwOnInvalidObject: true });
   } catch {
     assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
-    return;
+    return undefined;
   }
   if (hasUnresolvedPageTreeRef(doc)) {
     assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
-    return;
+    return undefined;
   }
   normaliseLeafPageCatalog(doc);
   let pages: PDFPage[];
@@ -351,19 +390,23 @@ export async function checkPdfRasterPageBudget(
   }
   if (pages.length === 0) {
     assertRawPdfBoxesWithinPageLimit(pdf, selectPageNumbers, dpi);
-    return;
+    return undefined;
   }
-  const pageNumbers = selectPageNumbers(pages.length);
+  const pageNumbers = [...selectPageNumbers(pages.length)];
   const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
+  const selectedFrames: PdfPageFrame[] = [];
   let totalPixels = 0;
   for (const pageNumber of pageNumbers) {
     const page = pages[pageNumber - 1];
     if (!page) {
       throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
     }
-    totalPixels += checkPageFrameWithBudget(page, pageNumber, dpi, perPageLimit);
+    const { frame, pixels } = checkPageFrameWithBudget(page, pageNumber, dpi, perPageLimit);
+    selectedFrames.push(frame);
+    totalPixels += pixels;
   }
   assertAggregatePixelLimit(totalPixels, pageNumbers.length, dpi);
+  return { pageNumbers, frames: selectedFrames };
 }
 
 /**

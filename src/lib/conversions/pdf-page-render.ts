@@ -145,7 +145,15 @@ export interface RenderPlan {
 }
 
 function selectOcrPageNumbers(pages: ReadonlySet<number> | undefined, pageCount: number): number[] {
-  const pageNumbers = (pages === undefined ? Array.from({ length: pageCount }, (_, index) => index + 1) : [...pages]).sort((a, b) => a - b);
+  if (pages === undefined) {
+    if (pageCount > OCR_MAX_RENDERED_PAGES) {
+      throw new PayloadLimitError(
+        `OCR was asked to render ${pageCount} pages; at most ${OCR_MAX_RENDERED_PAGES} are rendered in one request. Select a page range.`
+      );
+    }
+    return Array.from({ length: pageCount }, (_, index) => index + 1);
+  }
+  const pageNumbers = [...pages].sort((a, b) => a - b);
   for (const pageNumber of pageNumbers) {
     if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pageCount) {
       throw new ConversionFailedError(`Page ${pageNumber} does not exist; the PDF has ${pageCount} page(s).`);
@@ -166,7 +174,10 @@ function selectOcrPageNumbers(pages: ReadonlySet<number> | undefined, pageCount:
 export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | undefined, requestedDpi: number | undefined): Promise<RenderPlan> {
   const dpi = resolveRenderDpi(requestedDpi);
   assertPdfImagesWithinLimit(pdf);
-  await checkPdfRasterPageBudget(pdf, (pageCount) => selectOcrPageNumbers(pages, pageCount), dpi);
+  const checked = await checkPdfRasterPageBudget(pdf, (pageCount) => selectOcrPageNumbers(pages, pageCount), dpi);
+  if (checked) {
+    return { pageNumbers: checked.pageNumbers, frames: checked.frames, dpi };
+  }
   const frames = await readPdfPageFrames(pdf);
   const pageNumbers = selectOcrPageNumbers(pages, frames.length);
   assertPdfRasterPageBudget(frames, pageNumbers, dpi);
