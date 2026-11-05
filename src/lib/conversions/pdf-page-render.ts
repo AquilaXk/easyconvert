@@ -14,7 +14,7 @@ import {
 import { assertInputPixels } from './image-input-limits';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
-import { readPdfPageFrames, renderedSizePixels, type PdfPageFrame, type RenderedPdfPage } from './pdf-page-geometry';
+import { assertPdfRasterPageBudget, readPdfPageFrames, renderedSizePixels, type PdfPageFrame, type RenderedPdfPage } from './pdf-page-geometry';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
 import { PAGE_IMAGE_MAX_PAGES } from './page-range';
 
@@ -158,10 +158,7 @@ export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | u
       `OCR was asked to render ${pageNumbers.length} pages; at most ${OCR_MAX_RENDERED_PAGES} are rendered in one request. Select a page range.`
     );
   }
-  for (const pageNumber of pageNumbers) {
-    const { width, height } = renderedSizePixels(frames[pageNumber - 1], dpi);
-    assertInputPixels(width, height);
-  }
+  assertPdfRasterPageBudget(frames, pageNumbers, dpi);
   return { pageNumbers, frames: pageNumbers.map((pageNumber) => frames[pageNumber - 1]), dpi };
 }
 

@@ -1,5 +1,7 @@
-import { PDFCatalog, PDFDocument, PDFName, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
+import { PDFCatalog, PDFDocument, PDFName, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
+import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limits';
+import { MAX_AGGREGATE_PAGE_PIXELS } from './image-limits';
 import { mapBoxToSource, normaliseLeafPageCatalogWithLib, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
 
@@ -20,6 +22,9 @@ const POINTS_PER_INCH = 72;
 const FULL_TURN_DEGREES = 360;
 const QUARTER_TURN_DEGREES = 90;
 
+export const MAX_RASTER_PAGE_PIXELS = DEFAULT_MAX_INPUT_PIXELS;
+export const MAX_RASTER_AGGREGATE_PIXELS = MAX_AGGREGATE_PAGE_PIXELS;
+
 /** The visible rectangle of a page in PDF user space (points, y up): the CropBox, or the MediaBox when none is set. */
 export interface PdfBox {
   x0: number;
@@ -32,6 +37,7 @@ export interface PdfPageFrame {
   cropBox: PdfBox;
   /** /Rotate: the clockwise turn a viewer gives the page, a multiple of 90 degrees. */
   rotation: OcrQuarterTurn;
+  userUnit?: number;
 }
 
 /** A rendered page: its frame in the PDF, the resolution it was drawn at and its size in pixels. */
@@ -110,25 +116,78 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
     if (!(crop.width > 0) || !(crop.height > 0) || !Number.isFinite(crop.x) || !Number.isFinite(crop.y)) {
       throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has an empty or unreadable CropBox.`);
     }
+    const unitObj = page.node.lookup(PDFName.of('UserUnit'));
+    let userUnit: number | undefined;
+    if (unitObj instanceof PDFNumber) {
+      const rawUnit = unitObj.asNumber();
+      if (!Number.isFinite(rawUnit) || rawUnit <= 0) {
+        throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has a non-positive or invalid /UserUnit (${rawUnit}).`);
+      }
+      if (rawUnit !== 1) {
+        userUnit = rawUnit;
+      }
+    }
     return {
       cropBox: { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height },
       rotation: normalizePdfRotation(angle),
+      ...(userUnit === undefined ? {} : { userUnit }),
     };
   });
 }
 
 /** Size in points of the page as displayed: the CropBox, with width and height swapped by a quarter turn. */
 export function displayedSizePoints(frame: PdfPageFrame): { width: number; height: number } {
+  const unit = frame.userUnit ?? 1;
   const sideways = frame.rotation === 90 || frame.rotation === 270;
   return sideways
-    ? { width: height(frame.cropBox), height: width(frame.cropBox) }
-    : { width: width(frame.cropBox), height: height(frame.cropBox) };
+    ? { width: height(frame.cropBox) * unit, height: width(frame.cropBox) * unit }
+    : { width: width(frame.cropBox) * unit, height: height(frame.cropBox) * unit };
 }
 
 /** Size in pixels a page renders at: its displayed size at `dpi`, rounded up as the renderer does. */
 export function renderedSizePixels(frame: PdfPageFrame, dpi: number): { width: number; height: number } {
   const size = displayedSizePoints(frame);
   return { width: Math.ceil((size.width * dpi) / POINTS_PER_INCH), height: Math.ceil((size.height * dpi) / POINTS_PER_INCH) };
+}
+
+export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageNumbers: readonly number[], dpi: number): void {
+  const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
+  let totalPixels = 0;
+  for (const pageNumber of pageNumbers) {
+    const frame = frames[pageNumber - 1];
+    const { width, height } = renderedSizePixels(frame, dpi);
+    const pixels = width * height;
+    if (!Number.isFinite(pixels) || pixels > perPageLimit) {
+      throw new InputPixelLimitError(perPageLimit, width, height, `PDF page ${pageNumber} at ${dpi} DPI`);
+    }
+    totalPixels += pixels;
+  }
+  if (!Number.isFinite(totalPixels) || totalPixels > MAX_RASTER_AGGREGATE_PIXELS) {
+    throw new InputPixelLimitError(
+      MAX_RASTER_AGGREGATE_PIXELS,
+      undefined,
+      undefined,
+      `${pageNumbers.length} selected PDF pages at ${dpi} DPI (${totalPixels} pixels in total)`
+    );
+  }
+}
+
+export async function checkPdfRasterPageBudget(
+  pdf: Buffer | Uint8Array,
+  selectPageNumbers: (pageCount: number) => readonly number[],
+  dpi: number
+): Promise<PdfPageFrameError | undefined> {
+  let frames: PdfPageFrame[];
+  try {
+    frames = await readPdfPageFrames(pdf);
+  } catch (err) {
+    if (err instanceof PdfPageFrameError && !err.message.includes('/UserUnit')) {
+      return err;
+    }
+    throw err;
+  }
+  assertPdfRasterPageBudget(frames, selectPageNumbers(frames.length), dpi);
+  return undefined;
 }
 
 /**
@@ -155,7 +214,7 @@ export function unrotatedPageGeometry(page: RenderedPdfPage): OcrGeometry {
  * last row and column may lie past the CropBox.
  */
 export function unrotatedPageScale(page: RenderedPdfPage): { scaleX: number; scaleY: number; originX: number; top: number } {
-  const pointsPerPixel = POINTS_PER_INCH / page.dpi;
+  const pointsPerPixel = POINTS_PER_INCH / (page.dpi * (page.frame.userUnit ?? 1));
   return { scaleX: pointsPerPixel, scaleY: pointsPerPixel, originX: page.frame.cropBox.x0, top: page.frame.cropBox.y1 };
 }
 

@@ -87,6 +87,8 @@ import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
+import { checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1295,6 +1297,7 @@ interface PopplerRenderParams {
   originalFilename: string;
   startTime: number;
   timeout: number;
+  rasterDpi?: number;
   filterOutputFile: (fileName: string) => boolean;
   missingOutputError: string;
   /**
@@ -1323,20 +1326,8 @@ function loadPdfInputBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefine
 }
 
 async function executePopplerRender(params: PopplerRenderParams): Promise<WorkerConversionResult | null> {
-  const {
-    sandboxPrefix,
-    singleFile,
-    tgt,
-    input,
-    options,
-    originalFilename,
-    startTime,
-    timeout,
-    filterOutputFile,
-    missingOutputError,
-    startEarly,
-    renderPages,
-  } = params;
+  const { sandboxPrefix, singleFile, tgt, input, options, originalFilename, startTime, timeout, rasterDpi, filterOutputFile, missingOutputError, startEarly, renderPages } =
+    params;
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   try {
@@ -1348,6 +1339,14 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
         async (readablePath) => {
           // With a password the fallback parser must read the decrypted copy, not the encrypted input.
           const inputBuffer = options.password ? undefined : loadPdfInputBuffer(input);
+          const frameError =
+            rasterDpi === undefined
+              ? undefined
+              : await checkPdfRasterPageBudget(
+                  inputBuffer ?? fs.readFileSync(readablePath),
+                  (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)),
+                  rasterDpi
+                );
           const early = startEarly ? startEarly(tempDir, readablePath) : null;
           // An early run that fails is reported where the render would have reported it, below.
           early?.done.catch(() => undefined);
@@ -1355,6 +1354,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
           try {
             const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, inputBuffer);
             requestedIntervals = resolveRequestedPages(options, pageCount, !singleFile);
+            if (frameError !== undefined) throw frameError;
           } catch (err) {
             await early?.done.catch(() => undefined);
             throw err;
@@ -1383,7 +1383,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
       );
     });
   } catch (err) {
-    if (options.throwOnUnavailable) {
+    if (options.throwOnUnavailable || err instanceof InputPixelLimitError || err instanceof UnsupportedOptionError) {
       throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
@@ -1401,6 +1401,7 @@ async function renderPdfToImageWithPoppler(
   timeout: number,
   maxBuffer: number
 ): Promise<WorkerConversionResult | null> {
+  const dpi = resolvePdfRasterDpi(options);
   const pdftoppmBin = resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH);
   if (!pdftoppmBin) {
     if (options.throwOnUnavailable) {
@@ -1417,11 +1418,11 @@ async function renderPdfToImageWithPoppler(
     originalFilename,
     startTime,
     timeout,
+    rasterDpi: dpi,
     filterOutputFile: (f) => f.startsWith('page') && !f.endsWith('.pdf'),
     missingOutputError: 'pdftoppm execution completed without producing any output images',
     startEarly: (tempDir, inputPath) => {
       if (tgt !== PNG_FORMAT || selectsPages(options) || options.multiPageOutput === 'first') return null;
-      const dpi = resolvePdfRasterDpi(options);
       const throughPage = ppmBatchPages(dpi);
       const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       const prefix = path.join(tempDir, 'page');
@@ -1433,7 +1434,6 @@ async function renderPdfToImageWithPoppler(
       const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       // Poppler draws on one thread, so the batches of pages run side by side (the early batch counted among them).
       const isPng = tgt === PNG_FORMAT;
-      const dpi = resolvePdfRasterDpi(options);
       const batchPages = isPng ? ppmBatchPages(dpi) : DIRECT_RENDER_BATCH_PAGES;
       const drawnEarly = early?.throughPage ?? 0;
       const batches = intervals.flatMap((interval) => splitIntoBatches(Math.max(interval.start, drawnEarly + 1), interval.end, batchPages));
