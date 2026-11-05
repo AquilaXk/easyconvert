@@ -5,6 +5,7 @@ import { act } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import NotFoundPageView from '../src/components/pages/NotFoundPageView';
+import { themeFor } from '../src/hooks/useThemeToggle';
 import { testMessages } from './helpers/intl-messages';
 
 vi.mock('next/navigation', async (importOriginal) => ({
@@ -41,6 +42,15 @@ async function mount(): Promise<void> {
 }
 
 describe('the 404 page follows the theme the visitor chose', () => {
+  it('chooses the stored preference when present and the system preference otherwise', () => {
+    expect(themeFor('dark', false)).toBe(true);
+    expect(themeFor('dark', true)).toBe(true);
+    expect(themeFor('light', false)).toBe(false);
+    expect(themeFor('light', true)).toBe(false);
+    expect(themeFor(null, true)).toBe(true);
+    expect(themeFor(null, false)).toBe(false);
+  });
+
   it('is dark for a visitor whose stored theme is dark', async () => {
     localStorage.setItem('theme', 'dark');
     await mount();

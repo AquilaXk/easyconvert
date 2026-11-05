@@ -30,13 +30,16 @@ function writeStoredTheme(theme: string): void {
   }
 }
 
+/** Whether the document is dark for the stored theme preference (`null` when none is stored) and the system preference. */
+export function themeFor(stored: string | null, systemDark: boolean): boolean {
+  return stored ? stored === 'dark' : systemDark;
+}
+
 export function useThemeToggle() {
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
-    const stored = readStoredTheme();
-    const hasDarkClass = document.documentElement.classList.contains('dark');
-    const next = stored ? stored === 'dark' : hasDarkClass || systemPrefersDark();
+    const next = themeFor(readStoredTheme(), systemPrefersDark());
     setIsDark(next);
     document.documentElement.classList.toggle('dark', next);
 

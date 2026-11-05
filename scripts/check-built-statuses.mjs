@@ -20,8 +20,8 @@ const localeOf = (path) => (/^\/ko(?:\/|$)/i.test(path) ? 'ko' : 'en');
 
 /** A path the site offers no page at: 404, noindex, and the 404 page's own title in the language of the path, not the layout's. */
 const notFound = (path) => ({ path, status: 404, noindex: true, title: messages[localeOf(path)].notFound.title });
-/** A path the locale routing never sees (a name with a dot, `/api`): 404 and noindex from the framework's own page, which has no title. */
-const outsideLocales = (path) => ({ path, status: 404, noindex: true });
+/** A path with a malformed percent escape: 400 Bad Request, never an uncaught URIError (500). */
+const badRequest = (path) => ({ path, status: 400 });
 const page = (path, status = 200) => ({ path, status, noindex: false });
 
 /** The routes of the app that are pages of their own, and the status each answers (the account page redirects to the dashboard). */
@@ -37,7 +37,8 @@ const ROUTES = [
 /**
  * Each path and what the server must answer. A 404 also holds nothing of the layout's title anywhere in the document, the
  * flight payload that the browser hydrates from included, since a payload that names the home page retitles the tab after load.
- * A single-segment path with a dot, or the name of an API prefix, never reaches the locale routing and must be 404, never 500.
+ * Dotted paths that are not static assets and `/api` go through the locale middleware and answer 404 from the slug or catch-all
+ * page without throwing a `NoFallbackError`, and malformed percent escapes answer 400 without throwing `URIError`.
  */
 const EXPECTED = [
   notFound('/nonexistent-page-xyz'),
@@ -46,13 +47,23 @@ const EXPECTED = [
   notFound('/pdf-to-jpg%20'),
   notFound('/%09pdf-to-jpg'),
   notFound('/en/pdf-to-jpg%20'),
-  outsideLocales('/robots.txt'),
-  outsideLocales('/foo.html'),
-  outsideLocales('/api'),
+  notFound('/robots.txt'),
+  notFound('/foo.html'),
+  notFound('/wp-login.php'),
+  notFound('/.env'),
+  notFound('/.git/config'),
+  notFound('/api'),
   notFound('/ko/nonexistent-page-xyz'),
   notFound('/ko/foo/bar'),
+  notFound('/ko/robots.txt'),
   notFound('/ko/pdf-to-jpg%20'),
   notFound('/KO/pdf-to-jpg%20'),
+  badRequest('/%E0%A4%A'),
+  badRequest('/ko/%E0%A4%A'),
+  badRequest('/en/%E0%A4%A'),
+  badRequest('/pdf-to-jpg%E0%A4%A'),
+  badRequest('/%c0%ae%c0%ae/etc'),
+  badRequest('/ko/%c0%ae'),
   page('/pdf-to-jpg'),
   page('/ko/pdf-to-jpg'),
   ...ROUTES.map(([path, status]) => page(path, status)),
@@ -86,7 +97,7 @@ async function answerOf(path) {
 function faultsOf(expected, answer) {
   const faults = [];
   if (answer.status !== expected.status) faults.push(`status ${answer.status}, expected ${expected.status}`);
-  if (answer.noindex !== expected.noindex) faults.push(`noindex ${answer.noindex}, expected ${expected.noindex}`);
+  if (expected.noindex !== undefined && answer.noindex !== expected.noindex) faults.push(`noindex ${answer.noindex}, expected ${expected.noindex}`);
   if (expected.title !== undefined && answer.title !== expected.title) faults.push(`title ${answer.title}, expected ${expected.title}`);
   const layoutTitle = messages[localeOf(expected.path)].site.title;
   if (expected.status === 404 && answer.html.includes(layoutTitle)) faults.push(`the document names the title of the layout "${layoutTitle}", which retitles the tab after load`);

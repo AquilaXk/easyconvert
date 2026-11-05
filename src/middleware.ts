@@ -208,8 +208,16 @@ function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean 
 const handleRootLocale = createIntlMiddleware(routing);
 const handlePageLocale = createIntlMiddleware({ ...routing, localeDetection: false, localeCookie: false });
 
-/** What reading a URL drops from the decoded path: a tab or a line break anywhere, and a space or control character at the end. */
+/** What reading a URL drops from the decoded path, namely a tab or a line break anywhere, and a space or control character at the end. */
 const DROPPED_BY_URL_PARSING = /[\t\n\r]|(?:[\u0000-\u0020]$)/;
+
+function hasDroppedUrlChar(pathname: string): boolean {
+  try {
+    return DROPPED_BY_URL_PARSING.test(decodeURI(pathname));
+  } catch {
+    return false;
+  }
+}
 
 /** A path split into the language it names by its first segment, in any case (`/KO/x`), and the path after it; a path with none names the default language. */
 function splitLocalePrefix(pathname: string): { locale: AppLocale; path: string } {
@@ -221,26 +229,24 @@ function splitLocalePrefix(pathname: string): { locale: AppLocale; path: string 
 /**
  * The page's answer in the visitor's language. next-intl rewrites to the decoded path read back as a URL, which drops what
  * `DROPPED_BY_URL_PARSING` names, so `/pdf-to-jpg%20` would reach the page as `/pdf-to-jpg` and answer 200 for another path.
- * It also redirects a path with a superfluous or capitalised language prefix (`/en/x`, `/KO/x`) to the decoded path, which
- * is the same page. A path with such a character is therefore answered here, ahead of any redirect: next-intl negotiates
- * the language for the path in its canonical form, and the rewrite then keeps the path as it came, so the page reads the
- * whole slug and answers 404.
+ * A path with a malformed percent escape cannot be decoded and falls through to `handlePageLocale`, which lets Next.js answer
+ * 400. A path with a dropped character is rewritten here to `/${locale}${path}` as it came, ahead of any redirect for a
+ * superfluous or capitalised language prefix (`/en/x`, `/KO/x`), so the page reads the whole slug and answers 404.
  */
 function pageLocaleAnswer(request: NextRequest): NextResponse {
   const received = request.nextUrl.pathname;
-  if (!DROPPED_BY_URL_PARSING.test(decodeURI(received))) return handlePageLocale(request);
+  if (!hasDroppedUrlChar(received)) return handlePageLocale(request);
 
   const { locale, path } = splitLocalePrefix(received);
-  const canonical = new URL(`${locale === routing.defaultLocale ? '' : `/${locale}`}${path}${request.nextUrl.search}`, request.url);
-  const response = handlePageLocale(new NextRequest(canonical, request));
-  const target = new URL(response.headers.get('x-middleware-rewrite') ?? canonical);
-  target.pathname = `/${locale}${path}`;
-  response.headers.set('x-middleware-rewrite', target.toString());
-  return response;
+  const headers = new Headers(request.headers);
+  headers.set('X-NEXT-INTL-LOCALE', locale);
+  return NextResponse.rewrite(new URL(`/${locale}${path}${request.nextUrl.search}`, request.url), {
+    request: { headers },
+  });
 }
 
 /**
- * The root's answer: the home page in the visitor's language (the cookie the language selector wrote, then
+ * The root's answer is the home page in the visitor's language (the cookie the language selector wrote, then
  * Accept-Language). It differs by those two headers, so it says so and stays out of shared caches. next-intl writes the
  * cookie it negotiated for a visitor who sent none; only the selector writes it, so that answer carries no cookie.
  */
@@ -254,13 +260,13 @@ function rootLocaleAnswer(request: NextRequest): NextResponse {
 }
 
 function isApiPath(pathname: string): boolean {
-  return pathname === '/api' || pathname.startsWith('/api/');
+  return pathname.startsWith('/api/');
 }
 
-/** `/ko/api/...`: the API has no language, so a locale prefix in front of it names nothing. */
+/** `/ko/api/...` and `/ko/api` have no page because the API takes no language prefix. */
 function isLocalePrefixedApiPath(pathname: string): boolean {
-  const [, first, ...rest] = pathname.split('/');
-  return (routing.locales as readonly string[]).includes(first) && isApiPath(`/${rest.join('/')}`);
+  const [, first, second] = pathname.split('/');
+  return (routing.locales as readonly string[]).includes(first) && second === 'api';
 }
 
 export function middleware(request: NextRequest): NextResponse | Promise<NextResponse> {
@@ -416,14 +422,12 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
 }
 
 export const config = {
-  // API routes, and every page path that is not a framework internal or a file. A path with a dot names a file, except the
-  // dot of a dotted format id of the registry (`tar.gz`, only ever `tar.<suffix>`, in any case) at the start of a slug or
-  // after a dash and before a dash or the end (/zip-to-tar.gz, /TAR.GZ-to-zip). Every other dotted path (/wp-login.php,
-  // /.env, /backup.zip) never reaches the locale routing; one that reaches a page under a locale prefix is no page for
-  // parseConverterSlug (src/lib/slug-parser.ts), which answers it 404. The matcher must stay a literal for Next.js to read
-  // it, so tests/i18n-routing.test.ts builds it from DOTTED_FORMAT_SUFFIXES and fails when the two differ.
+  // API routes, and every path that is not a framework internal or a static asset in `public/` or `src/app/`. Dotted paths
+  // that are not static assets (`/robots.txt`, `/foo.html`, `/wp-login.php`, `/.env`, `/.git/config`) and bare `/api` go
+  // through `pageLocaleAnswer`, so `src/app/[locale]/[slug]/page.tsx` and `src/app/[locale]/[...rest]/page.tsx` answer them
+  // 404 without reaching `src/app/[locale]/page.tsx` with an unknown `locale` parameter (`NoFallbackError`).
   matcher: [
     '/api/:path*',
-    '/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-][tT][aA][rR])\\.|\\.(?!(?:[bB][zZ]2|[lL][zZ][oO]|[zZ][sS][tT]|7[zZ]|[bB][zZ]|[gG][zZ]|[xX][zZ]|[zZ])(?:-|$)))).*)',
+    '/((?!api/|_next/|_vercel/|fonts/|screenshots/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$).*)',
   ],
 };

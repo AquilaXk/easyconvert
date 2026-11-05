@@ -1,7 +1,29 @@
 import { MERGE_FORMATS } from './jobs/graph-operations';
 import { OPTIMIZABLE_FORMATS } from './jobs/optimize-formats';
-import { offersConversion } from './format-aliases';
-import type { CategoryWord } from './category-words';
+import { isCategoryWord, type CategoryWord } from './category-words';
+import { FORMAT_REGISTRY } from './registry';
+
+const isRegistered = (format: string): boolean => Object.hasOwn(FORMAT_REGISTRY, format);
+
+/**
+ * Whether two names are formats of the registry, not category words, and the registry lists the conversion between them.
+ * A category word stands for a format only as a representative, so `presentation`, a format of the registry that is also
+ * the word of a category, has the converter page of the category and no pair page of its own.
+ */
+export function offersConversion(source: string, target: string): boolean {
+  return (
+    isRegistered(source) &&
+    isRegistered(target) &&
+    !isCategoryWord(source) &&
+    !isCategoryWord(target) &&
+    FORMAT_REGISTRY[source].targetFormats.includes(target)
+  );
+}
+
+/** Whether a format can be converted to itself on a utility page (merge or compress), where the upload and output share one format. */
+export function isSelfConvertible(format: string): boolean {
+  return offersConversion(format, format);
+}
 
 export type SlugInfoType =
   | 'terms'
@@ -13,7 +35,7 @@ export type SlugInfoType =
   | 'unit'
   | 'accessibility';
 
-/** How a format page names what it converts: a format by its id in capitals, a category by the word of its title. */
+/** How a format page names what it converts, either a format by its id in capitals or a category by the word of its title. */
 export type SlugName =
   | { kind: 'format'; id: string; display: string }
   | { kind: 'category'; id: CategoryWord; display: string };
@@ -98,10 +120,9 @@ export function parseUnitPairSlug(rawSrc: string, rawTgt: string): SlugPage | nu
   };
 }
 
-/** The formats of `formats` that the registry converts to themselves, as a utility page does: its upload converts a file of the format to the same format. */
-const selfConvertible = (formats: Iterable<string>): ReadonlySet<string> => new Set([...formats].filter((format) => offersConversion(format, format)));
+const selfConvertible = (formats: Iterable<string>): ReadonlySet<string> => new Set([...formats].filter(isSelfConvertible));
 
-/** What each utility page works on: a merge joins what a merge node of a job graph takes, a compress page runs the optimiser of the job graph, which only some formats have. */
+/** What each utility page works on. A merge joins what a merge node of a job graph takes, and a compress page runs the optimiser of the job graph, which only some formats have. */
 const UTILITY_FORMATS = {
   merge: selfConvertible(MERGE_FORMATS),
   compress: selfConvertible(OPTIMIZABLE_FORMATS),

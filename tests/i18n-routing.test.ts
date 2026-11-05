@@ -10,7 +10,7 @@ import { localeAlternates } from '../src/i18n/metadata';
 import { routing } from '../src/i18n/routing';
 import { canonicalFormat, isSameFormat } from '../src/lib/format-aliases';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { DOTTED_FORMAT_SUFFIXES, parseConverterSlug } from '../src/lib/slug-parser';
+import { parseConverterSlug } from '../src/lib/slug-parser';
 import { parsedSlug } from './helpers/intl';
 
 /**
@@ -39,6 +39,7 @@ async function answer(pathname: string, headers: Record<string, string> = {}) {
     status: res.status,
     location: res.headers.get('location'),
     rewrite: res.headers.get('x-middleware-rewrite'),
+    requestLocale: res.headers.get('x-middleware-request-x-next-intl-locale'),
     setCookie: res.headers.get('set-cookie'),
     link: res.headers.get('link'),
     vary: res.headers.get('vary'),
@@ -115,7 +116,20 @@ describe('locale routing of pages', () => {
       ['/KO/pdf-to-jpg%20', 'ko', 'pdf-to-jpg%20'],
       ['/ko/pdf-to-jpg%0A?from=a', 'ko', 'pdf-to-jpg%0A?from=a'],
     ] as const) {
-      expect(await answer(asked), asked).toMatchObject({ status: 200, location: null, rewrite: `${ORIGIN}/${locale}/${page}` });
+      expect(await answer(asked), asked).toMatchObject({
+        status: 200,
+        location: null,
+        rewrite: `${ORIGIN}/${locale}/${page}`,
+        requestLocale: locale,
+      });
+    }
+  });
+
+  it('passes a path with a malformed percent escape through without throwing, so the server answers 400 instead of 500', async () => {
+    for (const malformed of ['/%E0%A4%A', '/ko/%E0%A4%A', '/en/%E0%A4%A', '/pdf-to-jpg%E0%A4%A', '/%c0%ae%c0%ae/etc', '/ko/%c0%ae']) {
+      expect(matched(malformed), malformed).toBe(true);
+      const res = await answer(malformed);
+      expect(res, malformed).toMatchObject({ status: 200, location: null, rewrite: null });
     }
   });
 
@@ -186,19 +200,25 @@ describe('API routes are not locale routed', () => {
     for (const pathname of ['/', '/ko', '/png-to-jpg', '/ko/png-to-jpg', '/api-docs', '/ko/api-docs', '/api/health', '/api/v1/jobs']) {
       expect(matched(pathname), pathname).toBe(true);
     }
-    const assets = ['/_next/static/chunks/main.js', '/_vercel/insights', '/.well-known/security.txt', '/favicon.ico'];
+    const assets = ['/_next/static/chunks/main.js', '/_vercel/insights', '/favicon.ico', '/icon.svg', '/apple-icon.png'];
     for (const pathname of [...assets, ...publicPaths()]) {
       expect(matched(pathname), pathname).toBe(false);
     }
   });
 
-  it('leaves every other path with a dot to the file routes, so a probe for a file never renders a page', () => {
+  it('routes non-asset dotted paths and bare /api through the locale middleware so they answer 404 without a NoFallbackError', async () => {
     const probes = [
-      '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz', '/index.html', '/a.JS',
-      '/robots.TXT', '/ko/wp-login.php', '/ko/backup.zip', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz',
-      '/ko/.env', '/ZIP-to-TAR.GZIP', '/ko/zip-to-TAR.GZ.PHP',
+      '/robots.txt', '/foo.html', '/wp-login.php', '/.env', '/.git/config', '/xmlrpc.php', '/backup.zip', '/backup.tar.gz',
+      '/index.html', '/a.JS', '/robots.TXT', '/zip-to-tar.gzip', '/zip-to-tar.gz.php', '/zip-to-x.tar.gz', '/ZIP-to-TAR.GZIP', '/api',
     ];
-    for (const pathname of probes) expect(matched(pathname), pathname).toBe(false);
+    for (const pathname of probes) {
+      expect(matched(pathname), pathname).toBe(true);
+      expect((await answer(pathname)).rewrite, pathname).toBe(`${ORIGIN}/en${pathname}`);
+    }
+    for (const pathname of ['/ko/robots.txt', '/ko/wp-login.php', '/ko/backup.zip', '/ko/.env', '/ko/zip-to-TAR.GZ.PHP']) {
+      expect(matched(pathname), pathname).toBe(true);
+      expect((await answer(pathname)).status, pathname).toBe(200);
+    }
   });
 });
 
@@ -281,20 +301,9 @@ describe('converter slug pages name one canonical URL', () => {
         throw error;
       }
     };
-    for (const [locale, slug] of [['ko', 'foo-to-bar.php'], ['ko', 'x.php-converter'], ['en', 'foo-to-bar.php'], ['ko', 'backup.zip']]) {
+    for (const [locale, slug] of [['ko', 'foo-to-bar.php'], ['ko', 'x.php-converter'], ['en', 'foo-to-bar.php'], ['ko', 'backup.zip'], ['en', 'robots.txt'], ['en', 'foo.html']]) {
       expect(await statusOf(locale, slug), `/${locale}/${slug}`).toBe(404);
     }
     for (const slug of ['zip-to-tar.gz', 'Zip-To-Tar.GZ']) expect(await statusOf('ko', slug), `/ko/${slug}`).toBe(200);
-  });
-
-  it('allows in the middleware matcher exactly the dotted ids of the registry, in any case', () => {
-    const dottedIds = Object.keys(FORMAT_REGISTRY).filter((id) => id.includes('.'));
-    expect(dottedIds.map((id) => id.split('.')[0])).toEqual(dottedIds.map(() => 'tar'));
-    expect([...DOTTED_FORMAT_SUFFIXES].sort()).toEqual(dottedIds.map((id) => id.slice('tar.'.length)).sort());
-    const anyCase = (text: string) => text.replace(/[a-z]/g, (letter) => `[${letter}${letter.toUpperCase()}]`);
-    const suffixes = [...DOTTED_FORMAT_SUFFIXES].sort((a, b) => b.length - a.length || a.localeCompare(b)).map(anyCase).join('|');
-    expect(config.matcher[1]).toBe(
-      `/((?!api(?:/|$)|_next/|_vercel/|fonts/|.*(?:(?<![/-]${anyCase('tar')})\\.|\\.(?!(?:${suffixes})(?:-|$)))).*)`
-    );
   });
 });

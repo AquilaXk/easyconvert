@@ -3,16 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { getAccessFallbackHTTPStatus, isHTTPAccessFallbackError } from 'next/dist/client/components/http-access-fallback/http-access-fallback';
 import ConverterPage, { generateMetadata } from '../src/app/[locale]/[slug]/page';
 import UnknownPathPage, { generateMetadata as unknownPathMetadata } from '../src/app/[locale]/[...rest]/page';
+import LocaleLayout, { dynamicParams as localeDynamicParams, generateStaticParams as localeStaticParams } from '../src/app/[locale]/layout';
 import { generateMetadata as notFoundMetadata } from '../src/app/[locale]/not-found';
 import NotFoundPageView from '../src/components/pages/NotFoundPageView';
 import { CATEGORY_WORDS, isCategoryWord } from '../src/lib/category-words';
 import { MERGE_FORMATS } from '../src/lib/jobs/graph-operations';
 import { OPTIMIZABLE_FORMATS } from '../src/lib/jobs/optimize-formats';
 import { routing } from '../src/i18n/routing';
-import { FORMAT_NAME_ALIASES, isSameFormat, offersConversion } from '../src/lib/format-aliases';
+import { FORMAT_NAME_ALIASES, isSameFormat } from '../src/lib/format-aliases';
 import { displayRoute, MAX_ROUTE_CHARS } from '../src/lib/display-route';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { parseConverterSlug } from '../src/lib/slug-parser';
+import { isSelfConvertible, offersConversion, parseConverterSlug } from '../src/lib/slug-parser';
 import { allElements, attrOf, headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
 import type { TestLocale } from './helpers/intl';
 
@@ -23,6 +24,10 @@ import type { TestLocale } from './helpers/intl';
  */
 
 const request = vi.hoisted(() => ({ locale: 'en' as 'en' | 'ko', pathname: '/' }));
+
+vi.mock('next/font/local', () => ({
+  default: (options: { variable: string }) => ({ variable: options.variable }),
+}));
 
 vi.mock('next-intl/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next-intl/server')>()),
@@ -178,12 +183,20 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
     const wrong: string[] = [];
     for (const [utility, formats] of Object.entries(operations)) {
       for (const id of ids) {
-        if (Boolean(parseConverterSlug(`${utility}-${id}`)) !== (formats.has(id) && offersConversion(id, id))) wrong.push(`${utility}-${id}`);
+        if (Boolean(parseConverterSlug(`${utility}-${id}`)) !== (formats.has(id) && isSelfConvertible(id))) wrong.push(`${utility}-${id}`);
       }
     }
     expect(wrong).toEqual([]);
     expect(parseConverterSlug('compress-png')).toBeNull();
     expect(parseConverterSlug('compress-pdf')).not.toBeNull();
+  });
+
+  it('locks the locale layout to the supported locales with dynamicParams off', async () => {
+    expect(localeDynamicParams).toBe(false);
+    expect(localeStaticParams()).toEqual(routing.locales.map((locale) => ({ locale })));
+    for (const unknown of ['robots.txt', 'foo.html', 'api', 'fr']) {
+      expect(await statusOf(() => LocaleLayout({ params: Promise.resolve({ locale: unknown }), children: null })), unknown).toBe(404);
+    }
   });
 
   it('names a registered source, and a registered target when there is one, for every page that is not an information page', () => {

@@ -1,10 +1,12 @@
 import { FORMAT_REGISTRY } from './registry';
-import { isSameFormat, offersConversion } from './format-aliases';
+import { isSameFormat } from './format-aliases';
 import { CATEGORY_WORDS, isCategoryWord } from './category-words';
 import {
   INFO_PAGE_MAP,
   UNIT_CONVERTER_INFO_PAGE,
   canonicalPathOf,
+  isSelfConvertible,
+  offersConversion,
   parseUnitPairSlug,
   parseUtilitySlug,
   type ParsedSlug,
@@ -12,7 +14,7 @@ import {
   type SlugPage,
 } from './slug-info-pages';
 
-export type { ParsedSlug, SlugCopy, SlugName } from './slug-info-pages';
+export { isSelfConvertible, offersConversion, type ParsedSlug, type SlugCopy, type SlugName } from './slug-info-pages';
 
 const OCR_SLUG = 'pdf-ocr';
 const CONVERTER_SUFFIX = '-converter';
@@ -27,7 +29,7 @@ function formatPage(format: string, name: SlugName): SlugPage {
  * The page of a pair of two format names that the registry converts (`png-to-jpg`), and of no other pair. A category word
  * stands for a format only as a representative (`video` for MP4), so a pair that holds one, like `any`, a name the registry
  * does not know and a conversion it does not list (`mp3-to-pdf`, `jpg-to-jpeg`), is no page. A pair of two names of one
- * format that the registry lists (`jpeg-to-jpg`, `pdf-to-pdf`) converts nothing: its page is the page of its source.
+ * format that the registry lists (`jpeg-to-jpg`, `pdf-to-pdf`) converts nothing, so its page is the page of its source.
  */
 function parsePairSlug(cleanSlug: string): SlugPage | null {
   const [source, target, ...rest] = cleanSlug.split(PAIR_SEPARATOR);
@@ -50,17 +52,7 @@ function parseFormatConverterSlug(cleanSlug: string): SlugPage | null {
   return Object.hasOwn(FORMAT_REGISTRY, word) ? formatPage(word, { kind: 'format', id: word, display: word.toUpperCase() }) : null;
 }
 
-const DOTTED_FORMAT_PREFIX = 'tar.';
-
-/**
- * The suffixes of the registry's dotted format ids (`tar.gz`), the only dots a page path holds. The matcher of
- * src/middleware.ts lists them as a literal, which tests/i18n-routing.test.ts holds to this list.
- */
-export const DOTTED_FORMAT_SUFFIXES: readonly string[] = Object.keys(FORMAT_REGISTRY)
-  .filter((id) => id.startsWith(DOTTED_FORMAT_PREFIX))
-  .map((id) => id.slice(DOTTED_FORMAT_PREFIX.length));
-
-/** The slug with `A` to `Z` lowercased and every other character as it came: the case folding of Unicode would read the Kelvin sign as `k`. */
+/** The slug with `A` to `Z` lowercased and every other character as it came; the case folding of Unicode would read the Kelvin sign as `k`. */
 const lowercaseAscii = (slug: string): string => slug.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
 
 function parseCleanSlug(cleanSlug: string): SlugPage | null {
@@ -73,11 +65,11 @@ function parseCleanSlug(cleanSlug: string): SlugPage | null {
 
 /**
  * What a slug is as a page of the site, or null when the site offers no page at that path. This is the one place that
- * decides: the slug page answers 404 for null. A page exists for a site page, `pdf-ocr`, the converter of a registered
+ * decides, and the slug page answers 404 for null. A page exists for a site page, `pdf-ocr`, the converter of a registered
  * format or a category of the registry, a pair of two registered formats the registry converts, a utility page of a format
  * it works on, and a pair of units. A name the site does not know, `any`, a category word in a pair and a conversion the
- * registry does not list have none. The slug is read exactly as it came: a space, a tab, a line break or a slash around it
- * makes it another path, and so no page. Lowercasing `A` to `Z` is the one tolerance, so `/PDF-to-JPG` shows the page of
+ * registry does not list have none. The slug is read exactly as it came, so a space, a tab, a line break or a slash around
+ * it makes it another path and no page. Lowercasing `A` to `Z` is the one tolerance, so `/PDF-to-JPG` shows the page of
  * `/pdf-to-jpg`, which it names as its canonical (`canonicalPath`, named here once for every page).
  */
 export function parseConverterSlug(slug: string): ParsedSlug | null {

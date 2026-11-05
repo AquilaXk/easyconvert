@@ -36,7 +36,16 @@ interface Faults {
 
 async function serve(faults: Faults = {}): Promise<string> {
   const server = createServer((request, response) => {
-    const pathname = decodeURIComponent(request.url ?? '/');
+    const rawUrl = request.url ?? '/';
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(rawUrl);
+    } catch {
+      const status = faults.answers?.[rawUrl] ?? 400;
+      response.writeHead(status, { 'content-type': 'text/plain' });
+      response.end('Bad Request');
+      return;
+    }
     const exists = (PAGES.has(pathname) && !faults.pageGone) || REDIRECTS.has(pathname);
     const status = faults.answers?.[pathname] ?? (REDIRECTS.has(pathname) ? 307 : exists ? 200 : 404);
     const { notFound, site } = titles(pathname);
@@ -80,7 +89,12 @@ describe('the built server answers a path the site does not offer with 404 and a
     ['a page with a space after it under /KO redirected to the page', { answers: { '/KO/pdf-to-jpg ': 307 } }, '/KO/pdf-to-jpg%20'],
     ['a file path answered 500', { answers: { '/robots.txt': 500 } }, '/robots.txt'],
     ['a dotted name answered 500', { answers: { '/foo.html': 500 } }, '/foo.html'],
+    ['a dotted probe answered 200', { answers: { '/wp-login.php': 200 } }, '/wp-login.php'],
+    ['a dotfile path answered 500', { answers: { '/.env': 500 } }, '/.env'],
     ['an API prefix answered 500', { answers: { '/api': 500 } }, '/api'],
+    ['a malformed percent escape answered 500', { answers: { '/%E0%A4%A': 500 } }, '/%E0%A4%A'],
+    ['a malformed percent escape under /ko answered 500', { answers: { '/ko/%E0%A4%A': 500 } }, '/ko/%E0%A4%A'],
+    ['an overlong UTF-8 percent escape answered 500', { answers: { '/%c0%ae%c0%ae/etc': 500 } }, '/%c0%ae%c0%ae/etc'],
     ['a route of the app with a segment after it answered 200', { answers: { '/dashboard/api-keys/x': 200 } }, '/dashboard/api-keys/x'],
     ['a 404 that carries the title of the home page', { homeTitle: true }, '/ko/foo/bar'],
     ['a 404 whose payload names the title of the home page', { payloadTitle: true }, '/ko/foo/bar'],
