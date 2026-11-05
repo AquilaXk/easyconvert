@@ -515,10 +515,6 @@ describe('schema', () => {
     });
   });
 
-  /**
-   * Every `process.env.NAME` the source reads is a schema entry. The scan reads the source files themselves, so the
-   * inventory cannot drift from the code. Reads that build the name at run time are listed by hand.
-   */
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const full = path.join(dir, entry.name);
@@ -530,108 +526,33 @@ describe('schema', () => {
   it('covers every process.env name that the source reads literally', () => {
     const names = new Set(CONFIG_SCHEMA.map((spec) => spec.name));
     const read = new Set<string>();
-    for (const file of sourceFiles(path.resolve(__dirname, '..', 'src'))) {
+    const files = [
+      ...sourceFiles(path.resolve(__dirname, '..', 'src')),
+      path.resolve(__dirname, '..', 'scripts', 'worker-healthcheck.js'),
+    ];
+    for (const file of files) {
       if (file.includes(`${path.sep}lib${path.sep}config${path.sep}`)) continue;
       for (const match of readFileSync(file, 'utf8').matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) read.add(match[1]);
     }
     expect(read.size).toBeGreaterThan(40);
+    expect(read.has('WORKER_HEARTBEAT_MAX_STALE_MS')).toBe(true);
+    expect(read.has('CHECK_REDIS')).toBe(true);
     expect([...read].filter((name) => !names.has(name)).sort()).toEqual([]);
   });
 
   it('covers the variables the source reads through computed names', () => {
     const names = new Set(CONFIG_SCHEMA.map((spec) => spec.name));
-    const computed = [
-      'KEY_HASH_PEPPER',
-      'KEY_HASH_PEPPER_PREVIOUS',
-      'BYOS_S3_DEV_ENDPOINT_ALLOWLIST',
-      'LIBREOFFICE_POOL_READINESS_TIMEOUT_MS',
-      'EASYCONVERT_MAX_INPUT_PIXELS',
-      'EASYCONVERT_PDF_TEXT_DEADLINE_MS',
-      'EASYCONVERT_OCR_PAGE_BUDGET_MS',
-      'EASYCONVERT_OCR_PAGE_CONCURRENCY',
-      'VIPS_CONCURRENCY',
-      'MALLOC_ARENA_MAX',
-      'EASYCONVERT_XLS_MAX_GRID_CELLS',
-      'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
-      'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
-      'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
-      'EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES',
-      'JOB_SECRET_KEK',
-      'JOB_SECRET_KEK_PREVIOUS',
-      'SANDBOX_LAUNCHER',
-      'HTML_IMAGE_FETCH',
-      'ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY',
-      'ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE',
-      'CONVERSION_CONCURRENCY_FREE',
-      'TRUSTED_PROXIES',
-      'TRUSTED_CDN',
-      'TRUSTED_CDN_RANGES',
-      'TRUSTED_PROXY_HEADER',
-      'NODE_ENV',
-      'STORAGE_DRIVER',
-      'STORAGE_SIGNING_SECRET',
-      'S3_SIGNING_SECRET',
-      'OCI_SIGNING_SECRET',
-      'APP_URL',
-      'NEXT_PHASE',
-      'OCI_ACCESS_KEY_ID',
-      'OCI_SECRET_ACCESS_KEY',
-      'OCI_BUCKET',
-      'OCI_BUCKET_NAME',
-      'S3_ENDPOINT',
-      'S3_REGION',
-      'S3_BUCKET',
-      'S3_BUCKET_NAME',
-      'S3_ACCESS_KEY_ID',
-      'S3_SECRET_ACCESS_KEY',
-      'S3_FORCE_PATH_STYLE',
-      'AWS_ACCESS_KEY_ID',
-      'AWS_SECRET_ACCESS_KEY',
-      'AWS_REGION',
-      'AWS_BUCKET_NAME',
-      'RESULT_UNDELIVERED_TTL_SECONDS',
-      'RESULT_DELIVERED_GRACE_SECONDS',
-      'RESULT_DISK_HIGH_PERCENT',
-      'RESULT_DISK_LOW_PERCENT',
-      'RESULT_DISK_REFUSE_PERCENT',
-      'QPDF_PATH',
-      'QPDF_RUNNER',
-      'QPDF_RUNNER_PATH',
-      'QPDF_RUNNER_LIB',
-      'VERAPDF_PATH',
-      'FC_LIST_PATH',
-      'FLUIDSYNTH_PATH',
-      'MIDI_SOUNDFONT_PATH',
-      'LBZIP2_PATH',
-      'LIBDEFLATE_GZIP_PATH',
-      'XZ_PATH',
-      'AVIFENC_PATH',
-      'MAGICK_PATH',
-      'MAGICK_POLICY_DIR',
-      'OPJ_DECOMPRESS_PATH',
-      'CAD_CONVERT_PATH',
-      'DWG2DXF_PATH',
-      'VTRACER_PATH',
-      'FONTFORGE_PATH',
-      'SOFFICE_PATH',
-      'PS2PDF_PATH',
-      'WORKER_HEARTBEAT_MAX_STALE_MS',
-      'CHECK_REDIS',
-    ];
-    expect(computed.filter((name) => !names.has(name))).toEqual([]);
-
-    const computedSet = new Set(computed);
     const scannedComputed = new Set<string>();
     for (const file of sourceFiles(path.resolve(__dirname, '..', 'src'))) {
       if (file.includes(`${path.sep}lib${path.sep}config${path.sep}`)) continue;
       const content = readFileSync(file, 'utf8');
-      for (const match of content.matchAll(/(?:const|let)\s+[A-Z0-9_]+(?:_ENV|_VARIABLE)\s*=\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) {
-        scannedComputed.add(match[1]);
-      }
-      for (const match of content.matchAll(/(?:const|let)\s+[A-Z0-9_]+(?:_ENV_VARS|_VARIABLES)\b[^;]*?\[([^\]]+)\]/gs)) {
+      for (const match of content.matchAll(/(?:const|let)\s+[A-Z0-9_]+(?:_ENV|_VARIABLE|_ENV_VARS|_VARIABLES)\b[^;]*?=\s*([^;]+);/gs)) {
         for (const inner of match[1].matchAll(/['"]([A-Z][A-Z0-9_]*)['"]/g)) {
           scannedComputed.add(inner[1]);
         }
+      }
+      for (const match of content.matchAll(/\b(?:resolveBinaryPath|readPositiveIntEnv|readVar|configuredValue|readIntegerSetting)\(\s*(?:[A-Za-z0-9_]+\s*,\s*)?['"]([A-Z][A-Z0-9_]+)['"]/g)) {
+        scannedComputed.add(match[1]);
       }
       for (const match of content.matchAll(/(?:process\.)?env\[['"]([A-Z][A-Z0-9_]*)['"]\]/g)) {
         scannedComputed.add(match[1]);
@@ -640,8 +561,31 @@ describe('schema', () => {
         scannedComputed.add(match[1]);
       }
     }
+    expect(scannedComputed.size).toBeGreaterThanOrEqual(95);
+    for (const sample of [
+      'SANDBOX_LAUNCHER',
+      'QPDF_RUNNER_LIB',
+      'FLUIDSYNTH_PATH',
+      'MIDI_SOUNDFONT_PATH',
+      'LBZIP2_PATH',
+      'LIBDEFLATE_GZIP_PATH',
+      'XZ_PATH',
+      'VIPS_CONCURRENCY',
+      'MALLOC_ARENA_MAX',
+      'EASYCONVERT_OCR_PAGE_CONCURRENCY',
+      'KEY_HASH_PEPPER_PREVIOUS',
+      'SOFFICE_PATH',
+      'JOB_DEADLINE_PER_MIB_MS',
+      'OCI_REGION',
+      'OCI_BUCKET_NAME',
+      'GS_PATH',
+      'ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY',
+      'EASYCONVERT_STORAGE_DIR',
+      'PATH',
+    ]) {
+      expect(scannedComputed.has(sample), sample).toBe(true);
+    }
     expect([...scannedComputed].filter((name) => !names.has(name)).sort()).toEqual([]);
-    expect([...scannedComputed].filter((name) => !computedSet.has(name)).sort()).toEqual([]);
   });
 
   it('declares each alternative group over variables that exist', () => {

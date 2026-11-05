@@ -1479,7 +1479,7 @@ const SCHEMA_ENTRIES = [
   {
     name: 'QPDF_RUNNER_LIB',
     area: 'tools',
-    description: 'Path of the libqpdf shared library handed to `qpdf-runner` (`-l`); the runner loads the system libqpdf when unset.',
+    description: 'Path of the libqpdf shared library handed to `qpdf-runner` (`--lib`); the runner loads the system libqpdf when unset.',
     kind: { type: 'path' },
     requiredInProduction: false,
     secret: false,
