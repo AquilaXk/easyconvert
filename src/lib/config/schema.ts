@@ -400,6 +400,36 @@ function absoluteToolPath<const N extends string>(name: N, description: string, 
   } as const satisfies VariableSpec;
 }
 
+function toolResourcePath<const N extends string>(name: N, description: string, roles: readonly ProcessRole[]) {
+  return {
+    name,
+    area: 'tools',
+    description,
+    kind: { type: 'path' },
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+function autoOffSetting<const N extends string>(
+  name: N,
+  area: ConfigArea,
+  description: string,
+  roles: readonly ProcessRole[]
+) {
+  return {
+    name,
+    area,
+    description,
+    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
+    default: 'auto',
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
 const HTTP_SCHEMES = ['http:', 'https:'] as const;
 const REDIS_SCHEMES = ['redis:', 'rediss:'] as const;
 const HTTPS_ONLY = ['https:'] as const;
@@ -496,28 +526,18 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'SANDBOX_LAUNCHER',
-    area: 'security',
-    description:
-      'Whether sandboxed native tools are started by the persistent low-heap launcher process instead of forked directly from the worker. `auto` (the default) uses the launcher when available and falls back to a direct start; `off` always starts programs directly.',
-    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
-    default: 'auto',
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'QPDF_RUNNER',
-    area: 'tools',
-    description:
-      'Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.',
-    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
-    default: 'auto',
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  autoOffSetting(
+    'SANDBOX_LAUNCHER',
+    'security',
+    'Whether sandboxed native tools are started by the persistent low-heap launcher process instead of forked directly from the worker. `auto` (the default) uses the launcher when available and falls back to a direct start; `off` always starts programs directly.',
+    BOTH
+  ),
+  autoOffSetting(
+    'QPDF_RUNNER',
+    'tools',
+    'Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.',
+    BOTH
+  ),
   {
     name: 'HTML_IMAGE_FETCH',
     area: 'security',
@@ -1432,27 +1452,19 @@ const SCHEMA_ENTRIES = [
   toolPath('FFMPEG_PATH', 'Path of the ffmpeg executable; searched in the standard locations when unset.', BOTH),
   toolPath('FFPROBE_PATH', 'Path of the ffprobe executable.', BOTH),
   toolPath('FLUIDSYNTH_PATH', 'Path of the FluidSynth `fluidsynth` executable that renders MIDI files to WAV; searched in the standard locations when unset.', BOTH),
-  {
-    name: 'MIDI_SOUNDFONT_PATH',
-    area: 'tools',
-    description: 'Path of the General MIDI SoundFont (`.sf2` or `.sf3`) handed to FluidSynth; searched in the standard locations when unset.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath(
+    'MIDI_SOUNDFONT_PATH',
+    'Path of the General MIDI SoundFont (`.sf2` or `.sf3`) handed to FluidSynth; searched in the standard locations when unset.',
+    BOTH
+  ),
   absoluteToolPath('AVIFENC_PATH', 'Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('MAGICK_PATH', 'Absolute path of the ImageMagick executable (`magick`, or `convert` of version 6) that decodes HEIC, HEIF, PSD, XCF, TGA, PCX, DDS, PNM and old-style JPEG TIFF pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('OPJ_DECOMPRESS_PATH', 'Absolute path of the OpenJPEG `opj_decompress` executable that decodes JPEG 2000 (JP2, J2K) pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.', BOTH),
-  {
-    name: 'MAGICK_POLICY_DIR',
-    area: 'tools',
-    description: 'Absolute path of the directory that holds the ImageMagick `policy.xml` every picture decode runs under (all coders and delegates denied except those the decoders use). Searched in `/etc/easyconvert/imagemagick` (the worker image) and `docker/imagemagick` (the repository) when unset; without a policy the conversions that need ImageMagick fail with HTTP 503.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath(
+    'MAGICK_POLICY_DIR',
+    'Absolute path of the directory that holds the ImageMagick `policy.xml` every picture decode runs under (all coders and delegates denied except those the decoders use). Searched in `/etc/easyconvert/imagemagick` (the worker image) and `docker/imagemagick` (the repository) when unset; without a policy the conversions that need ImageMagick fail with HTTP 503.',
+    BOTH
+  ),
   toolPath('P7ZIP_PATH', 'Path of the 7-Zip executable (`7zz`, `7z` or `7za`).', BOTH),
   toolPath('P7Z_PATH', 'Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.', BOTH),
   toolPath('ZIP_PATH', 'Path of the Info-ZIP `zip` executable.', BOTH),
@@ -1476,39 +1488,19 @@ const SCHEMA_ENTRIES = [
   toolPath('VTRACER_PATH', 'Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).', BOTH),
   toolPath('CAD_CONVERT_PATH', 'Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).', BOTH),
   toolPath('QPDF_RUNNER_PATH', 'Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.', BOTH),
-  {
-    name: 'QPDF_RUNNER_LIB',
-    area: 'tools',
-    description: 'Path of the libqpdf shared library handed to `qpdf-runner` (`--lib`); the runner loads the system libqpdf when unset.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath(
+    'QPDF_RUNNER_LIB',
+    'Path of the libqpdf shared library handed to `qpdf-runner` (`--lib`); the runner loads the system libqpdf when unset.',
+    BOTH
+  ),
   toolPath('FONTFORGE_PATH', 'Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).', BOTH),
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
-  {
-    name: 'TESSDATA_PREFIX',
-    area: 'tools',
-    description: 'Directory of the Tesseract language data.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath('TESSDATA_PREFIX', 'Directory of the Tesseract language data.', BOTH),
   toolPath('VERAPDF_PATH', 'Path of the `verapdf` executable that validates PDF/A output.', BOTH),
   toolPath('QPDF_PATH', 'Path of the `qpdf` executable that encrypts PDF output.', BOTH),
   toolPath('FC_LIST_PATH', 'Path of the fontconfig `fc-list` executable.', BOTH),
-  {
-    name: 'JAVA_HOME',
-    area: 'tools',
-    description: 'Java installation handed to LibreOffice for PDF/A export.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath('JAVA_HOME', 'Java installation handed to LibreOffice for PDF/A export.', BOTH),
 ] as const satisfies readonly VariableSpec[];
 
 /** The schema as data, for the loader and the documentation generator. */

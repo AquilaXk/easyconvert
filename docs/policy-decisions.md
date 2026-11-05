@@ -206,6 +206,7 @@ Legal
 Security
 
 154. [Edge OCR engine, WebAssembly core, and language data are served from SHA-256-verified first-party assets with zero third-party CDN requests](#154-edge-ocr-engine-webassembly-core-and-language-data-are-served-from-sha-256-verified-first-party-assets-with-zero-third-party-cdn-requests)
+155. [Complete startup configuration schema coverage across literal and computed environment variables](#155-complete-startup-configuration-schema-coverage-across-literal-and-computed-environment-variables)
 
 ---
 
