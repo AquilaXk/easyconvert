@@ -617,6 +617,26 @@ export const internalPaths = {
       },
     },
   },
+  '/api/ocr-assets/{version}/{asset}': {
+    get: {
+      ...INTERNAL,
+      summary: 'Get Browser OCR Asset',
+      description:
+        'Serves a pinned Tesseract.js worker, WASM core or language data file for browser OCR, verified against the committed SHA-256 manifest before sending.',
+      operationId: 'getOcrAsset',
+      security: PUBLIC_ACCESS,
+      parameters: [
+        createPathParameter('version', 'Pinned OCR asset bundle version.'),
+        createPathParameter('asset', 'OCR engine or language asset path inside the versioned bundle.'),
+      ],
+      responses: {
+        '200': binaryResponse('Verified OCR asset bytes.'),
+        '304': { description: 'Asset matches the caller\'s `If-None-Match` tag.' },
+        '404': createProblemResponse('Unknown version or asset path (problem type `https://api.easyconvert.io/problems/not-found`).'),
+        '503': createProblemResponse('The asset is missing on the server (problem type `https://api.easyconvert.io/problems/engine-unavailable`) or failed SHA-256 verification (problem type `https://api.easyconvert.io/problems/ocr-asset-integrity-failed`).'),
+      },
+    },
+  },
   '/api/openapi.json': {
     get: {
       ...INTERNAL,

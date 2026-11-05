@@ -62,20 +62,19 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
 
     it('pure-data.ts reaches no package beyond the YAML and CSV parsers, and no server-side conversion module', () => {
       const graph = pureGraph('pure-data');
-      // node:path arrives through the format registry.
-      expect(graph.externalSpecifiers).toEqual(['js-yaml', 'node:path', 'papaparse']);
+      expect(graph.externalSpecifiers).toEqual(['js-yaml', 'papaparse']);
       expect(relativeFiles(graph).filter((file) => /office|pdf|sharp|vector-cad/i.test(file))).toEqual([]);
     });
 
-    it('pure-cad.ts reaches no conversion module and no package beyond node:path: it only encodes meshes, STEP and IGES are read on the server', () => {
+    it('pure-cad.ts reaches no conversion module and no external package: it only encodes meshes, STEP and IGES are read on the server', () => {
       const graph = pureGraph('pure-cad');
-      expect(graph.externalSpecifiers).toEqual(['node:path']);
+      expect(graph.externalSpecifiers).toEqual([]);
       expect(relativeFiles(graph).filter((file) => file.startsWith('lib/conversions/'))).toEqual([]);
     });
 
     it('the audio path never names the Node Buffer, and converts with the Buffer global removed', () => {
       const graph = pureGraph('pure-audio');
-      expect(graph.externalSpecifiers).toEqual(['node:path']);
+      expect(graph.externalSpecifiers).toEqual([]);
       // The registry, the shared types and the job graph are imported for their names and are also used on the
       // server, where they do use Buffer; the audio engine itself is every other file in the graph.
       const audioFiles = graph.files.filter((file) => !/lib\/(?:registry|types)\.ts$|lib\/(?:jobs|api)\//.test(file));
