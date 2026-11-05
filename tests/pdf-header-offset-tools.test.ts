@@ -149,7 +149,9 @@ describe('LibreOffice receives the file from the %PDF- header on', () => {
       `for a in "$@"; do prev2="$prev"; prev="$a"; [ "$prev2" = "--outdir" ] && out="$a"; done; in="$prev"\n` +
         `cp "$in" "${received}"\ncp "${output}" "$out/$(basename "$in")"`
     );
-    const validator = script('verapdf-passing', `echo '{"report":{"jobs":[{"validationResult":[{"compliant":true}]}]}}'`);
+    const report = path.join(workDir, 'compliant.json');
+    fs.writeFileSync(report, '{"report":{"jobs":[{"validationResult":[{"compliant":true}]}]}}');
+    const validator = script('verapdf-passing', `cat "${report}"`);
     const saved = { SOFFICE_PATH: process.env.SOFFICE_PATH, VERAPDF_PATH: process.env.VERAPDF_PATH };
     process.env.SOFFICE_PATH = converter;
     process.env.VERAPDF_PATH = validator;

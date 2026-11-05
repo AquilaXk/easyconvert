@@ -38,7 +38,7 @@ afterAll(() => {
 
 describe('validator failure detail', () => {
   it('answers with fixed text, not the path, when the validator cannot be started', async () => {
-    const validator = validators.write('verapdf-not-executable', 'echo unreachable');
+    const validator = validators.write('verapdf-not-executable', 'exit 0');
     fs.chmodSync(validator, NOT_EXECUTABLE_MODE);
 
     const error = await withValidator(validator, () => verifyPdfA(pdfa2b, 'pdfa-2b')).then(

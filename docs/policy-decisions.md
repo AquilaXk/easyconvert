@@ -130,6 +130,7 @@ Engines
 130. [aom is built as a Release at -O3 on arm64 too, and the other build-level levers of the libvips stage (-O3 for the remaining libraries, LTO, a higher CPU target) are measured and not taken](#130-aom-is-built-as-a-release-at--o3-on-arm64-too-and-the-other-build-level-levers-of-the-libvips-stage--o3-for-the-remaining-libraries-lto-a-higher-cpu-target-are-measured-and-not-taken)
 131. [The Vorbis encoder of the worker image takes frames of any size, so that FFmpeg 9 hands it a whole frame at a time, and the stream it writes stays the same](#131-the-vorbis-encoder-of-the-worker-image-takes-frames-of-any-size-so-that-ffmpeg-9-hands-it-a-whole-frame-at-a-time-and-the-stream-it-writes-stays-the-same)
 135. [djvulibre is built from its Debian source with two patches: a shared file is searched once for a page component or a shape dictionary, a thread that cannot start fails the drawing, a run has 64 tasks or does not start, a worker runs two at once, and the budget counts 128 pixels a byte](#135-djvulibre-is-built-from-its-debian-source-with-two-patches-a-shared-file-is-searched-once-for-a-page-component-or-a-shape-dictionary-a-thread-that-cannot-start-fails-the-drawing-a-run-has-64-tasks-or-does-not-start-a-worker-runs-two-at-once-and-the-budget-counts-128-pixels-a-byte)
+151. [LibreOffice PDF/A conversion runs asynchronously inside the process sandbox and every PDF/A output is gated on veraPDF validation](#151-libreoffice-pdfa-conversion-runs-asynchronously-inside-the-process-sandbox-and-every-pdfa-output-is-gated-on-verapdf-validation)
 
 Usage limits
 
@@ -5631,5 +5632,19 @@ Legal
 - **Verified by**: `tests/api-docs-pages.test.ts`, `tests/api-docs-curl-builder.test.ts`, and `tests/readme-registry-drift.test.ts`.
 - **Revisit when**: a new public `/api/v1/*` operation is added to `buildOpenApiDocument()` (add it to `API_DOC_TOPICS` in `src/components/api-docs/topics.ts`).
 
+## 151. LibreOffice PDF/A conversion runs asynchronously inside the process sandbox and every PDF/A output is gated on veraPDF validation
 
+- **Status**: Implemented (issues #448 and #761), decided 2026-11-05.
+- **Decision**:
+  - **Asynchronous sandboxed LibreOffice execution in `convertToPdfA`.** `convertToPdfA` in `src/lib/conversions/pdf-postprocess/pdfa.ts` spawns `soffice` through `await executeSandboxedBinary` (`timeoutMs: SOFFICE_TIMEOUT_MS`, `cwd: workDir`, `env: { SAL_USE_VCLPLUGIN: 'svp' }`, `networkIsolated: true`) instead of synchronous `resolveSandboxedCommand` + `execFileSync`, and calls `rethrowSandboxUnavailable(err)` in the catch block before mapping conversion failures to `PdfPostprocessError`.
+  - **Fail-closed veraPDF validation gate across CI and the worker image.** Every PDF/A export (`pdfa-1b`, `pdfa-2b`, `pdfa-3b`, default `pdfa-2b`) from both direct Office exports (`postProcessNativePdf` in `src/lib/conversions/dispatch.ts`) and PDF-to-PDF/A Draw round-trips (`convertToPdfA` in `src/lib/conversions/pdf-postprocess/pdfa.ts`) requires `verapdf` (`requireVerapdf` and `verifyPdfA`), failing with `EngineUnavailableError` (HTTP 503) when `verapdf` is absent or cannot start and with `PdfAValidationError` (HTTP 422 with `profile` and `failedRules`) when any ISO 19005 rule check fails.
+- **Why**:
+  - **Keep the Node.js event loop responsive during PDF/A conversions.** Running `soffice` via `execFileSync` blocked the worker or web server thread for up to `SOFFICE_TIMEOUT_MS` (60 seconds), stalling health probes, timers, and concurrent requests on the same process; `await executeSandboxedBinary` yields to the event loop while enforcing the same sanitized environment, `prlimit` memory and CPU bounds, and network namespace isolation as `runVerapdf`.
+  - **Propagate sandbox unavailability consistently.** Calling `rethrowSandboxUnavailable(err)` ensures that a missing Linux namespace sandbox in production surfaces as `SandboxUnavailableError` (HTTP 503) rather than being misclassified as a document-level `PdfPostprocessError` (HTTP 422).
+- **Trade-offs**:
+  - **None on output bytes or latency.** Process arguments, timeout (`60_000` ms), isolated profile directory (`-env:UserInstallation=file://...`), and downstream `normalisePdfADates` + `verifyPdfA` checks are unchanged.
+- **Alternatives rejected**:
+  - **Keeping `execFileSync` in `convertToPdfA`.** Blocks the Node.js event loop for the entire LibreOffice Draw import/export duration and bypasses `executeSandboxedBinary`'s async timeout and buffer management.
+- **Verified by**: `tests/pdfa-validator-execution.test.ts`, `tests/pdfa-validator-failure-detail.test.ts`, `tests/pdfa-fail-closed.test.ts`, `tests/pdf-header-offset-tools.test.ts`, `tests/pdfa-verapdf-gate.test.ts`, and `tests/pdfa-1b-dates.test.ts`.
+- **Revisit when**: LibreOffice PDF/A conversion moves to a persistent pre-warmed worker pool or an in-process PDF/A writer replaces the Draw round-trip.
 

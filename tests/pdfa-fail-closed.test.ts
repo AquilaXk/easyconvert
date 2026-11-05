@@ -59,15 +59,19 @@ async function pdfWithPdfAId(part: number, conformance: string): Promise<Buffer>
   return Buffer.from(await doc.save());
 }
 
-/** A validator stand-in that reports every file compliant, so the tests below reach the converter checks. */
-function passingValidator(): string {
-  return script(
-    'verapdf-passes-everything',
-    `echo '{"report":{"jobs":[{"validationResult":[{"compliant":true,"profileName":"PDF/A"}]}]}}'`
+function validatorReporting(name: string, compliant: boolean): string {
+  const report = path.join(workDir, `${name}.json`);
+  fs.writeFileSync(
+    report,
+    JSON.stringify({ report: { jobs: [{ validationResult: [{ compliant, profileName: 'PDF/A-1B' }] }] } })
   );
+  return script(name, `cat "${report}"`);
 }
 
-/** A fake converter that copies `source` into the `--outdir` it receives as the output. */
+function passingValidator(): string {
+  return validatorReporting('verapdf-passes-everything', true);
+}
+
 function fakeConverterCopying(source: string): string {
   return script(
     `soffice-copy-${path.basename(source)}`,
@@ -138,10 +142,7 @@ describe('convertToPdfA fails closed', () => {
     const convertedPath = path.join(workDir, 'part1-noncompliant.pdf');
     fs.writeFileSync(convertedPath, await pdfWithPdfAId(1, 'B'));
     setEnv('SOFFICE_PATH', fakeConverterCopying(convertedPath));
-    setEnv(
-      'VERAPDF_PATH',
-      script('verapdf-fail', `echo '{"report":{"jobs":[{"validationResult":[{"compliant":false,"profileName":"PDF/A-1B"}]}]}}'`)
-    );
+    setEnv('VERAPDF_PATH', validatorReporting('verapdf-fail', false));
     await expect(convertToPdfA(await samplePdf('validated'), { conformance: 'pdfa-1b' })).rejects.toThrow(
       /not PDF\/A compliant/
     );
@@ -151,10 +152,7 @@ describe('convertToPdfA fails closed', () => {
     const convertedPath = path.join(workDir, 'part1-compliant.pdf');
     fs.writeFileSync(convertedPath, await pdfWithPdfAId(1, 'B'));
     setEnv('SOFFICE_PATH', fakeConverterCopying(convertedPath));
-    setEnv(
-      'VERAPDF_PATH',
-      script('verapdf-pass', `echo '{"report":{"jobs":[{"validationResult":[{"compliant":true,"profileName":"PDF/A-1B"}]}]}}'`)
-    );
+    setEnv('VERAPDF_PATH', validatorReporting('verapdf-pass', true));
     const result = await convertToPdfA(await samplePdf('validated'), { conformance: 'pdfa-1b' });
     expect(result.pdfaValidated).toBe(true);
   });
