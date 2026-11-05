@@ -296,14 +296,30 @@ describe('PDF page rasterization pixel budgets', () => {
       [
         { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
         { id: 2, dict: '/S /JavaScript /JS (func=function(){};func();)' },
-        { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400]' },
+        { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 200 100]' },
       ],
       1
     ).buffer;
     await expect(readPdfPageFrames(jsActionPagesCatalog)).rejects.toThrow(PdfPageFrameError);
     await withPdftoppmSpy(async (wasInvoked) => {
-      const error = await executeWorkerConversion(jsActionPagesCatalog, 'pdf', 'png', { dpi: 600 }, 'bad-catalog.pdf').catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(InputPixelLimitError);
+      const error = await executeWorkerConversion(jsActionPagesCatalog, 'pdf', 'png', { dpi: 300 }, 'bad-catalog.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(PdfPageFrameError);
+      expect(wasInvoked()).toBe(false);
+    });
+
+    const degenerateRawBoxPdf = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 0 100]' },
+        ],
+        1
+      ).buffer
+    );
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(degenerateRawBoxPdf, 'pdf', 'png', { dpi: 300 }, 'degenerate-raw.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(PdfPageFrameError);
       expect(wasInvoked()).toBe(false);
     });
   });

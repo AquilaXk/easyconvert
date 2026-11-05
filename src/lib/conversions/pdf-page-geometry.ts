@@ -250,9 +250,11 @@ function maxRawUserUnit(text: string): number {
 function extractRawPdfBoxes(text: string, unit: number): PdfPageFrame[] {
   const frames: PdfPageFrame[] = [];
   for (const match of text.matchAll(RAW_PAGE_BOX_PATTERN)) {
-    const w = Math.abs(Number(match[3]) - Number(match[1]));
-    const h = Math.abs(Number(match[4]) - Number(match[2]));
-    if (!(w > 0) || !(h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+    const w = Number(match[3]) - Number(match[1]);
+    const h = Number(match[4]) - Number(match[2]);
+    if (!(w > 0) || !(h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) {
+      throw new PdfPageFrameError('Invalid PDF: page MediaBox and CropBox must have positive width and height.');
+    }
     frames.push({
       cropBox: { x0: 0, y0: 0, x1: w, y1: h },
       rotation: 0,
@@ -376,10 +378,9 @@ function inspectTreeNodeKids(doc: PDFDocument, tree: PDFPageTree, visited: Set<P
 function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
   if (!(doc.catalog instanceof PDFCatalog)) return true;
   const pagesRef = doc.catalog.get(PDFName.of('Pages'));
-  if (isMissingRef(doc, pagesRef)) return true;
+  if (pagesRef === undefined || isMissingRef(doc, pagesRef)) return true;
   const rootTree = doc.catalog.lookup(PDFName.of('Pages'));
-  if (rootTree instanceof PDFPageLeaf) return false;
-  if (!(rootTree instanceof PDFPageTree)) return true;
+  if (!(rootTree instanceof PDFPageTree)) return false;
   const visited = new Set<PDFRef>();
   if (pagesRef instanceof PDFRef) visited.add(pagesRef);
   const stack: PDFPageTree[] = [rootTree];
