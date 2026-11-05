@@ -54,7 +54,9 @@ function parseOverride(raw: string): number {
   return DEFAULT_MAX_INPUT_PIXELS;
 }
 
-export function maxInputPixels(env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {}): number {
+export function maxInputPixels(
+  env: Record<string, string | undefined> = (typeof process !== 'undefined' ? process.env : undefined) ?? {}
+): number {
   const raw = env[MAX_INPUT_PIXELS_ENV];
   if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_INPUT_PIXELS;
   let value = parsedOverrides.get(raw);

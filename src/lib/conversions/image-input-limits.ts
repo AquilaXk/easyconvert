@@ -1,4 +1,5 @@
 import sharp, { type Metadata, type Sharp, type SharpOptions } from 'sharp';
+import { ConversionFailedError } from '../types';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   INPUT_PIXEL_LIMIT_HTTP_STATUS,
