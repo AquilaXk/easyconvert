@@ -153,7 +153,7 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     });
 
     const normalised = await normalisePdfADates(input);
-    expect(normalised.length).toBe(input.length);
+    expect(normalised).toHaveLength(input.length);
 
     const inspected = await inspectPdfDatesAndMetadata(normalised);
     expect(inspected.hasFilter).toBe(false);
@@ -178,7 +178,7 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     });
 
     const normalised = await normalisePdfADates(input);
-    expect(normalised.length).toBe(input.length);
+    expect(normalised).toHaveLength(input.length);
 
     const inspected = await inspectPdfDatesAndMetadata(normalised);
     expect(inspected.hasFilter).toBe(false);
@@ -233,6 +233,8 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
 
     const normalised = await normalisePdfADates(input);
     const inspected = await inspectPdfDatesAndMetadata(normalised);
+    expect(inspected.infoCreationDate).toBe('D:20260419081530Z');
+    expect(inspected.infoModDate).toBe('D:20260419091530Z');
     expect(inspected.xmp).toContain('xmp:CreateDate="2026-04-19T08:15:30Z"');
     expect(inspected.xmp).toContain('xmp:ModifyDate="2026-04-19T09:15:30Z"');
   });
@@ -299,7 +301,7 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
         expect(corruptedXmpExport.equals(rawExport)).toBe(false);
 
         const normalised = await normalisePdfADates(corruptedXmpExport);
-        expect(normalised.length).toBe(rawExport.length);
+        expect(normalised).toHaveLength(rawExport.length);
         expect(normalised.includes(jpeg)).toBe(true);
 
         const inspected = await inspectPdfDatesAndMetadata(normalised);

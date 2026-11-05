@@ -11,10 +11,12 @@ import {
 } from 'pdf-lib';
 
 const MAX_DATE_STRING_LENGTH = 64;
-const PDF_DATE_PATTERN =
-  /^D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:(Z)(?:00'00'?)?|([+-])(\d{2})'(\d{2})'?)?$/;
-const XMP_DATE_PATTERN =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:(Z)|([+-])(\d{2}):(\d{2}))$/;
+const PDF_DATE_HEAD_PATTERN = /^D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(.*)$/;
+const PDF_TZ_OFFSET_PATTERN = /^([+-])(\d{2})'(\d{2})'?$/;
+const XMP_DATE_HEAD_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(.*)$/;
+const XMP_TZ_OFFSET_PATTERN = /^([+-])(\d{2}):(\d{2})$/;
+
+export type PdfOffsetSign = 'Z' | '+' | '-';
 
 export interface PdfDateInstant {
   year: number;
@@ -23,10 +25,25 @@ export interface PdfDateInstant {
   hour: number;
   minute: number;
   second: number;
-  offsetSign: 'Z' | '+' | '-';
+  offsetSign: PdfOffsetSign;
   offsetHours: number;
   offsetMinutes: number;
   epochMs: number;
+}
+
+interface TimezoneOffset {
+  offsetSign: PdfOffsetSign;
+  offsetHours: number;
+  offsetMinutes: number;
+}
+
+interface RawDateFields extends TimezoneOffset {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
 }
 
 function isLeapYear(year: number): boolean {
@@ -47,42 +64,32 @@ function daysInMonth(year: number, month: number): number {
   }
 }
 
-interface RawDateFields {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-  offsetSign: 'Z' | '+' | '-';
-  offsetHours: number;
-  offsetMinutes: number;
-}
-
-function normalizeOffsetSign(sign: 'Z' | '+' | '-', hours: number, minutes: number): 'Z' | '+' | '-' {
+function normalizeOffsetSign(sign: PdfOffsetSign, hours: number, minutes: number): PdfOffsetSign {
   if (sign === '-' && hours === 0 && minutes === 0) {
     return 'Z';
   }
   return sign;
 }
 
-function signedOffsetInMinutes(sign: 'Z' | '+' | '-', hours: number, minutes: number): number {
+function signedOffsetInMinutes(sign: PdfOffsetSign, hours: number, minutes: number): number {
   if (sign === 'Z') return 0;
   const total = hours * 60 + minutes;
   return sign === '+' ? total : -total;
 }
 
-function buildInstant(fields: RawDateFields): PdfDateInstant | null {
-  const { year, month, day, hour, minute, second, offsetSign, offsetHours, offsetMinutes } = fields;
-  if (year < 1 || year > 9999) return null;
-  if (month < 1 || month > 12) return null;
-  if (day < 1 || day > daysInMonth(year, month)) return null;
-  if (hour < 0 || hour > 23) return null;
-  if (minute < 0 || minute > 59) return null;
-  if (second < 0 || second > 59) return null;
-  if (offsetHours < 0 || offsetHours > 23) return null;
-  if (offsetMinutes < 0 || offsetMinutes > 59) return null;
+function isValidDateRange(fields: RawDateFields): boolean {
+  if (fields.year < 1 || fields.year > 9999) return false;
+  if (fields.month < 1 || fields.month > 12) return false;
+  if (fields.day < 1 || fields.day > daysInMonth(fields.year, fields.month)) return false;
+  if (fields.hour < 0 || fields.hour > 23) return false;
+  if (fields.minute < 0 || fields.minute > 59) return false;
+  if (fields.second < 0 || fields.second > 59) return false;
+  return fields.offsetHours >= 0 && fields.offsetHours <= 23 && fields.offsetMinutes >= 0 && fields.offsetMinutes <= 59;
+}
 
+function buildInstant(fields: RawDateFields): PdfDateInstant | null {
+  if (!isValidDateRange(fields)) return null;
+  const { year, month, day, hour, minute, second, offsetSign, offsetHours, offsetMinutes } = fields;
   const normalizedSign = normalizeOffsetSign(offsetSign, offsetHours, offsetMinutes);
   const signedOffsetMinutes = signedOffsetInMinutes(normalizedSign, offsetHours, offsetMinutes);
   const utcFieldsMs = Date.UTC(year, month - 1, day, hour, minute, second);
@@ -101,14 +108,47 @@ function buildInstant(fields: RawDateFields): PdfDateInstant | null {
   };
 }
 
+function parsePdfTimezoneSuffix(suffix: string): { tz: TimezoneOffset; explicit: boolean } | null {
+  if (suffix === '') {
+    return { tz: { offsetSign: 'Z', offsetHours: 0, offsetMinutes: 0 }, explicit: false };
+  }
+  if (suffix === 'Z' || suffix === "Z00'00'" || suffix === "Z00'00") {
+    return { tz: { offsetSign: 'Z', offsetHours: 0, offsetMinutes: 0 }, explicit: true };
+  }
+  const match = PDF_TZ_OFFSET_PATTERN.exec(suffix);
+  if (!match) return null;
+  return {
+    tz: {
+      offsetSign: match[1] as '+' | '-',
+      offsetHours: Number(match[2]),
+      offsetMinutes: Number(match[3]),
+    },
+    explicit: true,
+  };
+}
+
+function parseXmpTimezoneSuffix(suffix: string): TimezoneOffset | null {
+  if (suffix === 'Z') {
+    return { offsetSign: 'Z', offsetHours: 0, offsetMinutes: 0 };
+  }
+  const match = XMP_TZ_OFFSET_PATTERN.exec(suffix);
+  if (!match) return null;
+  return {
+    offsetSign: match[1] as '+' | '-',
+    offsetHours: Number(match[2]),
+    offsetMinutes: Number(match[3]),
+  };
+}
+
 export function parsePdfDate(raw: string): PdfDateInstant | null {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_DATE_STRING_LENGTH) {
     return null;
   }
-  const match = PDF_DATE_PATTERN.exec(raw);
+  const match = PDF_DATE_HEAD_PATTERN.exec(raw);
   if (!match) return null;
+  const parsedTz = parsePdfTimezoneSuffix(match[7]);
+  if (!parsedTz) return null;
 
-  const sign = match[8] as '+' | '-' | undefined;
   return buildInstant({
     year: Number(match[1]),
     month: Number(match[2]),
@@ -116,26 +156,26 @@ export function parsePdfDate(raw: string): PdfDateInstant | null {
     hour: Number(match[4]),
     minute: Number(match[5]),
     second: Number(match[6]),
-    offsetSign: sign ?? 'Z',
-    offsetHours: match[9] !== undefined ? Number(match[9]) : 0,
-    offsetMinutes: match[10] !== undefined ? Number(match[10]) : 0,
+    ...parsedTz.tz,
   });
 }
 
 function hasPdfDateExplicitTimezone(raw: string | undefined): boolean {
   if (!raw || raw.length > MAX_DATE_STRING_LENGTH) return false;
-  const match = PDF_DATE_PATTERN.exec(raw);
-  return Boolean(match && (match[7] !== undefined || match[8] !== undefined));
+  const match = PDF_DATE_HEAD_PATTERN.exec(raw);
+  if (!match) return false;
+  return parsePdfTimezoneSuffix(match[7])?.explicit ?? false;
 }
 
 export function parseXmpDate(raw: string): PdfDateInstant | null {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_DATE_STRING_LENGTH) {
     return null;
   }
-  const match = XMP_DATE_PATTERN.exec(raw.trim());
+  const match = XMP_DATE_HEAD_PATTERN.exec(raw.trim());
   if (!match) return null;
+  const parsedTz = parseXmpTimezoneSuffix(match[7]);
+  if (!parsedTz) return null;
 
-  const sign = match[8] as '+' | '-' | undefined;
   return buildInstant({
     year: Number(match[1]),
     month: Number(match[2]),
@@ -143,9 +183,7 @@ export function parseXmpDate(raw: string): PdfDateInstant | null {
     hour: Number(match[4]),
     minute: Number(match[5]),
     second: Number(match[6]),
-    offsetSign: sign ?? 'Z',
-    offsetHours: match[9] !== undefined ? Number(match[9]) : 0,
-    offsetMinutes: match[10] !== undefined ? Number(match[10]) : 0,
+    ...parsedTz,
   });
 }
 
@@ -204,17 +242,11 @@ function readInfoString(info: PDFDict | undefined, key: string): string | undefi
   return undefined;
 }
 
-interface TimezoneOffset {
-  offsetSign: 'Z' | '+' | '-';
-  offsetHours: number;
-  offsetMinutes: number;
-}
-
 function extractXmpDateString(xmp: string | null, localName: string): string | undefined {
   if (!xmp) return undefined;
-  const elementMatch = new RegExp(`<(?:xmp|xap):${localName}>([^<]*)<\\/(?:xmp|xap):${localName}>`).exec(xmp);
+  const elementMatch = new RegExp(String.raw`<(?:xmp|xap):${localName}>([^<]*)<\/(?:xmp|xap):${localName}>`).exec(xmp);
   if (elementMatch) return elementMatch[1].trim();
-  const attrMatch = new RegExp(`\\b(?:xmp|xap):${localName}\\s*=\\s*["']([^"']*)["']`).exec(xmp);
+  const attrMatch = new RegExp(String.raw`\b(?:xmp|xap):${localName}\s*=\s*["']([^"']*)["']`).exec(xmp);
   if (attrMatch) return attrMatch[1].trim();
   return undefined;
 }
@@ -231,20 +263,15 @@ function extractXmpTimezoneOffset(
     };
   }
   if (!rawXmpDate) return null;
-  const tzMatch = /(?:(Z)|([+-])(\d{2}):(\d{2}))$/.exec(rawXmpDate.trim());
+  const tzMatch = /(Z|[+-]\d{2}:\d{2})$/.exec(rawXmpDate.trim());
   if (!tzMatch) return null;
-  if (tzMatch[1] === 'Z') {
-    return { offsetSign: 'Z', offsetHours: 0, offsetMinutes: 0 };
-  }
-  const sign = tzMatch[2] as '+' | '-';
-  const hours = Number(tzMatch[3]);
-  const minutes = Number(tzMatch[4]);
-  if (hours > 23 || minutes > 59) return null;
-  const normalizedSign = normalizeOffsetSign(sign, hours, minutes);
+  const parsedTz = parseXmpTimezoneSuffix(tzMatch[1]);
+  if (!parsedTz || parsedTz.offsetHours > 23 || parsedTz.offsetMinutes > 59) return null;
+  const normalizedSign = normalizeOffsetSign(parsedTz.offsetSign, parsedTz.offsetHours, parsedTz.offsetMinutes);
   return {
     offsetSign: normalizedSign,
-    offsetHours: normalizedSign === 'Z' ? 0 : hours,
-    offsetMinutes: normalizedSign === 'Z' ? 0 : minutes,
+    offsetHours: normalizedSign === 'Z' ? 0 : parsedTz.offsetHours,
+    offsetMinutes: normalizedSign === 'Z' ? 0 : parsedTz.offsetMinutes,
   };
 }
 
@@ -254,18 +281,62 @@ function applyTimezoneOffset(instant: PdfDateInstant, tz: TimezoneOffset | null)
 }
 
 function rewriteXmpTagOrAttr(xmp: string, localName: string, newValue: string): { text: string; replaced: boolean } {
-  const elementRe = new RegExp(`(<(?:xmp|xap):${localName}>)([^<]*)(<\\/(?:xmp|xap):${localName}>)`, 'g');
+  const elementRe = new RegExp(String.raw`(<(?:xmp|xap):${localName}>)([^<]*)(<\/(?:xmp|xap):${localName}>)`, 'g');
   let replaced = false;
   let next = xmp.replace(elementRe, (_, open: string, _old: string, close: string) => {
     replaced = true;
     return `${open}${newValue}${close}`;
   });
-  const attrRe = new RegExp(`(\\b(?:xmp|xap):${localName}\\s*=\\s*["'])([^"']*)(["'])`, 'g');
+  const attrRe = new RegExp(String.raw`(\b(?:xmp|xap):${localName}\s*=\s*["'])([^"']*)(["'])`, 'g');
   next = next.replace(attrRe, (_, prefix: string, _old: string, suffix: string) => {
     replaced = true;
     return `${prefix}${newValue}${suffix}`;
   });
   return { text: next, replaced };
+}
+
+function insertMissingXmpCreateDate(xmp: string, xmpCreateDate: string): string {
+  const xmpDescRe = /<rdf:Description\b[^>]*xmlns:(xmp|xap)="http:\/\/ns\.adobe\.com\/xap\/1\.0\/"[^>]*>/;
+  const descMatch = xmpDescRe.exec(xmp);
+  if (descMatch) {
+    const fullTag = descMatch[0];
+    const nsPrefix = descMatch[1];
+    if (fullTag.endsWith('/>')) {
+      const openTag = `${fullTag.slice(0, -2)}>`;
+      return xmp.replace(
+        fullTag,
+        `${openTag}\n   <${nsPrefix}:CreateDate>${xmpCreateDate}</${nsPrefix}:CreateDate>\n  </rdf:Description>`
+      );
+    }
+    return xmp.replace(
+      fullTag,
+      `${fullTag}\n   <${nsPrefix}:CreateDate>${xmpCreateDate}</${nsPrefix}:CreateDate>`
+    );
+  }
+  if (xmp.includes('</rdf:RDF>')) {
+    return xmp.replace(
+      '</rdf:RDF>',
+      `  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">\n   <xmp:CreateDate>${xmpCreateDate}</xmp:CreateDate>\n  </rdf:Description>\n </rdf:RDF>`
+    );
+  }
+  return xmp;
+}
+
+function insertMissingXmpModifyDate(xmp: string, xmpModDate: string): string {
+  const closeMatch = /<\/(xmp|xap):CreateDate>/.exec(xmp);
+  if (closeMatch) {
+    const nsPrefix = closeMatch[1];
+    return xmp.replace(
+      closeMatch[0],
+      `${closeMatch[0]}\n   <${nsPrefix}:ModifyDate>${xmpModDate}</${nsPrefix}:ModifyDate>`
+    );
+  }
+  const attrMatch = /\b(xmp|xap):CreateDate\s*=\s*["'][^"']*["']/.exec(xmp);
+  if (attrMatch) {
+    const nsPrefix = attrMatch[1];
+    return xmp.replace(attrMatch[0], `${attrMatch[0]} ${nsPrefix}:ModifyDate="${xmpModDate}"`);
+  }
+  return xmp;
 }
 
 function rewriteXmpPacketDates(
@@ -274,64 +345,34 @@ function rewriteXmpPacketDates(
   xmpModDate: string,
   hasModDateInInfo: boolean
 ): string {
-  let updated = xmp;
-
-  const created = rewriteXmpTagOrAttr(updated, 'CreateDate', xmpCreateDate);
-  updated = created.text;
-  if (!created.replaced) {
-    const xmpDescRe = /<rdf:Description\b[^>]*xmlns:(xmp|xap)="http:\/\/ns\.adobe\.com\/xap\/1\.0\/"[^>]*>/;
-    const descMatch = xmpDescRe.exec(updated);
-    if (descMatch) {
-      const fullTag = descMatch[0];
-      const nsPrefix = descMatch[1];
-      if (fullTag.endsWith('/>')) {
-        const openTag = `${fullTag.slice(0, -2)}>`;
-        updated = updated.replace(
-          fullTag,
-          `${openTag}\n   <${nsPrefix}:CreateDate>${xmpCreateDate}</${nsPrefix}:CreateDate>\n  </rdf:Description>`
-        );
-      } else {
-        updated = updated.replace(
-          fullTag,
-          `${fullTag}\n   <${nsPrefix}:CreateDate>${xmpCreateDate}</${nsPrefix}:CreateDate>`
-        );
-      }
-    } else if (updated.includes('</rdf:RDF>')) {
-      updated = updated.replace(
-        '</rdf:RDF>',
-        `  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">\n   <xmp:CreateDate>${xmpCreateDate}</xmp:CreateDate>\n  </rdf:Description>\n </rdf:RDF>`
-      );
-    }
-  }
+  const created = rewriteXmpTagOrAttr(xmp, 'CreateDate', xmpCreateDate);
+  let updated = created.replaced ? created.text : insertMissingXmpCreateDate(created.text, xmpCreateDate);
 
   const modified = rewriteXmpTagOrAttr(updated, 'ModifyDate', xmpModDate);
-  updated = modified.text;
-  if (!modified.replaced && hasModDateInInfo) {
-    const closeCreateRe = /<\/(xmp|xap):CreateDate>/;
-    const closeMatch = closeCreateRe.exec(updated);
-    if (closeMatch) {
-      const nsPrefix = closeMatch[1];
-      updated = updated.replace(
-        closeMatch[0],
-        `${closeMatch[0]}\n   <${nsPrefix}:ModifyDate>${xmpModDate}</${nsPrefix}:ModifyDate>`
-      );
-    } else {
-      const attrCreateRe = /\b(xmp|xap):CreateDate\s*=\s*["'][^"']*["']/;
-      const attrMatch = attrCreateRe.exec(updated);
-      if (attrMatch) {
-        const nsPrefix = attrMatch[1];
-        updated = updated.replace(attrMatch[0], `${attrMatch[0]} ${nsPrefix}:ModifyDate="${xmpModDate}"`);
-      }
-    }
-  }
+  updated =
+    !modified.replaced && hasModDateInInfo
+      ? insertMissingXmpModifyDate(modified.text, xmpModDate)
+      : modified.text;
 
   updated = rewriteXmpTagOrAttr(updated, 'MetadataDate', xmpModDate).text;
 
-  updated = updated.replace(/<dc:date>([\s\S]*?)<\/dc:date>/g, (block) =>
+  return updated.replace(/<dc:date>([\s\S]*?)<\/dc:date>/g, (block) =>
     block.replace(/<rdf:li>[^<]*<\/rdf:li>/g, `<rdf:li>${xmpCreateDate}</rdf:li>`)
   );
+}
 
-  return updated;
+function trimPaddingSpacesBeforeEnd(beforeEnd: string, neededRemoval: number): string | null {
+  let removed = 0;
+  const chars = Array.from(beforeEnd);
+  for (let i = chars.length - 1; i >= 0 && removed < neededRemoval; i--) {
+    if (chars[i] === ' ') {
+      chars[i] = '';
+      removed++;
+    } else if (chars[i] !== '\n' && chars[i] !== '\r') {
+      break;
+    }
+  }
+  return removed === neededRemoval ? chars.join('') : null;
 }
 
 function adjustXmpPaddingToLength(xmp: string, targetByteLength: number): Buffer | null {
@@ -348,21 +389,9 @@ function adjustXmpPaddingToLength(xmp: string, targetByteLength: number): Buffer
     return paddedBytes.length === targetByteLength ? paddedBytes : null;
   }
 
-  const neededRemoval = -delta;
-  const beforeEnd = xmp.slice(0, endMarkerIndex);
-  let removed = 0;
-  const chars = Array.from(beforeEnd);
-  for (let i = chars.length - 1; i >= 0 && removed < neededRemoval; i--) {
-    if (chars[i] === ' ') {
-      chars[i] = '';
-      removed++;
-    } else if (chars[i] !== '\n' && chars[i] !== '\r') {
-      break;
-    }
-  }
-  if (removed !== neededRemoval) return null;
-  const trimmed = `${chars.join('')}${xmp.slice(endMarkerIndex)}`;
-  const trimmedBytes = Buffer.from(trimmed, 'utf-8');
+  const trimmedPrefix = trimPaddingSpacesBeforeEnd(xmp.slice(0, endMarkerIndex), -delta);
+  if (trimmedPrefix === null) return null;
+  const trimmedBytes = Buffer.from(`${trimmedPrefix}${xmp.slice(endMarkerIndex)}`, 'utf-8');
   return trimmedBytes.length === targetByteLength ? trimmedBytes : null;
 }
 
@@ -386,32 +415,85 @@ function defaultPdfAXmpPacket(xmpCreateDate: string, xmpModDate: string): string
   );
 }
 
-export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): Promise<Buffer> {
-  if (!Buffer.isBuffer(pdf) || pdf.length === 0) return pdf;
+interface CatalogXmpState {
+  metadataObj: unknown;
+  hasUncompressedRawMetadata: boolean;
+  oldXmpBytes: Buffer | null;
+  oldXmpText: string | null;
+}
 
-  let doc: PDFDocument;
-  try {
-    doc = await PDFDocument.load(pdf, { updateMetadata: false });
-  } catch {
-    return pdf;
-  }
-
+function decodeCatalogXmp(doc: PDFDocument): CatalogXmpState {
   const metadataObj = doc.catalog.lookup(PDFName.of('Metadata'));
   const hasUncompressedRawMetadata =
     metadataObj instanceof PDFRawStream && !metadataObj.dict.lookup(PDFName.of('Filter'));
 
-  let oldXmpBytes: Buffer | null = null;
-  let oldXmpText: string | null = null;
-  if (metadataObj instanceof PDFRawStream) {
-    try {
-      oldXmpBytes = Buffer.from(decodePDFRawStream(metadataObj).decode());
-      oldXmpText = oldXmpBytes.toString('utf-8');
-    } catch {
-      oldXmpBytes = null;
-      oldXmpText = null;
-    }
+  if (!(metadataObj instanceof PDFRawStream)) {
+    return { metadataObj, hasUncompressedRawMetadata, oldXmpBytes: null, oldXmpText: null };
   }
+  try {
+    const oldXmpBytes = Buffer.from(decodePDFRawStream(metadataObj).decode());
+    return {
+      metadataObj,
+      hasUncompressedRawMetadata,
+      oldXmpBytes,
+      oldXmpText: oldXmpBytes.toString('utf-8'),
+    };
+  } catch {
+    return { metadataObj, hasUncompressedRawMetadata, oldXmpBytes: null, oldXmpText: null };
+  }
+}
 
+interface ResolvedPdfDates {
+  canonicalPdfCreateDate: string;
+  canonicalXmpCreateDate: string;
+  canonicalPdfModDate: string;
+  canonicalXmpModDate: string;
+  hasModDateInInfo: boolean;
+  needsInfoRewrite: boolean;
+}
+
+function selectCreationInstant(
+  rawCreationDate: string | undefined,
+  parsedCreation: PdfDateInstant | null,
+  xmpCreateTz: TimezoneOffset | null,
+  parsedXmpCreate: PdfDateInstant | null,
+  now: Date
+): PdfDateInstant {
+  if (parsedCreation !== null) {
+    return hasPdfDateExplicitTimezone(rawCreationDate)
+      ? parsedCreation
+      : applyTimezoneOffset(parsedCreation, xmpCreateTz);
+  }
+  if (rawCreationDate === undefined && parsedXmpCreate !== null) {
+    return parsedXmpCreate;
+  }
+  return fromUtcDate(now);
+}
+
+function selectModificationInstant(
+  rawCreationDate: string | undefined,
+  rawModDate: string | undefined,
+  parsedMod: PdfDateInstant | null,
+  xmpModTz: TimezoneOffset | null,
+  parsedXmpMod: PdfDateInstant | null,
+  creationInstant: PdfDateInstant
+): PdfDateInstant {
+  if (parsedMod !== null) {
+    return hasPdfDateExplicitTimezone(rawModDate)
+      ? parsedMod
+      : applyTimezoneOffset(parsedMod, xmpModTz);
+  }
+  if (rawCreationDate === undefined && rawModDate === undefined && parsedXmpMod !== null) {
+    return parsedXmpMod;
+  }
+  return creationInstant;
+}
+
+function resolveCanonicalDates(
+  infoDict: PDFDict | undefined,
+  oldXmpText: string | null,
+  now: Date
+): ResolvedPdfDates {
   const rawXmpCreate = extractXmpDateString(oldXmpText, 'CreateDate');
   const parsedXmpCreate = rawXmpCreate !== undefined ? parseXmpDate(rawXmpCreate) : null;
   const xmpCreateTz = extractXmpTimezoneOffset(rawXmpCreate, parsedXmpCreate);
@@ -420,72 +502,77 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
   const parsedXmpMod = rawXmpMod !== undefined ? parseXmpDate(rawXmpMod) : null;
   const xmpModTz = extractXmpTimezoneOffset(rawXmpMod, parsedXmpMod) ?? xmpCreateTz;
 
-  const infoRef = doc.context.trailerInfo.Info;
-  const infoDict = infoRef ? doc.context.lookupMaybe(infoRef, PDFDict) : undefined;
-
   const rawCreationDate = readInfoString(infoDict, 'CreationDate');
   const parsedCreation = rawCreationDate !== undefined ? parsePdfDate(rawCreationDate) : null;
-  const creationHasExplicitTz = hasPdfDateExplicitTimezone(rawCreationDate);
-  let creationInstant: PdfDateInstant;
-  if (parsedCreation !== null) {
-    creationInstant = creationHasExplicitTz
-      ? parsedCreation
-      : applyTimezoneOffset(parsedCreation, xmpCreateTz);
-  } else if (rawCreationDate === undefined && parsedXmpCreate !== null) {
-    creationInstant = parsedXmpCreate;
-  } else {
-    creationInstant = fromUtcDate(now);
-  }
+  const creationInstant = selectCreationInstant(rawCreationDate, parsedCreation, xmpCreateTz, parsedXmpCreate, now);
   const canonicalPdfCreateDate = formatPdfDate(creationInstant);
   const canonicalXmpCreateDate = formatXmpDate(creationInstant);
 
   const rawModDate = readInfoString(infoDict, 'ModDate');
   const hasModDateInInfo = rawModDate !== undefined;
   const parsedMod = rawModDate !== undefined ? parsePdfDate(rawModDate) : null;
-  const modHasExplicitTz = hasPdfDateExplicitTimezone(rawModDate);
-  let modInstant: PdfDateInstant;
-  if (parsedMod !== null) {
-    modInstant = modHasExplicitTz ? parsedMod : applyTimezoneOffset(parsedMod, xmpModTz);
-  } else if (rawCreationDate === undefined && rawModDate === undefined && parsedXmpMod !== null) {
-    modInstant = parsedXmpMod;
-  } else {
-    modInstant = creationInstant;
-  }
+  const modInstant = selectModificationInstant(
+    rawCreationDate,
+    rawModDate,
+    parsedMod,
+    xmpModTz,
+    parsedXmpMod,
+    creationInstant
+  );
   const canonicalPdfModDate = formatPdfDate(modInstant);
   const canonicalXmpModDate = formatXmpDate(modInstant);
 
   const createInInfoCanonical = parsedCreation !== null && rawCreationDate === canonicalPdfCreateDate;
   const modInInfoCanonical = !hasModDateInInfo || (parsedMod !== null && rawModDate === canonicalPdfModDate);
-  const needsInfoRewrite = !infoDict || !createInInfoCanonical || !modInInfoCanonical;
 
-  const updatedXmpText =
-    oldXmpText !== null
-      ? rewriteXmpPacketDates(oldXmpText, canonicalXmpCreateDate, canonicalXmpModDate, hasModDateInInfo)
-      : defaultPdfAXmpPacket(canonicalXmpCreateDate, canonicalXmpModDate);
+  return {
+    canonicalPdfCreateDate,
+    canonicalXmpCreateDate,
+    canonicalPdfModDate,
+    canonicalXmpModDate,
+    hasModDateInInfo,
+    needsInfoRewrite: !infoDict || !createInInfoCanonical || !modInInfoCanonical,
+  };
+}
 
-  if (!needsInfoRewrite && hasUncompressedRawMetadata && oldXmpBytes !== null && oldXmpText !== null) {
-    if (updatedXmpText === oldXmpText) {
-      return pdf;
-    }
-    const sameLengthXmp = adjustXmpPaddingToLength(updatedXmpText, oldXmpBytes.length);
-    if (sameLengthXmp) {
-      const offset = pdf.indexOf(oldXmpBytes);
-      if (offset >= 0 && pdf.indexOf(oldXmpBytes, offset + 1) === -1) {
-        const copy = Buffer.from(pdf);
-        sameLengthXmp.copy(copy, offset);
-        return copy;
-      }
-    }
+function tryInPlaceXmpPatch(
+  pdf: Buffer,
+  xmpState: CatalogXmpState,
+  updatedXmpText: string
+): Buffer | null {
+  if (!xmpState.hasUncompressedRawMetadata || xmpState.oldXmpBytes === null || xmpState.oldXmpText === null) {
+    return null;
   }
+  if (updatedXmpText === xmpState.oldXmpText) {
+    return pdf;
+  }
+  const sameLengthXmp = adjustXmpPaddingToLength(updatedXmpText, xmpState.oldXmpBytes.length);
+  if (!sameLengthXmp) return null;
 
-  let targetInfoDict = infoDict;
-  if (!targetInfoDict) {
-    targetInfoDict = doc.context.obj({});
+  const offset = pdf.indexOf(xmpState.oldXmpBytes);
+  if (offset < 0 || pdf.subarray(offset + 1).includes(xmpState.oldXmpBytes)) {
+    return null;
+  }
+  const copy = Buffer.from(pdf);
+  sameLengthXmp.copy(copy, offset);
+  return copy;
+}
+
+function applyRebuiltPdfMetadata(
+  doc: PDFDocument,
+  pdf: Buffer,
+  infoDict: PDFDict | undefined,
+  metadataObj: unknown,
+  dates: ResolvedPdfDates,
+  updatedXmpText: string
+): void {
+  const targetInfoDict = infoDict ?? doc.context.obj({});
+  if (!infoDict) {
     doc.context.trailerInfo.Info = doc.context.register(targetInfoDict);
   }
-  targetInfoDict.set(PDFName.of('CreationDate'), PDFString.of(canonicalPdfCreateDate));
-  if (hasModDateInInfo || /<(?:xmp|xap):ModifyDate|\b(?:xmp|xap):ModifyDate\s*=/.test(updatedXmpText)) {
-    targetInfoDict.set(PDFName.of('ModDate'), PDFString.of(canonicalPdfModDate));
+  targetInfoDict.set(PDFName.of('CreationDate'), PDFString.of(dates.canonicalPdfCreateDate));
+  if (dates.hasModDateInInfo || /<(?:xmp|xap):ModifyDate|\b(?:xmp|xap):ModifyDate\s*=/.test(updatedXmpText)) {
+    targetInfoDict.set(PDFName.of('ModDate'), PDFString.of(dates.canonicalPdfModDate));
   }
 
   const newXmpBytes = Buffer.from(updatedXmpText, 'utf-8');
@@ -502,9 +589,42 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
   }
 
   if (!doc.context.trailerInfo.ID) {
-    const digest = crypto.createHash('md5').update(pdf).digest('hex');
+    const digest = crypto.createHash('sha256').update(pdf).digest('hex').slice(0, 32);
     doc.context.trailerInfo.ID = doc.context.obj([PDFHexString.of(digest), PDFHexString.of(digest)]);
   }
+}
+
+export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): Promise<Buffer> {
+  if (!Buffer.isBuffer(pdf) || pdf.length === 0) return pdf;
+
+  let doc: PDFDocument;
+  try {
+    doc = await PDFDocument.load(pdf, { updateMetadata: false });
+  } catch {
+    return pdf;
+  }
+
+  const xmpState = decodeCatalogXmp(doc);
+  const infoRef = doc.context.trailerInfo.Info;
+  const infoDict = infoRef ? doc.context.lookupMaybe(infoRef, PDFDict) : undefined;
+  const dates = resolveCanonicalDates(infoDict, xmpState.oldXmpText, now);
+
+  const updatedXmpText =
+    xmpState.oldXmpText !== null
+      ? rewriteXmpPacketDates(
+          xmpState.oldXmpText,
+          dates.canonicalXmpCreateDate,
+          dates.canonicalXmpModDate,
+          dates.hasModDateInInfo
+        )
+      : defaultPdfAXmpPacket(dates.canonicalXmpCreateDate, dates.canonicalXmpModDate);
+
+  if (!dates.needsInfoRewrite) {
+    const patchedInPlace = tryInPlaceXmpPatch(pdf, xmpState, updatedXmpText);
+    if (patchedInPlace) return patchedInPlace;
+  }
+
+  applyRebuiltPdfMetadata(doc, pdf, infoDict, xmpState.metadataObj, dates, updatedXmpText);
 
   const saved = Buffer.from(await doc.save({ useObjectStreams: false }));
   const inputHeader = /^%PDF-1\.[0-7]/.exec(pdf.subarray(0, 16).toString('latin1'));

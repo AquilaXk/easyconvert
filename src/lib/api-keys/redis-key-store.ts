@@ -420,6 +420,77 @@ export class RedisKeyStore extends KeyStore {
     return result;
   }
 
+  private hasLocalKeyChanged(existing: ApiKey | undefined, key: ApiKey): boolean {
+    if (!existing) return true;
+    return (
+      existing.keyHash !== key.keyHash ||
+      existing.previousKeyHash !== key.previousKeyHash ||
+      existing.status !== key.status ||
+      existing.webhookSecret !== key.webhookSecret ||
+      existing.graceExpiresAt !== key.graceExpiresAt
+    );
+  }
+
+  private resolveMigratedHashArgs(
+    key: ApiKey,
+    oldKeyHash: string,
+    oldPreviousKeyHash: string | undefined,
+    keyHashChanged: boolean,
+    prevHashChanged: boolean
+  ): { hashFieldArg: string; newHashArg: string; oldHashArg: string } {
+    const hashFieldArg = prevHashChanged ? 'previousKeyHash' : 'keyHash';
+    let newHashArg = '';
+    if (keyHashChanged) {
+      newHashArg = key.keyHash;
+    } else if (prevHashChanged && key.previousKeyHash) {
+      newHashArg = key.previousKeyHash;
+    }
+
+    let oldHashArg = '';
+    if (keyHashChanged && oldKeyHash !== key.previousKeyHash) {
+      oldHashArg = oldKeyHash;
+    } else if (prevHashChanged && oldPreviousKeyHash && oldPreviousKeyHash !== key.keyHash) {
+      oldHashArg = oldPreviousKeyHash;
+    }
+
+    return { hashFieldArg, newHashArg, oldHashArg };
+  }
+
+  private async persistMigratedKeyInRedis(
+    keyId: string,
+    key: ApiKey,
+    hashArgs: { hashFieldArg: string; newHashArg: string; oldHashArg: string }
+  ): Promise<void> {
+    if (!this.redisClient) return;
+    if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+      await this.redisClient.eval(
+        RECORD_VERIFIED_KEY_LUA_SCRIPT,
+        2,
+        `${this.keyPrefix}apikeys:${keyId}`,
+        `${this.keyPrefix}apikey_hashes`,
+        String(key.lastUsedAt),
+        JSON.stringify(key),
+        hashArgs.newHashArg,
+        hashArgs.oldHashArg,
+        key.id,
+        hashArgs.hashFieldArg
+      );
+      return;
+    }
+    if (hashArgs.newHashArg) {
+      await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, hashArgs.newHashArg, key.id);
+      if (hashArgs.oldHashArg && hashArgs.oldHashArg !== hashArgs.newHashArg) {
+        await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, hashArgs.oldHashArg);
+      }
+    }
+    await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
+      keyHash: key.keyHash,
+      previousKeyHash: key.previousKeyHash || '',
+      data: JSON.stringify(key),
+      lastUsedAt: String(key.lastUsedAt),
+    });
+  }
+
   private async recordVerifiedKeyInRedis(
     keyId: string,
     key: ApiKey,
@@ -437,14 +508,7 @@ export class RedisKeyStore extends KeyStore {
       matchedPreviousKey && Boolean(key.previousKeyHash) && key.previousKeyHash !== oldPreviousKeyHash;
 
     key.lastUsedAt = Date.now();
-    const existing = this.keys.get(key.id);
-    const localDiffers =
-      !existing ||
-      existing.keyHash !== key.keyHash ||
-      existing.previousKeyHash !== key.previousKeyHash ||
-      existing.status !== key.status ||
-      existing.webhookSecret !== key.webhookSecret ||
-      existing.graceExpiresAt !== key.graceExpiresAt;
+    const localDiffers = this.hasLocalKeyChanged(this.keys.get(key.id), key);
     this.upsertKeyInMemory(key);
     if (migrated || localDiffers) {
       this.persist();
@@ -452,51 +516,142 @@ export class RedisKeyStore extends KeyStore {
 
     if (!this.redisClient) return;
     if (migrated) {
-      const hashFieldArg = prevHashChanged ? 'previousKeyHash' : 'keyHash';
-      const newHashArg = keyHashChanged
-        ? key.keyHash
-        : prevHashChanged && key.previousKeyHash
-          ? key.previousKeyHash
-          : '';
-      const oldHashArg = keyHashChanged
-        ? oldKeyHash !== key.previousKeyHash
-          ? oldKeyHash
-          : ''
-        : prevHashChanged && oldPreviousKeyHash && oldPreviousKeyHash !== key.keyHash
-          ? oldPreviousKeyHash
-          : '';
-      if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
-        await this.redisClient.eval(
-          RECORD_VERIFIED_KEY_LUA_SCRIPT,
-          2,
-          `${this.keyPrefix}apikeys:${keyId}`,
-          `${this.keyPrefix}apikey_hashes`,
-          String(key.lastUsedAt),
-          JSON.stringify(key),
-          newHashArg,
-          oldHashArg,
-          key.id,
-          hashFieldArg
-        );
-      } else {
-        if (newHashArg) {
-          await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, newHashArg, key.id);
-          if (oldHashArg && oldHashArg !== newHashArg) {
-            await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, oldHashArg);
-          }
-        }
-        await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
-          keyHash: key.keyHash,
-          previousKeyHash: key.previousKeyHash || '',
-          data: JSON.stringify(key),
-          lastUsedAt: String(key.lastUsedAt),
-        });
-      }
+      const hashArgs = this.resolveMigratedHashArgs(
+        key,
+        oldKeyHash,
+        oldPreviousKeyHash,
+        keyHashChanged,
+        prevHashChanged
+      );
+      await this.persistMigratedKeyInRedis(keyId, key, hashArgs);
       return;
     }
     this.redisClient
       .hset(`${this.keyPrefix}apikeys:${keyId}`, 'lastUsedAt', String(key.lastUsedAt))
       .catch(() => {});
+  }
+
+  private async verifyActiveRedisKeyRecord(
+    keyId: string,
+    hashData: Record<string, string>,
+    candidates: { hashes: string[]; currentHash: string },
+    clientIp?: string
+  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string } | null> {
+    const key = JSON.parse(hashData.data) as ApiKey;
+    key.status = (hashData.status as 'active' | 'revoked') || key.status;
+
+    if (key.status !== 'active') {
+      const local = this.keys.get(keyId);
+      if (local && local.status !== 'revoked') {
+        local.status = 'revoked';
+        this.persist();
+      }
+      return { valid: false, error: 'API key has been revoked' };
+    }
+
+    if (key.expiresAt && Date.now() > key.expiresAt) {
+      return { valid: false, error: 'API key has expired' };
+    }
+
+    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
+    const matchedPreviousKey =
+      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+    if (!matchedCurrentKey && !matchedPreviousKey) {
+      return null;
+    }
+
+    if (matchedPreviousKey && key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
+      return { valid: false, error: 'Previous API key has expired following key rotation' };
+    }
+
+    if (key.allowedIps && key.allowedIps.length > 0 && clientIp && !isIpAllowed(clientIp, key.allowedIps)) {
+      return { valid: false, error: 'Client IP address is not permitted by API key IP whitelist' };
+    }
+
+    const userRecord = await redisUserStore.findById(key.userId);
+    if (!userRecord) {
+      return { valid: false, error: 'User associated with API key not found' };
+    }
+
+    if (hashData.lastExpiryNotifiedAt) {
+      key.lastExpiryNotifiedAt = Number(hashData.lastExpiryNotifiedAt);
+    }
+
+    await this.recordVerifiedKeyInRedis(keyId, key, candidates, matchedPreviousKey);
+
+    return {
+      valid: true,
+      key: {
+        ...key,
+        webhookSecret: decryptSecret(key.webhookSecret),
+      },
+      user: redisUserStore.sanitizeUser(userRecord),
+    };
+  }
+
+  private async syncStaleCandidateKeysFromRedis(
+    keyId: string | undefined,
+    candidates: { hashes: string[]; currentHash: string }
+  ): Promise<void> {
+    const staleIds = new Set<string>();
+    if (keyId) {
+      staleIds.add(keyId);
+    }
+    for (const h of candidates.hashes) {
+      const mappedId = this.keyHashIndex.get(h);
+      if (mappedId) {
+        staleIds.add(mappedId);
+      }
+      this.keyHashIndex.delete(h);
+    }
+    for (const [id, localKey] of this.keys.entries()) {
+      if (
+        candidates.hashes.includes(localKey.keyHash) ||
+        (localKey.previousKeyHash && candidates.hashes.includes(localKey.previousKeyHash))
+      ) {
+        staleIds.add(id);
+      }
+    }
+    await Promise.all(Array.from(staleIds, (staleId) => this.syncKeyFromRedis(staleId)));
+  }
+
+  private async verifyWithRedis(
+    secretKey: string,
+    clientIp?: string
+  ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
+    if (!secretKey || typeof secretKey !== 'string') {
+      return { valid: false, error: 'Missing or invalid API key' };
+    }
+    const candidates = apiKeyHashCandidates(secretKey.trim());
+    const keyIds = await this.redisClient!.hmget(`${this.keyPrefix}apikey_hashes`, ...candidates.hashes);
+    const keyId = keyIds.find((id): id is string => typeof id === 'string' && id.length > 0);
+
+    if (keyId) {
+      const hashData = await this.redisClient!.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
+      if (hashData?.data) {
+        const verified = await this.verifyActiveRedisKeyRecord(keyId, hashData, candidates, clientIp);
+        if (verified) return verified;
+      }
+    }
+    await this.syncStaleCandidateKeysFromRedis(keyId, candidates);
+    return { valid: false, error: 'Invalid or non-existent API key' };
+  }
+
+  private async checkRemoteRevocationOnFallback(localKey: ApiKey): Promise<boolean> {
+    if (!this.redisClient) return false;
+    try {
+      const remoteStatus = await this.redisClient.hget(`${this.keyPrefix}apikeys:${localKey.id}`, 'status');
+      if (remoteStatus !== 'revoked') return false;
+      localKey.status = 'revoked';
+      const cached = this.keys.get(localKey.id);
+      if (cached && cached.status !== 'revoked') {
+        cached.status = 'revoked';
+        this.persist();
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public override async verifyApiKey(
@@ -506,110 +661,15 @@ export class RedisKeyStore extends KeyStore {
     this.ensureInitialized();
     if (this.redisClient) {
       try {
-        if (!secretKey || typeof secretKey !== 'string') {
-          return { valid: false, error: 'Missing or invalid API key' };
-        }
-        const candidates = apiKeyHashCandidates(secretKey.trim());
-        const keyIds = await this.redisClient.hmget(`${this.keyPrefix}apikey_hashes`, ...candidates.hashes);
-        const keyId = keyIds.find((id): id is string => typeof id === 'string' && id.length > 0);
-
-        if (keyId) {
-          const hashData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
-          if (hashData && hashData.data) {
-            const key = JSON.parse(hashData.data) as ApiKey;
-            key.status = (hashData.status as 'active' | 'revoked') || key.status;
-
-            if (key.status !== 'active') {
-              const local = this.keys.get(keyId);
-              if (local && local.status !== 'revoked') {
-                local.status = 'revoked';
-                this.persist();
-              }
-              return { valid: false, error: 'API key has been revoked' };
-            }
-
-            if (key.expiresAt && Date.now() > key.expiresAt) {
-              return { valid: false, error: 'API key has expired' };
-            }
-
-            const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
-            const matchedPreviousKey =
-              !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
-            if (matchedCurrentKey || matchedPreviousKey) {
-              if (matchedPreviousKey) {
-                if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
-                  return { valid: false, error: 'Previous API key has expired following key rotation' };
-                }
-              }
-
-              if (key.allowedIps && key.allowedIps.length > 0 && clientIp && !isIpAllowed(clientIp, key.allowedIps)) {
-                return { valid: false, error: 'Client IP address is not permitted by API key IP whitelist' };
-              }
-
-              const userRecord = await redisUserStore.findById(key.userId);
-              if (!userRecord) {
-                return { valid: false, error: 'User associated with API key not found' };
-              }
-
-              if (hashData.lastExpiryNotifiedAt) {
-                key.lastExpiryNotifiedAt = Number(hashData.lastExpiryNotifiedAt);
-              }
-
-              await this.recordVerifiedKeyInRedis(keyId, key, candidates, matchedPreviousKey);
-
-              return {
-                valid: true,
-                key: {
-                  ...key,
-                  webhookSecret: decryptSecret(key.webhookSecret),
-                },
-                user: redisUserStore.sanitizeUser(userRecord),
-              };
-            }
-          }
-        }
-        const staleIds = new Set<string>();
-        if (keyId) {
-          staleIds.add(keyId);
-        }
-        for (const h of candidates.hashes) {
-          const mappedId = this.keyHashIndex.get(h);
-          if (mappedId) {
-            staleIds.add(mappedId);
-          }
-          this.keyHashIndex.delete(h);
-        }
-        for (const [id, localKey] of this.keys.entries()) {
-          if (
-            candidates.hashes.includes(localKey.keyHash) ||
-            (localKey.previousKeyHash && candidates.hashes.includes(localKey.previousKeyHash))
-          ) {
-            staleIds.add(id);
-          }
-        }
-        for (const staleId of staleIds) {
-          await this.syncKeyFromRedis(staleId);
-        }
-        return { valid: false, error: 'Invalid or non-existent API key' };
+        return await this.verifyWithRedis(secretKey, clientIp);
       } catch (err) {
         console.warn('[RedisKeyStore] Redis verifyApiKey failed, falling back to local memory:', err);
       }
     }
 
     const localResult = await super.verifyApiKey(secretKey, clientIp);
-    if (localResult.valid && localResult.key && this.redisClient) {
-      try {
-        const remoteStatus = await this.redisClient.hget(`${this.keyPrefix}apikeys:${localResult.key.id}`, 'status');
-        if (remoteStatus === 'revoked') {
-          localResult.key.status = 'revoked';
-          const cached = this.keys.get(localResult.key.id);
-          if (cached && cached.status !== 'revoked') {
-            cached.status = 'revoked';
-            this.persist();
-          }
-          return { valid: false, error: 'API key has been revoked' };
-        }
-      } catch {}
+    if (localResult.valid && localResult.key && (await this.checkRemoteRevocationOnFallback(localResult.key))) {
+      return { valid: false, error: 'API key has been revoked' };
     }
     return localResult;
   }
@@ -639,7 +699,7 @@ export class RedisKeyStore extends KeyStore {
     try {
       const hashData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
       const existing = this.keys.get(keyId);
-      if (hashData && hashData.data) {
+      if (hashData?.data) {
         const parsed = JSON.parse(hashData.data) as ApiKey;
         parsed.status = (hashData.status as 'active' | 'revoked') || parsed.status;
         this.upsertKeyInMemory(parsed);
