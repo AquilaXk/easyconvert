@@ -1,4 +1,4 @@
-import { PDFCatalog, PDFDocument, PDFName, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
+import { PDFCatalog, PDFDocument, PDFName, PDFNull, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limits';
 import { MAX_AGGREGATE_PAGE_PIXELS } from './image-limits';
@@ -88,6 +88,61 @@ export function normaliseLeafPageCatalog(doc: PDFDocument): void {
   }
 }
 
+const RAW_PAGE_BOX_PATTERN =
+  /\/(?:MediaBox|CropBox)\s*\[\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\]/g;
+
+function readPageUserUnit(page: PDFPage, pageNumber: number): number | undefined {
+  const unitObj = page.node.lookup(PDFName.of('UserUnit'));
+  if (unitObj === undefined || unitObj === PDFNull) return undefined;
+  if (!(unitObj instanceof PDFNumber)) {
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has a non-numeric /UserUnit.`);
+  }
+  const rawUnit = unitObj.asNumber();
+  if (!Number.isFinite(rawUnit) || rawUnit <= 0) {
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has a non-positive or invalid /UserUnit (${rawUnit}).`);
+  }
+  return rawUnit === 1 ? undefined : rawUnit;
+}
+
+function readPageCropAndUnit(
+  page: PDFPage,
+  pageNumber: number
+): { cropBox: PdfBox; angle: number; userUnit?: number } {
+  let crop: ReturnType<typeof page.getCropBox>;
+  let angle: number;
+  try {
+    crop = page.getCropBox();
+    angle = page.getRotation().angle;
+  } catch (err) {
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  if (!(crop.width > 0) || !(crop.height > 0) || !Number.isFinite(crop.x) || !Number.isFinite(crop.y)) {
+    throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} has an empty or unreadable CropBox.`);
+  }
+  const userUnit = readPageUserUnit(page, pageNumber);
+  return {
+    cropBox: { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height },
+    angle,
+    ...(userUnit === undefined ? {} : { userUnit }),
+  };
+}
+
+function assertRawPdfBoxesWithinPageLimit(pdf: Buffer | Uint8Array, dpi: number): void {
+  const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
+  const text = Buffer.isBuffer(pdf) ? pdf.toString('latin1') : Buffer.from(pdf.buffer, pdf.byteOffset, pdf.byteLength).toString('latin1');
+  for (const match of text.matchAll(RAW_PAGE_BOX_PATTERN)) {
+    const w = Math.abs(Number(match[3]) - Number(match[1]));
+    const h = Math.abs(Number(match[4]) - Number(match[2]));
+    if (!(w > 0) || !(h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+    const widthPx = Math.ceil((w * dpi) / POINTS_PER_INCH);
+    const heightPx = Math.ceil((h * dpi) / POINTS_PER_INCH);
+    const pixels = widthPx * heightPx;
+    if (!Number.isFinite(pixels) || pixels > perPageLimit) {
+      throw new InputPixelLimitError(perPageLimit, widthPx, heightPx, `PDF page at ${dpi} DPI`);
+    }
+  }
+}
+
 /** The frame of every page of a PDF, in page order. */
 export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPageFrame[]> {
   let doc: PDFDocument;
@@ -104,31 +159,9 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
     throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
   return pages.map((page, index) => {
-    let crop: ReturnType<typeof page.getCropBox>;
-    let angle: number;
-    try {
-      crop = page.getCropBox();
-      angle = page.getRotation().angle;
-    } catch (err) {
-      // A page without a readable MediaBox in its own dictionary or in any ancestor has no box to render.
-      throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
-    }
-    if (!(crop.width > 0) || !(crop.height > 0) || !Number.isFinite(crop.x) || !Number.isFinite(crop.y)) {
-      throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has an empty or unreadable CropBox.`);
-    }
-    const unitObj = page.node.lookup(PDFName.of('UserUnit'));
-    let userUnit: number | undefined;
-    if (unitObj instanceof PDFNumber) {
-      const rawUnit = unitObj.asNumber();
-      if (!Number.isFinite(rawUnit) || rawUnit <= 0) {
-        throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has a non-positive or invalid /UserUnit (${rawUnit}).`);
-      }
-      if (rawUnit !== 1) {
-        userUnit = rawUnit;
-      }
-    }
+    const { cropBox, angle, userUnit } = readPageCropAndUnit(page, index + 1);
     return {
-      cropBox: { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height },
+      cropBox,
       rotation: normalizePdfRotation(angle),
       ...(userUnit === undefined ? {} : { userUnit }),
     };
@@ -137,7 +170,7 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
 
 /** Size in points of the page as displayed: the CropBox, with width and height swapped by a quarter turn. */
 export function displayedSizePoints(frame: PdfPageFrame): { width: number; height: number } {
-  const unit = frame.userUnit ?? 1;
+  const unit = Math.max(1, frame.userUnit ?? 1);
   const sideways = frame.rotation === 90 || frame.rotation === 270;
   return sideways
     ? { width: height(frame.cropBox) * unit, height: width(frame.cropBox) * unit }
@@ -155,6 +188,9 @@ export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageN
   let totalPixels = 0;
   for (const pageNumber of pageNumbers) {
     const frame = frames[pageNumber - 1];
+    if (!frame) {
+      throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
+    }
     const { width, height } = renderedSizePixels(frame, dpi);
     const pixels = width * height;
     if (!Number.isFinite(pixels) || pixels > perPageLimit) {
@@ -176,18 +212,44 @@ export async function checkPdfRasterPageBudget(
   pdf: Buffer | Uint8Array,
   selectPageNumbers: (pageCount: number) => readonly number[],
   dpi: number
-): Promise<PdfPageFrameError | undefined> {
-  let frames: PdfPageFrame[];
+): Promise<void> {
+  let pages: PDFPage[];
   try {
-    frames = await readPdfPageFrames(pdf);
-  } catch (err) {
-    if (err instanceof PdfPageFrameError && !err.message.includes('/UserUnit')) {
-      return err;
-    }
-    throw err;
+    const doc = await PDFDocument.load(pdf, { updateMetadata: false });
+    normaliseLeafPageCatalog(doc);
+    pages = doc.getPages();
+  } catch {
+    assertRawPdfBoxesWithinPageLimit(pdf, dpi);
+    return;
   }
-  assertPdfRasterPageBudget(frames, selectPageNumbers(frames.length), dpi);
-  return undefined;
+  if (pages.length === 0) return;
+  const pageNumbers = selectPageNumbers(pages.length);
+  const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
+  let totalPixels = 0;
+  for (const pageNumber of pageNumbers) {
+    const page = pages[pageNumber - 1];
+    if (!page) {
+      throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
+    }
+    const { cropBox, angle, userUnit } = readPageCropAndUnit(page, pageNumber);
+    const unit = Math.max(1, userUnit ?? 1);
+    const unrotatedWidthPx = Math.ceil((width(cropBox) * unit * dpi) / POINTS_PER_INCH);
+    const unrotatedHeightPx = Math.ceil((height(cropBox) * unit * dpi) / POINTS_PER_INCH);
+    const pixels = unrotatedWidthPx * unrotatedHeightPx;
+    if (!Number.isFinite(pixels) || pixels > perPageLimit) {
+      throw new InputPixelLimitError(perPageLimit, unrotatedWidthPx, unrotatedHeightPx, `PDF page ${pageNumber} at ${dpi} DPI`);
+    }
+    normalizePdfRotation(angle);
+    totalPixels += pixels;
+  }
+  if (!Number.isFinite(totalPixels) || totalPixels > MAX_RASTER_AGGREGATE_PIXELS) {
+    throw new InputPixelLimitError(
+      MAX_RASTER_AGGREGATE_PIXELS,
+      undefined,
+      undefined,
+      `${pageNumbers.length} selected PDF pages at ${dpi} DPI (${totalPixels} pixels in total)`
+    );
+  }
 }
 
 /**
@@ -214,7 +276,7 @@ export function unrotatedPageGeometry(page: RenderedPdfPage): OcrGeometry {
  * last row and column may lie past the CropBox.
  */
 export function unrotatedPageScale(page: RenderedPdfPage): { scaleX: number; scaleY: number; originX: number; top: number } {
-  const pointsPerPixel = POINTS_PER_INCH / (page.dpi * (page.frame.userUnit ?? 1));
+  const pointsPerPixel = POINTS_PER_INCH / page.dpi;
   return { scaleX: pointsPerPixel, scaleY: pointsPerPixel, originX: page.frame.cropBox.x0, top: page.frame.cropBox.y1 };
 }
 

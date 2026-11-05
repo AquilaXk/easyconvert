@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { PDFDocument, PDFName, PDFNumber, degrees } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFNumber, PDFString, degrees } from 'pdf-lib';
 import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
@@ -10,6 +10,7 @@ import {
   MAX_RASTER_AGGREGATE_PIXELS,
   MAX_RASTER_PAGE_PIXELS,
   PdfPageFrameError,
+  assertPdfRasterPageBudget,
   readPdfPageFrames,
   renderedSizePixels,
 } from '../src/lib/conversions/pdf-page-geometry';
@@ -88,12 +89,42 @@ describe('PDF page rasterization pixel budgets', () => {
     const invalidUnitPdf = Buffer.from(await invalidUnitDoc.save());
     await expect(readPdfPageFrames(invalidUnitPdf)).rejects.toThrow(PdfPageFrameError);
 
+    const nonNumericUnitDoc = await PDFDocument.create();
+    const nonNumericUnitPage = nonNumericUnitDoc.addPage([600, 600]);
+    nonNumericUnitPage.node.set(PDFName.of('UserUnit'), PDFString.of('25'));
+    const nonNumericUnitPdf = Buffer.from(await nonNumericUnitDoc.save());
+    await expect(readPdfPageFrames(nonNumericUnitPdf)).rejects.toThrow(PdfPageFrameError);
+
+    const fractionalUnitDoc = await PDFDocument.create();
+    const fractionalUnitPage = fractionalUnitDoc.addPage([14_400, 14_400]);
+    fractionalUnitPage.node.set(PDFName.of('UserUnit'), PDFNumber.of(0.01));
+    const fractionalUnitPdf = Buffer.from(await fractionalUnitDoc.save());
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(fractionalUnitPdf, 'pdf', 'png', { dpi: 600 }, 'fractional-unit.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect((error as InputPixelLimitError).width).toBe(120_000);
+      expect((error as InputPixelLimitError).height).toBe(120_000);
+      expect(wasInvoked()).toBe(false);
+    });
+
+    const mixedInvalidDoc = await PDFDocument.create();
+    mixedInvalidDoc.addPage([14_400, 14_400]);
+    const secondPage = mixedInvalidDoc.addPage([600, 600]);
+    secondPage.node.set(PDFName.of('Rotate'), PDFNumber.of(45));
+    const mixedInvalidPdf = Buffer.from(await mixedInvalidDoc.save());
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(mixedInvalidPdf, 'pdf', 'png', { dpi: 600 }, 'mixed-invalid.pdf').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect(wasInvoked()).toBe(false);
+    });
+
     const rotatedDoc = await PDFDocument.create();
     const rotatedPage = rotatedDoc.addPage([300, 600]);
     rotatedPage.setCropBox(0, 0, 300, 600);
     rotatedPage.setRotation(degrees(90));
     const rotatedFrames = await readPdfPageFrames(Buffer.from(await rotatedDoc.save()));
     expect(renderedSizePixels(rotatedFrames[0], 300)).toEqual({ width: 2500, height: 1250 });
+    expect(() => assertPdfRasterPageBudget(rotatedFrames, [2], 300)).toThrow(PdfPageFrameError);
   });
 
   it('refuses a 40-page A4 PDF at 600 DPI exceeding the 400 MP aggregate budget before pdftoppm starts', async () => {

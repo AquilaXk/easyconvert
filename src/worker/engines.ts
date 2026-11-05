@@ -88,7 +88,7 @@ import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
-import { checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
+import { PdfPageFrameError, checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1339,22 +1339,17 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
         async (readablePath) => {
           // With a password the fallback parser must read the decrypted copy, not the encrypted input.
           const inputBuffer = options.password ? undefined : loadPdfInputBuffer(input);
-          const frameError =
-            rasterDpi === undefined
-              ? undefined
-              : await checkPdfRasterPageBudget(
-                  inputBuffer ?? fs.readFileSync(readablePath),
-                  (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)),
-                  rasterDpi
-                );
+          const pdfBytes = inputBuffer ?? (rasterDpi === undefined ? undefined : fs.readFileSync(readablePath));
+          if (rasterDpi !== undefined && pdfBytes !== undefined) {
+            await checkPdfRasterPageBudget(pdfBytes, (count) => pagesOfIntervals(resolveRequestedPages(options, count, !singleFile)), rasterDpi);
+          }
           const early = startEarly ? startEarly(tempDir, readablePath) : null;
           // An early run that fails is reported where the render would have reported it, below.
           early?.done.catch(() => undefined);
           let requestedIntervals: PageInterval[];
           try {
-            const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, inputBuffer);
+            const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, pdfBytes);
             requestedIntervals = resolveRequestedPages(options, pageCount, !singleFile);
-            if (frameError !== undefined) throw frameError;
           } catch (err) {
             await early?.done.catch(() => undefined);
             throw err;
@@ -1383,7 +1378,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
       );
     });
   } catch (err) {
-    if (options.throwOnUnavailable || err instanceof InputPixelLimitError || err instanceof UnsupportedOptionError) {
+    if (options.throwOnUnavailable || err instanceof InputPixelLimitError || err instanceof UnsupportedOptionError || err instanceof PdfPageFrameError) {
       throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
