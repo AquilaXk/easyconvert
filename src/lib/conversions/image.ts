@@ -37,7 +37,7 @@ import { decodeLinearBt709 } from './sdr-linear';
 import { readStillCicp } from './still-cicp';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
-import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, type PixelBudget, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -1708,18 +1708,17 @@ function assertRgbSamples(info: OutputInfo, target: string): void {
   }
 }
 
-/**
- * The float arrays of EXR and Ultra HDR output are width x height x 3 values: refuse a picture over the HDR
- * budget from its header, with the resize that will be applied, before the raster is decoded.
- */
-async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: ConversionOptions): Promise<void> {
+async function assertPixelBudgetBeforeDecode(
+  pipeline: Sharp,
+  options: ConversionOptions,
+  budget: PixelBudget = HDR_FLOAT_PIXEL_BUDGET
+): Promise<void> {
   const { width, height, orientation } = await metadataOf(pipeline);
   if (width === undefined || height === undefined) return;
-  // The picture is turned upright before it is resized, so a quarter-turn orientation swaps the sides.
   const quarterTurn = (orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
   const upright = quarterTurn ? { width: height, height: width } : { width, height };
   const target = resizedDimensions(upright.width, upright.height, options);
-  assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
+  assertPixelBudget(target.width, target.height, budget);
 }
 
 /** True for an ICO or CUR file: named by its extension or recognised by the icon directory header (type 1 or 2). */
@@ -2388,7 +2387,7 @@ async function convertImage(
           } else if (hdrFloat && imgW > 0 && imgH > 0) {
             outputBuffer = await encodeOpenExrAsync(hdrFloat, imgW, imgH, options.outputDepth !== 32);
           } else {
-            await assertFloatBudgetBeforeDecode(pipeline, options);
+            await assertPixelBudgetBeforeDecode(pipeline, options);
             // The picture's own colour description (ICC profile or CICP tag) is applied; untagged means sRGB.
             const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await metadataOf(pipeline)), inputCicp);
             assertPixelBudget(linear.width, linear.height, HDR_FLOAT_PIXEL_BUDGET);
@@ -2409,7 +2408,7 @@ async function convertImage(
             { quality }
           );
         } else {
-          await assertFloatBudgetBeforeDecode(pipeline, options);
+          await assertPixelBudgetBeforeDecode(pipeline, options);
           const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await metadataOf(pipeline)), inputCicp);
           assertPixelBudget(linear.width, linear.height, HDR_FLOAT_PIXEL_BUDGET);
           // The SDR base is the sRGB rendition of the same light, so a wide-gamut or 16-bit source needs no second guess.
@@ -2466,29 +2465,20 @@ async function convertImage(
       }
 
       case 'bmp': {
-        // Deterministic raw RGBA extraction and standard BMP binary generation
-        const { data, info } = await pipeline
-          .ensureAlpha()
-          .raw()
-          .toBuffer({ resolveWithObject: true });
-
         if (options.colorDepth === 8 || options.palette) {
+          await assertPixelBudgetBeforeDecode(pipeline, options, QUANTIZER_PIXEL_BUDGET);
+          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const colours = Math.min(256, Math.max(2, options.colors || 256));
-          const rawRgb = Buffer.alloc(info.width * info.height * 3);
-          for (let i = 0; i < info.width * info.height; i++) {
-            rawRgb[i * 3] = data[i * 4];
-            rawRgb[i * 3 + 1] = data[i * 4 + 1];
-            rawRgb[i * 3 + 2] = data[i * 4 + 2];
-          }
-
           if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise') {
             const res = oklabPaletteRaster(data, info.width, info.height, colours, options);
             outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
           } else {
-            const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
+            const quant = quantizeNeuQuant(data, info.width, info.height, 4, 10, options.dither !== false);
             outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
           }
         } else {
+          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
           outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
         }
         mimeType = 'image/bmp';

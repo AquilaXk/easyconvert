@@ -43,6 +43,8 @@ import {
 import { isMidiSource, renderMidiToWav } from './midi-render';
 import { readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
+import { assertBmpHeaderWithinLimit, isBmp } from './bmp';
+import { InputPixelLimitError, assertEncodedImageWithinLimit, assertInputPixels } from './image-input-limits';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -77,14 +79,13 @@ function resolveFfmpegViaWhich(): string | null {
 
 let resolvedFfmpegPath: string | null = null;
 export function getFfmpegPath(): string | null {
-  if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
   const envPath = process.env.FFMPEG_PATH;
   if (envPath) {
     // An explicit override is authoritative, as in the worker's resolver: a path with no file behind it
     // means the tool is not installed, not that another install should be searched for.
-    resolvedFfmpegPath = fs.existsSync(envPath) ? envPath : '';
-    return resolvedFfmpegPath || null;
+    return fs.existsSync(envPath) ? envPath : null;
   }
+  if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
   const fixedLocations = [
     '/usr/bin/ffmpeg',
     '/usr/local/bin/ffmpeg',
@@ -111,12 +112,11 @@ function resolveFfprobeViaWhich(): string | null {
 
 let resolvedFfprobePath: string | null = null;
 export function getFfprobePath(): string | null {
-  if (resolvedFfprobePath !== null) return resolvedFfprobePath || null;
   const envPath = process.env.FFPROBE_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    resolvedFfprobePath = envPath;
-    return envPath;
+  if (envPath) {
+    return fs.existsSync(envPath) ? envPath : null;
   }
+  if (resolvedFfprobePath !== null) return resolvedFfprobePath || null;
   const fixedLocations = [
     '/usr/bin/ffprobe',
     '/usr/local/bin/ffprobe',
@@ -131,30 +131,34 @@ export function getFfprobePath(): string | null {
 }
 
 /**
- * Duration of an audio/video file in seconds, which bounds how long a job may run: from the header of a WAVE file
- * or a plain MP4 when it states one, otherwise from the ffprobe that belongs to `ffmpegBin` (or the one found on
- * the host). That probe is remembered for the file, so the stream planner of the same conversion reads it again at
- * no cost. Returns 0 if ffprobe is unavailable or if parsing fails.
+ * Duration of an audio/video file in seconds, which bounds how long a job may run, and video stream dimension validation
+ * against `maxInputPixels`: read from the header of a WAVE file or a plain MP4 when present, otherwise from `ffprobe`.
+ * Returns `options.duration` when finite and positive, or 0 if ffprobe is unavailable or parsing fails.
  */
 export function probeMediaDuration(input: MediaInput, options?: ConversionOptions, ffmpegBin?: string | null): number {
-  if (typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0) {
-    return options.duration;
-  }
-  // The duration of a WAVE file with uncompressed samples is in its header; no prober process is needed.
+  const overrideDuration =
+    typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0
+      ? options.duration
+      : undefined;
   const wav = readWavPcmInfo(input.path);
-  if (wav !== null) return wav.durationSeconds;
-  // So is the length of a plain MP4, in its movie header.
+  if (wav !== null) return overrideDuration ?? wav.durationSeconds;
   const header = readMp4Layout(input.path);
-  if (header?.durationSec !== undefined) return header.durationSec;
-  if (!fs.existsSync(input.path)) return 0;
+  if (header !== null) {
+    for (const stream of header.streams) {
+      if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
+    }
+    if (header.durationSec !== undefined) return overrideDuration ?? header.durationSec;
+  }
+  if (!fs.existsSync(input.path)) return overrideDuration ?? 0;
   try {
     const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
-    if (!ffprobe) return 0;
-    return probeInput(input, ffprobe as FfprobePath).durationSec ?? 0;
+    if (!ffprobe) return overrideDuration ?? 0;
+    const probed = probeInput(input, ffprobe as FfprobePath).durationSec ?? 0;
+    return overrideDuration ?? probed;
   } catch (err) {
-    // A host that cannot confine ffprobe is refused; any other unreadable file has no known duration.
+    if (err instanceof InputPixelLimitError) throw err;
     rethrowSandboxUnavailable(err);
-    return 0;
+    return overrideDuration ?? 0;
   }
 }
 
@@ -213,6 +217,30 @@ export function checkFfmpeg(): boolean {
   return getFfmpegPath() !== null;
 }
 
+const ENCODED_IMAGE_MEDIA_SOURCES: ReadonlySet<string> = new Set([
+  'gif',
+  'webp',
+  'webpvideo',
+  'png',
+  'jpg',
+  'jpeg',
+  'tif',
+  'tiff',
+  'bmp',
+]);
+
+export function isEncodedImageMediaSource(src: string): boolean {
+  return ENCODED_IMAGE_MEDIA_SOURCES.has(src.toLowerCase());
+}
+
+export async function assertMediaImageWithinLimit(input: Buffer): Promise<void> {
+  if (isBmp(input)) {
+    assertBmpHeaderWithinLimit(input);
+    return;
+  }
+  await assertEncodedImageWithinLimit(input);
+}
+
 /**
  * Universal Audio & Video Conversion Engine
  * Supports MP3, WAV, AAC, OGG, FLAC, M4A, WMA, OPUS, MP4, WEBM, MKV, AVI, MOV
@@ -228,7 +256,10 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  // A MIDI file holds notes, not sound: the synthesizer renders it, and the rendered WAV goes through the audio pipeline.
+  if (isEncodedImageMediaSource(src)) {
+    await assertMediaImageWithinLimit(inputBuffer);
+  }
+
   if (isMidiSource(src)) {
     return convertMedia(await renderMidiToWav(inputBuffer, options), 'wav', tgt, options, originalFilename);
   }
@@ -479,6 +510,7 @@ async function executeFfmpegThumbnails(
 
   try {
     const input = openMediaInput(inputPath, src);
+    probeMediaDuration(input, options, ffmpegBin);
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
       const outputPath = path.join(tmpDir, `easyconvert_thumb_${Date.now()}_${token}_${i}.${actualTgt}`);
@@ -553,6 +585,7 @@ export async function packageHlsDashMedia(
 
   try {
     const input = openMediaInput(inputPath, src);
+    probeMediaDuration(input, options, ffmpegBin);
     const source = probePackagingSource(input, ffmpegBin);
     const args = buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
     await runFfmpeg(ffmpegBin, args, {

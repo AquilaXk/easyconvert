@@ -25,7 +25,7 @@ import {
 } from '../lib/types';
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
-import { assertDrawingPackage, officeInputWithoutMacros } from './office-input-checks';
+import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
 import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
@@ -63,6 +63,7 @@ import {
   computePackagingTimeoutMs,
   plannedRungCount,
   DEFAULT_MEDIA_TIER_MAX_MS,
+  assertMediaImageWithinLimit, isEncodedImageMediaSource,
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
@@ -94,7 +95,7 @@ import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-render-normalize';
 import {
-  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertWithinPixelCap,
+  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertDecodedRawWhole, assertRawSensorPixels, assertWithinPixelCap,
   readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
 import { dataCorruptedWarning, decoderStderrDetail, decoderWarningOffset } from './raw-decoder-report';
@@ -373,17 +374,12 @@ async function runHeadlessOffice(
     return null;
   }
 
+  await assertOfficeEmbeddedImagesWithinLimit(input);
   libreOfficePool.setSofficePath(sofficeBin);
 
   if (libreOfficePool.isEnabled()) {
     try {
-      const poolResult = await libreOfficePool.convert(
-        input,
-        src,
-        tgt,
-        options,
-        originalFilename
-      );
+      const poolResult = await libreOfficePool.convert(input, src, tgt, options, originalFilename);
       if (poolResult) {
         return poolResult;
       }
@@ -487,7 +483,9 @@ export async function convertWithNativeFfmpeg(
 
   try {
     return await withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
-      const media = openMediaInput(resolveInputContext(input, src, tempDir).inputPath, src);
+      const { inputPath } = resolveInputContext(input, src, tempDir);
+      if (isEncodedImageMediaSource(src)) await assertMediaImageWithinLimit(fs.readFileSync(inputPath));
+      const media = openMediaInput(inputPath, src);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
       const durationSeconds = probeMediaDuration(media, options, ffmpegBin);
@@ -630,7 +628,7 @@ export async function convertWithNativeFfmpeg(
       return transcoded;
     });
   } catch (err) {
-    if (options.throwOnUnavailable) {
+    if (err instanceof InputPixelLimitError || options.throwOnUnavailable) {
       throw err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
@@ -1791,6 +1789,7 @@ export async function convertWithNativeRaw(
 
   return withConversionWarnings(() => withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
+    assertRawSensorPixels(inputPath);
     const decodedPath = path.join(tempDir, 'decoded.tiff');
     let decoderStderr = '';
     try {

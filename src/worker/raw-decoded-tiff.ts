@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import { RawDecodeError } from '../lib/types';
+import { RAW_SENSOR_PIXEL_BUDGET, assertInputPixels, assertPixelBudget } from '../lib/conversions/image-input-limits';
 import { withoutAbsoluteResolution } from '../lib/conversions/image-tiff-directories';
 import { RAW_DECODE_MAX_PIXELS } from '../lib/conversions/raw-formats';
-import { dngRawImageData, dngRefusal } from './raw-dng-image-data';
+import { assertRawSensorPixels, dngRawImageData, dngRefusal } from './raw-dng-image-data';
+
+export { assertRawSensorPixels };
 
 const TIFF_HEADER_READ_BYTES = 8192;
 const TIFF_IFD_ENTRY_BYTES = 12;
@@ -94,6 +97,8 @@ export function assertWithinPixelCap(layout: DecodedTiffLayout): void {
       `Decoded RAW image of ${layout.width}x${layout.height} pixels exceeds the ${RAW_DECODE_MAX_PIXELS} pixel limit`
     );
   }
+  assertInputPixels(layout.width, layout.height);
+  assertPixelBudget(layout.width, layout.height, RAW_SENSOR_PIXEL_BUDGET);
 }
 
 /** `count` rows of the decoded image from `firstRow` on, in one buffer. */

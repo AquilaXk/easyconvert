@@ -9,6 +9,7 @@ import {
   UnprocessableMediaInputError,
 } from '../types';
 import { explainProbeFailure } from './media-decode-failures';
+import { assertInputPixels } from './image-input-limits';
 import { type MediaInput, runFfprobe } from './media-process';
 import { findUndecodableAudio } from './media-undecodable-audio';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
@@ -21,12 +22,9 @@ import { readWavPcmInfo } from './wav-header';
 
 let cachedFfprobeBin: string | null = null;
 function getInternalFfprobe(): string | null {
-  if (cachedFfprobeBin !== null) return cachedFfprobeBin || null;
   const envPath = process.env.FFPROBE_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    cachedFfprobeBin = envPath;
-    return envPath;
-  }
+  if (envPath) return fs.existsSync(envPath) ? envPath : null;
+  if (cachedFfprobeBin !== null) return cachedFfprobeBin || null;
   const fixedLocations = [
     '/usr/bin/ffprobe',
     '/usr/local/bin/ffprobe',
@@ -68,8 +66,7 @@ const BITS_PER_KILOBIT = 1000;
  */
 export function findFfprobeBinary(ffmpegBin?: string | null): FfprobePath | null {
   const override = process.env.FFPROBE_PATH;
-  // An explicit override that names no file means ffprobe is not installed; do not search elsewhere.
-  if (override && !fs.existsSync(override)) return null;
+  if (override) return fs.existsSync(override) ? (override as FfprobePath) : null;
   if (ffmpegBin) {
     const sibling = path.join(path.dirname(ffmpegBin), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
     if (fs.existsSync(sibling)) {
@@ -346,6 +343,9 @@ export function probeInput(input: MediaInput, ffprobe: FfprobePath): InputProbe 
   const duration = typeof parsed.format?.duration === 'string' ? Number.parseFloat(parsed.format.duration) : Number.NaN;
   const raw = parsed.streams as RawStream[];
   const streams = raw.map(toInputStream);
+  for (const stream of streams) {
+    if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
+  }
   markUndecodableAudio(ffprobe, input, streams, raw);
   const probe: InputProbe = {
     streams,
@@ -380,7 +380,12 @@ export function probeStreamLayout(input: MediaInput, ffprobe: FfprobePath): Stre
   const identity = inputIdentity(input);
   if (identity === undefined || !probeCache.has(identity)) {
     const header = readMp4Layout(input.path);
-    if (header !== null) return { streams: header.streams, durationSec: header.durationSec };
+    if (header !== null) {
+      for (const stream of header.streams) {
+        if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
+      }
+      return { streams: header.streams, durationSec: header.durationSec };
+    }
   }
   const probe = probeInput(input, ffprobe);
   const { chapterCount, startTimeSec } = probe.timeline;
