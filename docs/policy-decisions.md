@@ -194,8 +194,8 @@ Interface
 
 Legal
 
-145. [The terms, the privacy policy, the data processing terms and the acceptable use policy are written from law and reference research, not reviewed by counsel, and sign-up and API key creation record the accepted terms version](#145-the-terms-the-privacy-policy-the-data-processing-terms-and-the-acceptable-use-policy-are-written-from-law-and-reference-research-not-reviewed-by-counsel-and-sign-up-and-api-key-creation-record-the-accepted-terms-version)
-146. [An ended conversion job drops its inline input and webhook secret at once, and is removed with its dead letter 25 hours after it ended; a failed webhook delivery is kept 30 days with its secret encrypted; an account is erased on request by one command](#146-an-ended-conversion-job-drops-its-inline-input-and-webhook-secret-at-once-and-is-removed-with-its-dead-letter-25-hours-after-it-ended-a-failed-webhook-delivery-is-kept-30-days-with-its-secret-encrypted-an-account-is-erased-on-request-by-one-command)
+146. [The terms, the privacy policy, the data processing terms and the acceptable use policy are written from law and reference research, not reviewed by counsel, and sign-up and API key creation record the accepted terms version](#146-the-terms-the-privacy-policy-the-data-processing-terms-and-the-acceptable-use-policy-are-written-from-law-and-reference-research-not-reviewed-by-counsel-and-sign-up-and-api-key-creation-record-the-accepted-terms-version)
+147. [An ended conversion job drops its inline input and webhook secret at once, and is removed with its dead letter 25 hours after it ended; a failed webhook delivery is kept 30 days with its secret encrypted; an account is erased on request by one command](#147-an-ended-conversion-job-drops-its-inline-input-and-webhook-secret-at-once-and-is-removed-with-its-dead-letter-25-hours-after-it-ended-a-failed-webhook-delivery-is-kept-30-days-with-its-secret-encrypted-an-account-is-erased-on-request-by-one-command)
 
 ---
 
