@@ -252,6 +252,7 @@ export class LibreOfficePoolManager {
       this.workers.length + this.spawningWorkers < this.maxWorkers
     ) {
       this.spawningWorkers++;
+      let spawnFailure: unknown;
       try {
         const worker = await this.createWorker();
         if (this.isShuttingDown) {
@@ -259,11 +260,21 @@ export class LibreOfficePoolManager {
           return;
         }
         this.workers.push(worker);
+        if (this.queue.length > 0) {
+          const next = this.queue.shift()!;
+          clearTimeout(next.timer);
+          worker.state = 'BUSY';
+          next.resolve(worker);
+        }
       } catch (err) {
         console.warn('[LibreOfficePoolManager] Warning: failed to pre-warm initial worker:', err);
+        spawnFailure = err;
         break;
       } finally {
         this.spawningWorkers--;
+        if (spawnFailure !== undefined) {
+          this.rejectQueuedWaitersOnSpawnFailure(spawnFailure);
+        }
       }
     }
   }
@@ -458,7 +469,7 @@ export class LibreOfficePoolManager {
         throw err;
       } finally {
         this.spawningWorkers--;
-        if (spawnFailure !== undefined) {
+        if (spawnFailure !== undefined && this.workers.length === 0 && this.spawningWorkers === 0) {
           this.rejectQueuedWaitersOnSpawnFailure(spawnFailure);
         }
       }

@@ -623,16 +623,7 @@ export function validateJobGraph(
         break;
       }
       case 'ocr': {
-        const fixed = FIXED_OUTPUT_FORMATS.ocr as string;
-        const requested = node.options?.ocrFormat;
-        if (requested !== undefined && requested !== fixed) {
-          errors.push({
-            path: `nodes.${nodeId}.options.ocrFormat`,
-            message: `OCR node "${nodeId}" produces "${fixed}"; ocrFormat "${requested}" is not supported.`,
-            code: 'UNSUPPORTED_OUTPUT_FORMAT',
-          });
-        }
-        inferredFormats[nodeId] = fixed;
+        inferredFormats[nodeId] = checkOcrNode(nodeId, node, errors);
         break;
       }
       case 'metadata': {
@@ -741,6 +732,33 @@ function checkConvertNode(
   if (target) {
     checkConversion(nodeId, inputId, sourceFmt, target, errors);
   }
+  checkPdfAndOfficeNodeOptions(nodeId, node, target, errors);
+}
+
+function checkOcrNode(
+  nodeId: string,
+  node: { options?: { ocrFormat?: unknown; protect?: unknown; libreOfficeFilter?: unknown } & Record<string, unknown> },
+  errors: GraphValidationErrorDetail[]
+): string {
+  const fixed = FIXED_OUTPUT_FORMATS.ocr as string;
+  const requested = node.options?.ocrFormat;
+  if (requested !== undefined && requested !== fixed) {
+    errors.push({
+      path: `nodes.${nodeId}.options.ocrFormat`,
+      message: `OCR node "${nodeId}" produces "${fixed}"; ocrFormat "${requested}" is not supported.`,
+      code: 'UNSUPPORTED_OUTPUT_FORMAT',
+    });
+  }
+  checkPdfAndOfficeNodeOptions(nodeId, node, fixed, errors);
+  return fixed;
+}
+
+function checkPdfAndOfficeNodeOptions(
+  nodeId: string,
+  node: { options?: { protect?: unknown; libreOfficeFilter?: unknown } & Record<string, unknown> },
+  target: string | undefined,
+  errors: GraphValidationErrorDetail[]
+): void {
   if (node.options?.protect !== undefined) {
     try {
       validatePdfProtectOptions(node.options.protect);
@@ -755,9 +773,6 @@ function checkConvertNode(
   const filter = node.options?.libreOfficeFilter;
   if (filter !== undefined && filter !== '' && target) {
     try {
-      if (typeof filter !== 'string') {
-        throw new Error('libreOfficeFilter must be a string.');
-      }
       assertAllowedLibreOfficeFilter(target, filter);
     } catch (err) {
       errors.push({

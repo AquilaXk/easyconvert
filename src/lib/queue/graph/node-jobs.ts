@@ -51,6 +51,16 @@ export type NodeOutputArea = 'intermediate' | 'results';
 const CONTROL_OR_SEPARATOR_CHARS = /[\0-\x1f\x7f\\/]+/g;
 const MAX_NODE_OUTPUT_FILENAME_LENGTH = 255;
 const MAX_PRESERVED_EXTENSION_LENGTH = 32;
+const COMPOUND_TAR_EXT_PATTERN = /\.(?:tar\.(?:gz|bz2|bz|xz|7z|lz|lzma|lzo|z))$/i;
+
+function splitPreservedExtension(filename: string): { stem: string; ext: string } {
+  const compoundMatch = filename.match(COMPOUND_TAR_EXT_PATTERN);
+  const rawExt = compoundMatch ? compoundMatch[0] : path.posix.extname(filename);
+  if (rawExt.length > 0 && rawExt.length <= MAX_PRESERVED_EXTENSION_LENGTH && rawExt.length < filename.length) {
+    return { stem: filename.slice(0, filename.length - rawExt.length), ext: rawExt };
+  }
+  return { stem: filename, ext: '' };
+}
 
 export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'output.bin'): string {
   const base = path.posix
@@ -60,14 +70,18 @@ export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'outp
   if (!base || !/[^\s._]/.test(base)) {
     return fallback;
   }
+  const { stem, ext } = splitPreservedExtension(base);
+  if (!/[^\s._]/.test(stem)) {
+    return fallback;
+  }
   if (base.length <= MAX_NODE_OUTPUT_FILENAME_LENGTH) {
     return base;
   }
-  const ext = path.posix.extname(base);
-  if (ext.length > 0 && ext.length <= MAX_PRESERVED_EXTENSION_LENGTH) {
-    return `${base.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH - ext.length)}${ext}`;
+  const truncatedStem = stem.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH - ext.length);
+  if (!/[^\s._]/.test(truncatedStem)) {
+    return fallback;
   }
-  return base.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH);
+  return `${truncatedStem}${ext}`;
 }
 
 /**

@@ -2157,7 +2157,7 @@ async function convertWithOfficeSuiteRoutes(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
-  assertConversionOptionsObject(options);
+  assertConversionOptionsObject(options, targetFormat);
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
   if (isCalibreEbookTarget(request.tgt)) {

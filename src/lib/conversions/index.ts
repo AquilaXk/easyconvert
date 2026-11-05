@@ -27,6 +27,7 @@ import {
   checkFfmpeg,
 } from './media';
 import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
+import { assertConversionOptionsObject } from './options-guard';
 import { assertReadableInProcess, isPlainOfficeVariant } from './office/office-suite-sources';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
@@ -381,6 +382,7 @@ async function convertFileInScope(
 ): Promise<ConversionResult> {
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  assertConversionOptionsObject(options, tgt);
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Conversion payload is empty. File buffer has 0 bytes.');

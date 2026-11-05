@@ -310,6 +310,29 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       await expect(p2).rejects.toThrow(/ENOMEM: cold worker creation failed/);
       await expect(p3).rejects.toThrow(/ENOMEM: cold worker creation failed/);
     });
+
+    it('wakes queued acquireWorker callers when init finishes pre-warming up to maxWorkers', async () => {
+      const pool = new LibreOfficePoolManager({
+        minWorkers: 1,
+        maxWorkers: 1,
+        acquireTimeoutMs: 2_000,
+        enabled: true,
+      });
+      activePools.push(pool);
+
+      const originalCreateWorker = pool.createWorker.bind(pool);
+      vi.spyOn(pool, 'createWorker').mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+        return originalCreateWorker();
+      });
+
+      const initPromise = pool.init();
+      const acquirePromise = pool.acquireWorker();
+      await initPromise;
+      const acquired = await acquirePromise;
+      expect(acquired.state).toBe('BUSY');
+      await pool.releaseWorker(acquired);
+    });
   });
 
   describe('4. Conversion Execution & Profile Sandbox Security', () => {
