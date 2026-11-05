@@ -226,3 +226,23 @@ redis.call('HSET', extensions, ARGV[2], ARGV[3])
 keep(extensions, tonumber(leaseEnd))
 return {1, limit - current - added}
 `;
+
+export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+if ARGV[3] ~= '' then
+  local hashField = (ARGV[6] ~= nil and ARGV[6] ~= '') and ARGV[6] or 'keyHash'
+  redis.call('HSET', KEYS[1], hashField, ARGV[3], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
+  redis.call('HSET', KEYS[2], ARGV[3], ARGV[5])
+  if ARGV[4] ~= '' and ARGV[4] ~= ARGV[3] then
+    redis.call('HDEL', KEYS[2], ARGV[4])
+  end
+elseif ARGV[2] ~= '' then
+  redis.call('HSET', KEYS[1], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
+else
+  redis.call('HSET', KEYS[1], 'lastUsedAt', ARGV[1])
+end
+return 1
+`;
+

@@ -237,6 +237,32 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     expect(inspected.infoModDate).toBe('D:20260419091530Z');
     expect(inspected.xmp).toContain('xmp:CreateDate="2026-04-19T08:15:30Z"');
     expect(inspected.xmp).toContain('xmp:ModifyDate="2026-04-19T09:15:30Z"');
+
+    const missingCreateXmp =
+      '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\n' +
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n' +
+      ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n' +
+      '  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/"/>\n' +
+      ' </rdf:RDF>\n' +
+      '</x:xmpmeta>\n' +
+      '<?xpacket end="w"?>';
+    const docMissingCreate = await PDFDocument.create();
+    docMissingCreate.addPage([200, 200]);
+    const infoMissingCreate = docMissingCreate.context.obj({});
+    infoMissingCreate.set(PDFName.of('CreationDate'), PDFString.of('D:20260419081530Z'));
+    infoMissingCreate.set(PDFName.of('ModDate'), PDFString.of('D:20260419091530Z'));
+    docMissingCreate.context.trailerInfo.Info = docMissingCreate.context.register(infoMissingCreate);
+    const streamMissingCreate = docMissingCreate.context.stream(Buffer.from(missingCreateXmp, 'utf-8'), {
+      Type: 'Metadata',
+      Subtype: 'XML',
+    });
+    docMissingCreate.catalog.set(PDFName.of('Metadata'), docMissingCreate.context.register(streamMissingCreate));
+    const normalisedMissingCreate = await normalisePdfADates(
+      Buffer.from(await docMissingCreate.save({ useObjectStreams: false }))
+    );
+    const inspectedMissingCreate = await inspectPdfDatesAndMetadata(normalisedMissingCreate);
+    expect(inspectedMissingCreate.xmpCreateDate).toBe('2026-04-19T08:15:30Z');
+    expect(inspectedMissingCreate.xmpModifyDate).toBe('2026-04-19T09:15:30Z');
   });
 
   it('replaces malformed or hostile /Info /CreationDate with the fallback UTC timestamp without throwing', async () => {

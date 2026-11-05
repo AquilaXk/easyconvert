@@ -292,13 +292,21 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const restartedStore = new RedisKeyStore({ isolated: true, redisClient: fakeRedis as any, keyPrefix: prefix });
     const expiredFirstSecretVerify = await restartedStore.verifyApiKey(oldSecretKey);
     expect(expiredFirstSecretVerify.valid).toBe(false);
+    expect(expiredFirstSecretVerify.error).toBe('Invalid or non-existent API key');
 
     fakeRedis.hmget.mockRejectedValueOnce(new Error('redis unreachable'));
     const fallbackVerifyAfterPeerRotate = await restartedStore.verifyApiKey(oldSecretKey);
     expect(fallbackVerifyAfterPeerRotate.valid).toBe(false);
+    expect(fallbackVerifyAfterPeerRotate.error).toBe('Invalid or non-existent API key');
 
     const listed = await restartedStore.listApiKeys(testUser.id);
     expect(listed.find((item) => item.id === key.id)?.webhookSecret).toBe(WEBHOOK_SECRET);
+
+    await peerStore.revokeApiKey(testUser.id, key.id);
+    await fakeRedis.hset(`${prefix}apikey_hashes`, hmacSha256(PEPPER_V2, oldSecretKey), key.id);
+    const staleRevokedVerify = await restartedStore.verifyApiKey(oldSecretKey);
+    expect(staleRevokedVerify.valid).toBe(false);
+    expect(staleRevokedVerify.error).toBe('Invalid or non-existent API key');
   });
 
   it('migrates a legacy unpeppered key and its JWT_SECRET-encrypted webhookSecret when KEY_HASH_PEPPER is introduced', async () => {

@@ -18,7 +18,11 @@ import { decryptSecret } from './secret-encryption';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { readyGatedRedis } from '../redis/when-ready';
-import { DEDUCT_QUOTA_LUA_SCRIPT, TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT } from './quota-lua-scripts';
+import {
+  DEDUCT_QUOTA_LUA_SCRIPT,
+  RECORD_VERIFIED_KEY_LUA_SCRIPT,
+  TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
+} from './quota-lua-scripts';
 import {
   MemoryReservationLedger,
   RESERVATION_LEASE,
@@ -29,7 +33,7 @@ import {
   type ReservationLedger,
 } from './reservation-ledger';
 
-export { isIpInCidr, isIpAllowed };
+export { isIpInCidr, isIpAllowed, RECORD_VERIFIED_KEY_LUA_SCRIPT };
 export type { QuotaExtension };
 
 export interface RedisKeyStoreOptions {
@@ -84,25 +88,6 @@ function secondsUntilUtcMidnight(): number {
   midnight.setUTCHours(24, 0, 0, 0);
   return Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
 }
-
-export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  return 0
-end
-if ARGV[3] ~= '' then
-  local hashField = (ARGV[6] ~= nil and ARGV[6] ~= '') and ARGV[6] or 'keyHash'
-  redis.call('HSET', KEYS[1], hashField, ARGV[3], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
-  redis.call('HSET', KEYS[2], ARGV[3], ARGV[5])
-  if ARGV[4] ~= '' and ARGV[4] ~= ARGV[3] then
-    redis.call('HDEL', KEYS[2], ARGV[4])
-  end
-elseif ARGV[2] ~= '' then
-  redis.call('HSET', KEYS[1], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
-else
-  redis.call('HSET', KEYS[1], 'lastUsedAt', ARGV[1])
-end
-return 1
-`;
 
 /**
  * Redis-backed Key Store with atomic Lua script metering and 2-phase quota transactions
@@ -435,25 +420,17 @@ export class RedisKeyStore extends KeyStore {
     key: ApiKey,
     oldKeyHash: string,
     oldPreviousKeyHash: string | undefined,
-    keyHashChanged: boolean,
-    prevHashChanged: boolean
+    matchedPreviousKey: boolean
   ): { hashFieldArg: string; newHashArg: string; oldHashArg: string } {
-    const hashFieldArg = prevHashChanged ? 'previousKeyHash' : 'keyHash';
-    let newHashArg = '';
-    if (keyHashChanged) {
-      newHashArg = key.keyHash;
-    } else if (prevHashChanged && key.previousKeyHash) {
-      newHashArg = key.previousKeyHash;
-    }
-
-    let oldHashArg = '';
-    if (keyHashChanged && oldKeyHash !== key.previousKeyHash) {
-      oldHashArg = oldKeyHash;
-    } else if (prevHashChanged && oldPreviousKeyHash && oldPreviousKeyHash !== key.keyHash) {
-      oldHashArg = oldPreviousKeyHash;
-    }
-
-    return { hashFieldArg, newHashArg, oldHashArg };
+    const oldHash = matchedPreviousKey ? (oldPreviousKeyHash ?? '') : oldKeyHash;
+    const newHash = matchedPreviousKey ? (key.previousKeyHash ?? '') : key.keyHash;
+    const otherHash = matchedPreviousKey ? key.keyHash : (key.previousKeyHash ?? '');
+    const changed = Boolean(newHash) && newHash !== oldHash;
+    return {
+      hashFieldArg: matchedPreviousKey ? 'previousKeyHash' : 'keyHash',
+      newHashArg: changed ? newHash : '',
+      oldHashArg: changed && Boolean(oldHash) && oldHash !== otherHash ? oldHash : '',
+    };
   }
 
   private async persistMigratedKeyInRedis(
@@ -503,9 +480,6 @@ export class RedisKeyStore extends KeyStore {
     const migrated = matchedPreviousKey
       ? this.migratePreviousKeyHash(key, candidates.currentHash)
       : this.migrateKeyHash(key, candidates.currentHash);
-    const keyHashChanged = !matchedPreviousKey && key.keyHash !== oldKeyHash;
-    const prevHashChanged =
-      matchedPreviousKey && Boolean(key.previousKeyHash) && key.previousKeyHash !== oldPreviousKeyHash;
 
     key.lastUsedAt = Date.now();
     const localDiffers = this.hasLocalKeyChanged(this.keys.get(key.id), key);
@@ -516,13 +490,7 @@ export class RedisKeyStore extends KeyStore {
 
     if (!this.redisClient) return;
     if (migrated) {
-      const hashArgs = this.resolveMigratedHashArgs(
-        key,
-        oldKeyHash,
-        oldPreviousKeyHash,
-        keyHashChanged,
-        prevHashChanged
-      );
+      const hashArgs = this.resolveMigratedHashArgs(key, oldKeyHash, oldPreviousKeyHash, matchedPreviousKey);
       await this.persistMigratedKeyInRedis(keyId, key, hashArgs);
       return;
     }
@@ -540,6 +508,13 @@ export class RedisKeyStore extends KeyStore {
     const key = JSON.parse(hashData.data) as ApiKey;
     key.status = (hashData.status as 'active' | 'revoked') || key.status;
 
+    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
+    const matchedPreviousKey =
+      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
+    if (!matchedCurrentKey && !matchedPreviousKey) {
+      return null;
+    }
+
     if (key.status !== 'active') {
       const local = this.keys.get(keyId);
       if (local && local.status !== 'revoked') {
@@ -551,13 +526,6 @@ export class RedisKeyStore extends KeyStore {
 
     if (key.expiresAt && Date.now() > key.expiresAt) {
       return { valid: false, error: 'API key has expired' };
-    }
-
-    const matchedCurrentKey = candidates.hashes.includes(key.keyHash);
-    const matchedPreviousKey =
-      !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
-    if (!matchedCurrentKey && !matchedPreviousKey) {
-      return null;
     }
 
     if (matchedPreviousKey && key.graceExpiresAt && Date.now() > key.graceExpiresAt) {

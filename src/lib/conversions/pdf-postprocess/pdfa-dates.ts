@@ -133,10 +133,14 @@ function parseXmpTimezoneSuffix(suffix: string): TimezoneOffset | null {
   }
   const match = XMP_TZ_OFFSET_PATTERN.exec(suffix);
   if (!match) return null;
+  const offsetHours = Number(match[2]);
+  const offsetMinutes = Number(match[3]);
+  if (offsetHours > 23 || offsetMinutes > 59) return null;
+  const offsetSign = normalizeOffsetSign(match[1] as '+' | '-', offsetHours, offsetMinutes);
   return {
-    offsetSign: match[1] as '+' | '-',
-    offsetHours: Number(match[2]),
-    offsetMinutes: Number(match[3]),
+    offsetSign,
+    offsetHours: offsetSign === 'Z' ? 0 : offsetHours,
+    offsetMinutes: offsetSign === 'Z' ? 0 : offsetMinutes,
   };
 }
 
@@ -262,17 +266,9 @@ function extractXmpTimezoneOffset(
       offsetMinutes: parsedXmp.offsetMinutes,
     };
   }
-  if (!rawXmpDate) return null;
-  const tzMatch = /(Z|[+-]\d{2}:\d{2})$/.exec(rawXmpDate.trim());
-  if (!tzMatch) return null;
-  const parsedTz = parseXmpTimezoneSuffix(tzMatch[1]);
-  if (!parsedTz || parsedTz.offsetHours > 23 || parsedTz.offsetMinutes > 59) return null;
-  const normalizedSign = normalizeOffsetSign(parsedTz.offsetSign, parsedTz.offsetHours, parsedTz.offsetMinutes);
-  return {
-    offsetSign: normalizedSign,
-    offsetHours: normalizedSign === 'Z' ? 0 : parsedTz.offsetHours,
-    offsetMinutes: normalizedSign === 'Z' ? 0 : parsedTz.offsetMinutes,
-  };
+  if (!rawXmpDate || rawXmpDate.length > MAX_DATE_STRING_LENGTH) return null;
+  const match = XMP_DATE_HEAD_PATTERN.exec(rawXmpDate.trim());
+  return match ? parseXmpTimezoneSuffix(match[7]) : null;
 }
 
 function applyTimezoneOffset(instant: PdfDateInstant, tz: TimezoneOffset | null): PdfDateInstant {
