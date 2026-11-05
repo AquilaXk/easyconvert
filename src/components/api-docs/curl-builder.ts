@@ -8,7 +8,6 @@ import {
   type ParsedEndpointItem,
 } from './openapi-types';
 
-const DEFAULT_API_ORIGIN = 'https://api.easyconvert.com';
 const SESSION_COOKIE_NAME = 'easyconvert_session';
 const MUTATING_METHODS: ReadonlySet<string> = new Set(['post', 'put', 'patch', 'delete']);
 type SchemaMap = Record<string, OpenApiSchemaObject>;
@@ -80,8 +79,9 @@ function substitutePathParams(
   return result;
 }
 
+/** The origin requests go to: the site's own; without one (a build with no `APP_ORIGIN`) the URL stays root-relative. */
 export function resolveBaseUrl(serverUrl?: string, runtimeOrigin?: string): string {
-  const origin = stripTrailingSlashes(runtimeOrigin?.trim() ?? '') || DEFAULT_API_ORIGIN;
+  const origin = stripTrailingSlashes(runtimeOrigin?.trim() ?? '');
   const trimmed = serverUrl?.trim();
   if (!trimmed || trimmed === '/') return origin;
   const lower = trimmed.toLowerCase();

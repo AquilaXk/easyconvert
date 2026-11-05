@@ -22,7 +22,10 @@ import {
   LENGTH_REQUIRED_DESCRIPTION,
   PLAN_FILE_LIMIT_DESCRIPTION,
   SINGLE_REQUEST_LIMIT_DESCRIPTION,
+  PUBLIC_ACCESS,
 } from '../shared';
+import { SYNC_CONVERSION_MAX_BYTES } from '@/lib/api/file-size-limit';
+import { formatBytes } from '@/lib/format-bytes';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).${PDFA_ENGINE_NOTE}`;
@@ -125,6 +128,28 @@ export const conversionPaths = {
               schema: {
                 type: 'string',
                 format: 'binary',
+              },
+            },
+          },
+        },
+        '202': {
+          description: `The file is over ${formatBytes(SYNC_CONVERSION_MAX_BYTES)}, or the request sent \`Prefer: respond-async\`: the conversion is queued as a job. Poll \`statusUrl\` (also in the \`Location\` header) for its result.`,
+          headers: { Location: { description: 'Path of the job status.', schema: { type: 'string', example: '/api/v1/jobs/job_1720000000000_abc123' } } },
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  success: { type: 'boolean', example: true },
+                  status: { type: 'string', example: 'accepted' },
+                  jobId: { type: 'string', example: 'job_1720000000000_abc123' },
+                  statusUrl: { type: 'string', example: '/api/v1/jobs/job_1720000000000_abc123' },
+                  sourceFormat: { type: 'string' },
+                  targetFormat: { type: 'string' },
+                  originalFilename: { type: 'string' },
+                  fileSize: { type: 'integer' },
+                  createdAt: { type: 'number' },
+                },
               },
             },
           },
@@ -366,6 +391,7 @@ export const conversionPaths = {
       summary: 'List Supported Formats',
       description: 'Returns all supported file formats, categories, and bidirectional conversion targets.',
       operationId: 'getFormats',
+      security: PUBLIC_ACCESS,
       responses: {
         '200': {
           description: 'Dictionary of supported format definitions.',

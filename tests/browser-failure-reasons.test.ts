@@ -3,7 +3,6 @@ import { createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import ApiDocsPageView from '../src/components/pages/ApiDocsPageView';
 import { useFilesAndDlqController } from '../src/components/dashboard/useDashboardResources';
 import { useClientQueue } from '../src/hooks/useClientQueue';
 import { executeItemConversion } from '../src/lib/client-converter';
@@ -15,8 +14,6 @@ import { testMessages, type TestLocale } from './helpers/intl-messages';
  * reason goes to the console (entry 141).
  */
 
-vi.mock('../src/components/Header', () => ({ default: () => null }));
-vi.mock('../src/components/Footer', () => ({ default: () => null }));
 vi.mock('../src/lib/edge/tier-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/lib/edge/tier-router')>()),
   resolveConversionTier: () => {
@@ -67,85 +64,6 @@ describe('the dashboard', () => {
     await vi.waitFor(() => expect(controller!.dlqFeedback).toBe('다시 전송을 요청하지 못했어요. 연결을 확인해 주세요.'));
     expect(controller!.dlqFeedback).not.toContain(REASON);
     expect(warnings()).toEqual([`Sending a webhook again failed: ${REASON}`]);
-  });
-});
-
-describe('the API documentation', () => {
-  const spec = { openapi: '3.1.0', info: { title: 'API', version: '1' }, paths: {} };
-
-  it('logs why the specification did not load and offers a retry that reads it again', async () => {
-    const answers = [() => { throw new Error(REASON); }, () => new Response('{}', { status: 503 }), () => new Response(JSON.stringify(spec))];
-    const fetchSpec = vi.fn(async () => answers[Math.min(fetchSpec.mock.calls.length - 1, answers.length - 1)]());
-    vi.stubGlobal('fetch', fetchSpec);
-    const page = mount(createElement(ApiDocsPageView), 'en');
-    await vi.waitFor(() => expect(page.querySelector('[role="alert"]')).not.toBeNull());
-    expect(warnings()).toEqual([`Loading the API specification failed: ${REASON}`]);
-    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
-    expect(retry()?.textContent).toBe('Try again');
-
-    retry()!.click();
-    await vi.waitFor(() => expect(warnings()).toHaveLength(2));
-    expect(warnings()[1]).toBe('Loading the API specification failed: the server answered 503');
-    await vi.waitFor(() => expect(retry()).not.toBeNull());
-
-    retry()!.click();
-    await vi.waitFor(() => expect(page.querySelector('[role="alert"]')).toBeNull());
-    expect(fetchSpec).toHaveBeenCalledTimes(3);
-    expect(warnings()).toHaveLength(2);
-  });
-});
-
-describe('the API documentation retry', () => {
-  it('keeps keyboard focus on the page while the specification loads again and on the button when it fails again', async () => {
-    let finish: (res: Response) => void = () => undefined;
-    const second = new Promise<Response>((resolve) => { finish = resolve; });
-    const fetchSpec = vi.fn(async () => (fetchSpec.mock.calls.length === 1 ? new Response('{}', { status: 503 }) : second));
-    vi.stubGlobal('fetch', fetchSpec);
-    const page = mount(createElement(ApiDocsPageView), 'en');
-    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
-    await vi.waitFor(() => expect(retry()).not.toBeNull());
-    retry()!.focus();
-    retry()!.click();
-    await vi.waitFor(() => expect(page.querySelector('output')).not.toBeNull());
-    expect(document.activeElement).toBe(page.querySelector('output'));
-    finish(new Response('{}', { status: 503 }));
-    await vi.waitFor(() => expect(retry()).not.toBeNull());
-    expect(document.activeElement).toBe(retry());
-  });
-
-  it('leaves focus in the search field when a retry fails while the person types there', async () => {
-    let finish: (res: Response) => void = () => undefined;
-    const second = new Promise<Response>((resolve) => { finish = resolve; });
-    const fetchSpec = vi.fn(async () => (fetchSpec.mock.calls.length === 1 ? new Response('{}', { status: 503 }) : second));
-    vi.stubGlobal('fetch', fetchSpec);
-    const page = mount(createElement(ApiDocsPageView), 'en');
-    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
-    await vi.waitFor(() => expect(retry()).not.toBeNull());
-    retry()!.click();
-    await vi.waitFor(() => expect(page.querySelector('output')).not.toBeNull());
-    const search = page.querySelector<HTMLInputElement>('#endpoint-search-input')!;
-    search.focus();
-    finish(new Response('{}', { status: 503 }));
-    await vi.waitFor(() => expect(retry()).not.toBeNull());
-    expect(document.activeElement).toBe(search);
-  });
-
-  it('moves focus from the loading notice to the endpoints when a retry succeeds, not to the body', async () => {
-    const spec = { openapi: '3.1.0', info: { title: 'API', version: '1' }, paths: {} };
-    const fetchSpec = vi.fn(async () =>
-      fetchSpec.mock.calls.length === 1 ? new Response('{}', { status: 503 }) : new Response(JSON.stringify(spec)));
-    vi.stubGlobal('fetch', fetchSpec);
-    const page = mount(createElement(ApiDocsPageView), 'en');
-    const retry = () => page.querySelector<HTMLButtonElement>('[role="alert"] button');
-    await vi.waitFor(() => expect(retry()).not.toBeNull());
-    retry()!.focus();
-    retry()!.click();
-    await vi.waitFor(() => expect(page.textContent).toContain('No matching API endpoints found.'));
-    await vi.waitFor(() => expect(document.activeElement).not.toBe(document.body));
-    expect(document.activeElement?.closest('main')).not.toBeNull();
-    expect(document.activeElement?.textContent).toContain('No matching API endpoints found.');
-    const named = document.getElementById(document.activeElement!.getAttribute('aria-labelledby') ?? '');
-    expect([document.activeElement?.tagName, named?.textContent?.trim()]).toEqual(['SECTION', 'Endpoints Reference']);
   });
 });
 

@@ -17,10 +17,10 @@ export function buildOpenApiDocument() {
   return {
     openapi: '3.1.0',
     info: {
-      title: 'EasyConvert Enterprise REST API',
+      title: 'EasyConvert API',
       version: '1.0.0',
       description:
-        'Enterprise data, media, document, CAD, and RAW conversion platform with asynchronous job queues, zero-heap streaming, dead-letter webhook queues, and granular RBAC scopes. Operations marked `x-internal` serve the web application and are not part of the public contract.',
+        'Converts files over HTTP: one request for a small file, a job for a large one. Operations marked `x-internal` serve the web application and are not part of the public contract.',
       termsOfService: new URL(LEGAL_DOCUMENTS.terms.path, getAppOrigin()).href,
       contact: {
         name: 'EasyConvert Engineering',

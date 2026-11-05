@@ -24,7 +24,7 @@ export const PAGE_NAMESPACES = {
   ],
   auth: [...CHROME, 'auth', 'errors'],
   dashboard: [...CHROME, 'dashboard', 'errors'],
-  apiDocs: [...CHROME, 'apiDocs'],
+  apiDocs: [...CHROME],
   status: [...CHROME, 'status'],
   legal: [...CHROME],
   unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq'],

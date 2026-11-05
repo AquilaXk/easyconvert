@@ -3,6 +3,14 @@ import { SINGLE_REQUEST_BODY_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planO
 import { createProblemDetailsResponse } from './problem-details';
 import { partBodyVerdict, singleRequestVerdict, type BodyLengthVerdict } from './request-body-limit';
 
+const MIB = 1024 * 1024;
+
+/** The largest file `POST /api/v1/convert` converts while the request waits; a larger one is queued as a job (202). */
+export const SYNC_CONVERSION_MAX_BYTES = 10 * MIB;
+
+/** The largest result the JSON answer of `POST /api/v1/convert` also carries as a `data:` URI. */
+export const DATA_URI_MAX_BYTES = 5 * MIB;
+
 /**
  * The 413 for a file of `sizeBytes` over the plan limit of `caller`, or null when the file fits (or has no known size). The
  * answer names the plan, the size and the limit as fields, so the interface words them in its own language.

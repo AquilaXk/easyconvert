@@ -1228,6 +1228,11 @@ export const JobResourceSchema = {
       type: 'object',
       description: 'Job execution result metadata.',
       properties: {
+        downloadUrl: { type: 'string', description: 'Path of the result; send it to `GET /api/storage/file/{key}` with the key.' },
+        filename: { type: 'string', description: 'File name of the result.' },
+        mimeType: { type: 'string' },
+        size: { type: 'integer', description: 'Size of the result in bytes.' },
+        durationMs: { type: 'number', description: 'Time the conversion took, in milliseconds.' },
         ...EngineTraceProperties,
         ...DroppedStreamsProperties,
         ...ConversionWarningsProperties,

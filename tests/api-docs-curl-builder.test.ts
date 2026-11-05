@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createElement, type ComponentType } from 'react';
 import { buildCurlSnippet } from '../src/components/api-docs/curl-builder';
-import { RequestBodySection } from '../src/components/api-docs/EndpointSchemaTables';
+import { schemaFields } from '../src/components/api-docs/api-reference';
 import {
   dereferenceSchema,
   formatSchemaType,
@@ -11,10 +10,7 @@ import {
   type OpenApiSchemaObject,
 } from '../src/components/api-docs/openapi-types';
 import { buildOpenApiDocument } from '../src/lib/api/openapi';
-import { phrasesMissing, renderDom, visibleText } from './helpers/rendered-dom';
 
-const render = <P extends object>(component: ComponentType<P>, props: P) =>
-  renderDom(createElement(component, props));
 
 describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () => {
   it('synthesizes JSON and binary PUT cURL flags without spurious multipart defaults', () => {
@@ -61,7 +57,7 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
       ''
     );
     expect(publicPutCurl.split(' \\\n')).toEqual([
-      'curl -X PUT "https://api.easyconvert.com/api/v1/uploads/direct/part"',
+      'curl -X PUT "/api/v1/uploads/direct/part"',
       '  -H "Content-Type: application/octet-stream"',
       '  --upload-file ./part.bin',
     ]);
@@ -83,13 +79,8 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     expect(headCurl).toContain('Authorization: Bearer ec_live_\\$SECRET\\`id\\`\\"key\\\\1');
 
     const rotateOp = doc.paths['/api/v1/webhooks/secrets/rotate'].post as unknown as OpenApiOperation;
-    const rotateSection = render(RequestBodySection, {
-      content: rotateOp.requestBody!.content!,
-      schemas,
-    });
-    expect(
-      phrasesMissing(visibleText(rotateSection), ['endpointId', 'apiKeyId', 'graceSeconds'])
-    ).toEqual([]);
+    const rotateFields = schemaFields(rotateOp.requestBody!.content!['application/json'].schema).map((field) => field.name);
+    expect(rotateFields).toEqual(expect.arrayContaining(['endpointId', 'apiKeyId', 'graceSeconds']));
 
     const rotateCurl = buildCurlSnippet(
       { key: 'POST:/api/v1/webhooks/secrets/rotate', method: 'post', path: '/api/v1/webhooks/secrets/rotate', operation: rotateOp },
@@ -125,19 +116,11 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     );
     expect(formatSchemaType(resolvedAnyOf, 'object')).toBe('string | number');
 
-    const unionBodyDom = render(RequestBodySection, {
-      content: {
-        'application/json': {
-          schema: {
-            type: 'object',
-            properties: { threshold: { oneOf: [{ type: 'string' }, { type: 'number' }] } },
-          },
-        },
-      },
-      schemas,
+    const unionFields = schemaFields({
+      type: 'object',
+      properties: { threshold: { oneOf: [{ type: 'string' }, { type: 'number' }] } },
     });
-    expect(visibleText(unionBodyDom)).toContain('[string | number]');
-    expect(visibleText(unionBodyDom)).not.toContain('[object]');
+    expect(unionFields.map((field) => [field.name, field.type])).toEqual([['threshold', 'string | number']]);
 
     const resolvedPdfaProblem = dereferenceSchema(
       { $ref: '#/components/schemas/PdfaValidationProblem' },
@@ -300,7 +283,7 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
       { schemas }
     );
     expect(partCurl).toContain(
-      '"https://api.easyconvert.com/api/v1/uploads/direct/part?uploadId=upl_01J9EXAMPLE&partNumber=1"'
+      '"/api/v1/uploads/direct/part?uploadId=upl_01J9EXAMPLE&partNumber=1"'
     );
 
     const completeOp = doc.paths['/api/v1/uploads/direct/complete'].post as unknown as OpenApiOperation;

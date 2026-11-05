@@ -27,6 +27,8 @@ import {
 } from '@/lib/api/contracts';
 import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { API_KEY_SCOPES } from './shared';
+import { DATA_URI_MAX_BYTES } from '@/lib/api/file-size-limit';
+import { formatBytes } from '@/lib/format-bytes';
 
 /** Reusable security schemes and schemas; contract schemas come from the contracts SSOT. */
 export const components = {
@@ -86,7 +88,8 @@ export const components = {
         mimeType: { type: 'string' },
         size: { type: 'integer' },
         durationMs: { type: 'number' },
-        dataUri: { type: 'string' },
+        dataUri: { type: 'string', description: `The result as a \`data:\` URI, present only for a result of ${formatBytes(DATA_URI_MAX_BYTES)} or less.` },
+        downloadUrl: { type: 'string', description: 'Path of the result; send it to `GET /api/storage/file/{key}` with the key.' },
         expiresAt: { type: 'number' },
         ...EngineTraceProperties,
         ...DroppedStreamsProperties,
