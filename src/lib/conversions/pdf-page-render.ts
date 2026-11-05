@@ -14,7 +14,14 @@ import {
 import { assertInputPixels } from './image-input-limits';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
-import { assertPdfRasterPageBudget, readPdfPageFrames, renderedSizePixels, type PdfPageFrame, type RenderedPdfPage } from './pdf-page-geometry';
+import {
+  assertPdfRasterPageBudget,
+  checkPdfRasterPageBudget,
+  readPdfPageFrames,
+  renderedSizePixels,
+  type PdfPageFrame,
+  type RenderedPdfPage,
+} from './pdf-page-geometry';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
 import { PAGE_IMAGE_MAX_PAGES } from './page-range';
 
@@ -137,20 +144,11 @@ export interface RenderPlan {
   dpi: number;
 }
 
-/**
- * Checks the pages and resolution against every limit before any page is drawn, and returns the frames of the
- * requested pages (all pages when `pages` is undefined).
- */
-export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | undefined, requestedDpi: number | undefined): Promise<RenderPlan> {
-  const dpi = resolveRenderDpi(requestedDpi);
-  // The renderer decodes every image a page draws, so an image that declares more pixels than the input limit is
-  // refused from its dictionary first (413), and one whose size cannot be read is refused as unreadable (400).
-  assertPdfImagesWithinLimit(pdf);
-  const frames = await readPdfPageFrames(pdf);
-  const pageNumbers = (pages === undefined ? frames.map((_, index) => index + 1) : [...pages]).sort((a, b) => a - b);
+function selectOcrPageNumbers(pages: ReadonlySet<number> | undefined, pageCount: number): number[] {
+  const pageNumbers = (pages === undefined ? Array.from({ length: pageCount }, (_, index) => index + 1) : [...pages]).sort((a, b) => a - b);
   for (const pageNumber of pageNumbers) {
-    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > frames.length) {
-      throw new ConversionFailedError(`Page ${pageNumber} does not exist; the PDF has ${frames.length} page(s).`);
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pageCount) {
+      throw new ConversionFailedError(`Page ${pageNumber} does not exist; the PDF has ${pageCount} page(s).`);
     }
   }
   if (pageNumbers.length > OCR_MAX_RENDERED_PAGES) {
@@ -158,6 +156,19 @@ export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | u
       `OCR was asked to render ${pageNumbers.length} pages; at most ${OCR_MAX_RENDERED_PAGES} are rendered in one request. Select a page range.`
     );
   }
+  return pageNumbers;
+}
+
+/**
+ * Checks the pages and resolution against every limit before any page is drawn, and returns the frames of the
+ * requested pages (all pages when `pages` is undefined).
+ */
+export async function planPageRender(pdf: Buffer, pages: ReadonlySet<number> | undefined, requestedDpi: number | undefined): Promise<RenderPlan> {
+  const dpi = resolveRenderDpi(requestedDpi);
+  assertPdfImagesWithinLimit(pdf);
+  await checkPdfRasterPageBudget(pdf, (pageCount) => selectOcrPageNumbers(pages, pageCount), dpi);
+  const frames = await readPdfPageFrames(pdf);
+  const pageNumbers = selectOcrPageNumbers(pages, frames.length);
   assertPdfRasterPageBudget(frames, pageNumbers, dpi);
   return { pageNumbers, frames: pageNumbers.map((pageNumber) => frames[pageNumber - 1]), dpi };
 }
