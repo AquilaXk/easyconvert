@@ -4,8 +4,8 @@ import {
   PDFDocument,
   PDFHexString,
   PDFName,
-  PDFNumber,
   PDFRawStream,
+  PDFRef,
   PDFString,
   decodePDFRawStream,
 } from 'pdf-lib';
@@ -412,7 +412,6 @@ function defaultPdfAXmpPacket(xmpCreateDate: string, xmpModDate: string): string
 }
 
 interface CatalogXmpState {
-  metadataObj: unknown;
   hasUncompressedRawMetadata: boolean;
   oldXmpBytes: Buffer | null;
   oldXmpText: string | null;
@@ -424,18 +423,17 @@ function decodeCatalogXmp(doc: PDFDocument): CatalogXmpState {
     metadataObj instanceof PDFRawStream && !metadataObj.dict.lookup(PDFName.of('Filter'));
 
   if (!(metadataObj instanceof PDFRawStream)) {
-    return { metadataObj, hasUncompressedRawMetadata, oldXmpBytes: null, oldXmpText: null };
+    return { hasUncompressedRawMetadata, oldXmpBytes: null, oldXmpText: null };
   }
   try {
     const oldXmpBytes = Buffer.from(decodePDFRawStream(metadataObj).decode());
     return {
-      metadataObj,
       hasUncompressedRawMetadata,
       oldXmpBytes,
       oldXmpText: oldXmpBytes.toString('utf-8'),
     };
   } catch {
-    return { metadataObj, hasUncompressedRawMetadata, oldXmpBytes: null, oldXmpText: null };
+    return { hasUncompressedRawMetadata, oldXmpBytes: null, oldXmpText: null };
   }
 }
 
@@ -558,7 +556,6 @@ function applyRebuiltPdfMetadata(
   doc: PDFDocument,
   pdf: Buffer,
   infoDict: PDFDict | undefined,
-  metadataObj: unknown,
   dates: ResolvedPdfDates,
   updatedXmpText: string
 ): void {
@@ -572,15 +569,11 @@ function applyRebuiltPdfMetadata(
   }
 
   const newXmpBytes = Buffer.from(updatedXmpText, 'utf-8');
-  if (metadataObj instanceof PDFRawStream) {
-    metadataObj.contents = newXmpBytes;
-    metadataObj.dict.delete(PDFName.of('Filter'));
-    metadataObj.dict.delete(PDFName.of('DecodeParms'));
-    metadataObj.dict.set(PDFName.of('Type'), PDFName.of('Metadata'));
-    metadataObj.dict.set(PDFName.of('Subtype'), PDFName.of('XML'));
-    metadataObj.dict.set(PDFName.of('Length'), PDFNumber.of(newXmpBytes.length));
+  const stream = doc.context.stream(newXmpBytes, { Type: 'Metadata', Subtype: 'XML' });
+  const metadataRef = doc.catalog.get(PDFName.of('Metadata'));
+  if (metadataRef instanceof PDFRef) {
+    doc.context.assign(metadataRef, stream);
   } else {
-    const stream = doc.context.stream(newXmpBytes, { Type: 'Metadata', Subtype: 'XML' });
     doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
   }
 
@@ -620,7 +613,7 @@ export async function normalisePdfADates(pdf: Buffer, now: Date = new Date()): P
     if (patchedInPlace) return patchedInPlace;
   }
 
-  applyRebuiltPdfMetadata(doc, pdf, infoDict, xmpState.metadataObj, dates, updatedXmpText);
+  applyRebuiltPdfMetadata(doc, pdf, infoDict, dates, updatedXmpText);
 
   const saved = Buffer.from(await doc.save({ useObjectStreams: false }));
   const inputHeader = /^%PDF-1\.[0-7]/.exec(pdf.subarray(0, 16).toString('latin1'));

@@ -323,7 +323,7 @@ export async function convertToPdfA(
     if (!fs.existsSync(outputPdf)) {
       throw new PdfPostprocessError('PDF/A conversion failed: output file was not generated.');
     }
-    let resultBuffer = fs.readFileSync(outputPdf);
+    let resultBuffer: Buffer = fs.readFileSync(outputPdf);
     if (resultBuffer.equals(pdfBuffer)) {
       throw new PdfPostprocessError('PDF/A conversion failed: the document was not converted.');
     }
