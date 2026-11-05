@@ -365,6 +365,7 @@ async function runHeadlessOffice(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  const filterSpec = resolveLibreOfficeFilter(tgt, src, options);
   const sofficeBin = resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH);
   if (!sofficeBin) {
     libreOfficePool.setSofficePath(null);
@@ -402,7 +403,6 @@ async function runHeadlessOffice(
   try {
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, src, tempDir);
-
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
@@ -415,7 +415,7 @@ async function runHeadlessOffice(
           '--nologo',
           `-env:UserInstallation=file://${tempDir}/user`,
           '--convert-to',
-          resolveLibreOfficeFilter(tgt, src, options),
+          filterSpec,
           '--outdir',
           tempDir,
           inputPath,
@@ -2157,7 +2157,7 @@ async function convertWithOfficeSuiteRoutes(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
-  assertConversionOptionsObject(options);
+  assertConversionOptionsObject(options, targetFormat);
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
   if (isCalibreEbookTarget(request.tgt)) {
@@ -2214,7 +2214,7 @@ async function convertWithinImageSession(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
-  assertConversionOptionsObject(options);
+  assertConversionOptionsObject(options, targetFormat);
   // An aborted job (deadline, cancel) starts no further stage: work that cannot be interrupted must not begin.
   options.signal?.throwIfAborted();
   const declaredSource = validateFormat(sourceFormat);

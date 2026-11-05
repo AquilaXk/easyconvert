@@ -12,6 +12,7 @@ import {
   getLibreOfficePool,
   libreOfficePool,
 } from '../src/worker/engines';
+import { UnsupportedOptionError } from '../src/lib/types';
 
 // A real soffice run includes the pool readiness probe, which takes several seconds on a loaded host.
 const REAL_SOFFICE_TIMEOUT_MS = 60_000;
@@ -224,6 +225,114 @@ describe('Pre-warmed LibreOffice worker pool', () => {
 
       await pool.releaseWorker(freshWorker);
     });
+
+    it('bounds concurrent cold spawns by maxWorkers using spawningWorkers accounting', async () => {
+      let spawnCount = 0;
+      const slowExecutor = vi.fn(async () => {
+        spawnCount++;
+        await new Promise((r) => setTimeout(r, 40));
+        return {
+          stdout: Buffer.from(''),
+          stderr: Buffer.from(''),
+          exitCode: 0,
+          durationMs: 40,
+          sandboxed: true,
+          sandboxType: 'host' as const,
+        };
+      });
+
+      const pool = new LibreOfficePoolManager({
+        maxWorkers: 2,
+        sofficePath: '/usr/bin/soffice',
+        enabled: true,
+        executor: slowExecutor,
+      });
+      activePools.push(pool);
+
+      const p1 = pool.acquireWorker();
+      const p2 = pool.acquireWorker();
+      const p3 = pool.acquireWorker();
+      const p4 = pool.acquireWorker();
+
+      const [w1, w2] = await Promise.all([p1, p2]);
+      expect(pool.getStats().totalWorkers).toBe(2);
+      expect(spawnCount).toBe(2);
+
+      await pool.releaseWorker(w1);
+      await pool.releaseWorker(w2);
+
+      const [w3, w4] = await Promise.all([p3, p4]);
+      expect(pool.getStats().totalWorkers).toBe(2);
+      expect(spawnCount).toBe(2);
+
+      await pool.releaseWorker(w3);
+      await pool.releaseWorker(w4);
+    });
+
+    it('rejects the next queued waiter immediately when replacement worker creation fails during recycle', async () => {
+      const pool = new LibreOfficePoolManager({
+        maxWorkers: 1,
+        maxJobsPerWorker: 1,
+        acquireTimeoutMs: 10_000,
+        enabled: true,
+      });
+      activePools.push(pool);
+
+      const w1 = await pool.acquireWorker();
+      w1.jobCount = 1;
+      const queuedWaiter = pool.acquireWorker();
+      vi.spyOn(pool, 'createWorker').mockRejectedValueOnce(
+        new Error('ENOSPC: failed to create replacement sandbox dir')
+      );
+
+      await pool.releaseWorker(w1);
+      await expect(queuedWaiter).rejects.toThrow(/ENOSPC: failed to create replacement sandbox dir/);
+    });
+
+    it('drains and rejects all queued waiters when a cold spawn fails with zero remaining workers', async () => {
+      const pool = new LibreOfficePoolManager({
+        maxWorkers: 1,
+        acquireTimeoutMs: 10_000,
+        enabled: true,
+      });
+      activePools.push(pool);
+
+      vi.spyOn(pool, 'createWorker').mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        throw new Error('ENOMEM: cold worker creation failed');
+      });
+
+      const p1 = pool.acquireWorker();
+      const p2 = pool.acquireWorker();
+      const p3 = pool.acquireWorker();
+
+      await expect(p1).rejects.toThrow(/ENOMEM: cold worker creation failed/);
+      await expect(p2).rejects.toThrow(/ENOMEM: cold worker creation failed/);
+      await expect(p3).rejects.toThrow(/ENOMEM: cold worker creation failed/);
+    });
+
+    it('wakes queued acquireWorker callers when init finishes pre-warming up to maxWorkers', async () => {
+      const pool = new LibreOfficePoolManager({
+        minWorkers: 1,
+        maxWorkers: 1,
+        acquireTimeoutMs: 2_000,
+        enabled: true,
+      });
+      activePools.push(pool);
+
+      const originalCreateWorker = pool.createWorker.bind(pool);
+      vi.spyOn(pool, 'createWorker').mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, 25));
+        return originalCreateWorker();
+      });
+
+      const initPromise = pool.init();
+      const acquirePromise = pool.acquireWorker();
+      await initPromise;
+      const acquired = await acquirePromise;
+      expect(acquired.state).toBe('BUSY');
+      await pool.releaseWorker(acquired);
+    });
   });
 
   describe('4. Conversion Execution & Profile Sandbox Security', () => {
@@ -297,6 +406,14 @@ describe('Pre-warmed LibreOffice worker pool', () => {
       const dummy = Buffer.from('test');
       await expect(pool.convert(dummy, 'docx; rm -rf /', 'pdf')).rejects.toThrow(/Invalid format identifier/);
       await expect(pool.convert(dummy, 'docx', 'pdf && malicious')).rejects.toThrow(/Invalid format identifier/);
+
+      const wBefore = await pool.acquireWorker();
+      await pool.releaseWorker(wBefore);
+      const totalBefore = pool.getStats().totalJobsProcessed;
+      await expect(
+        pool.convert(dummy, 'docx', 'pdf', { libreOfficeFilter: 'custom_filter' })
+      ).rejects.toThrow(UnsupportedOptionError);
+      expect(pool.getStats().totalJobsProcessed).toBe(totalBefore);
     });
   });
 
@@ -397,9 +514,20 @@ describe('Pre-warmed LibreOffice worker pool', () => {
           '"MaxImageResolution":{"type":"long","value":"150"}}'
       );
 
-      // 7. Explicit custom filter
-      expect(resolveLibreOfficeFilter('pdf', 'odt', { libreOfficeFilter: 'custom_filter' })).toBe(
-        'pdf:custom_filter'
+      expect(resolveLibreOfficeFilter('pdf', 'odt', { libreOfficeFilter: 'writer_pdf_Export' })).toBe(
+        'pdf:writer_pdf_Export'
+      );
+      expect(resolveLibreOfficeFilter('xls', 'xlsx', { libreOfficeFilter: 'MS Excel 97' })).toBe(
+        'xls:MS Excel 97'
+      );
+      expect(() => resolveLibreOfficeFilter('pdf', 'odt', { libreOfficeFilter: 'custom_filter' })).toThrow(
+        UnsupportedOptionError
+      );
+      expect(() => resolveLibreOfficeFilter('pdf', 'odt', { libreOfficeFilter: 'MS Excel 97' })).toThrow(
+        UnsupportedOptionError
+      );
+      expect(() => resolveLibreOfficeFilter('png', 'docx', { libreOfficeFilter: 'writer_pdf_Export' })).toThrow(
+        UnsupportedOptionError
       );
 
       // 8. Non-PDF target formats pass through untouched

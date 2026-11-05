@@ -96,7 +96,11 @@ export const OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS = 120_000;
  * nothing there. The limits are set here, over whatever the request carried.
  */
 export function withOfficePageBounds(src: string, options: WorkerEngineOptions): WorkerEngineOptions {
-  const bounded = { ...options, timeoutMs: options.timeoutMs ?? OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS };
+  const bounded = {
+    ...options,
+    libreOfficeFilter: undefined,
+    timeoutMs: options.timeoutMs ?? OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS,
+  };
   if (officeSuiteApplication(src) !== 'calc') return bounded;
   const firstPageOnly = options.multiPageOutput === 'first' && !selectsPages(options);
   return { ...bounded, pdfExportPageRange: firstPageOnly ? FIRST_PAGE_RANGE : undefined };

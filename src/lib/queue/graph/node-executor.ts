@@ -13,7 +13,7 @@ import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
 import { maskFailure } from '../../security/server-paths';
-import { graphNodeJobId, nodeOutputKey } from './node-jobs';
+import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
   createTarArchive,
@@ -155,10 +155,16 @@ async function processIntermediatePdfArtifacts(
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const transformedBuf = await transformFn(stored.buffer);
-      const outFilename = stored.filename || path.basename(inputKey);
-      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
-      await storage.saveObject(outKey, transformedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
-      return outKey;
+      return saveIntermediateNodeOutput(
+        storage,
+        { graphId, nodeId, index },
+        {
+          buffer: transformedBuf,
+          mimeType: registryMimeType('pdf'),
+          filename: stored.filename || path.basename(inputKey),
+          fallbackFilename: 'output.pdf',
+        }
+      );
     })
   );
 }
@@ -168,6 +174,60 @@ interface PdfNodeOutput {
   buffer: Buffer;
   filename: string;
   formatId: string;
+}
+
+async function saveIntermediateNodeOutput(
+  storage: IStorageBackend,
+  location: { graphId: string; nodeId: string; index: number },
+  artifact: { buffer: Buffer; mimeType: string; filename: string; fallbackFilename: string }
+): Promise<string> {
+  const safeName = sanitizeNodeOutputFilename(artifact.filename, artifact.fallbackFilename);
+  const outKey = nodeOutputKey('intermediate', location.graphId, location.nodeId, location.index, safeName);
+  await storage.saveObject(outKey, artifact.buffer, artifact.mimeType, safeName, INTERMEDIATE_TTL_MS);
+  return outKey;
+}
+
+async function convertGraphNodeInputs(
+  context: {
+    graphId: string;
+    nodeId: string;
+    inputArtifacts: string[];
+    storage: IStorageBackend;
+    engine: ConversionEnginePort;
+    attemptSignal: AbortSignal;
+  },
+  spec: {
+    targetFormat: string;
+    options: Parameters<ConversionEnginePort['convert']>[3];
+    fallbackFilename: string;
+    outputFilenameOverride?: string;
+    mimeTypeOverride?: string;
+  }
+): Promise<string[]> {
+  const keys: string[] = [];
+  for (const [index, inputKey] of context.inputArtifacts.entries()) {
+    context.attemptSignal.throwIfAborted();
+    const stored = await context.storage.getObject(inputKey);
+    if (!stored) {
+      throw new Error(`Input artifact "${inputKey}" not found in storage`);
+    }
+    const srcExt = artifactExtension(stored.filename, inputKey);
+    const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `input.${srcExt}`);
+    const convRes = await context.engine.convert(stored.buffer, srcExt, spec.targetFormat, spec.options, safeInputName);
+    keys.push(
+      await saveIntermediateNodeOutput(
+        context.storage,
+        { graphId: context.graphId, nodeId: context.nodeId, index },
+        {
+          buffer: convRes.buffer,
+          mimeType: spec.mimeTypeOverride ?? convRes.mimeType,
+          filename: spec.outputFilenameOverride ?? convRes.filename,
+          fallbackFilename: spec.fallbackFilename,
+        }
+      )
+    );
+  }
+  return keys;
 }
 
 /** Like processIntermediatePdfArtifacts for a node that names its own output file. */
@@ -186,10 +246,18 @@ async function processIntermediatePdfParts(
       if (!stored) {
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
-      const output = await transformFn(stored.buffer, stored.filename || path.basename(inputKey));
-      const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, output.filename);
-      await storage.saveObject(outKey, output.buffer, registryMimeType(output.formatId), output.filename, INTERMEDIATE_TTL_MS);
-      return outKey;
+      const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), 'document.pdf');
+      const output = await transformFn(stored.buffer, safeInputName);
+      return saveIntermediateNodeOutput(
+        storage,
+        { graphId, nodeId, index },
+        {
+          buffer: output.buffer,
+          mimeType: registryMimeType(output.formatId),
+          filename: output.filename,
+          fallbackFilename: `output.${output.formatId}`,
+        }
+      );
     })
   );
 }
@@ -316,42 +384,23 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
 
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-
-          const srcExt = artifactExtension(stored.filename, inputKey);
-          const convRes = await effectiveEngine.convert(stored.buffer, srcExt, node.targetFormat, node.options || {}, stored.filename);
-          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, convRes.filename);
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
-          outputKeys.push(outKey);
-        }
+        outputKeys.push(
+          ...(await convertGraphNodeInputs(
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            { targetFormat: node.targetFormat, options: node.options || {}, fallbackFilename: `output.${node.targetFormat}` }
+          ))
+        );
         await job.log(`Node "${nodeId}" converted ${inputArtifacts.length} artifact(s) to ${node.targetFormat}`);
         break;
       }
 
       case 'ocr': {
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const srcExt = artifactExtension(stored.filename, inputKey);
-          const convRes = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            'pdf',
-            { ...(node.options || {}), ocrEnabled: true },
-            stored.filename
-          );
-          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, convRes.filename);
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
-          outputKeys.push(outKey);
-        }
+        outputKeys.push(
+          ...(await convertGraphNodeInputs(
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            { targetFormat: 'pdf', options: { ...(node.options || {}), ocrEnabled: true }, fallbackFilename: 'ocr.pdf' }
+          ))
+        );
         break;
       }
 
@@ -375,7 +424,7 @@ export async function processGraphNodeJob(
           // An output that is not smaller is not an optimisation: the input is kept and said to be unchanged.
           const gained = optRes.optimized && optRes.buffer.length < stored.buffer.length;
           const outBuffer = gained ? optRes.buffer : stored.buffer;
-          const outFilename = stored.filename || path.basename(inputKey);
+          const outFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `optimized.${srcExt}`);
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
           await effectiveStorage.saveObject(outKey, outBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
@@ -393,37 +442,29 @@ export async function processGraphNodeJob(
         if (inputArtifacts.length === 0) {
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const srcExt = artifactExtension(stored.filename, inputKey);
-          const targetFormat = requireTargetFormat(node, nodeId);
-          if (!THUMBNAIL_FORMATS.has(targetFormat)) {
-            throw new ConversionFailedError(`Thumbnail node "${nodeId}" cannot produce "${targetFormat}"`);
-          }
-          const width = node.options?.thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX;
-          const height = node.options?.thumbnail?.height ?? DEFAULT_THUMBNAIL_EDGE_PX;
-          const convRes = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            targetFormat,
-            {
-              ...(node.options || {}),
-              thumbnail: undefined,
-              width,
-              height,
-              fit: 'inside',
-            },
-            stored.filename
-          );
-          const outFilename = `thumbnail.${targetFormat}`;
-          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, INTERMEDIATE_TTL_MS);
-          outputKeys.push(outKey);
+        const targetFormat = requireTargetFormat(node, nodeId);
+        if (!THUMBNAIL_FORMATS.has(targetFormat)) {
+          throw new ConversionFailedError(`Thumbnail node "${nodeId}" cannot produce "${targetFormat}"`);
         }
+        const width = node.options?.thumbnail?.width ?? DEFAULT_THUMBNAIL_EDGE_PX;
+        const height = node.options?.thumbnail?.height ?? DEFAULT_THUMBNAIL_EDGE_PX;
+        outputKeys.push(
+          ...(await convertGraphNodeInputs(
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            {
+              targetFormat,
+              options: {
+                ...(node.options || {}),
+                thumbnail: undefined,
+                width,
+                height,
+                fit: 'inside',
+              },
+              outputFilenameOverride: `thumbnail.${targetFormat}`,
+              fallbackFilename: `thumbnail.${targetFormat}`,
+            }
+          ))
+        );
         break;
       }
 
@@ -432,25 +473,17 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
         const packaging: MediaPackagingOptions = node.options?.packaging ?? { format: DEFAULT_PACKAGING_FORMAT };
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const srcExt = artifactExtension(stored.filename, inputKey);
-          // The engine packages for the format it is asked to produce and answers one ZIP.
-          const packaged = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            packaging.format,
-            { ...(node.options || {}), packaging },
-            stored.filename
-          );
-          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, packaged.filename);
-          await effectiveStorage.saveObject(outKey, packaged.buffer, registryMimeType(MEDIA_PACKAGE_OUTPUT_FORMAT), packaged.filename, INTERMEDIATE_TTL_MS);
-          outputKeys.push(outKey);
-        }
+        outputKeys.push(
+          ...(await convertGraphNodeInputs(
+            { graphId, nodeId, inputArtifacts, storage: effectiveStorage, engine: effectiveEngine, attemptSignal },
+            {
+              targetFormat: packaging.format,
+              options: { ...(node.options || {}), packaging },
+              fallbackFilename: `package.${MEDIA_PACKAGE_OUTPUT_FORMAT}`,
+              mimeTypeOverride: registryMimeType(MEDIA_PACKAGE_OUTPUT_FORMAT),
+            }
+          ))
+        );
         await job.log(`Node "${nodeId}" packaged ${inputArtifacts.length} artifact(s) as ${packaging.format}`);
         break;
       }
@@ -705,22 +738,10 @@ export async function processGraphNodeJob(
           archiveBuffer = stored.buffer;
         }
 
-        const ext = path.extname(effectiveFilename).toLowerCase().replace(/^\./, '');
-        let extracted: { filename: string; buffer: Buffer }[] = [];
-
-        if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-          const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer) : archiveBuffer;
-          extracted = extractTarArchive(uncompressed, { entries: node.entries });
-        } else if (ext === '7z') {
-          extracted = extract7zArchive(archiveBuffer, { entries: node.entries });
-        } else if (ext === 'rar') {
-          extracted = extractRarArchive(archiveBuffer, { entries: node.entries });
-        } else {
-          extracted = await extractZipArchive(archiveBuffer, { entries: node.entries });
-        }
+        const extracted = await extractGraphArchiveEntries(effectiveFilename, archiveBuffer, node.entries);
 
         for (const [index, f] of extracted.entries()) {
-          const entryName = path.basename(f.filename);
+          const entryName = sanitizeNodeOutputFilename(f.filename, `extracted_${index}.bin`);
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, entryName);
           await effectiveStorage.saveObject(outKey, f.buffer, archiveEntryMimeType(entryName), entryName, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
@@ -753,8 +774,9 @@ export async function processGraphNodeJob(
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
-          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, stored.filename || path.basename(inputKey));
-          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, stored.filename || path.basename(inputKey));
+          const safeFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `export_${index}.bin`);
+          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, safeFilename);
+          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, safeFilename);
           outputKeys.push(promotedKey);
         }
         await job.log(`Promoted ${outputKeys.length} result(s) for download`);
@@ -855,8 +877,7 @@ async function exportArtifactToUrl(
     },
     signal,
   });
-  // Drain the body so the connection can be reused; the payload itself is not needed.
-  await response.arrayBuffer().catch(() => undefined);
+  await response.body?.cancel?.().catch(() => undefined);
   if (!response.ok) {
     throw new GraphExportError(
       `Export of "${inputKey}" failed: destination answered HTTP ${response.status}`,
@@ -872,4 +893,26 @@ async function resolveInputArtifacts(graphId: string, node: GraphNode, providedA
   }
   if (!('input' in node) || !node.input) return [];
   return graphScheduler.getNodeOutputs(graphId, node.input);
+}
+
+async function extractGraphArchiveEntries(
+  effectiveFilename: string,
+  archiveBuffer: Buffer,
+  entries?: string[]
+): Promise<{ filename: string; buffer: Buffer }[]> {
+  const lowerFilename = effectiveFilename.toLowerCase();
+  const ext = lowerFilename.endsWith('.tar.gz')
+    ? 'tar.gz'
+    : path.extname(lowerFilename).replace(/^\./, '');
+  if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
+    const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer) : archiveBuffer;
+    return extractTarArchive(uncompressed, { entries });
+  }
+  if (ext === '7z') {
+    return extract7zArchive(archiveBuffer, { entries });
+  }
+  if (ext === 'rar') {
+    return extractRarArchive(archiveBuffer, { entries });
+  }
+  return extractZipArchive(archiveBuffer, { entries });
 }

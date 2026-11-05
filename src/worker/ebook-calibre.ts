@@ -214,7 +214,7 @@ async function stageEpubOfSource(deps: CalibreDeps, request: CalibreRequest, dir
   const { input, src, options, originalFilename } = request;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   // The dispatcher fails the pair closed because the calibre target has no in-process writer; the EPUB of the first step has one, so the flag is cleared for it.
-  const epubOptions = { ...options, outputPath: undefined, inProcessFallback: undefined } as WorkerEngineOptions;
+  const epubOptions = { ...options, outputPath: undefined, inProcessFallback: undefined, libreOfficeFilter: undefined } as WorkerEngineOptions;
   const written = await deps.convert(source, src, EPUB_FORMAT, epubOptions, originalFilename);
   try {
     assertBookSize(written.size, `The EPUB written from the .${src} file`);

@@ -27,6 +27,7 @@ import {
   checkFfmpeg,
 } from './media';
 import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
+import { assertConversionOptionsObject } from './options-guard';
 import { assertReadableInProcess, isPlainOfficeVariant } from './office/office-suite-sources';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
@@ -55,6 +56,7 @@ import {
   protectPdf,
   convertToPdfA,
 } from './pdf-postprocess';
+import { validatePdfProtectOptions } from './pdf-postprocess/protect';
 import {
   convertHwpx,
   parseHwpxDocument,
@@ -380,6 +382,7 @@ async function convertFileInScope(
 ): Promise<ConversionResult> {
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  assertConversionOptionsObject(options, tgt);
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Conversion payload is empty. File buffer has 0 bytes.');
@@ -629,6 +632,9 @@ async function convertFileInScope(
  */
 export function assertPdfPostProcessOptions(options: ConversionOptions): void {
   assertPdfExportOptions(options);
+  if (options.protect !== undefined) {
+    validatePdfProtectOptions(options.protect);
+  }
   if (resolvePdfAConformance(options) && options.protect) {
     // ISO 19005 forbids encryption in PDF/A files.
     throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');

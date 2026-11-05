@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { GraphExecutionState, GraphNodeJobMetadata, IGraphScheduler, SealedJobGraph } from './scheduler-types';
 import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
@@ -47,13 +48,52 @@ export function assertSealedFor(graphId: string, graph: SealedJobGraph): void {
 /** Where a node's files go: `intermediate` until the graph ends, or `results` for what an `export.internal` node keeps. */
 export type NodeOutputArea = 'intermediate' | 'results';
 
+const CONTROL_OR_SEPARATOR_CHARS = /[\0-\x1f\x7f\\/]+/g;
+const MAX_NODE_OUTPUT_FILENAME_LENGTH = 255;
+const MAX_PRESERVED_EXTENSION_LENGTH = 32;
+const COMPOUND_TAR_EXT_PATTERN = /\.(?:tar\.(?:gz|bz2|bz|xz|7z|lz|lzma|lzo|z))$/i;
+
+function splitPreservedExtension(filename: string): { stem: string; ext: string } {
+  const compoundMatch = filename.match(COMPOUND_TAR_EXT_PATTERN);
+  let rawExt = compoundMatch ? compoundMatch[0] : path.posix.extname(filename);
+  if (!rawExt && filename.startsWith('.')) {
+    rawExt = filename;
+  }
+  if (rawExt.length > 0 && rawExt.length <= MAX_PRESERVED_EXTENSION_LENGTH) {
+    return { stem: filename.slice(0, filename.length - rawExt.length), ext: rawExt };
+  }
+  return { stem: filename, ext: '' };
+}
+
+export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'output.bin'): string {
+  const base = path.posix
+    .basename(String(rawFilename || '').replace(/\\/g, '/'))
+    .replace(CONTROL_OR_SEPARATOR_CHARS, '_')
+    .trim();
+  if (!base || !/[^\s._]/.test(base)) {
+    return fallback;
+  }
+  const { stem, ext } = splitPreservedExtension(base);
+  if (!/[^\s._]/.test(stem)) {
+    return fallback;
+  }
+  if (base.length <= MAX_NODE_OUTPUT_FILENAME_LENGTH) {
+    return base;
+  }
+  const truncatedStem = stem.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH - ext.length);
+  if (!/[^\s._]/.test(truncatedStem)) {
+    return fallback;
+  }
+  return `${truncatedStem}${ext}`;
+}
+
 /**
  * The key of what node `nodeId` of graph `graphId` made of its input number `index` (0 for a node that makes one file of all
  * its inputs): each node and each input in a folder of its own, so two outputs that share a file name never overwrite each
  * other, and each keeps its readable name.
  */
 export function nodeOutputKey(area: NodeOutputArea, graphId: string, nodeId: NodeId, index: number, filename: string): string {
-  return `${area}/${graphId}/${nodeId}/${index}/${filename}`;
+  return `${area}/${graphId}/${nodeId}/${index}/${sanitizeNodeOutputFilename(filename)}`;
 }
 
 /** The metadata the node jobs of a graph carry: exactly the fields a node job reads, so nothing else reaches the queue. */

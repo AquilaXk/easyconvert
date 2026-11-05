@@ -14,6 +14,69 @@ export { getQpdfBinaryPath } from './qpdf-path';
 
 /** The argument file holds one argument per line, so a password with a line break would become several arguments. */
 const ARGUMENT_FILE_UNSAFE_CHARS = /[\r\n\0]/;
+export const MAX_PDF_PROTECT_PASSWORD_LENGTH = 256;
+export const VALID_PDF_PRINT_PERMISSIONS: ReadonlySet<string> = new Set(['none', 'low', 'full']);
+export const VALID_PDF_MODIFY_PERMISSIONS: ReadonlySet<string> = new Set(['none', 'assembly', 'annotate', 'form', 'all']);
+
+function validateProtectPassword(value: unknown, field: 'userPassword' | 'ownerPassword'): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new PdfPostprocessError(`${field} must be a string.`);
+  }
+  if (value.length > MAX_PDF_PROTECT_PASSWORD_LENGTH) {
+    throw new PdfPostprocessError(`${field} exceeds maximum length of ${MAX_PDF_PROTECT_PASSWORD_LENGTH} characters.`);
+  }
+  if (ARGUMENT_FILE_UNSAFE_CHARS.test(value)) {
+    throw new PdfPostprocessError(PDF_PASSWORD_UNSAFE_MESSAGE);
+  }
+  return value;
+}
+
+function validateProtectKeyLength(value: unknown): 128 | 256 {
+  const keyLength = value ?? 256;
+  if (keyLength !== 128 && keyLength !== 256) {
+    throw new PdfPostprocessError(`Unsupported key length: ${String(keyLength)}. Supported lengths are 128 and 256.`);
+  }
+  return keyLength;
+}
+
+function validateProtectPermissions(permsRaw: unknown): NonNullable<PdfProtectOptions['permissions']> {
+  if (permsRaw !== undefined && (typeof permsRaw !== 'object' || permsRaw === null || Array.isArray(permsRaw))) {
+    throw new PdfPostprocessError('permissions must be an object.');
+  }
+  const perms = (permsRaw ?? {}) as Record<string, unknown>;
+  if (perms.print !== undefined && (typeof perms.print !== 'string' || !VALID_PDF_PRINT_PERMISSIONS.has(perms.print))) {
+    throw new PdfPostprocessError(`Unsupported print permission: ${String(perms.print)}. Supported values are none, low, and full.`);
+  }
+  if (perms.modify !== undefined && (typeof perms.modify !== 'string' || !VALID_PDF_MODIFY_PERMISSIONS.has(perms.modify))) {
+    throw new PdfPostprocessError(`Unsupported modify permission: ${String(perms.modify)}. Supported values are none, assembly, annotate, form, and all.`);
+  }
+  if (perms.extract !== undefined && typeof perms.extract !== 'boolean') {
+    throw new PdfPostprocessError('Unsupported extract permission: must be a boolean.');
+  }
+  if (perms.annotate !== undefined && typeof perms.annotate !== 'boolean') {
+    throw new PdfPostprocessError('Unsupported annotate permission: must be a boolean.');
+  }
+  return {
+    print: (perms.print as 'none' | 'low' | 'full' | undefined) ?? 'full',
+    modify: (perms.modify as 'none' | 'assembly' | 'annotate' | 'form' | 'all' | undefined) ?? 'none',
+    extract: Boolean(perms.extract),
+    ...(perms.annotate !== undefined ? { annotate: perms.annotate } : {}),
+  };
+}
+
+export function validatePdfProtectOptions(options: unknown = {}): PdfProtectOptions {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new PdfPostprocessError('PDF protection options must be an object.');
+  }
+  const raw = options as Record<string, unknown>;
+  return {
+    userPassword: validateProtectPassword(raw.userPassword, 'userPassword'),
+    ownerPassword: validateProtectPassword(raw.ownerPassword, 'ownerPassword'),
+    keyLength: validateProtectKeyLength(raw.keyLength),
+    permissions: validateProtectPermissions(raw.permissions),
+  };
+}
 
 /**
  * Protect a PDF document using AES-256 encryption and fine-grained permission controls
@@ -36,16 +99,10 @@ export async function protectPdf(
 
   requireQpdfBinary();
 
-  const userPassword = options.userPassword ?? '';
-  const ownerPassword = options.ownerPassword || userPassword || crypto.randomBytes(16).toString('hex');
-  if (ARGUMENT_FILE_UNSAFE_CHARS.test(userPassword) || ARGUMENT_FILE_UNSAFE_CHARS.test(ownerPassword)) {
-    throw new PdfPostprocessError(PDF_PASSWORD_UNSAFE_MESSAGE);
-  }
-
-  const keyLength = options.keyLength ?? 256;
-  if (keyLength !== 128 && keyLength !== 256) {
-    throw new PdfPostprocessError(`Unsupported key length: ${keyLength}. Supported lengths are 128 and 256.`);
-  }
+  const validated = validatePdfProtectOptions(options);
+  const userPassword = validated.userPassword ?? '';
+  const ownerPassword = validated.ownerPassword || userPassword || crypto.randomBytes(16).toString('hex');
+  const keyLength = validated.keyLength ?? 256;
 
   let plain: Buffer;
   try {
@@ -56,7 +113,7 @@ export async function protectPdf(
     throw err;
   }
 
-  const perms = options.permissions || {};
+  const perms = validated.permissions || {};
   const printPerm = perms.print ?? 'full';
   const modifyPerm = perms.modify ?? 'none';
   const extractPerm = perms.extract ? 'y' : 'n';

@@ -80,6 +80,24 @@ describe('decompression bombs answer 413 through convertArchive', () => {
       TIMEOUT_MS
     );
   }
+
+  oracleTest(
+    'bzip2: 36 MiB of zeros stops at the 32 MiB ratio cap inside the stream decoder with DecompressionLimitError (413)',
+    ['bzip2'],
+    async () => {
+      const zeros36m = Buffer.alloc(36 * MIB, 0);
+      const result = spawnSync(getOracleToolPath('bzip2') as string, ['-9', '-c'], { input: zeros36m, maxBuffer: 8 * MIB });
+      expect(result.status).toBe(0);
+      const stream = result.stdout;
+      assertValid('bzip2', stream);
+
+      const error = await failureOf(() => convertArchive(stream, 'bz2', 'tar', {}, 'zeros36m.bz2'));
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect((error as { status?: number }).status).toBe(413);
+      expect((error as Error).message).toBe('Archive bomb detected: compression ratio exceeds 100:1 limit');
+    },
+    TIMEOUT_MS
+  );
 });
 
 describe('a damaged stream keeps its 400', () => {

@@ -150,7 +150,7 @@ export async function dispatchConversion(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
-  assertConversionOptionsObject(options);
+  assertConversionOptionsObject(options, targetFormat);
   const src = normalizeFormat(sourceFormat);
   const tgt = normalizeFormat(targetFormat);
   assertAdvertised(src, tgt, options);

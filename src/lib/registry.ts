@@ -2918,11 +2918,11 @@ export function getFormatsByCategory(category: FormatCategory): FormatDefinition
 }
 
 export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinition[] {
-  const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];
+  const source = getFormatByExtension(sourceFormatId);
   if (!source) return [];
   return source.targetFormats
-    .map((targetId) => FORMAT_REGISTRY[targetId])
-    .filter((def): def is FormatDefinition => Boolean(def) && def.available !== false);
+    .map((targetId) => getFormatByExtension(targetId))
+    .filter((def): def is FormatDefinition => def !== undefined && def.available !== false);
 }
 
 /** ISO base media `ftyp` box layout (ISO/IEC 14496-12 section 4.3): size, type, major brand, minor version, compatible brands. */

@@ -1,6 +1,5 @@
 import { DecompressionLimitError } from '../types';
 import {
-  exceedsArchiveRatio,
   unpackedBytesCap,
   unpackedBytesCapError,
   type ArchiveExtractionLimits,
@@ -40,14 +39,15 @@ export interface UnpackedWrapper {
 }
 
 function bzip2Payload(src: string, archive: Buffer, limits: ArchiveExtractionLimits): UnpackedWrapper {
-  const payload = decompressBzip2(archive, limits.MAX_UNCOMPRESSED_SIZE);
-  if (payload.length > limits.MAX_UNCOMPRESSED_SIZE) {
-    throw new DecompressionLimitError(
-      `Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-    );
-  }
-  if (exceedsArchiveRatio(payload.length, archive.length, limits.MAX_RATIO)) {
-    throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`);
+  const cap = unpackedBytesCap(archive.length, limits);
+  let payload: Buffer;
+  try {
+    payload = decompressBzip2(archive, cap);
+  } catch (err) {
+    if (err instanceof DecompressionLimitError) {
+      throw new DecompressionLimitError(unpackedBytesCapError(archive.length, limits).message);
+    }
+    throw err;
   }
   return { payload, isTar: BZIP2_TARBALL_SOURCES.has(src) || looksLikeTar(payload), label: 'BZIP2' };
 }
