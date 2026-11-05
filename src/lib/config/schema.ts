@@ -400,6 +400,50 @@ function absoluteToolPath<const N extends string>(name: N, description: string, 
   } as const satisfies VariableSpec;
 }
 
+function toolResourcePath<const N extends string>(name: N, description: string, roles: readonly ProcessRole[]) {
+  return {
+    name,
+    area: 'tools',
+    description,
+    kind: { type: 'path' },
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+function autoOffSetting<const N extends string>(name: N, area: ConfigArea, description: string, roles: readonly ProcessRole[]) {
+  return {
+    name,
+    area,
+    description,
+    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
+    default: 'auto',
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+function intLimit<const N extends string>(
+  name: N,
+  description: string,
+  max: number,
+  defaultValue: number,
+  roles: readonly ProcessRole[] = BOTH
+) {
+  return {
+    name,
+    area: 'limits',
+    description,
+    kind: { type: 'integer', min: 1, max },
+    default: defaultValue,
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
 const HTTP_SCHEMES = ['http:', 'https:'] as const;
 const REDIS_SCHEMES = ['redis:', 'rediss:'] as const;
 const HTTPS_ONLY = ['https:'] as const;
@@ -477,6 +521,16 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'MALLOC_ARENA_MAX',
+    area: 'runtime',
+    description:
+      'glibc allocator arena limit per process. When set (for example to `2` in the worker container), the image pipeline may lease up to 8 threads instead of the unbounded-heap cap of 2.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'STRICT_SANDBOX',
     area: 'security',
     description: 'Set to `true` to refuse running native tools without the strict process sandbox.',
@@ -486,17 +540,18 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'QPDF_RUNNER',
-    area: 'tools',
-    description:
-      'Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.',
-    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
-    default: 'auto',
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  autoOffSetting(
+    'SANDBOX_LAUNCHER',
+    'security',
+    'Whether sandboxed native tools are started by the persistent low-heap launcher process instead of forked directly from the worker. `auto` (the default) uses the launcher when available and falls back to a direct start; `off` always starts programs directly.',
+    BOTH
+  ),
+  autoOffSetting(
+    'QPDF_RUNNER',
+    'tools',
+    'Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.',
+    BOTH
+  ),
   {
     name: 'HTML_IMAGE_FETCH',
     area: 'security',
@@ -1106,167 +1161,83 @@ const SCHEMA_ENTRIES = [
   },
 
   // ---- limits -----------------------------------------------------------------------------------------
+  intLimit('MAX_IN_MEMORY_BYTES', 'Largest stored object, in bytes, that may be read into memory instead of streamed.', Number.MAX_SAFE_INTEGER, 512 * BYTES_PER_MIB),
+  intLimit('GRAPH_URL_IMPORT_MAX_BYTES', 'Largest body, in bytes, that an `import.url` graph node downloads.', Number.MAX_SAFE_INTEGER, 5 * BYTES_PER_GIB),
+  intLimit('EASYCONVERT_MAX_INPUT_PIXELS', 'Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.', Number.MAX_SAFE_INTEGER, 100_000_000),
   {
-    name: 'MAX_IN_MEMORY_BYTES',
+    name: 'VIPS_CONCURRENCY',
     area: 'limits',
-    description: 'Largest stored object, in bytes, that may be read into memory instead of streamed.',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 512 * BYTES_PER_MIB,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'GRAPH_URL_IMPORT_MAX_BYTES',
-    area: 'limits',
-    description: 'Largest body, in bytes, that an `import.url` graph node downloads.',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 5 * BYTES_PER_GIB,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'EASYCONVERT_MAX_INPUT_PIXELS',
-    area: 'limits',
-    description: 'Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 100_000_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'EASYCONVERT_PDF_TEXT_DEADLINE_MS',
-    area: 'limits',
-    description: 'Milliseconds the PDF text extraction may run before it is stopped.',
+    description:
+      'Threads the image pipeline leases per operation. When unset, non-encode operations use 1 thread and AVIF encodes and OCR page preparations lease up to 8 threads (2 when MALLOC_ARENA_MAX is unset).',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 60_000,
+    computedDefault: '1 outside an encode; up to 8 (2 when MALLOC_ARENA_MAX is unset) during an AVIF encode or OCR page preparation',
     requiredInProduction: false,
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'EASYCONVERT_OCR_PAGE_BUDGET_MS',
-    area: 'limits',
-    description:
-      'Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job\'s own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 10_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_BASE_MS_FREE',
-    area: 'limits',
-    description:
-      'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
-    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
-    default: 60_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_BASE_MS_PRO',
-    area: 'limits',
-    description:
-      'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
-    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
-    default: 120_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_BASE_MS_ENTERPRISE',
-    area: 'limits',
-    description:
-      'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
-    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
-    default: 180_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_MAX_MS_FREE',
-    area: 'limits',
-    description:
-      'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
-    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
-    default: 300_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_MAX_MS_PRO',
-    area: 'limits',
-    description:
-      'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
-    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
-    default: 1_800_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_MAX_MS_ENTERPRISE',
-    area: 'limits',
-    description:
-      'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
-    kind: { type: 'integer', min: 1, max: JOB_DEADLINE_CEILING_MS },
-    default: JOB_DEADLINE_CEILING_MS,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_PER_MIB_MS',
-    area: 'limits',
-    description:
-      'Milliseconds added to a job deadline for each started MiB of input.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 2_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_DEADLINE_PER_MEDIA_SECOND_MS',
-    area: 'limits',
-    description:
-      'Milliseconds added to a job deadline for each second of audio or video, when the length is known.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 3_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'SYNC_DEADLINE_MAX_MS',
-    area: 'limits',
-    description:
-      'Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 120_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'CONVERSION_CONCURRENCY_FREE',
-    area: 'limits',
-    description:
-      'Most conversions an anonymous or free-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota. Paid tiers have no such limit.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 5,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  intLimit('EASYCONVERT_PDF_TEXT_DEADLINE_MS', 'Milliseconds the PDF text extraction may run before it is stopped.', INT32_MAX, 60_000),
+  intLimit(
+    'EASYCONVERT_OCR_PAGE_BUDGET_MS',
+    'Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job\'s own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.',
+    INT32_MAX,
+    10_000
+  ),
+  intLimit(
+    'EASYCONVERT_OCR_PAGE_CONCURRENCY',
+    'Most pages of one scanned PDF that text recognition (OCR) prepares and recognizes at once, capped at the built-in per-document ceiling of 4 and the OCR worker pool size.',
+    INT32_MAX,
+    4
+  ),
+  intLimit(
+    'JOB_DEADLINE_BASE_MS_FREE',
+    'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
+    JOB_DEADLINE_CEILING_MS,
+    60_000
+  ),
+  intLimit(
+    'JOB_DEADLINE_BASE_MS_PRO',
+    'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
+    JOB_DEADLINE_CEILING_MS,
+    120_000
+  ),
+  intLimit(
+    'JOB_DEADLINE_BASE_MS_ENTERPRISE',
+    'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
+    JOB_DEADLINE_CEILING_MS,
+    180_000
+  ),
+  intLimit(
+    'JOB_DEADLINE_MAX_MS_FREE',
+    'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+    JOB_DEADLINE_CEILING_MS,
+    300_000
+  ),
+  intLimit(
+    'JOB_DEADLINE_MAX_MS_PRO',
+    'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+    JOB_DEADLINE_CEILING_MS,
+    1_800_000
+  ),
+  intLimit(
+    'JOB_DEADLINE_MAX_MS_ENTERPRISE',
+    'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.',
+    JOB_DEADLINE_CEILING_MS,
+    JOB_DEADLINE_CEILING_MS
+  ),
+  intLimit('JOB_DEADLINE_PER_MIB_MS', 'Milliseconds added to a job deadline for each started MiB of input.', INT32_MAX, 2_000),
+  intLimit('JOB_DEADLINE_PER_MEDIA_SECOND_MS', 'Milliseconds added to a job deadline for each second of audio or video, when the length is known.', INT32_MAX, 3_000),
+  intLimit(
+    'SYNC_DEADLINE_MAX_MS',
+    'Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.',
+    INT32_MAX,
+    120_000
+  ),
+  intLimit(
+    'CONVERSION_CONCURRENCY_FREE',
+    'Most conversions an anonymous or free-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota. Paid tiers have no such limit.',
+    INT32_MAX,
+    5
+  ),
   {
     name: 'JOB_STUCK_RECYCLE_MS',
     area: 'worker',
@@ -1278,132 +1249,71 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: ['worker'],
   },
-  {
-    name: 'EASYCONVERT_XLS_MAX_GRID_CELLS',
-    area: 'limits',
-    description:
-      'Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 4 * 1024 * 1024,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
-    area: 'limits',
-    description:
-      'Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 500_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
-    area: 'limits',
-    description:
-      'Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 64 * 1024 * 1024,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
-    area: 'limits',
-    description:
-      'Most characters the cells of an XLSX workbook may expand to, shared strings counted once per cell that uses them; a workbook over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 64 * 1024 * 1024,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES',
-    area: 'limits',
-    description:
-      'Most bytes of embedded media (pictures, video) one deck or document may decode to, each part counted once however many pictures use it; a document over it is refused with HTTP 413 (keeps the memory of a deck with large or repeated media within a job share).',
-    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
-    default: 1024 * 1024 * 1024,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'ANONYMOUS_DAILY_LIMIT',
-    area: 'limits',
-    description:
-      'Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the web image build and the deploy both read (the deploy refuses an image built with another value).',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: ANONYMOUS_DAILY_CONVERSIONS,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'ANONYMOUS_BURST_CAPACITY',
-    area: 'limits',
-    description: 'Token bucket size (largest burst of requests) of one anonymous caller.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 10,
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
-  {
-    name: 'ANONYMOUS_BURST_REFILL_RATE',
-    area: 'limits',
-    description: 'Requests per second that refill the token bucket of one anonymous caller.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 1,
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
-  {
-    name: 'ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY',
-    area: 'limits',
-    description: 'Token bucket size shared by every anonymous caller whose address cannot be trusted.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 600,
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
-  {
-    name: 'ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE',
-    area: 'limits',
-    description: 'Requests per second that refill the bucket shared by untrusted anonymous callers.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 100,
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
+  intLimit(
+    'EASYCONVERT_XLS_MAX_GRID_CELLS',
+    'Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.',
+    Number.MAX_SAFE_INTEGER,
+    4 * 1024 * 1024
+  ),
+  intLimit(
+    'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
+    'Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.',
+    Number.MAX_SAFE_INTEGER,
+    500_000
+  ),
+  intLimit(
+    'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
+    'Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
+    Number.MAX_SAFE_INTEGER,
+    64 * 1024 * 1024
+  ),
+  intLimit(
+    'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
+    'Most characters the cells of an XLSX workbook may expand to, shared strings counted once per cell that uses them; a workbook over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
+    Number.MAX_SAFE_INTEGER,
+    64 * 1024 * 1024
+  ),
+  intLimit(
+    'EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES',
+    'Most bytes of embedded media (pictures, video) one deck or document may decode to, each part counted once however many pictures use it; a document over it is refused with HTTP 413 (keeps the memory of a deck with large or repeated media within a job share).',
+    Number.MAX_SAFE_INTEGER,
+    1024 * 1024 * 1024
+  ),
+  intLimit(
+    'ANONYMOUS_DAILY_LIMIT',
+    'Conversions per day for an anonymous caller. In the OCI deployment it is the repository variable of the same name, which the web image build and the deploy both read (the deploy refuses an image built with another value).',
+    INT32_MAX,
+    ANONYMOUS_DAILY_CONVERSIONS
+  ),
+  intLimit('ANONYMOUS_BURST_CAPACITY', 'Token bucket size (largest burst of requests) of one anonymous caller.', INT32_MAX, 10, WEB),
+  intLimit('ANONYMOUS_BURST_REFILL_RATE', 'Requests per second that refill the token bucket of one anonymous caller.', INT32_MAX, 1, WEB),
+  intLimit('ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY', 'Token bucket size shared by every anonymous caller whose address cannot be trusted.', INT32_MAX, 600, WEB),
+  intLimit('ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE', 'Requests per second that refill the bucket shared by untrusted anonymous callers.', INT32_MAX, 100, WEB),
 
   // ---- tools ------------------------------------------------------------------------------------------
   toolPath('FFMPEG_PATH', 'Path of the ffmpeg executable; searched in the standard locations when unset.', BOTH),
   toolPath('FFPROBE_PATH', 'Path of the ffprobe executable.', BOTH),
+  toolPath('FLUIDSYNTH_PATH', 'Path of the FluidSynth `fluidsynth` executable that renders MIDI files to WAV; searched in the standard locations when unset.', BOTH),
+  toolResourcePath(
+    'MIDI_SOUNDFONT_PATH',
+    'Path of the General MIDI SoundFont (`.sf2` or `.sf3`) handed to FluidSynth; searched in the standard locations when unset.',
+    BOTH
+  ),
   absoluteToolPath('AVIFENC_PATH', 'Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('MAGICK_PATH', 'Absolute path of the ImageMagick executable (`magick`, or `convert` of version 6) that decodes HEIC, HEIF, PSD, XCF, TGA, PCX, DDS, PNM and old-style JPEG TIFF pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('OPJ_DECOMPRESS_PATH', 'Absolute path of the OpenJPEG `opj_decompress` executable that decodes JPEG 2000 (JP2, J2K) pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.', BOTH),
-  {
-    name: 'MAGICK_POLICY_DIR',
-    area: 'tools',
-    description: 'Absolute path of the directory that holds the ImageMagick `policy.xml` every picture decode runs under (all coders and delegates denied except those the decoders use). Searched in `/etc/easyconvert/imagemagick` (the worker image) and `docker/imagemagick` (the repository) when unset; without a policy the conversions that need ImageMagick fail with HTTP 503.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath(
+    'MAGICK_POLICY_DIR',
+    'Absolute path of the directory that holds the ImageMagick `policy.xml` every picture decode runs under (all coders and delegates denied except those the decoders use). Searched in `/etc/easyconvert/imagemagick` (the worker image) and `docker/imagemagick` (the repository) when unset; without a policy the conversions that need ImageMagick fail with HTTP 503.',
+    BOTH
+  ),
   toolPath('P7ZIP_PATH', 'Path of the 7-Zip executable (`7zz`, `7z` or `7za`).', BOTH),
   toolPath('P7Z_PATH', 'Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.', BOTH),
   toolPath('ZIP_PATH', 'Path of the Info-ZIP `zip` executable.', BOTH),
   toolPath('UNRAR_PATH', 'Path of the `unrar` executable.', BOTH),
+  toolPath('LBZIP2_PATH', 'Path of the `lbzip2` executable that compresses bzip2 streams of up to two blocks; searched in the standard locations when unset.', BOTH),
+  toolPath('LIBDEFLATE_GZIP_PATH', 'Path of the `libdeflate-gzip` executable that compresses raw deflate streams; searched in the standard locations when unset.', BOTH),
+  toolPath('XZ_PATH', 'Path of the `xz` executable that compresses and decompresses XZ streams; searched in the standard locations when unset.', BOTH),
   toolPath('SOFFICE_PATH', 'Path of the LibreOffice `soffice` executable.', BOTH),
   toolPath('PDFINFO_PATH', 'Path of the poppler `pdfinfo` executable.', BOTH),
   toolPath('PDFTOPPM_PATH', 'Path of the poppler `pdftoppm` executable.', BOTH),
@@ -1420,30 +1330,19 @@ const SCHEMA_ENTRIES = [
   toolPath('VTRACER_PATH', 'Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).', BOTH),
   toolPath('CAD_CONVERT_PATH', 'Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).', BOTH),
   toolPath('QPDF_RUNNER_PATH', 'Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.', BOTH),
+  toolResourcePath(
+    'QPDF_RUNNER_LIB',
+    'Path of the libqpdf shared library handed to `qpdf-runner` (`--lib`); the runner loads the system libqpdf when unset.',
+    BOTH
+  ),
   toolPath('FONTFORGE_PATH', 'Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).', BOTH),
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
-  {
-    name: 'TESSDATA_PREFIX',
-    area: 'tools',
-    description: 'Directory of the Tesseract language data.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath('TESSDATA_PREFIX', 'Directory of the Tesseract language data.', BOTH),
   toolPath('VERAPDF_PATH', 'Path of the `verapdf` executable that validates PDF/A output.', BOTH),
   toolPath('QPDF_PATH', 'Path of the `qpdf` executable that encrypts PDF output.', BOTH),
   toolPath('FC_LIST_PATH', 'Path of the fontconfig `fc-list` executable.', BOTH),
-  {
-    name: 'JAVA_HOME',
-    area: 'tools',
-    description: 'Java installation handed to LibreOffice for PDF/A export.',
-    kind: { type: 'path' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  toolResourcePath('JAVA_HOME', 'Java installation handed to LibreOffice for PDF/A export.', BOTH),
 ] as const satisfies readonly VariableSpec[];
 
 /** The schema as data, for the loader and the documentation generator. */
