@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
+import { getFormatByExtension } from '@/lib/registry';
+import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
 import type { FailurePolicy } from '@/lib/queue/graph/types';
 import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
@@ -656,30 +657,13 @@ export function validateJobGraph(
       case 'optimize': {
         const inputId = getTaskDependencies(node)[0];
         const srcFmt = firstInputFormat(node);
-        if (srcFmt === UNKNOWN_FORMAT) {
-          errors.push({
-            path: `nodes.${nodeId}`,
-            message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
-            code: 'SOURCE_FORMAT_UNKNOWN',
-          });
-        } else if (srcFmt === DYNAMIC_FORMAT) {
-          // With no optimiser at all, a source known only at run time is certain to fail there, after the
-          // job was queued, charged for and its upstream nodes ran.
-          if (OPTIMIZABLE_FORMATS.length === 0) {
-            errors.push({
-              path: `nodes.${nodeId}`,
-              message: optimizeUnavailableMessage('a source whose format is only known at run time'),
-              code: 'UNSUPPORTED_TARGET_FORMAT',
-            });
-          }
-        } else if (!hasOptimizer(srcFmt)) {
-          errors.push({
-            path: `nodes.${nodeId}`,
-            message: optimizeUnavailableMessage(srcFmt),
-            code: 'UNSUPPORTED_TARGET_FORMAT',
-          });
-        }
+        checkOptimizeNode(nodeId, inputId, srcFmt, errors);
         inferredFormats[nodeId] = srcFmt;
+        break;
+      }
+      case 'pdf.protect': {
+        checkPdfProtectNode(nodeId, node, errors);
+        inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
       default: {
@@ -701,6 +685,52 @@ export function validateJobGraph(
   };
 }
 
+function checkOptimizeNode(
+  nodeId: string,
+  inputId: string | undefined,
+  srcFmt: string,
+  errors: GraphValidationErrorDetail[]
+): void {
+  if (srcFmt === UNKNOWN_FORMAT) {
+    errors.push({
+      path: `nodes.${nodeId}`,
+      message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
+      code: 'SOURCE_FORMAT_UNKNOWN',
+    });
+  } else if (srcFmt === DYNAMIC_FORMAT) {
+    if (OPTIMIZABLE_FORMATS.length === 0) {
+      errors.push({
+        path: `nodes.${nodeId}`,
+        message: optimizeUnavailableMessage('a source whose format is only known at run time'),
+        code: 'UNSUPPORTED_TARGET_FORMAT',
+      });
+    }
+  } else if (!hasOptimizer(srcFmt)) {
+    errors.push({
+      path: `nodes.${nodeId}`,
+      message: optimizeUnavailableMessage(srcFmt),
+      code: 'UNSUPPORTED_TARGET_FORMAT',
+    });
+  }
+}
+
+function checkPdfProtectNode(
+  nodeId: string,
+  node: { options?: { protect?: unknown } & Record<string, unknown> },
+  errors: GraphValidationErrorDetail[]
+): void {
+  const rawProtect = node.options?.protect ?? node.options ?? {};
+  try {
+    validatePdfProtectOptions(rawProtect);
+  } catch (err) {
+    errors.push({
+      path: `nodes.${nodeId}.options`,
+      message: err instanceof Error ? err.message : 'Invalid pdf.protect options.',
+      code: 'INVALID_NODE_OPTIONS',
+    });
+  }
+}
+
 /** Inputs a node lists in `input`, counting a repeated one each time. */
 function mergeInputListed(node: { input?: unknown }): number {
   if (Array.isArray(node.input)) return node.input.length;
@@ -715,7 +745,7 @@ function checkConversion(
   target: string,
   errors: GraphValidationErrorDetail[]
 ): void {
-  const targetDef = FORMAT_REGISTRY[target] || getFormatByExtension(target);
+  const targetDef = getFormatByExtension(target);
   if (!targetDef) {
     errors.push({
       path: `nodes.${nodeId}`,
@@ -734,7 +764,7 @@ function checkConversion(
     });
     return;
   }
-  const sourceDef = FORMAT_REGISTRY[sourceFmt] || getFormatByExtension(sourceFmt);
+  const sourceDef = getFormatByExtension(sourceFmt);
   if (!sourceDef) {
     errors.push({
       path: `nodes.${nodeId}`,

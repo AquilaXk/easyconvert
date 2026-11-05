@@ -143,3 +143,47 @@ export function buildPdfExportFilterData(options: ConversionOptions, pageRange?:
 export function pdfaMetadata(pdfaValidated: boolean, pdfaProfile: string): Record<string, unknown> {
   return { pdfaValidated, pdfaProfile };
 }
+
+export const ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  pdf: new Set(['writer_pdf_Export', 'calc_pdf_Export', 'impress_pdf_Export', 'draw_pdf_Export']),
+  docx: new Set(['MS Word 2007 XML', 'Office Open XML Text']),
+  doc: new Set(['MS Word 97']),
+  odt: new Set(['writer8']),
+  rtf: new Set(['Rich Text Format']),
+  txt: new Set(['Text', 'Text (encoded)', 'Text (encoded):UTF8,LF,,,false']),
+  html: new Set([
+    'HTML (StarWriter)',
+    'XHTML Writer File',
+    'HTML (StarCalc)',
+    'XHTML Calc File',
+    'impress_html_Export',
+    'draw_html_Export',
+  ]),
+  xlsx: new Set(['Calc MS Excel 2007 XML']),
+  xls: new Set(['MS Excel 97']),
+  ods: new Set(['calc8']),
+  csv: new Set(['Text - txt - csv (StarCalc)']),
+  pptx: new Set(['Impress MS PowerPoint 2007 XML']),
+  ppt: new Set(['MS PowerPoint 97']),
+  odp: new Set(['impress8']),
+  odg: new Set(['draw8']),
+  odd: new Set(['draw8_template']),
+  otg: new Set(['draw8_template']),
+});
+
+export const ALLOWED_LIBREOFFICE_FILTERS: readonly string[] = Object.freeze([
+  ...new Set(Object.values(ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET).flatMap((set) => [...set])),
+]);
+
+export function assertAllowedLibreOfficeFilter(targetFormat: string, filter: unknown): string {
+  const tgt = targetFormat.toLowerCase();
+  const allowed = Object.hasOwn(ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET, tgt)
+    ? ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET[tgt]
+    : undefined;
+  if (typeof filter !== 'string' || !allowed || !allowed.has(filter)) {
+    throw new UnsupportedOptionError(
+      `Unsupported LibreOffice export filter "${String(filter)}" for target format "${tgt}".`
+    );
+  }
+  return filter;
+}

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from './guard';
 import { conversionQueue } from '../queue/conversion-queue';
+import { graphScheduler } from '../queue/graph';
 import { storageProvider } from '../storage';
 import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
 import { isResultDeleted } from '../storage/retention-service';
@@ -66,10 +67,14 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
   if (classified.namespace === 'job-result') {
     try {
       const job = await conversionQueue.getJob(classified.jobId);
-      if (!job) {
-        return { resolved: false };
+      if (job) {
+        return { resolved: true, ownerUserId: job.data?.userId };
       }
-      return { resolved: true, ownerUserId: job.data?.userId };
+      const graphState = await graphScheduler.getGraphState(classified.jobId);
+      if (graphState) {
+        return { resolved: true, ownerUserId: graphState.ownerUserId };
+      }
+      return { resolved: false };
     } catch (err) {
       if (err instanceof QueueUnavailableError) {
         return { resolved: false };

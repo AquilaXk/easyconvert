@@ -2056,14 +2056,14 @@
     "rule": "complexity",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 107
+    "maxValue": 104
   },
   {
     "file": "src/lib/jobs/graph.ts",
     "rule": "max-lines-per-function",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 388
+    "maxValue": 373
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",
@@ -2206,14 +2206,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 108
+    "maxValue": 100
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 489
+    "maxValue": 479
   },
   {
     "file": "src/lib/queue/node-processor.ts",

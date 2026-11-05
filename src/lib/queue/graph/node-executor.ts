@@ -13,7 +13,7 @@ import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
 import { maskFailure } from '../../security/server-paths';
-import { graphNodeJobId, nodeOutputKey } from './node-jobs';
+import { graphNodeJobId, nodeOutputKey, sanitizeNodeOutputFilename } from './node-jobs';
 import { openUrlNodeSecrets } from './sealed-nodes';
 import {
   createTarArchive,
@@ -705,22 +705,10 @@ export async function processGraphNodeJob(
           archiveBuffer = stored.buffer;
         }
 
-        const ext = path.extname(effectiveFilename).toLowerCase().replace(/^\./, '');
-        let extracted: { filename: string; buffer: Buffer }[] = [];
-
-        if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-          const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer) : archiveBuffer;
-          extracted = extractTarArchive(uncompressed, { entries: node.entries });
-        } else if (ext === '7z') {
-          extracted = extract7zArchive(archiveBuffer, { entries: node.entries });
-        } else if (ext === 'rar') {
-          extracted = extractRarArchive(archiveBuffer, { entries: node.entries });
-        } else {
-          extracted = await extractZipArchive(archiveBuffer, { entries: node.entries });
-        }
+        const extracted = await extractGraphArchiveEntries(effectiveFilename, archiveBuffer, node.entries);
 
         for (const [index, f] of extracted.entries()) {
-          const entryName = path.basename(f.filename);
+          const entryName = sanitizeNodeOutputFilename(f.filename, `extracted_${index}.bin`);
           const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, entryName);
           await effectiveStorage.saveObject(outKey, f.buffer, archiveEntryMimeType(entryName), entryName, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
@@ -753,8 +741,9 @@ export async function processGraphNodeJob(
           const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
-          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, stored.filename || path.basename(inputKey));
-          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, stored.filename || path.basename(inputKey));
+          const safeFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `export_${index}.bin`);
+          const promotedKey = nodeOutputKey('results', graphId, nodeId, index, safeFilename);
+          await saveRetainedResult(effectiveStorage, promotedKey, stored.buffer, stored.mimeType, safeFilename);
           outputKeys.push(promotedKey);
         }
         await job.log(`Promoted ${outputKeys.length} result(s) for download`);
@@ -855,8 +844,7 @@ async function exportArtifactToUrl(
     },
     signal,
   });
-  // Drain the body so the connection can be reused; the payload itself is not needed.
-  await response.arrayBuffer().catch(() => undefined);
+  await response.body?.cancel?.().catch(() => undefined);
   if (!response.ok) {
     throw new GraphExportError(
       `Export of "${inputKey}" failed: destination answered HTTP ${response.status}`,
@@ -872,4 +860,26 @@ async function resolveInputArtifacts(graphId: string, node: GraphNode, providedA
   }
   if (!('input' in node) || !node.input) return [];
   return graphScheduler.getNodeOutputs(graphId, node.input);
+}
+
+async function extractGraphArchiveEntries(
+  effectiveFilename: string,
+  archiveBuffer: Buffer,
+  entries?: string[]
+): Promise<{ filename: string; buffer: Buffer }[]> {
+  const lowerFilename = effectiveFilename.toLowerCase();
+  const ext = lowerFilename.endsWith('.tar.gz')
+    ? 'tar.gz'
+    : path.extname(lowerFilename).replace(/^\./, '');
+  if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
+    const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer) : archiveBuffer;
+    return extractTarArchive(uncompressed, { entries });
+  }
+  if (ext === '7z') {
+    return extract7zArchive(archiveBuffer, { entries });
+  }
+  if (ext === 'rar') {
+    return extractRarArchive(archiveBuffer, { entries });
+  }
+  return extractZipArchive(archiveBuffer, { entries });
 }

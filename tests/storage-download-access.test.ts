@@ -8,6 +8,8 @@ import { mayUseStorageKeyAsJobInput, resolveObjectOwnership } from '../src/lib/a
 import { classifyStorageKey } from '../src/lib/storage/key-namespace';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { graphScheduler } from '../src/lib/queue/graph';
+import { nodeOutputKey, sanitizeNodeOutputFilename, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -236,6 +238,39 @@ describe('/api/storage/file owner access (#249)', () => {
     expect(getJob).toHaveBeenCalledWith(job.id);
     expect(ownerRes.status).toBe(404);
     expect(await ownerRes.json()).toEqual(notFoundBody(key));
+
+    const anonymousRes = await download(key);
+    expect(anonymousRes.status).toBe(404);
+    expect(await anonymousRes.json()).toEqual(notFoundBody(key));
+  });
+
+  it('resolves results/<graphId>/<nodeId>/<index>/<name> ownership from graphScheduler and sanitizes nodeOutputKey filenames', async () => {
+    const alice = await createUser('dl_graph_alice');
+    const bob = await createUser('dl_graph_bob');
+    const graphId = `graph_${uniqueSuffix()}`;
+    await graphScheduler.initGraph(
+      graphId,
+      sealGraph(graphId, {
+        nodes: {
+          upload: { op: 'import.upload', storageKey: 'uploads/src.txt' },
+          conv: { op: 'convert', input: 'upload', targetFormat: 'json' },
+        },
+      }),
+      { ownerUserId: alice.id }
+    );
+
+    const key = storeObject(nodeOutputKey('results', graphId, 'conv', 0, '../../secret/evil\r\nname.json'));
+    expect(key).toBe(`results/${graphId}/conv/0/evil_name.json`);
+    expect(sanitizeNodeOutputFilename('..')).toBe('output.bin');
+    expect(sanitizeNodeOutputFilename('a/b\\c.txt')).toBe('c.txt');
+
+    const ownerRes = await download(key, sessionHeaders(alice));
+    expect(ownerRes.status).toBe(200);
+    expect((await bodyBytes(ownerRes)).toString('hex')).toBe(FIXTURE.toString('hex'));
+
+    const bobRes = await download(key, sessionHeaders(bob));
+    expect(bobRes.status).toBe(404);
+    expect(await bobRes.json()).toEqual(notFoundBody(key));
 
     const anonymousRes = await download(key);
     expect(anonymousRes.status).toBe(404);

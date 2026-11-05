@@ -14,9 +14,16 @@ import {
   SandboxedTimeoutError,
 } from '../lib/security/process-sandbox';
 import { EngineUnavailableError } from '../lib/types';
-import { buildPdfExportFilterData } from '../lib/conversions/pdf-export-options';
+import {
+  ALLOWED_LIBREOFFICE_FILTERS,
+  ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET,
+  assertAllowedLibreOfficeFilter,
+  buildPdfExportFilterData,
+} from '../lib/conversions/pdf-export-options';
 import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
+
+export { ALLOWED_LIBREOFFICE_FILTERS, ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET };
 
 /** Engine name reported by the typed error when the pool cannot serve conversions. */
 export const LIBREOFFICE_POOL_ENGINE_NAME = 'libreoffice-pool';
@@ -160,8 +167,9 @@ export function resolveLibreOfficeFilter(
   const tgt = targetFormat.toLowerCase();
   const src = sourceFormat.toLowerCase();
 
-  if (options.libreOfficeFilter) {
-    return `${tgt}:${options.libreOfficeFilter}`;
+  if (options.libreOfficeFilter !== undefined && options.libreOfficeFilter !== '') {
+    const validFilter = assertAllowedLibreOfficeFilter(tgt, options.libreOfficeFilter);
+    return `${tgt}:${validFilter}`;
   }
 
   if (tgt === 'pdf') {
@@ -196,6 +204,7 @@ export class LibreOfficePoolManager {
 
   private isShuttingDown = false;
   private totalJobsProcessed = 0;
+  private spawningWorkers = 0;
 
   constructor(options: LibreOfficePoolOptions = {}) {
     const cpus = os.cpus()?.length || 2;
@@ -422,11 +431,16 @@ export class LibreOfficePoolManager {
     }
 
     // 2. Spawn a new worker if under maxWorkers limit
-    if (this.workers.length < this.maxWorkers) {
-      const newWorker = await this.createWorker();
-      newWorker.state = 'BUSY';
-      this.workers.push(newWorker);
-      return newWorker;
+    if (this.workers.length + this.spawningWorkers < this.maxWorkers) {
+      this.spawningWorkers++;
+      try {
+        const newWorker = await this.createWorker();
+        newWorker.state = 'BUSY';
+        this.workers.push(newWorker);
+        return newWorker;
+      } finally {
+        this.spawningWorkers--;
+      }
     }
 
     // 3. Enqueue FIFO request
@@ -520,6 +534,7 @@ export class LibreOfficePoolManager {
     if (this.isShuttingDown) return;
 
     // Spawn a fresh replacement worker
+    this.spawningWorkers++;
     try {
       const replacement = await this.createWorker();
       this.workers.push(replacement);
@@ -532,6 +547,14 @@ export class LibreOfficePoolManager {
       }
     } catch (err) {
       console.warn('[LibreOfficePoolManager] Warning: failed to spawn replacement worker:', err);
+      const failure = err instanceof Error ? err : new Error(String(err));
+      if (this.queue.length > 0) {
+        const next = this.queue.shift()!;
+        clearTimeout(next.timer);
+        next.reject(failure);
+      }
+    } finally {
+      this.spawningWorkers--;
     }
   }
 

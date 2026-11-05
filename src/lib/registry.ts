@@ -2918,10 +2918,10 @@ export function getFormatsByCategory(category: FormatCategory): FormatDefinition
 }
 
 export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinition[] {
-  const source = FORMAT_REGISTRY[sourceFormatId.toLowerCase()];
+  const source = getFormatByExtension(sourceFormatId);
   if (!source) return [];
   return source.targetFormats
-    .map((targetId) => FORMAT_REGISTRY[targetId])
+    .map((targetId) => getFormatByExtension(targetId))
     .filter((def): def is FormatDefinition => Boolean(def) && def.available !== false);
 }
 

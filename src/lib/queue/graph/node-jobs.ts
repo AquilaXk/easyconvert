@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { GraphExecutionState, GraphNodeJobMetadata, IGraphScheduler, SealedJobGraph } from './scheduler-types';
 import { foundOrUnknown, RECOVERY_UNKNOWN, type Recovery } from '../../api-keys/hand-off';
@@ -47,13 +48,26 @@ export function assertSealedFor(graphId: string, graph: SealedJobGraph): void {
 /** Where a node's files go: `intermediate` until the graph ends, or `results` for what an `export.internal` node keeps. */
 export type NodeOutputArea = 'intermediate' | 'results';
 
+const CONTROL_OR_SEPARATOR_CHARS = /[\0-\x1f\x7f\\/]+/g;
+
+export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'output.bin'): string {
+  const base = path.posix
+    .basename(String(rawFilename || '').replace(/\\/g, '/'))
+    .replace(CONTROL_OR_SEPARATOR_CHARS, '_')
+    .trim();
+  if (!base || base === '.' || base === '..') {
+    return fallback;
+  }
+  return base.slice(0, 255);
+}
+
 /**
  * The key of what node `nodeId` of graph `graphId` made of its input number `index` (0 for a node that makes one file of all
  * its inputs): each node and each input in a folder of its own, so two outputs that share a file name never overwrite each
  * other, and each keeps its readable name.
  */
 export function nodeOutputKey(area: NodeOutputArea, graphId: string, nodeId: NodeId, index: number, filename: string): string {
-  return `${area}/${graphId}/${nodeId}/${index}/${filename}`;
+  return `${area}/${graphId}/${nodeId}/${index}/${sanitizeNodeOutputFilename(filename)}`;
 }
 
 /** The metadata the node jobs of a graph carry: exactly the fields a node job reads, so nothing else reaches the queue. */

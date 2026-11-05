@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import {
@@ -10,6 +11,11 @@ import {
   convertToPdfA,
   getQpdfBinaryPath,
 } from '../src/lib/conversions/pdf-postprocess';
+import { validatePdfProtectOptions } from '../src/lib/conversions/pdf-postprocess/protect';
+import { validateJobGraph } from '../src/lib/jobs/graph';
+import { getAvailableTargetFormats } from '../src/lib/registry';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
+import * as safeFetchModule from '../src/lib/security/safe-fetch';
 import {
   PdfPostprocessError,
   InvalidPageRangeError,
@@ -278,6 +284,46 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
       await expect(protectPdf(Buffer.from('not a pdf at all'))).rejects.toThrow(PdfPostprocessError);
     });
 
+    it('rejects qpdf argument-file injection in permissions and passwords in both protectPdf and validateJobGraph', async () => {
+      const pdf = await createSamplePdf(1);
+
+      expect(() =>
+        validatePdfProtectOptions({ userPassword: 'ok', permissions: { print: 'full\n--modify=all' as any } })
+      ).toThrow(/Unsupported print permission/);
+      expect(() =>
+        validatePdfProtectOptions({ userPassword: 'ok', permissions: { modify: 'all\n--extract=y' as any } })
+      ).toThrow(/Unsupported modify permission/);
+      expect(() => validatePdfProtectOptions({ userPassword: 'a'.repeat(257) })).toThrow(/exceeds maximum length of 256/);
+      expect(() => validatePdfProtectOptions({ userPassword: 'bad\npassword' })).toThrow(/invalid newline or null characters/);
+
+      await expect(
+        protectPdf(pdf, { userPassword: 'ok', permissions: { print: 'full\n--modify=all' as any } })
+      ).rejects.toThrow(PdfPostprocessError);
+
+      const badGraphResult = validateJobGraph({
+        nodes: {
+          in: { op: 'import.upload', storageKey: 'uploads/doc.pdf' },
+          prot: {
+            op: 'pdf.protect',
+            input: 'in',
+            options: { protect: { userPassword: 'ok', permissions: { print: 'full\n--modify=all' as any } } },
+          },
+        },
+      } as any);
+      expect(badGraphResult.valid).toBe(false);
+      expect(badGraphResult.errors.map((e) => e.message).join(' ')).toMatch(/Unsupported print permission/);
+
+      expect(getAvailableTargetFormats('__proto__')).toEqual([]);
+      expect(getAvailableTargetFormats('constructor')).toEqual([]);
+      const protoGraphResult = validateJobGraph({
+        nodes: {
+          in: { op: 'import.upload', storageKey: 'uploads/doc.pdf' },
+          conv: { op: 'convert', input: 'in', sourceFormat: '__proto__', targetFormat: 'toString' },
+        },
+      } as any);
+      expect(protoGraphResult.valid).toBe(false);
+    });
+
     it('fails closed with EngineUnavailableError when qpdf binary is absent', async () => {
       const pdf = await createSamplePdf(1);
       const originalPath = process.env.QPDF_PATH;
@@ -402,6 +448,90 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
         expect(info).toMatch(/algorithm:AES-256/);
       } finally {
         fs.rmSync(testFile, { force: true });
+      }
+    });
+
+    it('extracts .tar.gz archives in DAG archive.extract and cancels export.url response streams without buffering', async () => {
+      const graphId = `graph_targz_${Date.now()}`;
+      const payload = Buffer.from('hello from tar.gz', 'utf-8');
+      const header = Buffer.alloc(512, 0);
+      header.write('nested/hello.txt', 0, 'utf-8');
+      header.write('0000644\0', 100, 'ascii');
+      header.write('0000000\0', 108, 'ascii');
+      header.write('0000000\0', 116, 'ascii');
+      header.write(`${payload.length.toString(8).padStart(11, '0')}\0`, 124, 'ascii');
+      header.write('00000000000\0', 136, 'ascii');
+      header.write('        ', 148, 'ascii');
+      header.write('0', 156, 'ascii');
+      header.write('ustar\0', 257, 'ascii');
+      header.write('00', 263, 'ascii');
+      let sum = 0;
+      for (let i = 0; i < 512; i++) sum += header[i];
+      header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'ascii');
+      const dataBlock = Buffer.alloc(512, 0);
+      payload.copy(dataBlock, 0);
+      const tarBytes = Buffer.concat([header, dataBlock, Buffer.alloc(1024, 0)]);
+      const tarGzBytes = zlib.gzipSync(tarBytes);
+      const inputKey = `intermediate/${graphId}/init/bundle.tar.gz`;
+      s3Storage.saveObject(inputKey, tarGzBytes, 'application/gzip', 'bundle.tar.gz');
+
+      const extractJob: any = {
+        signal: new AbortController().signal,
+        data: {
+          graphId,
+          graphNodeId: 'extractNode',
+          graphNode: {
+            id: 'extractNode',
+            op: 'archive.extract',
+            input: [inputKey],
+          },
+          inputArtifacts: [inputKey],
+        },
+        log: async () => {},
+        updateProgress: async () => {},
+      };
+
+      const extractResult = await processGraphNodeJob(extractJob, undefined, s3Storage);
+      expect(extractResult.resultKey).toBe(`intermediate/${graphId}/extractNode/0/hello.txt`);
+      expect(s3Storage.getObject(extractResult.resultKey)?.buffer.toString('utf-8')).toBe('hello from tar.gz');
+
+      const cancelSpy = vi.fn(async () => undefined);
+      const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0));
+      const safeFetchSpy = vi.spyOn(safeFetchModule, 'safeFetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: { cancel: cancelSpy },
+        arrayBuffer: arrayBufferSpy,
+      } as unknown as Response);
+
+      try {
+        const sealed = sealGraph(graphId, {
+          nodes: {
+            exportNode: {
+              op: 'export.url',
+              input: 'extractNode',
+              url: 'https://storage.example.com/upload/hello.txt',
+              method: 'PUT',
+            },
+          },
+        });
+        const exportJob: any = {
+          signal: new AbortController().signal,
+          data: {
+            graphId,
+            graphNodeId: 'exportNode',
+            graphNode: sealed.nodes.exportNode,
+            inputArtifacts: [extractResult.resultKey],
+          },
+          log: async () => {},
+          updateProgress: async () => {},
+        };
+
+        await processGraphNodeJob(exportJob, undefined, s3Storage);
+        expect(cancelSpy).toHaveBeenCalledTimes(1);
+        expect(arrayBufferSpy).not.toHaveBeenCalled();
+      } finally {
+        safeFetchSpy.mockRestore();
       }
     });
   });

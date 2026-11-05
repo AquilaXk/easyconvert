@@ -2,6 +2,7 @@ import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
 import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
 import { ARCHIVE_COMPRESSION_LEVEL_MAX, ARCHIVE_COMPRESSION_LEVEL_MIN } from '@/lib/conversions/archive-compression-level';
 import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
+import { ALLOWED_LIBREOFFICE_FILTERS } from '@/lib/conversions/pdf-export-options';
 
 import { PIPELINE_OPERATIONS } from './enums';
 import {
@@ -810,6 +811,7 @@ export const ConversionOptionsSchema = {
     },
     libreOfficeFilter: {
       type: 'string',
+      enum: [...ALLOWED_LIBREOFFICE_FILTERS],
       description: 'Explicit LibreOffice export filter name.',
     },
     losslessImageCompression: {
