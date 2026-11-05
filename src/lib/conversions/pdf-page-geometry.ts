@@ -282,12 +282,21 @@ function resolveFallbackSelectedPages(
   pageCount: number
 ): readonly number[] {
   try {
-    return selectPageNumbers(pageCount).filter((pageNum) => pageNum >= 1 && pageNum <= pageCount);
+    return selectPageNumbers(pageCount);
   } catch (err) {
     if (err instanceof PayloadLimitError) {
       throw err;
     }
-    return Array.from({ length: pageCount }, (_, idx) => idx + 1);
+    if (pageCount < MAX_RAW_FALLBACK_PAGES) {
+      try {
+        return selectPageNumbers(MAX_RAW_FALLBACK_PAGES);
+      } catch (retryErr) {
+        if (retryErr instanceof PayloadLimitError) {
+          throw retryErr;
+        }
+      }
+    }
+    return [];
   }
 }
 
@@ -309,9 +318,10 @@ function assertRawPdfBoxesWithinPageLimit(
   }
   const pageCount = countRawPdfPages(text, frames.length);
   const selected = resolveFallbackSelectedPages(selectPageNumbers, pageCount);
+  const usePerPageBox = frames.length >= pageCount && selected.every((pageNum) => pageNum >= 1 && pageNum <= frames.length);
   let totalPixels = 0;
   for (const pageNum of selected) {
-    if (frames.length >= pageCount) {
+    if (usePerPageBox) {
       const { width: widthPx, height: heightPx } = renderedSizePixels(frames[pageNum - 1], dpi);
       totalPixels += widthPx * heightPx;
     } else {
@@ -325,7 +335,7 @@ function isMissingRef(doc: PDFDocument, ref: unknown): boolean {
   return ref instanceof PDFRef && doc.context.lookup(ref) === undefined;
 }
 
-function hasUnresolvedKidsInTree(doc: PDFDocument, tree: PDFPageTree, visited: Set<PDFRef>): boolean {
+function inspectTreeNodeKids(doc: PDFDocument, tree: PDFPageTree, visited: Set<PDFRef>, stack: PDFPageTree[]): boolean {
   const kidsEntry = tree.get(PDFName.of('Kids'));
   if (isMissingRef(doc, kidsEntry)) return true;
   const kids = doc.context.lookup(kidsEntry);
@@ -336,7 +346,7 @@ function hasUnresolvedKidsInTree(doc: PDFDocument, tree: PDFPageTree, visited: S
     visited.add(kidRef);
     const kid = doc.context.lookup(kidRef);
     if (kid === undefined) return true;
-    if (kid instanceof PDFPageTree && hasUnresolvedKidsInTree(doc, kid, visited)) return true;
+    if (kid instanceof PDFPageTree) stack.push(kid);
   }
   return false;
 }
@@ -345,11 +355,16 @@ function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
   if (!(doc.catalog instanceof PDFCatalog)) return false;
   const pagesRef = doc.catalog.get(PDFName.of('Pages'));
   if (isMissingRef(doc, pagesRef)) return true;
-  const tree = doc.catalog.lookup(PDFName.of('Pages'));
-  if (!(tree instanceof PDFPageTree)) return false;
+  const rootTree = doc.catalog.lookup(PDFName.of('Pages'));
+  if (!(rootTree instanceof PDFPageTree)) return false;
   const visited = new Set<PDFRef>();
   if (pagesRef instanceof PDFRef) visited.add(pagesRef);
-  return hasUnresolvedKidsInTree(doc, tree, visited);
+  const stack: PDFPageTree[] = [rootTree];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current && inspectTreeNodeKids(doc, current, visited, stack)) return true;
+  }
+  return false;
 }
 
 export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageNumbers: readonly number[], dpi: number): void {

@@ -238,6 +238,24 @@ describe('PDF page rasterization pixel budgets', () => {
     });
     await expect(planPageRender(hugeCountPdf, undefined, 300)).rejects.toThrow(PayloadLimitError);
 
+    const singleBoxDamagedA4 = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /MediaBox [0 0 595.28 841.89]' },
+        ],
+        1
+      ).buffer
+    );
+    await withPdftoppmSpy(async (wasInvoked) => {
+      const error = await executeWorkerConversion(singleBoxDamagedA4, 'pdf', 'png', { pages: '1-40', dpi: 600 }, 'range-forty.pdf').catch(
+        (err: unknown) => err
+      );
+      expect(error).toBeInstanceOf(InputPixelLimitError);
+      expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
+      expect(wasInvoked()).toBe(false);
+    });
+
     const unparseablePageObjectPdf = Buffer.from(
       '%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] /PieceInfo <<\nendobj\ntrailer\n<< /Size 4 /Root 1 0 R >>\n%%EOF\n',
       'latin1'

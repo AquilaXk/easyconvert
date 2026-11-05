@@ -13,7 +13,7 @@ import {
   ArchiveNotEncryptedError,
   UnsupportedOptionError,
   EngineUnavailableError,
-  InvalidPageRangeError,
+  InvalidPageRangeError, PayloadLimitError,
   ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions,
   UnsupportedTargetError,
@@ -1378,7 +1378,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
       );
     });
   } catch (err) {
-    if (options.throwOnUnavailable || err instanceof InputPixelLimitError || err instanceof UnsupportedOptionError || err instanceof PdfPageFrameError) {
+    if (options.throwOnUnavailable || err instanceof PayloadLimitError || err instanceof UnsupportedOptionError || err instanceof PdfPageFrameError || err instanceof InvalidPageRangeError) {
       throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
