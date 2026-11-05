@@ -532,6 +532,7 @@ export class RedisKeyStore extends KeyStore {
             const matchedPreviousKey =
               !matchedCurrentKey && Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
             if (!matchedCurrentKey && !matchedPreviousKey) {
+              await this.syncKeyFromRedis(keyId);
               return { valid: false, error: 'Invalid or non-existent API key' };
             }
 
@@ -565,17 +566,28 @@ export class RedisKeyStore extends KeyStore {
               user: redisUserStore.sanitizeUser(userRecord),
             };
           }
-          const staleById = this.keys.get(keyId);
-          if (staleById) {
-            this.keyHashIndex.delete(staleById.keyHash);
-            if (staleById.previousKeyHash) {
-              this.keyHashIndex.delete(staleById.previousKeyHash);
-            }
-            this.keys.delete(keyId);
-          }
+        }
+        const staleIds = new Set<string>();
+        if (keyId) {
+          staleIds.add(keyId);
         }
         for (const h of candidates.hashes) {
+          const mappedId = this.keyHashIndex.get(h);
+          if (mappedId) {
+            staleIds.add(mappedId);
+          }
           this.keyHashIndex.delete(h);
+        }
+        for (const [id, localKey] of this.keys.entries()) {
+          if (
+            candidates.hashes.includes(localKey.keyHash) ||
+            (localKey.previousKeyHash && candidates.hashes.includes(localKey.previousKeyHash))
+          ) {
+            staleIds.add(id);
+          }
+        }
+        for (const staleId of staleIds) {
+          await this.syncKeyFromRedis(staleId);
         }
         return { valid: false, error: 'Invalid or non-existent API key' };
       } catch (err) {

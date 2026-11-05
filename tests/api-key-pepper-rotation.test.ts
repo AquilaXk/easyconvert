@@ -288,6 +288,10 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const expiredFirstSecretVerify = await store.verifyApiKey(oldSecretKey);
     expect(expiredFirstSecretVerify.valid).toBe(false);
 
+    fakeRedis.hmget.mockRejectedValueOnce(new Error('redis unreachable'));
+    const fallbackVerifyAfterPeerRotate = await store.verifyApiKey(oldSecretKey);
+    expect(fallbackVerifyAfterPeerRotate.valid).toBe(false);
+
     const listed = await store.listApiKeys(testUser.id);
     expect(listed.find((item) => item.id === key.id)?.webhookSecret).toBe(WEBHOOK_SECRET);
   });
