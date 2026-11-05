@@ -143,6 +143,14 @@ describe('the lists a run is judged with', () => {
     const known = readKnownFailures(REGRESSION_KNOWN_FAILURES_PATH);
     expect(known.map((entry) => entry.issue)).toEqual(known.map(() => 783));
   });
+
+  it('marks only verified empty inputs with a non-empty reason, including the 3D-only U3D page cc-6200151.pdf', () => {
+    const empty = files.filter((file) => file.emptyInput === true);
+    expect(empty.map((file) => file.id)).toContain('cc-6200151.pdf');
+    for (const file of empty) {
+      expect(file.emptyInputReason?.trim().length, file.id).toBeGreaterThan(20);
+    }
+  });
 });
 
 describe('documentation', () => {

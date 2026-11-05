@@ -163,6 +163,7 @@ Quality evidence
 92. [Acknowledging an intended speed slowdown against the base, row by row, single-use](#92-acknowledging-an-intended-speed-slowdown-against-the-base-row-by-row-single-use)
 114. [The launch pass line of a speed row is 0.90 of the reference](#114-the-launch-pass-line-of-a-speed-row-is-090-of-the-reference)
 143. [Corpus files are fetched from copies that do not change, a host with a published limit is spaced, a host that refuses is held for the time it asked, and a shard that fails keeps what it fetched](#143-corpus-files-are-fetched-from-copies-that-do-not-change-a-host-with-a-published-limit-is-spaced-a-host-that-refuses-is-held-for-the-time-it-asked-and-a-shard-that-fails-keeps-what-it-fetched)
+148. [The nightly corpus splits its heaviest shard in two, caps multi-page OCR workers by the host CPU count, reads root-level PDF page boxes, and marks five image-only PDFs for OCR](#148-the-nightly-corpus-splits-its-heaviest-shard-in-two-caps-multi-page-ocr-workers-by-the-host-cpu-count-reads-root-level-pdf-page-boxes-and-marks-five-image-only-pdfs-for-ocr)
 
 Tabular data
 
@@ -5573,3 +5574,23 @@ Legal
   - **Removing a job when its result goes.** A download of the deleted result could no longer tell its owner that it was deleted.
 - **Verified by**: `tests/job-record-retention-redis.test.ts` (the data dropped at each end, kept while retried, the age removal of completed and failed jobs and their dead letters, `clean` of cancelled jobs, a conversion job's webhook still signed after its secret was dropped, and the sweep removing a job no later job removes), `tests/queue-keep-jobs.test.ts` (KeepJobs in the in-process queue), `tests/job-graph-redis-e2e.test.ts` (an ended graph empties its secret and its keys expire), `tests/webhook-dlq-retention.test.ts` (the sealed secret, a replay signed with it, the 30 days), `tests/erase-account.test.ts` (the plan changes nothing, the erasure removes every family of one account and nothing of another, and in Redis mode every key tagged with its id).
 - **Revisit when**: the volume makes the scan of the ended sets slow (move them to a sorted index with a migration), the result retention changes (the age follows it), or a dead letter needs a longer life for a business customer.
+
+## 148. The nightly corpus splits its heaviest shard in two, caps multi-page OCR workers by the host CPU count, reads root-level PDF page boxes, and marks five image-only PDFs for OCR
+
+- **Status**: Implemented (issues #655 and #671), decided 2026-11-05.
+- **Decision**:
+  - **Eight shards in the nightly corpus workflow.** `ccpdf-ocr-office` is split into `ccpdf-ocr` (`ccpdf-ocr` and `scanned-pdf`) and `office-govdocs` (`govdocs1-doc`, `govdocs1-xls`, `govdocs1-ppt`, `libreoffice-qa-calc`, `libreoffice-qa-writer`, and `synthetic-office`), with a 30-minute job timeout on each shard.
+  - **Multi-page OCR worker concurrency follows the host CPU count.** `ocrPageConcurrency(pageCount)` in `src/lib/conversions/ocr-page-batch.ts` returns `Math.min(pageCount, Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))))`, spawning at most 2 `tesseract` processes on a 4-vCPU runner (`OMP_THREAD_LIMIT=2`) and up to 4 on an 8-vCPU host.
+  - **Root-level PDF page geometry inheritance.** `readPageFrames` in `src/lib/conversions/pdf-page-geometry.ts` visits the root `/Pages` dictionary in `walkNode` before recursing into `/Kids`, inheriting `/MediaBox`, `/CropBox`, and `/Rotate` placed on the root `/Pages` dictionary (`ISO 32000-1:2008` §7.7.3.4, Poppler `poppler/Page.cc` `PageAttrs::PageAttrs`).
+  - **Optical character recognition for five scanned corpus PDFs.** `cc-1400556.pdf`, `cc-2400969.pdf`, `cc-4600613.pdf`, `cc-5200942.pdf`, and `cc-6200064.pdf` in `bench/realworld/regression-manifest.json` carry `"options": { "ocr": true }` under `expect: "convert"`, because `pdftotext` extracts 0 text characters from all five while `pdfimages -list` shows full-page scanned images; without `ocr: true`, `pdf -> txt` and `pdf -> md` intentionally refuse image-only PDFs with `ConversionRefusedError('empty_extraction')` per policy #124 and #671.
+- **Why**:
+  - **Eliminate CPU oversubscription and 25-minute shard timeouts.** Running 4 `tesseract` processes with `OMP_THREAD_LIMIT=2` (8 threads) on a 4-vCPU GitHub Actions runner caused severe thread contention and pushed `ccpdf-ocr-office` past its 25-minute timeout.
+  - **Preserve vector paths on PDFs with root-inherited `/MediaBox`.** `cc-2800657.pdf` places `/MediaBox [0 0 595 842]` on the root `/Pages` dictionary (`3 0 obj`) while leaf `/Page` dictionaries omit `/MediaBox`; skipping the root node defaulted the page height to `792 pt`, leaving `52` vector paths outside the page box on `pdf -> docx`.
+  - **Keep image-only PDF refusal strict by default.** Implicitly running OCR when `options.ocr` is false would violate policy #124 and #671 (`empty_extraction`), whereas marking the five scanned corpus entries with `options: { ocr: true }` exercises the real OCR pipeline on those corpus files.
+- **Trade-offs**:
+  - **One extra matrix job in `.github/workflows/regression-corpus.yml`.** Eight shards run instead of seven, each well inside the 30-minute timeout.
+- **Alternatives rejected**:
+  - **Auto-enabling OCR on `pdf -> txt` when `pdftotext` yields no text.** Violates policy #124 and #671, which require an explicit `empty_extraction` refusal unless the caller requests `ocr: true`.
+  - **Hard-coding `OCR_PAGE_CONCURRENCY = 2` on all machines.** Wastes half the cores on 8-vCPU+ worker hosts.
+- **Verified by**: `tests/pdf-page-frames-root.test.ts`, `tests/ocr-pdf-concurrency.perf.test.ts`, `tests/regression-corpus-manifest.test.ts`, `tests/regression-corpus-manifest-real.test.ts`, `tests/regression-corpus-workflow.test.ts`, and `tests/realworld-corpus.test.ts`.
+- **Revisit when**: a shard approaches 20 minutes on `ubuntu-latest` or Tesseract thread scheduling changes.

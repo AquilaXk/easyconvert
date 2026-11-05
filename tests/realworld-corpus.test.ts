@@ -18,7 +18,7 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
-import { JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { childOcrPageConcurrency, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getAvailableTargetFormats } from '../src/lib/registry';
@@ -498,6 +498,13 @@ describe('job deadline by size', () => {
     const holdMs = (TOLERATED_HUNG_JOBS * MAX_JOB_DEADLINE_MS) / NIGHTLY_WORKERS;
     expect(holdMs).toBeLessThanOrEqual((minutes * 60_000) / 2);
     expect(MAX_JOB_DEADLINE_MS).toBe(540_000);
+  });
+
+  it('gives each job server its share of the runner cores for per-page OCR concurrency, and at least one page', () => {
+    expect(childOcrPageConcurrency(3, 4)).toBe(1);
+    expect(childOcrPageConcurrency(4, 4)).toBe(1);
+    expect(childOcrPageConcurrency(2, 4)).toBe(2);
+    expect(childOcrPageConcurrency(1, 4)).toBe(4);
   });
 
   describe('which files are read by OCR', () => {

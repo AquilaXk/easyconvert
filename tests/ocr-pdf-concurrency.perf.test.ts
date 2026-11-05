@@ -8,6 +8,7 @@ import { performSmartMultiPagePdfOcr, recognizePdfPages, shutdownOcrWorkerPool }
 import {
   mapWithConcurrency,
   OCR_MAX_INFLIGHT_PAGES,
+  OCR_PAGE_CONCURRENCY_ENV,
   ocrPageConcurrency,
 } from '../src/lib/conversions/ocr-page-batch';
 import {
@@ -109,6 +110,23 @@ describe('ocrPageConcurrency', () => {
     expect(ocrPageConcurrency()).toBe(Math.min(OCR_POOL_MAX_WORKERS_TOTAL, OCR_MAX_INFLIGHT_PAGES));
     expect(ocrPageConcurrency(100)).toBe(OCR_MAX_INFLIGHT_PAGES);
     expect(ocrPageConcurrency(0)).toBe(1);
+  });
+
+  it('honours a positive integer EASYCONVERT_OCR_PAGE_CONCURRENCY without exceeding the upper bound', () => {
+    const previous = process.env[OCR_PAGE_CONCURRENCY_ENV];
+    try {
+      process.env[OCR_PAGE_CONCURRENCY_ENV] = '1';
+      expect(ocrPageConcurrency()).toBe(1);
+      process.env[OCR_PAGE_CONCURRENCY_ENV] = '2';
+      expect(ocrPageConcurrency()).toBe(2);
+      process.env[OCR_PAGE_CONCURRENCY_ENV] = '99';
+      expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
+      process.env[OCR_PAGE_CONCURRENCY_ENV] = '0';
+      expect(ocrPageConcurrency()).toBe(OCR_MAX_INFLIGHT_PAGES);
+    } finally {
+      if (previous === undefined) delete process.env[OCR_PAGE_CONCURRENCY_ENV];
+      else process.env[OCR_PAGE_CONCURRENCY_ENV] = previous;
+    }
   });
 });
 

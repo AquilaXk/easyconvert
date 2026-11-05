@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { convertDocument } from '../src/lib/conversions/document';
 import { PdfPageFrameError, readPdfPageFrames } from '../src/lib/conversions/pdf-page-geometry';
-import { buildPdf } from './helpers/pdf-craft';
+import { buildPdf, HELVETICA_FONT, textContent } from './helpers/pdf-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -40,6 +41,22 @@ describe('the frames of a PDF whose catalog has no page tree', () => {
     expect(frames).toEqual([{ cropBox: { x0: 0, y0: 0, x1: 200, y1: 100 }, rotation: 0 }]);
   });
 
+  it('reads the frame of a catalog whose /Pages entry is a single /Type /Page leaf directly, and converts its text', async () => {
+    const leafPdf = buildPdf(
+      [
+        { id: CATALOG_ID, dict: `/Type /Catalog /Pages ${PAGES_ID} 0 R` },
+        { id: PAGES_ID, dict: `/Type /Page /MediaBox [0 0 842 1191] /Rotate 90 /Contents 3 0 R /Resources << /Font << /F1 4 0 R >> >>` },
+        { id: 3, stream: Buffer.from(textContent('Single page leaf catalog'), 'latin1') },
+        { id: 4, raw: HELVETICA_FONT },
+      ],
+      CATALOG_ID
+    ).buffer;
+    const frames = await readPdfPageFrames(leafPdf);
+    expect(frames).toEqual([{ cropBox: { x0: 0, y0: 0, x1: 842, y1: 1191 }, rotation: 90 }]);
+    const converted = await convertDocument(leafPdf, 'pdf', 'txt');
+    expect(converted.buffer.toString('utf8').trim()).toBe('Single page leaf catalog');
+  });
+
   it('refuses pdfjs-issue15590.pdf, whose /Pages is the dictionary of a JavaScript action, the same way', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'pdfjs-issue15590.pdf');
     const error = await readPdfPageFrames(bytes).catch((caught: unknown) => caught);
@@ -48,3 +65,4 @@ describe('the frames of a PDF whose catalog has no page tree', () => {
     expect((error as PdfPageFrameError).message).not.toMatch(PARSER_TYPE_ERROR);
   });
 });
+

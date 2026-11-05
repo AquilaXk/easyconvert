@@ -179,4 +179,22 @@ describe('regression manifest file', () => {
     const loose = file('web-1.doc', { origin: { kind: 'file', url: 'https://example.invalid/x.doc' } });
     expect(() => serializeRegressionManifest(manifestOf([loose]))).toThrow(/zip/);
   });
+
+  it('round-trips emptyInputs for files marked emptyInput and refuses an unknown file id or a blank reason', () => {
+    const reason = 'The one page has a 0-byte /Contents stream and only a /Subtype /3D annotation with an empty appearance.';
+    const withEmpty = manifestOf([
+      files[0],
+      files[1],
+      { ...files[2], emptyInput: true, emptyInputReason: reason },
+    ]);
+    const serialized = serializeRegressionManifest(withEmpty);
+    expect(serialized).toContain(`"emptyInputs": {"cc-0000007.pdf":${JSON.stringify(reason)}},`);
+    const parsed = parseRegressionManifest(serialized);
+    const byId = new Map(parsed.files.map((f) => [f.id, f]));
+    expect(byId.get('cc-0000007.pdf')).toMatchObject({ emptyInput: true, emptyInputReason: reason });
+    expect(byId.get('gd-000001.doc')?.emptyInput).toBeUndefined();
+    expect(() => parseRegressionManifest(JSON.stringify({ ...JSON.parse(written), emptyInputs: { 'missing.pdf': reason } }))).toThrow(ManifestError);
+    expect(() => parseRegressionManifest(JSON.stringify({ ...JSON.parse(written), emptyInputs: { 'cc-0000007.pdf': '   ' } }))).toThrow(ManifestError);
+  });
 });
+

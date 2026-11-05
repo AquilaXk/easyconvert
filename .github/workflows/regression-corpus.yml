@@ -7,7 +7,7 @@ name: Regression corpus
 #
 #   - Sunday: the whole corpus, as 16 shards. The merged result set is kept as the `regression-baseline` artifact.
 #   - Monday to Saturday: a seventh of the corpus chosen by the date, plus the canary (one file of every format and producer
-#     class, and every file that failed before), as 4 shards, compared with the last full run on main.
+#     class, and every file that failed before), as 8 shards, compared with the last full run on main.
 #
 # No Actions cache holds the files: each shard reads its files from the archives by byte range, checks the digest, judges the
 # file and deletes it (bench/README.md, Regression corpus). A failed run shows in the run summary, which lists each file by verdict,
@@ -39,7 +39,7 @@ permissions:
 env:
   # Shards per mode (bench/realworld/regression/schedule.ts sizes them; tests/regression-corpus-workflow.test.ts keeps them equal).
   FULL_SHARDS: '16'
-  NIGHTLY_SHARDS: '4'
+  NIGHTLY_SHARDS: '8'
   # The schedule entry that starts a full run.
   FULL_CRON: '17 3 * * 0'
   # The branch whose last full run is the baseline of the differential judge.

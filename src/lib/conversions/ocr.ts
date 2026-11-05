@@ -179,10 +179,10 @@ export async function recognizeRenderedPdfPages(
   const renderer = await openPdfPageRenderer(pdf, pages, options.dpi);
   try {
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
-    // With several pages the pages run side by side and each is read whole; bands are for a lone page.
-    const bandsAllowed = indices.length < 2 && options.parallelBands !== false;
+    const concurrency = ocrPageConcurrency();
+    const bandsAllowed = indices.length < 2 && options.parallelBands !== false && concurrency > 1;
     const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs, options.signal);
-    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), (index) =>
+    const recognized = await mapWithConcurrency(indices, concurrency, (index) =>
       budget.guardPage(renderer.plan.pageNumbers[index], async (signal) => {
         const rendered = await renderer.render(index, signal);
         // A page that was refused while it was being drawn costs no reading.
