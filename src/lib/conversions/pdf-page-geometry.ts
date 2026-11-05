@@ -1,6 +1,6 @@
 import { PDFArray, PDFCatalog, PDFDocument, PDFName, PDFNull, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
 import { ConversionFailedError, PayloadLimitError } from '../types';
-import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limits';
+import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limit-config';
 import { MAX_AGGREGATE_PAGE_PIXELS } from './image-limits';
 import { mapBoxToSource, normaliseLeafPageCatalogWithLib, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
