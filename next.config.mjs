@@ -14,6 +14,14 @@ const nextConfig = {
     // also a part of an upload in parts and its framing); tests/next-config-body-limit.test.ts holds the two together.
     middlewareClientMaxBodySize: 65 * 1024 * 1024,
   },
+  async rewrites() {
+    return [
+      {
+        source: '/_assets/ocr/:version/:asset*',
+        destination: '/api/ocr-assets/:version/:asset*',
+      },
+    ];
+  },
 };
 
 /** The legal pages import their Markdown from docs/legal as text (`?raw`, src/lib/legal/texts.ts), as Vite does in the tests. */

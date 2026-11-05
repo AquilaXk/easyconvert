@@ -31,6 +31,12 @@ const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 /** Edge OCR only produces a searchable PDF; other OCR targets go through the normal flow. */
 const EDGE_OCR_TARGET_FORMAT = 'pdf';
 
+export const EDGE_OCR_ASSET_VERSION = '7.0.0';
+export const EDGE_OCR_ASSET_BASE_PATH = `/_assets/ocr/${EDGE_OCR_ASSET_VERSION}`;
+export const EDGE_OCR_WORKER_PATH = `${EDGE_OCR_ASSET_BASE_PATH}/worker.min.js`;
+export const EDGE_OCR_CORE_PATH = EDGE_OCR_ASSET_BASE_PATH;
+export const EDGE_OCR_LANG_PATH = `${EDGE_OCR_ASSET_BASE_PATH}/tessdata`;
+
 /**
  * Returns true if the client environment supports in-browser WebAssembly & Web Worker execution.
  */
@@ -69,6 +75,12 @@ async function recognizeImage(
   try {
     const Tesseract = await import('tesseract.js');
     const worker = await Tesseract.createWorker(language, 1, {
+      workerPath: EDGE_OCR_WORKER_PATH,
+      corePath: EDGE_OCR_CORE_PATH,
+      langPath: EDGE_OCR_LANG_PATH,
+      gzip: false,
+      workerBlobURL: false,
+      cacheMethod: 'none',
       // Failures already reject the pending job; without a handler the worker also rethrows
       // them from its message listener as an uncaught exception.
       errorHandler: () => undefined,
@@ -118,8 +130,9 @@ async function recognizeImage(
 }
 
 /**
- * Executes 100% local, client-side Edge OCR and Searchable PDF generation for a raster image.
- * All computations run strictly within client RAM without a single byte sent over the network.
+ * Executes client-side Edge OCR and Searchable PDF generation for a raster image.
+ * The input image remains in client memory without being uploaded, while the OCR worker script,
+ * WebAssembly core, and language data are loaded from first-party `/_assets/ocr/7.0.0/...` assets.
  * Throws {@link EdgeOcrError} whenever no searchable text layer can be produced.
  */
 export async function runClientEdgeOcr(

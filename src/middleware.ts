@@ -426,6 +426,6 @@ export const config = {
   // 404 without reaching `src/app/[locale]/page.tsx` with an unknown `locale` parameter (`NoFallbackError`).
   matcher: [
     '/api/:path*',
-    '/((?!api/|_next/|_vercel/|fonts/|screenshots/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$).*)',
+    '/((?!api/|_next/|_vercel/|_assets/|fonts/|screenshots/|favicon\\.ico$|icon\\.svg$|apple-icon\\.png$|sample\\.pdf$).*)',
   ],
 };
