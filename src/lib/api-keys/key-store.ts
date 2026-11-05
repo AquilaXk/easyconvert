@@ -134,6 +134,30 @@ export class KeyStore {
     }
   }
 
+  protected upsertKeyInMemory(key: ApiKey): void {
+    const existing = this.keys.get(key.id);
+    if (existing) {
+      this.keyHashIndex.delete(existing.keyHash);
+      if (existing.previousKeyHash) {
+        this.keyHashIndex.delete(existing.previousKeyHash);
+      }
+    }
+    this.keys.set(key.id, key);
+    this.keyHashIndex.set(key.keyHash, key.id);
+    if (key.previousKeyHash) {
+      this.keyHashIndex.set(key.previousKeyHash, key.id);
+    }
+  }
+
+  protected reloadKeysFromDisk(): void {
+    const keysFile = getKeysFile();
+    if (!fs.existsSync(keysFile)) return;
+    const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
+    for (const k of list) {
+      this.upsertKeyInMemory(k);
+    }
+  }
+
   protected ensureInitialized() {
     if (this.initialized) return;
     this.initialized = true;
@@ -142,24 +166,7 @@ export class KeyStore {
     }
 
     try {
-      const keysFile = getKeysFile();
-      if (fs.existsSync(keysFile)) {
-        const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
-        for (const k of list) {
-          const existing = this.keys.get(k.id);
-          if (existing) {
-            this.keyHashIndex.delete(existing.keyHash);
-            if (existing.previousKeyHash) {
-              this.keyHashIndex.delete(existing.previousKeyHash);
-            }
-          }
-          this.keys.set(k.id, k);
-          this.keyHashIndex.set(k.keyHash, k.id);
-          if (k.previousKeyHash) {
-            this.keyHashIndex.set(k.previousKeyHash, k.id);
-          }
-        }
-      }
+      this.reloadKeysFromDisk();
 
       const usageFile = getUsageFile();
       if (fs.existsSync(usageFile)) {
@@ -176,12 +183,11 @@ export class KeyStore {
           this.userFiles.set(f.id, f);
         }
       }
-    } catch {
-      // In-memory fallback
-    }
+    } catch {}
   }
 
   protected persist() {
+    this.ensureInitialized();
     try {
       const storageDir = getStorageDir();
       if (!fs.existsSync(storageDir)) {
@@ -197,9 +203,7 @@ export class KeyStore {
       fs.writeFileSync(getUsageFile(), JSON.stringify(usageObj, null, 2), 'utf-8');
 
       fs.writeFileSync(getFilesFile(), JSON.stringify(Array.from(this.userFiles.values()), null, 2), 'utf-8');
-    } catch {
-      // Ignore in sandbox/read-only
-    }
+    } catch {}
   }
 
   public async generateApiKey(
@@ -262,24 +266,9 @@ export class KeyStore {
 
   private findOrReloadKeyId(candidateHashes: readonly string[]): string | undefined {
     let keyId = this.lookupKeyId(candidateHashes);
-    const keysFile = getKeysFile();
-    if (!keyId && fs.existsSync(keysFile)) {
+    if (!keyId && fs.existsSync(getKeysFile())) {
       try {
-        const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
-        for (const k of list) {
-          const existing = this.keys.get(k.id);
-          if (existing) {
-            this.keyHashIndex.delete(existing.keyHash);
-            if (existing.previousKeyHash) {
-              this.keyHashIndex.delete(existing.previousKeyHash);
-            }
-          }
-          this.keys.set(k.id, k);
-          this.keyHashIndex.set(k.keyHash, k.id);
-          if (k.previousKeyHash) {
-            this.keyHashIndex.set(k.previousKeyHash, k.id);
-          }
-        }
+        this.reloadKeysFromDisk();
         keyId = this.lookupKeyId(candidateHashes);
       } catch {}
     }
@@ -534,6 +523,7 @@ export class KeyStore {
   }
 
   public markKeyExpiryNotified(keyId: string, timestamp: number): void {
+    this.ensureInitialized();
     const k = this.keys.get(keyId);
     if (k) {
       k.lastExpiryNotifiedAt = timestamp;
@@ -724,9 +714,7 @@ export class KeyStore {
       if (fs.existsSync(usageFile)) fs.unlinkSync(usageFile);
       const filesFile = getFilesFile();
       if (fs.existsSync(filesFile)) fs.unlinkSync(filesFile);
-    } catch {
-      // Ignore
-    }
+    } catch {}
   }
 }
 

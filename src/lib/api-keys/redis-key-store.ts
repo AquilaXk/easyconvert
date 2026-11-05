@@ -426,6 +426,7 @@ export class RedisKeyStore extends KeyStore {
     candidates: { hashes: string[]; currentHash: string },
     matchedPreviousKey: boolean
   ): Promise<void> {
+    this.ensureInitialized();
     const oldKeyHash = key.keyHash;
     const oldPreviousKeyHash = key.previousKeyHash;
     const migrated = matchedPreviousKey
@@ -444,17 +445,7 @@ export class RedisKeyStore extends KeyStore {
       existing.status !== key.status ||
       existing.webhookSecret !== key.webhookSecret ||
       existing.graceExpiresAt !== key.graceExpiresAt;
-    if (existing) {
-      this.keyHashIndex.delete(existing.keyHash);
-      if (existing.previousKeyHash) {
-        this.keyHashIndex.delete(existing.previousKeyHash);
-      }
-    }
-    this.keys.set(key.id, key);
-    this.keyHashIndex.set(key.keyHash, key.id);
-    if (key.previousKeyHash) {
-      this.keyHashIndex.set(key.previousKeyHash, key.id);
-    }
+    this.upsertKeyInMemory(key);
     if (migrated || localDiffers) {
       this.persist();
     }
@@ -512,6 +503,7 @@ export class RedisKeyStore extends KeyStore {
     secretKey: string,
     clientIp?: string
   ): Promise<{ valid: boolean; key?: ApiKey; user?: User; error?: string }> {
+    this.ensureInitialized();
     if (this.redisClient) {
       try {
         if (!secretKey || typeof secretKey !== 'string') {
@@ -647,22 +639,16 @@ export class RedisKeyStore extends KeyStore {
     try {
       const hashData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
       const existing = this.keys.get(keyId);
-      if (existing) {
+      if (hashData && hashData.data) {
+        const parsed = JSON.parse(hashData.data) as ApiKey;
+        parsed.status = (hashData.status as 'active' | 'revoked') || parsed.status;
+        this.upsertKeyInMemory(parsed);
+        this.persist();
+      } else if (existing) {
         this.keyHashIndex.delete(existing.keyHash);
         if (existing.previousKeyHash) {
           this.keyHashIndex.delete(existing.previousKeyHash);
         }
-      }
-      if (hashData && hashData.data) {
-        const parsed = JSON.parse(hashData.data) as ApiKey;
-        parsed.status = (hashData.status as 'active' | 'revoked') || parsed.status;
-        this.keys.set(keyId, parsed);
-        this.keyHashIndex.set(parsed.keyHash, keyId);
-        if (parsed.previousKeyHash) {
-          this.keyHashIndex.set(parsed.previousKeyHash, keyId);
-        }
-        this.persist();
-      } else if (existing) {
         this.keys.delete(keyId);
         this.persist();
       }
@@ -723,6 +709,7 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
+    this.ensureInitialized();
     const localKey = this.keys.get(keyId);
     if (localKey && localKey.userId !== userId) {
       return false;

@@ -289,14 +289,15 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const rotatedSecond = await peerStore.rotateApiKey(testUser.id, key.id, { gracePeriodSeconds: 3600 });
     vi.spyOn(process, 'cwd').mockReturnValue(tempWorkDir);
     expect(rotatedSecond).not.toBeNull();
-    const expiredFirstSecretVerify = await store.verifyApiKey(oldSecretKey);
+    const restartedStore = new RedisKeyStore({ isolated: true, redisClient: fakeRedis as any, keyPrefix: prefix });
+    const expiredFirstSecretVerify = await restartedStore.verifyApiKey(oldSecretKey);
     expect(expiredFirstSecretVerify.valid).toBe(false);
 
     fakeRedis.hmget.mockRejectedValueOnce(new Error('redis unreachable'));
-    const fallbackVerifyAfterPeerRotate = await store.verifyApiKey(oldSecretKey);
+    const fallbackVerifyAfterPeerRotate = await restartedStore.verifyApiKey(oldSecretKey);
     expect(fallbackVerifyAfterPeerRotate.valid).toBe(false);
 
-    const listed = await store.listApiKeys(testUser.id);
+    const listed = await restartedStore.listApiKeys(testUser.id);
     expect(listed.find((item) => item.id === key.id)?.webhookSecret).toBe(WEBHOOK_SECRET);
   });
 
