@@ -1,10 +1,10 @@
 import type { PDFDict, PDFDocument, PDFStream } from 'pdf-lib';
 import { PayloadLimitError } from '../types';
 import { assertInputPixels } from './image-input-limits';
+import { normaliseLeafPageCatalogWithLib } from './ocr-geometry';
 import { pdfjsImageToPng } from './pdf-rasterizer';
 import type { OperatorListLike } from './pdf-text-content';
 import {
-  normaliseLeafPageCatalogWithLib,
   PDF_CONTENT_MAX_IMAGE_BYTES,
   PDF_CONTENT_MAX_PAGE_STREAM_BYTES,
   PDF_CONTENT_MAX_PICTURES,

@@ -1,8 +1,7 @@
 import { PDFCatalog, PDFDocument, PDFName, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
-import { mapBoxToSource, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
+import { mapBoxToSource, normaliseLeafPageCatalogWithLib, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
-import { normaliseLeafPageCatalogWithLib } from './pdf-text-types';
 
 /**
  * How a rendered PDF page relates to the PDF page it was rendered from, so that boxes the recognizer reports in
