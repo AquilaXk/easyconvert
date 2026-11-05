@@ -14,6 +14,7 @@ import ConversionQueue from '../src/components/ConversionQueue';
 import type { ConversionFailure } from '../src/lib/conversion-failure';
 import { resetLoginRateLimiterStore } from '../src/lib/auth/login-rate-limiter';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 import { hashPassword } from '../src/lib/auth/crypto';
 import { concurrencyLimitResponse } from '../src/lib/queue/concurrency-limit';
 import { fileSizeLimitProblem } from '../src/lib/api/file-size-limit';
@@ -318,7 +319,8 @@ describe('sign-in refusals are worded by their code', () => {
       await bodyOf(await register(jsonRequest('/api/auth/register', '{not json'))),
       await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'no-at-sign', password: 'LongEnough1' }))),
       await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', password: 'short' }))),
-      await bodyOf(await register(jsonRequest('/api/auth/register', { email: existing, password: 'LongEnough1' }))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', { email: 'new@i18n.test', password: 'LongEnough1' }))),
+      await bodyOf(await register(jsonRequest('/api/auth/register', { email: existing, password: 'LongEnough1', acceptedTermsVersion: TERMS_VERSION }))),
     ];
     expect(answers.map(({ status, body }) => [status, body.code])).toEqual([
       [400, 'invalid_json'],
@@ -326,6 +328,7 @@ describe('sign-in refusals are worded by their code', () => {
       [400, 'invalid_json'],
       [400, 'invalid_email'],
       [400, 'password_length'],
+      [400, 'terms_not_accepted'],
       [409, 'account_exists'],
     ]);
     for (const { status, body } of answers) {

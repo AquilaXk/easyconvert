@@ -41,6 +41,9 @@ export interface RedisKeyStoreOptions {
   redisClient?: Redis;
 }
 
+/** How long a request burst counter lives after the last request it counted, unless the caller sets `ttlSeconds`. */
+export const TOKEN_BUCKET_TTL_SECONDS = 3600;
+
 export interface TokenBucketOptions {
   capacity?: number;
   refillRate?: number;
@@ -88,11 +91,9 @@ function secondsUntilUtcMidnight(): number {
  */
 export class RedisKeyStore extends KeyStore {
   private static sharedLedger: MemoryReservationLedger | undefined;
-  protected static sharedTokenBuckets = new Map<string, { tokens: number; lastRefill: number }>();
   private readonly memoryLedger: MemoryReservationLedger;
   /** The ledger in Redis, made once for the client it was made with. */
   private redisLedger: { client: Redis; ledger: RedisReservationLedger } | undefined;
-  private readonly tokenBuckets: Map<string, { tokens: number; lastRefill: number }>;
   private readonly keyPrefix: string;
   private redisClient: Redis | null = null;
 
@@ -126,7 +127,6 @@ export class RedisKeyStore extends KeyStore {
     this.memoryLedger = isIsolated
       ? new MemoryReservationLedger(this.dailyUsage, persist)
       : (RedisKeyStore.sharedLedger ??= new MemoryReservationLedger(this.dailyUsage, persist));
-    this.tokenBuckets = isIsolated ? new Map() : RedisKeyStore.sharedTokenBuckets;
     this.redisClient = client ?? null;
   }
 
@@ -549,9 +549,18 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
+    const localKey = this.keys.get(keyId);
+    if (localKey && localKey.userId !== userId) {
+      return false;
+    }
+    let deletedInRedis = false;
     if (this.redisClient) {
       try {
         const keyData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
+        const ownerId = keyData.userId ?? localKey?.userId;
+        if (ownerId !== userId) {
+          return false;
+        }
         if (keyData.keyHash) {
           await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.keyHash);
         }
@@ -559,12 +568,15 @@ export class RedisKeyStore extends KeyStore {
           await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.previousKeyHash);
         }
         await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
-        await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`);
+        await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`, `${this.keyPrefix}rate:apikey:${keyId}`);
+        this.tokenBuckets.delete(`apikey:${keyId}`);
+        deletedInRedis = Boolean(keyData.userId);
       } catch (err) {
         console.warn('[RedisKeyStore] Redis deleteApiKey failed:', err);
       }
     }
-    return super.deleteApiKey(userId, keyId);
+    const deletedLocal = await super.deleteApiKey(userId, keyId);
+    return deletedInRedis || deletedLocal;
   }
 
   public override async listApiKeys(userId: string): Promise<ApiKey[]> {
@@ -634,6 +646,16 @@ export class RedisKeyStore extends KeyStore {
     return { allowed: true, remaining: res.remaining };
   }
 
+  public override forgetUsage(userId: string): number {
+    this.memoryLedger.forgetOwner(userId);
+    for (const key of this.tokenBuckets.keys()) {
+      if (key === userId || key.startsWith(`${userId}:`) || key.endsWith(`:${userId}`)) {
+        this.tokenBuckets.delete(key);
+      }
+    }
+    return super.forgetUsage(userId);
+  }
+
   public override resetStore() {
     this.memoryLedger.clear();
     this.tokenBuckets.clear();
@@ -683,7 +705,7 @@ export class RedisKeyStore extends KeyStore {
     const capacity = options.capacity ?? 50;
     const refillRate = options.refillRate ?? 10;
     const cost = options.cost ?? 1;
-    const ttl = options.ttlSeconds ?? 3600;
+    const ttl = options.ttlSeconds ?? TOKEN_BUCKET_TTL_SECONDS;
     const now = Date.now();
 
     if (this.redisClient) {

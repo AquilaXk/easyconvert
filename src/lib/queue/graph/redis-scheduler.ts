@@ -15,7 +15,9 @@ import {
   NODE_COMPLETED_LUA_SCRIPT,
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
+  FORGET_ENDED_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
+import { endedJobRetentionMs } from '../enqueue';
 import { assertSealedFor, cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords } from './sealed-nodes';
@@ -37,7 +39,7 @@ export interface RedisGraphSchedulerOptions {
 }
 
 /** The Redis commands this scheduler sends. */
-const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem']);
+const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem', 'del', 'hget', 'scan']);
 const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
 
 /**
@@ -221,7 +223,19 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
 
   /** The graph `graphId` whose end a script recorded, with the reservation id and the input keys the script returned. */
   private endedGraph(graphId: string, reservationId: string | undefined, inputKeys: string | undefined): EndedGraph {
-    return { graphId, reservationId: reservationId || undefined, inputKeys: endedInputKeys(graphId, inputKeys), readState: () => this.getGraphState(graphId) };
+    return {
+      graphId,
+      reservationId: reservationId || undefined,
+      inputKeys: endedInputKeys(graphId, inputKeys),
+      readState: () => this.getGraphState(graphId),
+      forget: () => this.forgetEndedGraph(graphId),
+    };
+  }
+
+  /** Empties the webhook secret of the ended graph `graphId` and sets every key of it to expire `endedJobRetentionMs` from now. */
+  async forgetEndedGraph(graphId: string): Promise<void> {
+    const k = this.graphKeys(graphId);
+    await this.redisClient.eval(FORGET_ENDED_GRAPH_LUA_SCRIPT, 6, k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox, String(endedJobRetentionMs()));
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
@@ -309,6 +323,27 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     return [...new Set(values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : [])))];
   }
 
+  async graphsOfUser(userId: string): Promise<string[]> {
+    const prefix = `${this.keyPrefix}graph:{`;
+    const graphIds = new Set<string>();
+    let cursor = '0';
+    do {
+      const [next, keys] = await this.redisClient.scan(cursor, 'MATCH', `${prefix}*}`, 'COUNT', 500);
+      for (const key of keys) {
+        if (!key.endsWith('}')) continue;
+        if ((await this.redisClient.hget(key, 'owner')) === userId) {
+          graphIds.add(key.slice(prefix.length, -1));
+        }
+      }
+      cursor = next;
+    } while (cursor !== '0');
+    return [...graphIds].sort((a, b) => a.localeCompare(b));
+  }
+
+  async deleteGraph(graphId: string): Promise<boolean> {
+    const k = this.graphKeys(graphId);
+    return (await this.redisClient.del(k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox)) > 0;
+  }
 }
 
 /** The input keys a script returned for an ended graph; a corrupt list is logged and none are released. */

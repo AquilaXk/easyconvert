@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import { parse } from 'parse5';
 import type { DefaultTreeAdapterMap } from 'parse5';
 import { convertFile } from '../src/lib/conversions/index';
-import { renderMarkdownFragment } from '../src/lib/conversions/markdown';
+import { renderMarkdownFragment } from '../src/lib/markdown/safe-markdown';
 import { docxAnchors, epubAnchors, odtAnchors } from './helpers/anchor-targets';
 import { elementsOf, inspectEpub } from './helpers/epub-inspect';
 import { zipEntryText } from './helpers/zip-entry';

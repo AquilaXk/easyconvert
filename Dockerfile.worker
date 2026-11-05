@@ -25,8 +25,8 @@ RUN npm ci --include=dev --ignore-scripts
 # Copy configuration and source files
 COPY tsconfig.json ./
 COPY src/ ./src/
+COPY scripts/erase-account.ts ./scripts/
 
-# Compile worker bundle to dist/worker.js
 RUN npm run build:worker
 
 # Prune devDependencies to ship production dependencies only

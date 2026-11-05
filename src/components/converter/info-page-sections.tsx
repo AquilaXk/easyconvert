@@ -3,8 +3,6 @@ import { useTranslations } from 'next-intl';
 
 /** The sections of each policy page, in order; each one's heading and body are `infoPages.<page>.<section>`. */
 const POLICY_SECTIONS = {
-  privacy: ['retention', 'isolation', 'noResale'],
-  terms: ['acceptance', 'acceptableUse', 'availability'],
   about: ['purpose', 'architecture'],
   security: ['transport', 'isolation'],
   accessibility: ['conformance', 'keyboard', 'landmarks', 'contrast', 'feedback'],
@@ -40,7 +38,7 @@ export function PolicySections({
             {key === 'accessibility.feedback' && (
               <div>
                 <a
-                  href="mailto:support@easyconvert.com?subject=Accessibility%20Feedback"
+                  href="mailto:support@aquilaxk.site?subject=Accessibility%20Feedback"
                   className="min-h-[44px] inline-flex items-center gap-1.5 text-sm font-semibold text-accent-ink hover:underline rounded-md"
                 >
                   {t('accessibility.feedback.link')}
@@ -68,10 +66,10 @@ export function ContactContent() {
           <h3 className="font-bold text-ink text-sm">{t('email.heading')}</h3>
           <p className="text-xs text-ink-2">{t('email.body')}</p>
           <a
-            href="mailto:support@easyconvert.com"
+            href="mailto:support@aquilaxk.site"
             className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded-md"
           >
-            support@easyconvert.com
+            support@aquilaxk.site
           </a>
         </div>
 
@@ -79,7 +77,7 @@ export function ContactContent() {
           <h3 className="font-bold text-ink text-sm">{t('bugs.heading')}</h3>
           <p className="text-xs text-ink-2">{t('bugs.body')}</p>
           <a
-            href="mailto:support@easyconvert.com?subject=Bug%20Report"
+            href="mailto:support@aquilaxk.site?subject=Bug%20Report"
             className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded-md"
           >
             {t('bugs.link')}

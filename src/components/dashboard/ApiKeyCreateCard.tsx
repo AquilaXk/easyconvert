@@ -2,6 +2,8 @@ import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Check, Copy, Key, Loader2 } from 'lucide-react';
 import type { ApiKeyScope } from '@/lib/api-keys/types';
+import { Link } from '@/i18n/navigation';
+import { LEGAL_DOCUMENTS } from '@/lib/legal/documents';
 import {
   isKeyExpiryOption,
   KEY_EXPIRY_OPTIONS,
@@ -89,10 +91,12 @@ interface CreateApiKeyFormProps {
   newKeyName: string;
   selectedScopes: ApiKeyScope[];
   keyExpiry: KeyExpiryOption;
+  acceptedTerms: boolean;
   isGeneratingKey: boolean;
   onNameChange: (name: string) => void;
   onToggleScope: (scope: ApiKeyScope, checked: boolean) => void;
   onExpiryChange: (expiry: KeyExpiryOption) => void;
+  onAcceptedTermsChange: (value: boolean) => void;
   onSubmit: (e: React.FormEvent) => void;
   onCancel: () => void;
 }
@@ -101,10 +105,12 @@ export function CreateApiKeyForm({
   newKeyName,
   selectedScopes,
   keyExpiry,
+  acceptedTerms,
   isGeneratingKey,
   onNameChange,
   onToggleScope,
   onExpiryChange,
+  onAcceptedTermsChange,
   onSubmit,
   onCancel,
 }: Readonly<CreateApiKeyFormProps>) {
@@ -191,6 +197,26 @@ export function CreateApiKeyForm({
               {t.rich('expiryNote', { code: (chunks) => <code>{chunks}</code> })}
             </p>
           </div>
+        </div>
+
+        <div className="flex items-center gap-3 min-h-[44px]">
+          <input
+            id="new-key-accept-terms"
+            type="checkbox"
+            required
+            checked={acceptedTerms}
+            onChange={(e) => onAcceptedTermsChange(e.target.checked)}
+            className="size-4 cursor-pointer"
+          />
+          <label htmlFor="new-key-accept-terms" className="text-sm text-ink cursor-pointer select-none">
+            {t.rich('acceptTerms', {
+              link: (chunks) => (
+                <Link href={LEGAL_DOCUMENTS.terms.path} target="_blank" className="font-medium text-accent-ink hover:underline">
+                  {chunks}
+                </Link>
+              ),
+            })}
+          </label>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 pt-2">

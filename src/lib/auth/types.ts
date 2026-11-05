@@ -12,6 +12,8 @@ export interface User {
   conversionsCount?: number;
   sessionVersion?: number;
   emailVerified?: boolean;
+  /** The version of the terms accepted at sign-up (`TERMS_VERSION`); absent on accounts made before it was recorded. */
+  acceptedTermsVersion?: string;
 }
 
 export interface UserRecord extends User {

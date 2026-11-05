@@ -4,7 +4,7 @@ import type { Block, DocumentModel } from './document-model/model';
 import { safeHref } from './document-model/support';
 import { EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
 import { htmlToDocumentModel } from './html-model';
-import { renderMarkdownFragment } from './markdown';
+import { renderMarkdownFragment } from '../markdown/safe-markdown';
 import { decodeXmlBytes, resolvePackagePath } from './package-access';
 
 /**

@@ -49,9 +49,9 @@ export type ObjectOwnership =
 
 /**
  * Resolves the user that owns a stored object from its key namespace.
- * A job result is resolved only while its job record can be read: jobs are never removed after
- * they finish, so a missing record or a queue outage (`QueueUnavailableError`) or a restarted
- * in-memory queue means the owner cannot be proven, and access is denied.
+ * A job result is resolved only while its job record can be read. An ended job is kept for `endedJobRetentionMs`, longer
+ * than its result and the record of the result's deletion, so a missing record, a queue outage (`QueueUnavailableError`) or
+ * a restarted in-memory queue means the owner cannot be proven, and access is denied.
  * An upload and the output of a graph node have no owner (capability access). A key of no namespace a writer of the
  * server produces is not resolved, so no route serves it.
  */

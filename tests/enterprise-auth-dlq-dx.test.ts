@@ -5,6 +5,7 @@ import { validateApiAccess, extractClientIp } from '../src/lib/api-keys/guard';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { TIER_LIMITS } from '../src/lib/plan-limits';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { decryptSecret } from '../src/lib/api-keys/secret-encryption';
 import { userStore } from '../src/lib/auth/user-store';
 import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
 import { GET as getDlqList, DELETE as clearDlqList } from '../src/app/api/webhooks/dlq/route';
@@ -17,6 +18,7 @@ import { EasyConvertClient } from '../sdk/typescript/src/client';
 import { createSessionToken } from '../src/lib/auth/session';
 import { isBlockedIp, createSsrfSafeAgent } from '../src/lib/security/ssrf';
 import type { ApiKeyScope, WebhookDlqEntry } from '../src/lib/api-keys/types';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 
 describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
   let testUser: { id: string; email: string; name: string; tier: 'free' | 'pro' | 'enterprise' };
@@ -167,7 +169,8 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       expect(entry!.event).toBe('job.completed');
       expect(entry!.finalStatusCode).toBe(500);
       expect(entry!.retryCount).toBe(3);
-      expect(entry!.secret).toBe(secret);
+      expect(entry!.secret).not.toContain(secret);
+      expect(decryptSecret(entry!.secret)).toBe(secret);
       expect(entry!.payload).toBeDefined();
 
       fetchSpy.mockRestore();
@@ -456,6 +459,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
           Cookie: sessionCookie,
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Microservice Worker Key',
           scopes: ['convert:write', 'storage:download'],
           expiresAt: futureTime,
@@ -628,6 +632,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
           Authorization: `Bearer ${adminKeyResult.secretKey}`,
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Child Key Generated via SDK',
           scopes: ['convert:read'],
           expiresAt: Date.now() + 86400000,
@@ -662,7 +667,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${restrictedKey.secretKey}`,
         },
-        body: JSON.stringify({ name: 'Privilege Escalation Attempt' }),
+        body: JSON.stringify({ acceptedTermsVersion: TERMS_VERSION, name: 'Privilege Escalation Attempt' }),
       });
       const createRes = await createKeyRoute(createReq as any);
       expect(createRes.status).toBe(403);
@@ -686,6 +691,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
           Cookie: sessionCookie,
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Invalid Past Key',
           expiresAt: Date.now() - 5000,
         }),
@@ -703,6 +709,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
           Cookie: sessionCookie,
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Sanitized Scope Key',
           scopes: ['convert:read', 'invalid:scope', 1234],
         }),

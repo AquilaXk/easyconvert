@@ -489,10 +489,12 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       newKeyName: 'Worker Key',
       selectedScopes: [],
       keyExpiry: '30d',
+      acceptedTerms: false,
       isGeneratingKey: false,
       onNameChange: noop,
       onToggleScope: noop,
       onExpiryChange: noop,
+      onAcceptedTermsChange: noop,
       onSubmit: noop,
       onCancel: noop,
     });
@@ -505,13 +507,22 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       newKeyName: 'Worker Key',
       selectedScopes: ['convert:read'],
       keyExpiry: '30d',
+      acceptedTerms: false,
       isGeneratingKey: false,
       onNameChange: noop,
       onToggleScope: noop,
       onExpiryChange: noop,
+      onAcceptedTermsChange: noop,
       onSubmit: noop,
       onCancel: noop,
     });
+    const termsBox = select(validScopesForm, 'input', 'id', 'new-key-accept-terms');
+    expect(termsBox).toHaveLength(1);
+    expect(attrOf(termsBox[0], 'type')).toBe('checkbox');
+    expect(attrOf(termsBox[0], 'required')).toBe('');
+    const termsLabel = select(validScopesForm, 'label', 'for', 'new-key-accept-terms');
+    expect(visibleText(termsLabel[0])).toContain('I accept the terms of service');
+    expect(select(termsLabel[0], 'a').map((link) => attrOf(link, 'href'))).toEqual(['/terms']);
     const validScopesSubmit = select(validScopesForm, 'button', 'type', 'submit');
     expect(validScopesSubmit).toHaveLength(1);
     expect(attrOf(validScopesSubmit[0], 'disabled')).toBeNull();
@@ -558,6 +569,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         revokingKeyId: null,
         selectedScopes: ['convert:write'],
         keyExpiry: '30d',
+        acceptedTerms: false,
       },
       actions: {
         onOpenGenerateForm: noop,
@@ -566,6 +578,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         onNameChange: noop,
         onToggleScope: noop,
         onExpiryChange: noop,
+        onAcceptedTermsChange: noop,
         onGenerateKey: noop,
         onRequestRevoke: noop,
         onConfirmRevoke: noop,

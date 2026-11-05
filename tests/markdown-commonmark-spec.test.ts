@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { renderMarkdownFragment } from '../src/lib/conversions/markdown';
+import { renderMarkdownFragment } from '../src/lib/markdown/safe-markdown';
 import { findDangerousConstructs, normalizeHtmlFragment } from './helpers/html-dom-oracle';
 
 /**

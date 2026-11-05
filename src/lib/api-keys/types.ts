@@ -25,6 +25,8 @@ export interface ApiKey {
   webhookSecret?: string;
   scopes?: ApiKeyScope[];
   lastExpiryNotifiedAt?: number;
+  /** The version of the terms in force when the key was created (`TERMS_VERSION`); absent on keys made before it was recorded. */
+  acceptedTermsVersion?: string;
 }
 
 export interface ApiKeyCreateOptions {
@@ -33,6 +35,7 @@ export interface ApiKeyCreateOptions {
   webhookSecret?: string;
   scopes?: ApiKeyScope[];
   expiresAt?: number;
+  acceptedTermsVersion?: string;
 }
 
 export interface ApiKeyUpdateOptions {

@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { applySessionChange, type SessionUser } from '@/lib/viewer-plan';
+import { TERMS_VERSION } from '@/lib/legal/documents';
 import { useAuthErrorWording } from '../i18n/error-wording';
 import {
   resolveOAuthErrorKey,
@@ -37,6 +38,7 @@ export function useAuthController() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
@@ -84,16 +86,22 @@ export function useAuthController() {
   };
 
   const handleGoogleLogin = async () => {
+    if (activeTab === 'register' && !acceptedTerms) {
+      setError(authErrorWording({ code: 'terms_not_accepted' }, 400));
+      return;
+    }
     setIsGoogleLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/auth/google/url?locale=${encodeURIComponent(locale)}`);
+      const query = new URLSearchParams({ locale });
+      if (acceptedTerms) query.set('acceptedTermsVersion', TERMS_VERSION);
+      const res = await fetch(`/api/auth/google/url?${query}`);
       const data = await res.json();
       if (data.success && data.url) {
         window.location.href = data.url;
         return;
       }
-      setError(t('messages.googleFailed'));
+      setError(data.code ? authErrorWording(data, res.status) : t('messages.googleFailed'));
       setIsGoogleLoading(false);
     } catch {
       setError(t('messages.googleNetwork'));
@@ -123,7 +131,8 @@ export function useAuthController() {
 
     try {
       const endpoint = activeTab === 'register' ? '/api/auth/register' : '/api/auth/login';
-      const payload = activeTab === 'register' ? { email, password, name } : { email, password };
+      const acceptance = acceptedTerms ? { acceptedTermsVersion: TERMS_VERSION } : {};
+      const payload = activeTab === 'register' ? { email, password, name, ...acceptance } : { email, password };
 
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -158,6 +167,7 @@ export function useAuthController() {
     password,
     confirmPassword,
     name,
+    acceptedTerms,
     showPassword,
     isLoading,
     isGoogleLoading,
@@ -168,6 +178,7 @@ export function useAuthController() {
     setPassword,
     setConfirmPassword,
     setName,
+    setAcceptedTerms,
     setShowPassword,
     handleTabSwitch,
     handleTabKeyDown,

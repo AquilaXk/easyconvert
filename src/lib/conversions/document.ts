@@ -47,7 +47,7 @@ import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
 import { sourceBytesAsText } from './office/text-source';
 import { markdownToSafeHtml } from './markdown-pdf';
-import { renderMarkdownFragment } from './markdown';
+import { renderMarkdownFragment } from '../markdown/safe-markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
 /**

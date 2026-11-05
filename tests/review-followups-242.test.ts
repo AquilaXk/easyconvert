@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
+import { decryptSecret } from '../src/lib/api-keys/secret-encryption';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -170,7 +171,7 @@ describe('PR #246 review follow-ups', () => {
       // White-box check of the in-memory store (no Redis in this suite): the legacy record is gone.
       const store = (webhookDispatcher as unknown as { inMemoryDlq: Map<string, { secret: string }> }).inMemoryDlq;
       expect(store.has(legacyId)).toBe(false);
-      expect(store.get(ownedId)?.secret).toBe('owned_secret');
+      expect(decryptSecret(store.get(ownedId)?.secret)).toBe('owned_secret');
     });
   });
 });

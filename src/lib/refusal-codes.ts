@@ -32,6 +32,8 @@ export const AUTH_ERROR_CODES = [
   'client_ip_unconfigured',
   'invalid_email',
   'password_length',
+  'terms_not_accepted',
+  'terms_outdated',
   'account_exists',
 ] as const;
 
@@ -39,11 +41,13 @@ export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
 /**
  * Why a route of the dashboard (`/api/account/files/**`, `/api/keys/**`, `/api/webhooks/dlq/**`) refused, where its status
- * cannot say it: a key without the `*` scope a route requires, key settings or a grace period out of range, or a key that
- * could not be made. The access check (401, 403, 429, 503) and an unknown id (404) are worded by their status.
+ * cannot say it: a key without the `*` scope a route requires, a key requested without accepting the terms in force, key
+ * settings or a grace period out of range, or a key that could not be made. The access check (401, 403, 429, 503) and an unknown id (404) are worded by their status.
  */
 export const DASHBOARD_REFUSAL_CODES = [
   'admin_scope_required',
+  'terms_not_accepted',
+  'terms_outdated',
   'invalid_key_settings',
   'invalid_grace_period',
   'key_create_failed',

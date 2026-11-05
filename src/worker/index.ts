@@ -10,6 +10,7 @@ import {
   allConversionQueues,
   attachJobLifecycleListeners,
   attachInputCleanupOnCompletion,
+  startEndedRecordSweep,
 } from '../lib/queue/conversion-queue';
 import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullmq-engine';
 import { legacyJobTimeoutMs } from '../lib/queue/enqueue';
@@ -314,6 +315,7 @@ startHeartbeat();
 // Attach signal listeners in non-test environments
 if (process.env.NODE_ENV !== 'test') {
   startRetentionSweep(ociStorage);
+  startEndedRecordSweep();
 
   process.on('SIGINT', () => {
     void drainWorker('SIGINT')

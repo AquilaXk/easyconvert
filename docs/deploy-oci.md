@@ -170,6 +170,17 @@ A per-service key in the secret (`EASYCONVERT_WORKER_CONCURRENCY` and the others
 - **Which digests are running.** `readlink /opt/easyconvert/current` and `cat /opt/easyconvert/current/images.env`.
 - Redis keeps its data across both (volume `easyconvert_redis-data`).
 
+## Deleting an account
+
+The privacy policy promises an answer to a deletion request within 10 days (sections 4 and 10). The request arrives by mail at `support@aquilaxk.site`.
+
+1. Check that the request comes from the account's email address. Answer from the same mailbox.
+2. List what will be deleted. Nothing changes yet: `docker compose -p easyconvert exec worker node dist/erase-account.js --user <account email or id>`.
+3. Delete it by running the same command with `--apply` added. This deletes the account's conversion jobs, its stored files and their retention records, its API keys and their webhook signing secrets, its webhook dead letters, and its counts (the Redis keys tagged `{<account id>}`). The account record goes last. The command exits with 3 when a cancelled job was still running. Run it again a minute later. It finds the account again, because the account record is kept until no job is left.
+4. Tell the requester that the account is deleted, within 10 days of the request.
+
+What the command does not touch expires on its own. The edge server log keeps the request lines for up to 15 days (`/etc/logrotate.d/nginx`). A multi-step job's state goes 25 hours after the job ends. The list of an account's files in the web process lasts no longer than the file.
+
 ## Releases
 
 One version per production deploy, never one per pull request. The rule and its reasons are in entry 122 of `docs/policy-decisions.md`.

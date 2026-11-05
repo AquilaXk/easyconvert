@@ -7,6 +7,7 @@ import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
 import { redisUserStore } from '../auth/redis-user-store';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
 import { foundOrUnknown, type ReservedUnit } from '../api-keys/hand-off';
+import { GONE_RECORD_MS, resolveRetentionPolicy } from '../storage/result-retention';
 
 /**
  * The one way a conversion job reaches a queue. The job's wall-clock deadline is computed here from the owner's
@@ -28,7 +29,18 @@ export interface JobDeadlineOwner {
   notAfter?: number;
 }
 
-export type ConversionJobOptions = Omit<JobOptions, 'timeout'>;
+export type ConversionJobOptions = Omit<JobOptions, 'timeout' | 'removeOnComplete' | 'removeOnFail' | 'removeDataOnFinish'>;
+
+const DATA_DROPPED_ON_FINISH: readonly (keyof ConversionJobData)[] = ['inputBufferBase64', 'webhookSecret'];
+
+/**
+ * How long an ended conversion job is kept, in milliseconds: while its result can still be downloaded
+ * (RESULT_UNDELIVERED_TTL_SECONDS from the end, which a download only shortens), and then while the download of the deleted
+ * result answers that it was deleted (GONE_RECORD_MS). Both answers need the job, which tells who owns the result.
+ */
+export function endedJobRetentionMs(env: Readonly<Record<string, string | undefined>> = process.env): number {
+  return resolveRetentionPolicy(env).undeliveredTtlMs + GONE_RECORD_MS;
+}
 
 /**
  * Puts a conversion job on `queue` with the deadline of its tier and input as the job timeout. The open password of a
@@ -49,7 +61,6 @@ export async function enqueueConversionJob(
   });
 }
 
-/** The job `opts.jobId` as the queue stores it: its password sealed, and the deadline of its tier and input as its timeout. */
 function preparedConversionJob(
   data: Omit<ConversionJobData, 'reservationId'>,
   opts: ConversionJobOptions & { jobId: string },
@@ -61,9 +72,17 @@ function preparedConversionJob(
     targetFormat: data.targetFormat,
     inputBytes: owner.inputBytes,
   });
+  const endedJobKeep = { age: endedJobRetentionMs() / 1000 };
   return {
     data: sealJobDataSecrets(data, opts.jobId),
-    opts: { ...opts, timeout, ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }) },
+    opts: {
+      ...opts,
+      timeout,
+      removeOnComplete: endedJobKeep,
+      removeOnFail: endedJobKeep,
+      removeDataOnFinish: DATA_DROPPED_ON_FINISH,
+      ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
+    },
   };
 }
 

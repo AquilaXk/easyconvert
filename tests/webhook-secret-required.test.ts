@@ -12,6 +12,7 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import type { User } from '../src/lib/auth/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 
 describe('Security: Webhook secret enforcement', () => {
   let testUser: User;
@@ -39,6 +40,7 @@ describe('Security: Webhook secret enforcement', () => {
         Cookie: `easyconvert_session=${sessionToken}`,
       },
       body: JSON.stringify({
+        acceptedTermsVersion: TERMS_VERSION,
         name: 'Insecure Key',
         webhookUrl: 'https://example.com/webhook',
       }),
@@ -58,6 +60,7 @@ describe('Security: Webhook secret enforcement', () => {
         Cookie: `easyconvert_session=${sessionToken}`,
       },
       body: JSON.stringify({
+        acceptedTermsVersion: TERMS_VERSION,
         name: 'Secure Key',
         webhookUrl: 'https://example.com/webhook',
         webhookSecret: 'my_super_secret_value',

@@ -25,8 +25,6 @@ export function isSelfConvertible(format: string): boolean {
 }
 
 export type SlugInfoType =
-  | 'terms'
-  | 'privacy'
   | 'contact'
   | 'about'
   | 'security'
@@ -86,7 +84,7 @@ export function canonicalPathOf(copy: SlugCopy): string {
   }
 }
 
-const INFO_PAGES = ['terms', 'privacy', 'contact', 'about', 'security', 'status', 'accessibility'] as const;
+const INFO_PAGES = ['contact', 'about', 'security', 'status', 'accessibility'] as const;
 
 export const INFO_PAGE_MAP: Readonly<Record<string, SlugPage>> = Object.fromEntries(
   INFO_PAGES.map((page) => [

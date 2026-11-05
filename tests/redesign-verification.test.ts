@@ -155,21 +155,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(missingFrom(hrefs, ['/accessibility', '/api-docs'])).toEqual([]);
   });
 
-  it('verifies Terms of Service has no obsolete daily quotas or paid credits mentions', () => {
-    const terms = renderSlug('terms');
-    const text = visibleText(terms);
-
-    expect(headings(terms).slice(0, 4)).toEqual([
-      'Terms of Service',
-      '1. Acceptance of Terms',
-      '2. Acceptable Use',
-      '3. Service Availability & Free Use',
-    ]);
-    expect(phrasesPresent(text, ['credits with prioritized throughput'])).toEqual([]);
-    expect(phrasesPresent(text, ['unlimited conversions'])).toEqual([]);
-    expect(phrasesMissing(text, ['free for up to 10 a day without an account'])).toEqual([]);
-  });
-
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
     for (const pair of POPULAR_CONVERSIONS) {
       const srcDef = FORMAT_REGISTRY[pair.from];
@@ -198,14 +183,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(pdfToWord.isInfoPage).toBe(false);
     expect(pdfToWord.sourceFormat).toBe('pdf');
     expect(pdfToWord.targetFormat).toBe('docx');
-
-    const terms = parsedSlug('terms');
-    expect(terms.isInfoPage).toBe(true);
-    expect(terms.infoType).toBe('terms');
-
-    const privacy = parsedSlug('privacy');
-    expect(privacy.isInfoPage).toBe(true);
-    expect(privacy.infoType).toBe('privacy');
 
     const status = parsedSlug('status');
     expect(status.isInfoPage).toBe(true);
@@ -539,8 +516,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The contact page is a plain support contact: a mailto link, no form that would pretend to send a message
     const contact = renderSlug('contact');
     expect(links(contact).filter((l) => l.href.startsWith('mailto:')).map((l) => l.href)).toEqual([
-      'mailto:support@easyconvert.com',
-      'mailto:support@easyconvert.com?subject=Bug%20Report',
+      'mailto:support@aquilaxk.site',
+      'mailto:support@aquilaxk.site?subject=Bug%20Report',
     ]);
   });
 
@@ -574,7 +551,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
-    for (const slug of ['pdf-to-docx', 'terms', 'status', 'unit-converter']) {
+    for (const slug of ['pdf-to-docx', 'contact', 'status', 'unit-converter']) {
       const page = renderSlug(slug);
       const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
       // The body paints the canvas colour of both themes, so the page root carries layout only and never covers it.

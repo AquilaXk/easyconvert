@@ -9,7 +9,7 @@ import { processNodeJob } from './node-processor';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
-import { legacyJobTimeoutMs } from './enqueue';
+import { endedJobRetentionMs, legacyJobTimeoutMs } from './enqueue';
 import { graphScheduler } from './graph/scheduler';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
@@ -419,11 +419,18 @@ if (origConversionQueueRequeue) {
 
 const origConversionQueueClean = conversionQueue.clean.bind(conversionQueue);
 conversionQueue.clean = async (grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled') => {
-  const [direct, ...otherLists] = await Promise.all([
-    origConversionQueueClean(grace, limit, type),
-    ...Object.values(resourceQueues).map((q) => q.clean(grace, limit, type)),
-  ]);
-  return direct.concat(...otherLists).slice(0, limit);
+  const removed: string[] = [];
+  for (const q of [{ clean: origConversionQueueClean }, ...Object.values(resourceQueues)]) {
+    if (removed.length >= limit) break;
+    removed.push(...(await q.clean(grace, limit - removed.length, type)));
+  }
+  return removed;
+};
+
+const origConversionQueueRemove = conversionQueue.remove.bind(conversionQueue);
+conversionQueue.remove = async (id: string) => {
+  const removed = await Promise.all([origConversionQueueRemove(id), ...Object.values(resourceQueues).map((q) => q.remove(id))]);
+  return removed.includes(true);
 };
 
 const origConversionQueueGetJobsByUser = conversionQueue.getJobsByUser.bind(conversionQueue);
@@ -464,6 +471,41 @@ for (const q of Object.values(resourceQueues)) {
   });
 }
 
+const ENDED_RECORD_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const ENDED_RECORD_SWEEP_LIMIT = 1000;
+const ENDED_JOB_STATES = ['completed', 'failed', 'cancelled'] as const;
+
+/**
+ * Removes the conversion jobs that ended more than `endedJobRetentionMs` ago, with their dead letters, and the webhook dead
+ * letters past their retention. A job's own `removeOnComplete` / `removeOnFail` age removes ended jobs only when a later job
+ * of its queue ends, so this sweep covers a queue that went quiet, cancelled jobs, and jobs queued before the option existed.
+ */
+export async function sweepEndedRecords(): Promise<void> {
+  const grace = endedJobRetentionMs();
+  for (const state of ENDED_JOB_STATES) {
+    await conversionQueue.clean(grace, ENDED_RECORD_SWEEP_LIMIT, state);
+  }
+  await webhookDispatcher.purgeExpiredDlqEntries();
+}
+
+let endedRecordSweepTimer: NodeJS.Timeout | null = null;
+
+/** Runs `sweepEndedRecords` now and every ENDED_RECORD_SWEEP_INTERVAL_MS; a failed run is logged and the next one tries again. */
+export function startEndedRecordSweep(): void {
+  if (endedRecordSweepTimer) return;
+  const run = () => {
+    sweepEndedRecords().catch((err: unknown) => console.error('[ConversionQueue] The sweep of ended jobs failed:', err));
+  };
+  run();
+  endedRecordSweepTimer = setInterval(run, ENDED_RECORD_SWEEP_INTERVAL_MS);
+  endedRecordSweepTimer.unref();
+}
+
+export function stopEndedRecordSweep(): void {
+  if (endedRecordSweepTimer) clearInterval(endedRecordSweepTimer);
+  endedRecordSweepTimer = null;
+}
+
 // 2. Worker Lifecycle Management (Producer/Consumer Decoupled)
 let workerInstance: Worker<ConversionJobData, ConversionJobResult> | null = null;
 
@@ -486,11 +528,13 @@ export function startConversionWorker(
   );
   attachJobLifecycleListeners(worker);
   attachInputCleanupOnCompletion(worker);
+  startEndedRecordSweep();
   workerInstance = worker;
   return worker;
 }
 
 export async function stopConversionWorker(): Promise<void> {
+  stopEndedRecordSweep();
   if (workerInstance) {
     await workerInstance.close();
     workerInstance = null;

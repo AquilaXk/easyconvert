@@ -57,7 +57,7 @@ const pageStatus = (locale: string, slug: string) => statusOf(() => ConverterPag
 const metadataStatus = (locale: string, slug: string) => statusOf(() => generateMetadata({ params: Promise.resolve({ locale, slug }) }));
 
 const NO_PAGE: Record<string, readonly string[]> = {
-  'a name the site does not know': ['nonexistent-page-xyz', 'dpa', 'acceptable-use', 'hello-world', 'forgot-password', 'pdf-to-docx-to-zip'],
+  'a name the site does not know': ['nonexistent-page-xyz', 'hello-world', 'forgot-password', 'pdf-to-docx-to-zip'],
   'a name every object has': ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'constructor-converter', 'constructor-to-pdf', 'pdf-to-constructor'],
   'a converter of a format that is not registered': ['foo-converter', 'any-converter', 'xyz-converter', '-converter', 'converter-converter'],
   'a pair with a name that is not registered': ['foo-to-bar', 'pdf-to-foo', 'foo-to-pdf', 'png-to-xyz', '-to-pdf', 'pdf-to-', '-to-'],
@@ -75,7 +75,7 @@ const NO_PAGE: Record<string, readonly string[]> = {
   'a name that lowercases to a page name only by Unicode rules (the Kelvin sign is the capital of k)': ['lbs-to-\u212Ag', '\u212Ag-to-lbs', 'm\u212Av-to-mp4', 'm\u212Av-converter'],
   'a path that names a file': ['backup.zip', 'foo-to-bar.php', 'x.php-converter', 'zip-to-x.tar.gz', 'pdf-to-docx.php'],
   'a page name with a space, a tab, a line break or a slash around it': [
-    'pdf-to-jpg ', ' pdf-to-jpg', '\tpdf-to-jpg', 'pdf-to-jpg\n', '\npdf-to-jpg\r', '/pdf-to-jpg', '//pdf-to-jpg', 'pdf-ocr ', ' terms', 'merge-pdf\t', 'pdf-converter ', ' video-converter',
+    'pdf-to-jpg ', ' pdf-to-jpg', '\tpdf-to-jpg', 'pdf-to-jpg\n', '\npdf-to-jpg\r', '/pdf-to-jpg', '//pdf-to-jpg', 'pdf-ocr ', ' contact', 'merge-pdf\t', 'pdf-converter ', ' video-converter',
   ],
 };
 
@@ -86,7 +86,7 @@ const PAGE: Record<string, readonly string[]> = {
   'the OCR page': ['pdf-ocr'],
   'a utility page of a format its operation runs': ['merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'],
   'a unit pair': ['lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet'],
-  'a site page': ['terms', 'privacy', 'security', 'about', 'contact', 'accessibility', 'status'],
+  'a site page': ['security', 'about', 'contact', 'accessibility', 'status'],
 };
 
 describe('a path the site does not offer is answered 404 in every locale', () => {

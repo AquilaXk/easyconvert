@@ -20,7 +20,20 @@ import {
   PURGE_DEAD_LETTERS_LUA_SCRIPT,
   REMOVE_GONE_USER_JOBS_LUA_SCRIPT,
 } from './lua-scripts';
+import {
+  dropEndedData,
+  finishedData,
+  keepNewestEnded,
+  keepJobsOf,
+  ownerOf,
+  removeEndedBefore,
+  removeStoredJob,
+  type KeepJobs,
+  type QueueKeySpace,
+} from './ended-jobs';
 import { JobTimeoutError, QueueUnavailableError } from '../types';
+
+export type { KeepJobs } from './ended-jobs';
 
 export interface JobOptions {
   jobId?: string;
@@ -31,8 +44,14 @@ export interface JobOptions {
     type: 'fixed' | 'exponential';
     delay: number;
   };
-  removeOnComplete?: boolean | number;
-  removeOnFail?: boolean | number;
+  removeOnComplete?: boolean | number | KeepJobs;
+  removeOnFail?: boolean | number | KeepJobs;
+  /**
+   * Keys of `data` that the stored job and its dead letter drop once the job is completed, failed or cancelled: an inline
+   * input or a secret that only a running attempt needs. The attempt and the listeners of its end keep them in memory.
+   * Redis mode only: the in-process queue shares one job object with its worker and listeners.
+   */
+  removeDataOnFinish?: readonly string[];
   /** Wall-clock limit of one attempt in milliseconds. */
   timeout?: number;
   /**
@@ -260,6 +279,8 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   getJobsByUser(userId: string, states?: JobState[], limit?: number, offset?: number): Promise<Job<T, R>[]>;
   getJobCounts(): Promise<JobCounts>;
   clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]>;
+  /** Removes job `id` and its entry in its user's index, as BullMQ's Queue.remove. False when the job is active or unknown. */
+  remove(id: string): Promise<boolean>;
   close(): Promise<void>;
   _popNextWaiting?(): Promise<Job<T, R> | undefined> | Job<T, R> | undefined;
   /** Moves an active job back to waiting/delayed. Returns false when the job is no longer active. */
@@ -306,7 +327,7 @@ function buildDlqEntry<T, R>(job: Job<T, R>, reason: string): DlqEntry<T> {
   return {
     jobId: job.id,
     name: job.name,
-    data: redactForOutput(job.data),
+    data: redactForOutput(finishedData(job.data, job.opts?.removeDataOnFinish)),
     failedReason: redactText(reason),
     attemptsMade: job.attemptsMade,
     timestamp: Date.now(),
@@ -502,61 +523,70 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   _onJobCompleted(job: Job<T, R>, _result: R): boolean {
-    if (job.opts?.removeOnComplete === true) {
-      this.jobs.delete(job.id);
-      this.removeUserJob(job.id, (job.data as any)?.userId);
-    } else if (typeof job.opts?.removeOnComplete === 'number') {
-      const maxToKeep = job.opts.removeOnComplete;
-      const completed = Array.from(this.jobs.values())
-        .filter((j) => j.state === 'completed')
-        .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
-      for (let i = maxToKeep; i < completed.length; i++) {
-        this.jobs.delete(completed[i].id);
-        this.removeUserJob(completed[i].id, (completed[i].data as any)?.userId);
-      }
-    }
-    return true;
+    return this.finishJob(job, 'completed', job.opts?.removeOnComplete);
   }
 
   _onJobFailed(job: Job<T, R>, _err: any): boolean {
-    if (job.opts?.removeOnFail === true) {
-      this.jobs.delete(job.id);
-      this.removeUserJob(job.id, (job.data as any)?.userId);
-    } else if (typeof job.opts?.removeOnFail === 'number') {
-      const maxToKeep = job.opts.removeOnFail;
-      const failed = Array.from(this.jobs.values())
-        .filter((j) => j.state === 'failed')
+    return this.finishJob(job, 'failed', job.opts?.removeOnFail);
+  }
+
+  private finishJob(job: Job<T, R>, state: 'completed' | 'failed', keepOpt: boolean | number | KeepJobs | undefined): boolean {
+    if (!this.jobs.has(job.id)) return false;
+    job.state = state;
+    job.finishedOn = job.finishedOn || Date.now();
+    this.keepEndedJobs(job, state, keepJobsOf(keepOpt));
+    return true;
+  }
+
+  private keepEndedJobs(job: Job<T, R>, state: 'completed' | 'failed', keep: KeepJobs): void {
+    if (keep.count === 0) {
+      this.removeJob(job);
+      return;
+    }
+    if (keep.age !== undefined) void this.clean(keep.age * 1000, Number.POSITIVE_INFINITY, state);
+    if (keep.count !== undefined && keep.count > 0) {
+      const older = Array.from(this.jobs.values())
+        .filter((j) => j.state === state)
         .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
-      for (let i = maxToKeep; i < failed.length; i++) {
-        this.jobs.delete(failed[i].id);
-        this.removeUserJob(failed[i].id, (failed[i].data as any)?.userId);
+      older.slice(keep.count).forEach((j) => this.removeJob(j));
+    }
+  }
+
+  private removeJob(job: Job<T, R>): void {
+    this.jobs.delete(job.id);
+    this.removeUserJob(job.id, ownerOf(job.data));
+  }
+
+  private removeEndedBefore(state: 'completed' | 'failed' | 'cancelled', threshold: number, limit: number): string[] {
+    const removed: string[] = [];
+    for (const job of this.jobs.values()) {
+      if (removed.length >= limit) break;
+      if (job.state === state && job.finishedOn && job.finishedOn <= threshold) {
+        this.removeJob(job);
+        removed.push(job.id);
       }
     }
-    return true;
+    return removed;
   }
 
   async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
     const threshold = Date.now() - grace;
-    const removed: string[] = [];
+    if (type === 'failed') this.dlq = this.dlq.filter((entry) => entry.timestamp > threshold);
+    return this.removeEndedBefore(type, threshold, limit);
+  }
 
-    for (const [id, job] of this.jobs.entries()) {
-      if (removed.length >= limit) break;
-      if (job.state === type && job.finishedOn && job.finishedOn <= threshold) {
-        this.jobs.delete(id);
-        const userId = (job.data as any)?.userId;
-        if (userId) {
-          const userList = this.userJobs.get(userId);
-          if (userList) {
-            this.userJobs.set(
-              userId,
-              userList.filter((jid) => jid !== id)
-            );
-          }
-        }
-        removed.push(id);
-      }
-    }
-    return removed;
+  async remove(id: string): Promise<boolean> {
+    const job = this.jobs.get(id);
+    if (job?.state === 'active') return false;
+    this.dlq = this.dlq.filter((entry) => entry.jobId !== id);
+    if (!job) return false;
+    this.waitingIds = this.waitingIds.filter((wid) => wid !== id);
+    this.delayedIds = this.delayedIds.filter((did) => did !== id);
+    const timer = this.delayTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this.delayTimers.delete(id);
+    this.removeJob(job);
+    return true;
   }
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
@@ -1376,6 +1406,15 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return `${this.heartbeatKeyPrefix}${id}`;
   }
 
+  private get keySpace(): QueueKeySpace {
+    return {
+      jobKey: (id) => this.getJobKey(id),
+      userJobsKey: (userId) => (userId ? this.getUserJobsKey(userId) : `${this.keyPrefix}{${this.name}}:user_jobs:none`),
+      dlqKey: this.dlqKey,
+      stateKeys: [this.waitingKey, this.delayedKey, this.activeKey, this.completedKey, this.failedKey, this.cancelledKey],
+    };
+  }
+
   /** Aborts the attempt this process is running for `jobId`, if any, as cancelled. */
   private abortLocalActiveJob(jobId: string, reason: string): void {
     const job = this.localActiveJobs.get(jobId);
@@ -1758,45 +1797,31 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.getJobsByUser(userId, states, limit, offset);
   }
 
+  /**
+   * Removes up to `limit` jobs in state `type` that ended at least `grace` milliseconds ago, with their entry in the index
+   * of their user, as BullMQ's Queue.clean; for `failed`, also the dead letters recorded before that time.
+   */
   async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
-    if (this.redisClient) {
-      await this.assertRedisConnected();
-      try {
-        const setKeysByType = {
-          completed: this.completedKey,
-          failed: this.failedKey,
-          cancelled: this.cancelledKey,
-        };
-        const key = setKeysByType[type];
-        const ids = await this.redisClient.smembers(key);
-        const threshold = Date.now() - grace;
-        const removed: string[] = [];
-        for (const id of ids) {
-          if (removed.length >= limit) break;
-          const raw = await this.redisClient.hgetall(this.getJobKey(id));
-          const finishedOn = Number(raw?.finishedOn || 0);
-          if (finishedOn > 0 && finishedOn <= threshold) {
-            await this.redisClient.srem(key, id);
-            await this.redisClient.del(this.getJobKey(id));
-            try {
-              let userId = '';
-              if (raw?.data) {
-                const parsed = JSON.parse(raw.data);
-                userId = parsed.userId || '';
-              }
-              if (userId) {
-                await this.redisClient.zrem(this.getUserJobsKey(userId), id);
-              }
-            } catch {}
-            removed.push(id);
-          }
-        }
-        return removed;
-      } catch (err) {
-        throw this.toQueueUnavailable(err);
-      }
+    const client = this.redisClient;
+    if (!client) return this.memoryFallback.clean(grace, limit, type);
+    await this.assertRedisConnected();
+    const setKeysByType = { completed: this.completedKey, failed: this.failedKey, cancelled: this.cancelledKey };
+    try {
+      return await removeEndedBefore(client, this.keySpace, setKeysByType[type], Date.now() - grace, limit, type === 'failed');
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
     }
-    return this.memoryFallback.clean(grace, limit, type);
+  }
+
+  async remove(id: string): Promise<boolean> {
+    const client = this.redisClient;
+    if (!client) return this.memoryFallback.remove(id);
+    await this.assertRedisConnected();
+    try {
+      return await removeStoredJob(client, this.keySpace, id, true);
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
+    }
   }
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
@@ -1834,7 +1859,11 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       this.abortLocalActiveJob(id, reason);
     }
     await this.publishEvent({ event: 'cancelled', jobId: id, reason });
-    this.emit('cancelled', this.hashToJob(flatHashToRecord(rawHash)));
+    const cancelled = this.hashToJob(flatHashToRecord(rawHash));
+    await dropEndedData(client, this.keySpace, id, cancelled.opts?.removeDataOnFinish).catch((err: unknown) => {
+      console.warn(`[DistributedBullMQAdapter:${this.name}] Could not drop the ended data of job ${id}:`, err);
+    });
+    this.emit('cancelled', cancelled);
     return true;
   }
 
@@ -1982,48 +2011,24 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback._popNextWaiting();
   }
 
-  private async pruneStateJobs(stateKey: string, maxToKeep: number): Promise<void> {
-    if (!this.redisClient || !this.redisConnected) return;
+  private async keepEndedJobs(job: Job<T, R>, state: 'completed' | 'failed', keep: KeepJobs): Promise<void> {
+    const client = this.redisClient;
+    if (!client) return;
     try {
-      const ids = await this.redisClient.smembers(stateKey);
-      if (ids.length <= maxToKeep) return;
-      const jobsWithTime: { id: string; finishedOn: number; userId?: string }[] = [];
-      const records = await Promise.all(
-        ids.map(async (id) => {
-          if (!this.redisClient) return null;
-          const raw = await this.redisClient.hmget(this.getJobKey(id), 'finishedOn', 'data');
-          let userId: string | undefined;
-          try {
-            if (raw[1]) {
-              const parsed = JSON.parse(raw[1]);
-              userId = parsed.userId;
-            }
-          } catch {}
-          return {
-            id,
-            finishedOn: Number(raw[0] || 0),
-            userId,
-          };
-        })
-      );
-      for (const rec of records) {
-        if (rec) jobsWithTime.push(rec);
+      const userId = ownerOf(job.data);
+      if (keep.count === 0) {
+        await removeStoredJob(client, this.keySpace, job.id);
+        if (userId) await client.zrem(this.getUserJobsKey(userId), job.id);
+        return;
       }
-      jobsWithTime.sort((a, b) => b.finishedOn - a.finishedOn);
-      const toRemove = jobsWithTime.slice(maxToKeep);
-      await Promise.all(
-        toRemove.map(async (item) => {
-          if (!this.redisClient) return;
-          await this.redisClient.srem(stateKey, item.id);
-          await this.redisClient.del(this.getJobKey(item.id));
-          if (item.userId) {
-            try {
-              await this.redisClient.zrem(this.getUserJobsKey(item.userId), item.id);
-            } catch {}
-          }
-        })
-      );
-    } catch {}
+      await dropEndedData(client, this.keySpace, job.id, job.opts?.removeDataOnFinish);
+      if (keep.age !== undefined) await this.clean(keep.age * 1000, Number.POSITIVE_INFINITY, state);
+      if (keep.count !== undefined && keep.count > 0) {
+        await keepNewestEnded(client, this.keySpace, state === 'completed' ? this.completedKey : this.failedKey, keep.count);
+      }
+    } catch (err) {
+      console.warn(`[DistributedBullMQAdapter:${this.name}] Could not apply the retention of ended job ${job.id}:`, err);
+    }
   }
 
   async _claimDeadline(job: Job<T, R>, candidateAt: number): Promise<number | undefined> {
@@ -2087,6 +2092,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
     const finishedOn = String(job.finishedOn || Date.now());
     const returnValue = result === undefined ? '' : JSON.stringify(result);
+    const keep = keepJobsOf(job.opts?.removeOnComplete);
     let lastError: unknown;
     for (let commitAttempt = 1; commitAttempt <= COMPLETION_COMMIT_MAX_ATTEMPTS; commitAttempt++) {
       if (commitAttempt > 1) {
@@ -2109,7 +2115,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           finishedOn,
           returnValue,
           String(job.attemptsMade),
-          job.opts?.removeOnComplete === true ? '1' : '0',
+          keep.count === 0 ? '1' : '0',
           job._attemptToken ?? ''
         );
         if (Number(committed) !== 1) {
@@ -2119,16 +2125,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           return false;
         }
         await this.publishEvent({ event: 'completed', jobId: job.id, result });
-        if (job.opts?.removeOnComplete === true) {
-          const userId = (job.data as any)?.userId;
-          if (userId) {
-            try {
-              await client.zrem(this.getUserJobsKey(userId), job.id);
-            } catch {}
-          }
-        } else if (typeof job.opts?.removeOnComplete === 'number') {
-          await this.pruneStateJobs(this.completedKey, job.opts.removeOnComplete);
-        }
+        await this.keepEndedJobs(job, 'completed', keep);
         return true;
       } catch (err) {
         lastError = err;
@@ -2146,6 +2143,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (!this.redisClient || !this.redisConnected) {
       return this.memoryFallback._onJobFailed(job, err);
     }
+    const keep = keepJobsOf(job.opts?.removeOnFail);
     try {
       const committed = await this.redisClient.eval(
         FAIL_JOB_LUA_SCRIPT,
@@ -2159,7 +2157,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         job.failedReason ?? '',
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
-        job.opts?.removeOnFail === true ? '1' : '0',
+        keep.count === 0 ? '1' : '0',
         job._attemptToken ?? '',
         job.failedCode ?? '',
         String(job.failedStatus ?? ''),
@@ -2172,16 +2170,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         return false;
       }
       await this.publishEvent({ event: 'failed', jobId: job.id, error: job.failedReason });
-      if (job.opts?.removeOnFail === true) {
-        const userId = (job.data as any)?.userId;
-        if (userId) {
-          try {
-            await this.redisClient.zrem(this.getUserJobsKey(userId), job.id);
-          } catch {}
-        }
-      } else if (typeof job.opts?.removeOnFail === 'number') {
-        await this.pruneStateJobs(this.failedKey, job.opts.removeOnFail);
-      }
+      await this.keepEndedJobs(job, 'failed', keep);
       return true;
     } catch (redisErr) {
       // The job stays active without a heartbeat, so the stalled sweep will recover it.
@@ -2284,6 +2273,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         continue;
       }
       await this.moveToDlq(job, STALLED_JOB_FAILURE_REASON);
+      await this.keepEndedJobs(job, 'failed', keepJobsOf(job.opts?.removeOnFail));
       failedJobs.push(job);
       await this.publishEvent({ event: 'failed', jobId: job.id, error: STALLED_JOB_FAILURE_REASON });
     }

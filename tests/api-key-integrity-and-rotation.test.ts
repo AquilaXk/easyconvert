@@ -11,6 +11,7 @@ import { encryptSecret, decryptSecret } from '../src/lib/api-keys/secret-encrypt
 import { isScopeAllowed } from '../src/lib/api-keys/guard';
 import { toPublicApiKey } from '../src/lib/api-keys/public-views';
 import type { User } from '../src/lib/auth/types';
+import { TERMS_VERSION } from '../src/lib/legal/documents';
 
 describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation', () => {
   let testUser: User;
@@ -48,6 +49,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
           'content-type': 'application/json',
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Empty Scopes Key',
           scopes: [],
         }),
@@ -68,6 +70,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
           'content-type': 'application/json',
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Invalid Scope Key',
           scopes: ['convert:read', 'admin:superpower'],
         }),
@@ -88,6 +91,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
           'content-type': 'application/json',
         },
         body: JSON.stringify({
+          acceptedTermsVersion: TERMS_VERSION,
           name: 'Default Scope Key',
         }),
       });

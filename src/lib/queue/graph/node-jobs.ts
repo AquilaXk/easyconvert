@@ -138,6 +138,8 @@ async function cancelAfterFailedStart(graphId: string, cancel: (reason: string) 
 export interface StartingGraphScheduler extends Pick<IGraphScheduler, 'cancelGraph' | 'getGraphState'> {
   /** Queues the ready nodes of the stored graph `graphId` that its start left unqueued. */
   queueReadyNodes(graphId: string): Promise<unknown>;
+  /** The `forget` step of the end of graph `graphId` (graph-end.ts `EndedGraph`). */
+  forgetEndedGraph(graphId: string): Promise<void>;
   /** Cancels the queue job of one node; the node's resource-class queue when absent. */
   readonly cancelNode?: typeof cancelGraphNodeJob;
 }
@@ -148,12 +150,18 @@ export interface StartingGraphScheduler extends Pick<IGraphScheduler, 'cancelGra
  * and the holds on the input files and the intermediate files end. Each step does nothing the second time, so an end that did
  * run is ended again to no effect.
  */
-async function endCancelledStart(state: GraphExecutionState, cancelNode: StartingGraphScheduler['cancelNode']): Promise<void> {
+async function endCancelledStart(state: GraphExecutionState, scheduler: StartingGraphScheduler): Promise<void> {
   const { graphId } = state;
   const stopped = Object.values(state.nodes).filter((node) => node.status === 'cancelled');
-  const graph = { graphId, reservationId: state.reservationId, inputKeys: graphInputKeys(state.graph.nodes), readState: async () => state };
+  const graph = {
+    graphId,
+    reservationId: state.reservationId,
+    inputKeys: graphInputKeys(state.graph.nodes),
+    readState: async () => state,
+    forget: () => scheduler.forgetEndedGraph(graphId),
+  };
   await finishGraph(graph, { outcome: { status: 'cancelled' }, reservation: { kind: 'rollback' } }, async () => {
-    for (const node of stopped) await cancelGraphNodeJobOrLog(graphId, node.id, state.graph.nodes[node.id], START_FAILED_REASON, cancelNode);
+    for (const node of stopped) await cancelGraphNodeJobOrLog(graphId, node.id, state.graph.nodes[node.id], START_FAILED_REASON, scheduler.cancelNode);
   });
 }
 
@@ -182,7 +190,7 @@ export async function queueReadyNodesOrCancel(state: GraphExecutionState, schedu
     return undefined;
   });
   if (ended?.status !== 'cancelled' || ended.failedReason !== START_FAILED_REASON) return foundOrUnknown(ended);
-  await endCancelledStart(ended, scheduler.cancelNode);
+  await endCancelledStart(ended, scheduler);
   return { status: 'not-started' };
 }
 

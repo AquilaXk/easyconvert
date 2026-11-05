@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { HeadingSlugs, githubSlug } from '../src/lib/conversions/github-slug';
+import { HeadingSlugs, githubSlug } from '../src/lib/markdown/github-slug';
 
 /**
  * The ids of headings against the 78 test vectors of github-slugger 2.0.0 (tests/fixtures/github-slugger), whose expected

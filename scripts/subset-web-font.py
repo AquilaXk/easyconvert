@@ -2,8 +2,8 @@
 
 The page draws Latin and Hangul in one family: Pretendard's Latin is Inter-derived, and its Hangul is the Source Han Sans
 set. Both files are cut from the same source with the same weight axis (400 to 700) and the same family name, so they
-draw as one face. The Hangul file holds the syllables and jamo of messages/ko.json and messages/en.json that lie in the
-unicode-range the layout declares for it. The Latin file holds ASCII, Latin-1, the general punctuation and arrow blocks,
+draw as one face. The Hangul file holds the syllables and jamo of messages/ko.json, messages/en.json and the legal texts the
+pages render (docs/legal/*.en.md and *.ko.md) that lie in the unicode-range the layout declares for it. The Latin file holds ASCII, Latin-1, the general punctuation and arrow blocks,
 every other non-ASCII character of the messages, and the syllables of the language name that every page shows
 (src/components/LanguageSwitcher.tsx). The font chain asks the Hangul family only for a character the Latin family lacks,
 so an English page loads the Latin file alone and a Korean page loads both. A file name or other text the messages do not
@@ -33,6 +33,7 @@ from fontTools.varLib import instancer
 PINNED_TOOLS = {'fonttools': '4.68.0', 'brotli': '1.2.1'}
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MESSAGES = [ROOT / 'messages' / 'ko.json', ROOT / 'messages' / 'en.json']
+LEGAL_TEXTS = sorted(path for locale in ('en', 'ko') for path in (ROOT / 'docs' / 'legal').glob(f'*.{locale}.md'))
 FONT_DIR = ROOT / 'src' / 'app' / 'fonts'
 OUTPUTS = {'latin': FONT_DIR / 'EasyConvertSans-latin.woff2', 'hangul': FONT_DIR / 'EasyConvertSans-hangul.woff2'}
 CHECKSUMS = FONT_DIR / 'EasyConvertSans.sha256'
@@ -67,6 +68,7 @@ def is_hangul(char: str) -> bool:
 
 def subset_texts() -> dict:
     chars = {ch for path in MESSAGES for text in message_strings(json.loads(path.read_text(encoding='utf-8'))) for ch in text}
+    chars.update(ch for path in LEGAL_TEXTS for ch in path.read_text(encoding='utf-8') if ch not in '\n\t')
     chars.update(chr(code) for low, high in FIXED_RANGES for code in range(low, high + 1))
     return {
         'latin': ''.join(sorted({ch for ch in chars if not is_hangul(ch)} | set(LANGUAGE_NAME_SYLLABLES))),

@@ -24,11 +24,11 @@ const noop = () => undefined;
 
 const keysPanelState = {
   apiKeys: [], quota: null, newKeyName: '', generatedSecret: null, isGeneratingKey: false, showGenerateForm: false,
-  copiedKey: false, revokingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const,
+  copiedKey: false, revokingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const, acceptedTerms: false,
 };
 const keysPanelActions = {
   onOpenGenerateForm: noop, onCloseGenerateForm: noop, onDismissGeneratedSecret: noop, onNameChange: noop, onToggleScope: noop,
-  onExpiryChange: noop, onGenerateKey: noop, onRequestRevoke: noop, onConfirmRevoke: noop, onCopy: noop,
+  onExpiryChange: noop, onAcceptedTermsChange: noop, onGenerateKey: noop, onRequestRevoke: noop, onConfirmRevoke: noop, onCopy: noop,
 };
 
 function fileWithSecondsLeft(remainingSeconds: number): FileWithRemaining {
