@@ -1,4 +1,61 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { extractClientIp } from '../api-keys/ip-utils';
+import { RATE_LIMITED_PROBLEM_TYPE, codedRefusal } from '../api/problem-details';
+import type { AuthErrorCode } from '../refusal-codes';
+import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpError,
+  UNATTRIBUTED_CLIENT_KEY,
+  rateLimitKey,
+} from '../security/client-ip';
 import { redisUserStore } from './redis-user-store';
+
+const authRefusal = codedRefusal<AuthErrorCode>;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+const CLIENT_IP_MALFORMED_MESSAGE = 'Client address could not be determined from the request headers.';
+const CLIENT_IP_CONFIG_MESSAGE = "Server misconfiguration: the server's client-IP trust configuration is missing or invalid.";
+
+export function resolveAuthClientIp(
+  req: NextRequest
+): { clientIp: string | null } | { refused: NextResponse } {
+  try {
+    const resolvedIp = extractClientIp(req);
+    return {
+      clientIp: resolvedIp === UNATTRIBUTED_CLIENT_KEY ? null : rateLimitKey(resolvedIp),
+    };
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    if (error.status === HTTP_SERVICE_UNAVAILABLE) {
+      return {
+        refused: authRefusal(error.status, 'client_ip_unconfigured', CLIENT_IP_CONFIG_MESSAGE, {}, {
+          'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS),
+        }),
+      };
+    }
+    return {
+      refused: authRefusal(error.status, 'client_address_unknown', CLIENT_IP_MALFORMED_MESSAGE),
+    };
+  }
+}
+
+export function authRateLimitRefusal(retryAfterSeconds: number, detail: string): NextResponse {
+  return NextResponse.json(
+    {
+      type: RATE_LIMITED_PROBLEM_TYPE,
+      title: 'Too Many Requests',
+      status: 429,
+      code: 'login_locked' satisfies AuthErrorCode,
+      detail,
+      retryAfterSeconds,
+    },
+    {
+      status: 429,
+      headers: {
+        'Retry-After': String(retryAfterSeconds),
+      },
+    }
+  );
+}
 
 export const LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL = 5;
 export const LOGIN_MAX_FAILED_ATTEMPTS_PER_IP = 10;
@@ -8,6 +65,11 @@ export const LOGIN_WINDOW_SECONDS = 300; // 5 minutes
 export const LOGIN_GLOBAL_MAX_FAILED_ATTEMPTS = 300;
 export const LOGIN_GLOBAL_WINDOW_SECONDS = 300; // 5 minutes
 const GLOBAL_ATTEMPTS_KEY = 'global';
+
+export const REGISTER_MAX_ATTEMPTS_PER_IP = 10;
+export const REGISTER_WINDOW_SECONDS = 300;
+export const REGISTER_GLOBAL_MAX_ATTEMPTS = 300;
+const REGISTER_GLOBAL_ATTEMPTS_KEY = 'register:global';
 
 export interface LoginRateLimitCheckResult {
   allowed: boolean;
@@ -222,6 +284,106 @@ export async function resetLoginAttempts(ip: string | null, email: string): Prom
 
   if (normEmail) inMemoryAttempts.delete(`email:${normEmail}`);
   if (normIp) inMemoryAttempts.delete(`ip:${normIp}`);
+}
+
+async function consumeRedisFixedWindow(
+  redis: NonNullable<ReturnType<typeof redisUserStore.getRedisClient>>,
+  key: string,
+  windowSeconds: number,
+  maxAttempts: number,
+  reason: 'ip' | 'global'
+): Promise<LoginRateLimitCheckResult | null> {
+  const pipeline = redis.pipeline();
+  pipeline.set(key, 0, 'EX', windowSeconds, 'NX');
+  pipeline.incr(key);
+  pipeline.ttl(key);
+  const results = await pipeline.exec();
+  if (!results || results.some(([err]) => err !== null)) {
+    throw new Error('Redis registration rate-limit pipeline failed');
+  }
+  const count = Number(results[1]?.[1] ?? 0);
+  const ttlRaw = Number(results[2]?.[1] ?? windowSeconds);
+  if (ttlRaw < 0) {
+    await redis.expire(key, windowSeconds);
+  }
+  const retryAfterSeconds = ttlRaw < 0 ? windowSeconds : Math.max(1, ttlRaw);
+  if (count > maxAttempts) {
+    return { allowed: false, retryAfterSeconds, reason };
+  }
+  return null;
+}
+
+export async function consumeRegistrationRateLimit(
+  ip: string | null
+): Promise<LoginRateLimitCheckResult> {
+  const normIp = normalizeLoginIp(ip);
+  const useGlobal = usesGlobalCounter(ip);
+
+  const redis = redisUserStore.getRedisClient();
+  const prefix = redisUserStore.getKeyPrefix();
+
+  if (redis) {
+    try {
+      if (normIp) {
+        const ipKey = `${prefix}register_attempts:ip:${normIp}`;
+        const blocked = await consumeRedisFixedWindow(
+          redis,
+          ipKey,
+          REGISTER_WINDOW_SECONDS,
+          REGISTER_MAX_ATTEMPTS_PER_IP,
+          'ip'
+        );
+        if (blocked) return blocked;
+      }
+
+      if (useGlobal) {
+        const globalKey = `${prefix}register_attempts:${GLOBAL_ATTEMPTS_KEY}`;
+        const blocked = await consumeRedisFixedWindow(
+          redis,
+          globalKey,
+          REGISTER_WINDOW_SECONDS,
+          REGISTER_GLOBAL_MAX_ATTEMPTS,
+          'global'
+        );
+        if (blocked) return blocked;
+      }
+
+      return { allowed: true, retryAfterSeconds: 0 };
+    } catch {}
+  }
+
+  cleanStaleAttempts();
+  const now = Date.now();
+  const expiresAt = now + REGISTER_WINDOW_SECONDS * 1000;
+
+  if (normIp) {
+    const key = `register:ip:${normIp}`;
+    const existing = inMemoryAttempts.get(key);
+    const entry: AttemptEntry =
+      existing && now < existing.expiresAt
+        ? { count: existing.count + 1, expiresAt: existing.expiresAt }
+        : { count: 1, expiresAt };
+    inMemoryAttempts.set(key, entry);
+    if (entry.count > REGISTER_MAX_ATTEMPTS_PER_IP) {
+      const retryAfter = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));
+      return { allowed: false, retryAfterSeconds: retryAfter, reason: 'ip' };
+    }
+  }
+
+  if (useGlobal) {
+    const existing = inMemoryAttempts.get(REGISTER_GLOBAL_ATTEMPTS_KEY);
+    const entry: AttemptEntry =
+      existing && now < existing.expiresAt
+        ? { count: existing.count + 1, expiresAt: existing.expiresAt }
+        : { count: 1, expiresAt };
+    inMemoryAttempts.set(REGISTER_GLOBAL_ATTEMPTS_KEY, entry);
+    if (entry.count > REGISTER_GLOBAL_MAX_ATTEMPTS) {
+      const retryAfter = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));
+      return { allowed: false, retryAfterSeconds: retryAfter, reason: 'global' };
+    }
+  }
+
+  return { allowed: true, retryAfterSeconds: 0 };
 }
 
 /**

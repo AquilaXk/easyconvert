@@ -6,6 +6,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
+import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,12 +49,19 @@ function parseKeyCreationPayload(body: Record<string, unknown> | null | undefine
     allowedIps = body.allowedIps.map((ip) => ip.trim());
   }
 
-  const webhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
-  const webhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
-
-  if (webhookUrl && !webhookSecret) {
-    return { keyName, error: 'webhookSecret is required when webhookUrl is provided.' };
+  if (body?.webhookUrl !== undefined && typeof body.webhookUrl !== 'string') {
+    return { keyName, error: 'webhookUrl must be a string.' };
   }
+  if (body?.webhookSecret !== undefined && typeof body.webhookSecret !== 'string') {
+    return { keyName, error: 'webhookSecret must be a string.' };
+  }
+  const rawWebhookUrl = typeof body?.webhookUrl === 'string' && body.webhookUrl.trim() ? body.webhookUrl.trim() : undefined;
+  const rawWebhookSecret = typeof body?.webhookSecret === 'string' && body.webhookSecret.trim() ? body.webhookSecret.trim() : undefined;
+  const resolvedWebhook = resolveEffectiveWebhook(rawWebhookUrl, rawWebhookSecret, undefined, undefined);
+  if (resolvedWebhook.error) {
+    return { keyName, error: resolvedWebhook.error };
+  }
+  const { webhookUrl, webhookSecret } = resolvedWebhook;
 
   let expiresAt: number | undefined;
   if (typeof body?.expiresAt === 'number' && Number.isFinite(body.expiresAt)) {

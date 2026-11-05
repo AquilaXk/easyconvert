@@ -11,6 +11,7 @@ import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { encryptSecret, decryptSecret, reencryptSecretIfNeeded } from './secret-encryption';
+import { InvalidWebhookConfigError, resolveEffectiveWebhook } from '../security/ssrf';
 import type { ApiKeyRotateOptions, ApiKeyRotateResult, ApiKeyUpdateOptions } from './types';
 
 const MODULE_STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
@@ -463,17 +464,32 @@ export class KeyStore {
       return null;
     }
 
+    const nextWebhookUrl = updates.webhookUrl !== undefined ? updates.webhookUrl.trim() : undefined;
+    const nextWebhookSecret = updates.webhookSecret !== undefined ? updates.webhookSecret.trim() : undefined;
+
+    if (nextWebhookUrl !== undefined || nextWebhookSecret !== undefined) {
+      const effectiveUrl = nextWebhookUrl !== undefined ? (nextWebhookUrl || undefined) : key.webhookUrl;
+      const effectiveSecret =
+        nextWebhookSecret !== undefined
+          ? (nextWebhookSecret || undefined)
+          : decryptSecret(key.webhookSecret);
+      const resolved = resolveEffectiveWebhook(undefined, undefined, effectiveUrl, effectiveSecret);
+      if (resolved.error) {
+        throw new InvalidWebhookConfigError(resolved.error);
+      }
+    }
+
     if (updates.name !== undefined) {
       key.name = updates.name.trim() || key.name;
     }
     if (updates.allowedIps !== undefined) {
       key.allowedIps = updates.allowedIps;
     }
-    if (updates.webhookUrl !== undefined) {
-      key.webhookUrl = updates.webhookUrl;
+    if (nextWebhookUrl !== undefined) {
+      key.webhookUrl = nextWebhookUrl || undefined;
     }
-    if (updates.webhookSecret !== undefined) {
-      key.webhookSecret = encryptSecret(updates.webhookSecret);
+    if (nextWebhookSecret !== undefined) {
+      key.webhookSecret = nextWebhookSecret ? encryptSecret(nextWebhookSecret) : undefined;
     } else {
       this.reencryptWebhookSecret(key);
     }

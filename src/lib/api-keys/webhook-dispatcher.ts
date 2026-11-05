@@ -114,7 +114,7 @@ function classifyStatusCode(code: number): WebhookStatusAction {
   if (code >= 200 && code < 300) return 'success';
   if (code === 410) return 'deactivate';
   if (code === 408 || code === 429 || code >= 500) return 'retry';
-  if (code >= 400 && code < 500) return 'dlq_immediate';
+  if (code >= 300 && code < 500) return 'dlq_immediate';
   return 'retry';
 }
 
@@ -392,6 +392,87 @@ export class WebhookDispatcher {
     }
   }
 
+  private async executeFetchAttempt(
+    targetUrl: string,
+    headers: Record<string, string>,
+    bodyString: string,
+    timeoutMs: number,
+    attempt: number
+  ): Promise<{ attemptEntry: WebhookDeliveryAttempt; statusAction: WebhookStatusAction; statusCode?: number }> {
+    const attemptStart = Date.now();
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
+      const response = (await fetchFn(targetUrl, {
+        method: 'POST',
+        headers,
+        body: bodyString,
+        redirect: 'manual',
+        dispatcher: this.ssrfAgent,
+        signal: controller.signal,
+      })) as unknown as Response;
+
+      await response.body?.cancel?.().catch(() => undefined);
+      const attemptDuration = Date.now() - attemptStart;
+      const redirectError =
+        response.status >= 300 && response.status < 400
+          ? `Webhook redirect (${response.status}) is not followed.`
+          : undefined;
+
+      return {
+        attemptEntry: {
+          attemptNumber: attempt,
+          timestamp: Date.now(),
+          statusCode: response.status,
+          error: redirectError,
+          durationMs: attemptDuration,
+        },
+        statusAction: classifyWebhookStatus(response.status),
+        statusCode: response.status,
+      };
+    } catch (err: unknown) {
+      const attemptDuration = Date.now() - attemptStart;
+      const errMsg = this.formatFetchError(err);
+      const statusAction = classifyWebhookStatus(undefined, errMsg);
+      return {
+        attemptEntry: {
+          attemptNumber: attempt,
+          timestamp: Date.now(),
+          error: errMsg,
+          durationMs: attemptDuration,
+        },
+        statusAction,
+        statusCode: statusAction === 'dlq_immediate' ? 403 : undefined,
+      };
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+  }
+
+  private formatFetchError(err: unknown): string {
+    if (!(err instanceof Error)) return String(err);
+    if (err.cause instanceof Error && err.cause.message) {
+      return `${err.message}: ${err.cause.message}`;
+    }
+    return err.message;
+  }
+
+  private parseWebhookTargetUrl(targetUrl: string): URL {
+    const parsedUrl = new URL(targetUrl);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw new Error(`Unsupported webhook protocol: ${parsedUrl.protocol}`);
+    }
+    if (parsedUrl.username || parsedUrl.password) {
+      throw new Error('webhookUrl cannot include embedded credentials.');
+    }
+    return parsedUrl;
+  }
+
   /**
    * Asynchronously dispatches a signed webhook payload to the destination URL.
    * If delivery fails after retries are exhausted, saves to Dead Letter Queue (DLQ).
@@ -430,10 +511,7 @@ export class WebhookDispatcher {
     // 1. URL Structure & Protocol Validation
     let parsedUrl: URL;
     try {
-      parsedUrl = new URL(targetUrl);
-      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-        throw new Error(`Unsupported webhook protocol: ${parsedUrl.protocol}`);
-      }
+      parsedUrl = this.parseWebhookTargetUrl(targetUrl);
     } catch (urlErr: unknown) {
       const errMsg = urlErr instanceof Error ? urlErr.message : 'Invalid target URL';
       const result: WebhookDispatchResult = {
@@ -570,81 +648,41 @@ export class WebhookDispatcher {
       webhookSignatureHeader = `${primaryStandardSig} ${prevStandardSig}`;
     }
 
+    const requestHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'EasyConvert-Webhook/1.0',
+      'Webhook-Id': deliveryId,
+      'Webhook-Timestamp': timestamp.toString(),
+      'Webhook-Signature': webhookSignatureHeader,
+      'X-EasyConvert-Delivery': deliveryId,
+      'X-EasyConvert-Event': event,
+      'X-EasyConvert-Timestamp': timestamp.toString(),
+      'X-EasyConvert-Signature': `sha256=${legacySignature}`,
+      'X-Signature-SHA256': legacySignature,
+    };
+
     const attempts: WebhookDeliveryAttempt[] = [];
     let success = false;
     let finalStatusCode: number | undefined;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const attemptStart = Date.now();
-      const controller = new AbortController();
-      let timer: NodeJS.Timeout | null = setTimeout(() => controller.abort(), timeoutMs);
-
-      try {
-        const fetchFn = (globalThis.fetch || undiciFetch) as unknown as typeof undiciFetch;
-        const response = (await fetchFn(targetUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'EasyConvert-Webhook/1.0',
-            'Webhook-Id': deliveryId,
-            'Webhook-Timestamp': timestamp.toString(),
-            'Webhook-Signature': webhookSignatureHeader,
-            'X-EasyConvert-Delivery': deliveryId,
-            'X-EasyConvert-Event': event,
-            'X-EasyConvert-Timestamp': timestamp.toString(),
-            'X-EasyConvert-Signature': `sha256=${legacySignature}`,
-            'X-Signature-SHA256': legacySignature,
-          },
-          body: bodyString,
-          dispatcher: this.ssrfAgent,
-          signal: controller.signal as any,
-        } as any)) as unknown as Response;
-
-        finalStatusCode = response.status;
-        const attemptDuration = Date.now() - attemptStart;
-
-        attempts.push({
-          attemptNumber: attempt,
-          timestamp: Date.now(),
-          statusCode: response.status,
-          durationMs: attemptDuration,
-        });
-
-        const statusAction = classifyWebhookStatus(response.status);
-        if (statusAction === 'success') {
-          success = true;
-          break;
-        }
-
-        if (statusAction === 'deactivate') {
-          // 410 Gone: permanently stop retrying and do not store in DLQ
-          break;
-        }
-
-        if (statusAction === 'dlq_immediate') {
-          // 4xx client errors (except 408/429): fast-fail immediately to DLQ
-          break;
-        }
-      } catch (err: unknown) {
-        const attemptDuration = Date.now() - attemptStart;
-        const errMsg = err instanceof Error ? err.message : String(err);
-        attempts.push({
-          attemptNumber: attempt,
-          timestamp: Date.now(),
-          error: errMsg,
-          durationMs: attemptDuration,
-        });
-
-        const statusAction = classifyWebhookStatus(undefined, errMsg);
-        if (statusAction === 'dlq_immediate') {
-          finalStatusCode = 403;
-          break;
-        }
-      } finally {
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
+      const { attemptEntry, statusAction, statusCode } = await this.executeFetchAttempt(
+        targetUrl,
+        requestHeaders,
+        bodyString,
+        timeoutMs,
+        attempt
+      );
+      attempts.push(attemptEntry);
+      if (statusCode !== undefined) {
+        finalStatusCode = statusCode;
+      }
+      if (statusAction === 'success') {
+        success = true;
+        break;
+      }
+      if (statusAction === 'deactivate' || statusAction === 'dlq_immediate') {
+        break;
       }
 
       if (attempt < maxRetries) {

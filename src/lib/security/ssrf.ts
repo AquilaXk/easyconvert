@@ -231,6 +231,61 @@ export function isPrivateOrRestrictedHost(hostname: string): boolean {
   return false;
 }
 
+export function validateWebhookUrl(urlString: string): { valid: boolean; error?: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return { valid: false, error: 'webhookUrl must be a valid HTTP or HTTPS URL.' };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, error: 'webhookUrl must use the http: or https: protocol.' };
+  }
+
+  if (parsed.username || parsed.password) {
+    return { valid: false, error: 'webhookUrl cannot include embedded credentials.' };
+  }
+
+  const rawHostname = parsed.hostname.toLowerCase();
+  const hostname = rawHostname.startsWith('[') && rawHostname.endsWith(']')
+    ? rawHostname.slice(1, -1)
+    : rawHostname;
+
+  if (!hostname || isPrivateOrRestrictedHost(hostname)) {
+    return { valid: false, error: 'webhookUrl cannot target a private, loopback, or restricted host.' };
+  }
+
+  return { valid: true };
+}
+
+export class InvalidWebhookConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidWebhookConfigError';
+  }
+}
+
+export function resolveEffectiveWebhook(
+  paramUrl: string | undefined,
+  paramSecret: string | undefined,
+  keyUrl: string | undefined,
+  keySecret: string | undefined
+): { webhookUrl?: string; webhookSecret?: string; error?: string } {
+  const webhookUrl = paramUrl || keyUrl;
+  const webhookSecret = paramSecret || keySecret;
+  if (webhookUrl) {
+    const urlCheck = validateWebhookUrl(webhookUrl);
+    if (!urlCheck.valid) {
+      return { error: urlCheck.error };
+    }
+    if ((paramUrl && !paramSecret) || !webhookSecret) {
+      return { error: 'webhookSecret is required when webhookUrl is provided.' };
+    }
+  }
+  return { webhookUrl, webhookSecret };
+}
+
 export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {
   const rawHostname = targetUrl.hostname.toLowerCase();
   const hostname = rawHostname.startsWith('[') && rawHostname.endsWith(']')

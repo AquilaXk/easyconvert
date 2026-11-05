@@ -651,7 +651,14 @@ describe('Auth & API Key Infrastructure', () => {
       expect(location).toContain('error=invalid_oauth_state');
 
       // Bogus/expired state
-      const reqInvalidState = new NextRequest('http://localhost:3000/api/auth/google/callback?code=some_code&state=nonexistent_state');
+      const reqInvalidState = new NextRequest(
+        'http://localhost:3000/api/auth/google/callback?code=some_code&state=nonexistent_state',
+        {
+          headers: {
+            cookie: 'easyconvert_oauth_state=nonexistent_state',
+          },
+        }
+      );
       const resInvalid = await googleCallbackHandler(reqInvalidState);
       const loc2 = resInvalid.headers.get('location') || '';
       expect(loc2).toContain('error=invalid_oauth_state');
@@ -865,6 +872,40 @@ describe('Auth & API Key Infrastructure', () => {
       const arrayHeaderB64 = Buffer.from('[{"alg":"HS256"}]').toString('base64url');
       const payloadB64 = Buffer.from('{"sub":"user1"}').toString('base64url');
       expect(verifyJwt(`${arrayHeaderB64}.${payloadB64}.sig`)).toBeNull();
+    });
+
+    it('rejects options.thumbnail.at with more than 16 timestamps before reserving quota', async () => {
+      const user = await userStore.createUser({
+        email: 'thumb.cap@example.com',
+        name: 'Thumbnail Cap User',
+        tier: 'free',
+      });
+      const { secretKey } = await keyStore.generateApiKey(user.id, 'Thumbnail Cap Key', {
+        scopes: ['convert:write'],
+      });
+
+      const form = new FormData();
+      form.append('file', new Blob(['hello'], { type: 'text/plain' }), 'sample.txt');
+      form.append('targetFormat', 'pdf');
+      form.append(
+        'options',
+        JSON.stringify({
+          thumbnail: {
+            at: Array.from({ length: 17 }, (_, i) => `00:00:${String(i).padStart(2, '0')}`),
+          },
+        })
+      );
+
+      const res = await v1ConvertHandler(
+        new NextRequest('http://localhost:3000/api/v1/convert', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${secretKey}` },
+          body: form,
+        })
+      );
+      expect(res.status).toBe(422);
+      const usage = await keyStore.getQuotaUsage(user.id);
+      expect(usage.usedToday).toBe(0);
     });
   });
 });

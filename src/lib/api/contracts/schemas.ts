@@ -12,85 +12,32 @@ import {
 } from './result-properties';
 import { MANIFEST_EXTENSION_BY_FORMAT_SCHEMA, MASTER_PLAYLIST_NAME_SCHEMA, PACKAGING_FORMATS } from '@/lib/conversions/media-packaging';
 import { SERVER_ONLY_KEYWORD, SERVER_ONLY_OPTION_KEYS } from './server-only-options';
-import { PdfOptimizeOptionsSchema, PdfReorderOptionsSchema, PdfRotateOptionsSchema, PdfSplitOptionsSchema, pageSpecSchema } from './pdf-operation-schemas';
+import {
+  MAX_PASSWORD_LENGTH,
+  MAX_PASSWORD_LIST_ITEMS,
+  PdfAOptionsSchema,
+  PdfOptimizeOptionsSchema,
+  PdfProtectOptionsSchema,
+  PdfReorderOptionsSchema,
+  PdfRotateOptionsSchema,
+  PdfSplitOptionsSchema,
+  PdfWatermarkOptionsSchema,
+  pageSpecSchema,
+} from './pdf-operation-schemas';
 import { VECTORIZE_OPTIONS_SCHEMA } from '@/lib/conversions/raster-vectorize-options';
+
+export {
+  MAX_PASSWORD_LENGTH,
+  MAX_PASSWORD_LIST_ITEMS,
+  PdfAOptionsSchema,
+  PdfProtectOptionsSchema,
+  PdfWatermarkOptionsSchema,
+};
+
+export const MAX_THUMBNAIL_TIMESTAMPS = 16;
 
 /** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
 const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
-
-export const PdfWatermarkOptionsSchema = {
-  $id: 'https://easyconvert.local/schemas/pdf-watermark-options.json',
-  type: 'object',
-  properties: {
-    type: { type: 'string', enum: ['text', 'image'] },
-    text: { type: 'string', description: 'Watermark text.' },
-    fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
-    fontColor: {
-      type: 'string',
-      pattern: '^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\\(\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*\\))$',
-      description: 'Text colour as `#rgb`, `#rrggbb` or `rgb(r,g,b)`. Any other value is a 400.',
-    },
-    fontFamily: { type: 'string', description: 'Font family name.' },
-    image: { type: 'string', description: 'Base64 image data or URI.' },
-    imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },
-    opacity: { type: 'number', minimum: 0, maximum: 1, description: 'Watermark opacity (0.0 - 1.0).' },
-    rotation: { type: 'number', description: 'Rotation in degrees.' },
-    position: {
-      type: 'string',
-      enum: [
-        'tile',
-        'top-left',
-        'top-center',
-        'top-right',
-        'center-left',
-        'center',
-        'center-right',
-        'bottom-left',
-        'bottom-center',
-        'bottom-right',
-      ],
-      description: 'Position on page or tile across entire page.',
-    },
-    pages: { type: 'string', description: 'Page ranges to watermark (e.g. 1-3,5).' },
-    layer: { type: 'string', enum: ['over', 'under'], description: 'Draw on top of or beneath page content.' },
-    scale: { type: 'number', minimum: 0.01, maximum: 10, description: 'Scaling factor.' },
-  },
-} as const;
-
-/**
- * Longest password the API accepts, in characters. A password is sealed for the queue, and a blob holds 64 KiB: the
- * longest list of passwords (MAX_PASSWORD_LIST_ITEMS of them, each written with six-byte escapes) stays below that.
- */
-export const MAX_PASSWORD_LENGTH = 256;
-export const MAX_PASSWORD_LIST_ITEMS = 32;
-
-export const PdfProtectOptionsSchema = {
-  $id: 'https://easyconvert.local/schemas/pdf-protect-options.json',
-  type: 'object',
-  properties: {
-    userPassword: { type: 'string', maxLength: MAX_PASSWORD_LENGTH, description: 'Password required to open the PDF.' },
-    ownerPassword: { type: 'string', maxLength: MAX_PASSWORD_LENGTH, description: 'Master password required to modify permissions.' },
-    keyLength: { type: 'integer', enum: [128, 256], description: 'Encryption key bit length (default 256).' },
-    permissions: {
-      type: 'object',
-      properties: {
-        print: { type: 'string', enum: ['none', 'low', 'full'], description: 'Allowed printing quality.' },
-        modify: { type: 'string', enum: ['none', 'assembly', 'annotate', 'form', 'all'], description: 'Allowed modifications.' },
-        extract: { type: 'boolean', description: 'Allow text and graphic extraction.' },
-        annotate: { type: 'boolean', description: 'Allow comments and form filling.' },
-      },
-    },
-  },
-} as const;
-
-export const PdfAOptionsSchema = {
-  $id: 'https://easyconvert.local/schemas/pdfa-options.json',
-  type: 'object',
-  properties: {
-    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level. Defaults to pdfa-2b.' },
-    recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
-  },
-} as const;
 
 export const ConversionOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/conversion-options.json',
@@ -717,8 +664,10 @@ export const ConversionOptionsSchema = {
       properties: {
         at: {
           type: 'array',
+          minItems: 1,
+          maxItems: MAX_THUMBNAIL_TIMESTAMPS,
           items: { type: 'string' },
-          description: 'Timestamp strings or second offsets where thumbnails should be sampled.',
+          description: `Timestamp strings or second offsets where thumbnails should be sampled (at most ${MAX_THUMBNAIL_TIMESTAMPS}).`,
         },
         format: {
           type: 'string',

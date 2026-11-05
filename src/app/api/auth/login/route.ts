@@ -2,29 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
-import { extractClientIp } from '@/lib/api-keys/ip-utils';
-import { RATE_LIMITED_PROBLEM_TYPE, codedRefusal, serverFault } from '@/lib/api/problem-details';
+import { codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
 import {
-  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
-  ClientIpError,
-  UNATTRIBUTED_CLIENT_KEY,
-  rateLimitKey,
-} from '@/lib/security/client-ip';
-import {
+  authRateLimitRefusal,
   checkLoginRateLimit,
   recordFailedLogin,
   resetLoginAttempts,
+  resolveAuthClientIp,
 } from '@/lib/auth/login-rate-limiter';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
 
 const refusal = codedRefusal<AuthErrorCode>;
-
-const HTTP_SERVICE_UNAVAILABLE = 503;
-const CLIENT_IP_MALFORMED_MESSAGE = 'Client address could not be determined from the request headers.';
-const CLIENT_IP_CONFIG_MESSAGE = "Server misconfiguration: the server's client-IP trust configuration is missing or invalid.";
 
 // Static dummy hash/salt to prevent email enumeration timing attacks
 const DUMMY_HASH = '0'.repeat(128);
@@ -37,19 +28,9 @@ export async function POST(req: NextRequest) {
   }
 
   // null = unattributed client: no shared per-IP login counter (per-email lockout still applies).
-  let clientIp: string | null;
-  try {
-    const resolvedIp = extractClientIp(req);
-    clientIp = resolvedIp === UNATTRIBUTED_CLIENT_KEY ? null : rateLimitKey(resolvedIp);
-  } catch (error) {
-    if (!(error instanceof ClientIpError)) throw error;
-    if (error.status === HTTP_SERVICE_UNAVAILABLE) {
-      return refusal(error.status, 'client_ip_unconfigured', CLIENT_IP_CONFIG_MESSAGE, {}, {
-        'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS),
-      });
-    }
-    return refusal(error.status, 'client_address_unknown', CLIENT_IP_MALFORMED_MESSAGE);
-  }
+  const resolvedIp = resolveAuthClientIp(req);
+  if ('refused' in resolvedIp) return resolvedIp.refused;
+  const { clientIp } = resolvedIp;
 
   try {
     const email = typeof body.email === 'string' ? body.email.trim() : '';
@@ -62,21 +43,9 @@ export async function POST(req: NextRequest) {
     // 1. Enforce brute-force rate limit per IP and email identifier
     const rateLimit = await checkLoginRateLimit(clientIp, email);
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        {
-          type: RATE_LIMITED_PROBLEM_TYPE,
-          title: 'Too Many Requests',
-          status: 429,
-          code: 'login_locked' satisfies AuthErrorCode,
-          detail: `Too many failed login attempts. Please try again in ${rateLimit.retryAfterSeconds} seconds.`,
-          retryAfterSeconds: rateLimit.retryAfterSeconds,
-        },
-        {
-          status: 429,
-          headers: {
-            'Retry-After': String(rateLimit.retryAfterSeconds),
-          },
-        }
+      return authRateLimitRefusal(
+        rateLimit.retryAfterSeconds,
+        `Too many failed login attempts. Please try again in ${rateLimit.retryAfterSeconds} seconds.`
       );
     }
 

@@ -185,28 +185,13 @@ export function validateOAuthState(state: string): boolean {
   return true;
 }
 
-/**
- * Resolves the fixed canonical application origin mitigating Host header poisoning.
- */
-export function getAppOrigin(req?: Request): string {
-  if (process.env.APP_ORIGIN) {
-    return process.env.APP_ORIGIN.replace(/\/$/, '');
-  }
-  if (process.env.NEXT_PUBLIC_APP_URL) {
-    return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '');
-  }
-
-  if (req) {
-    const rawHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
-    const rawProto = req.headers.get('x-forwarded-proto') || 'https';
-    if (rawHost) {
-      // Sanitize host string to avoid injection / CRLF
-      const cleanHost = rawHost.split(',')[0].trim().replace(/[^a-zA-Z0-9.:_-]/g, '');
-      const cleanProto = rawProto.split(',')[0].trim().toLowerCase() === 'http' ? 'http' : 'https';
-      if (cleanHost) {
-        return `${cleanProto}://${cleanHost}`;
-      }
-    }
+export function getAppOrigin(): string {
+  const configured =
+    process.env.APP_ORIGIN?.trim() ||
+    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
+    process.env.APP_URL?.trim();
+  if (configured) {
+    return configured.replace(/\/$/, '');
   }
 
   return 'http://localhost:3000';

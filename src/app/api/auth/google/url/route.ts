@@ -14,7 +14,7 @@ import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/docum
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const origin = getAppOrigin(req);
+  const origin = getAppOrigin();
   const redirectUri = `${origin}/api/auth/google/callback`;
 
   try {

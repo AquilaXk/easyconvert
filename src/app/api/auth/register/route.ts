@@ -4,6 +4,11 @@ import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
+import {
+  authRateLimitRefusal,
+  consumeRegistrationRateLimit,
+  resolveAuthClientIp,
+} from '@/lib/auth/login-rate-limiter';
 import type { AuthErrorCode } from '@/lib/refusal-codes';
 import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
 
@@ -16,6 +21,10 @@ export async function POST(req: NextRequest) {
   if (!body) {
     return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
   }
+
+  const resolvedIp = resolveAuthClientIp(req);
+  if ('refused' in resolvedIp) return resolvedIp.refused;
+  const { clientIp } = resolvedIp;
 
   try {
     const email = typeof body.email === 'string' ? body.email.trim() : '';
@@ -32,6 +41,14 @@ export async function POST(req: NextRequest) {
 
     const termsRefused = termsRefusal(body.acceptedTermsVersion);
     if (termsRefused) return refusal(400, termsRefused, termsRefusalText(termsRefused));
+
+    const rateLimit = await consumeRegistrationRateLimit(clientIp);
+    if (!rateLimit.allowed) {
+      return authRateLimitRefusal(
+        rateLimit.retryAfterSeconds,
+        `Too many registration attempts. Please try again in ${rateLimit.retryAfterSeconds} seconds.`
+      );
+    }
 
     const displayName = name || email.split('@')[0];
 

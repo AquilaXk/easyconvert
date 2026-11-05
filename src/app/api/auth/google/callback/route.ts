@@ -14,8 +14,8 @@ import { TERMS_VERSION, termsRefusal } from '@/lib/legal/documents';
 export const dynamic = 'force-dynamic';
 
 /** A redirect to `pathname` in `locale` (its prefix, none for the default language), with `search` as it is. */
-function redirectTo(req: NextRequest, locale: AppLocale, pathname: string, search = ''): NextResponse {
-  return NextResponse.redirect(new URL(`${getPathname({ locale, href: pathname })}${search}`, req.url));
+function redirectTo(origin: string, locale: AppLocale, pathname: string, search = ''): NextResponse {
+  return NextResponse.redirect(new URL(`${getPathname({ locale, href: pathname })}${search}`, origin));
 }
 
 export async function GET(req: NextRequest) {
@@ -23,30 +23,29 @@ export async function GET(req: NextRequest) {
   const code = searchParams.get('code');
   const state = searchParams.get('state');
 
-  const origin = getAppOrigin(req);
+  const origin = getAppOrigin();
   const redirectUri = `${origin}/api/auth/google/callback`;
 
   // Until the state is consumed the language of the sign-in is unknown, so these answers use the default language.
   // 1. Validate state parameter exists
   if (!state) {
-    return redirectTo(req, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
+    return redirectTo(origin, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
   }
 
-  // 2. Cookie-to-state binding verification (Login CSRF Defense)
   const stateCookie = req.cookies.get(OAUTH_STATE_COOKIE_NAME)?.value;
-  if (stateCookie && stateCookie !== state) {
-    return redirectTo(req, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
+  if (!stateCookie || stateCookie !== state) {
+    return redirectTo(origin, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
   }
 
   // 3. Atomically consume OAuth state from Redis or local cache
   const oauthSession = await consumeOAuthSession(state);
   if (!oauthSession) {
-    return redirectTo(req, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
+    return redirectTo(origin, routing.defaultLocale, '/auth', '?error=invalid_oauth_state');
   }
   const { locale } = oauthSession;
 
   if (!code) {
-    return redirectTo(req, locale, '/auth', '?error=oauth_code_missing');
+    return redirectTo(origin, locale, '/auth', '?error=oauth_code_missing');
   }
 
   try {
@@ -57,7 +56,7 @@ export async function GET(req: NextRequest) {
       const termsRefused = termsRefusal(oauthSession.acceptedTermsVersion);
       if (termsRefused) {
         const error = termsRefused === 'terms_outdated' ? 'terms_outdated' : 'terms_required';
-        return redirectTo(req, locale, '/auth', `?tab=register&error=${error}`);
+        return redirectTo(origin, locale, '/auth', `?tab=register&error=${error}`);
       }
       userRecord = await redisUserStore.createUser({
         email: googleProfile.email,
@@ -82,7 +81,7 @@ export async function GET(req: NextRequest) {
           provider: 'google',
         })) || userRecord;
       } else {
-        return redirectTo(req, locale, '/auth', `?error=account_linking_required&email=${encodeURIComponent(googleProfile.email)}`);
+        return redirectTo(origin, locale, '/auth', `?error=account_linking_required&email=${encodeURIComponent(googleProfile.email)}`);
       }
     }
 
@@ -90,7 +89,7 @@ export async function GET(req: NextRequest) {
     const token = createSessionToken(user);
     const sessionCookieHeader = createSessionCookie(token);
 
-    const redirectResponse = redirectTo(req, locale, '/dashboard');
+    const redirectResponse = redirectTo(origin, locale, '/dashboard');
     redirectResponse.headers.append('Set-Cookie', sessionCookieHeader);
 
     // Clear the OAuth state cookie
@@ -101,7 +100,7 @@ export async function GET(req: NextRequest) {
     return redirectResponse;
   } catch (err: unknown) {
     const errorMsg = encodeURIComponent(err instanceof Error ? err.message : 'oauth_exchange_failed');
-    return redirectTo(req, locale, '/auth', `?error=${errorMsg}`);
+    return redirectTo(origin, locale, '/auth', `?error=${errorMsg}`);
   }
 }
 

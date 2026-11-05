@@ -3,6 +3,7 @@ import { dashboardRefusal as refusal, notFoundRefusal, resolveDashboardCaller } 
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope, ApiKeyUpdateOptions } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
+import { InvalidWebhookConfigError, validateWebhookUrl } from '@/lib/security/ssrf';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,65 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   });
 }
 
+function parseWebhookUpdates(
+  body: Record<string, unknown>,
+  updates: ApiKeyUpdateOptions
+): string | null {
+  if (body.webhookUrl !== undefined) {
+    if (typeof body.webhookUrl !== 'string') {
+      return 'webhookUrl must be a string.';
+    }
+    updates.webhookUrl = body.webhookUrl.trim();
+    if (updates.webhookUrl) {
+      const urlCheck = validateWebhookUrl(updates.webhookUrl);
+      if (!urlCheck.valid) {
+        return urlCheck.error!;
+      }
+    }
+  }
+
+  if (body.webhookSecret !== undefined) {
+    if (typeof body.webhookSecret !== 'string') {
+      return 'webhookSecret must be a string.';
+    }
+    updates.webhookSecret = body.webhookSecret.trim();
+  }
+
+  return null;
+}
+
+function parseAccessUpdates(
+  body: Record<string, unknown>,
+  updates: ApiKeyUpdateOptions
+): string | null {
+  if (body.allowedIps !== undefined) {
+    if (!Array.isArray(body.allowedIps)) {
+      return 'allowedIps must be an array of strings.';
+    }
+    for (const ip of body.allowedIps) {
+      if (typeof ip !== 'string' || !ip.trim()) {
+        return 'Every item in allowedIps must be a non-empty string.';
+      }
+    }
+    updates.allowedIps = body.allowedIps.map((ip) => ip.trim());
+  }
+
+  if (body.scopes !== undefined) {
+    if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
+      return 'scopes must be a non-empty array of valid scopes.';
+    }
+    const valid = new Set<ApiKeyScope>([...ALL_API_KEY_SCOPES, '*']);
+    for (const s of body.scopes) {
+      if (typeof s !== 'string' || !valid.has(s as ApiKeyScope)) {
+        return `Invalid scope '${String(s)}'. Valid scopes are: ${[...ALL_API_KEY_SCOPES, '*'].join(', ')}.`;
+      }
+    }
+    updates.scopes = [...new Set(body.scopes as ApiKeyScope[])];
+  }
+
+  return null;
+}
+
 export async function PATCH(req: NextRequest, context: RouteContext) {
   const caller = await resolveDashboardCaller(req, { action: 'update API keys', adminKey: true });
   if ('refused' in caller) return caller.refused;
@@ -43,37 +103,14 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     updates.name = body.name.trim();
   }
 
-  if (body.allowedIps !== undefined) {
-    if (!Array.isArray(body.allowedIps)) {
-      return refusal(400, 'invalid_key_settings', 'allowedIps must be an array of strings.');
-    }
-    for (const ip of body.allowedIps) {
-      if (typeof ip !== 'string' || !ip.trim()) {
-        return refusal(400, 'invalid_key_settings', 'Every item in allowedIps must be a non-empty string.');
-      }
-    }
-    updates.allowedIps = body.allowedIps.map((ip) => ip.trim());
+  const accessError = parseAccessUpdates(body, updates);
+  if (accessError) {
+    return refusal(400, 'invalid_key_settings', accessError);
   }
 
-  if (body.webhookUrl !== undefined) {
-    updates.webhookUrl = typeof body.webhookUrl === 'string' ? body.webhookUrl.trim() : undefined;
-  }
-
-  if (body.webhookSecret !== undefined) {
-    updates.webhookSecret = typeof body.webhookSecret === 'string' ? body.webhookSecret.trim() : undefined;
-  }
-
-  if (body.scopes !== undefined) {
-    if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
-      return refusal(400, 'invalid_key_settings', 'scopes must be a non-empty array of valid scopes.');
-    }
-    const valid = new Set<ApiKeyScope>([...ALL_API_KEY_SCOPES, '*']);
-    for (const s of body.scopes) {
-      if (typeof s !== 'string' || !valid.has(s as ApiKeyScope)) {
-        return refusal(400, 'invalid_key_settings', `Invalid scope '${String(s)}'. Valid scopes are: ${[...ALL_API_KEY_SCOPES, '*'].join(', ')}.`);
-      }
-    }
-    updates.scopes = [...new Set(body.scopes as ApiKeyScope[])];
+  const webhookError = parseWebhookUpdates(body, updates);
+  if (webhookError) {
+    return refusal(400, 'invalid_key_settings', webhookError);
   }
 
   if (body.expiresAt !== undefined) {
@@ -83,7 +120,15 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     updates.expiresAt = body.expiresAt;
   }
 
-  const updatedKey = await redisKeyStore.updateApiKey(user.id, keyId, updates);
+  let updatedKey;
+  try {
+    updatedKey = await redisKeyStore.updateApiKey(user.id, keyId, updates);
+  } catch (err: unknown) {
+    if (err instanceof InvalidWebhookConfigError) {
+      return refusal(400, 'invalid_key_settings', err.message);
+    }
+    throw err;
+  }
   if (!updatedKey) {
     return notFoundRefusal('API key not found, inactive, or not owned by the current user.');
   }

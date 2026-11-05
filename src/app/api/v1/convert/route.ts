@@ -23,6 +23,7 @@ import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-s
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
+import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
 import { storageProvider } from '@/lib/storage';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
 import {
@@ -249,31 +250,23 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
 
     const webhookUrlParam = formText(formData, 'webhookUrl')?.trim() || undefined;
     const webhookSecretParam = formText(formData, 'webhookSecret')?.trim() || undefined;
-
-    if (webhookUrlParam && !webhookSecretParam) {
+    const resolvedWebhook = resolveEffectiveWebhook(
+      webhookUrlParam,
+      webhookSecretParam,
+      auth.apiKey?.webhookUrl,
+      auth.apiKey?.webhookSecret
+    );
+    if (resolvedWebhook.error) {
       return reply(createProblemDetailsResponse(
         400,
-        'webhookSecret is required when webhookUrl is provided.',
+        resolvedWebhook.error,
         instanceUri,
         'Bad Request',
         undefined,
         rateLimitHeaders
       ));
     }
-
-    const effectiveWebhookUrl = webhookUrlParam || auth.apiKey?.webhookUrl;
-    const effectiveWebhookSecret = webhookSecretParam || auth.apiKey?.webhookSecret;
-
-    if (effectiveWebhookUrl && !effectiveWebhookSecret) {
-      return reply(createProblemDetailsResponse(
-        400,
-        'webhookSecret is required when webhookUrl is provided.',
-        instanceUri,
-        'Bad Request',
-        undefined,
-        rateLimitHeaders
-      ));
-    }
+    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret } = resolvedWebhook;
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
     const unit = await reserveConversionUnit(auth.user);
