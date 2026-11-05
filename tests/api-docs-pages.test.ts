@@ -118,9 +118,13 @@ describe('what the documentation shows', () => {
   });
 
   it('says who may call each operation: anyone for the formats, a scoped key for a conversion', () => {
-    expect(visibleText(main(page('formats')))).toContain('None. Anyone can call this endpoint.');
-    expect(visibleText(main(page('convert')))).toContain('An API key with the convert:write scope');
-    expect(visibleText(main(page('convert', 'ko')))).toContain('convert:write 권한 범위가 있는 API 키');
+    const formatsText = visibleText(main(page('formats')));
+    const convertTextEn = visibleText(main(page('convert')));
+    const convertTextKo = visibleText(main(page('convert', 'ko')));
+    expect(formatsText).toContain('None. Anyone can call this endpoint.');
+    expect(formatsText.includes('An API key with the convert:write scope')).toBe(false);
+    expect(convertTextEn).toContain('An API key with the convert:write scope');
+    expect(convertTextKo).toContain('convert:write 권한 범위가 있는 API 키');
   });
 
   it('keeps the OpenAPI document one plain link away', () => {
