@@ -282,7 +282,8 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     expect(newVerifyAfterRetiringV1.key?.keyHash).toBe(expectedNewHash);
     expect(newVerifyAfterRetiringV1.key?.webhookSecret).toBe(WEBHOOK_SECRET);
 
-    const rotatedSecond = await store.rotateApiKey(testUser.id, key.id, { gracePeriodSeconds: 3600 });
+    const peerStore = new RedisKeyStore({ isolated: true, redisClient: fakeRedis as any, keyPrefix: prefix });
+    const rotatedSecond = await peerStore.rotateApiKey(testUser.id, key.id, { gracePeriodSeconds: 3600 });
     expect(rotatedSecond).not.toBeNull();
     const expiredFirstSecretVerify = await store.verifyApiKey(oldSecretKey);
     expect(expiredFirstSecretVerify.valid).toBe(false);

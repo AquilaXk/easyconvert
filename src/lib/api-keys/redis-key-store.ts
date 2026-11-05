@@ -436,10 +436,16 @@ export class RedisKeyStore extends KeyStore {
       matchedPreviousKey && Boolean(key.previousKeyHash) && key.previousKeyHash !== oldPreviousKeyHash;
 
     key.lastUsedAt = Date.now();
+    const existing = this.keys.get(key.id);
+    if (existing) {
+      this.keyHashIndex.delete(existing.keyHash);
+      if (existing.previousKeyHash) {
+        this.keyHashIndex.delete(existing.previousKeyHash);
+      }
+    }
     this.keys.set(key.id, key);
-    if (keyHashChanged) {
-      this.keyHashIndex.set(key.keyHash, key.id);
-    } else if (prevHashChanged && key.previousKeyHash) {
+    this.keyHashIndex.set(key.keyHash, key.id);
+    if (key.previousKeyHash) {
       this.keyHashIndex.set(key.previousKeyHash, key.id);
     }
 
@@ -559,7 +565,19 @@ export class RedisKeyStore extends KeyStore {
               user: redisUserStore.sanitizeUser(userRecord),
             };
           }
+          const staleById = this.keys.get(keyId);
+          if (staleById) {
+            this.keyHashIndex.delete(staleById.keyHash);
+            if (staleById.previousKeyHash) {
+              this.keyHashIndex.delete(staleById.previousKeyHash);
+            }
+            this.keys.delete(keyId);
+          }
         }
+        for (const h of candidates.hashes) {
+          this.keyHashIndex.delete(h);
+        }
+        return { valid: false, error: 'Invalid or non-existent API key' };
       } catch (err) {
         console.warn('[RedisKeyStore] Redis verifyApiKey failed, falling back to local memory:', err);
       }
@@ -604,14 +622,14 @@ export class RedisKeyStore extends KeyStore {
     if (!this.redisClient) return;
     try {
       const hashData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
-      if (hashData && hashData.data) {
-        const existing = this.keys.get(keyId);
-        if (existing) {
-          this.keyHashIndex.delete(existing.keyHash);
-          if (existing.previousKeyHash) {
-            this.keyHashIndex.delete(existing.previousKeyHash);
-          }
+      const existing = this.keys.get(keyId);
+      if (existing) {
+        this.keyHashIndex.delete(existing.keyHash);
+        if (existing.previousKeyHash) {
+          this.keyHashIndex.delete(existing.previousKeyHash);
         }
+      }
+      if (hashData && hashData.data) {
         const parsed = JSON.parse(hashData.data) as ApiKey;
         parsed.status = (hashData.status as 'active' | 'revoked') || parsed.status;
         this.keys.set(keyId, parsed);
@@ -619,6 +637,8 @@ export class RedisKeyStore extends KeyStore {
         if (parsed.previousKeyHash) {
           this.keyHashIndex.set(parsed.previousKeyHash, keyId);
         }
+      } else if (existing) {
+        this.keys.delete(keyId);
       }
     } catch {}
   }
@@ -677,7 +697,6 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
-    await this.syncKeyFromRedis(keyId);
     const localKey = this.keys.get(keyId);
     if (localKey && localKey.userId !== userId) {
       return false;
