@@ -2469,10 +2469,10 @@ async function convertImage(
         // Deterministic raw RGBA extraction and standard BMP binary generation
         const { data, info } = await pipeline
           .ensureAlpha()
-          .raw()
-          .toBuffer({ resolveWithObject: true });
+          .raw().toBuffer({ resolveWithObject: true });
 
         if (options.colorDepth === 8 || options.palette) {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const colours = Math.min(256, Math.max(2, options.colors || 256));
           const rawRgb = Buffer.alloc(info.width * info.height * 3);
           for (let i = 0; i < info.width * info.height; i++) {

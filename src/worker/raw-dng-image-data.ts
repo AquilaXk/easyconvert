@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { RAW_SENSOR_PIXEL_BUDGET, assertInputPixels, assertPixelBudget } from '../lib/conversions/image-input-limits';
 import { readUInt16, readUInt32 } from '../lib/conversions/image-tiff-directories';
 import { RawDecodeError } from '../lib/types';
 
@@ -218,6 +219,7 @@ interface Walk {
   nikon: boolean;
   /** EXIF entries left to scan of MAX_EXIF_ENTRIES. */
   exifEntriesLeft: number;
+  allowUnmodelled?: boolean;
 }
 
 const get2 = (reader: TiffReader, at: number): number => readUInt16(reader.readPadded(at, 2), 0, reader.little);
@@ -269,9 +271,11 @@ type EntryHandler = (walk: Walk, directory: Directory, entry: Entry) => void;
 /** Thrown by `refuse` and caught once, in `dngRawImageData`. */
 class UnmodelledLayout extends Error {}
 
-/** Ends the walk at an entry through which LibRaw reads a directory the walk does not follow. */
 const refuse = (): never => {
   throw new UnmodelledLayout();
+};
+const refuseUnmodelledLayout = (walk: Walk): void => {
+  if (!walk.allowUnmodelled) refuse();
 };
 const startsWith = (reader: TiffReader, entry: Entry, text: string): boolean =>
   reader.readPadded(entry.at, text.length).toString('latin1') === text;
@@ -301,7 +305,10 @@ const raiseNikonFromUniqueCameraModel: EntryHandler = (walk, _directory, entry) 
 function listsMakerNote(walk: Walk, at: number): boolean {
   const { reader } = walk;
   const count = get2(reader, at);
-  if (count > walk.exifEntriesLeft) refuse();
+  if (count > walk.exifEntriesLeft) {
+    refuseUnmodelledLayout(walk);
+    return false;
+  }
   walk.exifEntriesLeft -= count;
   const entries = reader.readPadded(at + 2, count * ENTRY_BYTES);
   for (let offset = 0; offset < entries.length; offset += ENTRY_BYTES) {
@@ -317,7 +324,9 @@ function listsMakerNote(walk: Walk, at: number): boolean {
  */
 function readsJpegStream(walk: Walk, directory: Directory, entry: Entry): void {
   const offset = get4(walk.reader, entry.at);
-  if (directory.bitsPerSample === 0 && walk.reader.readPadded(offset + 1, 1)[0] === JPEG_START_OF_IMAGE_SECOND_BYTE) refuse();
+  if (directory.bitsPerSample === 0 && walk.reader.readPadded(offset + 1, 1)[0] === JPEG_START_OF_IMAGE_SECOND_BYTE) {
+    refuseUnmodelledLayout(walk);
+  }
 }
 
 const ENTRY_HANDLERS: ReadonlyMap<number, EntryHandler> = new Map<number, EntryHandler>([
@@ -331,30 +340,33 @@ const ENTRY_HANDLERS: ReadonlyMap<number, EntryHandler> = new Map<number, EntryH
     walk.pixelAspect = pixelAspectOf(walk.reader, entry) ?? walk.pixelAspect;
   }],
   [TAG.subIfds, (walk, directory, entry) => {
-    if (directory.width === A100_WIDTH) refuse();
+    if (directory.width === A100_WIDTH) {
+      refuseUnmodelledLayout(walk);
+      return;
+    }
     visitSubIfds(walk, entry);
   }],
   [TAG.fujiTable, (walk, _directory, entry) => {
     visit(walk, get4(walk.reader, entry.at));
   }],
   [TAG.panasonicFlag, (walk, _directory, entry) => {
-    if (entry.count === PANASONIC_FLAG_VALUES && get4(walk.reader, entry.at) !== 0) refuse();
+    if (entry.count === PANASONIC_FLAG_VALUES && get4(walk.reader, entry.at) !== 0) refuseUnmodelledLayout(walk);
   }],
   [TAG.stripOffsets, readsJpegStream],
   [TAG.jpegInterchange, readsJpegStream],
   [TAG.fujiStripOffsets, readsJpegStream],
-  [TAG.sonyMinolta, refuse],
+  [TAG.sonyMinolta, refuseUnmodelledLayout],
   [TAG.make, setMake],
   [TAG.uniqueCameraModel, raiseNikonFromUniqueCameraModel],
   [TAG.exifIfd, (walk, _directory, entry) => {
-    if (walk.nikon && listsMakerNote(walk, get4(walk.reader, entry.at))) refuse();
+    if (!walk.allowUnmodelled && walk.nikon && listsMakerNote(walk, get4(walk.reader, entry.at))) refuseUnmodelledLayout(walk);
   }],
-  [TAG.hasselblad, refuse],
+  [TAG.hasselblad, refuseUnmodelledLayout],
   [TAG.dngVersion, (walk, _directory, entry) => {
     walk.dngVersion = walk.reader.readPadded(entry.at, DNG_VERSION_BYTES).readUInt32BE(0);
   }],
   [TAG.dngPrivateData, (walk) => {
-    if (walk.nikon || walk.dngVersion === 0) refuse();
+    if (walk.nikon || walk.dngVersion === 0) refuseUnmodelledLayout(walk);
   }],
 ]);
 
@@ -380,8 +392,17 @@ function visitSubIfds(walk: Walk, list: Entry): void {
 }
 
 /** The directories LibRaw reads, in its order, and what it keeps from reading them. */
-function walkDirectories(reader: TiffReader): Walk {
-  const walk: Walk = { reader, directories: [], counted: 0, pixelAspect: 1, dngVersion: 0, nikon: false, exifEntriesLeft: MAX_EXIF_ENTRIES };
+function walkDirectories(reader: TiffReader, allowUnmodelled = false): Walk {
+  const walk: Walk = {
+    reader,
+    directories: [],
+    counted: 0,
+    pixelAspect: 1,
+    dngVersion: 0,
+    nikon: false,
+    exifEntriesLeft: MAX_EXIF_ENTRIES,
+    allowUnmodelled,
+  };
   for (let at = reader.firstDirectory; at !== 0;) {
     const directory = visit(walk, at);
     if (directory === null) break;
@@ -532,4 +553,33 @@ const UNCHECKED_DNG_REASONS: Readonly<Record<Exclude<DngRawImageData, 'whole' | 
 export function dngRefusal(finding: Exclude<DngRawImageData, 'whole'>, src: string): RawDecodeError {
   if (finding === 'outside-file') return new RawDecodeError(`The .${src} file is truncated: its raw image data runs past the end of the file`);
   return new RawDecodeError(`Native RAW decoder reported corrupted data in the .${src} file, and the file cannot be shown to be whole: ${UNCHECKED_DNG_REASONS[finding]}`);
+}
+
+export function assertRawSensorPixels(filePath: string): void {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const reader = openTiff(fd);
+    if (reader === null) return;
+    const walk = walkDirectories(reader, true);
+    const stretchWidth = (columns: number) => (walk.pixelAspect > 1 ? Math.floor(columns * walk.pixelAspect + 0.5) : columns);
+    const stretchHeight = (rows: number) => (walk.pixelAspect < 1 ? Math.floor(rows / walk.pixelAspect + 0.5) : rows);
+    const checkSize = (width: number, height: number): void => {
+      if (width <= 0 || height <= 0) return;
+      assertInputPixels(width, height);
+      assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
+      const stretchedW = stretchWidth(width);
+      const stretchedH = stretchHeight(height);
+      if (stretchedW !== width || stretchedH !== height) {
+        assertInputPixels(stretchedW, stretchedH);
+        assertPixelBudget(stretchedW, stretchedH, RAW_SENSOR_PIXEL_BUDGET);
+      }
+    };
+    for (const directory of walk.directories) {
+      checkSize(directory.width, directory.height);
+      const size = rawSize(reader, directory);
+      if (size !== null) checkSize(size.width, size.height);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
 }

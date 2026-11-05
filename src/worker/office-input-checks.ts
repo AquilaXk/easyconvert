@@ -1,9 +1,16 @@
 import fs from 'node:fs';
+import JSZip from 'jszip';
+import sharp from 'sharp';
+import { InflateBudget } from '../lib/conversions/bounded-inflate';
+import { assertEmbeddableImageWithinLimit, assertInputPixels, isPngOrJpeg, rethrowInputPixelLimit } from '../lib/conversions/image-input-limits';
 import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
 import { isEncryptedWordDocument } from '../lib/conversions/office/doc-reader';
+import { maxDocumentMediaBytes } from '../lib/conversions/office/media-limits';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
+import { ZIP_LOCAL_HEADER_SIGNATURE, startsWithBytes } from '../lib/conversions/package-access';
+import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
 import type { WorkerVfsPayload } from './worker-types';
 
@@ -15,6 +22,7 @@ import type { WorkerVfsPayload } from './worker-types';
 
 /** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
+const OFFICE_MEDIA_PREFIXES = ['word/media/', 'ppt/media/', 'xl/media/', 'Pictures/', 'Data/'];
 /**
  * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
  * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
@@ -58,6 +66,33 @@ export async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src
   if (!DRAWING_SOURCES.has(src)) return;
   const buffer = inputAsBuffer(input);
   if (buffer) await assertOpenDocumentGraphic(buffer, src);
+}
+
+export async function assertOfficeEmbeddedImagesWithinLimit(input: Buffer | WorkerVfsPayload): Promise<void> {
+  const buffer = inputAsBuffer(input);
+  if (!buffer || !startsWithBytes(buffer, ZIP_LOCAL_HEADER_SIGNATURE)) return;
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return;
+  }
+  const budget = new InflateBudget(maxDocumentMediaBytes());
+  for (const [name, entry] of Object.entries(zip.files)) {
+    if (entry.dir || !OFFICE_MEDIA_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+    const bytes = await readZipEntryBytes(entry, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget });
+    await assertEmbeddableImageWithinLimit(bytes);
+    if (!isPngOrJpeg(bytes)) {
+      try {
+        const meta = await sharp(bytes, { limitInputPixels: false }).metadata();
+        if (meta.width !== undefined && meta.height !== undefined) {
+          assertInputPixels(meta.width, meta.height);
+        }
+      } catch (err) {
+        rethrowInputPixelLimit(err);
+      }
+    }
+  }
 }
 
 /**

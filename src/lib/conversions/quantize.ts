@@ -22,6 +22,7 @@
  */
 
 import { blueNoiseCentred } from './blue-noise-mask';
+import { QUANTIZER_PIXEL_BUDGET, assertPixelBudget } from './image-input-limits';
 
 export interface RgbColor {
   r: number;
@@ -116,6 +117,7 @@ export function quantizeMedianCut(
   maxColors: number = 256,
   dither: boolean = true
 ): QuantizedResult {
+  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   const pixelCount = width * height;
   const sampleStep = Math.max(1, Math.floor(pixelCount / 10000));
   const sampledColors: RgbColor[] = [];
@@ -191,6 +193,7 @@ export function quantizeNeuQuant(
   sampleFactor: number = 10,
   dither: boolean = true
 ): QuantizedResult {
+  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   // Initialize neural network weights [r, g, b] uniformly distributed
   const network: number[][] = [];
   for (let i = 0; i < NEU_NETSIZE; i++) {
@@ -199,7 +202,9 @@ export function quantizeNeuQuant(
   }
 
   const length = width * height;
-  const samplePixels = Math.floor(length / sampleFactor);
+  const MAX_NEUQUANT_SAMPLES = 100_000;
+  const effectiveSampleFactor = Math.max(1, sampleFactor, Math.ceil(length / MAX_NEUQUANT_SAMPLES));
+  const samplePixels = Math.floor(length / effectiveSampleFactor);
   const nCycles = 100;
   const delta = Math.max(1, Math.floor(samplePixels / nCycles));
   let alpha = 1024; // Initial learning rate
@@ -250,7 +255,7 @@ export function quantizeNeuQuant(
     pix += step;
 
     if (i % delta === 0) {
-      alpha -= Math.floor(alpha / (30 + (sampleFactor - 1) / 3));
+      alpha -= Math.floor(alpha / (30 + (effectiveSampleFactor - 1) / 3));
       radius = Math.max(1, radius - 1);
     }
   }
@@ -471,11 +476,17 @@ export function applyFloydSteinbergDither(
 ): Uint8Array {
   const indexed = new Uint8Array(width * height);
   const precomputedOklab = useOklab ? palette.map((p) => srgbToOklab(p.r, p.g, p.b)) : undefined;
+  const lookup = new Int16Array(32768).fill(-1);
 
   const getClosest = (c: RgbColor): number => {
-    return useOklab
+    const key = ((c.r >> 3) << 10) | ((c.g >> 3) << 5) | (c.b >> 3);
+    const cached = lookup[key];
+    if (cached !== -1) return cached;
+    const found = useOklab
       ? findClosestPaletteIndexOklab(c, palette, precomputedOklab)
       : findClosestPaletteIndex(c, palette);
+    lookup[key] = found;
+    return found;
   };
 
   if (!dither) {
@@ -667,6 +678,7 @@ export function quantizeXiaolinWu(
   maxColors = 256,
   options: { dither?: boolean; ditherMethod?: 'floyd-steinberg' | 'blue-noise' } = {}
 ): QuantizedResult {
+  assertPixelBudget(width, height, QUANTIZER_PIXEL_BUDGET);
   const wt = new Float64Array(WU_TOTAL);
   const mr = new Float64Array(WU_TOTAL);
   const mg = new Float64Array(WU_TOTAL);

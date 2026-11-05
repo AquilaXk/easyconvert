@@ -9,6 +9,7 @@ import {
   UnprocessableMediaInputError,
 } from '../types';
 import { explainProbeFailure } from './media-decode-failures';
+import { assertInputPixels } from './image-input-limits';
 import { type MediaInput, runFfprobe } from './media-process';
 import { findUndecodableAudio } from './media-undecodable-audio';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
@@ -346,6 +347,9 @@ export function probeInput(input: MediaInput, ffprobe: FfprobePath): InputProbe 
   const duration = typeof parsed.format?.duration === 'string' ? Number.parseFloat(parsed.format.duration) : Number.NaN;
   const raw = parsed.streams as RawStream[];
   const streams = raw.map(toInputStream);
+  for (const stream of streams) {
+    if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
+  }
   markUndecodableAudio(ffprobe, input, streams, raw);
   const probe: InputProbe = {
     streams,
@@ -380,7 +384,12 @@ export function probeStreamLayout(input: MediaInput, ffprobe: FfprobePath): Stre
   const identity = inputIdentity(input);
   if (identity === undefined || !probeCache.has(identity)) {
     const header = readMp4Layout(input.path);
-    if (header !== null) return { streams: header.streams, durationSec: header.durationSec };
+    if (header !== null) {
+      for (const stream of header.streams) {
+        if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
+      }
+      return { streams: header.streams, durationSec: header.durationSec };
+    }
   }
   const probe = probeInput(input, ffprobe);
   const { chapterCount, startTimeSec } = probe.timeline;

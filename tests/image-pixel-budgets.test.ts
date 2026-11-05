@@ -63,6 +63,7 @@ describe('palette quantizers refuse pictures that would not fit the job memory s
     ['png', 'Riemersma', { ditherMethod: 'riemersma', colorDepth: 8 }],
     ['gif', 'Oklab', { quantizer: 'oklab' }],
     ['bmp', 'Oklab', { quantizer: 'oklab', colorDepth: 8 }],
+    ['bmp', 'NeuQuant', { colorDepth: 8 }],
   ];
 
   it.each(targets)('refuses a 25 MP picture for %s output with %s quantization before the per-pixel work', async (target, _label, options) => {
