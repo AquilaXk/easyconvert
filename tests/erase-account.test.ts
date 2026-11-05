@@ -242,6 +242,7 @@ describe('erasing one account', () => {
 
     const writer = new RedisKeyStore({ keyPrefix: 'test:', isolated: true, redisClient: client as never });
     const reader = new RedisKeyStore({ keyPrefix: 'test:', isolated: true });
+    await reader.close();
 
     const { key: localKey } = await writer.generateApiKey('owner_1', 'local', { acceptedTermsVersion: TERMS_VERSION });
     hashes.delete(`test:apikeys:${localKey.id}`);
