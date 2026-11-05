@@ -124,6 +124,14 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     expect(formatXmpDate(valid!)).toBe('2026-11-05T13:51:04+09:00');
     expect(parseXmpDate('2026-11-05T13:51:04+09:00')?.epochMs).toBe(valid!.epochMs);
 
+    const zOffset = parsePdfDate("D:20260419081530Z00'00'");
+    expect(zOffset).not.toBeNull();
+    expect(zOffset!.offsetSign).toBe('Z');
+    expect(zOffset!.offsetHours).toBe(0);
+    expect(zOffset!.offsetMinutes).toBe(0);
+    expect(formatPdfDate(zOffset!)).toBe('D:20260419081530Z');
+    expect(formatXmpDate(zOffset!)).toBe('2026-04-19T08:15:30Z');
+
     expect(parsePdfDate('D:20240229120000Z')).not.toBeNull();
     expect(parsePdfDate('D:20260229120000Z')).toBeNull();
     expect(parsePdfDate('D:00000000000000Z')).toBeNull();
@@ -179,6 +187,54 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     expect(inspected.xmpModifyDate).toBe('2026-11-05T04:51:04Z');
     expect(inspected.xmpMetadataDate).toBe('2026-11-05T04:51:04Z');
     expect(decodeTestXmpDate(inspected.xmpCreateDate!)).toEqual(decodeTestPdfDate(inspected.infoCreationDate!));
+  });
+
+  it('adopts the XMP timezone offset and preserves the %PDF-1.4 header when /Info omits a timezone offset', async () => {
+    const raw = await buildSyntheticLibreOfficePdfA1b({
+      infoCreationDate: 'D:20260419081530',
+      xmpCreateDate: '2026-04-19T08:15:30+09:00',
+      xmpModifyDate: '2026-04-19T08:15:30+09:00',
+      xmpMetadataDate: '2026-04-19T08:15:30+09:00',
+    });
+    const pdf14 = Buffer.from(raw);
+    pdf14.write('%PDF-1.4', 0, 'latin1');
+
+    const normalised = await normalisePdfADates(pdf14);
+    expect(normalised.subarray(0, 8).toString('latin1')).toBe('%PDF-1.4');
+
+    const inspected = await inspectPdfDatesAndMetadata(normalised);
+    expect(inspected.infoCreationDate).toBe("D:20260419081530+09'00'");
+    expect(inspected.infoModDate).toBe("D:20260419081530+09'00'");
+    expect(inspected.xmpCreateDate).toBe('2026-04-19T08:15:30+09:00');
+    expect(inspected.xmpModifyDate).toBe('2026-04-19T08:15:30+09:00');
+    expect(decodeTestXmpDate(inspected.xmpCreateDate!)).toEqual(decodeTestPdfDate(inspected.infoCreationDate!));
+  });
+
+  it('normalises self-closing rdf:Description XMP packets with attribute or missing xmp:CreateDate', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([200, 200]);
+    const infoDict = doc.context.obj({});
+    infoDict.set(PDFName.of('CreationDate'), PDFString.of('D:20260419081530Z'));
+    infoDict.set(PDFName.of('ModDate'), PDFString.of('D:20260419091530Z'));
+    doc.context.trailerInfo.Info = doc.context.register(infoDict);
+
+    const selfClosingXmp =
+      '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\n' +
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n' +
+      ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n' +
+      '  <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/" pdfaid:part="1" pdfaid:conformance="B"/>\n' +
+      '  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:CreateDate="2020-01-01T00:00:00Z"/>\n' +
+      ' </rdf:RDF>\n' +
+      '</x:xmpmeta>\n' +
+      '<?xpacket end="w"?>';
+    const stream = doc.context.stream(Buffer.from(selfClosingXmp, 'utf-8'), { Type: 'Metadata', Subtype: 'XML' });
+    doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
+    const input = Buffer.from(await doc.save({ useObjectStreams: false }));
+
+    const normalised = await normalisePdfADates(input);
+    const inspected = await inspectPdfDatesAndMetadata(normalised);
+    expect(inspected.xmp).toContain('xmp:CreateDate="2026-04-19T08:15:30Z"');
+    expect(inspected.xmp).toContain('xmp:ModifyDate="2026-04-19T09:15:30Z"');
   });
 
   it('replaces malformed or hostile /Info /CreationDate with the fallback UTC timestamp without throwing', async () => {

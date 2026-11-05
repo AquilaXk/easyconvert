@@ -1,6 +1,11 @@
 import crypto from 'node:crypto';
 
 const ENCRYPTION_PREFIX = 'enc:v1:';
+const DEV_SECRET_KEY_SALT = 'easyconvert-dev-secret-key-salt';
+
+function deriveKey(secret: string): Buffer {
+  return crypto.createHash('sha256').update(secret).digest();
+}
 
 function getEncryptionKey(): Buffer {
   const secret =
@@ -14,10 +19,63 @@ function getEncryptionKey(): Buffer {
         '[SecretEncryption] FATAL: KEY_ENCRYPTION_KEY, KEY_HASH_PEPPER, or JWT_SECRET is required in production.'
       );
     }
-    return crypto.createHash('sha256').update('easyconvert-dev-secret-key-salt').digest();
+    return deriveKey(DEV_SECRET_KEY_SALT);
   }
 
-  return crypto.createHash('sha256').update(secret).digest();
+  return deriveKey(secret);
+}
+
+export function getDecryptionCandidateKeys(): Buffer[] {
+  const primary = getEncryptionKey();
+  const seen = new Set<string>([primary.toString('hex')]);
+  const keys: Buffer[] = [primary];
+
+  const rawSecrets = [
+    process.env.KEY_ENCRYPTION_KEY,
+    process.env.KEY_HASH_PEPPER,
+    process.env.KEY_HASH_PEPPER_PREVIOUS,
+    process.env.JWT_SECRET,
+    process.env.NODE_ENV !== 'production' ? DEV_SECRET_KEY_SALT : undefined,
+  ];
+
+  for (const raw of rawSecrets) {
+    if (!raw) continue;
+    const derived = deriveKey(raw);
+    const hex = derived.toString('hex');
+    if (!seen.has(hex)) {
+      seen.add(hex);
+      keys.push(derived);
+    }
+  }
+
+  return keys;
+}
+
+function decryptWithCandidateKeys(cipherText: string): { plainText: string; keyIndex: number } {
+  const payload = cipherText.substring(ENCRYPTION_PREFIX.length);
+  const parts = payload.split(':');
+  if (parts.length !== 3) {
+    throw new Error('[SecretEncryption] Malformed encrypted payload structure.');
+  }
+
+  const [ivB64, tagB64, encB64] = parts;
+  const iv = Buffer.from(ivB64, 'base64');
+  const tag = Buffer.from(tagB64, 'base64');
+  const enc = Buffer.from(encB64, 'base64');
+
+  const candidateKeys = getDecryptionCandidateKeys();
+  let lastError: unknown;
+  for (let i = 0; i < candidateKeys.length; i++) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', candidateKeys[i], iv);
+      decipher.setAuthTag(tag);
+      const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
+      return { plainText: decrypted.toString('utf8'), keyIndex: i };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -45,32 +103,23 @@ export function decryptSecret(cipherText: string | undefined): string | undefine
     return cipherText;
   }
 
-  const payload = cipherText.substring(ENCRYPTION_PREFIX.length);
-  const parts = payload.split(':');
-  if (parts.length !== 3) {
-    throw new Error('[SecretEncryption] Malformed encrypted payload structure.');
-  }
+  return decryptWithCandidateKeys(cipherText).plainText;
+}
 
-  const [ivB64, tagB64, encB64] = parts;
-  const iv = Buffer.from(ivB64, 'base64');
-  const tag = Buffer.from(tagB64, 'base64');
-  const enc = Buffer.from(encB64, 'base64');
-
-  const candidateKeys = [getEncryptionKey()];
-  if (!process.env.KEY_ENCRYPTION_KEY && process.env.KEY_HASH_PEPPER_PREVIOUS) {
-    candidateKeys.push(crypto.createHash('sha256').update(process.env.KEY_HASH_PEPPER_PREVIOUS).digest());
+export function reencryptSecretIfNeeded(cipherText: string | undefined): {
+  plainText: string | undefined;
+  cipherText: string | undefined;
+  reencrypted: boolean;
+} {
+  if (!cipherText) {
+    return { plainText: undefined, cipherText: undefined, reencrypted: false };
   }
-
-  let lastError: unknown;
-  for (const key of candidateKeys) {
-    try {
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
-      decipher.setAuthTag(tag);
-      const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
-      return decrypted.toString('utf8');
-    } catch (err) {
-      lastError = err;
-    }
+  if (!cipherText.startsWith(ENCRYPTION_PREFIX)) {
+    return { plainText: cipherText, cipherText: encryptSecret(cipherText), reencrypted: true };
   }
-  throw lastError;
+  const { plainText, keyIndex } = decryptWithCandidateKeys(cipherText);
+  if (keyIndex === 0) {
+    return { plainText, cipherText, reencrypted: false };
+  }
+  return { plainText, cipherText: encryptSecret(plainText), reencrypted: true };
 }

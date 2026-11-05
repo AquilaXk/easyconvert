@@ -85,6 +85,24 @@ function secondsUntilUtcMidnight(): number {
   return Math.max(60, Math.floor((midnight.getTime() - Date.now()) / 1000));
 }
 
+export const RECORD_VERIFIED_KEY_LUA_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+if ARGV[3] ~= '' then
+  redis.call('HSET', KEYS[1], 'keyHash', ARGV[3], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
+  redis.call('HSET', KEYS[2], ARGV[3], ARGV[5])
+  if ARGV[4] ~= '' and ARGV[4] ~= ARGV[3] then
+    redis.call('HDEL', KEYS[2], ARGV[4])
+  end
+elseif ARGV[2] ~= '' then
+  redis.call('HSET', KEYS[1], 'data', ARGV[2], 'lastUsedAt', ARGV[1])
+else
+  redis.call('HSET', KEYS[1], 'lastUsedAt', ARGV[1])
+end
+return 1
+`;
+
 /**
  * Redis-backed Key Store with atomic Lua script metering and 2-phase quota transactions
  * (Reserve-Commit/Rollback) preventing TOCTOU races in distributed environments.
@@ -408,21 +426,47 @@ export class RedisKeyStore extends KeyStore {
   ): Promise<void> {
     const matchedPreviousKey = Boolean(key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash));
     const oldKeyHash = key.keyHash;
-    const migrated = !matchedPreviousKey && this.migrateKeyHash(key, candidates.currentHash);
+    const migrated = matchedPreviousKey
+      ? this.reencryptWebhookSecret(key)
+      : this.migrateKeyHash(key, candidates.currentHash);
+    const hashChanged = key.keyHash !== oldKeyHash;
 
     key.lastUsedAt = Date.now();
     this.keys.set(key.id, key);
+    if (hashChanged) {
+      this.keyHashIndex.set(key.keyHash, key.id);
+    }
 
     if (!this.redisClient) return;
     if (migrated) {
       this.persist();
-      await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, candidates.currentHash, key.id);
-      await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, oldKeyHash);
-      await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
-        keyHash: key.keyHash,
-        data: JSON.stringify(key),
-        lastUsedAt: String(key.lastUsedAt),
-      });
+      const newHashArg = hashChanged ? key.keyHash : '';
+      const oldHashArg = hashChanged && oldKeyHash !== key.previousKeyHash ? oldKeyHash : '';
+      if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
+        await this.redisClient.eval(
+          RECORD_VERIFIED_KEY_LUA_SCRIPT,
+          2,
+          `${this.keyPrefix}apikeys:${keyId}`,
+          `${this.keyPrefix}apikey_hashes`,
+          String(key.lastUsedAt),
+          JSON.stringify(key),
+          newHashArg,
+          oldHashArg,
+          key.id
+        );
+      } else {
+        if (newHashArg) {
+          await this.redisClient.hset(`${this.keyPrefix}apikey_hashes`, newHashArg, key.id);
+          if (oldHashArg && oldHashArg !== newHashArg) {
+            await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, oldHashArg);
+          }
+        }
+        await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
+          keyHash: key.keyHash,
+          data: JSON.stringify(key),
+          lastUsedAt: String(key.lastUsedAt),
+        });
+      }
       return;
     }
     this.redisClient
@@ -528,11 +572,26 @@ export class RedisKeyStore extends KeyStore {
     return super.revokeApiKey(userId, keyId);
   }
 
+  private async hydrateKeyFromRedisIfMissing(keyId: string): Promise<void> {
+    this.ensureInitialized();
+    if (this.keys.has(keyId) || !this.redisClient) return;
+    try {
+      const hashData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
+      if (hashData && hashData.data) {
+        const parsed = JSON.parse(hashData.data) as ApiKey;
+        parsed.status = (hashData.status as 'active' | 'revoked') || parsed.status;
+        this.keys.set(keyId, parsed);
+        this.keyHashIndex.set(parsed.keyHash, keyId);
+      }
+    } catch {}
+  }
+
   public override async rotateApiKey(
     userId: string,
     keyId: string,
     options: ApiKeyRotateOptions = {}
   ): Promise<ApiKeyRotateResult | null> {
+    await this.hydrateKeyFromRedisIfMissing(keyId);
     const result = await super.rotateApiKey(userId, keyId, options);
     if (result && this.redisClient) {
       try {
@@ -559,6 +618,7 @@ export class RedisKeyStore extends KeyStore {
     keyId: string,
     updates: ApiKeyUpdateOptions
   ): Promise<ApiKey | null> {
+    await this.hydrateKeyFromRedisIfMissing(keyId);
     const updated = await super.updateApiKey(userId, keyId, updates);
     if (updated && this.redisClient) {
       try {

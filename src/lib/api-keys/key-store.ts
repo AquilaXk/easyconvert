@@ -10,13 +10,24 @@ import { isIpAllowed } from './ip-utils';
 import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
 import { globalSharedObjects } from '../storage/shared-store';
 import { resolveRetentionPolicy } from '../storage/result-retention';
-import { encryptSecret, decryptSecret } from './secret-encryption';
+import { encryptSecret, decryptSecret, reencryptSecretIfNeeded } from './secret-encryption';
 import type { ApiKeyRotateOptions, ApiKeyRotateResult, ApiKeyUpdateOptions } from './types';
 
-const STORAGE_DIR = path.resolve(process.cwd(), '.easyconvert');
-const KEYS_FILE = path.join(STORAGE_DIR, 'api-keys.json');
-const USAGE_FILE = path.join(STORAGE_DIR, 'api-usage.json');
-const FILES_FILE = path.join(STORAGE_DIR, 'user-files.json');
+function getStorageDir(): string {
+  return path.resolve(process.cwd(), '.easyconvert');
+}
+
+function getKeysFile(): string {
+  return path.join(getStorageDir(), 'api-keys.json');
+}
+
+function getUsageFile(): string {
+  return path.join(getStorageDir(), 'api-usage.json');
+}
+
+function getFilesFile(): string {
+  return path.join(getStorageDir(), 'user-files.json');
+}
 
 export { TIER_LIMITS, getAnonymousDailyLimit };
 
@@ -131,23 +142,26 @@ export class KeyStore {
     }
 
     try {
-      if (fs.existsSync(KEYS_FILE)) {
-        const list: ApiKey[] = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf-8'));
+      const keysFile = getKeysFile();
+      if (fs.existsSync(keysFile)) {
+        const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
         for (const k of list) {
           this.keys.set(k.id, k);
           this.keyHashIndex.set(k.keyHash, k.id);
         }
       }
 
-      if (fs.existsSync(USAGE_FILE)) {
-        const usageObj: Record<string, number> = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf-8'));
+      const usageFile = getUsageFile();
+      if (fs.existsSync(usageFile)) {
+        const usageObj: Record<string, number> = JSON.parse(fs.readFileSync(usageFile, 'utf-8'));
         for (const [key, val] of Object.entries(usageObj)) {
           this.dailyUsage.set(key, val);
         }
       }
 
-      if (fs.existsSync(FILES_FILE)) {
-        const filesList: UserConversionFile[] = JSON.parse(fs.readFileSync(FILES_FILE, 'utf-8'));
+      const filesFile = getFilesFile();
+      if (fs.existsSync(filesFile)) {
+        const filesList: UserConversionFile[] = JSON.parse(fs.readFileSync(filesFile, 'utf-8'));
         for (const f of filesList) {
           this.userFiles.set(f.id, f);
         }
@@ -159,19 +173,20 @@ export class KeyStore {
 
   protected persist() {
     try {
-      if (!fs.existsSync(STORAGE_DIR)) {
-        fs.mkdirSync(STORAGE_DIR, { recursive: true });
+      const storageDir = getStorageDir();
+      if (!fs.existsSync(storageDir)) {
+        fs.mkdirSync(storageDir, { recursive: true });
       }
 
-      fs.writeFileSync(KEYS_FILE, JSON.stringify(Array.from(this.keys.values()), null, 2), 'utf-8');
+      fs.writeFileSync(getKeysFile(), JSON.stringify(Array.from(this.keys.values()), null, 2), 'utf-8');
 
       const usageObj: Record<string, number> = {};
       for (const [key, val] of this.dailyUsage.entries()) {
         usageObj[key] = val;
       }
-      fs.writeFileSync(USAGE_FILE, JSON.stringify(usageObj, null, 2), 'utf-8');
+      fs.writeFileSync(getUsageFile(), JSON.stringify(usageObj, null, 2), 'utf-8');
 
-      fs.writeFileSync(FILES_FILE, JSON.stringify(Array.from(this.userFiles.values()), null, 2), 'utf-8');
+      fs.writeFileSync(getFilesFile(), JSON.stringify(Array.from(this.userFiles.values()), null, 2), 'utf-8');
     } catch {
       // Ignore in sandbox/read-only
     }
@@ -237,9 +252,10 @@ export class KeyStore {
 
   private findOrReloadKeyId(candidateHashes: readonly string[]): string | undefined {
     let keyId = this.lookupKeyId(candidateHashes);
-    if (!keyId && fs.existsSync(KEYS_FILE)) {
+    const keysFile = getKeysFile();
+    if (!keyId && fs.existsSync(keysFile)) {
       try {
-        const list: ApiKey[] = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf-8'));
+        const list: ApiKey[] = JSON.parse(fs.readFileSync(keysFile, 'utf-8'));
         for (const k of list) {
           this.keys.set(k.id, k);
           this.keyHashIndex.set(k.keyHash, k.id);
@@ -250,16 +266,26 @@ export class KeyStore {
     return keyId;
   }
 
-  protected migrateKeyHash(key: ApiKey, currentHash: string): boolean {
-    if (key.keyHash === currentHash) {
+  protected reencryptWebhookSecret(key: ApiKey): boolean {
+    if (!key.webhookSecret) {
       return false;
+    }
+    const { cipherText, reencrypted } = reencryptSecretIfNeeded(key.webhookSecret);
+    if (reencrypted) {
+      key.webhookSecret = cipherText;
+      return true;
+    }
+    return false;
+  }
+
+  protected migrateKeyHash(key: ApiKey, currentHash: string): boolean {
+    const secretMigrated = this.reencryptWebhookSecret(key);
+    if (key.keyHash === currentHash) {
+      return secretMigrated;
     }
     this.keyHashIndex.delete(key.keyHash);
     key.keyHash = currentHash;
     this.keyHashIndex.set(currentHash, key.id);
-    if (key.webhookSecret && !process.env.KEY_ENCRYPTION_KEY) {
-      key.webhookSecret = encryptSecret(decryptSecret(key.webhookSecret));
-    }
     return true;
   }
 
@@ -297,7 +323,10 @@ export class KeyStore {
       return { valid: false, error: 'Invalid or non-existent API key' };
     }
 
-    if (key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash)) {
+    const matchedPreviousKey = Boolean(
+      key.previousKeyHash && candidates.hashes.includes(key.previousKeyHash)
+    );
+    if (matchedPreviousKey) {
       if (key.graceExpiresAt && Date.now() > key.graceExpiresAt) {
         return { valid: false, error: 'Previous API key has expired following key rotation' };
       }
@@ -313,8 +342,9 @@ export class KeyStore {
       return { valid: false, error: 'User associated with API key not found' };
     }
 
-    // Only migrate hash if verifying against current secret
-    if (!key.previousKeyHash || !candidates.hashes.includes(key.previousKeyHash)) {
+    if (matchedPreviousKey) {
+      this.reencryptWebhookSecret(key);
+    } else {
       this.migrateKeyHash(key, candidates.currentHash);
     }
     key.lastUsedAt = Date.now();
@@ -360,6 +390,13 @@ export class KeyStore {
       return null;
     }
 
+    const plainWebhookSecret = key.webhookSecret
+      ? reencryptSecretIfNeeded(key.webhookSecret)
+      : { plainText: undefined, cipherText: undefined, reencrypted: false };
+    if (plainWebhookSecret.reencrypted) {
+      key.webhookSecret = plainWebhookSecret.cipherText;
+    }
+
     const rawRandom = crypto.randomBytes(24).toString('hex');
     const newSecretKey = `ec_live_${rawRandom}`;
     const newKeyHash = hashApiKeySecret(newSecretKey);
@@ -379,7 +416,7 @@ export class KeyStore {
     return {
       key: {
         ...key,
-        webhookSecret: decryptSecret(key.webhookSecret),
+        webhookSecret: plainWebhookSecret.plainText,
       },
       newSecretKey,
       graceExpiresAt,
@@ -408,6 +445,8 @@ export class KeyStore {
     }
     if (updates.webhookSecret !== undefined) {
       key.webhookSecret = encryptSecret(updates.webhookSecret);
+    } else {
+      this.reencryptWebhookSecret(key);
     }
     if (updates.scopes !== undefined) {
       key.scopes = updates.scopes;
@@ -636,9 +675,12 @@ export class KeyStore {
     }
 
     try {
-      if (fs.existsSync(KEYS_FILE)) fs.unlinkSync(KEYS_FILE);
-      if (fs.existsSync(USAGE_FILE)) fs.unlinkSync(USAGE_FILE);
-      if (fs.existsSync(FILES_FILE)) fs.unlinkSync(FILES_FILE);
+      const keysFile = getKeysFile();
+      if (fs.existsSync(keysFile)) fs.unlinkSync(keysFile);
+      const usageFile = getUsageFile();
+      if (fs.existsSync(usageFile)) fs.unlinkSync(usageFile);
+      const filesFile = getFilesFile();
+      if (fs.existsSync(filesFile)) fs.unlinkSync(filesFile);
     } catch {
       // Ignore
     }
