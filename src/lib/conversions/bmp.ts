@@ -511,14 +511,29 @@ function decodeBitmap(buf: Buffer, base: number, pixelOffset: number | null, opt
 }
 
 export function isBmp(buf: Buffer): boolean {
-  return buf.length >= FILE_HEADER_BYTES + 4 && buf.toString('ascii', 0, 2) === FILE_SIGNATURE;
+  return (
+    buf.length >= FILE_HEADER_BYTES + 4 &&
+    buf.toString('ascii', 0, 2) === FILE_SIGNATURE &&
+    KNOWN_HEADER_SIZES.has(buf.readUInt32LE(FILE_HEADER_BYTES))
+  );
+}
+
+export function isDib(buf: Buffer): boolean {
+  if (buf.length < CORE_HEADER_BYTES) return false;
+  const headerBytes = buf.readUInt32LE(0);
+  return KNOWN_HEADER_SIZES.has(headerBytes) && buf.length >= headerBytes;
 }
 
 export function assertBmpHeaderWithinLimit(buf: Buffer, budget?: PixelBudget): { width: number; height: number } {
-  if (!isBmp(buf)) {
+  let offset = -1;
+  if (isBmp(buf)) {
+    offset = FILE_HEADER_BYTES;
+  } else if (isDib(buf)) {
+    offset = 0;
+  } else {
     throw new BmpDecodeError('Invalid BMP file: missing BM header signature.');
   }
-  const { width, rows } = readHeader(buf, FILE_HEADER_BYTES, {});
+  const { width, rows } = readHeader(buf, offset, {});
   assertInputPixels(width, rows);
   if (budget) assertPixelBudget(width, rows, budget);
   return { width, height: rows };
@@ -529,7 +544,7 @@ export function assertBmpHeaderWithinLimit(buf: Buffer, budget?: PixelBudget): {
  * limit is checked from the header too, before anything is allocated.
  */
 export function decodeBmp(buf: Buffer, budget?: PixelBudget): DecodedBmp {
-  if (!isBmp(buf)) {
+  if (buf.length < FILE_HEADER_BYTES + 4 || buf.toString('ascii', 0, 2) !== FILE_SIGNATURE) {
     throw new BmpDecodeError('Invalid BMP file: missing BM header signature.');
   }
   const pixelOffset = buf.readUInt32LE(PIXEL_OFFSET_FIELD);

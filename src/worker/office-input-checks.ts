@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import JSZip from 'jszip';
 import sharp from 'sharp';
-import { assertBmpHeaderWithinLimit, isBmp } from '../lib/conversions/bmp';
+import { assertBmpHeaderWithinLimit, isBmp, isDib } from '../lib/conversions/bmp';
 import { InflateBudget } from '../lib/conversions/bounded-inflate';
 import { assertEmbeddableImageWithinLimit, assertInputPixels, isPngOrJpeg, rethrowInputPixelLimit } from '../lib/conversions/image-input-limits';
 import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
@@ -90,7 +90,8 @@ export async function assertOfficeEmbeddedImagesWithinLimit(input: Buffer | Work
   for (const [name, entry] of Object.entries(zip.files)) {
     if (entry.dir || !isOfficeMediaEntry(name)) continue;
     const bytes = await readZipEntryBytes(entry, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget });
-    if (isBmp(bytes)) {
+    const lowerName = name.toLowerCase();
+    if (isBmp(bytes) || ((lowerName.endsWith('.dib') || lowerName.endsWith('.bmp')) && isDib(bytes))) {
       assertBmpHeaderWithinLimit(bytes);
       continue;
     }

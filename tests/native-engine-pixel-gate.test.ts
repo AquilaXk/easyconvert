@@ -288,6 +288,13 @@ describe('native LibreOffice embedded picture pixel gate', () => {
       15_000,
       15_000
     );
+    const dibPptx = await pptxWithPicture('bomb.dib', bombBmp(15_000, 15_000).subarray(14));
+    await expectFastPixelLimitRejection(
+      () => convertWithHeadlessOffice(dibPptx, 'pptx', 'pdf', { throwOnUnavailable: true }, 'deck.pptx'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
+    );
     expect(invocationsOf('soffice')).toEqual([]);
   });
 });
@@ -362,6 +369,12 @@ describe('native FFmpeg image and video stream pixel gate', () => {
     );
     await expectFastPixelLimitRejection(
       () => convertWithNativeFfmpeg(mp4, 'mp4', 'gif', { duration: 5, throwOnUnavailable: true }, 'bomb.mp4'),
+      DEFAULT_MAX_INPUT_PIXELS,
+      15_000,
+      15_000
+    );
+    await expectFastPixelLimitRejection(
+      () => convertMedia(mp4, 'mp4', 'hls', {}, 'bomb.mp4'),
       DEFAULT_MAX_INPUT_PIXELS,
       15_000,
       15_000

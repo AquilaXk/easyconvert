@@ -585,6 +585,7 @@ export async function packageHlsDashMedia(
 
   try {
     const input = openMediaInput(inputPath, src);
+    probeMediaDuration(input, options, ffmpegBin);
     const source = probePackagingSource(input, ffmpegBin);
     const args = buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
     await runFfmpeg(ffmpegBin, args, {
