@@ -622,7 +622,7 @@ export const internalPaths = {
       ...INTERNAL,
       summary: 'Get Browser OCR Asset',
       description:
-        'Serves a pinned Tesseract.js worker, WASM core or language data file for browser OCR, verified against the committed SHA-256 manifest before sending.',
+        'Serves a pinned Tesseract.js worker or WASM core script verified against the committed SHA-256 manifest, or an installed `.traineddata` language file verified against Tesseract header and size bounds.',
       operationId: 'getOcrAsset',
       security: PUBLIC_ACCESS,
       parameters: [
@@ -630,10 +630,16 @@ export const internalPaths = {
         createPathParameter('asset', 'OCR engine or language asset path inside the versioned bundle.'),
       ],
       responses: {
-        '200': binaryResponse('Verified OCR asset bytes.'),
+        '200': {
+          description: 'Verified OCR asset bytes.',
+          content: {
+            'application/javascript': { schema: { type: 'string', format: 'binary' } },
+            'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
         '304': { description: 'Asset matches the caller\'s `If-None-Match` tag.' },
-        '404': createProblemResponse('Unknown version or asset path (problem type `https://api.easyconvert.io/problems/not-found`).'),
-        '503': createProblemResponse('The asset is missing on the server (problem type `https://api.easyconvert.io/problems/engine-unavailable`) or failed SHA-256 verification (problem type `https://api.easyconvert.io/problems/ocr-asset-integrity-failed`).'),
+        '404': createProblemResponse('Unknown version, asset path, or uninstalled OCR language data (problem type `https://api.easyconvert.io/problems/not-found`).'),
+        '500': createProblemResponse('The pinned asset is missing on disk or failed manifest or header integrity verification (problem type `https://api.easyconvert.io/problems/ocr-asset-integrity-failed`).'),
       },
     },
   },

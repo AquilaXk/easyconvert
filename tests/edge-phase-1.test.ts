@@ -75,16 +75,13 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     it('the audio path never names the Node Buffer, and converts with the Buffer global removed', () => {
       const graph = pureGraph('pure-audio');
       expect(graph.externalSpecifiers).toEqual([]);
-      // The registry, the shared types and the job graph are imported for their names and are also used on the
-      // server, where they do use Buffer; the audio engine itself is every other file in the graph.
-      const audioFiles = graph.files.filter((file) => !/lib\/(?:registry|types)\.ts$|lib\/(?:jobs|api)\//.test(file));
+      const audioFiles = graph.files.filter((file) => !/lib\/types\.ts$/.test(file));
       expect(audioFiles.map((file) => path.relative(SRC_ROOT, file))).toContain('lib/edge/pure/pure-audio.ts');
       const bufferUses = audioFiles.flatMap((file) =>
         identifierUses(parseSource(file), 'Buffer').map((position) => `${path.relative(SRC_ROOT, file)}:${position}`)
       );
       expect(bufferUses).toEqual([]);
 
-      // Behaviour agrees with the source: a conversion runs and returns the samples it was given, with no Buffer.
       const samples = new Int16Array([0, 1000, -1000, 32767, -32768]);
       const wavBytes = encodePcmToWav(samples, 8000, 1);
       vi.stubGlobal('Buffer', undefined);
