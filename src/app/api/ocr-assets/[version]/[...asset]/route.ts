@@ -69,7 +69,7 @@ export async function GET(
         },
       });
     }
-    const bodyView = new Uint8Array(res.body.buffer, res.body.byteOffset, res.body.byteLength);
+    const bodyView = new Uint8Array(res.body.buffer as ArrayBuffer, res.body.byteOffset, res.body.byteLength);
     return new NextResponse(bodyView, {
       status: 200,
       headers: {
