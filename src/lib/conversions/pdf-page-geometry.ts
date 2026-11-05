@@ -374,11 +374,12 @@ function inspectTreeNodeKids(doc: PDFDocument, tree: PDFPageTree, visited: Set<P
 }
 
 function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
-  if (!(doc.catalog instanceof PDFCatalog)) return false;
+  if (!(doc.catalog instanceof PDFCatalog)) return true;
   const pagesRef = doc.catalog.get(PDFName.of('Pages'));
   if (isMissingRef(doc, pagesRef)) return true;
   const rootTree = doc.catalog.lookup(PDFName.of('Pages'));
-  if (!(rootTree instanceof PDFPageTree)) return false;
+  if (rootTree instanceof PDFPageLeaf) return false;
+  if (!(rootTree instanceof PDFPageTree)) return true;
   const visited = new Set<PDFRef>();
   if (pagesRef instanceof PDFRef) visited.add(pagesRef);
   const stack: PDFPageTree[] = [rootTree];
