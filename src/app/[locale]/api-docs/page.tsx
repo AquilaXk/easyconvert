@@ -10,7 +10,7 @@ export default async function ApiDocsPage({ params }: Readonly<{ params: LocaleP
   await resolvePageLocale(params);
   return (
     <PageMessages page="apiDocs">
-      <ApiDocsPageView />
+      <ApiDocsPageView topic="introduction" />
     </PageMessages>
   );
 }

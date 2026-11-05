@@ -39,7 +39,6 @@ const ALLOWED_TEXT = new Set([
   'EasyConvert', // brand
   'English', // language names are written in their own language (LanguageSwitcher)
   'cURL', 'Node.js', 'Python', // SDK names on the integration guide tabs
-  'Content-Type:', // an HTTP header name in the request body table
   '00:00 UTC', // the quota reset time, a clock reading
   'ms', // the unit after a probe's latency
 ]);

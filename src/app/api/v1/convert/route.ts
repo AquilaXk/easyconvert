@@ -31,7 +31,7 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
-import { withinSingleRequest } from '@/lib/api/file-size-limit';
+import { DATA_URI_MAX_BYTES, SYNC_CONVERSION_MAX_BYTES, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
@@ -58,8 +58,6 @@ const HTTP_INTERNAL_SERVER_ERROR = 500;
 
 /** The fields of the form that are read as text and change the conversion or where its result goes; none of them may be sent as a file. */
 const TEXT_FIELDS = ['sourceFormat', 'options', 'webhookUrl', 'webhookSecret'] as const;
-
-const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
 
 interface ValidatedConvertInput {
   file: File;
@@ -449,12 +447,10 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
 async function convertReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {
   const { req, user, file, sourceDef, targetDef, options, rateLimitHeaders, instanceUri, startTime, reply, trace } = c;
 
-  // Check for RFC 7240 Prefer: respond-async or file size > 10MB auto-handoff BEFORE calling file.arrayBuffer()
   const preferHeader = req.headers.get('prefer') || '';
   const isPreferAsync = preferHeader.toLowerCase().includes('respond-async');
-  if (isPreferAsync || file.size > ASYNC_THRESHOLD_BYTES) return queueReserved(c, unit);
+  if (isPreferAsync || file.size > SYNC_CONVERSION_MAX_BYTES) return queueReserved(c, unit);
 
-  // Synchronous execution path for payloads <= 10MB without respond-async preference
   const inputBuffer = Buffer.from(await file.arrayBuffer());
 
   // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
@@ -543,9 +539,6 @@ interface ConversionAnswer {
   rateLimitHeaders: Record<string, string>;
 }
 
-/** Zero-Heap optimization: only generate Base64 data URI if output payload <= 5MB */
-const MAX_DATA_URI_PAYLOAD_BYTES = 5 * 1024 * 1024;
-
 /** The answer of a finished synchronous conversion: the raw bytes when asked for, else JSON with a data URI for a small result. */
 function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse {
   const { conversionResult, rateLimitHeaders } = a;
@@ -570,7 +563,7 @@ function answerOfConversion(req: NextRequest, a: ConversionAnswer): NextResponse
   }
 
   const dataUri =
-    outputBuffer.length <= MAX_DATA_URI_PAYLOAD_BYTES ? `data:${conversionResult.mimeType};base64,${outputBuffer.toString('base64')}` : undefined;
+    outputBuffer.length <= DATA_URI_MAX_BYTES ? `data:${conversionResult.mimeType};base64,${outputBuffer.toString('base64')}` : undefined;
 
   return NextResponse.json(
     {

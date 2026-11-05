@@ -16,6 +16,7 @@ export interface OpenApiSchemaObject {
   maximum?: number;
   minItems?: number;
   items?: OpenApiSchemaObject;
+  additionalProperties?: boolean | OpenApiSchemaObject;
   required?: readonly string[];
   properties?: Record<string, OpenApiSchemaObject>;
   allOf?: ReadonlyArray<OpenApiSchemaObject>;
@@ -49,13 +50,13 @@ export interface OpenApiOperation {
     description?: string;
     content?: Record<string, OpenApiMediaType>;
   };
-  responses?: Record<
-    string,
-    {
-      description?: string;
-      content?: Record<string, { schema?: Record<string, unknown> }>;
-    }
-  >;
+  responses?: Record<string, OpenApiResponse>;
+}
+
+export interface OpenApiResponse {
+  description?: string;
+  headers?: Record<string, { description?: string; schema?: OpenApiSchemaObject }>;
+  content?: Record<string, OpenApiMediaType>;
 }
 
 export interface OpenApiSpec {
@@ -68,6 +69,7 @@ export interface OpenApiSpec {
     license?: { name?: string; url?: string };
   };
   servers?: Array<{ url: string; description?: string }>;
+  security?: Array<Record<string, string[]>>;
   components?: {
     schemas?: Record<string, OpenApiSchemaObject>;
   };

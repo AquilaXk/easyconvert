@@ -22,6 +22,7 @@ import ConverterPageView from '../src/components/pages/ConverterPageView';
 import AuthPage from '../src/components/pages/AuthPageView';
 import { resolveOAuthErrorKey } from '../src/components/auth/AuthForms';
 import ApiDocsPage from '../src/components/pages/ApiDocsPageView';
+import { API_DOC_TOPICS, apiDocsHref } from '../src/components/api-docs/topics';
 import { writeClipboardText } from '../src/hooks/useCopyFeedback';
 import StatusPage from '../src/components/pages/StatusPageView';
 import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
@@ -414,7 +415,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       { name: '/accessibility', dom: render(ConverterPageView, { parsed: parsedSlug('accessibility'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/contact', dom: render(ConverterPageView, { parsed: parsedSlug('contact'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/auth', dom: render(AuthPage, {}) },
-      { name: '/api-docs', dom: render(ApiDocsPage, {}) },
+      ...API_DOC_TOPICS.map((topic) => ({ name: apiDocsHref(topic.slug), dom: render(ApiDocsPage, { topic: topic.slug }) })),
       { name: '/status', dom: render(StatusPage, {}) },
       { name: '/unit-converter', dom: render(UnitConverterPage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
     ];

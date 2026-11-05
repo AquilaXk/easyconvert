@@ -1,55 +1,247 @@
 {
   "apiDocs": {
-    "masthead": {
-      "fallbackTitle": "EasyConvert Developer API",
-      "fallbackDescription": "REST API for asynchronous conversion queues, multipart uploads, and webhook delivery. Operations marked <code>x-internal</code> serve the web application and are excluded from external client contracts.",
-      "version": "OpenAPI {openapi} | v{version}",
-      "auth": "Auth: Bearer API Key",
-      "base": "Base:",
-      "download": "Download OpenAPI JSON",
-      "dashboard": "API Key Dashboard",
-      "previewKey": "cURL Preview Key",
-      "previewKeyPlaceholder": "Paste an ec_live_... key to populate cURL snippets locally"
+    "metaTitle": "{topic} | EasyConvert API documentation",
+    "toc": "On this page",
+    "nav": {
+      "label": "API documentation",
+      "menu": "Documentation menu",
+      "groups": {
+        "gettingStarted": "Getting started",
+        "reference": "API reference"
+      }
     },
-    "toolbar": {
-      "heading": "Endpoints Reference",
-      "intro": "Inspect request parameters, RBAC scopes, and executable cURL commands.",
-      "searchLabel": "Search API endpoints",
-      "searchPlaceholder": "Search endpoints (convert, jobs, uploads)...",
-      "methodLegend": "Filter endpoints by HTTP method",
-      "allMethods": "all"
-    },
-    "page": {
-      "loading": "Loading OpenAPI specification...",
-      "loadFailedHeading": "Could not load the OpenAPI specification",
-      "loadFailedBody": "Try again in a moment.",
-      "retry": "Try again",
-      "noMatches": "No matching API endpoints found."
-    },
-    "endpoint": {
-      "security": "Security & Scopes",
-      "curl": "Executable cURL",
-      "copyLabel": "Copy cURL command for {method} {path}",
-      "copied": "Copied",
-      "copy": "Copy cURL",
-      "copiedAnnouncement": "Copied cURL command for {method} {path}"
-    },
-    "schema": {
-      "parameters": "Parameters",
-      "columns": {
-        "name": "Name",
-        "in": "In",
-        "type": "Type",
-        "required": "Required",
-        "description": "Description"
+    "topics": {
+      "introduction": {
+        "nav": "Introduction",
+        "title": "API documentation",
+        "lead": "Convert files from your own code with the EasyConvert API."
       },
-      "yes": "Yes",
-      "no": "No",
-      "optionalParameter": "Optional parameter",
-      "requestBody": "Request Body",
-      "binaryPayload": "Binary stream or structured schema payload.",
-      "responses": "Responses",
-      "responsePayload": "Response payload"
+      "quickstart": {
+        "nav": "Quickstart",
+        "title": "Quickstart",
+        "lead": "Create a key, convert a file, and convert a large file through a job."
+      },
+      "convert": {
+        "nav": "Convert",
+        "title": "Convert",
+        "lead": "Convert one file in one request."
+      },
+      "jobs": {
+        "nav": "Jobs",
+        "title": "Jobs",
+        "lead": "Create, show, list and cancel conversion jobs."
+      },
+      "uploads": {
+        "nav": "Uploads",
+        "title": "Uploads",
+        "lead": "Upload a file in parts, for a file larger than one request carries."
+      },
+      "downloads": {
+        "nav": "Downloads",
+        "title": "Downloads",
+        "lead": "Download the result of a conversion."
+      },
+      "formats": {
+        "nav": "Formats",
+        "title": "Formats",
+        "lead": "List the formats and the conversions between them."
+      },
+      "ocr-languages": {
+        "nav": "OCR languages",
+        "title": "OCR languages",
+        "lead": "List the languages text recognition can read."
+      },
+      "archives": {
+        "nav": "Archives",
+        "title": "Archives",
+        "lead": "Read what an archive holds without unpacking it."
+      },
+      "usage": {
+        "nav": "Usage",
+        "title": "Usage",
+        "lead": "Read how many conversions are left today."
+      }
+    },
+    "intro": {
+      "headings": {
+        "base-url": "Base URL",
+        "authentication": "Authentication",
+        "api-keys": "API keys",
+        "scopes": "Scopes",
+        "errors": "Errors",
+        "limits": "Limits",
+        "daily-allowance": "Daily allowance",
+        "request-rate": "Request rate",
+        "concurrent-conversions": "Conversions at once",
+        "file-size": "File size"
+      },
+      "lead1": "This is the documentation of version 1 of the EasyConvert API, the paths under <code>/api/v1</code>. Send a file and a target format, and get the converted file back.",
+      "lead2": "This page covers the base URL, authentication, errors and limits. The menu lists the endpoints. To send a first request, follow the <quickstart>Quickstart</quickstart>.",
+      "lead3": "Every endpoint is also described in the <openapi>OpenAPI document</openapi> (JSON), which an API client or a code generator can read.",
+      "baseUrl": "The base URL of the API is <code>{origin}</code>. Every path in this documentation starts there, for example <code>{origin}/api/v1/convert</code>.",
+      "authentication": "A request carries an API key. The few endpoints that need none say so on their page.",
+      "apiKeys1": "Sign in and create a key on the <keys>API keys</keys> page of the dashboard. A key starts with <code>ec_live_</code> and is shown once, when it is created.",
+      "apiKeys2": "Send the key in the <code>x-api-key</code> header, or as a bearer token in the <code>Authorization</code> header:",
+      "apiKeys3": "A key can be limited to IP addresses or CIDR ranges and can expire. A request from another address, or with an expired or revoked key, is refused.",
+      "scopes": "A key holds one or more scopes. Each endpoint names the scope it needs, and a key without it is answered 403.",
+      "scopeColumn": "Scope",
+      "allowsColumn": "Allows",
+      "scopeAllows": {
+        "convert:write": "Convert files, upload files, and create and cancel jobs.",
+        "convert:read": "Show and list jobs, read the OCR languages and the offset of an upload.",
+        "storage:download": "Download the results of conversions made with the key."
+      },
+      "errors1": "A refused or failed request is answered with a status of 400 or more and a problem details body (RFC 9457) of type <code>application/problem+json</code>:",
+      "errors2": "The <code>type</code> names the cause, and some causes add fields of their own, such as <code>dailyLimit</code> and <code>remaining</code> for a used-up allowance. A few routes, <downloads>Downloads</downloads> and <usage>Usage</usage>, answer JSON with <code>success</code> set to false and an <code>error</code> sentence instead. The statuses mean:",
+      "statuses": {
+        "400": "The request is malformed: a missing field, an unknown format or a conversion between two formats that is not offered.",
+        "401": "No API key, or a key that is unknown, expired or revoked.",
+        "403": "The key lacks the scope, or the request comes from an address the key does not allow.",
+        "404": "The job, upload or file does not exist, or belongs to another account.",
+        "409": "A request with the same <code>Idempotency-Key</code> is still running, or the job cannot be cancelled any more.",
+        "413": "The file or the request is over a limit; the detail names the limit.",
+        "415": "The body is not of the type the endpoint takes.",
+        "422": "The request is well formed but cannot be done: a protected document, a file whose content does not match its format, or an <code>Idempotency-Key</code> reused with another request.",
+        "429": "The daily allowance is used up, the key exceeded its request rate, or too many conversions are running. See <code>Retry-After</code>.",
+        "500": "The conversion failed on the server. Nothing is charged.",
+        "503": "The conversion needs an engine this server does not have.",
+        "504": "The conversion ran past its time limit. Send it as a job instead."
+      },
+      "limits": "The daily allowance and the conversions at once count for the account, whichever key it uses; the request rate counts for each key.",
+      "dailyAllowance1": "An account on the free plan runs {daily} conversions a day on the server; the count starts again at midnight UTC. Only a conversion that finishes counts: a refused, failed or cancelled conversion is not charged.",
+      "dailyAllowance2": "Each conversion answer carries <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code> and <code>RateLimit-Reset</code> (the seconds until the count starts again). When none is left, a conversion is answered 429 with <code>Retry-After</code>. The <usage>Usage</usage> endpoint reads the same numbers.",
+      "requestRate": "A key on the free plan sends up to {burst} requests at once and {perSecond} a second after that. A request over that rate is answered 429 with <code>Retry-After</code>.",
+      "concurrentConversions": "An account on the free plan has up to {concurrent} conversions queued or running at once. Another one is answered 429 with <code>Retry-After</code> and takes nothing from the allowance.",
+      "fileSize1": "One request carries at most {requestMax} of file and form fields. A file up to {fileMax} is uploaded in parts through <uploads>Uploads</uploads> and converted by a <jobs>job</jobs>.",
+      "fileSize2": "<code>POST /api/v1/convert</code> converts a file of up to {syncMax} while the request waits; a larger file is queued as a job and answered 202."
+    },
+    "quickstart": {
+      "headings": {
+        "create-a-key": "Create an API key",
+        "convert-a-file": "Convert a file",
+        "convert-a-large-file": "Convert a large file",
+        "download-the-result": "Download the result"
+      },
+      "lead": "This guide sends a file to the API and saves the converted file, first in one request and then through an upload and a job. The commands use curl and read the key from the <code>EASYCONVERT_API_KEY</code> environment variable.",
+      "createKey1": "Sign in and open the <keys>API keys</keys> page of the dashboard. Create a key with the <code>convert:write</code>, <code>convert:read</code> and <code>storage:download</code> scopes.",
+      "createKey2": "Copy the key when it is shown; it is shown only once. Keep it on the server and never put it in a web page or an app.",
+      "convert1": "Send the file and the target format as a form to <code>POST /api/v1/convert</code>. With <code>Accept: application/octet-stream</code> the answer is the converted file:",
+      "convert2": "Without that header the answer is JSON with the name, size and <code>downloadUrl</code> of the result. See <downloads>Downloads</downloads>.",
+      "convert3": "A file over {syncMax} is not converted while the request waits: it is queued as a job and the answer is 202 with the <code>jobId</code> and its <code>statusUrl</code>. Continue with the job as below.",
+      "large1": "One request carries at most {requestMax}. A larger file is uploaded in parts and then converted by a job:",
+      "largeStep1": "Start a direct upload. The answer lists an upload URL for each part.",
+      "largeStep2": "Send each part with <code>PUT</code> to its URL and keep the <code>ETag</code> of each answer.",
+      "largeStep3": "Complete the upload with the part numbers and their entity tags. The answer holds the <code>storageKey</code> of the file.",
+      "large2": "Create a job for the stored file:",
+      "large3": "The answer is 202 with the <code>jobId</code>. Ask for the job until its <code>status</code> is <code>completed</code> or <code>failed</code>; a finished job names its file in <code>result.downloadUrl</code>. A <code>webhookUrl</code> sent with the job is told instead, so nothing needs to ask.",
+      "download1": "Download the result from its <code>downloadUrl</code> with the key:",
+      "download2": "A result is deleted shortly after it has been downloaded completely, and after a while when nobody downloads it, so save it when it is ready."
+    },
+    "operation": {
+      "authentication": "Authentication",
+      "parameters": "Parameters",
+      "requestBody": "Request body",
+      "response": "Response",
+      "errors": "Errors",
+      "example": "Example request",
+      "status": "Status",
+      "meaning": "Meaning",
+      "required": "required",
+      "childProperties": "Show child properties",
+      "mediaType": "As <code>{mediaType}</code>:",
+      "binaryBody": "The bytes of the file.",
+      "copy": "Copy the example",
+      "copied": "Copied the example",
+      "in": {
+        "header": "header",
+        "query": "query",
+        "path": "path"
+      },
+      "access": {
+        "public": "None. Anyone can call this endpoint.",
+        "key": "An API key in the <code>x-api-key</code> or <code>Authorization</code> header.",
+        "keyScoped": "An API key with the <code>{scopes}</code> scope, in the <code>x-api-key</code> or <code>Authorization</code> header.",
+        "optionalKey": "An API key, or none for a file whose URL is all its access.",
+        "optionalKeyScoped": "An API key with the <code>{scopes}</code> scope for a file of an account. A file made without an account needs none: its URL is all its access."
+      }
+    },
+    "operations": {
+      "convert-a-file": {
+        "title": "Convert a file",
+        "lead": "Converts one file while the request waits. Send the file and the target format as a form. With <code>Accept: application/octet-stream</code> the answer is the converted file; without it, JSON that names the result. A large file is queued as a job instead, as the 202 answer below says."
+      },
+      "create-a-job": {
+        "title": "Create a job",
+        "lead": "Queues a conversion and answers at once with the id of the job, while the conversion runs on its own. Use it for a file sent through <uploads>Uploads</uploads> (by its <code>storageKey</code>) and for a conversion that takes longer than a request can wait. With <code>webhookUrl</code> the job sends <code>job.completed</code> or <code>job.failed</code> there when it ends."
+      },
+      "show-a-job": {
+        "title": "Show a job",
+        "lead": "Answers with the status and progress of a job, and its result once it is completed."
+      },
+      "list-jobs": {
+        "title": "List jobs",
+        "lead": "Lists the jobs of the account, optionally only those in the given states."
+      },
+      "cancel-a-job": {
+        "title": "Cancel a job",
+        "lead": "Stops a job that is waiting or running. A cancelled job is not charged."
+      },
+      "start-a-direct-upload": {
+        "title": "Start a direct upload",
+        "lead": "Starts an upload in parts and answers with an upload URL for each part. The URLs are valid for 15 minutes."
+      },
+      "upload-a-part": {
+        "title": "Upload a part",
+        "lead": "Sends one part to its upload URL. The URL carries its own signature, so the request sends no key."
+      },
+      "complete-a-direct-upload": {
+        "title": "Complete a direct upload",
+        "lead": "Joins the parts into one file and checks that its content matches its format. The answer holds the <code>storageKey</code> a job converts."
+      },
+      "abort-a-direct-upload": {
+        "title": "Abort a direct upload",
+        "lead": "Stops an upload and deletes the parts sent so far."
+      },
+      "create-a-resumable-upload": {
+        "title": "Create a resumable upload",
+        "lead": "Starts an upload by the tus 1.0.0 protocol, which can resume after a broken connection. A tus client library sends these requests for you."
+      },
+      "append-a-chunk": {
+        "title": "Append a chunk",
+        "lead": "Adds bytes to a resumable upload at the offset the server holds."
+      },
+      "read-the-upload-offset": {
+        "title": "Read the upload offset",
+        "lead": "Answers with how many bytes the server has received, so an interrupted upload can resume there."
+      },
+      "terminate-a-resumable-upload": {
+        "title": "Terminate a resumable upload",
+        "lead": "Stops a resumable upload and deletes what it received."
+      },
+      "discover-the-upload-capabilities": {
+        "title": "Discover the upload capabilities",
+        "lead": "Answers with the tus version, extensions and largest size the server takes, in the response headers."
+      },
+      "download-a-file": {
+        "title": "Download a file",
+        "lead": "Downloads a result by the key in its <code>downloadUrl</code>. One byte range can be asked for, so a broken download can continue."
+      },
+      "list-formats": {
+        "title": "List formats",
+        "lead": "Lists every format with its category and the formats it converts to."
+      },
+      "list-ocr-languages": {
+        "title": "List OCR languages",
+        "lead": "Lists the languages text recognition knows, and whether this server has the data for each. Name one in the <code>ocrLanguage</code> option by its code."
+      },
+      "inspect-an-archive": {
+        "title": "Inspect an archive",
+        "lead": "Lists the entries of an archive with their sizes and whether they are encrypted, without unpacking it."
+      },
+      "show-the-daily-allowance": {
+        "title": "Show the daily allowance",
+        "lead": "Answers with the conversions the account has run today, how many are left and when the count starts again."
+      }
     }
   },
   "auth": {
@@ -727,8 +919,8 @@
       "description": "Manage API keys, converted files, webhook deliveries, and usage quotas for your EasyConvert account."
     },
     "apiDocs": {
-      "title": "API Reference | EasyConvert",
-      "description": "OpenAPI 3.1 reference for the EasyConvert REST API: endpoints, schemas, and ready-to-run cURL requests."
+      "title": "API documentation | EasyConvert",
+      "description": "Documentation of the EasyConvert API: the base URL, API keys, errors, limits and every endpoint with its request and answer."
     },
     "status": {
       "title": "Browser Edge Engine Status | EasyConvert",

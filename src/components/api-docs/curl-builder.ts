@@ -8,9 +8,6 @@ import {
   type ParsedEndpointItem,
 } from './openapi-types';
 
-const DEFAULT_API_ORIGIN = 'https://api.easyconvert.com';
-const SESSION_COOKIE_NAME = 'easyconvert_session';
-const MUTATING_METHODS: ReadonlySet<string> = new Set(['post', 'put', 'patch', 'delete']);
 type SchemaMap = Record<string, OpenApiSchemaObject>;
 
 export interface CurlBuildOptions {
@@ -22,24 +19,13 @@ const SAMPLE_PROP_VALUES: Record<string, unknown> = {
   sourceUrl: 'https://example.com/sample.docx',
   uploadId: 'upl_01J9EXAMPLE',
   targetFormat: 'pdf',
-  name: 'Production Worker Key',
-  allowedIps: ['203.0.113.0/24'],
-  scopes: ['convert:read', 'convert:write', 'storage:download'],
-  expiresAt: 1893456000000,
   webhookUrl: 'https://example.com/webhooks/easyconvert',
   filename: 'document.docx',
   contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   sizeBytes: 1048576,
   totalSize: 1048576,
   etag: 'etag_01J9EXAMPLE',
-  endpointId: 'ep_01J9EXAMPLE',
-  apiKeyId: 'key_01J9EXAMPLE',
-  graceSeconds: 86400,
   storageKey: 'uploads/01J9EXAMPLE/document.docx',
-  credentials: {
-    type: 's3', bucket: 'my-conversions-bucket', region: 'us-east-1',
-    accessKeyId: 'YOUR_S3_ACCESS_KEY_ID', secretAccessKey: 'YOUR_S3_SECRET_ACCESS_KEY',
-  },
 };
 
 const escapeDoubleQuoted = (value: string): string =>
@@ -81,7 +67,7 @@ function substitutePathParams(
 }
 
 export function resolveBaseUrl(serverUrl?: string, runtimeOrigin?: string): string {
-  const origin = stripTrailingSlashes(runtimeOrigin?.trim() ?? '') || DEFAULT_API_ORIGIN;
+  const origin = stripTrailingSlashes(runtimeOrigin?.trim() ?? '');
   const trimmed = serverUrl?.trim();
   if (!trimmed || trimmed === '/') return origin;
   const lower = trimmed.toLowerCase();
@@ -130,9 +116,6 @@ function selectPayloadKeys(
 ): readonly string[] {
   const requiredKeys = schema.required ?? [];
   if (requiredKeys.length > 0) return requiredKeys;
-  if ('endpointId' in properties && 'apiKeyId' in properties) {
-    return ['endpointId', ...('graceSeconds' in properties ? ['graceSeconds'] : [])];
-  }
   if ('uploadId' in properties && 'targetFormat' in properties) {
     return ['uploadId', 'targetFormat'];
   }
@@ -343,40 +326,16 @@ function appendPayloadFlags(
   }
 }
 
-function isSessionCookieOnlySecurity(
-  security: Array<Record<string, string[]>> | undefined
-): boolean {
-  if (!security || security.length === 0) return false;
-  const hasSessionCookie = security.some((req) => 'SessionCookie' in req);
-  const hasApiAuth = security.some((req) => 'BearerAuth' in req || 'ApiKeyAuth' in req);
-  return hasSessionCookie && !hasApiAuth;
-}
-
-function resolveAuthConfig(
+function resolveAuthFlag(
   security: Array<Record<string, string[]>> | undefined,
   apiKeyInput: string
-): { flag: string | null; isSessionCookie: boolean } {
+): string | null {
   if (Array.isArray(security) && security.length === 0) {
-    return { flag: null, isSessionCookie: false };
+    return null;
   }
-  if (isSessionCookieOnlySecurity(security)) {
-    return {
-      flag: `  -b "${SESSION_COOKIE_NAME}=YOUR_SESSION_COOKIE"`,
-      isSessionCookie: true,
-    };
-  }
-  return {
-    flag: `  -H "Authorization: Bearer ${escapeDoubleQuoted(apiKeyInput.trim() || 'YOUR_API_KEY')}"`,
-    isSessionCookie: false,
-  };
-}
-
-function extractOrigin(baseUrl: string): string {
-  try {
-    return new URL(baseUrl).origin;
-  } catch {
-    return baseUrl;
-  }
+  const trimmedKey = apiKeyInput.trim();
+  const token = trimmedKey ? escapeDoubleQuoted(trimmedKey) : '$EASYCONVERT_API_KEY';
+  return `  -H "Authorization: Bearer ${token}"`;
 }
 
 export function buildCurlSnippet(
@@ -392,13 +351,10 @@ export function buildCurlSnippet(
   const lines: string[] = [
     method === 'head' ? `curl -I "${escapedUrl}"` : `curl -X ${method.toUpperCase()} "${escapedUrl}"`,
   ];
-  const auth = resolveAuthConfig(operation.security, apiKeyInput);
-  if (auth.flag) lines.push(auth.flag);
+  const authFlag = resolveAuthFlag(operation.security, apiKeyInput);
+  if (authFlag) lines.push(authFlag);
   const isTusCreate = isTusCreationEndpoint(endpoint);
   const headerMap = collectHeaderMap(operation.parameters, schemas, isTusCreate);
-  if (auth.isSessionCookie && MUTATING_METHODS.has(method) && !headerMap.has('origin')) {
-    lines.push(`  -H "Origin: ${escapeDoubleQuoted(extractOrigin(baseUrl))}"`);
-  }
   for (const headerValue of headerMap.values()) {
     lines.push(`  -H "${headerValue}"`);
   }

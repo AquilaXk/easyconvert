@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createElement, type ComponentType } from 'react';
 import { buildCurlSnippet } from '../src/components/api-docs/curl-builder';
-import { RequestBodySection } from '../src/components/api-docs/EndpointSchemaTables';
+import { schemaFields } from '../src/components/api-docs/api-reference';
 import {
   dereferenceSchema,
   formatSchemaType,
@@ -11,10 +10,7 @@ import {
   type OpenApiSchemaObject,
 } from '../src/components/api-docs/openapi-types';
 import { buildOpenApiDocument } from '../src/lib/api/openapi';
-import { phrasesMissing, renderDom, visibleText } from './helpers/rendered-dom';
 
-const render = <P extends object>(component: ComponentType<P>, props: P) =>
-  renderDom(createElement(component, props));
 
 describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () => {
   it('synthesizes JSON and binary PUT cURL flags without spurious multipart defaults', () => {
@@ -61,7 +57,7 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
       ''
     );
     expect(publicPutCurl.split(' \\\n')).toEqual([
-      'curl -X PUT "https://api.easyconvert.com/api/v1/uploads/direct/part"',
+      'curl -X PUT "/api/v1/uploads/direct/part"',
       '  -H "Content-Type: application/octet-stream"',
       '  --upload-file ./part.bin',
     ]);
@@ -82,24 +78,14 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     expect(headCurl).not.toContain('-X HEAD');
     expect(headCurl).toContain('Authorization: Bearer ec_live_\\$SECRET\\`id\\`\\"key\\\\1');
 
-    const rotateOp = doc.paths['/api/v1/webhooks/secrets/rotate'].post as unknown as OpenApiOperation;
-    const rotateSection = render(RequestBodySection, {
-      content: rotateOp.requestBody!.content!,
-      schemas,
-    });
-    expect(
-      phrasesMissing(visibleText(rotateSection), ['endpointId', 'apiKeyId', 'graceSeconds'])
-    ).toEqual([]);
-
-    const rotateCurl = buildCurlSnippet(
-      { key: 'POST:/api/v1/webhooks/secrets/rotate', method: 'post', path: '/api/v1/webhooks/secrets/rotate', operation: rotateOp },
+    const defaultAuthCurl = buildCurlSnippet(
+      { key: 'HEAD:/api/v1/uploads/{id}', method: 'head', path: '/api/v1/uploads/{id}', operation: headOp },
       '',
       '/',
-      { schemas }
+      { schemas, runtimeOrigin: 'https://console.example.com' }
     );
-    expect(rotateCurl).toContain('"endpointId":"ep_01J9EXAMPLE"');
-    expect(rotateCurl).toContain('"graceSeconds":86400');
-    expect(rotateCurl).not.toContain('apiKeyId');
+    expect(defaultAuthCurl).toContain('-H "Authorization: Bearer $EASYCONVERT_API_KEY"');
+    expect(defaultAuthCurl).not.toContain('YOUR_API_KEY');
 
     const resolvedByUriId = dereferenceSchema(
       { $ref: 'https://easyconvert.local/schemas/conversion-options.json' },
@@ -125,19 +111,11 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     );
     expect(formatSchemaType(resolvedAnyOf, 'object')).toBe('string | number');
 
-    const unionBodyDom = render(RequestBodySection, {
-      content: {
-        'application/json': {
-          schema: {
-            type: 'object',
-            properties: { threshold: { oneOf: [{ type: 'string' }, { type: 'number' }] } },
-          },
-        },
-      },
-      schemas,
+    const unionFields = schemaFields({
+      type: 'object',
+      properties: { threshold: { oneOf: [{ type: 'string' }, { type: 'number' }] } },
     });
-    expect(visibleText(unionBodyDom)).toContain('[string | number]');
-    expect(visibleText(unionBodyDom)).not.toContain('[object]');
+    expect(unionFields.map((field) => [field.name, field.type])).toEqual([['threshold', 'string | number']]);
 
     const resolvedPdfaProblem = dereferenceSchema(
       { $ref: '#/components/schemas/PdfaValidationProblem' },
@@ -151,44 +129,6 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     expect(resolvedPdfaProblem?.required).toEqual(
       expect.arrayContaining(['type', 'title', 'status', 'detail', 'instance', 'profile', 'failedRules'])
     );
-
-    const patchKeyOp = doc.paths['/api/keys/{id}'].patch as unknown as OpenApiOperation;
-    const patchKeyCurl = buildCurlSnippet(
-      { key: 'PATCH:/api/keys/{id}', method: 'patch', path: '/api/keys/{id}', operation: patchKeyOp },
-      '',
-      '/',
-      { schemas }
-    );
-    const patchDataStart = patchKeyCurl.indexOf("-d '");
-    expect(patchDataStart).toBeGreaterThan(-1);
-    const patchDataEnd = patchKeyCurl.indexOf("'", patchDataStart + 4);
-    const patchPayload = JSON.parse(patchKeyCurl.slice(patchDataStart + 4, patchDataEnd)) as Record<string, unknown>;
-    expect(Object.keys(patchPayload)).toEqual(['name']);
-
-    const patchCidrCurl = buildCurlSnippet(
-      {
-        key: 'PATCH:/api/keys/{id}:cidr',
-        method: 'patch',
-        path: '/api/keys/{id}',
-        operation: {
-          requestBody: {
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { allowedIps: { type: 'array', items: { type: 'string' } }, expiresAt: { type: 'number' } },
-                },
-              },
-            },
-          },
-        },
-      },
-      '',
-      '/',
-      { schemas }
-    );
-    expect(patchCidrCurl).toContain('"allowedIps":["203.0.113.0/24"]');
-    expect(patchCidrCurl).not.toContain('expiresAt');
 
     const jobsOp = doc.paths['/api/v1/jobs'].post as unknown as OpenApiOperation;
     const jobsJsonCurl = buildCurlSnippet(
@@ -207,70 +147,6 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     );
     expect(jobsJsonCurl).toContain('"uploadId":"upl_01J9EXAMPLE"');
     expect(jobsJsonCurl).toContain('"targetFormat":"pdf"');
-
-    const sessionSecurity = [{ SessionCookie: [] }];
-    const sessionMeOp = doc.paths['/api/auth/me'].get as unknown as OpenApiOperation;
-    const sessionCurl = buildCurlSnippet(
-      { key: 'GET:/api/auth/me', method: 'get', path: '/api/auth/me', operation: sessionMeOp },
-      'ec_live_ignored',
-      '/',
-      { schemas }
-    );
-    expect(sessionCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
-    expect(sessionCurl).not.toContain('Authorization: Bearer');
-    expect(sessionCurl).not.toContain('-H "Origin:');
-
-    const sessionKeysGetCurl = buildCurlSnippet(
-      { key: 'GET:/api/v1/account/keys', method: 'get', path: '/api/v1/account/keys', operation: { security: sessionSecurity } },
-      '',
-      '/',
-      { schemas }
-    );
-    expect(sessionKeysGetCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
-    expect(sessionKeysGetCurl).not.toContain('-H "Origin:');
-
-    for (const method of ['post', 'put', 'patch', 'delete'] as const) {
-      const mutatingSessionCurl = buildCurlSnippet(
-        {
-          key: `${method.toUpperCase()}:/api/v1/account/keys/{id}`,
-          method,
-          path: method === 'post' ? '/api/v1/webhooks/secrets/rotate' : '/api/v1/account/keys/{id}',
-          operation: { security: sessionSecurity },
-        },
-        '',
-        'https://console.example.com/v1',
-        { schemas }
-      );
-      expect(mutatingSessionCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
-      expect(mutatingSessionCurl).toContain('-H "Origin: https://console.example.com"');
-    }
-
-    const scopesCurl = buildCurlSnippet(
-      {
-        key: 'POST:/api/keys',
-        method: 'post',
-        path: '/api/keys',
-        operation: {
-          requestBody: {
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['name', 'scopes'],
-                  properties: { name: { type: 'string' }, scopes: { type: 'array', items: { type: 'string' } } },
-                },
-              },
-            },
-          },
-        },
-      },
-      '',
-      'https://api.easyconvert.com',
-      { schemas }
-    );
-    expect(scopesCurl).toContain('"convert:read"');
-    expect(scopesCurl).not.toContain('jobs:read');
-    expect(scopesCurl).not.toContain('jobs:write');
 
     const inspectOp = doc.paths['/api/v1/archives/inspect'].post as unknown as OpenApiOperation;
     const inspectCurl = buildCurlSnippet(
@@ -300,7 +176,7 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
       { schemas }
     );
     expect(partCurl).toContain(
-      '"https://api.easyconvert.com/api/v1/uploads/direct/part?uploadId=upl_01J9EXAMPLE&partNumber=1"'
+      '"/api/v1/uploads/direct/part?uploadId=upl_01J9EXAMPLE&partNumber=1"'
     );
 
     const completeOp = doc.paths['/api/v1/uploads/direct/complete'].post as unknown as OpenApiOperation;
@@ -311,16 +187,6 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
       { schemas }
     );
     expect(completeCurl).toContain('"parts":[{"partNumber":1,"etag":"etag_01J9EXAMPLE"}]');
-
-    const credsOp = doc.paths['/api/v1/storage/credentials'].post as unknown as OpenApiOperation;
-    const credsCurl = buildCurlSnippet(
-      { key: 'POST:/api/v1/storage/credentials', method: 'post', path: '/api/v1/storage/credentials', operation: credsOp },
-      '',
-      '/',
-      { schemas }
-    );
-    expect(credsCurl).toContain('"providerType":"s3"');
-    expect(credsCurl).toContain('"bucket":"my-conversions-bucket"');
 
     const intOrStr: OpenApiSchemaObject = { oneOf: [{ type: 'integer', minimum: 0 }, { type: 'string' }] };
     const filterUnion: OpenApiSchemaObject = {

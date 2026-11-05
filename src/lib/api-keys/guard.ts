@@ -3,7 +3,7 @@ import { RESERVATION_LEASE } from './reservation-ledger';
 import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
-import { dailyConversions, planOfCaller, type PlanCaller } from '../plan-limits';
+import { API_KEY_BURST_LIMITS, dailyConversions, planOfCaller, type PlanCaller } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
@@ -65,15 +65,7 @@ function quotaExceeded(caller: PlanCaller): string {
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
 
-/**
- * Per-API-key token bucket sizes by account tier: `capacity` is the maximum burst,
- * `refillRate` the sustained requests per second.
- */
-export const API_KEY_BURST_LIMITS: Readonly<Record<UserTier, BurstLimit>> = {
-  free: { capacity: 20, refillRate: 2 },
-  pro: { capacity: 100, refillRate: 20 },
-  enterprise: { capacity: 500, refillRate: 100 },
-};
+export { API_KEY_BURST_LIMITS };
 
 export function getAnonymousBurstLimit(): BurstLimit {
   return {

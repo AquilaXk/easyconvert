@@ -2,47 +2,54 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a high-performance universal file conversion platform built with Next.js 15 (App Router), TypeScript, and a signature lavender design system. It delivers deterministic conversion across **292 file formats** and **2,156 verified conversion specifications** spanning **12 distinct categories**.
+EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **302 file formats** and **2,561 conversion pairs** in **12 categories**.
 
-Powered by authentic in-memory pure-TypeScript binary engines, distributed BullMQ job queues, and S3/OCI chunked multipart storage, EasyConvert fails closed on malformed input and deletes files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
+EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools, a Redis-backed queue with Lua scripts, and S3 or OCI multipart object storage. It fails closed on malformed or spoofed input and deletes stored files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
 
 ---
 
 ## Key Highlights
 
-- **292 Universal Formats Across 12 Categories**: Comprehensive support for Images, Documents, Spreadsheets, Presentations, Korean Office (HWP), Vector & CAD, Fonts, Audio, Video, E-Books, Structured Data, and Archives.
-- **Authentic Pure-TypeScript Algorithmic Engines**:
-  - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and bidirectional generator with paragraph and table extraction.
-  - **Cox-de Boor curves**: Recursive B-spline basis evaluator and Bézier flattening for the vector paths.
-  - **Pure BZip2**: Native Burrows-Wheeler Transform (BWT), Move-To-Front (MTF), and Huffman coding encoder/decoder.
-  - **Color Quantization**: NeuQuant (1994) neural-gas and Median Cut (1982) algorithms with Floyd-Steinberg error diffusion dithering.
-  - **Media Encoders**: In-memory MP3 MDCT spectral quantization and H.264 NAL baseline encoder packaged into ISO BMFF MP4 containers.
-  - **Font Engines**: TrueType/OpenType SFNT table directory parser, font converter (TTF, OTF, WOFF, WOFF2, EOT, SVG Font), and quadratic Bézier curve extraction.
-  - **Searchable OCR**: Optical Character Recognition engine generating invisible text overlays directly inside searchable PDFs.
-- **Distributed Async Job Queue**: BullMQ-ready queue system (`/api/queue/jobs`, `/api/queue/stats`) with real-time job progress tracking, retry semantics, and webhook notifications.
-- **S3 & OCI Chunked Multipart Storage**: Object storage abstraction (`/api/storage/multipart`, `/api/storage/file/[...key]`) supporting large binary file ingestion with automatic expiration.
-- **Dynamic SEO Landing Routes**: Fully rendered dynamic `/[slug]` subpages for format pairs (e.g., `/pdf-to-docx`, `/png-to-webp`, `/mp4-to-mp3`) with format parameters, FAQs, and breadcrumbs.
-- **Fail-Closed Processing and Scheduled Deletion**: Every job runs in an isolated worker, and results and uploads are deleted on the schedule above. Malformed payloads or unsupported formats immediately fail closed with HTTP 400 Bad Request, preventing corrupted outputs or silent fallbacks.
-- **Signature Lavender Design System**: High-contrast, accessible user interface featuring a signature lavender palette with seamless light and dark mode support.
+- **302 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,561` source-to-target pairs).
+- **Binary Conversion Engines**:
+  - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and builder with paragraph and table extraction.
+  - **Cox-de Boor Curves**: B-spline basis evaluator and Bézier flattening for CAD and vector paths.
+  - **BZip2**: Burrows-Wheeler Transform (BWT), Move-To-Front (MTF), and Huffman coding encoder and decoder.
+  - **Color Quantization**: Oklab k-d tree, NeuQuant, and Median Cut palette quantization with error diffusion dithering.
+  - **Media Encoders**: Audio and video transcoding with stream validation and container packaging.
+  - **Font Engines**: TrueType and OpenType SFNT table parser and converter for TTF, OTF, WOFF, WOFF2, EOT, PFA, PFB, DFONT, BIN, and SVG fonts.
+  - **Searchable OCR**: Optical Character Recognition engine that embeds a searchable text layer into PDF output.
+- **Redis-Backed Job Queue with Lua Scripts**: Asynchronous queue engine (`src/lib/queue/bullmq-engine.ts`, `src/lib/queue/conversion-queue.ts`) serving `/api/v1/jobs` and `/api/queue/jobs` with progress tracking, two-phase quota reservation, retries, DAG pipelines, and HMAC-signed webhooks.
+- **Resumable and Multipart Storage**: Public tus 1.0.0 and presigned direct multipart uploads (`/api/v1/uploads`, `/api/v1/uploads/direct`) alongside web multipart chunk ingestion (`/api/storage/multipart`, `/api/storage/file/[...key]`) with scheduled expiration.
+- **Dynamic Landing and API Reference Routes**: Localized `/[slug]` format-pair pages (for example `/pdf-to-docx`, `/png-to-webp`, `/mp4-to-mp3`) and topic-based `/api-docs` reference pages generated from the OpenAPI 3.1 specification (`/api/v1/openapi.json`).
+- **Fail-Closed Processing and Scheduled Deletion**: Every job runs in an isolated worker, and results and uploads are deleted on the schedule above. Malformed payloads, spoofed magic bytes, or unsupported pairs fail closed with HTTP 400 or 422 responses.
 
 ---
 
 ## Supported Format Matrix (12 Categories)
 
-| Category | Format Count | Notable Supported Extensions |
-| :--- | :--- | :--- |
-| **Images & RAW** | 68 | PNG, JPG, JPEG, WebP, AVIF, GIF, BMP, TIFF, SVG, ICO, ICNS, EPS, 3FR, CRW, NEF, ARW, DNG, RAF, RW2, HEIC |
-| **Documents** | 32 | PDF, DOCX, DOC, ODT, RTF, TXT, MD, HTML, XHTML, EPUB, AZW4, XPS, ABW, WPS, SXW |
-| **Spreadsheets** | 18 | XLSX, XLS, CSV, TSV, ODS, ET, Numbers, XLSM, XLSB, XML, TAB |
-| **Presentations** | 16 | PPTX, PPT, ODP, DPS, Keynote, PPS, PPSX, POT, POTX, VSDX |
-| **Korean Office (HWP)** | 4 | HWP (5.0 OLE2 CFBF), HWPX, HWT, HWTX |
-| **Vector & CAD** | 28 | DXF, DWG, SVG, EMF, WMF, CGM, CDR, STEP, STP, IGES, IGS, STL, OBJ, PLY, DWF |
-| **Fonts** | 8 | TTF, OTF, WOFF, WOFF2, EOT, SVG Font, PFA, PFB |
-| **Audio** | 22 | MP3, WAV, FLAC, AAC, OGG, M4A, WMA, AIFF, AC3, AMR, OPUS, MID |
-| **Video** | 26 | MP4, WebM, AVI, MOV, MKV, FLV, WMV, MPEG, 3GP, M4V, TS, VOB |
-| **E-Books** | 14 | EPUB, MOBI, AZW3, AZW, FB2, CBZ, CBR, LIT, LRF, PDB |
-| **Data Structures** | 18 | JSON, JSONL, NDJSON, YAML, YML, XML, CSV, TSV, TOML, SQL, PLIST |
-| **Archives** | 38 | ZIP, TAR, GZ, TGZ, BZ2, TBZ2, 7Z, RAR, XZ, Z, ISO, CAB, ARJ |
+<!-- registry-stats:start -->
+| Category | Format Count | Supported Extensions |
+| :--- | ---: | :--- |
+| **Images** (`image`) | 49 | 3FR, AI, ARW, AVIF, BMP, CR2, CR3, CRW, CUR, DCR, DDS, DNG, EPS, ERF, EXR, GIF, HEIC, HEIF, ICNS, ICO, J2K, JFIF, JP2, JPEG, JPG, MOS, MRW, NEF, ORF, PBM, PCX, PEF, PGM, PNG, PNM, PPM, PSB, PSD, RAF, RAW, RW2, TGA, TIF, TIFF, WBMP, WEBP, X3F, XCF |
+| **Documents** (`document`) | 43 | ABW, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SXW, TEX, TEXT, TXT, WPD, WPS, XHTML, XML, XPS, ZABW |
+| **Archives** (`archive`) | 44 | 7Z, ACE, ALZ, ARC, ARJ, BZ, BZ2, CAB, CPIO, DEB, DMG, EAR, GZ, IMG, ISO, JAR, LHA, LZ, LZMA, LZO, RAR, RPM, RZ, TAR, TAR.7Z, TAR.BZ, TAR.BZ2, TAR.GZ, TAR.LZO, TAR.XZ, TAR.Z, TAR.ZST, TBZ, TBZ2, TGZ, TXZ, TZ, TZO, WAR, XZ, Z, ZIP, ZST, ZSTD |
+| **Video** (`video`) | 37 | 3G2, 3GP, 3GPP, ASF, AV1, AVI, CAVS, DIVX, DV, DVR, F4V, FLV, H264, H265, HEVC, M2TS, M2V, M4V, MKV, MOD, MOV, MP4, MPEG, MPG, MTS, MXF, OGV, RM, RMVB, SWF, TS, VOB, WEBM, WEBP, WMV, WTV, XVID |
+| **Audio** (`audio`) | 29 | AAC, AC3, AIF, AIFC, AIFF, ALAC, AMR, APE, AU, CAF, DSS, DTS, FLAC, M4A, M4B, MID, MIDI, MKA, MP3, MPC, OGA, OGG, OPUS, RA, SPX, VOC, WAV, WEBA, WMA |
+| **Ebooks** (`ebook`) | 24 | AZW, AZW3, AZW4, CB7, CBC, CBR, CBT, CBZ, CHM, DJV, EPUB, FB2, HTMLZ, IBOOKS, LIT, LRF, MOBI, OEB, PML, PRC, RB, SNB, TCR, TXTZ |
+| **Spreadsheets** (`spreadsheet`) | 18 | DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WKS, XLS, XLSM, XLSX, XLT, XLTX |
+| **Presentations** (`presentation`) | 18 | DPS, FODP, KEY, KEYNOTES, ODP, OTP, POT, POTX, PPS, PPSX, PPT, PPTM, PPTX, PRESENTATION, SDA, SHW, SXD, SXI |
+| **Data & Tables** (`data`) | 11 | CSV, JSON, JSONL, NDJSON, PARQUET, TAB, TOML, TSV, XML, YAML, YML |
+| **Vector** (`vector`) | 10 | CDR, CGM, EMF, PS, SK, SK1, SVG, SVGZ, VSD, WMF |
+| **Fonts** (`font`) | 10 | BIN, DFONT, EOT, OTF, PFA, PFB, SVG, TTF, WOFF, WOFF2 |
+| **CAD & 3D** (`cad`) | 9 | DWF, DWG, DXF, IGES, IGS, OBJ, STEP, STL, STP |
+<!-- registry-stats:end -->
+
+Regenerate `docs/generated/registry-stats.json` and the table above after changing `src/lib/registry.ts`:
+
+```bash
+npm run docs:generate
+```
 
 ---
 
@@ -52,68 +59,49 @@ Powered by authentic in-memory pure-TypeScript binary engines, distributed BullM
 easyconvert/
 ├── src/
 │   ├── app/                         # Next.js App Router (pages & API routes)
-│   │   ├── [slug]/                  # Dynamic format landing pages (e.g. /pdf-to-docx)
+│   │   ├── [locale]/                # Localized UI pages (converter, /[slug], /api-docs)
 │   │   ├── api/
-│   │   │   ├── convert/             # Synchronous conversion endpoints
+│   │   │   ├── convert/             # Web synchronous conversion endpoints
 │   │   │   │   └── batch/           # Batch conversion with ZIP bundling
 │   │   │   ├── fetch-url/           # Remote file ingestion via URL
 │   │   │   ├── formats/             # Format registry & capability query API
-│   │   │   ├── health/              # Service health, uptime & engine status
-│   │   │   ├── queue/               # Distributed BullMQ asynchronous job queue
-│   │   │   │   ├── jobs/            # Job creation & polling ([id])
+│   │   │   ├── health/              # Service health, readiness & smoke probes
+│   │   │   ├── keys/                # API key management & secret rotation
+│   │   │   ├── openapi.json/        # OpenAPI 3.1 specification endpoint
+│   │   │   ├── queue/               # Web asynchronous job queue endpoints
+│   │   │   │   ├── jobs/            # Job creation & status polling ([id])
 │   │   │   │   └── stats/           # Queue metrics & throughput
-│   │   │   ├── storage/             # S3/OCI chunked object storage
+│   │   │   ├── storage/             # Object storage download & multipart routes
 │   │   │   │   ├── file/[...key]/   # Ephemeral artifact download
 │   │   │   │   └── multipart/       # Multipart chunk upload orchestration
-│   │   │   └── v2/                  # Interactive API v2 documentation dashboard
-│   │   ├── globals.css              # Lavender design system variables & utility classes
-│   │   ├── layout.tsx               # Root layout & theme provider
-│   │   └── page.tsx                 # Converter main dashboard
-│   ├── components/                  # Reusable UI components
-│   │   ├── ConversionQueue.tsx      # Real-time conversion queue with progress & ZIP bundle
-│   │   ├── FaqSection.tsx           # Accordion FAQ component
-│   │   ├── Features.tsx             # Privacy, performance, and architecture highlights
-│   │   ├── Footer.tsx               # Brand footer with status indicator
-│   │   ├── FormatExplorer.tsx       # Searchable format browser across all 12 categories
-│   │   ├── FormatSelector.tsx       # Filterable format picker popover
-│   │   ├── Header.tsx               # Sticky navigation with theme toggle & user actions
-│   │   ├── Hero.tsx                 # Converter selector & drag-and-drop zone
-│   │   ├── OptionsModal.tsx         # Granular parameter configuration modal
-│   │   ├── UrlImportModal.tsx       # Remote URL file ingestion modal
-│   │   └── UrlUploadModal.tsx       # Secondary URL upload dialog
+│   │   │   ├── v1/                  # Public REST API v1 (/api/v1/*)
+│   │   │   │   ├── archives/inspect/# Archive structure & encryption inspection
+│   │   │   │   ├── convert/         # Synchronous conversion with 2-phase quota
+│   │   │   │   ├── jobs/            # Async jobs & DAG pipelines ([id])
+│   │   │   │   ├── ocr/languages/   # Installed OCR language catalog
+│   │   │   │   ├── openapi.json/    # Public OpenAPI 3.1 specification
+│   │   │   │   ├── storage/         # Customer BYOS credential vault
+│   │   │   │   ├── uploads/         # tus 1.0.0 & direct presigned multipart uploads
+│   │   │   │   ├── usage/           # Metered API usage & quota reporting
+│   │   │   │   └── webhooks/        # Webhook signing secret rotation
+│   │   │   └── webhooks/dlq/        # Webhook dead-letter queue inspection & replay
+│   │   ├── globals.css              # Design system variables & utility classes
+│   │   └── layout.tsx               # Root layout & providers
+│   ├── components/                  # UI and API documentation components
 │   └── lib/
-│       ├── conversions/             # Authentic binary conversion engines
-│       │   ├── archive.ts           # ZIP, TAR, GZ, TGZ, BZ2, TBZ2, 7Z, RAR
-│       │   ├── bzip2.ts             # Pure TS BZip2 (BWT + MTF + Huffman)
-│       │   ├── cad-nurbs.ts         # Cox-de Boor B-spline curves, Bézier flattening, mesh topology check
-│       │   ├── cad-occt.ts          # STEP/IGES through the Open CASCADE program (native/cad-convert)
-│       │   ├── data.ts              # CSV, TSV, JSON, JSONL, YAML, XML
-│       │   ├── document.ts          # PDFKit, Markdown, HTML, RTF, EPUB
-│       │   ├── font.ts              # TTF, OTF, WOFF, WOFF2, EOT, SVG Font
-│       │   ├── font-fontforge.ts    # PFA/PFB through the FontForge program (separate sandboxed process)
-│       │   ├── font-type1.ts        # PFA/PFB check, glyph count and rewrite for FontForge
-│       │   ├── hwp.ts               # Pure TS HWP 5.0 OLE2 CFBF parser & builder
-│       │   ├── image.ts             # Sharp, PostScript raster, RAW formats
-│       │   ├── media.ts             # Audio & video transcoding wrapper
-│       │   ├── media-encoder.ts     # In-memory MDCT MP3 & NAL H.264 encoders
-│       │   ├── ocr.ts               # Searchable PDF invisible text layer generator
-│       │   ├── office.ts            # OOXML (DOCX, XLSX, PPTX), ODF, iWork
-│       │   ├── pdf-utils.ts         # PDF layout, extraction, and utility methods
-│       │   ├── quantize.ts          # NeuQuant & Median Cut color quantization
-│       │   └── vector-cad.ts        # SVG, EMF, WMF, CGM, CDR, DXF, DWG
-│       ├── queue/                   # BullMQ async worker & queue abstraction
-│       │   ├── bullmq-engine.ts     # Redis client connection & job processor
-│       │   └── conversion-queue.ts  # In-memory & distributed queue manager
-│       ├── storage/                 # Multipart cloud storage abstractions
-│       │   ├── oci-storage.ts       # Oracle Cloud Infrastructure Object Storage
-│       │   └── s3-storage.ts        # AWS S3-compatible chunked upload engine
-│       ├── pricing.ts               # Subscription tiers & credit calculator
-│       ├── registry.ts              # 292 canonical format definitions & options
+│       ├── api/openapi/             # OpenAPI 3.1 schema and path definitions
+│       ├── conversions/             # Binary conversion engines and dispatchers
+│       ├── queue/                   # Redis-backed queue with Lua scripts
+│       │   ├── bullmq-engine.ts     # Redis Lua queue adapter & in-memory engine
+│       │   └── conversion-queue.ts  # Queue manager & job lifecycle coordinator
+│       ├── storage/                 # Local, S3, and OCI object storage backends
+│       ├── registry.ts              # 302 canonical format definitions & options
+│       ├── registry-stats.ts        # Computed format, category, and pair statistics
 │       ├── slug-parser.ts           # Dynamic route slug parser ([source]-to-[target])
-│       ├── theme.ts                 # Lavender palette design tokens
 │       └── types.ts                 # TypeScript schemas & queue contracts
-├── scripts/                         # Headless browser inspection & capture tools
-├── tests/                           # 21 test suites & 192 deterministic tests
+├── docs/                            # Policy decisions, deployment, and generated stats
+├── scripts/                         # Build, verification, and doc generation scripts
+├── tests/                           # Vitest unit, integration, and drift test suites
 ├── sonar-project.properties         # SonarCloud code quality configuration
 └── package.json
 ```
@@ -122,64 +110,40 @@ easyconvert/
 
 ## API Reference
 
-EasyConvert provides synchronous REST endpoints, an asynchronous job queue for long-running conversions, and chunked multipart storage endpoints.
+Written reference documentation for the public v1 API is served at `/api-docs` (with topic pages `/api-docs/quickstart`, `/api-docs/convert`, `/api-docs/jobs`, `/api-docs/uploads`, `/api-docs/downloads`, `/api-docs/formats`, `/api-docs/ocr-languages`, `/api-docs/archives`, and `/api-docs/usage`) and backed by the OpenAPI 3.1 document at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`).
 
-### 1. Synchronous File Conversion
-- **Endpoint**: `POST /api/convert`
-- **Content-Type**: `multipart/form-data`
-- **Fields**:
-  - `file`: The source binary file (required).
-  - `targetFormat`: Destination format identifier (e.g., `webp`, `docx`, `mp3`, `pdf`).
-  - `options`: Optional JSON string of conversion parameters (e.g., `{"quality": 85, "width": 1920}`).
-- **Response**: Binary stream of the converted file with correct `Content-Type` and `Content-Disposition` headers.
-- **Document options** (inside `options`):
-  - `layout` (PDF to TXT): `true` keeps the physical page layout so table rows stay on one line. The default reads text in reading order, column after column.
-  - `imageDpi` (72-1200) and `jpegQuality` (1-100) (Office to PDF): opt into a compression profile. By default the embedded JPEG streams, the outline and the links pass through unchanged.
-  - `pdfa` (`{"conformance": "pdfa-1b" | "pdfa-2b" | "pdfa-3b"}`) or `pdfStandard`: request PDF/A output. A request that names no level (`{}` or `"pdfa"`) is answered at **PDF/A-2b**. Every PDF/A output is validated with veraPDF against the requested level: a missing veraPDF answers `503`, and a file that fails validation answers `422` with the failed rule IDs (`failedRules`) and the requested `profile`.
+### 1. Public v1 Conversion & Jobs (`/api/v1/*`)
+- **Synchronous Conversion**: `POST /api/v1/convert` (`multipart/form-data` with `file`, `targetFormat`, optional `options`, and optional `Idempotency-Key` header).
+  - **Document options** (inside `options`):
+    - `layout` (PDF to TXT): `true` keeps the physical page layout so table rows stay on one line. The default reads text in reading order, column after column.
+    - `imageDpi` (72-1200) and `jpegQuality` (1-100) (Office to PDF): opt into a compression profile. By default the embedded JPEG streams, the outline, and the links pass through unchanged.
+    - `pdfa` (`{"conformance": "pdfa-1b" | "pdfa-2b" | "pdfa-3b"}`) or `pdfStandard`: request PDF/A output. A request that names no level (`{}` or `"pdfa"`) is answered at **PDF/A-2b**. Every PDF/A output is validated with veraPDF against the requested level: a missing veraPDF answers `503`, and a file that fails validation answers `422` with the failed rule IDs (`failedRules`) and the requested `profile`.
+- **Asynchronous Jobs & Pipelines**: `POST /api/v1/jobs`, `GET /api/v1/jobs`, `GET /api/v1/jobs/:id`, `DELETE /api/v1/jobs/:id`
+  - Enqueues single-step conversions, sequential `tasks` pipelines, or multi-node `graph` DAGs to the Redis-backed queue with Lua scripts, automatic two-phase quota reservation, and optional HMAC-SHA256 webhook callbacks.
+- **Resumable & Direct Multipart Uploads**:
+  - tus 1.0.0 resumable uploads: `OPTIONS /api/v1/uploads`, `POST /api/v1/uploads`, `HEAD /api/v1/uploads/:id`, `PATCH /api/v1/uploads/:id`, `DELETE /api/v1/uploads/:id`
+  - Presigned direct multipart uploads: `POST /api/v1/uploads/direct`, `PUT /api/v1/uploads/direct/part`, `POST /api/v1/uploads/direct/complete`, `DELETE /api/v1/uploads/direct/:id`
+- **Archive Inspection & OCR Catalog**:
+  - `POST /api/v1/archives/inspect`: Inspects archive entries and encryption status without extracting payloads.
+  - `GET /api/v1/ocr/languages`: Lists installed OCR language packs and script metadata.
 
-### 2. Batch Conversion
-- **Endpoint**: `POST /api/convert/batch`
-- **Content-Type**: `multipart/form-data`
-- **Fields**:
-  - `files`: Multiple binary files.
-  - `targetFormat`: Common target format (or per-file format mapping).
-  - `bundleZip`: Boolean flag (`true` to return a combined ZIP archive).
-- **Response**: Binary ZIP stream or JSON array of completed conversion results.
-
-### 3. Format Registry Query
-- **Endpoint**: `GET /api/formats`
-- **Query Parameters**:
-  - `category` *(optional)*: Filter by category (e.g., `image`, `document`, `cad`, `font`, `media`).
-  - `search` *(optional)*: Search term matching format ID, name, or extension.
-- **Response**: JSON array of format definitions, supported target formats, and option schemas.
-
-### 4. Remote URL Ingestion
-- **Endpoint**: `POST /api/fetch-url`
-- **Content-Type**: `application/json`
-- **Body**: `{"url": "https://example.com/asset.png", "targetFormat": "webp"}`
-- **Response**: Ingested file metadata and temporary storage reference.
-
-### 5. Distributed Asynchronous Job Queue
-- **Submit Job**: `POST /api/queue/jobs`
-  - Body: `{"originalFilename": "model.step", "targetFormat": "stl", "storageKey": "...", "options": {}}`
-  - Returns: `{"jobId": "job-12345", "status": "waiting"}`
-- **Poll Status**: `GET /api/queue/jobs/:id`
-  - Returns: `{"jobId": "job-12345", "status": "completed", "downloadUrl": "/api/storage/file/..."}`
-- **Queue Metrics**: `GET /api/queue/stats`
-  - Returns active, waiting, completed, and failed job counters.
-
-### 6. Multipart Chunked Storage
-- **Initialize Upload**: `POST /api/storage/multipart?action=init`
-  - Body: `{"filename": "archive.zip", "contentType": "application/zip", "size": 104857600}`
-  - Returns: `uploadId`, `key`, and `partSize`.
-- **Upload Part**: `POST /api/storage/multipart?action=part&uploadId=...&partNumber=1`
-- **Complete Upload**: `POST /api/storage/multipart?action=complete&uploadId=...`
-- **Retrieve File**: `GET /api/storage/file/[...key]`
-
-### 7. Service Health & Diagnostics
-- **Endpoint**: `GET /api/health`
-- **Response**: `{"status": "healthy" | "unhealthy"}` with `200` or `503`. Readiness depends on live probes of Redis (when configured) and storage. The native tools (soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z, dcraw_emu) are probed too but are advisory: a missing tool fails only the conversions that need it. Results are cached for a few seconds.
-- **Admin view**: an API key with the wildcard (`*`) scope also receives the per-component status; paths, hosts, and credentials are never included.
+### 2. Web Application Endpoints
+- **Synchronous Conversion**: `POST /api/convert` and `POST /api/convert/batch`
+- **Format Registry Query**: `GET /api/formats` (optional `category` and `search` query parameters)
+- **Remote URL Ingestion**: `POST /api/fetch-url` (`{"url": "https://example.com/asset.png"}`)
+- **Web Job Queue**:
+  - Submit job: `POST /api/queue/jobs` with `{"filename": "model.step", "targetFormat": "stl", "storageKey": "...", "fileSize": 1048576, "options": {}}`
+  - Poll or stream status: `GET /api/queue/jobs/:id` (supports `?stream=true` for Server-Sent Events)
+  - Cancel job: `DELETE /api/queue/jobs/:id`
+  - Queue metrics: `GET /api/queue/stats`
+- **Multipart Chunked Storage (`POST /api/storage/multipart`)**:
+  - Initialize upload: `POST /api/storage/multipart?action=initiate` with JSON body `{"filename": "archive.zip", "mimeType": "application/zip", "totalSize": 104857600}` (and optional `partSize`, or `contentType` / `fileSize` metadata on job handoff). Returns `uploadId`, `key`, `partSize`, `totalParts`, and `expiresAt`.
+  - Upload chunk part: `POST /api/storage/multipart?action=chunk&uploadId=...&partNumber=1` with raw binary body (`application/octet-stream`) and `Content-Length`.
+  - Complete upload: `POST /api/storage/multipart?action=complete` with `{"uploadId": "...", "parts": [{"partNumber": 1, "etag": "..."}]}`.
+  - Abort upload: `POST /api/storage/multipart?action=abort` with `{"uploadId": "..."}`.
+  - Retrieve file: `GET /api/storage/file/[...key]`
+- **Service Health & Diagnostics**:
+  - `GET /api/health`: Returns `{"status": "healthy" | "unhealthy"}` with HTTP `200` (`healthy`) or `503` (`unhealthy`) based on live `redis` (when configured) and `storage` probes. Native binaries (`soffice`, `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `tesseract`, `7z`, `dcraw_emu`, `ebook-convert`) are probed as advisory components under `components`, which are included when called with a wildcard (`*`) scope API key.
 
 ---
 
@@ -200,15 +164,16 @@ npm install
 
 ### Configuration
 
-- `KEY_HASH_PEPPER`: server-side secret used to store API key hashes as HMAC-SHA256 instead of plain SHA-256; set it to a long random value (at least 32 bytes) in production, and note that rotating it invalidates every key created or rehashed under the previous value.
-- `JOB_SECRET_KEK`: dedicated secret that seals the signed URLs and request headers stored in queued job data (AES-256-GCM, bound to the job id). It is required in production for both the web app and every worker: use a random value of at least 32 bytes, for example `openssl rand -hex 32`; the JWT, vault and encryption secrets are never reused for this. `docker compose up` refuses to start the workers until it is set. Outside production a development key is used when it is unset.
+- `KEY_HASH_PEPPER`: server-side secret used to store API key hashes as HMAC-SHA256 instead of plain SHA-256; set it to a long random value (at least 32 bytes) in production. Zero-downtime rotation is supported by pairing the new value with `KEY_HASH_PEPPER_PREVIOUS` so existing keys verify and rehash on first use; rotating without `KEY_HASH_PEPPER_PREVIOUS` invalidates keys hashed under the previous value.
+- `KEY_HASH_PEPPER_PREVIOUS`: optional previous pepper secret used during zero-downtime `KEY_HASH_PEPPER` rotation. When set, an API key that does not match the current `KEY_HASH_PEPPER` is checked against `KEY_HASH_PEPPER_PREVIOUS` and transparently migrated to the current pepper hash upon successful verification.
+- `JOB_SECRET_KEK`: dedicated secret that seals the signed URLs and request headers stored in queued job data (AES-256-GCM, bound to the job id). It is required in production for both the web app and every worker: use a random value of at least 32 bytes, for example `openssl rand -hex 32`; the JWT, vault, and encryption secrets are never reused for this. `docker compose up` refuses to start the workers until it is set. Outside production a development key is used when it is unset.
 - `JOB_SECRET_KEK_PREVIOUS`: optional; during a rotation, set it to the old `JOB_SECRET_KEK` value so jobs queued before the change can still be opened. Remove it once those jobs have finished. A job sealed under a key that is neither configured fails with an unknown-key error.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: most pixels a still image (or an image inside a document) may declare before conversion; larger pictures are refused with HTTP 413 from the container header, before any pixel is decoded. Default 100000000 (100 megapixels), a plain decimal number, lowered to 268402689 (16383 x 16383) when larger; a malformed value is reported once in the log and ignored. Tighter built-in budgets apply to in-process per-pixel paths (Oklab and Riemersma palette quantization, camera RAW sensors, Ultra HDR).
-- `TRUSTED_PROXIES`: client-IP trust mode, required when `NODE_ENV=production`. Set it to the CIDR list of the proxy hops in front of the server, or to `none` when the server is exposed directly (every client then shares one rate-limit bucket). Without it the edge answers `/api/*` with 503.
+- `TRUSTED_PROXIES`: client-IP trust mode, required when `NODE_ENV=production`. Set it to the CIDR list of the proxy hops in front of the server, or to `none` when the server is exposed directly (every client then shares one rate-limit bucket). Without it the edge answers API routes with 503.
 - `TRUSTED_CDN`: set to `cloudflare` to honour `CF-Connecting-IP` from verified Cloudflare edge hops.
 - `TRUSTED_PROXY_HEADER`: the single forwarding header your proxy maintains, `x-forwarded-for` (default) or `forwarded`.
 
-See [docs/client-ip-trust.md](docs/client-ip-trust.md) for the full deployment contract.
+See [docs/client-ip-trust.md](docs/client-ip-trust.md) and [docs/configuration.md](docs/configuration.md) for the full deployment contract.
 
 ### Development Server
 
@@ -220,7 +185,7 @@ Open [http://localhost:3000](http://localhost:3000) to view the application.
 
 ### Deterministic Verification
 
-Execute the complete test suite across all 21 test files and 192 deterministic tests:
+Run the test suite with Vitest:
 
 ```bash
 npm test
@@ -251,28 +216,28 @@ npm start
 
 ### Code smell ratchet
 
-`npm run guard:code-smells` (CI `checks` job) runs ESLint with only these rules over `src/**/*.{ts,tsx}`, independent of `next lint`: `complexity` 30, `max-depth` 5, `max-lines-per-function` 250 (blank lines and comments skipped), `max-params` 6, `no-nested-ternary`, `@typescript-eslint/no-explicit-any` and `max-lines` 1500. Inline `eslint-disable` comments are ignored by this gate.
+`npm run guard:code-smells` (CI `checks` job) runs ESLint with only these rules over `src/**/*.{ts,tsx}`, independent of `next lint`: `complexity` 30, `max-depth` 5, `max-lines-per-function` 250 (blank lines and comments skipped), `max-params` 6, `no-nested-ternary`, `@typescript-eslint/no-explicit-any`, and `max-lines` 1500. Inline `eslint-disable` comments are ignored by this gate.
 
-Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by file, rule and enclosing function name (never by line number, so unrelated edits do not move keys), with a count and the worst measured value. The baseline only shrinks:
+Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by file, rule, and enclosing function name (never by line number, so unrelated edits do not move keys), with a count and the worst measured value. The baseline only shrinks:
 
-- `NEW` or `GREW` lines name the file, function, rule and measured value of a smell above the baseline. Fix the code; do not raise the baseline.
+- `NEW` or `GREW` lines name the file, function, rule, and measured value of a smell above the baseline. Fix the code; do not raise the baseline.
 - `GONE` or improved lines mean you removed a smell. Run `npm run guard:code-smells -- --update` and commit the smaller baseline in the same change. `--update` refuses to raise any entry.
 - A hot codec loop that must stay may keep its entry; add an optional `reason` field to that baseline entry. `--update` preserves it.
 - On pull requests CI also runs `npm run guard:code-smells -- --check-base <base baseline file>`: the baseline may not exceed the base branch's, summed per file and rule (a rename passes). Pushes to main skip this comparison.
 
-- **Deterministic Test Suite**: 21 test files containing 192 tests verifying RFC compliance, pure-TS mathematical basis functions, OLE2 CFBF structures, and memory safety.
-- **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers immediately trigger HTTP 400 Bad Request responses.
+- **Deterministic Test Suite**: Vitest unit, integration, and drift tests verify RFC compliance, mathematical basis functions, OLE2 CFBF structures, OpenAPI contracts, and memory safety.
+- **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers trigger HTTP 400 or 422 responses.
 - **Scheduled Deletion**: A result is kept until its first complete download plus 10 minutes, or 1 hour after conversion, and an upload until 10 minutes after its last job (policy decision 125).
-- **SonarCloud Integration**: Automated static analysis and code quality gates configured via `sonar-project.properties`.
+- **SonarCloud Integration**: Static analysis and code quality gates configured via `sonar-project.properties`.
 
 ---
 
 ## Policy decisions
 
-Conversion and product policies, such as output defaults, limits, engines and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same pull request that changes a policy.
+Conversion and product policies, such as output defaults, limits, engines, and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same pull request that changes a policy.
 
 ## Licensing
 
 - **Project License**: EasyConvert is distributed under the [MIT License](LICENSE).
 - **Third-Party Open Source Notices**: Full attribution, copyright, and licence terms for all production dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-- **External Tools, Relinking & Patent Considerations**: Comprehensive legal and architecture guidelines covering external CLI tools (FFmpeg, Poppler, veraPDF), LGPL relinking, unRAR component restrictions, and codec patent considerations are available in [docs/licensing.md](docs/licensing.md).
+- **External Tools, Relinking & Patent Considerations**: Legal and architecture guidelines covering external CLI tools (FFmpeg, Poppler, veraPDF), LGPL relinking, unRAR component restrictions, and codec patent considerations are available in [docs/licensing.md](docs/licensing.md).
