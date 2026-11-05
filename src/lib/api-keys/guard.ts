@@ -6,7 +6,7 @@ import type { TokenBucketOptions } from './redis-key-store';
 import { API_KEY_BURST_LIMITS, dailyConversions, planOfCaller, type PlanCaller } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
-import type { User, UserTier } from '../auth/types';
+import type { User } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';

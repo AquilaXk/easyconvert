@@ -1483,12 +1483,6 @@
     "count": 1
   },
   {
-    "file": "src/lib/conversions/pdf-postprocess/pdfa.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertToPdfA",
-    "count": 1
-  },
-  {
     "file": "src/lib/conversions/pdf-postprocess/watermark.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "loadAndPrepareDocument",

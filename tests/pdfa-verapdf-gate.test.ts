@@ -9,7 +9,7 @@ import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
 import { buildDocxWithJpeg, buildTextDocx, makeNoisyJpeg } from './helpers/office-jpeg-fixtures';
 import { withMissingBinary } from './helpers/native-tools';
-import { withValidator } from './helpers/pdfa-route-harness';
+import { createValidatorScripts, withValidator, type ValidatorScripts } from './helpers/pdfa-route-harness';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertToPdfA, verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
@@ -40,6 +40,7 @@ const SOFFICE_TOOLS: ExternalOracleTool[] = ['soffice'];
 const SOFFICE_VERAPDF_TOOLS: ExternalOracleTool[] = ['soffice', 'verapdf'];
 
 let workDir: string;
+let validators: ValidatorScripts;
 let docx: Buffer;
 
 function tool(name: ExternalOracleTool): string {
@@ -97,10 +98,12 @@ async function identifiedButNonConformingPdf(): Promise<Buffer> {
 
 beforeAll(async () => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdfa-verapdf-gate-'));
+  validators = createValidatorScripts();
   docx = await buildDocxWithJpeg(await makeNoisyJpeg());
 });
 
 afterAll(() => {
+  validators.dispose();
   fs.rmSync(workDir, { recursive: true, force: true });
 });
 
@@ -295,11 +298,9 @@ describe('POST /api/v1/convert with a PDF/A request', () => {
       const negative = writePdf('route-negative.pdf', await identifiedButNonConformingPdf());
       const expected = runVerapdf(negative, '2b');
       expect(expected.failedRules).toContain(FONT_NOT_EMBEDDED_RULE);
-      const wrapper = path.join(workDir, 'verapdf-fixed-input.sh');
-      fs.writeFileSync(
-        wrapper,
-        `#!/bin/sh\nexec "${tool('verapdf')}" --flavour 2b --format json --maxfailuresdisplayed 1 "${negative}"\n`,
-        { mode: 0o755 }
+      const wrapper = validators.write(
+        'verapdf-fixed-input',
+        `exec "${tool('verapdf')}" --flavour 2b --format json --maxfailuresdisplayed 1 "${negative}"`
       );
 
       const res = await withValidator(wrapper, () =>

@@ -9,14 +9,8 @@ import {
   withValidator,
   type ValidatorScripts,
 } from './helpers/pdfa-route-harness';
-import { verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
+import { convertToPdfA, verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
 import { EngineUnavailableError, PdfAValidationError, PdfPostprocessError } from '../src/lib/types';
-
-/**
- * How the PDF/A validator is run and how its outcomes are classified. The validators here are
- * executable scripts that print a fixed report or fail in a fixed way; the PDF is a real
- * PDF/A-2b-identified file that pdf-lib wrote.
- */
 
 const COMPLIANT_REPORT = '{"report":{"jobs":[{"validationResult":[{"compliant":true}]}]}}';
 const EXIT_STATUS = 2;
@@ -24,13 +18,13 @@ const SHORT_TIMEOUT_MS = 300;
 const HANG_SECONDS = 30;
 const UNPROCESSABLE_DETAIL = 'The PDF/A validator could not process the document.';
 const SLOW_VALIDATOR_SECONDS = 1;
-/** Interval of the loop-liveness probe, and the fewest ticks it must see while a validator sleeps. */
 const PROBE_INTERVAL_MS = 20;
 const MIN_PROBE_TICKS = 20;
 const PROBE_SECRET_NAME = 'EASYCONVERT_PROBE_API_TOKEN';
 const PROBE_SECRET_VALUE = 'probe-secret-value-1f3a';
 
 let validators: ValidatorScripts;
+let compliantReportFile: string;
 let pdfa2b: Buffer;
 
 async function identifiedPdf(): Promise<Buffer> {
@@ -47,6 +41,8 @@ async function identifiedPdf(): Promise<Buffer> {
 
 beforeAll(async () => {
   validators = createValidatorScripts();
+  compliantReportFile = path.join(validators.dir, 'compliant.json');
+  fs.writeFileSync(compliantReportFile, COMPLIANT_REPORT);
   pdfa2b = await identifiedPdf();
 });
 
@@ -72,7 +68,7 @@ describe('validator execution', () => {
   it('keeps the event loop running while the validator works', async () => {
     const validator = validators.write(
       'verapdf-slow',
-      `sleep ${SLOW_VALIDATOR_SECONDS}\necho '${COMPLIANT_REPORT}'`
+      `sleep ${SLOW_VALIDATOR_SECONDS}\ncat "${compliantReportFile}"`
     );
     let ticks = 0;
     const probe = setInterval(() => {
@@ -89,7 +85,7 @@ describe('validator execution', () => {
 
   it('runs the validator without the credentials of the server environment', async () => {
     const envDump = path.join(validators.dir, 'validator-env.txt');
-    const validator = validators.write('verapdf-env', `env > "${envDump}"\necho '${COMPLIANT_REPORT}'`);
+    const validator = validators.write('verapdf-env', `env > "${envDump}"\ncat "${compliantReportFile}"`);
     process.env[PROBE_SECRET_NAME] = PROBE_SECRET_VALUE;
     try {
       await withValidator(validator, () => verifyPdfA(pdfa2b, 'pdfa-2b'));
@@ -103,7 +99,7 @@ describe('validator execution', () => {
   });
 
   it('answers a typed 422 when the validator exits without a report on a document', async () => {
-    const validator = validators.write('verapdf-no-report', `echo "boom at $0" >&2\nexit ${EXIT_STATUS}`);
+    const validator = validators.write('verapdf-no-report', `printf 'boom at %s\\n' "$0" >&2\nexit ${EXIT_STATUS}`);
 
     const run = withValidator(validator, () => verifyPdfA(pdfa2b, 'pdfa-2b'));
 
@@ -120,5 +116,47 @@ describe('validator execution', () => {
     await expect(run).rejects.toBeInstanceOf(PdfPostprocessError);
     await expect(run).rejects.not.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toThrow(UNPROCESSABLE_DETAIL);
+  });
+
+  it('keeps the event loop running and strips server credentials while the converter works', async () => {
+    const plainDoc = await PDFDocument.create();
+    plainDoc.addPage([100, 100]);
+    const sourcePdf = Buffer.from(await plainDoc.save());
+    const convertedFile = path.join(validators.dir, 'converted-2b.pdf');
+    fs.writeFileSync(convertedFile, pdfa2b);
+    const marker = path.join(validators.dir, 'event-loop-marker');
+    const envDump = path.join(validators.dir, 'converter-env.txt');
+    const converter = validators.write(
+      'soffice-event-loop',
+      `env > "${envDump}"\n` +
+        `i=0; while [ ! -f "${marker}" ] && [ "$i" -lt 50 ]; do sleep 0.02; i=$((i + 1)); done\n` +
+        `[ -f "${marker}" ] || exit 1\n` +
+        `out=""; prev=""; for a in "$@"; do [ "$prev" = "--outdir" ] && out="$a"; prev="$a"; done; in="$a"\n` +
+        `cp "${convertedFile}" "$out/$(basename "$in")"`
+    );
+    const validator = validators.printing('verapdf-compliant', COMPLIANT_REPORT, 0);
+    const previousSoffice = process.env.SOFFICE_PATH;
+    process.env.SOFFICE_PATH = converter;
+    process.env[PROBE_SECRET_NAME] = PROBE_SECRET_VALUE;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await withValidator(validator, async () => {
+        const conversion = convertToPdfA(sourcePdf, { conformance: 'pdfa-2b' });
+        timer = setTimeout(() => {
+          fs.writeFileSync(marker, 'ready');
+        }, PROBE_INTERVAL_MS);
+        return await conversion;
+      });
+      expect(result.pdfaValidated).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (previousSoffice === undefined) delete process.env.SOFFICE_PATH;
+      else process.env.SOFFICE_PATH = previousSoffice;
+      delete process.env[PROBE_SECRET_NAME];
+    }
+
+    const seen = fs.readFileSync(envDump, 'utf-8');
+    expect(seen).not.toContain(PROBE_SECRET_VALUE);
+    expect(seen).toContain('SAL_USE_VCLPLUGIN=svp');
   });
 });

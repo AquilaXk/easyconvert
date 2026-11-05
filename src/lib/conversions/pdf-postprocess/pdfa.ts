@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,9 +12,7 @@ import {
   EngineUnavailableError,
 } from '../../types';
 import {
-  resolveSandboxedCommand,
   rethrowSandboxUnavailable,
-  getSanitizedEnvironment,
   executeSandboxedBinary,
   SandboxedProcessError,
 } from '../../security/process-sandbox';
@@ -291,32 +288,32 @@ export async function convertToPdfA(
     const filterDef = `pdf:draw_pdf_Export:${JSON.stringify(buildPdfExportFilterData({ pdfa: { conformance } }))}`;
     // A private profile per job: concurrent jobs must not share (or lock) the default profile.
     const profileDir = path.join(workDir, 'profile');
-    const resolved = resolveSandboxedCommand(
-      soffice,
-      [
-        '--headless',
-        '--norestore',
-        '--nofirststartwizard',
-        '--nologo',
-        `-env:UserInstallation=file://${profileDir}`,
-        '--convert-to',
-        filterDef,
-        '--outdir',
-        outDir,
-        inputPdf,
-      ],
-      { networkIsolated: true }
-    );
-
     try {
-      execFileSync(resolved.binary, resolved.args, {
-        cwd: workDir,
-        env: getSanitizedEnvironment({ SAL_USE_VCLPLUGIN: 'svp' }, true),
-        timeout: SOFFICE_TIMEOUT_MS,
-      });
-    } catch (err: any) {
-      // The command line and stderr hold sandbox paths: log them here, keep them out of the response.
-      console.error('[pdfa] LibreOffice PDF/A conversion failed:', (err?.message || '') + (err?.stderr?.toString() || ''));
+      await executeSandboxedBinary(
+        soffice,
+        [
+          '--headless',
+          '--norestore',
+          '--nofirststartwizard',
+          '--nologo',
+          `-env:UserInstallation=file://${profileDir}`,
+          '--convert-to',
+          filterDef,
+          '--outdir',
+          outDir,
+          inputPdf,
+        ],
+        {
+          timeoutMs: SOFFICE_TIMEOUT_MS,
+          cwd: workDir,
+          env: { SAL_USE_VCLPLUGIN: 'svp' },
+          networkIsolated: true,
+        }
+      );
+    } catch (err: unknown) {
+      rethrowSandboxUnavailable(err);
+      const detail = (err instanceof Error ? err.message : String(err)) + (err instanceof SandboxedProcessError ? err.stderr : '');
+      console.error('[pdfa] LibreOffice PDF/A conversion failed:', detail);
       throw new PdfPostprocessError('PDF/A conversion failed: LibreOffice could not convert the document.');
     }
 
