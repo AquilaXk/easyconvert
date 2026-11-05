@@ -8,12 +8,6 @@ import { endedJobRetentionMs, enqueueConversionJob } from '../src/lib/queue/enqu
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import type { ConversionJobData } from '../src/lib/types';
 
-/**
- * What the Redis queue keeps of a job once it ends: the data keys named in `removeDataOnFinish` are gone from the stored
- * job and from its dead letter, and `removeOnComplete` / `removeOnFail` given as `{ age }` remove the jobs that ended more
- * than `age` seconds ago, as BullMQ's KeepJobs does. Needs a real Redis server (the transitions are Lua scripts); the
- * Redis-mode CI step (npm run test:redis) sets REDIS_URL and runs this file.
- */
 const REDIS_URL = process.env.REDIS_URL;
 const AGE_SECONDS = 60;
 const AGE_MS = AGE_SECONDS * 1000;
@@ -112,6 +106,19 @@ describe.skipIf(!REDIS_URL)('Job records after the job ends, on a real Redis ser
       const [failed] = await queue._recoverStalledJobs();
       expect(failed.data.secret).toBe('whsec_plain');
       expect(await storedData('drop-stalled', attempt.id)).toEqual({ userId: 'u1', name: 'report.pdf' });
+    });
+
+    it('removes a stalled job with removeOnFail: true from Redis and the user index after DLQ transfer', async () => {
+      const queue = connect('remove-stalled');
+      const attempt = await runToActive(queue, data, { ...ENDING_OPTS, removeOnFail: true });
+      await admin.del(keyOf('remove-stalled', `heartbeat:${attempt.id}`));
+
+      const [failed] = await queue._recoverStalledJobs();
+      expect(failed.id).toBe(attempt.id);
+      expect(await queue.getJob(attempt.id)).toBeUndefined();
+      expect(await admin.sismember(keyOf('remove-stalled', 'failed'), attempt.id)).toBe(0);
+      expect(await queue.getJobsByUser('u1')).toEqual([]);
+      expect((await queue.getDlqEntries()).map((letter) => letter.jobId)).toEqual([attempt.id]);
     });
 
     it('keeps the data of a job that asks for nothing to be dropped', async () => {

@@ -13,12 +13,6 @@ import { OAUTH_STATE_TTL_SECONDS } from '../src/lib/auth/oauth';
 import { createSessionCookie } from '../src/lib/auth/session';
 import { MAX_SESSION_AGE_MS } from '../src/lib/edge/opfs/storage-gc';
 
-/**
- * The numbers the legal texts state are the values the code runs with: each phrase below is built from the value it names,
- * so a change of a default or a limit fails here until both languages say the new value. The two languages also carry the
- * same clauses: the same sections, list items and table rows.
- */
-
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -28,7 +22,6 @@ type Unit = 'minute' | 'hour' | 'day';
 const UNIT_MS: Record<Unit, number> = { minute: MINUTE_MS, hour: HOUR_MS, day: DAY_MS };
 const KO_UNIT: Record<Unit, string> = { minute: '분', hour: '시간', day: '일' };
 
-/** `ms` as a whole number of `unit`; a value that is not one fails, since the texts state whole units. */
 function count(ms: number, unit: Unit): number {
   expect(ms % UNIT_MS[unit], `${ms} ms in whole ${unit}s`).toBe(0);
   return ms / UNIT_MS[unit];
@@ -40,7 +33,6 @@ const sessionMaxAgeMs = Number(/Max-Age=(\d+)/.exec(createSessionCookie('token')
 const deliveredGraceMs = readIntegerSetting(NO_ENV, 'RESULT_DELIVERED_GRACE_SECONDS') * 1000;
 const undeliveredTtlMs = readIntegerSetting(NO_ENV, 'RESULT_UNDELIVERED_TTL_SECONDS') * 1000;
 
-/** What each value is, and the phrase that states it in the privacy policy in each language. */
 const PRIVACY_VALUES: ReadonlyArray<{ value: string; en: string; ko: string }> = [
   { value: 'upload kept after its last conversion (RESULT_DELIVERED_GRACE_SECONDS)', en: `Deleted ${en(deliveredGraceMs, 'minute')} after the last conversion that reads it ends`, ko: `마지막 변환이 끝나고 ${ko(deliveredGraceMs, 'minute')} 뒤 삭제합니다` },
   { value: 'unused upload (JOB_INPUT_HOLD_MAX_MS)', en: `deleted after at most ${en(JOB_INPUT_HOLD_MAX_MS, 'day')}`, ko: `길어도 ${ko(JOB_INPUT_HOLD_MAX_MS, 'day')} 뒤 삭제합니다` },
@@ -71,7 +63,6 @@ describe('the numbers of the legal texts are the values in force', () => {
   });
 });
 
-/** The clauses of a Markdown text: its sections, list items and table rows. */
 function clauses(markdown: string) {
   const lines = markdown.split('\n');
   return {

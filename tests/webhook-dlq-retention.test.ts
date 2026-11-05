@@ -3,7 +3,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WEBHOOK_DLQ_RETENTION_MS, webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
 
-// Public IPv4 literal: passes the SSRF pre-flight without a DNS round trip; fetch itself is mocked.
 const PUBLIC_WEBHOOK_URL = 'https://93.184.215.14/hooks/easyconvert';
 const SECRET = 'whsec_dead_letter_plain';
 
@@ -24,7 +23,6 @@ function entry(ownerUserId: string, failedAt: number): WebhookDlqEntry {
   };
 }
 
-/** The legacy signature header of a delivery, recomputed from the body and timestamp it carried. */
 function expectedLegacySignature(init: RequestInit): string {
   const headers = init.headers as Record<string, string>;
   const timestamp = headers['X-EasyConvert-Timestamp'];

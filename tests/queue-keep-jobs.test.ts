@@ -1,11 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Queue, type JobOptions } from '../src/lib/queue/bullmq-engine';
 
-/**
- * The in-process queue applies `removeOnComplete` / `removeOnFail` as BullMQ's KeepJobs: `{ age }` removes the jobs of the
- * same end state that ended more than `age` seconds ago when a job ends, `true` removes the job itself, a number keeps that
- * many of the newest. `clean` removes ended jobs older than its grace, and for `failed` their dead letters.
- */
 const AGE_SECONDS = 60;
 
 async function endJob(queue: Queue<{ userId: string; name: string }, string>, name: string, opts: JobOptions, endedAgoMs: number, outcome: 'completed' | 'failed') {

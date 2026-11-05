@@ -114,7 +114,6 @@ describe('the legal texts', () => {
   });
 });
 
-/** The source files `file` imports, resolved as the build resolves them (`@/` is `src/`); packages are left out. */
 function importsOf(file: string): string[] {
   const source = fs.readFileSync(file, 'utf8');
   const specifiers = [...source.matchAll(/(?:from|import)\s*\(?\s*'([^']+)'/g)].map((match) => match[1].replace(/\?raw$/, ''));
@@ -126,7 +125,6 @@ function importsOf(file: string): string[] {
   });
 }
 
-/** Every source file reachable from `entry` through its imports. */
 function reachableFrom(entry: string): Set<string> {
   const seen = new Set<string>([entry]);
   for (const file of seen) for (const imported of importsOf(file)) seen.add(imported);

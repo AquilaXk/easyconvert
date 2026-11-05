@@ -31,7 +31,6 @@ export interface JobDeadlineOwner {
 
 export type ConversionJobOptions = Omit<JobOptions, 'timeout' | 'removeOnComplete' | 'removeOnFail' | 'removeDataOnFinish'>;
 
-/** The data of a conversion job that only its running attempt needs: the inline input and the webhook signing secret. */
 const DATA_DROPPED_ON_FINISH: readonly (keyof ConversionJobData)[] = ['inputBufferBase64', 'webhookSecret'];
 
 /**
@@ -62,10 +61,6 @@ export async function enqueueConversionJob(
   });
 }
 
-/**
- * The job `opts.jobId` as the queue stores it: its password sealed, the deadline of its tier and input as its timeout, its
- * inline input and webhook secret dropped when it ends, and the job itself removed `endedJobRetentionMs` after it ended.
- */
 function preparedConversionJob(
   data: Omit<ConversionJobData, 'reservationId'>,
   opts: ConversionJobOptions & { jobId: string },

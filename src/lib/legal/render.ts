@@ -30,7 +30,6 @@ function plainText(inline: Token | undefined): string {
 
 const isHeading = (token: Token, tag: 'h1' | 'h2') => token.type === 'heading_open' && token.tag === tag;
 
-/** Points each link to a page of the site (`/contact`) at that page in `locale`, so that both languages of a text link alike. */
 function localizeSiteLinks(tokens: readonly Token[], locale: AppLocale): void {
   for (const token of tokens) {
     if (token.children) localizeSiteLinks(token.children, locale);

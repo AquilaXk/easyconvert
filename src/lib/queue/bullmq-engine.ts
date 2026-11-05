@@ -523,16 +523,19 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   _onJobCompleted(job: Job<T, R>, _result: R): boolean {
+    job.state = 'completed';
+    job.finishedOn = job.finishedOn || Date.now();
     this.keepEndedJobs(job, 'completed', keepJobsOf(job.opts?.removeOnComplete));
     return true;
   }
 
   _onJobFailed(job: Job<T, R>, _err: any): boolean {
+    job.state = 'failed';
+    job.finishedOn = job.finishedOn || Date.now();
     this.keepEndedJobs(job, 'failed', keepJobsOf(job.opts?.removeOnFail));
     return true;
   }
 
-  /** Applies `keep` as `job` ends in `state`: removes `job` itself for a count of 0, else the ended jobs `keep` leaves out. */
   private keepEndedJobs(job: Job<T, R>, state: 'completed' | 'failed', keep: KeepJobs): void {
     if (keep.count === 0) {
       this.removeJob(job);
@@ -542,11 +545,10 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       this.removeEndedBefore(state, Date.now() - keep.age * 1000, Number.POSITIVE_INFINITY);
     }
     if (keep.count !== undefined && keep.count > 0) {
-      // `job` is the newest of its state; the worker records its state only after this returns.
       const older = Array.from(this.jobs.values())
-        .filter((j) => j !== job && j.state === state)
+        .filter((j) => j.state === state)
         .sort((a, b) => (b.finishedOn || 0) - (a.finishedOn || 0));
-      older.slice(keep.count - 1).forEach((j) => this.removeJob(j));
+      older.slice(keep.count).forEach((j) => this.removeJob(j));
     }
   }
 
@@ -555,7 +557,6 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
     this.removeUserJob(job.id, ownerOf(job.data));
   }
 
-  /** Removes up to `limit` jobs in `state` that ended at or before `threshold`, and answers their ids. */
   private removeEndedBefore(state: 'completed' | 'failed' | 'cancelled', threshold: number, limit: number): string[] {
     const removed: string[] = [];
     for (const job of this.jobs.values()) {
@@ -2008,17 +2009,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback._popNextWaiting();
   }
 
-  /**
-   * Applies `keep` once `job` ended in `state`: for a count of 0 the job hash is already gone and only its index entry goes;
-   * otherwise the job drops its `removeDataOnFinish` data, and the ended jobs `keep` leaves out are removed. The end is
-   * already recorded, so a failure here is logged and left to `clean`.
-   */
   private async keepEndedJobs(job: Job<T, R>, state: 'completed' | 'failed', keep: KeepJobs): Promise<void> {
     const client = this.redisClient;
     if (!client) return;
     try {
       const userId = ownerOf(job.data);
       if (keep.count === 0) {
+        await removeStoredJob(client, this.keySpace, job.id);
         if (userId) await client.zrem(this.getUserJobsKey(userId), job.id);
         return;
       }
@@ -2274,9 +2271,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         continue;
       }
       await this.moveToDlq(job, STALLED_JOB_FAILURE_REASON);
-      const keep = keepJobsOf(job.opts?.removeOnFail);
-      // The sweep marks the job failed without deleting its hash, so a count of 0 has nothing to act on here.
-      if (keep.count !== 0) await this.keepEndedJobs(job, 'failed', keep);
+      await this.keepEndedJobs(job, 'failed', keepJobsOf(job.opts?.removeOnFail));
       failedJobs.push(job);
       await this.publishEvent({ event: 'failed', jobId: job.id, error: STALLED_JOB_FAILURE_REASON });
     }

@@ -2,11 +2,6 @@ import type Redis from 'ioredis';
 import { REMOVE_JOB_LUA_SCRIPT, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT, TRIM_DEAD_LETTERS_LUA_SCRIPT } from './lua-scripts';
 
 /**
- * What the queue keeps of jobs once they end. The engine (bullmq-engine.ts) applies these rules in both modes; the Redis
- * steps are here, each one a few commands on the keys of one queue.
- */
-
-/**
  * Which ended jobs a queue keeps, as BullMQ's KeepJobs (src/interfaces/keep-jobs.ts): those that ended at most `age`
  * seconds ago, and at most the `count` newest. When a job ends with this option, the ended jobs of its state that fall
  * outside it are removed (BullMQ moveToFinished-14.lua and includes/removeJobsByMaxAge.lua). The removal runs only when a

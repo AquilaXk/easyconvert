@@ -23,7 +23,6 @@ export async function GET(req: NextRequest) {
     if (sentVersion !== null && termsRefusal(sentVersion) === 'terms_outdated') {
       return codedRefusal<AuthErrorCode>(400, 'terms_outdated', termsRefusalText('terms_outdated'));
     }
-    // Only the version in force is kept, so the state never carries a value the callback could record unchecked.
     const session = await createOAuthSession({
       locale: offeredLocale(searchParams.get('locale')),
       acceptedTermsVersion: sentVersion === TERMS_VERSION ? sentVersion : undefined,

@@ -6,11 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 import { testMessages } from './helpers/intl-messages';
 
-/**
- * What the sign-up form, the sign-up with Google and the dashboard key form send about the terms: the version in force only
- * when the box is ticked, and no Google sign-up from the sign-up tab before it is.
- */
-
 const ROUTER = { push: vi.fn(), refresh: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), prefetch: vi.fn() };
 vi.mock('../src/i18n/navigation', () => ({ useRouter: () => ROUTER }));
 vi.mock('next/navigation', async (importOriginal) => ({
@@ -30,7 +25,6 @@ afterEach(() => {
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-/** Mounts `useController` under the English messages with `fetch` answering `answer`; the fetch mock and the live controller. */
 async function mount<Controller>(useController: () => Controller, answer: (url: string) => Response) {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
   const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => answer(url));

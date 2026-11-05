@@ -318,7 +318,6 @@ function endedGraph(data: InternalGraphData): EndedGraph {
   };
 }
 
-/** Drops the webhook secret of an ended graph. The process keeps its state until it stops, as it keeps its jobs. */
 function forgetWebhookSecret(state: GraphExecutionState): void {
   delete state.webhookSecret;
 }

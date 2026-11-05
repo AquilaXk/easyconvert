@@ -694,8 +694,6 @@ export class WebhookDispatcher {
   }
 
   public async saveToDlq(unmasked: WebhookDlqEntry): Promise<void> {
-    // A replay needs the target URL and the signing secret: the URL stays as it is and the secret is stored encrypted, as
-    // the key store keeps it. The payload and the error text are what a reader of the queue sees, so they are stored masked.
     const entry: WebhookDlqEntry = {
       ...unmasked,
       secret: encryptSecret(unmasked.secret) ?? '',
@@ -733,7 +731,6 @@ export class WebhookDispatcher {
     return Array.from(this.inMemoryDlq.values());
   }
 
-  /** The entry `id`, or null when there is none or it expired (WEBHOOK_DLQ_RETENTION_MS). */
   private async readDlqEntry(id: string): Promise<WebhookDlqEntry | null> {
     const entry = await this.readStoredDlqEntry(id);
     return entry && !isDlqEntryExpired(entry, Date.now()) ? entry : null;

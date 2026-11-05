@@ -10,12 +10,6 @@ import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
 
-/**
- * The account erasure the runbook runs on a deletion request (scripts/erase-account.ts), against the in-process stores and
- * queue: the plan lists every family of records of one account and changes nothing, and the erasure removes them all and
- * nothing of another account.
- */
-
 async function accountWithRecords(label: string) {
   const user = await redisUserStore.createUser({ email: `${label}_${crypto.randomUUID()}@erase.test`, name: label, acceptedTermsVersion: TERMS_VERSION });
   const { key } = await redisKeyStore.generateApiKey(user.id, `${label} key`, { acceptedTermsVersion: TERMS_VERSION });

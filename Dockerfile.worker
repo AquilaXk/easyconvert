@@ -27,7 +27,6 @@ COPY tsconfig.json ./
 COPY src/ ./src/
 COPY scripts/erase-account.ts ./scripts/
 
-# Compile worker bundle to dist/worker.js, and the account erasure the runbook runs (docs/deploy-oci.md, "Deleting an account")
 RUN npm run build:worker
 
 # Prune devDependencies to ship production dependencies only

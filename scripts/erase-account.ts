@@ -3,34 +3,16 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
-import { CANCELLABLE_JOB_STATES } from '../src/lib/queue/bullmq-engine';
+import { CANCELLABLE_JOB_STATES, type JobState } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { deleteResult } from '../src/lib/storage/retention-service';
-
-/**
- * Deletes what EasyConvert keeps about one account when its owner asks for that (privacy policy, sections 4 and 10, answered
- * within 10 days). It lists, and with `--apply` deletes, every family of records of the account:
- *
- * - its conversion jobs in every queue, with the index of its jobs: live ones are cancelled first, and a job whose attempt is
- *   still running is left for a second run;
- * - the stored files of those jobs and of the account, through the retention ledger, as the retention sweep deletes them;
- * - its API keys and their webhook signing secrets;
- * - its webhook dead letters;
- * - its conversion counts, in this process and as the Redis keys tagged with the account id (usage, reservations, leases);
- * - the account record, its email index and its session version, last and only once no job is left, so that a run that
- *   stops, or that leaves a running job, can be run again.
- *
- * Run it in the worker container, which reaches Redis and the storage root:
- *   node dist/erase-account.js --user <account id or email>           lists what would be deleted
- *   node dist/erase-account.js --user <account id or email> --apply   deletes it
- */
 
 export interface AccountErasurePlan {
   userId: string;
   email: string;
   apiKeyIds: string[];
-  jobs: { id: string; state: string }[];
+  jobs: { id: string; state: JobState }[];
   storedKeys: string[];
   deadLetters: number;
   taggedKeys: string[];
@@ -41,16 +23,13 @@ export interface AccountErasureOutcome {
   runningJobIds: string[];
 }
 
-/** Most jobs of one account a run reads; an account with more is erased over several runs. */
 const MAX_JOBS_PER_RUN = 10_000;
-/** Keys one SCAN step of Redis returns at most. */
 const SCAN_COUNT = 500;
 
 async function findAccount(idOrEmail: string) {
   return idOrEmail.includes('@') ? redisUserStore.findByEmail(idOrEmail) : redisUserStore.findById(idOrEmail);
 }
 
-/** Redis keys whose hash tag is the account id, `{<id>}`, the slot every per-account counter and secret record shares. */
 async function accountTaggedKeys(userId: string): Promise<string[]> {
   const client = redisKeyStore.getRedisClient();
   if (!client) return [];
@@ -65,7 +44,6 @@ async function accountTaggedKeys(userId: string): Promise<string[]> {
   return keys.sort();
 }
 
-/** The stored files the retention ledger tracks for the account and for `jobIds`, by storage key. */
 async function accountStoredKeys(userId: string, jobIds: readonly string[]): Promise<string[]> {
   const prefixes = [`conversions/${userId}/`, ...jobIds.map((id) => `results/${id}/`)];
   const records = await getRetentionLedger().liveRecords();
@@ -94,11 +72,10 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
   };
 }
 
-/** Deletes everything `plan` lists. */
 export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountErasureOutcome> {
   const { userId } = plan;
   for (const job of plan.jobs) {
-    if (CANCELLABLE_JOB_STATES.has(job.state as never)) await conversionQueue.cancelJob(job.id, 'The account was deleted');
+    if (CANCELLABLE_JOB_STATES.has(job.state)) await conversionQueue.cancelJob(job.id, 'The account was deleted');
   }
   const runningJobIds: string[] = [];
   for (const job of plan.jobs) {
@@ -114,7 +91,6 @@ export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountEra
   redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
   if (client && plan.taggedKeys.length > 0) await client.del(...plan.taggedKeys);
-  // The account goes last, and only once no job is left, so that a second run still finds it by its id.
   if (runningJobIds.length === 0) await redisUserStore.deleteUser(userId);
   return { runningJobIds };
 }

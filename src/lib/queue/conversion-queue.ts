@@ -470,9 +470,7 @@ for (const q of Object.values(resourceQueues)) {
   });
 }
 
-/** How often the ended conversion jobs and the expired webhook dead letters are removed. */
 const ENDED_RECORD_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
-/** Most jobs of one end state that one sweep removes from each queue; a larger backlog goes over the next sweeps. */
 const ENDED_RECORD_SWEEP_LIMIT = 1000;
 const ENDED_JOB_STATES = ['completed', 'failed', 'cancelled'] as const;
 
