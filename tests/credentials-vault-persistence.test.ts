@@ -35,6 +35,14 @@ function fakeRedis() {
     get: (key: string) => guard(() => data.get(key) ?? null),
     del: (key: string) => guard(() => (data.delete(key) ? 1 : 0)),
     keys: (pattern: string) => guard(() => [...data.keys()].filter((key) => key.startsWith(pattern.replace('*', '')))),
+    scan: (cursor: string, _matchToken: string, pattern: string) =>
+      guard(() => {
+        const prefix = pattern.replace('*', '');
+        const matching = [...data.keys()].filter((key) => key.startsWith(prefix));
+        const index = Number(cursor);
+        const next = index + 1 < matching.length ? String(index + 1) : '0';
+        return [next, matching.slice(index, index + 1)] as [string, string[]];
+      }),
   };
   return { client, data, state };
 }
@@ -71,6 +79,24 @@ describe('Credentials vault persistence (#483)', () => {
       expect(await reader.list('user_2')).toEqual([]);
       expect(await reader.get(ref, 'user_1')).toEqual(CREDENTIALS);
       expect(await reader.get(ref, 'user_2')).toBeNull();
+    });
+
+    it('lists every stored credential id of the user over Redis SCAN, expired ones not yet evicted included', async () => {
+      const redis = fakeRedis();
+      const writer = new CredentialsVault(redis.client as never);
+
+      const activeRef = await writer.store('user_1', CREDENTIALS, { name: 'active' });
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow - 120_000);
+      const expiredRef = await writer.store('user_1', CREDENTIALS, { name: 'expired', ttlSeconds: 60 });
+      nowSpy.mockRestore();
+      await writer.store('user_2', CREDENTIALS, { name: 'other' });
+
+      const reader = new CredentialsVault(redis.client as never);
+      expect(memoryCopies(reader)).toBe(0);
+      expect((await reader.list('user_1')).map((c) => c.id)).toEqual([activeRef]);
+      expect(await reader.listByUser('user_1')).toEqual([activeRef, expiredRef].sort());
+      expect(memoryCopies(reader)).toBe(0);
     });
 
     it('throws when the Redis save fails instead of keeping the credentials in memory', async () => {

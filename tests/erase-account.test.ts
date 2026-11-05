@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eraseAccount, planAccountErasure } from '../scripts/erase-account';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
-import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { keyStore } from '../src/lib/api-keys/key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { conversionQueue, resourceQueues } from '../src/lib/queue/conversion-queue';
@@ -34,6 +34,19 @@ async function accountWithRecords(label: string) {
     storageKey: `conversions/${user.id}/${label}.json`,
   });
   const credentialId = await credentialsVault.store(user.id, { type: 'http', url: 'https://93.184.215.14/out' });
+  const realNow = Date.now();
+  const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow - 120_000);
+  let expiredCredentialId: string;
+  try {
+    expiredCredentialId = await credentialsVault.store(
+      user.id,
+      { type: 'http', url: 'https://93.184.215.14/expired' },
+      { ttlSeconds: 60 }
+    );
+  } finally {
+    nowSpy.mockRestore();
+  }
+  const credentialIds = [credentialId, expiredCredentialId].sort();
   const job = await enqueueConversionJob(
     conversionQueue,
     'convert',
@@ -91,7 +104,7 @@ async function accountWithRecords(label: string) {
   };
   await webhookDispatcher.saveToDlq(letter);
   await webhookDispatcher.saveToDlq(expiredLetter);
-  return { user, keyId: key.id, credentialId, jobId: job.id, graphId, storedKeys, expiredLetterId: expiredLetter.id };
+  return { user, keyId: key.id, credentialId, credentialIds, jobId: job.id, graphId, storedKeys, expiredLetterId: expiredLetter.id };
 }
 
 describe('erasing one account', () => {
@@ -109,14 +122,16 @@ describe('erasing one account', () => {
   });
 
   it('lists every family of records of the account and deletes none of them in the plan', async () => {
-    const { user, keyId, credentialId, jobId, graphId, storedKeys } = await accountWithRecords('planned');
+    const { user, keyId, credentialId, credentialIds, jobId, graphId, storedKeys } = await accountWithRecords('planned');
+    expect((await credentialsVault.list(user.id)).map((c) => c.id)).toEqual([credentialId]);
+    expect(await credentialsVault.listByUser(user.id)).toEqual(credentialIds);
 
     const plan = await planAccountErasure(user.email);
     expect(plan).toMatchObject({
       userId: user.id,
       email: user.email,
       apiKeyIds: [keyId],
-      credentialIds: [credentialId],
+      credentialIds,
       graphIds: [graphId],
       storedKeys,
       deadLetters: 2,
@@ -126,6 +141,7 @@ describe('erasing one account', () => {
     expect(await redisUserStore.findById(user.id)).not.toBeNull();
     expect((await conversionQueue.getJob(jobId))?.state).toBe('waiting');
     expect(await redisKeyStore.listApiKeys(user.id)).toHaveLength(1);
+    expect(await credentialsVault.listByUser(user.id)).toEqual(credentialIds);
     expect((await redisKeyStore.getQuotaUsage(user.id)).usedToday).toBe(2);
     await eraseAccount(plan!);
   });
@@ -159,7 +175,8 @@ describe('erasing one account', () => {
     expect((await redisKeyStore.listApiKeys(kept.user.id)).map((key) => key.id)).toEqual([kept.keyId]);
     expect((await redisKeyStore.checkTokenBucketRateLimit(`apikey:${kept.keyId}`, { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(false);
     expect(await redisKeyStore.listUserFiles(kept.user.id)).toHaveLength(1);
-    expect(await credentialsVault.listByUser(kept.user.id)).toEqual([kept.credentialId]);
+    expect((await credentialsVault.list(kept.user.id)).map((c) => c.id)).toEqual([kept.credentialId]);
+    expect(await credentialsVault.listByUser(kept.user.id)).toEqual(kept.credentialIds);
     expect((await conversionQueue.getJob(kept.jobId))?.state).toBe('waiting');
     expect((await graphScheduler.getGraphState(kept.graphId))?.status).toBe('running');
     expect((await resourceQueues.light.getDlqEntries?.())?.some((entry) => entry.jobId === kept.jobId)).toBe(true);
@@ -183,5 +200,89 @@ describe('erasing one account', () => {
 
   it('answers no plan for an account that does not exist', async () => {
     expect(await planAccountErasure('nobody@erase.test')).toBeUndefined();
+  });
+
+  it('deletes a key in Redis only for its owner, even when the key is not in local memory', async () => {
+    const hashes = new Map<string, Record<string, string>>();
+    const sets = new Map<string, Set<string>>();
+    const client = {
+      hset: async (key: string, fieldOrMap: string | Record<string, string>, value?: string) => {
+        const entry = hashes.get(key) ?? {};
+        if (typeof fieldOrMap === 'string') entry[fieldOrMap] = value ?? '';
+        else Object.assign(entry, fieldOrMap);
+        hashes.set(key, entry);
+        return 1;
+      },
+      hgetall: async (key: string) => ({ ...(hashes.get(key) ?? {}) }),
+      hdel: async (key: string, field: string) => {
+        const entry = hashes.get(key);
+        if (!entry || !(field in entry)) return 0;
+        delete entry[field];
+        return 1;
+      },
+      sadd: async (key: string, member: string) => {
+        const set = sets.get(key) ?? new Set<string>();
+        set.add(member);
+        sets.set(key, set);
+        return 1;
+      },
+      srem: async (key: string, member: string) => {
+        const set = sets.get(key);
+        return set?.delete(member) ? 1 : 0;
+      },
+      del: async (...keys: string[]) => {
+        let removed = 0;
+        for (const key of keys) {
+          if (hashes.delete(key)) removed++;
+          if (sets.delete(key)) removed++;
+        }
+        return removed;
+      },
+    };
+
+    const writer = new RedisKeyStore({ keyPrefix: 'test:', isolated: true, redisClient: client as never });
+    const reader = new RedisKeyStore({ keyPrefix: 'test:', isolated: true });
+
+    const { key: localKey } = await writer.generateApiKey('owner_1', 'local', { acceptedTermsVersion: TERMS_VERSION });
+    hashes.delete(`test:apikeys:${localKey.id}`);
+    hashes.set(`test:rate:apikey:${localKey.id}`, { tokens: '0' });
+    writer.setRedisClient(null);
+    await writer.checkTokenBucketRateLimit(`apikey:${localKey.id}`, { capacity: 1, refillRate: 0, cost: 1 });
+    writer.setRedisClient(client as never);
+
+    expect(await writer.deleteApiKey('other_user', localKey.id)).toBe(false);
+    expect(hashes.has(`test:rate:apikey:${localKey.id}`)).toBe(true);
+    writer.setRedisClient(null);
+    expect((await writer.checkTokenBucketRateLimit(`apikey:${localKey.id}`, { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(false);
+    writer.setRedisClient(client as never);
+
+    const { key: remoteKey } = await writer.generateApiKey('owner_1', 'remote', { acceptedTermsVersion: TERMS_VERSION });
+    hashes.set(`test:rate:apikey:${remoteKey.id}`, { tokens: '0' });
+    hashes.set('test:rate:apikey:missing_key', { tokens: '0' });
+
+    await reader.checkTokenBucketRateLimit(`apikey:${remoteKey.id}`, { capacity: 1, refillRate: 0, cost: 1 });
+    await reader.checkTokenBucketRateLimit('apikey:missing_key', { capacity: 1, refillRate: 0, cost: 1 });
+    reader.setRedisClient(client as never);
+
+    expect(await reader.deleteApiKey('other_user', 'missing_key')).toBe(false);
+    expect(hashes.has('test:rate:apikey:missing_key')).toBe(true);
+    expect(await reader.deleteApiKey('other_user', remoteKey.id)).toBe(false);
+    expect(hashes.has(`test:apikeys:${remoteKey.id}`)).toBe(true);
+    expect(hashes.has(`test:rate:apikey:${remoteKey.id}`)).toBe(true);
+    expect(sets.get('test:user_keys:owner_1')?.has(remoteKey.id)).toBe(true);
+
+    reader.setRedisClient(null);
+    expect((await reader.checkTokenBucketRateLimit('apikey:missing_key', { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(false);
+    expect((await reader.checkTokenBucketRateLimit(`apikey:${remoteKey.id}`, { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(false);
+
+    reader.setRedisClient(client as never);
+    expect(await reader.deleteApiKey('owner_1', remoteKey.id)).toBe(true);
+    expect(hashes.has(`test:apikeys:${remoteKey.id}`)).toBe(false);
+    expect(hashes.has(`test:rate:apikey:${remoteKey.id}`)).toBe(false);
+    expect(sets.get('test:user_keys:owner_1')?.has(remoteKey.id)).toBe(false);
+    expect(hashes.get('test:apikey_hashes')?.[remoteKey.keyHash]).toBeUndefined();
+
+    reader.setRedisClient(null);
+    expect((await reader.checkTokenBucketRateLimit(`apikey:${remoteKey.id}`, { capacity: 1, refillRate: 0, cost: 1 })).allowed).toBe(true);
   });
 });

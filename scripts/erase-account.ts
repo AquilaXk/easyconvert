@@ -47,10 +47,6 @@ async function accountTaggedKeys(userId: string): Promise<string[]> {
   return keys.sort((a, b) => a.localeCompare(b));
 }
 
-function accountGraphIds(userId: string): Promise<string[]> {
-  return graphScheduler.graphsOfUser(userId);
-}
-
 async function accountStoredKeys(
   userId: string,
   jobIds: readonly string[],
@@ -74,7 +70,7 @@ export async function planAccountErasure(idOrEmail: string): Promise<AccountEras
   const [keys, credentialIds, graphIds, jobs, letters, taggedKeys] = await Promise.all([
     redisKeyStore.listApiKeys(userId),
     credentialsVault.listByUser(userId),
-    accountGraphIds(userId),
+    graphScheduler.graphsOfUser(userId),
     conversionQueue.getJobsByUser(userId, undefined, MAX_JOBS_PER_RUN, 0),
     webhookDispatcher.getDlqEntries(userId, { includeExpired: true }),
     accountTaggedKeys(userId),

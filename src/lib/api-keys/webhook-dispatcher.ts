@@ -15,7 +15,7 @@ import {
 
 /**
  * How long a dead letter is kept after its delivery failed: 30 days, within the 2 to 90 days for which webhook delivery
- * services keep a failed delivery for a manual redelivery (docs/policy-decisions.md, entry 146). The download link in a
+ * services keep a failed delivery for a manual redelivery (docs/policy-decisions.md, entry 147). The download link in a
  * letter expires long before, so a later redelivery would only announce a file that is gone.
  */
 export const WEBHOOK_DLQ_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;

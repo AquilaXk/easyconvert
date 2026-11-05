@@ -549,10 +549,16 @@ export class RedisKeyStore extends KeyStore {
   }
 
   public override async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
+    const localKey = this.keys.get(keyId);
+    if (localKey && localKey.userId !== userId) {
+      return false;
+    }
+    let deletedInRedis = false;
     if (this.redisClient) {
       try {
         const keyData = await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${keyId}`);
-        if (keyData.userId && keyData.userId !== userId) {
+        const ownerId = keyData.userId ?? localKey?.userId;
+        if (ownerId !== userId) {
           return false;
         }
         if (keyData.keyHash) {
@@ -564,11 +570,13 @@ export class RedisKeyStore extends KeyStore {
         await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
         await this.redisClient.del(`${this.keyPrefix}apikeys:${keyId}`, `${this.keyPrefix}rate:apikey:${keyId}`);
         this.tokenBuckets.delete(`apikey:${keyId}`);
+        deletedInRedis = Boolean(keyData.userId);
       } catch (err) {
         console.warn('[RedisKeyStore] Redis deleteApiKey failed:', err);
       }
     }
-    return super.deleteApiKey(userId, keyId);
+    const deletedLocal = await super.deleteApiKey(userId, keyId);
+    return deletedInRedis || deletedLocal;
   }
 
   public override async listApiKeys(userId: string): Promise<ApiKey[]> {
