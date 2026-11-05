@@ -1606,7 +1606,8 @@
       "client-ip-trust-unconfigured": "The service is temporarily unavailable. Try again shortly.",
       "byos-invalid-endpoint": "The storage endpoint cannot be used. Check its address and try again.",
       "byos-provider-unavailable": "This storage provider cannot be connected yet. Choose another provider.",
-      "graph-without-conversion": "A job needs at least one conversion. Add a conversion step between the import and the export."
+      "graph-without-conversion": "A job needs at least one conversion. Add a conversion step between the import and the export.",
+      "ocr-asset-integrity-failed": "The text recognition data on the server could not be verified. Try again later."
     },
     "limits": {
       "payload-too-large": "One request can carry at most {limit}.",

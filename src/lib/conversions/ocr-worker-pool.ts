@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import { OcrEngineUnavailableError } from '../types';
+import { TRAINEDDATA_HEADER_PROBE_BYTES, isValidTraineddataHeader } from './ocr-language-data';
 
 /**
  * Workers kept per language set. Each holds a WebAssembly heap of roughly 100-300 MB (about 50 MB for English
@@ -24,11 +25,6 @@ export const OCR_POOL_CREATE_TIMEOUT_MS = 60_000;
 /** Shutdown stops waiting for worker termination after this long. */
 export const OCR_POOL_SHUTDOWN_TIMEOUT_MS = 5_000;
 
-const TRAINEDDATA_COUNT_BYTES = 4;
-const TRAINEDDATA_OFFSET_BYTES = 8;
-/** The component table of a traineddata file has far fewer entries than this. */
-const TRAINEDDATA_MAX_ENTRIES = 64;
-const TRAINEDDATA_ABSENT_OFFSET = -1n;
 const LANGUAGE_SEPARATOR = '+';
 
 export type OcrRecognizeResult = Awaited<ReturnType<TesseractWorker['recognize']>>;
@@ -114,22 +110,17 @@ function assertTraineddataIntact(spec: OcrWorkerSpec): void {
       const fd = fs.openSync(file, 'r');
       try {
         size = fs.fstatSync(fd).size;
-        header = Buffer.alloc(TRAINEDDATA_COUNT_BYTES + TRAINEDDATA_MAX_ENTRIES * TRAINEDDATA_OFFSET_BYTES);
-        fs.readSync(fd, header, 0, header.length, 0);
+        header = Buffer.alloc(TRAINEDDATA_HEADER_PROBE_BYTES);
+        const bytesRead = fs.readSync(fd, header, 0, header.length, 0);
+        header = header.subarray(0, bytesRead);
       } finally {
         fs.closeSync(fd);
       }
     } catch {
       throw unreadableData(lang);
     }
-    const entries = header.readInt32LE(0);
-    const tableEnd = TRAINEDDATA_COUNT_BYTES + entries * TRAINEDDATA_OFFSET_BYTES;
-    if (entries < 1 || entries > TRAINEDDATA_MAX_ENTRIES || tableEnd > size) throw unreadableData(lang);
-    for (let i = 0; i < entries; i++) {
-      const offset = header.readBigInt64LE(TRAINEDDATA_COUNT_BYTES + i * TRAINEDDATA_OFFSET_BYTES);
-      if (offset !== TRAINEDDATA_ABSENT_OFFSET && (offset < BigInt(tableEnd) || offset >= BigInt(size))) {
-        throw unreadableData(lang);
-      }
+    if (!isValidTraineddataHeader(header, size)) {
+      throw unreadableData(lang);
     }
   }
 }

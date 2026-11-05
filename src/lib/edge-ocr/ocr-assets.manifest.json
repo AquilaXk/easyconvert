@@ -1,0 +1,41 @@
+{
+  "tesseractVersion": "7.0.0",
+  "coreVersion": "7.0.0",
+  "assets": {
+    "worker.min.js": {
+      "packagePath": "node_modules/tesseract.js/dist/worker.min.js",
+      "size": 111307,
+      "sha256": "576b7df7e3393e137e51849357c9adb53fe7ac1bb69bfa06cf3d61520f182c6d"
+    },
+    "tesseract-core-lstm.wasm.js": {
+      "packagePath": "node_modules/tesseract.js-core/tesseract-core-lstm.wasm.js",
+      "size": 3896484,
+      "sha256": "eef5f8b2f8e20e150680b20adaec4a60babafee3adbe8a94583c81fee46e8680"
+    },
+    "tesseract-core-simd-lstm.wasm.js": {
+      "packagePath": "node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm.js",
+      "size": 3899472,
+      "sha256": "c58b46a4c796c0b8afccf77591d5b875b6896b45d402bbce8caa6f5362447b38"
+    },
+    "tesseract-core-relaxedsimd-lstm.wasm.js": {
+      "packagePath": "node_modules/tesseract.js-core/tesseract-core-relaxedsimd-lstm.wasm.js",
+      "size": 3905767,
+      "sha256": "861a536cf9ef8e63cb644d57bab39c388f37f7d6b6f60024b741c5f6b39a59b3"
+    },
+    "tesseract-core.wasm.js": {
+      "packagePath": "node_modules/tesseract.js-core/tesseract-core.wasm.js",
+      "size": 4687944,
+      "sha256": "0bc6ce3e5fbbd0cd89706cf2fd70960e3372f4f01ee24265b26990808aaeb286"
+    },
+    "tesseract-core-simd.wasm.js": {
+      "packagePath": "node_modules/tesseract.js-core/tesseract-core-simd.wasm.js",
+      "size": 4690932,
+      "sha256": "6b61ef4e911b5cf57e656bbfe983d6e2b3711a02dd164154ddda064566e8e09d"
+    },
+    "tesseract-core-relaxedsimd.wasm.js": {
+      "packagePath": "node_modules/tesseract.js-core/tesseract-core-relaxedsimd.wasm.js",
+      "size": 4697227,
+      "sha256": "843074aa5bad1cc6421b74a86201768ced9f244795e4d81435435a61a40ce535"
+    }
+  }
+}

@@ -203,6 +203,10 @@ Legal
 146. [The terms, the privacy policy, the data processing terms and the acceptable use policy are written from law and reference research, not reviewed by counsel, and sign-up and API key creation record the accepted terms version](#146-the-terms-the-privacy-policy-the-data-processing-terms-and-the-acceptable-use-policy-are-written-from-law-and-reference-research-not-reviewed-by-counsel-and-sign-up-and-api-key-creation-record-the-accepted-terms-version)
 147. [An ended conversion job drops its inline input and webhook secret at once, and is removed with its dead letter 25 hours after it ended; a failed webhook delivery is kept 30 days with its secret encrypted; an account is erased on request by one command](#147-an-ended-conversion-job-drops-its-inline-input-and-webhook-secret-at-once-and-is-removed-with-its-dead-letter-25-hours-after-it-ended-a-failed-webhook-delivery-is-kept-30-days-with-its-secret-encrypted-an-account-is-erased-on-request-by-one-command)
 
+Security
+
+154. [Edge OCR engine, WebAssembly core, and language data are served from SHA-256-verified first-party assets with zero third-party CDN requests](#154-edge-ocr-engine-webassembly-core-and-language-data-are-served-from-sha-256-verified-first-party-assets-with-zero-third-party-cdn-requests)
+
 ---
 
 ## 1. AVIF chroma and bit depth
@@ -5680,8 +5684,22 @@ Legal
   - **Direct-mapped 24-bit RGB cache in `createPaletteLookup` allocates `384` KiB (`Int32Array(65536)` + `Uint16Array(65536)`) per dithering pass.** Preserves exact 24-bit RGB palette matching with zero colour aliasing.
 - **Alternatives rejected**:
   - **Relying only on `prlimit --as` inside the process sandbox.** Returns a generic process crash or timeout after CPU and memory have already been spent instead of a deterministic `413` `InputPixelLimitError` with the declared dimensions and limit.
-- **Verified by**: `tests/native-engine-pixel-gate.test.ts`, `tests/image-pixel-budgets.test.ts`, `tests/image-input-pixel-limit-embedded.test.ts`, and `tests/raw-native-limits.test.ts`.
+- **Verified by**: `tests/native-engine-pixel-gate.test.ts`, `tests/image-input-pixel-limit-embedded.test.ts`, `tests/image-pixel-budgets.test.ts`, and `tests/raw-native-limits.test.ts`.
 - **Revisit when**: LibreOffice or FFmpeg exposes a native flag that enforces a maximum decoded pixel count across all input codecs and embedded media parts.
 
+## 154. Edge OCR engine, WebAssembly core, and language data are served from SHA-256-verified first-party assets with zero third-party CDN requests
 
-
+- **Status**: Implemented (issues #530 and #761), decided 2026-11-05.
+- **Decision**:
+  - **First-party worker, core, and traineddata options on `Tesseract.createWorker`.** `recognizeImage` in `src/lib/edge-ocr/index.ts` passes `workerPath: EDGE_OCR_WORKER_PATH` (`/_assets/ocr/7.0.0/worker.min.js`), `corePath: EDGE_OCR_CORE_PATH` (`/_assets/ocr/7.0.0`), `langPath: EDGE_OCR_LANG_PATH` (`/_assets/ocr/7.0.0/tessdata`), `gzip: false`, `workerBlobURL: false`, and `cacheMethod: 'none'` to `Tesseract.createWorker`, overriding `tesseract.js` default URLs (`node_modules/tesseract.js/src/worker/browser/defaultOptions.js:11`, `src/worker-script/browser/getCore.js:14`, `src/worker-script/index.js:130`) that otherwise fetched from `https://cdn.jsdelivr.net/npm/...`.
+  - **Pinned SHA-256 manifest and traineddata component table verification.** `src/lib/edge-ocr/ocr-assets.manifest.json` pins `tesseractVersion` (`7.0.0`), `coreVersion` (`7.0.0`), and the exact byte size and SHA-256 digest of `worker.min.js` and all six `tesseract-core*.wasm.js` bundles in `node_modules/tesseract.js-core/`. `loadVerifiedOcrAsset` and `verifyTraineddataBuffer` in `src/lib/edge-ocr/assets.ts` (sharing `isValidTraineddataHeader` in `src/lib/conversions/ocr-language-data.ts` with `OcrWorkerPool`) verify the byte size and SHA-256 digest of every JS/WASM asset against the manifest, bound `.traineddata` size and decompression to `MAX_TRAINEDDATA_BYTES` (`128` MiB), verify the Tesseract traineddata component offset table (`1 <= entries <= 64`, `tableEnd = 4 + entries * 8 <= bytes.length`, every non-`-1` 64-bit offset inside `[tableEnd, bytes.length)`, and at least one present component) of installed language packs resolved via `resolveOcrLanguages` and `locateLanguageData`, memoize verified assets by `(path, size, mtimeMs)`, and throw `EdgeOcrError` on any mismatch or corruption.
+  - **Immutable first-party asset route and worker CSP.** `next.config.mjs` rewrites `/_assets/ocr/:version/:asset+` to `/api/ocr-assets/:version/:asset+` (`src/app/api/ocr-assets/[version]/[...asset]/route.ts`), and `isApiPath` in `src/middleware.ts` treats `/_assets/ocr/:version/:asset+` as an API path (enforcing rate-limiting and client IP trust without a locale rewrite, while routing non-asset `/_assets/...` paths through `pageLocaleAnswer` so they answer 404 cleanly). Successful asset responses carry `Cache-Control: public, max-age=31536000, immutable`, `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'`, `X-Content-Type-Options: nosniff`, and `ETag: "sha256-<digest>"` (answering `304 Not Modified` on matching `If-None-Match`), while missing or corrupted assets fail closed with RFC 7807 `application/problem+json` (HTTP 404 or 500) and reject `Tesseract.createWorker` via `errorHandler` so `runClientEdgeOcr` either escalates to L4 or blocks in client-only mode.
+  - **Transitive browser-bundle import guard.** `tests/edge-ocr-browser-imports.test.ts` walks all reachable `src/` modules from both `src/lib/edge-ocr/index.ts` and `src/lib/conversions/ocr-pdf-combiner.ts` and forbids both Node built-ins (`builtinModules` from `node:module`) and server-only native packages (`sharp`, `ioredis`, `pdfkit`, `harfbuzzjs`).
+- **Why**:
+  - **Eliminate third-party CDN dependencies and runtime supply-chain exposure in client-side Edge OCR.** Fetching worker scripts, WebAssembly cores, and language models from `cdn.jsdelivr.net` leaked OCR usage and requested language codes to a third-party CDN, broke air-gapped or strict-CSP environments, and lacked cryptographic digest verification before executing worker scripts.
+- **Trade-offs**:
+  - **Upgrading `tesseract.js` or `tesseract.js-core` requires updating `src/lib/edge-ocr/ocr-assets.manifest.json` and `EDGE_OCR_ASSET_VERSION`.** Enforced by `tests/edge-ocr-first-party-assets.test.ts`.
+- **Alternatives rejected**:
+  - **Keeping `cdn.jsdelivr.net` with Subresource Integrity.** Web `new Worker(url)` and `importScripts(url)` inside a Worker do not support HTML `integrity` attributes, so only first-party serving with server-side SHA-256 verification and `script-src 'self'` CSP enforces both origin and digest integrity.
+- **Verified by**: `tests/edge-ocr-first-party-assets.test.ts`, `tests/edge-ocr-browser-imports.test.ts`, `tests/edge-ocr-fail-closed.test.ts`, and `tests/ocr-language-propagation.test.ts`.
+- **Revisit when**: Web Workers and `importScripts()` standardize native SRI enforcement across all supported browsers.

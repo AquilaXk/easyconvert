@@ -1,5 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
-import { ConversionOptions, ConversionQueueItem } from '../types';
+import type { ConversionOptions, ConversionQueueItem } from '../types';
 import { injectInvisibleTextLayer, parseTesseractBlocks, OcrResult } from '../conversions/ocr-pdf-combiner';
 import { calibrateOcrResult, characterWeightedConfidence } from '../conversions/ocr-calibration';
 import { resolveImageDpi } from '../conversions/ocr-dpi';
@@ -31,6 +31,12 @@ const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 /** Edge OCR only produces a searchable PDF; other OCR targets go through the normal flow. */
 const EDGE_OCR_TARGET_FORMAT = 'pdf';
 
+export const EDGE_OCR_ASSET_VERSION = '7.0.0';
+export const EDGE_OCR_ASSET_BASE_PATH = `/_assets/ocr/${EDGE_OCR_ASSET_VERSION}`;
+export const EDGE_OCR_WORKER_PATH = `${EDGE_OCR_ASSET_BASE_PATH}/worker.min.js`;
+export const EDGE_OCR_CORE_PATH = EDGE_OCR_ASSET_BASE_PATH;
+export const EDGE_OCR_LANG_PATH = `${EDGE_OCR_ASSET_BASE_PATH}/tessdata`;
+
 /**
  * Returns true if the client environment supports in-browser WebAssembly & Web Worker execution.
  */
@@ -39,7 +45,9 @@ export function isClientEdgeOcrSupported(): boolean {
 }
 
 function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof Error) return err.message;
+  if (err === undefined || err === null || err === '') return 'worker failed to start';
+  return String(err);
 }
 
 /**
@@ -68,23 +76,48 @@ async function recognizeImage(
   let data: { text?: string; blocks?: unknown[] | null };
   try {
     const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(language, 1, {
-      // Failures already reject the pending job; without a handler the worker also rethrows
-      // them from its message listener as an uncaught exception.
-      errorHandler: () => undefined,
+    let failStart: (reason: Error) => void = () => undefined;
+    const startFailed = new Promise<never>((_, reject) => {
+      failStart = reject;
+    });
+    const started = Tesseract.createWorker(language, 1, {
+      workerPath: EDGE_OCR_WORKER_PATH,
+      corePath: EDGE_OCR_CORE_PATH,
+      langPath: EDGE_OCR_LANG_PATH,
+      gzip: false,
+      workerBlobURL: false,
+      cacheMethod: 'none',
+      errorHandler: (err: unknown) => {
+        failStart(
+          new EdgeOcrError(`Edge OCR worker for '${language}' failed: ${describeError(err)}`, {
+            cause: err,
+          })
+        );
+      },
       logger: (m) => {
         if (m.status === 'recognizing text' && typeof m.progress === 'number') {
           onProgress?.(Math.round(35 + m.progress * 45));
         }
       },
     });
+    let worker: Awaited<typeof started>;
+    try {
+      worker = await Promise.race([started, startFailed]);
+    } catch (err: unknown) {
+      void started.then(
+        (late) => late.terminate().catch(() => undefined),
+        () => undefined
+      );
+      throw err;
+    }
     try {
       const input = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : file;
-      ({ data } = await worker.recognize(input, {}, { blocks: true }));
+      ({ data } = await Promise.race([worker.recognize(input, {}, { blocks: true }), startFailed]));
     } finally {
-      await worker.terminate();
+      await worker.terminate().catch(() => undefined);
     }
   } catch (err: unknown) {
+    if (err instanceof EdgeOcrError) throw err;
     throw new EdgeOcrError(`Edge OCR engine failed: ${describeError(err)}`, { cause: err });
   }
 
@@ -118,8 +151,9 @@ async function recognizeImage(
 }
 
 /**
- * Executes 100% local, client-side Edge OCR and Searchable PDF generation for a raster image.
- * All computations run strictly within client RAM without a single byte sent over the network.
+ * Executes client-side Edge OCR and Searchable PDF generation for a raster image.
+ * The input image remains in client memory without being uploaded, while the OCR worker script,
+ * WebAssembly core, and language data are loaded from first-party `/_assets/ocr/7.0.0/...` assets.
  * Throws {@link EdgeOcrError} whenever no searchable text layer can be produced.
  */
 export async function runClientEdgeOcr(

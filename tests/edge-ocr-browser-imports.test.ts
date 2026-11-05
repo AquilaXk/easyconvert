@@ -1,25 +1,22 @@
 import fs from 'node:fs';
+import { builtinModules } from 'node:module';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-/**
- * The in-browser OCR path is bundled for the client, where Node built-ins do not exist. This walks the
- * conversion modules the OCR PDF combiner pulls in and lists every Node built-in one of them imports.
- * Shared modules outside `src/lib/conversions` (types, contracts) are left to the production build.
- */
-
 const SRC_ROOT = path.join(process.cwd(), 'src');
-const CONVERSIONS_DIR = path.join(SRC_ROOT, 'lib', 'conversions') + path.sep;
-// The OCR PDF combiner is the part of the browser OCR path that builds the searchable PDF.
-const BROWSER_ENTRY = path.join(SRC_ROOT, 'lib', 'conversions', 'ocr-pdf-combiner.ts');
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '/index.ts', '/index.tsx'];
-const NODE_BUILTINS = new Set([
-  'assert', 'buffer', 'child_process', 'crypto', 'dns', 'events', 'fs', 'fs/promises', 'http', 'https',
-  'net', 'os', 'path', 'stream', 'tls', 'url', 'util', 'worker_threads', 'zlib',
-]);
+const EDGE_OCR_ENTRY = path.join(SRC_ROOT, 'lib', 'edge-ocr', 'index.ts');
+const COMBINER_ENTRY = path.join(SRC_ROOT, 'lib', 'conversions', 'ocr-pdf-combiner.ts');
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.json', '/index.ts', '/index.tsx'];
+const NODE_BUILTINS = new Set(builtinModules.map((mod) => mod.replace(/^node:/, '')));
+const SERVER_ONLY_PACKAGES = new Set(['sharp', 'ioredis', 'pdfkit', 'harfbuzzjs']);
 // Value imports only: `import type` and `export type` are erased before bundling.
 const IMPORT_PATTERN = /(?:^|\n)\s*(?:import|export)\s+(?!type\b)(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/g;
 const DYNAMIC_IMPORT_PATTERN = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+function packageRootName(specifier: string): string {
+  const parts = specifier.split('/');
+  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
 
 function resolveLocal(fromFile: string, specifier: string): string | null {
   let base: string;
@@ -33,7 +30,7 @@ function resolveLocal(fromFile: string, specifier: string): string | null {
   throw new Error(`Unresolved import ${specifier} from ${fromFile}`);
 }
 
-function nodeBuiltinsReachableFrom(entry: string): string[] {
+function forbiddenImportsReachableFrom(entry: string): string[] {
   const seen = new Set<string>();
   const found: string[] = [];
   const pending = [entry];
@@ -41,23 +38,36 @@ function nodeBuiltinsReachableFrom(entry: string): string[] {
     const file = pending.pop() as string;
     if (seen.has(file)) continue;
     seen.add(file);
+    if (file.endsWith('.json')) continue;
     const source = fs.readFileSync(file, 'utf-8');
     const specifiers = [...source.matchAll(IMPORT_PATTERN), ...source.matchAll(DYNAMIC_IMPORT_PATTERN)].map((m) => m[1]);
     for (const specifier of specifiers) {
       const bare = specifier.replace(/^node:/, '');
-      if (specifier.startsWith('node:') || NODE_BUILTINS.has(bare)) {
+      const pkgRoot = packageRootName(bare);
+      if (
+        specifier.startsWith('node:') ||
+        NODE_BUILTINS.has(bare) ||
+        NODE_BUILTINS.has(pkgRoot) ||
+        SERVER_ONLY_PACKAGES.has(pkgRoot)
+      ) {
         found.push(`${path.relative(process.cwd(), file)} -> ${specifier}`);
         continue;
       }
       const local = resolveLocal(file, specifier);
-      if (local?.startsWith(CONVERSIONS_DIR)) pending.push(local);
+      if (local && local.startsWith(SRC_ROOT + path.sep)) {
+        pending.push(local);
+      }
     }
   }
   return found.sort((a, b) => a.localeCompare(b));
 }
 
 describe('browser OCR bundle', () => {
-  it('imports no Node built-in in the conversion modules of the OCR PDF combiner', () => {
-    expect(nodeBuiltinsReachableFrom(BROWSER_ENTRY)).toEqual([]);
+  it('imports no Node built-in or server-only package in modules reachable from src/lib/edge-ocr/index.ts', () => {
+    expect(forbiddenImportsReachableFrom(EDGE_OCR_ENTRY)).toEqual([]);
+  });
+
+  it('imports no Node built-in or server-only package in modules reachable from src/lib/conversions/ocr-pdf-combiner.ts', () => {
+    expect(forbiddenImportsReachableFrom(COMBINER_ENTRY)).toEqual([]);
   });
 });
