@@ -14,9 +14,11 @@ import {
   STATS_END_MARKER,
   STATS_START_MARKER,
   buildGeneratedRegistryStats,
-  renderRegistryStatsBlock,
+   renderRegistryStatsBlock,
+  replaceRegistryStatsBlock,
   type GeneratedRegistryStats,
 } from '../scripts/registry-stats';
+import { API_DOC_SUBPAGES } from '../src/components/api-docs/topics';
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const GENERATED_JSON_PATH = path.join(ROOT_DIR, 'docs', 'generated', 'registry-stats.json');
@@ -95,6 +97,19 @@ function extractApiPaths(markdown: string): string[] {
     .map(normalizeApiPath)
     .filter((p) => p.length > '/api/'.length && !p.endsWith('/*'));
   return Array.from(new Set(normalized));
+}
+
+function extractApiDocSlugs(markdown: string): string[] {
+  const matches = Array.from(markdown.matchAll(/\/api-docs\/([A-Za-z0-9_-]+)/g), (m) => m[1]);
+  return Array.from(new Set(matches));
+}
+
+function extractSrcPaths(markdown: string): string[] {
+  const matches = Array.from(
+    markdown.matchAll(/\b(src\/[A-Za-z0-9._[\]/-]+)(?!\*)/g),
+    (m) => m[1].replace(/[.,;:`'")\]]+$/, '')
+  ).filter((p) => !p.endsWith('/'));
+  return Array.from(new Set(matches));
 }
 
 function hasAppRouteHandler(normalizedPath: string): boolean {
@@ -179,6 +194,26 @@ describe('Registry stats, CATEGORIES, and README drift guard (#467)', () => {
       expect(content, name).toContain(String(REGISTRY_STATS.categoryCount));
       expect(content, name).toContain(formattedPairs);
     }
+
+    const syntheticStats: GeneratedRegistryStats = {
+      ...buildGeneratedRegistryStats(),
+      formatCount: 999,
+      categoryCount: 15,
+      pairCount: 9876,
+    };
+    const rewrittenEn = replaceRegistryStatsBlock(readmeEn, syntheticStats);
+    expect(rewrittenEn).toContain('**999 file formats** and **9,876 conversion pairs** in **15 categories**');
+    expect(rewrittenEn).toContain('**999 Formats Across 15 Categories**');
+    expect(rewrittenEn).toContain('(`9,876` source-to-target pairs)');
+    expect(rewrittenEn).toContain('## Supported Format Matrix (15 Categories)');
+    expect(rewrittenEn).toContain('# 999 canonical format definitions & options');
+
+    const rewrittenKo = replaceRegistryStatsBlock(readmeKo, syntheticStats);
+    expect(rewrittenKo).toContain('**15개 카테고리**, **999개 포맷**, **9,876개 변환 쌍**');
+    expect(rewrittenKo).toContain('**15개 카테고리 999개 포맷 지원**');
+    expect(rewrittenKo).toContain('`9,876`개 변환 쌍을 지원합니다');
+    expect(rewrittenKo).toContain('## 지원 포맷 매트릭스 (15개 카테고리)');
+    expect(rewrittenKo).toContain('# 999개 표준 포맷 정의 및 옵션 스키마');
   });
 
   it('lists only registered format extensions in README tables and prose', () => {
@@ -211,10 +246,11 @@ describe('Registry stats, CATEGORIES, and README drift guard (#467)', () => {
     }
   });
 
-  it('contains zero stale counts, BullMQ claims, /api/v2 paths, or action=init tokens across READMEs, src/components, and src/app', () => {
+  it('contains zero stale counts, BullMQ claims, /api/v2 paths, or action=init tokens across READMEs, OpenAPI definitions, src/components, and src/app', () => {
     const filesToCheck = [
       README_EN_PATH,
       README_KO_PATH,
+      ...collectSourceFiles(path.join(ROOT_DIR, 'src', 'lib', 'api', 'openapi')),
       ...collectSourceFiles(path.join(ROOT_DIR, 'src', 'components')),
       ...collectSourceFiles(path.join(ROOT_DIR, 'src', 'app')),
     ];
@@ -243,9 +279,10 @@ describe('Registry stats, CATEGORIES, and README drift guard (#467)', () => {
     }
   });
 
-  it('ensures every /api/... path in README.md and README.ko.md exists in the OpenAPI document or src/app/api routes', () => {
+  it('ensures every /api/..., /api-docs/..., and src/... path in README.md and README.ko.md exists', () => {
     const spec = buildOpenApiDocument();
     const openApiPaths = new Set(Object.keys(spec.paths));
+    const validApiDocSlugs = new Set<string>(API_DOC_SUBPAGES.map((t) => t.slug));
 
     for (const [name, filePath] of [
       ['README.md', README_EN_PATH],
@@ -255,10 +292,19 @@ describe('Registry stats, CATEGORIES, and README drift guard (#467)', () => {
       const apiPaths = extractApiPaths(text);
       expect(apiPaths.length, name).toBeGreaterThan(0);
 
-      const missing = apiPaths.filter(
+      const missingApi = apiPaths.filter(
         (apiPath) => !openApiPaths.has(apiPath) && !hasAppRouteHandler(apiPath)
       );
-      expect(missing, name).toEqual([]);
+      expect(missingApi, name).toEqual([]);
+
+      const docSlugs = extractApiDocSlugs(text);
+      expect(docSlugs.length, name).toBeGreaterThan(0);
+      expect(docSlugs.filter((slug) => !validApiDocSlugs.has(slug)), name).toEqual([]);
+
+      const srcPaths = extractSrcPaths(text);
+      expect(srcPaths.length, name).toBeGreaterThan(0);
+      expect(srcPaths.filter((relPath) => !fs.existsSync(path.join(ROOT_DIR, relPath))), name).toEqual([]);
     }
   });
 });
+

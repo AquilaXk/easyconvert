@@ -126,4 +126,29 @@ describe('what the documentation shows', () => {
   it('keeps the OpenAPI document one plain link away', () => {
     expect(links(main(page('introduction'))).filter((link) => link.href === '/api/v1/openapi.json')).toHaveLength(1);
   });
+
+  it('uses $EASYCONVERT_API_KEY in authenticated curl snippets and never YOUR_API_KEY', () => {
+    const snippets = API_DOC_TOPICS.flatMap((topic) => select(main(page(topic.slug)), 'pre').map(visibleText));
+    expect(snippets.some((code) => code.includes('$EASYCONVERT_API_KEY'))).toBe(true);
+    expect(snippets.filter((code) => code.includes('YOUR_API_KEY'))).toEqual([]);
+  });
+
+  it('shows binary response media types, response header location chips, and JobGraph.nodes properties', () => {
+    const convertText = visibleText(main(page('convert')));
+    expect(convertText).toContain('As application/json');
+    expect(convertText).toContain('As application/octet-stream');
+    expect(convertText).toContain('The bytes of the file.');
+    expect(convertText).toContain('Location header string');
+
+    const downloadsText = visibleText(main(page('downloads')));
+    expect(downloadsText).toContain('As application/octet-stream');
+    expect(downloadsText).toContain('The bytes of the file.');
+    expect(downloadsText).toContain('Content-Disposition header string');
+
+    const jobsText = visibleText(main(page('jobs')));
+    for (const nodeProp of ['op', 'input', 'storageKey', 'url', 'targetFormat', 'options']) {
+      expect(jobsText).toContain(nodeProp);
+    }
+  });
 });
+

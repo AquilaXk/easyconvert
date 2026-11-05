@@ -39,7 +39,9 @@ function Bodies({ bodies }: Readonly<{ bodies: readonly DocBody[] }>) {
   const t = useTranslations('apiDocs.operation');
   return bodies.map((body) => (
     <div key={body.mediaType}>
-      {bodies.length > 1 && <p className={DOC.p}>{t.rich('mediaType', { ...richText, mediaType: body.mediaType })}</p>}
+      {(bodies.length > 1 || body.mediaType !== 'application/json') && (
+        <p className={DOC.p}>{t.rich('mediaType', { ...richText, mediaType: body.mediaType })}</p>
+      )}
       {body.fields.length > 0 ? <FieldList fields={body.fields} /> : <p className={DOC.p}>{t('binaryBody')}</p>}
     </div>
   ));

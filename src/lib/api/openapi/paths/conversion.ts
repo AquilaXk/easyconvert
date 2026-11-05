@@ -199,7 +199,7 @@ export const conversionPaths = {
     post: {
       summary: 'Submit Asynchronous Conversion Job',
       description:
-        'Enqueues a conversion job to the distributed BullMQ queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.',
+        'Enqueues a conversion job to the distributed Redis-backed job queue with automatic 2-phase quota reservation and optional HMAC-signed webhook callback. Requires "convert:write" scope.',
       operationId: 'createJobV1',
       security: requireScope('convert:write'),
       parameters: [IDEMPOTENCY_KEY_PARAMETER],

@@ -110,7 +110,7 @@ easyconvert/
 
 ## API 레퍼런스
 
-공개 v1 API의 전체 레퍼런스 문서는 `/api-docs`(주제별 페이지 `/api-docs/convert`, `/api-docs/jobs`, `/api-docs/uploads`, `/api-docs/formats`, `/api-docs/webhooks`, `/api-docs/errors`)에서 제공하며, `GET /api/v1/openapi.json`(별칭 `GET /api/openapi.json`)의 OpenAPI 3.1 문서를 정본으로 사용합니다.
+공개 v1 API의 레퍼런스 문서는 `/api-docs`(주제별 페이지 `/api-docs/quickstart`, `/api-docs/convert`, `/api-docs/jobs`, `/api-docs/uploads`, `/api-docs/downloads`, `/api-docs/formats`, `/api-docs/ocr-languages`, `/api-docs/archives`, `/api-docs/usage`)에서 제공하며, `GET /api/v1/openapi.json`(별칭 `GET /api/openapi.json`)의 OpenAPI 3.1 문서를 정본으로 사용합니다.
 
 ### 1. 공개 v1 변환 및 비동기 작업 (`/api/v1/*`)
 - **동기 파일 변환**: `POST /api/v1/convert` (`multipart/form-data`, `file`, `targetFormat`, 선택적 `options`, 선택적 `Idempotency-Key` 헤더)
@@ -143,7 +143,7 @@ easyconvert/
   - 업로드 중단: `POST /api/storage/multipart?action=abort`에 `{"uploadId": "..."}`을 전송합니다.
   - 파일 다운로드: `GET /api/storage/file/[...key]`
 - **서비스 헬스체크 및 진단**:
-  - `GET /api/health`: Redis, 스토리지, 워커 하트비트 및 워커 역할의 필수 네이티브 도구(`soffice`, `ffmpeg`) 실시간 점검 결과에 따라 `{"status": "healthy" | "degraded" | "unhealthy"}`와 HTTP `200`(`healthy`) 또는 `503`(`degraded` / `unhealthy`)을 반환합니다. 추가 보조 도구(`pdftoppm`, `pdftotext`, `tesseract`, `7z`, `dcraw_emu`)는 참고용으로 점검합니다. 와일드카드(`*`) 스코프 API 키는 구성 요소별 상태도 함께 받습니다.
+  - `GET /api/health`: `redis`(설정된 경우)와 `storage` 실시간 점검 결과에 따라 `{"status": "healthy" | "unhealthy"}`와 HTTP `200`(`healthy`) 또는 `503`(`unhealthy`)을 반환합니다. 네이티브 도구(`soffice`, `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `tesseract`, `7z`, `dcraw_emu`, `ebook-convert`)는 보조 구성 요소로 점검되며, 와일드카드(`*`) 스코프 API 키로 요청하면 `components` 필드에 구성 요소별 상태가 함께 포함됩니다.
 
 ---
 

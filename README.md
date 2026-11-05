@@ -110,7 +110,7 @@ easyconvert/
 
 ## API Reference
 
-Full interactive documentation for the public v1 API is served at `/api-docs` (with topic pages such as `/api-docs/convert`, `/api-docs/jobs`, `/api-docs/uploads`, `/api-docs/formats`, `/api-docs/webhooks`, and `/api-docs/errors`) and backed by the OpenAPI 3.1 document at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`).
+Written reference documentation for the public v1 API is served at `/api-docs` (with topic pages `/api-docs/quickstart`, `/api-docs/convert`, `/api-docs/jobs`, `/api-docs/uploads`, `/api-docs/downloads`, `/api-docs/formats`, `/api-docs/ocr-languages`, `/api-docs/archives`, and `/api-docs/usage`) and backed by the OpenAPI 3.1 document at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`).
 
 ### 1. Public v1 Conversion & Jobs (`/api/v1/*`)
 - **Synchronous Conversion**: `POST /api/v1/convert` (`multipart/form-data` with `file`, `targetFormat`, optional `options`, and optional `Idempotency-Key` header).
@@ -143,7 +143,7 @@ Full interactive documentation for the public v1 API is served at `/api-docs` (w
   - Abort upload: `POST /api/storage/multipart?action=abort` with `{"uploadId": "..."}`.
   - Retrieve file: `GET /api/storage/file/[...key]`
 - **Service Health & Diagnostics**:
-  - `GET /api/health`: Returns `{"status": "healthy" | "degraded" | "unhealthy"}` with HTTP `200` (`healthy`) or `503` (`degraded` / `unhealthy`) based on live Redis, storage, worker heartbeat, and critical native binary (`soffice`, `ffmpeg` on worker roles) probes. Additional tools (`pdftoppm`, `pdftotext`, `tesseract`, `7z`, `dcraw_emu`) are probed as advisory components. An API key with the wildcard (`*`) scope also receives the per-component status.
+  - `GET /api/health`: Returns `{"status": "healthy" | "unhealthy"}` with HTTP `200` (`healthy`) or `503` (`unhealthy`) based on live `redis` (when configured) and `storage` probes. Native binaries (`soffice`, `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `tesseract`, `7z`, `dcraw_emu`, `ebook-convert`) are probed as advisory components under `components`, which are included when called with a wildcard (`*`) scope API key.
 
 ---
 

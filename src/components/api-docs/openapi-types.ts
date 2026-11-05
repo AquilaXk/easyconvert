@@ -16,6 +16,7 @@ export interface OpenApiSchemaObject {
   maximum?: number;
   minItems?: number;
   items?: OpenApiSchemaObject;
+  additionalProperties?: boolean | OpenApiSchemaObject;
   required?: readonly string[];
   properties?: Record<string, OpenApiSchemaObject>;
   allOf?: ReadonlyArray<OpenApiSchemaObject>;

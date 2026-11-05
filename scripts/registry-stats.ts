@@ -62,6 +62,51 @@ export function renderRegistryStatsBlock(
   ].join('\n');
 }
 
+function replaceHeadlineStats(markdown: string, stats: GeneratedRegistryStats): string {
+  const formattedPairs = stats.pairCount.toLocaleString('en-US');
+  return markdown
+    .replace(
+      /\*\*\d+ file formats\*\* and \*\*[\d,]+ conversion pairs\*\* in \*\*\d+ categories\*\*/g,
+      `**${stats.formatCount} file formats** and **${formattedPairs} conversion pairs** in **${stats.categoryCount} categories**`
+    )
+    .replace(
+      /\*\*\d+ Formats Across \d+ Categories\*\*/g,
+      `**${stats.formatCount} Formats Across ${stats.categoryCount} Categories**`
+    )
+    .replace(
+      /\(`[\d,]+` source-to-target pairs\)/g,
+      `(\`${formattedPairs}\` source-to-target pairs)`
+    )
+    .replace(
+      /## Supported Format Matrix \(\d+ Categories\)/g,
+      `## Supported Format Matrix (${stats.categoryCount} Categories)`
+    )
+    .replace(
+      /# \d+ canonical format definitions & options/g,
+      `# ${stats.formatCount} canonical format definitions & options`
+    )
+    .replace(
+      /\*\*\d+개 카테고리\*\*, \*\*\d+개 포맷\*\*, \*\*[\d,]+개 변환 쌍\*\*/g,
+      `**${stats.categoryCount}개 카테고리**, **${stats.formatCount}개 포맷**, **${formattedPairs}개 변환 쌍**`
+    )
+    .replace(
+      /\*\*\d+개 카테고리 \d+개 포맷 지원\*\*/g,
+      `**${stats.categoryCount}개 카테고리 ${stats.formatCount}개 포맷 지원**`
+    )
+    .replace(
+      /`[\d,]+`개 변환 쌍을 지원합니다/g,
+      `\`${formattedPairs}\`개 변환 쌍을 지원합니다`
+    )
+    .replace(
+      /## 지원 포맷 매트릭스 \(\d+개 카테고리\)/g,
+      `## 지원 포맷 매트릭스 (${stats.categoryCount}개 카테고리)`
+    )
+    .replace(
+      /# \d+개 표준 포맷 정의 및 옵션 스키마/g,
+      `# ${stats.formatCount}개 표준 포맷 정의 및 옵션 스키마`
+    );
+}
+
 export function replaceRegistryStatsBlock(
   markdown: string,
   stats: GeneratedRegistryStats = buildGeneratedRegistryStats()
@@ -72,11 +117,11 @@ export function replaceRegistryStatsBlock(
     throw new Error('Missing registry-stats markers in markdown document.');
   }
   const block = renderRegistryStatsBlock(stats);
-  return (
+  const withTable =
     markdown.slice(0, startIdx) +
     block +
-    markdown.slice(endIdx + STATS_END_MARKER.length)
-  );
+    markdown.slice(endIdx + STATS_END_MARKER.length);
+  return replaceHeadlineStats(withTable, stats);
 }
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

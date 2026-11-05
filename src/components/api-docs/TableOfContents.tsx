@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 export interface TocItem {
@@ -37,7 +37,7 @@ function useCurrentHeading(ids: readonly string[]): string | undefined {
       window.removeEventListener('resize', schedule);
     };
   }, [ids]);
-  return current;
+  return current && ids.includes(current) ? current : ids[0];
 }
 
 function TocList({ items, current, nested, tall }: Readonly<{ items: readonly TocItem[]; current?: string; nested: boolean; tall: boolean }>) {
@@ -62,7 +62,7 @@ function TocList({ items, current, nested, tall }: Readonly<{ items: readonly To
 }
 
 export default function TableOfContents({ title, items }: Readonly<{ title: string; items: readonly TocItem[] }>) {
-  const [ids] = useState(() => flatIds(items));
+  const ids = useMemo(() => flatIds(items), [items]);
   const current = useCurrentHeading(ids);
   if (items.length === 0) return null;
   return (

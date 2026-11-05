@@ -61,6 +61,10 @@ function objectShape(schema: OpenApiSchemaObject | undefined): OpenApiSchemaObje
     const items = unwrapPrimarySchema(dereferenceSchema(effective.items, SCHEMAS));
     return items?.properties ? items : undefined;
   }
+  if (effective.additionalProperties && typeof effective.additionalProperties === 'object') {
+    const valueShape = unwrapPrimarySchema(dereferenceSchema(effective.additionalProperties, SCHEMAS));
+    return valueShape?.properties ? valueShape : undefined;
+  }
   return undefined;
 }
 
@@ -84,6 +88,10 @@ function typeLabel(schema: OpenApiSchemaObject | undefined): string {
   return schema?.format === 'binary' ? 'binary' : formatSchemaType(schema, primarySchemaType(schema));
 }
 
+function isBinaryMedia(schema: OpenApiSchemaObject | undefined): boolean {
+  return unwrapPrimarySchema(dereferenceSchema(schema, SCHEMAS))?.format === 'binary';
+}
+
 function parameterField(param: OpenApiParameter): DocField {
   const resolved = dereferenceSchema(param.schema, SCHEMAS);
   return {
@@ -99,7 +107,10 @@ function parameterField(param: OpenApiParameter): DocField {
 function bodiesOf(content: Record<string, { schema?: OpenApiSchemaObject }> | undefined): DocBody[] {
   return Object.entries(content ?? {})
     .filter(([mediaType]) => mediaType !== 'application/problem+json')
-    .map(([mediaType, media]) => ({ mediaType, fields: schemaFields(media.schema) }));
+    .flatMap(([mediaType, media]) => {
+      const fields = schemaFields(media.schema);
+      return fields.length > 0 || isBinaryMedia(media.schema) ? [{ mediaType, fields }] : [];
+    });
 }
 
 function accessOf(security: OpenApiOperation['security']): DocAccess {
@@ -137,10 +148,11 @@ export function docOperation(ref: DocOperationRef, origin: string): DocOperation
           name,
           type: formatSchemaType(header.schema, 'string'),
           required: false,
+          location: 'header',
           description: header.description ?? header.schema?.description,
           children: [],
         })),
-        bodies: bodiesOf(response.content).filter((body) => body.fields.length > 0),
+        bodies: bodiesOf(response.content),
       })),
     errors: responses
       .filter(([status]) => !isSuccess(status))
