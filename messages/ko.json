@@ -563,7 +563,7 @@
   "features": {
     "directoryHeading": "지원 파일 형식",
     "directoryIntro": "{categories}개 분류, {formats}개 형식, 변환 조합 {pairs}개를 살펴보세요.",
-    "extensionsHeading": "{category} 확장자 ({count})",
+    "extensionsHeading": "{category} 형식",
     "pairsHeading": "자주 쓰는 {category} 변환",
     "pairs": {
       "png-webp": "투명도를 유지하는 웹 이미지 압축",
@@ -602,7 +602,8 @@
       "dwg-pdf": "기술 도면을 PDF 시트로",
       "step-stl": "3D 프린팅용 삼각형 메시",
       "dxf-svg": "2D 벡터 CAD 도면 내보내기"
-    }
+    },
+    "extensionsListed": "{count}개"
   },
   "footer": {
     "categories": {

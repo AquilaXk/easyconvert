@@ -563,7 +563,7 @@
   "features": {
     "directoryHeading": "Supported Format Directory",
     "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
-    "extensionsHeading": "{category} Extensions ({count})",
+    "extensionsHeading": "{category} formats",
     "pairsHeading": "Common {category} Pairs",
     "pairs": {
       "png-webp": "Web image compression with alpha support",
@@ -602,7 +602,8 @@
       "dwg-pdf": "Technical drawing PDF sheet",
       "step-stl": "Triangle mesh for 3D printing",
       "dxf-svg": "2D vector CAD plot export"
-    }
+    },
+    "extensionsListed": "{count} listed"
   },
   "footer": {
     "categories": {

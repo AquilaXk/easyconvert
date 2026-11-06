@@ -22,7 +22,7 @@ const CATEGORY_ICONS: Readonly<Record<FormatCategory, LucideIcon>> = {
 };
 
 /** The glyph of a category the registry names; a category it does not know reads as a document. */
-function categoryIcon(category: string): LucideIcon {
+export function categoryIcon(category: string): LucideIcon {
   return Object.hasOwn(CATEGORY_ICONS, category) ? CATEGORY_ICONS[category as FormatCategory] : CATEGORY_ICONS.document;
 }
 
