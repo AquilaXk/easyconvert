@@ -334,6 +334,27 @@ describe('Phase 5: Differential Oracle & Endurance Soak Testnet (#236)', () => {
       expect(fdDelta).toBeLessThanOrEqual(4);
     });
 
+    it('judges descriptor leaks against the post-warmup count, so descriptors closed after startup are not growth', async () => {
+      // Startup descriptors (loader, lazy handles) close during the first iterations: 50 -> 34, then flat.
+      const counts = [50, 50, 40, 34];
+      let call = 0;
+      vi.spyOn(fs, 'existsSync').mockImplementation((p) => p === '/proc/self/fd');
+      vi.spyOn(fs, 'readdirSync').mockImplementation((() =>
+        new Array(counts[Math.min(call++, counts.length - 1)]).fill('fd')) as unknown as typeof fs.readdirSync);
+      try {
+        const report = await new EnduranceSoakController().runSoakSession({
+          maxIterations: 6,
+          bytesPerIteration: 64 * 1024,
+          chunkSizeBytes: 16 * 1024,
+          warmupIterations: 2,
+        });
+        expect(report.fdDelta).toBe(0);
+        expect(report.isMemoryStable).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
     it('controller.abort gracefully halts soak loop and returns partial telemetry without errors', async () => {
       const controller = new EnduranceSoakController();
 

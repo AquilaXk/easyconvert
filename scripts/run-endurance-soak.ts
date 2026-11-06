@@ -118,6 +118,8 @@ async function main(): Promise<void> {
 
   const report = await controller.runSoakSession({
     durationMs: options.durationMs,
+    // The session is bounded by --duration; the controller's default iteration cap would end a 24h run in minutes.
+    maxIterations: Number.POSITIVE_INFINITY,
     bytesPerIteration: options.targetBytes,
     chunkSizeBytes: options.chunkSizeBytes,
     onProgress: (stats: SoakIterationStats) => {
