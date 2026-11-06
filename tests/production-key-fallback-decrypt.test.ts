@@ -4,14 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  SecretEncryptionKeyRequiredError,
+  SecretEncryptionKeyMissingError,
   decryptSecret,
   encryptSecret,
   needsSecretReencryption,
   reencryptSecretIfNeeded,
 } from '../src/lib/api-keys/secret-encryption';
 import { KeyStore } from '../src/lib/api-keys/key-store';
-import { CredentialsVault, VaultKeyRequiredError } from '../src/lib/storage/credentials-vault';
+import { CredentialsVault, VaultKeyMissingError } from '../src/lib/storage/credentials-vault';
 import { signJwt, verifyJwt } from '../src/lib/auth/jwt';
 import { userStore } from '../src/lib/auth/user-store';
 
@@ -65,7 +65,7 @@ describe('Production decrypt never depends on the new primary key being set', ()
     vi.stubEnv('NODE_ENV', 'production');
     expect(decryptSecret(legacy)).toBe(PLAIN);
     expect(needsSecretReencryption(legacy)).toBe(true);
-    expect(() => encryptSecret('whsec_new')).toThrow(SecretEncryptionKeyRequiredError);
+    expect(() => encryptSecret('whsec_new')).toThrow(SecretEncryptionKeyMissingError);
     expect(() => encryptSecret('whsec_new')).toThrow(/KEY_ENCRYPTION_KEY/);
 
     const result = reencryptSecretIfNeeded(legacy);
@@ -79,7 +79,7 @@ describe('Production decrypt never depends on the new primary key being set', ()
 
     vi.stubEnv('NODE_ENV', 'production');
     expect(decryptSecret(legacy)).toBe(PLAIN);
-    expect(() => encryptSecret('whsec_new')).toThrow(SecretEncryptionKeyRequiredError);
+    expect(() => encryptSecret('whsec_new')).toThrow(SecretEncryptionKeyMissingError);
   });
 
   it('keeps a legacy plain-text value readable and unchanged when no key can seal it', () => {
@@ -99,7 +99,7 @@ describe('Production decrypt never depends on the new primary key being set', ()
 
     vi.stubEnv('NODE_ENV', 'production');
     expect(decryptSecret(legacy)).toBe(PLAIN);
-    expect(() => encryptSecret('whsec_new')).toThrow(SecretEncryptionKeyRequiredError);
+    expect(() => encryptSecret('whsec_new')).toThrow(SecretEncryptionKeyMissingError);
     expect(reencryptSecretIfNeeded(legacy).reencrypted).toBe(false);
 
     vi.stubEnv('KEY_ENCRYPTION_KEY', NEW_KEK);
@@ -179,7 +179,7 @@ describe('Production decrypt never depends on the new primary key being set', ()
 
       await expect(
         store.generateApiKey(user.id, 'New Webhook Key', { webhookSecret: 'whsec_new', scopes: ['convert:write'] })
-      ).rejects.toThrow(SecretEncryptionKeyRequiredError);
+      ).rejects.toThrow(SecretEncryptionKeyMissingError);
     });
   });
 });
@@ -209,9 +209,9 @@ describe('Production vault reads never depend on STORAGE_VAULT_KEY being set', (
 
     vi.stubEnv('NODE_ENV', 'production');
     expect(await vault.get(ref, 'user_vault')).toEqual(creds);
-    await expect(vault.store('user_vault', creds)).rejects.toThrow(VaultKeyRequiredError);
+    await expect(vault.store('user_vault', creds)).rejects.toThrow(VaultKeyMissingError);
     await expect(vault.store('user_vault', creds)).rejects.toThrow(/STORAGE_VAULT_KEY/);
-    await expect(vault.rotate('user_vault')).rejects.toThrow(VaultKeyRequiredError);
+    await expect(vault.rotate('user_vault')).rejects.toThrow(VaultKeyMissingError);
   });
 
   it('reads credentials stored under a STORAGE_VAULT_KEY shorter than 32 characters, and refuses only new stores', async () => {
@@ -222,7 +222,7 @@ describe('Production vault reads never depend on STORAGE_VAULT_KEY being set', (
 
     vi.stubEnv('NODE_ENV', 'production');
     expect(await vault.get(ref, 'user_vault')).toEqual(creds);
-    await expect(vault.store('user_vault', creds)).rejects.toThrow(VaultKeyRequiredError);
+    await expect(vault.store('user_vault', creds)).rejects.toThrow(VaultKeyMissingError);
   });
 
   it('reads credentials stored under a key with surrounding spaces, and rotates them under a valid STORAGE_VAULT_KEY', async () => {

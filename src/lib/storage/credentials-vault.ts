@@ -136,14 +136,14 @@ function deriveVaultKey(secret: string): Buffer {
 }
 
 /** Raised when credentials must be sealed but no valid `STORAGE_VAULT_KEY` is configured. Reads are unaffected. */
-export class VaultKeyRequiredError extends Error {
-  readonly code = 'VAULT_KEY_REQUIRED';
+export class VaultKeyMissingError extends Error {
+  readonly code = 'VAULT_KEY_MISSING';
 
   constructor() {
     super(
       `STORAGE_VAULT_KEY must be set (at least ${MIN_PRODUCTION_SEALING_KEY_LENGTH} characters) in production to store credentials; stored credentials can still be read.`
     );
-    this.name = 'VaultKeyRequiredError';
+    this.name = 'VaultKeyMissingError';
   }
 }
 
@@ -167,7 +167,7 @@ function resolveVaultSealingKey(): Buffer | null {
 function getVaultMasterKey(): Buffer {
   const key = resolveVaultSealingKey();
   if (key === null) {
-    throw new VaultKeyRequiredError();
+    throw new VaultKeyMissingError();
   }
   return key;
 }

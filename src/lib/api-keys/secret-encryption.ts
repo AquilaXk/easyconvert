@@ -9,14 +9,14 @@ function deriveKey(secret: string): Buffer {
 }
 
 /** Raised when new data must be sealed but no valid `KEY_ENCRYPTION_KEY` is configured. Reads are unaffected. */
-export class SecretEncryptionKeyRequiredError extends Error {
-  readonly code = 'SECRET_ENCRYPTION_KEY_REQUIRED';
+export class SecretEncryptionKeyMissingError extends Error {
+  readonly code = 'SECRET_ENCRYPTION_KEY_MISSING';
 
   constructor() {
     super(
       `KEY_ENCRYPTION_KEY must be set (at least ${MIN_PRODUCTION_SEALING_KEY_LENGTH} characters) in production to encrypt new secrets; existing secrets still decrypt.`
     );
-    this.name = 'SecretEncryptionKeyRequiredError';
+    this.name = 'SecretEncryptionKeyMissingError';
   }
 }
 
@@ -37,7 +37,7 @@ function resolveSealingSecret(): string | null {
 function getEncryptionKey(): Buffer {
   const secret = resolveSealingSecret();
   if (secret === null) {
-    throw new SecretEncryptionKeyRequiredError();
+    throw new SecretEncryptionKeyMissingError();
   }
   return deriveKey(secret);
 }
