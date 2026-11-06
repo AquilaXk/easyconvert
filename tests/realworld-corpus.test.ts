@@ -18,7 +18,7 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
-import { childOcrPageConcurrency, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { childOcrPageBudgetMs, childOcrPageConcurrency, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getAvailableTargetFormats } from '../src/lib/registry';
@@ -485,6 +485,10 @@ describe('job deadline by size', () => {
     expect(scaledDeadlineMs(BASE_MS, SHARD_PAGES)).toBe(BASE_MS + SHARD_PAGES * OCR_PAGE_BUDGET_MS);
   });
 
+  it('grows by the page budget the job server works to when that is not the default', () => {
+    expect(scaledDeadlineMs(BASE_MS, SHARD_PAGES, 4 * OCR_PAGE_BUDGET_MS)).toBe(Math.min(MAX_JOB_DEADLINE_MS, BASE_MS + SHARD_PAGES * 4 * OCR_PAGE_BUDGET_MS));
+  });
+
   it('stops growing at the longest a job may run, and never goes below the base deadline', () => {
     expect(scaledDeadlineMs(BASE_MS, 100_000)).toBe(MAX_JOB_DEADLINE_MS);
     expect(scaledDeadlineMs(2 * MAX_JOB_DEADLINE_MS, 100_000)).toBe(2 * MAX_JOB_DEADLINE_MS);
@@ -505,6 +509,13 @@ describe('job deadline by size', () => {
     expect(childOcrPageConcurrency(4, 4)).toBe(1);
     expect(childOcrPageConcurrency(2, 4)).toBe(2);
     expect(childOcrPageConcurrency(1, 4)).toBe(4);
+  });
+
+  it('gives each job server a page budget that grows by the share of the OCR parallelism it gives up', () => {
+    expect(childOcrPageBudgetMs(1, 4)).toBe(OCR_PAGE_BUDGET_MS);
+    expect(childOcrPageBudgetMs(2, 4)).toBe(2 * OCR_PAGE_BUDGET_MS);
+    expect(childOcrPageBudgetMs(3, 4)).toBe(4 * OCR_PAGE_BUDGET_MS);
+    expect(childOcrPageBudgetMs(1, 64)).toBe(OCR_PAGE_BUDGET_MS);
   });
 
   describe('which files are read by OCR', () => {

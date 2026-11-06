@@ -7,7 +7,6 @@ import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import {
-  MAX_RASTER_AGGREGATE_PIXELS,
   MAX_RASTER_PAGE_PIXELS,
   PdfPageFrameError,
   assertPdfRasterPageBudget,
@@ -198,9 +197,8 @@ describe('PDF page rasterization pixel budgets', () => {
     await expect(PDFDocument.load(damagedFortyA4, { updateMetadata: false, throwOnInvalidObject: true })).rejects.toThrow();
     await withPdftoppmSpy(async (wasInvoked) => {
       const error = await executeWorkerConversion(damagedFortyA4, 'pdf', 'png', { dpi: 600 }, 'damaged-forty.pdf').catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(InputPixelLimitError);
-      expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
-      expect(wasInvoked()).toBe(false);
+      expect(error).not.toBeInstanceOf(InputPixelLimitError);
+      expect(wasInvoked()).toBe(true);
     });
 
     const inheritedKids = Array.from({ length: 40 }, (_, idx) => `${idx + 3} 0 R`).join(' ');
@@ -218,9 +216,8 @@ describe('PDF page rasterization pixel budgets', () => {
     await expect(PDFDocument.load(inheritedFortyPages, { updateMetadata: false, throwOnInvalidObject: true })).rejects.toThrow();
     await withPdftoppmSpy(async (wasInvoked) => {
       const error = await executeWorkerConversion(inheritedFortyPages, 'pdf', 'png', { dpi: 600 }, 'inherited-forty.pdf').catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(InputPixelLimitError);
-      expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
-      expect(wasInvoked()).toBe(false);
+      expect(error).not.toBeInstanceOf(InputPixelLimitError);
+      expect(wasInvoked()).toBe(true);
     });
 
     const hugeCountPdf = corruptPdfXref(
@@ -249,17 +246,15 @@ describe('PDF page rasterization pixel budgets', () => {
         1
       ).buffer
     );
-    await withPdftoppmSpy(async (wasInvoked) => {
+    await withPdftoppmSpy(async () => {
       const error = await executeWorkerConversion(singleBoxDamagedA4, 'pdf', 'png', { pages: '1-40', dpi: 600 }, 'range-forty.pdf').catch(
         (err: unknown) => err
       );
-      expect(error).toBeInstanceOf(InputPixelLimitError);
-      expect((error as InputPixelLimitError).limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
+      expect(error).not.toBeInstanceOf(InputPixelLimitError);
       const directError = await convertWithNativePoppler(singleBoxDamagedA4, 'pdf', 'png', { pages: '1-40', dpi: 600 }, 'range-forty.pdf').catch(
         (err: unknown) => err
       );
-      expect(directError).toBeInstanceOf(InputPixelLimitError);
-      expect(wasInvoked()).toBe(false);
+      expect(directError).not.toBeInstanceOf(InputPixelLimitError);
     });
     for (const openSpec of ['2-', '9960-']) {
       await expect(
@@ -324,21 +319,79 @@ describe('PDF page rasterization pixel budgets', () => {
     });
   });
 
-  it('refuses a 40-page A4 PDF at 600 DPI exceeding the 400 MP aggregate budget before pdftoppm starts', async () => {
+  it('does not add the pages of a request up: 40 A4 pages at 600 DPI, each within the page budget, reach pdftoppm', async () => {
     const pdf = await createPdfWithPages(40, [595.28, 841.89]);
     await withPdftoppmSpy(async (wasInvoked) => {
       const error = await executeWorkerConversion(pdf, 'pdf', 'png', { dpi: 600 }, 'forty-a4.pdf').catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(InputPixelLimitError);
-      const pixelError = error as InputPixelLimitError;
-      expect(pixelError.status).toBe(413);
-      expect(pixelError.limit).toBe(MAX_RASTER_AGGREGATE_PIXELS);
-      expect(pixelError.message).toContain('400000000');
-      expect(wasInvoked()).toBe(false);
+      expect(error).not.toBeInstanceOf(InputPixelLimitError);
+      expect(wasInvoked()).toBe(true);
     });
-    await expect(planPageRender(pdf, undefined, 600)).rejects.toThrow(InputPixelLimitError);
+    await expect(planPageRender(pdf, undefined, 600)).resolves.toMatchObject({ dpi: 600 });
   });
 
-  oracleTest('converts 10 selected A4 pages at 300 DPI within the aggregate pixel budget into a 10-entry ZIP', ['pdftoppm'], async () => {
+  it('accepts a long document of ordinary pages at 150 and 300 DPI, whatever its pixels in total', async () => {
+    const letters = await createPdfWithPages(489, [612, 792]);
+    const selectAll = (count: number): number[] => Array.from({ length: count }, (_, index) => index + 1);
+    const atDefault = await checkPdfRasterPageBudget(letters, selectAll, 150);
+    expect(atDefault?.pageNumbers).toHaveLength(489);
+    const atOcr = await checkPdfRasterPageBudget(letters, selectAll, 300);
+    expect(atOcr?.pageNumbers).toHaveLength(489);
+    const plan = await planPageRender(letters, undefined, 300);
+    expect(plan.pageNumbers).toHaveLength(489);
+    const a4 = await createPdfWithPages(137, [595.28, 841.89]);
+    await expect(planPageRender(a4, undefined, 300)).resolves.toMatchObject({ dpi: 300 });
+    await expect(planPageRender(a4, undefined, 600)).resolves.toMatchObject({ dpi: 600 });
+  });
+
+  it('keeps the page budget for a long document that holds one giant page', async () => {
+    const doc = await PDFDocument.create();
+    for (let i = 0; i < 20; i++) doc.addPage([612, 792]);
+    doc.addPage([14_400, 14_400]);
+    const pdf = Buffer.from(await doc.save({ useObjectStreams: false }));
+    const error = await planPageRender(pdf, undefined, 300).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(InputPixelLimitError);
+    expect(error).toMatchObject({ limit: MAX_RASTER_PAGE_PIXELS });
+    expect((error as Error).message).toContain('PDF page 21');
+  });
+
+  it('reads the CropBox of a page of a damaged file, not the MediaBox it is cut from, as pdftoppm draws it with -cropbox', async () => {
+    const scanned = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 2672 4072] /CropBox [0 0 641 977]' },
+        ],
+        1
+      ).buffer
+    );
+    await expect(PDFDocument.load(scanned, { updateMetadata: false, throwOnInvalidObject: true })).rejects.toThrow();
+    await expect(checkPdfRasterPageBudget(scanned, () => [1], 300)).resolves.toBeUndefined();
+    const cropFirst = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /CropBox [0 0 641 977] /MediaBox [0 0 2672 4072]' },
+        ],
+        1
+      ).buffer
+    );
+    await expect(checkPdfRasterPageBudget(cropFirst, () => [1], 300)).resolves.toBeUndefined();
+    const giantCrop = corruptPdfXref(
+      buildPdf(
+        [
+          { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+          { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+          { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] /CropBox [0 0 14400 14400]' },
+        ],
+        1
+      ).buffer
+    );
+    await expect(checkPdfRasterPageBudget(giantCrop, () => [1], 300)).rejects.toBeInstanceOf(InputPixelLimitError);
+  });
+
+  oracleTest('converts 10 selected A4 pages at 300 DPI into a 10-entry ZIP', ['pdftoppm'], async () => {
     const pdf = await createPdfWithPages(40, [595.28, 841.89]);
     const result = await executeWorkerConversion(pdf, 'pdf', 'png', { pages: '1-10', dpi: 300 }, 'forty-a4.pdf');
     expect(result.mimeType).toBe('application/zip');
