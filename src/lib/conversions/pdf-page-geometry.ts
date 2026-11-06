@@ -1,7 +1,6 @@
 import { PDFArray, PDFCatalog, PDFDocument, PDFName, PDFNull, PDFNumber, PDFPage, PDFPageLeaf, PDFPageTree, PDFRef } from 'pdf-lib';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { DEFAULT_MAX_INPUT_PIXELS, InputPixelLimitError, maxInputPixels } from './image-input-limit-config';
-import { MAX_AGGREGATE_PAGE_PIXELS } from './image-limits';
 import { mapBoxToSource, normaliseLeafPageCatalogWithLib, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import type { OcrBBox } from './ocr-pdf-combiner';
 
@@ -22,8 +21,13 @@ const POINTS_PER_INCH = 72;
 const FULL_TURN_DEGREES = 360;
 const QUARTER_TURN_DEGREES = 90;
 
+/**
+ * The pixels one page may render to. The bound is per page, as the renderers bound it (pdf.js `maxCanvasPixels` is the pixel
+ * count of one canvas; Poppler draws a page into one bitmap and holds none of the others): a page is drawn, encoded and freed
+ * before the next, so the memory of a request is that of its largest page and the number of pages is bounded by
+ * `PAGE_IMAGE_MAX_PAGES` and the job deadline, not by a sum of pixels that no step holds at once.
+ */
 export const MAX_RASTER_PAGE_PIXELS = DEFAULT_MAX_INPUT_PIXELS;
-export const MAX_RASTER_AGGREGATE_PIXELS = MAX_AGGREGATE_PAGE_PIXELS;
 
 /** The visible rectangle of a page in PDF user space (points, y up): the CropBox, or the MediaBox when none is set. */
 export interface PdfBox {
@@ -89,8 +93,9 @@ export function normaliseLeafPageCatalog(doc: PDFDocument): void {
 }
 
 const RAW_NUMBER_TOKEN = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
+// Each match is the end of an object or one box of it, so that the boxes of one page dictionary are read together.
 const RAW_PAGE_BOX_PATTERN = new RegExp(
-  `\\/(?:MediaBox|CropBox)\\s*\\[\\s*(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s*\\]`,
+  `endobj|\\/(MediaBox|CropBox)\\s*\\[\\s*(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s+(${RAW_NUMBER_TOKEN})\\s*\\]`,
   'g'
 );
 const RAW_USER_UNIT_PATTERN = new RegExp(`\\/UserUnit\\s+(${RAW_NUMBER_TOKEN})`, 'g');
@@ -177,23 +182,11 @@ export function renderedSizePixels(frame: PdfPageFrame, dpi: number): { width: n
   return { width: Math.ceil((size.width * dpi) / POINTS_PER_INCH), height: Math.ceil((size.height * dpi) / POINTS_PER_INCH) };
 }
 
-function assertPageWithinPixelLimit(frame: PdfPageFrame, pageNumber: number, dpi: number, perPageLimit: number): number {
+function assertPageWithinPixelLimit(frame: PdfPageFrame, pageNumber: number, dpi: number, perPageLimit: number): void {
   const { width: widthPx, height: heightPx } = renderedSizePixels(frame, dpi);
   const pixels = widthPx * heightPx;
   if (!Number.isFinite(pixels) || pixels > perPageLimit) {
     throw new InputPixelLimitError(perPageLimit, widthPx, heightPx, `PDF page ${pageNumber} at ${dpi} DPI`);
-  }
-  return pixels;
-}
-
-function assertAggregatePixelLimit(totalPixels: number, pageCount: number, dpi: number): void {
-  if (!Number.isFinite(totalPixels) || totalPixels > MAX_RASTER_AGGREGATE_PIXELS) {
-    throw new InputPixelLimitError(
-      MAX_RASTER_AGGREGATE_PIXELS,
-      undefined,
-      undefined,
-      `${pageCount} selected PDF pages at ${dpi} DPI (${totalPixels} pixels in total)`
-    );
   }
 }
 
@@ -209,7 +202,7 @@ function checkPageFrameWithBudget(
   pageNumber: number,
   dpi: number,
   perPageLimit: number
-): { frame: PdfPageFrame; pixels: number } {
+): PdfPageFrame {
   const cropBox = readPageCropBox(page, pageNumber);
   let userUnit: number | undefined;
   let rotation: OcrQuarterTurn = 0;
@@ -229,11 +222,11 @@ function checkPageFrameWithBudget(
     rotation,
     ...(userUnit === undefined ? {} : { userUnit }),
   };
-  const pixels = assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
+  assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
   if (frameError !== undefined) {
     throw frameError;
   }
-  return { frame, pixels };
+  return frame;
 }
 
 function maxRawUserUnit(text: string): number {
@@ -247,20 +240,41 @@ function maxRawUserUnit(text: string): number {
   return unit;
 }
 
+/**
+ * The page boxes of an unparsed file, one frame for each object that holds a box. Where an object has both, the frame is its
+ * CropBox, the visible rectangle that a renderer draws for the page (see `PdfPageFrame`); counting its MediaBox as a second
+ * page would charge the page for a sheet that is cut away, which a scanner or an imposition tool writes at several times the
+ * size of the page.
+ */
 function extractRawPdfBoxes(text: string, unit: number): PdfPageFrame[] {
   const frames: PdfPageFrame[] = [];
+  let media: PdfPageFrame | undefined;
+  let crop: PdfPageFrame | undefined;
+  const flush = (): void => {
+    const frame = crop ?? media;
+    if (frame !== undefined) frames.push(frame);
+    media = undefined;
+    crop = undefined;
+  };
   for (const match of text.matchAll(RAW_PAGE_BOX_PATTERN)) {
-    const w = Number(match[3]) - Number(match[1]);
-    const h = Number(match[4]) - Number(match[2]);
+    if (match[1] === undefined) {
+      flush();
+      continue;
+    }
+    const w = Number(match[4]) - Number(match[2]);
+    const h = Number(match[5]) - Number(match[3]);
     if (!(w > 0) || !(h > 0) || !Number.isFinite(w) || !Number.isFinite(h)) {
       throw new PdfPageFrameError('Invalid PDF: page MediaBox and CropBox must have positive width and height.');
     }
-    frames.push({
+    const frame: PdfPageFrame = {
       cropBox: { x0: 0, y0: 0, x1: w, y1: h },
       rotation: 0,
       ...(unit > 1 ? { userUnit: unit } : {}),
-    });
+    };
+    if (match[1] === 'CropBox') crop = frame;
+    else media = frame;
   }
+  flush();
   return frames;
 }
 
@@ -333,26 +347,11 @@ function assertRawPdfBoxesWithinPageLimit(
   const frames = extractRawPdfBoxes(text, maxRawUserUnit(text));
   if (frames.length === 0) return;
   const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
-  let maxFramePixels = 0;
   for (let i = 0; i < frames.length; i++) {
-    const pixels = assertPageWithinPixelLimit(frames[i], i + 1, dpi, perPageLimit);
-    if (pixels > maxFramePixels) {
-      maxFramePixels = pixels;
-    }
+    assertPageWithinPixelLimit(frames[i], i + 1, dpi, perPageLimit);
   }
-  const pageCount = countRawPdfPages(text, frames.length);
-  const selected = resolveFallbackSelectedPages(selectPageNumbers, pageCount);
-  const usePerPageBox = frames.length >= pageCount && selected.every((pageNum) => pageNum >= 1 && pageNum <= frames.length);
-  let totalPixels = 0;
-  for (const pageNum of selected) {
-    if (usePerPageBox) {
-      const { width: widthPx, height: heightPx } = renderedSizePixels(frames[pageNum - 1], dpi);
-      totalPixels += widthPx * heightPx;
-    } else {
-      totalPixels += maxFramePixels;
-    }
-  }
-  assertAggregatePixelLimit(totalPixels, selected.length, dpi);
+  // The pages the request selects are counted against the page guard; the number of pixels in them is not (see MAX_RASTER_PAGE_PIXELS).
+  resolveFallbackSelectedPages(selectPageNumbers, countRawPdfPages(text, frames.length));
 }
 
 function isMissingRef(doc: PDFDocument, ref: unknown): boolean {
@@ -393,15 +392,13 @@ function hasUnresolvedPageTreeRef(doc: PDFDocument): boolean {
 
 export function assertPdfRasterPageBudget(frames: readonly PdfPageFrame[], pageNumbers: readonly number[], dpi: number): void {
   const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
-  let totalPixels = 0;
   for (const pageNumber of pageNumbers) {
     const frame = frames[pageNumber - 1];
     if (!frame) {
       throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
     }
-    totalPixels += assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
+    assertPageWithinPixelLimit(frame, pageNumber, dpi, perPageLimit);
   }
-  assertAggregatePixelLimit(totalPixels, pageNumbers.length, dpi);
 }
 
 export async function checkPdfRasterPageBudget(
@@ -434,17 +431,13 @@ export async function checkPdfRasterPageBudget(
   const pageNumbers = [...selectPageNumbers(pages.length)];
   const perPageLimit = Math.min(MAX_RASTER_PAGE_PIXELS, maxInputPixels());
   const selectedFrames: PdfPageFrame[] = [];
-  let totalPixels = 0;
   for (const pageNumber of pageNumbers) {
     const page = pages[pageNumber - 1];
     if (!page) {
       throw new PdfPageFrameError(`Invalid PDF: page ${pageNumber} does not exist.`);
     }
-    const { frame, pixels } = checkPageFrameWithBudget(page, pageNumber, dpi, perPageLimit);
-    selectedFrames.push(frame);
-    totalPixels += pixels;
+    selectedFrames.push(checkPageFrameWithBudget(page, pageNumber, dpi, perPageLimit));
   }
-  assertAggregatePixelLimit(totalPixels, pageNumbers.length, dpi);
   return { pageNumbers, frames: selectedFrames };
 }
 
