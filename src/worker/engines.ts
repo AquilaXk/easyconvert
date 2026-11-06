@@ -26,7 +26,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -82,6 +82,7 @@ import { convertPostScript, type PostScriptJob } from './postscript-render';
 import { convertDjvu } from './djvu-render';
 import { convertXps, type XpsJob } from './xps-render';
 import { convertWithCalibre } from './ebook-calibre';
+import { writeKeepExcelObjectsSetting } from './libreoffice-profile';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
@@ -378,7 +379,8 @@ async function runHeadlessOffice(
   await assertOfficeEmbeddedImagesWithinLimit(input);
   libreOfficePool.setSofficePath(sofficeBin);
 
-  if (libreOfficePool.isEnabled()) {
+  // A run with its own settings never goes to the pool, whose profiles other jobs share.
+  if (libreOfficePool.isEnabled() && !options.keepEmbeddedExcelObjects) {
     try {
       const poolResult = await libreOfficePool.convert(input, src, tgt, options, originalFilename);
       if (poolResult) {
@@ -403,6 +405,7 @@ async function runHeadlessOffice(
   try {
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, src, tempDir);
+      if (options.keepEmbeddedExcelObjects) writeKeepExcelObjectsSetting(`${tempDir}/user`);
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
@@ -424,7 +427,8 @@ async function runHeadlessOffice(
           cwd: tempDir,
           timeoutMs: timeout,
           maxBuffer,
-          env: { HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+          // The suite's temporary files go into the run's own directory, which is removed with it: a run that is killed leaves nothing in the shared temporary directory (the two charts of govdocs1-001020.ppt leave 2.9 GB there).
+          env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
           signal: options.signal,
         }
@@ -456,7 +460,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(runHeadlessOffice)), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(withEmbeddedWorkbookRetry(runHeadlessOffice))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.

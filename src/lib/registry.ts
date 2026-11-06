@@ -1423,7 +1423,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'WPS Office Kingsoft Presentation slide deck.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'ppt', 'jpg', 'png'],
   },
   shw: {
     id: 'shw',

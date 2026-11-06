@@ -56,7 +56,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 

@@ -738,7 +738,7 @@ export class LibreOfficePoolManager {
           cwd: jobSubdir,
           timeoutMs: timeout,
           maxBuffer,
-          env: { HOME: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
+          env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
           signal: options.signal,
         }
