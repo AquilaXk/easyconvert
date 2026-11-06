@@ -27,8 +27,6 @@ const page = (path, status = 200) => ({ path, status, noindex: false });
 const ROUTES = [
   ['/dashboard/api-keys', 200],
   ['/api-docs', 200],
-  ['/status', 200],
-  ['/unit-converter', 200],
   ['/auth', 200],
   ['/account', 307],
 ];
@@ -46,6 +44,11 @@ const EXPECTED = [
   notFound('/.env'),
   notFound('/.git/config'),
   notFound('/api'),
+  notFound('/status'),
+  notFound('/unit-converter'),
+  notFound('/lbs-to-kg'),
+  notFound('/ko/status'),
+  notFound('/ko/unit-converter'),
   notFound('/ko/nonexistent-page-xyz'),
   notFound('/ko/foo/bar'),
   notFound('/ko/robots.txt'),

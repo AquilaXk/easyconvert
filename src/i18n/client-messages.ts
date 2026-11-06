@@ -20,15 +20,12 @@ export const PAGE_NAMESPACES = {
   home: [...CHROME, ...WORKBENCH, 'features', 'home'],
   converter: [
     ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',
-    'faq', 'status', 'unitConverter', 'unitCategories', 'unitNames',
   ],
   auth: [...CHROME, 'auth', 'errors'],
   dashboard: [...CHROME, 'dashboard', 'errors'],
   apiDocs: [...CHROME],
-  status: [...CHROME, 'status'],
   legal: [...CHROME],
-  unitConverter: [...CHROME, 'unitConverter', 'unitCategories', 'unitNames', 'faq'],
-  notFound: ['header', 'notFound'],
+  notFound: [...CHROME, 'notFound'],
 } as const satisfies Record<string, readonly Namespace[]>;
 
 export type ClientMessagesPage = keyof typeof PAGE_NAMESPACES;

@@ -3,11 +3,9 @@ import { isSameFormat } from './format-aliases';
 import { CATEGORY_WORDS, isCategoryWord } from './category-words';
 import {
   INFO_PAGE_MAP,
-  UNIT_CONVERTER_INFO_PAGE,
   canonicalPathOf,
   isSelfConvertible,
   offersConversion,
-  parseUnitPairSlug,
   parseUtilitySlug,
   type ParsedSlug,
   type SlugName,
@@ -29,9 +27,6 @@ function parsePairSlug(cleanSlug: string): SlugPage | null {
   const [source, target, ...rest] = cleanSlug.split(PAIR_SEPARATOR);
   if (target === undefined || rest.length > 0) return null;
 
-  const unitPair = parseUnitPairSlug(source, target);
-  if (unitPair) return unitPair;
-
   if (!offersConversion(source, target)) return null;
   if (isSameFormat(source, target)) return formatPage(source, { kind: 'format', id: source, display: source.toUpperCase() });
   return { isInfoPage: false, sourceFormat: source, targetFormat: target, copy: { kind: 'pair', src: source, tgt: target } };
@@ -39,7 +34,6 @@ function parsePairSlug(cleanSlug: string): SlugPage | null {
 
 function parseFormatConverterSlug(cleanSlug: string): SlugPage | null {
   const word = cleanSlug.slice(0, -CONVERTER_SUFFIX.length);
-  if (word === 'unit') return UNIT_CONVERTER_INFO_PAGE;
   if (isCategoryWord(word)) {
     return formatPage(CATEGORY_WORDS[word].format, { kind: 'category', id: word, display: CATEGORY_WORDS[word].display });
   }

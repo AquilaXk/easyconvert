@@ -163,6 +163,25 @@
     box-shadow: var(--shadow-primary-hover);
   }
 
+  /* Checkbox: a 16 px square with the 2.4 px corner and a rule border; checked, it fills with the accent and shows a white tick. */
+  .checkbox {
+    appearance: none;
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    border: 1px solid rgb(var(--c-rule-strong));
+    border-radius: var(--radius-xs);
+    background-color: rgb(var(--c-surface));
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 0.75rem;
+  }
+  .checkbox:checked {
+    border-color: rgb(var(--c-accent));
+    background-color: rgb(var(--c-accent));
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E");
+  }
+
   /* The progress strand: a track in the rule colour and a fill in the accent. */
   .thread {
     -webkit-appearance: none;

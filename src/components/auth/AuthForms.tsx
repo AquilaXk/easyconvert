@@ -2,11 +2,14 @@
 
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import { ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, User } from 'lucide-react';
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { LEGAL_DOCUMENTS } from '@/lib/legal/documents';
 
 export type AuthTab = 'login' | 'register';
+
+/** The 32 px height of the form controls; 44 px where the pointer is a finger, as the accessibility statement promises. */
+const CONTROL_HEIGHT = 'h-8 [@media(pointer:coarse)]:h-11';
 
 /** The `error` codes the OAuth callback redirects with; each is worded as `auth.oauthErrors.<code>`. */
 const OAUTH_ERROR_CODES = [
@@ -51,7 +54,7 @@ export function GoogleOAuthButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="w-full min-h-[44px] flex items-center justify-center gap-3 px-4 py-2.5 rounded-sm border border-rule bg-surface hover:bg-sunken text-ink font-medium text-sm transition-colors disabled:opacity-60"
+      className={`${CONTROL_HEIGHT} w-full flex items-center justify-center gap-2 px-2.5 rounded-xs border border-rule bg-surface hover:bg-sunken text-ink font-medium text-sm transition-colors disabled:opacity-60`}
     >
       {isGoogleLoading ? (
         <Loader2 className="w-4 h-4 animate-spin text-accent-ink" />
@@ -106,72 +109,51 @@ export function AuthCredentialsForm({
   onSubmit,
 }: Readonly<AuthCredentialsFormProps>) {
   const t = useTranslations('auth.form');
-  const inputBaseClass =
-    'w-full min-h-[44px] pl-10 pr-4 py-2.5 rounded-sm border border-rule-strong bg-surface/80 text-ink text-base transition-colors';
+  const inputClass =
+    `${CONTROL_HEIGHT} w-full px-2.5 rounded-xs border border-rule bg-sunken text-ink text-base transition-colors`;
+  const labelClass = 'block text-sm font-medium text-ink-2 mb-1';
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form onSubmit={onSubmit} className="space-y-5">
       {activeTab === 'register' && (
         <div>
-          <label
-            htmlFor="auth-full-name"
-            className="block text-xs font-semibold text-ink mb-1.5"
-          >
+          <label htmlFor="auth-full-name" className={labelClass}>
             {t('name')}
           </label>
-          <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
-              <User className="w-4 h-4" />
-            </div>
-            <input
-              id="auth-full-name"
-              type="text"
-              autoComplete="name"
-              required
-              value={name}
-              onChange={(e) => onNameChange(e.target.value)}
-              placeholder={t('namePlaceholder')}
-              className={inputBaseClass}
-            />
-          </div>
+          <input
+            id="auth-full-name"
+            type="text"
+            autoComplete="name"
+            required
+            value={name}
+            onChange={(e) => onNameChange(e.target.value)}
+            placeholder={t('namePlaceholder')}
+            className={inputClass}
+          />
         </div>
       )}
 
       <div>
-        <label
-          htmlFor="auth-email"
-          className="block text-xs font-semibold text-ink mb-1.5"
-        >
+        <label htmlFor="auth-email" className={labelClass}>
           {t('email')}
         </label>
-        <div className="relative">
-          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
-            <Mail className="w-4 h-4" />
-          </div>
-          <input
-            id="auth-email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => onEmailChange(e.target.value)}
-            placeholder={t('emailPlaceholder')}
-            className={inputBaseClass}
-          />
-        </div>
+        <input
+          id="auth-email"
+          type="email"
+          autoComplete="email"
+          required
+          value={email}
+          onChange={(e) => onEmailChange(e.target.value)}
+          placeholder={t('emailPlaceholder')}
+          className={inputClass}
+        />
       </div>
 
       <div>
-        <label
-          htmlFor="auth-password"
-          className="block text-xs font-semibold text-ink mb-1.5"
-        >
+        <label htmlFor="auth-password" className={labelClass}>
           {t('password')}
         </label>
         <div className="relative">
-          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
-            <Lock className="w-4 h-4" />
-          </div>
           <input
             id="auth-password"
             type={showPassword ? 'text' : 'password'}
@@ -180,13 +162,13 @@ export function AuthCredentialsForm({
             value={password}
             onChange={(e) => onPasswordChange(e.target.value)}
             placeholder="••••••••"
-            className="w-full min-h-[44px] pl-10 pr-12 py-2.5 rounded-sm border border-rule-strong bg-surface/80 text-ink text-base transition-colors"
+            className={`${inputClass} pr-9 [@media(pointer:coarse)]:pr-11`}
           />
           <button
             type="button"
             onClick={onTogglePassword}
             aria-label={showPassword ? t('hidePassword') : t('showPassword')}
-            className="min-w-[44px] min-h-[44px] absolute inset-y-0 right-0 flex items-center justify-center rounded-sm text-ink-3 hover:text-ink transition-colors"
+            className="absolute inset-y-0 right-0 w-8 [@media(pointer:coarse)]:w-11 flex items-center justify-center rounded-xs text-ink-3 hover:text-ink transition-colors"
           >
             {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
           </button>
@@ -195,39 +177,31 @@ export function AuthCredentialsForm({
 
       {activeTab === 'register' && (
         <div>
-          <label
-            htmlFor="auth-confirm-password"
-            className="block text-xs font-semibold text-ink mb-1.5"
-          >
+          <label htmlFor="auth-confirm-password" className={labelClass}>
             {t('confirmPassword')}
           </label>
-          <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
-              <Lock className="w-4 h-4" />
-            </div>
-            <input
-              id="auth-confirm-password"
-              type={showPassword ? 'text' : 'password'}
-              autoComplete="new-password"
-              required
-              value={confirmPassword}
-              onChange={(e) => onConfirmPasswordChange(e.target.value)}
-              placeholder="••••••••"
-              className={inputBaseClass}
-            />
-          </div>
+          <input
+            id="auth-confirm-password"
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="new-password"
+            required
+            value={confirmPassword}
+            onChange={(e) => onConfirmPasswordChange(e.target.value)}
+            placeholder="••••••••"
+            className={inputClass}
+          />
         </div>
       )}
 
       {activeTab === 'register' && (
-        <div className="flex items-center gap-3 min-h-[44px]">
+        <div className="flex items-center gap-2">
           <input
             id="auth-accept-terms"
             type="checkbox"
             required
             checked={acceptedTerms}
             onChange={(e) => onAcceptedTermsChange(e.target.checked)}
-            className="size-4 cursor-pointer"
+            className="checkbox cursor-pointer"
           />
           <label htmlFor="auth-accept-terms" className="text-sm text-ink cursor-pointer select-none">
             {t.rich('acceptTerms', {
@@ -244,16 +218,9 @@ export function AuthCredentialsForm({
       <button
         type="submit"
         disabled={isBusy}
-        className="btn-primary w-full min-h-[48px] mt-2 flex items-center justify-center gap-2 py-3 px-4 rounded-sm font-semibold text-base disabled:opacity-60"
+        className={`${CONTROL_HEIGHT} w-full flex items-center justify-center px-2.5 rounded-xs bg-accent text-on-accent hover:bg-accent-hover text-sm font-medium transition-colors disabled:opacity-60`}
       >
-        {isSubmitting ? (
-          <Loader2 className="w-4 h-4 animate-spin" />
-        ) : (
-          <>
-            <span>{activeTab === 'login' ? t('signIn') : t('createAccount')}</span>
-            <ArrowRight className="w-4 h-4" />
-          </>
-        )}
+        {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <span>{activeTab === 'login' ? t('signIn') : t('createAccount')}</span>}
       </button>
     </form>
   );

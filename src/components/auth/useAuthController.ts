@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
@@ -12,8 +12,6 @@ import {
   validateRegistrationInput,
   type AuthTab,
 } from './AuthForms';
-
-export const AUTH_TABS: readonly AuthTab[] = ['login', 'register'];
 
 /** What `/api/auth/login` and `/api/auth/register` answer: the session's user on success (both routes always send it), else a refusal with its `code`. */
 type AuthAnswer = { success: true; user: SessionUser } | { success: false; code?: string; error?: string };
@@ -44,10 +42,6 @@ export function useAuthController() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(() => oauthErrorMessage(urlError));
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const tabRefs = useRef<Record<AuthTab, HTMLButtonElement | null>>({
-    login: null,
-    register: null,
-  });
 
   useEffect(() => {
     setActiveTab(tabParam === 'register' ? 'register' : 'login');
@@ -62,27 +56,6 @@ export function useAuthController() {
     setActiveTab(tab);
     setError(null);
     setSuccessMessage(null);
-  };
-
-  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, currentTab: AuthTab) => {
-    const currentIndex = AUTH_TABS.indexOf(currentTab);
-    let nextTab: AuthTab | null = null;
-
-    if (event.key === 'ArrowRight') {
-      nextTab = AUTH_TABS[(currentIndex + 1) % AUTH_TABS.length];
-    } else if (event.key === 'ArrowLeft') {
-      nextTab = AUTH_TABS[(currentIndex - 1 + AUTH_TABS.length) % AUTH_TABS.length];
-    } else if (event.key === 'Home') {
-      nextTab = AUTH_TABS[0];
-    } else if (event.key === 'End') {
-      nextTab = AUTH_TABS.at(-1) ?? null;
-    }
-
-    if (nextTab) {
-      event.preventDefault();
-      handleTabSwitch(nextTab);
-      tabRefs.current[nextTab]?.focus();
-    }
   };
 
   const handleGoogleLogin = async () => {
@@ -173,7 +146,6 @@ export function useAuthController() {
     isGoogleLoading,
     error,
     successMessage,
-    tabRefs,
     setEmail,
     setPassword,
     setConfirmPassword,
@@ -181,7 +153,6 @@ export function useAuthController() {
     setAcceptedTerms,
     setShowPassword,
     handleTabSwitch,
-    handleTabKeyDown,
     handleGoogleLogin,
     handleSubmit,
   };
