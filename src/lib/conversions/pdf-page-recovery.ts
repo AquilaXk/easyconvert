@@ -1,4 +1,4 @@
-import { type PdfDict, type PdfRef, type PdfValue, isArray, isDict, isName, isRef } from './pdf-values';
+import { type PdfDict, PdfStructureError, type PdfRef, type PdfValue, isArray, isDict, isName, isRef } from './pdf-values';
 
 /**
  * Whether pdf.js re-reads a file by scanning it after it followed the cross-reference, as `PDFDocument.checkFirstPage` and
@@ -14,7 +14,33 @@ import { type PdfDict, type PdfRef, type PdfValue, isArray, isDict, isName, isRe
  * `/Kids` and `/Type` when they are references. Not modelled: the first page of a linearized file, which pdf.js reads from the
  * object the linearization dictionary names before it walks the tree (`#getLinearizationPage`), and its page count (`/N`), which
  * `checkLastPage` uses for such a file; `PdfDocument` reads the file again by its other readings where the choice is uncertain.
+ *
+ * pdf.js bounds neither walk: it visits a reference once, but an inline dictionary of `/Kids` that is a reference to an array that
+ * holds that dictionary again is pushed again for ever, and a node of N inline kids whose `/Kids` is a shared array of M more
+ * costs N times M. Each walk here counts every node it pushes or pops, inline ones included, and the depth of each node, and
+ * refuses the file (a structure error, not a fall back to the cross-reference's objects) past `PageWalkLimits`.
  */
+
+/** What one walk of the page tree may do before the file is refused. */
+export interface PageWalkLimits {
+  /** Nodes pushed or popped, in one walk. */
+  maxWork: number;
+  /** Levels of nodes below the top `/Pages` node. */
+  maxDepth: number;
+}
+
+/** The counting of one walk. */
+class WalkMeter {
+  private work = 0;
+
+  constructor(private readonly limits: PageWalkLimits) {}
+
+  /** Counts one push or pop of a node `depth` levels down. @throws PdfStructureError past a limit. */
+  step(depth: number): void {
+    if (depth > this.limits.maxDepth) throw new PdfStructureError('PDF page tree is nested too deeply.');
+    if (++this.work > this.limits.maxWork) throw new PdfStructureError(`PDF page tree makes a reader visit more than ${this.limits.maxWork} nodes.`);
+  }
+}
 
 /** A fetch or a walk that pdf.js fails on: `entry` for an `XRefEntryException`, otherwise a `FormatError` or another error. */
 export class PageFault extends Error {
@@ -32,14 +58,16 @@ function fetchIfRef(source: PageTreeSource, value: PdfValue | undefined): PdfVal
   return isRef(value) ? source.fetch(value) : (value ?? null);
 }
 
-/** `Catalog.getPageDict(pageIndex)`: returns when the page is found. @throws PageFault. */
-function walkToPage(top: PdfDict, pagesRef: PdfValue | undefined, pageIndex: number, source: PageTreeSource): void {
+/** `Catalog.getPageDict(pageIndex)`: returns when the page is found. @throws PageFault, PdfStructureError. */
+function walkToPage(top: PdfDict, pagesRef: PdfValue | undefined, pageIndex: number, source: PageTreeSource, limits: PageWalkLimits): void {
+  const meter = new WalkMeter(limits);
   const visited = new Set<number>();
   if (isRef(pagesRef)) visited.add(pagesRef.num);
-  const toVisit: PdfValue[] = [top];
+  const toVisit: Array<{ node: PdfValue; depth: number }> = [{ node: top, depth: 0 }];
   let current = 0;
   while (toVisit.length > 0) {
-    const node = toVisit.pop() as PdfValue;
+    const { node, depth } = toVisit.pop() as { node: PdfValue; depth: number };
+    meter.step(depth);
     if (isRef(node)) {
       if (visited.has(node.num)) throw new PageFault(false);
       visited.add(node.num);
@@ -48,7 +76,7 @@ function walkToPage(top: PdfDict, pagesRef: PdfValue | undefined, pageIndex: num
         if (current === pageIndex) return;
         current++;
       } else {
-        toVisit.push(object);
+        toVisit.push({ node: object, depth });
       }
       continue;
     }
@@ -60,7 +88,10 @@ function walkToPage(top: PdfDict, pagesRef: PdfValue | undefined, pageIndex: num
     }
     const kids = fetchIfRef(source, node.entries.get('Kids'));
     if (isArray(kids)) {
-      for (let last = kids.items.length - 1; last >= 0; last--) toVisit.push(kids.items[last]);
+      for (let last = kids.items.length - 1; last >= 0; last--) {
+        meter.step(depth + 1);
+        toVisit.push({ node: kids.items[last], depth: depth + 1 });
+      }
     } else if (isName(fetchIfRef(source, node.entries.get('Type')), 'Page') || !node.entries.has('Kids')) {
       if (current === pageIndex) return;
       current++;
@@ -71,13 +102,15 @@ function walkToPage(top: PdfDict, pagesRef: PdfValue | undefined, pageIndex: num
   throw new PageFault(false);
 }
 
-/** The walk of `Catalog.getAllPageDicts` (not in recovery mode): whether it meets an `XRefEntryException` before any other error ends it. */
-function wholeTreeFails(top: PdfDict, pagesRef: PdfValue | undefined, source: PageTreeSource): boolean {
+/** The walk of `Catalog.getAllPageDicts` (not in recovery mode): whether it meets an `XRefEntryException` before any other error ends it. @throws PdfStructureError. */
+function wholeTreeFails(top: PdfDict, pagesRef: PdfValue | undefined, source: PageTreeSource, limits: PageWalkLimits): boolean {
+  const meter = new WalkMeter(limits);
   const visited = new Set<number>();
   if (isRef(pagesRef)) visited.add(pagesRef.num);
   const queue: Array<{ node: PdfDict; position: number }> = [{ node: top, position: 0 }];
   try {
     while (queue.length > 0) {
+      meter.step(queue.length - 1);
       const item = queue[queue.length - 1];
       const kids = fetchIfRef(source, item.node.entries.get('Kids'));
       if (!isArray(kids)) return false;
@@ -115,14 +148,14 @@ function attempt(run: () => void): Outcome {
 }
 
 /** Whether pdf.js, having followed the cross-reference, reads the first or the last page's way down the tree into an entry it cannot use and scans the file instead. */
-export function recoversByScanning(top: PdfDict, pagesRef: PdfValue | undefined, source: PageTreeSource): boolean {
+export function recoversByScanning(top: PdfDict, pagesRef: PdfValue | undefined, source: PageTreeSource, limits: PageWalkLimits): boolean {
   // checkFirstPage: only an XRefEntryException matters, every other error leaves the first page unread and goes on.
-  if (attempt(() => walkToPage(top, pagesRef, 0, source)) === 'entry') return true;
+  if (attempt(() => walkToPage(top, pagesRef, 0, source, limits)) === 'entry') return true;
   // checkLastPage: the page count of the top node, then the last page; an error that is not an XRefEntryException sends it to the whole tree.
   const last = attempt(() => {
     const count = fetchIfRef(source, top.entries.get('Count'));
     if (typeof count !== 'number' || !Number.isInteger(count)) throw new PageFault(false);
-    if (count > 1) walkToPage(top, pagesRef, count - 1, source);
+    if (count > 1) walkToPage(top, pagesRef, count - 1, source, limits);
   });
-  return last === 'entry' || (last === 'other' && wholeTreeFails(top, pagesRef, source));
+  return last === 'entry' || (last === 'other' && wholeTreeFails(top, pagesRef, source, limits));
 }

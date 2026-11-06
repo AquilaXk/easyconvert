@@ -57,6 +57,8 @@ export const MAX_PDF_OBJECTS = 500 * 1000;
 export const MAX_PDF_PAGES = 50 * 1000;
 /** Nesting of the page tree (Pages nodes below the root). */
 export const MAX_PDF_PAGE_TREE_DEPTH = 64;
+/** Per walk of the page tree that decides whether pdf.js scans the file (`pdf-page-recovery.ts`): a node costs a push and a pop, a file lists at most MAX_PDF_OBJECTS objects. */
+const PAGE_WALK_LIMITS = { maxWork: 2 * MAX_PDF_OBJECTS, maxDepth: MAX_PDF_PAGE_TREE_DEPTH };
 /** Nesting of form XObjects drawing other form XObjects. */
 export const MAX_PDF_FORM_DEPTH = 16;
 /** Form XObject invocations in one document. */
@@ -345,7 +347,7 @@ export class PdfDocument {
   /** Whether a number is defined more than once in the file, so that the choice between its definitions matters. */
   private superseded = false;
   private followedCrossReference = false;
-  /** Whether the index may differ from the objects pdf.js reads: the cross-reference was not followed or a section was rejected, and a number has several definitions. */
+  /** Whether the index may differ from the objects pdf.js reads (no cross-reference followed, or a section rejected) and a number has several definitions. */
   private uncertain = false;
   private rootRef: PdfRef | null = null;
   private pageList: PageNode[] | null | undefined;
@@ -644,7 +646,7 @@ export class PdfDocument {
         const pages = root?.entries.get('Pages');
         const pagesDict = this.resolveDict(pages);
         if (!root || !pagesDict) return null;
-        if (recoversByScanning(pagesDict, pages, this.pageTreeSource(failed))) return null;
+        if (recoversByScanning(pagesDict, pages, this.pageTreeSource(failed), PAGE_WALK_LIMITS)) return null;
       }
       this.encrypted = encrypted;
       const rootRef = top.entries.get('Root');

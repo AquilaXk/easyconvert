@@ -519,3 +519,35 @@ describe('entries that lead to streams with no end', () => {
     await expectNoHang('20,000 entries at streams with no end', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(/same bytes again and again/));
   });
 });
+
+/** A catalog, a top `/Pages` node with `topKids` and `count`, and the objects of `extra`, with a valid table. */
+function pageTree(topKids: string, count: number, extra: Array<[number, string]>): Buffer {
+  const writer = new Writer();
+  writer.object(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  writer.object(2, `<< /Type /Pages /Kids ${topKids} /Count ${count} >>`);
+  for (const [num, body] of extra) writer.object(num, body);
+  return finishWithTable(writer);
+}
+
+describe('a page tree that makes the walk of pdf.js go on', () => {
+  it('refuses an inline node whose /Kids is a shared array that holds the node again: pdf.js pushes it for ever, and a valid table sent the walk there', async () => {
+    const pdf = pageTree('[ << /Kids 5 0 R >> ]', 1, [[5, '[ << /Kids 5 0 R >> ]']]);
+    expect(pdf.length).toBeLessThan(400);
+    await expectNoHang('a node that returns to itself', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(PdfStructureError));
+  });
+
+  it('refuses a cycle through two shared arrays that hold different inline nodes', async () => {
+    const pdf = pageTree('[ << /Kids 5 0 R >> ]', 1, [
+      [5, '[ << /Kids 6 0 R >> ]'],
+      [6, '[ << /Kids 5 0 R >> ]'],
+    ]);
+    await expectNoHang('two arrays that return to each other', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(PdfStructureError));
+  });
+
+  it('refuses 16,000 inline nodes that each share an array of 16,000 pages: the walk to the last page would visit 256 million nodes', async () => {
+    const count = 16_000;
+    const pdf = pageTree(`[ ${'<< /Kids 5 0 R >> '.repeat(count)}]`, 2_000_000_000, [[5, `[ ${'<< /Type /Page >> '.repeat(count)}]`]]);
+    expect(pdf.length).toBeLessThan(700_000);
+    await expectNoHang('16,000 nodes sharing 16,000 kids', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(PdfStructureError));
+  });
+});
