@@ -130,12 +130,6 @@
     "count": 2
   },
   {
-    "file": "src/lib/api/idempotency.ts",
-    "rule": "no-nested-ternary",
-    "function": "canonicalJSON",
-    "count": 1
-  },
-  {
     "file": "src/lib/api/problem-details.ts",
     "rule": "max-params",
     "function": "createProblemDetailsResponse",
