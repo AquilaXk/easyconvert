@@ -634,7 +634,8 @@ class Builder {
     // An uploaded drawing has no companion files: an external reference holds no entities and draws nothing, and says so.
     if (block.xrefPath !== undefined && block.records.length === 0) {
       const path = printable(block.xrefPath);
-      reportConversionWarning(`The drawing refers to ${path === '' ? 'an external drawing' : `the external drawing "${path}"`} (reference "${printable(name ?? '')}"), which is not part of the uploaded file, so it was left out.`);
+      const target = path === '' ? 'an external drawing' : `the external drawing "${path}"`;
+      reportConversionWarning(`The drawing refers to ${target} (reference "${printable(name ?? '')}"), which is not part of the uploaded file, so it was left out.`);
     }
     if (depth >= MAX_BLOCK_DEPTH) throw new CadExpansionLimitError(`The DXF nests blocks deeper than ${MAX_BLOCK_DEPTH} levels (block ${name})`);
     const scaleX = num(record, 41, 1);

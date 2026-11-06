@@ -104,7 +104,7 @@ function mifCharacter(written: string, digit: string, hex: string): string {
 /** `\U+XXXX` (four hex digits, either case) and `\M+nXXXX` replaced by their characters. */
 export function decodeDxfEscapes(value: string): string {
   let text = value;
-  if (text.includes('\\U+')) text = text.replace(DXF_UNICODE, (_written, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+  if (text.includes('\\U+')) text = text.replace(DXF_UNICODE, (_written, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)));
   if (text.includes('\\M+')) text = text.replace(DXF_MIF, mifCharacter);
   return text;
 }
@@ -123,7 +123,7 @@ const MAX_CODE_CHARACTER = 255;
 /** `^I` is a tab, `^ ` a caret: the character that follows a caret, minus 64, modulo 126 (ezdxf `caret_decode`). */
 function caretDecode(text: string): string {
   if (!text.includes('^')) return text;
-  return text.replace(CARET_PAIR, (_written, character: string) => String.fromCharCode((((character.codePointAt(0) ?? 0) - CARET_OFFSET) % CARET_RANGE + CARET_RANGE) % CARET_RANGE));
+  return text.replace(CARET_PAIR, (_written, character: string) => String.fromCodePoint((((character.codePointAt(0) ?? 0) - CARET_OFFSET) % CARET_RANGE + CARET_RANGE) % CARET_RANGE));
 }
 
 /**
@@ -147,14 +147,17 @@ function specialCharacter(written: string, token: string): string {
       return '';
     default: {
       const code = Number.parseInt(token, 10);
-      return code >= MIN_CODE_CHARACTER && code <= MAX_CODE_CHARACTER ? String.fromCharCode(code) : written;
+      return code >= MIN_CODE_CHARACTER && code <= MAX_CODE_CHARACTER ? String.fromCodePoint(code) : written;
     }
   }
 }
 
 /** The string of a TEXT entity as the drawing shows it. */
 export function plainText(raw: string): string {
-  const oneLine = caretDecode(decodeDxfEscapes(raw)).replace(/[\r\n]/g, '').replace(/\^+$/, '');
+  let oneLine = caretDecode(decodeDxfEscapes(raw)).replace(/[\r\n]/g, '');
+  let end = oneLine.length;
+  while (end > 0 && oneLine[end - 1] === '^') end -= 1;
+  oneLine = oneLine.slice(0, end);
   return oneLine.includes('%%') ? oneLine.replace(SPECIAL_CODES, specialCharacter) : oneLine;
 }
 

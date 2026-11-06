@@ -557,15 +557,7 @@ async function convertDxfSource(
   baseName: string
 ): Promise<ConversionResult> {
   // DXF -> DWG
-  if (tgt === 'dwg') {
-    const dwgBuffer = dxfToDwg(inputBuffer.toString('utf-8'));
-    return {
-      buffer: dwgBuffer,
-      mimeType: 'image/vnd.dwg',
-      filename: `${baseName}.dwg`,
-      size: dwgBuffer.length,
-    };
-  }
+  if (tgt === 'dwg') dxfToDwg(inputBuffer.toString('utf-8'));
 
   const drawing = parseDxfDrawing(decodeDxfBytes(inputBuffer));
 
@@ -985,7 +977,7 @@ export function encode3dCadToDxf(mesh: CadMesh3D): string {
   return `  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n  0\nENDSEC\n  0\nSECTION\n  2\nTABLES\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n${entitiesDxf}  0\nENDSEC\n  0\nEOF\n`;
 }
 
-function dxfToDwg(_dxfString: string): Buffer {
+function dxfToDwg(_dxfString: string): never {
   throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
 }
 
