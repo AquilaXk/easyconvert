@@ -28,8 +28,6 @@ export type SlugInfoType =
   | 'contact'
   | 'about'
   | 'security'
-  | 'status'
-  | 'unit'
   | 'accessibility';
 
 export type SlugName =
@@ -40,7 +38,6 @@ export type SlugName =
 export type SlugCopy =
   | { kind: 'info'; page: SlugInfoType }
   | { kind: 'ocr' }
-  | { kind: 'unitPair'; src: string; tgt: string }
   | { kind: 'pair'; src: string; tgt: string }
   | { kind: 'format'; name: SlugName }
   | { kind: 'merge'; format: string }
@@ -66,10 +63,9 @@ export interface ParsedSlug extends SlugPage {
 export function canonicalPathOf(copy: SlugCopy): string {
   switch (copy.kind) {
     case 'info':
-      return copy.page === 'unit' ? '/unit-converter' : `/${copy.page}`;
+      return `/${copy.page}`;
     case 'ocr':
       return '/pdf-ocr';
-    case 'unitPair':
     case 'pair':
       return `/${copy.src}-to-${copy.tgt}`;
     case 'format':
@@ -84,7 +80,7 @@ export function canonicalPathOf(copy: SlugCopy): string {
   }
 }
 
-const INFO_PAGES = ['contact', 'about', 'security', 'status', 'accessibility'] as const;
+const INFO_PAGES = ['contact', 'about', 'security', 'accessibility'] as const;
 
 export const INFO_PAGE_MAP: Readonly<Record<string, SlugPage>> = Object.fromEntries(
   INFO_PAGES.map((page) => [
@@ -92,29 +88,6 @@ export const INFO_PAGE_MAP: Readonly<Record<string, SlugPage>> = Object.fromEntr
     { isInfoPage: true, infoType: page, copy: { kind: 'info', page }, sourceFormat: 'pdf', targetFormat: 'docx' } satisfies SlugPage,
   ])
 );
-
-export const UNIT_CONVERTER_INFO_PAGE: SlugPage = {
-  isInfoPage: true,
-  infoType: 'unit',
-  copy: { kind: 'info', page: 'unit' },
-  sourceFormat: 'lbs',
-  targetFormat: 'kg',
-};
-
-const UNIT_PAIR_SLUGS = new Set(['lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet']);
-
-export function parseUnitPairSlug(rawSrc: string, rawTgt: string): SlugPage | null {
-  if (!UNIT_PAIR_SLUGS.has(`${rawSrc}-to-${rawTgt}`)) {
-    return null;
-  }
-  return {
-    isInfoPage: true,
-    infoType: 'unit',
-    sourceFormat: rawSrc,
-    targetFormat: rawTgt,
-    copy: { kind: 'unitPair', src: rawSrc, tgt: rawTgt },
-  };
-}
 
 const selfConvertible = (formats: Iterable<string>): ReadonlySet<string> => new Set([...formats].filter(isSelfConvertible));
 

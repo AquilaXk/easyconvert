@@ -7,8 +7,7 @@ import Header from '../src/components/Header';
 import { POPULAR_PAIRS_BY_CATEGORY } from '../src/components/Features';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import HomePageView from '../src/components/pages/HomePageView';
-import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
-import { COMMON_TARGETS } from '../src/components/workbench/SourceChipPicker';
+import { FOOTER_COLUMNS, PRIMARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { CATEGORY_WORDS } from '../src/lib/category-words';
@@ -20,7 +19,7 @@ import type { TestLocale } from './helpers/intl-messages';
 /**
  * Every link the site renders to one of its own pages leads to a page that exists: a route of its own under src/app/[locale]
  * or a slug the parser reads as a page. The links of the site chrome, the home page and the converter pages are read from
- * what a visitor receives, and the tables that feed the home page (the chips, the directory) are
+ * what a visitor receives, and the tables that feed the home page (the directory) are
  * read as data, since a render shows one state of each.
  */
 
@@ -57,24 +56,22 @@ const render = (element: Parameters<typeof renderDom>[0], locale: TestLocale) =>
 const LOCALES: readonly TestLocale[] = ['en', 'ko'];
 
 describe('the links the site renders lead to pages that exist', () => {
-  it('finds the routes of the app that are not slug pages', () => {
-    expect([...ROUTES].sort()).toEqual(expect.arrayContaining(['/', '/api-docs', '/dashboard', '/status', '/unit-converter']));
+  it('finds the routes of the app that are not slug pages, and none for the retired status and unit converter pages', () => {
+    expect(ROUTES.has('/status') || ROUTES.has('/unit-converter')).toBe(false);
+    expect([...ROUTES].sort()).toEqual(expect.arrayContaining(['/', '/api-docs', '/dashboard']));
   });
 
   it('holds for every link of the site chrome tables', () => {
-    const directory: SiteLink[] = DIRECTORY_CATEGORIES.flatMap((category) => [...category.links]);
-    const table: SiteLink[] = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...SECONDARY_LINKS, ...directory];
-    expect(table.length).toBeGreaterThan(40);
+    const footer: SiteLink[] = FOOTER_COLUMNS.flatMap((column) => [...column.links]);
+    const table: SiteLink[] = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...footer];
+    expect(table.length).toBeGreaterThan(15);
     expect(deadLinks(table.map(hrefOf))).toEqual([]);
   });
 
-  it('holds for the conversions the home page lists, the pairs of its directory and the targets of its chips', () => {
-    const pairs = [
-      ...Object.values(POPULAR_PAIRS_BY_CATEGORY).flat(),
-      ...Object.entries(COMMON_TARGETS).flatMap(([from, targets]) => targets.map((to) => ({ from, to }))),
-    ];
-    expect(pairs.length).toBeGreaterThan(100);
-    expect(deadLinks([...pairs.map(({ from, to }) => `/${from}-to-${to}`), ...Object.keys(COMMON_TARGETS).map((from) => `/${from}-converter`)])).toEqual([]);
+  it('holds for the common conversion types of the home page directory', () => {
+    const pairs = Object.values(POPULAR_PAIRS_BY_CATEGORY).flat();
+    expect(pairs.length).toBeGreaterThan(30);
+    expect(deadLinks(pairs.map(({ from, to }) => `/${from}-to-${to}`))).toEqual([]);
   });
 
   it.each(LOCALES)('holds for the header, the footer and the home page in %s', (locale) => {
@@ -98,19 +95,20 @@ describe('the links the site renders lead to pages that exist', () => {
   }, 120_000);
 
   it.each(LOCALES)('holds for pair pages, utility pages and site pages in %s', (locale) => {
-    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'lbs-to-kg', 'contact', 'accessibility'];
+    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'contact', 'about', 'accessibility'];
     const dead = slugs.flatMap((slug) =>
       deadLinks(render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale)).map((href) => `/${slug} links ${href}`)
     );
     expect(dead).toEqual([]);
   });
 
-  it('would find a link to a pair the site does not offer', () => {
+  it('would find a link to a pair the site does not offer, or to the retired status page', () => {
     expect(deadLinks(['/video-to-mp4', '/ko/image-to-pdf', '/ocr', '/foo-converter', '/mp4-to-gif', '/ko/video-converter', '/status', '/#format-catalog'])).toEqual([
       '/video-to-mp4',
       '/ko/image-to-pdf',
       '/ocr',
       '/foo-converter',
+      '/status',
     ]);
   });
 });

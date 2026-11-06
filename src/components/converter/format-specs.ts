@@ -2,19 +2,11 @@ import { useTranslations } from 'next-intl';
 import { FORMAT_FULL_NAMES } from '@/lib/format-full-names';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import { formatMessageKey } from '@/i18n/message-keys';
-import type { FormatCategory } from '@/lib/types';
 
 /** A format's card as the page shows it: its full name, which reads the same in every language, and its description in the page's language. */
 export interface FormatSpecification {
   fullName: string;
   desc: string;
-}
-
-type FormatDetailTranslator = ReturnType<typeof useTranslations<'formatDetail'>>;
-
-/** The name of a registry category in the page's language. */
-export function formatCategoryLabel(t: FormatDetailTranslator, category: FormatCategory): string {
-  return t(`categories.${category}`);
 }
 
 /** Reads a format's card in the page's language: a written one, else one built from the registry entry. */

@@ -2,35 +2,13 @@
 
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import { Files, Lock, UserRound } from 'lucide-react';
-import { REGISTRY_STATS } from '@/lib/registry-stats';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
-import SourceChipPicker from './workbench/SourceChipPicker';
 import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload } from './hero/useHeroUpload';
 import type { PairTiles } from './hero/usePairTiles';
 
 type FilesSelected = (files: File[], target?: string) => void;
-
-function HomeTrustRow() {
-  const t = useTranslations('hero.trust');
-  const items = [
-    { Icon: Files, text: t('formats', { count: REGISTRY_STATS.formatCount }) },
-    { Icon: Lock, text: t('encrypted') },
-    { Icon: UserRound, text: t('noSignup') },
-  ];
-  return (
-    <ul className="mt-6 flex flex-wrap justify-center lg:justify-start gap-x-[18px] gap-y-2 text-sm font-extrabold text-ink-2">
-      {items.map(({ Icon, text }) => (
-        <li key={text} className="inline-flex items-center gap-2">
-          <Icon aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
-          <span>{text}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
 
 interface HomeHeroProps {
   onFilesSelected: FilesSelected;
@@ -38,7 +16,7 @@ interface HomeHeroProps {
   dailyLimit: number;
 }
 
-/** The home page's hero: the title and trust row beside the upload card with the source chips. */
+/** The home page's hero: the title and intro, and the upload card centred under them. */
 export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps>) {
   const t = useTranslations('hero');
   const upload = useHeroUpload(onFilesSelected, undefined);
@@ -46,19 +24,12 @@ export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps
     <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
       <input {...upload.fileInput} />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="lg:grid lg:grid-cols-2 lg:items-center lg:gap-14">
-          <div className="text-center lg:text-left min-w-0">
-            <h1 className="text-5xl sm:text-6xl lg:text-[78px] font-normal leading-[0.95] tracking-[-0.06em] text-ink">
-              {t('title.default')}
-            </h1>
-            <p className="mt-6 text-lg sm:text-xl leading-normal text-ink-3 max-w-xl mx-auto lg:mx-0">{t('subtitle.default')}</p>
-            <HomeTrustRow />
-          </div>
-          <div className="mt-10 lg:mt-0 min-w-0">
-            <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit}>
-              <SourceChipPicker />
-            </HeroDropzoneCard>
-          </div>
+        <div className="text-center lg:text-left lg:max-w-2xl">
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{t('title.default')}</h1>
+          <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{t('subtitle.default')}</p>
+        </div>
+        <div className="mt-10 lg:mt-12 max-w-2xl mx-auto">
+          <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit} />
         </div>
       </div>
     </section>
@@ -90,8 +61,8 @@ export function PairHero({ onFilesSelected, dailyLimit, tiles, title, descriptio
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
           <div className="text-center lg:text-left lg:max-w-2xl">
-            <h1 className="text-4xl sm:text-5xl leading-none text-ink">{changed ? formatsTitle(t, source, target) : title}</h1>
-            <p className="mt-5 text-lg leading-relaxed text-ink-2">
+            <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{changed ? formatsTitle(t, source, target) : title}</h1>
+            <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">
               {changed ? formatsSubtitle(t, source, target) : description}
             </p>
           </div>

@@ -25,8 +25,6 @@
   --c-rule-strong: 102 112 133;
   --c-accent: 37 99 235;
   --c-accent-hover: 29 78 216;
-  --c-accent-to: 79 70 229;
-  --c-accent-to-hover: 67 56 202;
   --c-accent-ink: 29 78 216;
   --c-accent-soft: 239 246 255;
   --c-accent-edge: 191 219 254;
@@ -47,8 +45,6 @@
 
   --elev-1: 0 12px 34px rgb(17 24 39 / 0.06);
   --elev-2: 0 24px 70px rgb(17 24 39 / 0.1);
-  --shadow-primary: 0 4px 6px -1px rgb(98 95 255 / 0.2), 0 2px 4px -2px rgb(98 95 255 / 0.2);
-  --shadow-primary-hover: 0 10px 15px -3px rgb(98 95 255 / 0.3), 0 4px 6px -4px rgb(98 95 255 / 0.3);
 }
 
 .dark {
@@ -64,8 +60,6 @@
   --c-rule-strong: 113 113 122;
   --c-accent: 37 99 235;
   --c-accent-hover: 29 78 216;
-  --c-accent-to: 79 70 229;
-  --c-accent-to-hover: 67 56 202;
   --c-accent-ink: 96 165 250;
   --c-accent-soft: 26 35 58;
   --c-accent-edge: 29 54 110;
@@ -84,8 +78,6 @@
 
   --elev-1: none;
   --elev-2: none;
-  --shadow-primary: none;
-  --shadow-primary-hover: none;
 }
 
 @layer base {
@@ -150,17 +142,33 @@
 }
 
 @layer components {
-  /* Primary action: a blue-600 to indigo-600 gradient with a soft indigo shadow. On hover the gradient steps to blue-700 and
-     indigo-700 at once (a gradient does not animate) and the shadow grows over 0.15s on the Tailwind default curve. */
+  /* Primary action: a solid accent with no gradient and no shadow. On hover the fill steps to the darker accent over 0.15s. */
   .btn-primary {
     color: rgb(var(--c-on-accent));
-    background-image: linear-gradient(to right, rgb(var(--c-accent)), rgb(var(--c-accent-to)));
-    box-shadow: var(--shadow-primary);
-    transition: box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    background-color: rgb(var(--c-accent));
+    transition: background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .btn-primary:not(:disabled):hover {
-    background-image: linear-gradient(to right, rgb(var(--c-accent-hover)), rgb(var(--c-accent-to-hover)));
-    box-shadow: var(--shadow-primary-hover);
+    background-color: rgb(var(--c-accent-hover));
+  }
+
+  /* Checkbox: a 16 px square with the 2.4 px corner and a rule border; checked, it fills with the accent and shows a white tick. */
+  .checkbox {
+    appearance: none;
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    border: 1px solid rgb(var(--c-rule-strong));
+    border-radius: var(--radius-xs);
+    background-color: rgb(var(--c-surface));
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 0.75rem;
+  }
+  .checkbox:checked {
+    border-color: rgb(var(--c-accent));
+    background-color: rgb(var(--c-accent));
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E");
   }
 
   /* The progress strand: a track in the rule colour and a fill in the accent. */

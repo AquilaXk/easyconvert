@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
@@ -108,24 +108,33 @@ describe('PR #246 review follow-ups', () => {
       const key = await redisKeyStore.generateApiKey(user.id, 'burst', { scopes: ['convert:write'] });
       const capacity = API_KEY_BURST_LIMITS.pro.capacity;
 
-      // The bucket refills while requests run, so a slow runner can need more than capacity + 1 calls.
+      // The bucket refills from Date.now, so the clock is held during the burst: the 429 then comes after capacity + 1 calls
+      // on any runner, instead of a slow runner converting until the refill falls behind.
       const maxAttempts = capacity * BURST_ATTEMPT_FACTOR;
       expect(TIER_LIMITS.pro).toBeGreaterThan(maxAttempts);
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
       let last: Response | undefined;
-      for (let i = 0; i < maxAttempts && last?.status !== 429; i++) {
-        const formData = new FormData();
-        formData.append('file', new File(['a,b\n1,2'], 'burst.csv', { type: 'text/csv' }));
-        formData.append('targetFormat', 'json');
-        last = await v1ConvertRoute(
-          new NextRequest(`${BASE_URL}/api/v1/convert`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${key.secretKey}` },
-            body: formData,
-          })
-        );
+      let attempts = 0;
+      try {
+        for (let i = 0; i < maxAttempts && last?.status !== 429; i++) {
+          attempts += 1;
+          const formData = new FormData();
+          formData.append('file', new File(['a,b\n1,2'], 'burst.csv', { type: 'text/csv' }));
+          formData.append('targetFormat', 'json');
+          last = await v1ConvertRoute(
+            new NextRequest(`${BASE_URL}/api/v1/convert`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${key.secretKey}` },
+              body: formData,
+            })
+          );
+        }
+      } finally {
+        clock.mockRestore();
       }
 
       expect(last?.status).toBe(429);
+      expect(attempts).toBe(capacity + 1);
       const body = await last!.json();
       expect(body.type).toBe(RATE_LIMITED_TYPE);
       expect(body.type).not.toBe(QUOTA_EXCEEDED_TYPE);

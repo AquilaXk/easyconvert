@@ -52,7 +52,7 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
         <Link
           href={{ pathname: '/auth', query: { tab: 'register' } }}
           onClick={onItemClick}
-          className="btn-primary min-h-[44px] inline-flex items-center justify-center px-3 text-sm font-semibold rounded-sm"
+          className="min-h-[44px] inline-flex items-center justify-center px-3 text-sm font-medium rounded-xs bg-ink text-canvas hover:bg-ink/90 transition-colors"
         >
           {t('signUp')}
         </Link>
@@ -81,13 +81,13 @@ export default function UserNav({ mobile = false, onItemClick }: Readonly<UserNa
     <>
       <Link
         href="/auth"
-        className="min-h-[44px] inline-flex items-center px-4 text-sm font-medium text-ink-2 hover:text-ink rounded-sm transition-colors"
+        className="px-2.5 py-1.5 inline-flex items-center text-sm font-medium text-ink hover:bg-sunken/50 rounded-xs transition-colors"
       >
         {t('logIn')}
       </Link>
       <Link
         href={{ pathname: '/auth', query: { tab: 'register' } }}
-        className="btn-primary min-h-[44px] inline-flex items-center px-5 text-sm font-semibold rounded-sm"
+        className="px-2.5 py-1.5 inline-flex items-center text-sm font-medium rounded-xs bg-ink text-canvas hover:bg-ink/90 transition-colors"
       >
         {t('signUp')}
       </Link>

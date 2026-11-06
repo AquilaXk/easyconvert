@@ -3,7 +3,7 @@ import { parse, TYPE, type MessageFormatElement } from '@formatjs/icu-messagefor
 import { testMessages, type TestLocale } from './helpers/intl';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { FORMAT_FULL_NAMES } from '../src/lib/format-full-names';
-import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
+import { FOOTER_COLUMNS, PRIMARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { formatMessageKey } from '../src/i18n/message-keys';
 import { routing } from '../src/i18n/routing';
 import { completeMessages } from '../src/i18n/messages';
@@ -92,11 +92,11 @@ describe('every language carries every message', () => {
   });
 
   it('labels every link of the site chrome', () => {
-    const directoryLinks = DIRECTORY_CATEGORIES.flatMap((category): readonly SiteLink[] => category.links);
-    const linkKeys = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...SECONDARY_LINKS, ...directoryLinks].map(
+    const footerLinks = FOOTER_COLUMNS.flatMap((column): readonly SiteLink[] => column.links);
+    const linkKeys = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...footerLinks].map(
       (link) => `siteLinks.${link.key}`
     );
-    const categoryKeys = DIRECTORY_CATEGORIES.map((category) => `footer.categories.${category.key}`);
+    const categoryKeys = FOOTER_COLUMNS.map((column) => `footer.columns.${column.key}`);
     for (const locale of LOCALES) {
       expect([...linkKeys, ...categoryKeys].filter((key) => !MESSAGES.get(locale)!.has(key)), locale).toEqual([]);
     }
