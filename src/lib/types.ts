@@ -1278,9 +1278,9 @@ export interface ArchiveInspectResponse {
   unextractableReasons: string[];
 }
 
-export class MissingVolumeError extends Error {
+/** A multi-volume archive lacks a part: the volumes sent are intact, so every route answers 422 and a queued job fails once. */
+export class MissingVolumeError extends ArchiveInputUnprocessableError {
   readonly refusalCode: ConversionRefusalCode = 'missing_volume';
-  readonly status = 422;
   constructor(missingVolume: string, message?: string) {
     super(message || `Missing archive volume part: "${missingVolume}".`);
     this.name = 'MissingVolumeError';
@@ -1298,9 +1298,9 @@ export class ArchiveEntryCollisionError extends ConversionFailedError {
   }
 }
 
-export class ArchiveEncryptedHeaderError extends Error {
+/** The archive hides its entry names behind a password the request lacks or got wrong; the archive is intact, so the answer is 422. */
+export class ArchiveEncryptedHeaderError extends ArchiveInputUnprocessableError {
   readonly refusalCode: ConversionRefusalCode = 'encrypted_input';
-  readonly status = 422;
   constructor(message?: string) {
     super(message || 'Archive header is encrypted and requires a password to inspect entries.');
     this.name = 'ArchiveEncryptedHeaderError';

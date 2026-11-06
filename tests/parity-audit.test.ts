@@ -36,7 +36,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'prc->azw3', 'prc->epub', 'prc->lrf', 'prc->mobi', 'prc->oeb', 'prc->pdb', 'prc->pdf', 'prc->rtf', 'prc->txt',
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
   'tcr->azw3', 'tcr->epub', 'tcr->lrf', 'tcr->mobi', 'tcr->oeb', 'tcr->pdb', 'tcr->pdf', 'tcr->rtf', 'tcr->txt',
-  'dps->eps', 'dps->jpg', 'dps->md', 'dps->png', 'dps->ppt',
+  'dps->eps', 'dps->md',
   'key->doc', 'key->jpg', 'key->png', 'key->ppt', 'key->xls',
   'odp->eps', 'odp->md',
   'pot->emf', 'pot->jpg', 'pot->png', 'pot->ppt', 'pot->xps',

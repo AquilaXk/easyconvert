@@ -49,6 +49,8 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   pdb: { application: 'writer', interchange: 'docx' },
   numbers: { application: 'calc', interchange: 'xlsx' },
   sxi: { application: 'impress', interchange: 'pptx' },
+  // Kingsoft Presentation: the suite's PowerPoint 97 import lists `dps` among its extensions (`impress_MS_PowerPoint_97.xcu`), so it opens the file as the application that wrote it.
+  dps: { application: 'impress', interchange: 'pptx' },
   sxd: { application: 'draw' },
   pub: { application: 'draw' },
   sda: { application: 'draw' },

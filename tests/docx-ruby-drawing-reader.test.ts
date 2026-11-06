@@ -26,6 +26,15 @@ describe('the drawing-aware reader of a Word document', () => {
     expect(parse(body).paragraphs.map((paragraph) => paragraph.text)).toEqual(['before 東京 after']);
   });
 
+  it.each([
+    ['a hyperlink', (guide: string) => `<w:hyperlink w:anchor="a">${guide}</w:hyperlink>`],
+    ['an insertion', (guide: string) => `<w:ins w:id="1" w:author="a">${guide}</w:ins>`],
+    ['a content control', (guide: string) => `<w:sdt><w:sdtContent>${guide}</w:sdtContent></w:sdt>`],
+  ])('reads the base of a guide that stands directly in %s', (_name, around) => {
+    const body = `<w:p>${run('before ')}${around(rubyOf('とうきょう', '東京'))}${run(' after')}</w:p>`;
+    expect(parse(body).paragraphs.map((paragraph) => paragraph.text)).toEqual(['before 東京 after']);
+  });
+
   it('reads the base of a guide in a table cell, and leaves the guide out of the cell text', () => {
     const cell = `<w:tbl><w:tr><w:tc><w:p>${inRun(rubyOf('じ', '字'))}</w:p></w:tc></w:tr></w:tbl>`;
     expect(parse(cell).tables[0].rows).toEqual([['字']]);

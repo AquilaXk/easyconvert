@@ -121,6 +121,15 @@ const SAMPLES: readonly SampleCase[] = [
     targets: ['pptx', 'odp', 'pdf', 'html', 'txt', 'ppt', 'jpg', 'png'],
     phrases: ['so you want an instrument approach', 'new york flight procedures office'],
   },
+  {
+    // No public Kingsoft Presentation exists (docs/policy-decisions.md entry 40); the suite's PowerPoint 97 import lists `dps` as an extension, so a real
+    // presentation saved by the suite as PowerPoint 97 and named `.dps` is the file it opens for that name.
+    id: 'govdocs1-764092.pps',
+    extension: 'dps',
+    targets: ['pptx', 'odp', 'pdf', 'html', 'txt', 'ppt', 'jpg', 'png', 'zip'],
+    phrases: ['so you want an instrument approach', 'new york flight procedures office'],
+    resaveAs: 'ppt:MS PowerPoint 97',
+  },
   { id: 'lo-impress.otp', extension: 'otp', targets: ['odp', 'pptx', 'pdf'], phrases: ['title of impress template'] },
   { id: 'lo-calc.ots', extension: 'ots', targets: ['ods', 'xlsx', 'csv', 'pdf', 'zip'], phrases: ['calc template s first cell'] },
   {

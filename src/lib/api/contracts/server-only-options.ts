@@ -21,5 +21,6 @@ export const SERVER_ONLY_OPTION_KEYS = [
   'throwOnUnavailable',
   'inProcessFallback',
   'pdfExportPageRange',
+  'keepEmbeddedExcelObjects',
   'disableNativeEngine',
 ] as const satisfies readonly (keyof WorkerEngineOptions | keyof WorkerVfsPayload)[];
