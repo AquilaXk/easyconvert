@@ -168,7 +168,8 @@ describe('hostile reach of the keys of a page', () => {
     const result = await outcome(pages, {});
     expect(result).toBeInstanceOf(PayloadLimitError);
     expect((result as Error).message).toMatch(/entries of resource dictionaries/);
-  });
+    // The package itself holds 610,000 entries to parse, so building and reading it takes seconds on a shared runner.
+  }, 60_000);
 
   it('refuses one page that reaches more entries than the budget holds, with no image named at all', async () => {
     const LEVELS = 530_000;

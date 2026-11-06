@@ -1431,13 +1431,6 @@
     "maxValue": 7
   },
   {
-    "file": "src/lib/conversions/pdf-document.ts",
-    "rule": "complexity",
-    "function": "parseValue",
-    "count": 1,
-    "maxValue": 37
-  },
-  {
     "file": "src/lib/conversions/pdf-jpeg-passthrough.ts",
     "rule": "complexity",
     "function": "planJpegPassthrough",
