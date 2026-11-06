@@ -1,9 +1,9 @@
-import { ConversionFailedError, CorruptStreamError, PayloadLimitError } from '../../types';
+import { CorruptStreamError, PayloadLimitError } from '../../types';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../bounded-inflate';
-import { decodeXmlBytes, resolvePackagePath } from '../package-access';
+import { decodeXmlBytes } from '../package-access';
 import { childElements, parseXmlTree, type XmlElement } from '../xml-tree';
 import { xpsImagePixels } from './xps-image-header';
-import { XPS_MAX_PART_BYTES } from './xps-reader';
+import { withinNameBuffer, XPS_MAX_PART_BYTES, xpsAbsolutePath } from './xps-reader';
 
 /**
  * What the parts a fixed page names cost the renderer. A package keeps an image, a colour profile, a font or a resource
@@ -55,6 +55,14 @@ export function maxRepeatedPixels(timeoutMs: number): number {
 
 /** What naming a part costs at least, whatever its size: looking it up and opening it. It bounds the number of references one budget can hold. */
 const MIN_REFERENCE_COST_BYTES = 1_024;
+/**
+ * The most times anything can be used before the byte budget is gone, whatever it costs, since each use of a part costs at least
+ * MIN_REFERENCE_COST_BYTES: a count past it is kept at it, which keeps the product of nested uses a finite number that is still over
+ * the budget.
+ */
+const MAX_USES = Math.floor(XPS_MAX_REPEATED_BYTES / MIN_REFERENCE_COST_BYTES) + 1;
+/** The most resource entries all pages together may reach through their keys, each counted once for every page that reaches it: one for each reference the byte budget can hold. */
+const MAX_ENTRY_VISITS = Math.floor(XPS_MAX_REPEATED_BYTES / MIN_REFERENCE_COST_BYTES);
 const FONT_ATTRIBUTE = 'FontUri';
 const IMAGE_ATTRIBUTE = 'ImageSource';
 const DICTIONARY_ELEMENT = 'ResourceDictionary';
@@ -67,8 +75,6 @@ const WHITESPACE = /\s+/;
 const STATIC_RESOURCE_PREFIX = '{StaticResource ';
 /** An image source that names a colour profile besides the image: `{ColorConvertedBitmap /Resources/image.png /Resources/profile.icc}` (xpsimage.c line 421). */
 const COLOR_CONVERTED_BITMAP_PREFIX = '{ColorConvertedBitmap';
-/** The buffers that hold a part name in GhostXPS are 1,024 bytes (`char partname[1024]`), so a name is cut at 1,023 bytes and a terminator. */
-const GHOSTXPS_NAME_BYTES = 1_023;
 
 /** The bytes of every part of a package by its name in lower case, as XPS part names ignore case. */
 export type XpsPartBytes = ReadonlyMap<string, Buffer>;
@@ -85,43 +91,45 @@ function bump(counts: Counts, key: string, by = 1): void {
   counts.set(key, (counts.get(key) ?? 0) + by);
 }
 
+/** What one keyed entry of a resource dictionary names and uses. */
+interface EntryReferences {
+  /** The images and colour profiles the entry names, by key: decoded each time the entry is parsed. */
+  readonly images: Counts;
+  /** The keys the entry uses with `{StaticResource key}`, and how many times each: the renderer parses the entry that key names again for every one. */
+  readonly uses: Counts;
+}
+
 interface PartReferences {
   /** The images and colour profiles named outside any resource entry, by key: the parts the renderer decodes again for each naming. */
   readonly drawn: Counts;
-  /** The images and colour profiles named inside each keyed entry of a resource dictionary, by the entry's key: decoded each time a page uses the entry. */
-  readonly entries: Map<string, Counts>;
-  /** The keys the part uses with `{StaticResource key}`, and how many times. */
+  /** The keys used outside any resource entry with `{StaticResource key}`, and how many times. */
   readonly uses: Counts;
+  /** What each keyed entry of a resource dictionary names and uses, by the entry's key. */
+  readonly entries: Map<string, EntryReferences>;
   /** The fonts and resource dictionaries named, by key: the parts the renderer loads once. */
   readonly once: string[];
   /** The resource dictionaries named, by key; they are also in `once`. */
   readonly dictionaries: string[];
 }
 
+function emptyReferences(): PartReferences {
+  return { drawn: new Map(), uses: new Map(), entries: new Map(), once: [], dictionaries: [] };
+}
+
 function directoryOf(part: string): string {
   return part.slice(0, part.lastIndexOf('/') + 1);
 }
 
-function withinNameBuffer(text: string): string {
-  const bytes = Buffer.from(text, 'utf8');
-  return bytes.length <= GHOSTXPS_NAME_BYTES ? text : bytes.subarray(0, GHOSTXPS_NAME_BYTES).toString('utf8');
+/** The key of the part GhostXPS reads for `name`, held by a part in `holderDirectory` (xps-reader.ts `xpsAbsolutePath`). */
+function ghostXpsPartKey(holderDirectory: string, name: string): string {
+  return partKey(xpsAbsolutePath(holderDirectory, name));
 }
 
-/**
- * The key of the part that GhostXPS reads for `name`, held by a part in `holderDirectory`: `xps_absolute_path` and `xps_clean_path`
- * (xps/xpsmem.c lines 60 to 132). A name that starts with a slash is the part name, any other follows the directory of the holder;
- * empty and `.` elements go and `..` removes the element before it, and at the root it is dropped. The name is not decoded (a
- * `%20` is three characters of the name) and keeps a `#` or a space as they are.
- */
-function ghostXpsPartKey(holderDirectory: string, name: string): string {
-  const baseUri = holderDirectory === '' ? '' : `/${holderDirectory.slice(0, -1)}`;
-  const kept: string[] = [];
-  for (const element of withinNameBuffer(name.startsWith('/') ? name : `${baseUri}/${name}`).split('/')) {
-    if (element === '' || element === '.') continue;
-    if (element === '..') kept.pop();
-    else kept.push(element);
-  }
-  return partKey(kept.join('/'));
+/** The key of the font part `FontUri` names: GhostXPS cuts the joined name at its last `#`, which gives the number of the face in a collection (xps/xpsglyphs.c lines 682 to 688). */
+function ghostXpsFontKey(holderDirectory: string, name: string): string {
+  const path = xpsAbsolutePath(holderDirectory, name);
+  const faceAt = path.lastIndexOf('#');
+  return partKey(faceAt === -1 ? path : path.slice(0, faceAt));
 }
 
 /**
@@ -149,17 +157,6 @@ function staticResourceKey(value: string): string | undefined {
   return close === -1 ? key : key.slice(0, close);
 }
 
-/** The key of the part a reference names, or undefined when it names nothing inside the package (a markup word, a URI that leaves the package). */
-function keyOfReference(holderDirectory: string, reference: string): string | undefined {
-  if (reference === '') return undefined;
-  try {
-    return partKey(resolvePackagePath(holderDirectory, reference));
-  } catch (error) {
-    if (error instanceof ConversionFailedError) return undefined;
-    throw error;
-  }
-}
-
 interface ElementReferences {
   /** The keys of the images and colour profiles the element names. */
   repeated: string[];
@@ -176,24 +173,24 @@ function referencesOfElement(element: XmlElement, directory: string): ElementRef
   const repeated = image === undefined ? [] : namesOfImageSource(image).map((name) => ghostXpsPartKey(directory, name));
   const uses: string[] = [];
   for (const value of element.attrs.values()) {
-    if (value.startsWith(CONTEXT_COLOR_PREFIX)) repeated.push(...(keyOfReference(directory, value.split(WHITESPACE)[1] ?? '') ?? []));
+    if (value.startsWith(CONTEXT_COLOR_PREFIX)) repeated.push(ghostXpsPartKey(directory, value.split(WHITESPACE)[1] ?? ''));
     const used = staticResourceKey(value);
     if (used !== undefined) uses.push(used);
   }
   const font = element.attrs.get(FONT_ATTRIBUTE);
   const source = element.local === DICTIONARY_ELEMENT ? element.attrs.get(DICTIONARY_ATTRIBUTE) : undefined;
-  const dictionary = source === undefined ? undefined : keyOfReference(directory, source);
-  const fontKey = font === undefined ? undefined : keyOfReference(directory, font);
+  const dictionary = source === undefined ? undefined : ghostXpsPartKey(directory, source);
+  const fontKey = font === undefined ? undefined : ghostXpsFontKey(directory, font);
   return { repeated, uses, once: fontKey === undefined ? [] : [fontKey], dictionary };
 }
 
-function countsOfEntry(entries: Map<string, Counts>, entry: string): Counts {
-  let counts = entries.get(entry);
-  if (counts === undefined) {
-    counts = new Map();
-    entries.set(entry, counts);
+function entryReferences(entries: Map<string, EntryReferences>, entry: string): EntryReferences {
+  let references = entries.get(entry);
+  if (references === undefined) {
+    references = { images: new Map(), uses: new Map() };
+    entries.set(entry, references);
   }
-  return counts;
+  return references;
 }
 
 /** An element to read, and the key of the dictionary entry it belongs to (undefined outside any entry). */
@@ -211,14 +208,14 @@ function referencesOf(part: string, bytes: Buffer): PartReferences {
   if (bytes.length > XPS_MAX_PART_BYTES) throw new PayloadLimitError(`"${part}" is ${bytes.length} bytes, more than the ${XPS_MAX_PART_BYTES} byte limit of a part.`);
   const root = parseXmlTree(decodeXmlBytes(bytes, `${LABEL} ${part}`), part, LABEL);
   const directory = directoryOf(part);
-  const references: PartReferences = { drawn: new Map(), entries: new Map(), uses: new Map(), once: [], dictionaries: [] };
+  const references = emptyReferences();
   const pending: Visit[] = [{ element: root, entry: undefined }];
   while (pending.length > 0) {
     const { element, entry } = pending.pop() as Visit;
     const named = referencesOfElement(element, directory);
-    const into = entry === undefined ? references.drawn : countsOfEntry(references.entries, entry);
-    for (const key of named.repeated) bump(into, key);
-    for (const key of named.uses) bump(references.uses, key);
+    const inEntry = entry === undefined ? undefined : entryReferences(references.entries, entry);
+    for (const key of named.repeated) bump(inEntry === undefined ? references.drawn : inEntry.images, key);
+    for (const key of named.uses) bump((inEntry ?? references).uses, key);
     references.once.push(...named.once);
     if (named.dictionary !== undefined) {
       references.once.push(named.dictionary);
@@ -257,6 +254,60 @@ function lookUpPart(parts: XpsPartBytes, key: string): StoredPart | undefined {
   }
 }
 
+/** The entries of the resource dictionaries in scope that a key names (more than one when the dictionaries repeat a key). */
+type EntryLookup = (key: string) => readonly EntryReferences[];
+
+/**
+ * How many times the renderer parses each entry a page reaches. It resolves `{StaticResource key}` while it parses the element that
+ * holds it, so an entry is parsed once for every use of its key by the page and once more for every parse of an entry that uses it
+ * (GhostPDL xps/xpsresource.c `xps_parse_resource_reference`, read for behaviour): the times of an entry are the page's own uses of
+ * its key plus, for every entry that uses it, the times of that entry multiplied by how often it uses the key. The entries are
+ * taken in an order in which every entry comes after all that use it (a count of the uses still to be added), so each is
+ * worked out once however deep or wide the nesting, and no call goes down a level. The counts are kept at MAX_USES. Entries that
+ * use each other in a loop never get there, and the renderer, which parses them without end, crashes on them (GhostXPS 10.08.0 exits
+ * with a segmentation fault on a VisualBrush `A` whose Visual holds a path filled with `A`), so such a page is refused.
+ */
+function timesEntriesAreParsed(pageUses: Counts, lookUp: EntryLookup): Counts {
+  const times: Counts = new Map();
+  const unadded = new Map<string, number>();
+  const reached: string[] = [];
+  const reach = (key: string, uses: number): void => {
+    times.set(key, uses);
+    unadded.set(key, 0);
+    reached.push(key);
+  };
+  for (const [key, uses] of pageUses) if (lookUp(key).length > 0) reach(key, Math.min(uses, MAX_USES));
+  for (let next = 0; next < reached.length; next += 1) {
+    for (const entry of lookUp(reached[next])) {
+      for (const used of entry.uses.keys()) {
+        if (lookUp(used).length === 0) continue;
+        if (!times.has(used)) reach(used, 0);
+        unadded.set(used, (unadded.get(used) as number) + 1);
+      }
+    }
+    if (reached.length > MAX_ENTRY_VISITS) throw new PayloadLimitError(`The ${LABEL} page reaches more than ${MAX_ENTRY_VISITS} entries of resource dictionaries through the keys it uses.`);
+  }
+  const ready = reached.filter((key) => unadded.get(key) === 0);
+  let ordered = 0;
+  while (ready.length > 0) {
+    const key = ready.pop() as string;
+    ordered += 1;
+    for (const entry of lookUp(key)) {
+      for (const [used, count] of entry.uses) {
+        if (!unadded.has(used)) continue;
+        times.set(used, Math.min((times.get(used) as number) + (times.get(key) as number) * count, MAX_USES));
+        unadded.set(used, (unadded.get(used) as number) - 1);
+        if (unadded.get(used) === 0) ready.push(used);
+      }
+    }
+  }
+  if (ordered < reached.length) {
+    const looping = reached.find((key) => (unadded.get(key) as number) > 0) as string;
+    throw new CorruptStreamError(`The ${LABEL} page uses the resource "${looping}", which is part of a loop of resources that use each other.`);
+  }
+  return times;
+}
+
 /**
  * Refuses a document whose pages together name more than XPS_MAX_REPEATED_BYTES of images and colour profiles, or more than
  * `maxRepeatedPixels(timeoutMs)` pixels of images, which the renderer cannot decode in the run limit of the job. Each page is charged
@@ -266,7 +317,8 @@ function lookUpPart(parts: XpsPartBytes, key: string): StoredPart | undefined {
  * once however many brushes name it, and only for a part a brush names: an entry nobody uses is not read. Fonts and dictionaries
  * are charged the first time a page names them. A dictionary that names a dictionary is charged for that one and its contents
  * are not followed, so a chain or a cycle of dictionaries costs one read each; every XML part is read once however many pages
- * name it. The reading stops at the first page over a budget. An image that a brush names, whose declared size is over the input
+ * name it. An entry that uses another entry charges what that one names for every parse of the first (`timesEntriesAreParsed`): the
+ * uses of the page multiply down the chain of entries, and entries that use each other in a loop are refused. The reading stops at the first page over a budget. An image that a brush names, whose declared size is over the input
  * pixel limit of a still image or whose header cannot be read, is refused by itself.
  *
  * A package that lists a page it does not hold is refused first, whatever the renderer would do with it (it stops at the
@@ -285,10 +337,10 @@ export async function requirePagesDrawable(pageParts: readonly string[], parts: 
   /** The references with only the parts that exist and are not pages, so that a reference to nothing costs nothing wherever it is counted. */
   const existingOnly = (references: PartReferences): PartReferences => {
     const existing = (counts: Counts): Counts => new Map([...counts].filter(([key]) => storedPart(key) !== undefined));
-    const entries = new Map<string, Counts>();
-    for (const [entry, counts] of references.entries) {
-      const kept = existing(counts);
-      if (kept.size > 0) entries.set(entry, kept);
+    const entries = new Map<string, EntryReferences>();
+    for (const [entry, { images, uses }] of references.entries) {
+      const kept = existing(images);
+      if (kept.size > 0 || uses.size > 0) entries.set(entry, { images: kept, uses });
     }
     return { ...references, drawn: existing(references.drawn), entries };
   };
@@ -297,7 +349,7 @@ export async function requirePagesDrawable(pageParts: readonly string[], parts: 
     let references = dictionaryReferences.get(dictionary);
     if (references === undefined) {
       const bytes = parts.get(dictionary);
-      references = bytes === undefined ? { drawn: new Map(), entries: new Map(), uses: new Map(), once: [], dictionaries: [] } : existingOnly(referencesOf(dictionary, bytes));
+      references = bytes === undefined ? emptyReferences() : existingOnly(referencesOf(dictionary, bytes));
       dictionaryReferences.set(dictionary, references);
     }
     return references;
@@ -315,6 +367,7 @@ export async function requirePagesDrawable(pageParts: readonly string[], parts: 
   const chargedOnce = new Set<string>();
   let totalBytes = 0;
   let totalPixels = 0;
+  let entryVisits = 0;
   const chargeBytes = (size: number, times: number): void => {
     totalBytes += Math.max(size, MIN_REFERENCE_COST_BYTES) * times;
     if (totalBytes > XPS_MAX_REPEATED_BYTES) {
@@ -343,14 +396,15 @@ export async function requirePagesDrawable(pageParts: readonly string[], parts: 
     const own = existingOnly(named);
     const demand: Counts = new Map(own.drawn);
     const dictionaries = [...new Set(named.dictionaries)].map(referencesOfDictionary);
-    for (const source of [own, ...dictionaries]) {
-      const candidates = named.uses.size <= source.entries.size ? named.uses.keys() : source.entries.keys();
-      for (const entry of candidates) {
-        const times = named.uses.get(entry);
-        const counts = source.entries.get(entry);
-        if (times === undefined || counts === undefined) continue;
-        for (const [key, count] of counts) bump(demand, key, count * times);
-      }
+    const sources = [own, ...dictionaries];
+    const lookUp: EntryLookup = (key) => sources.flatMap((source) => source.entries.get(key) ?? []);
+    const parsed = timesEntriesAreParsed(named.uses, lookUp);
+    entryVisits += parsed.size;
+    if (entryVisits > MAX_ENTRY_VISITS) {
+      throw new PayloadLimitError(`The ${LABEL} pages reach more than ${MAX_ENTRY_VISITS} entries of resource dictionaries between them through the keys they use.`);
+    }
+    for (const [key, times] of parsed) {
+      for (const entry of lookUp(key)) for (const [image, count] of entry.images) bump(demand, image, Math.min(count * times, MAX_USES));
     }
     for (const [key, times] of demand) await chargeRepeated(key, times);
     for (const key of new Set([...named.once, ...dictionaries.flatMap((dictionary) => dictionary.once)])) {
