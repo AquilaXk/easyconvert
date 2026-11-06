@@ -247,7 +247,10 @@ describe('what is not an Outlook message is refused with a typed answer', () => 
   });
 
   it('refuses bytes that are no compound file', async () => {
-    await expect(text(Buffer.from('plain text, not a message'))).rejects.toMatchObject({ name: 'LegacyOfficeFormatError' });
+    await expect(extractTextContentForOffice(Buffer.from('plain text, not a message'), 'msg', {}, 'message')).rejects.toMatchObject({
+      name: 'LegacyOfficeFormatError',
+    });
+    await expect(text(Buffer.from('plain text, not a message'))).rejects.toMatchObject({ name: 'FileExtensionSpoofError' });
   });
 
   it('refuses a binary container that has no reader instead of writing its bytes as text', async () => {

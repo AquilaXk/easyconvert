@@ -41,11 +41,11 @@ export function decodeXmlBytes(bytes: Buffer, what: string): string {
 }
 
 /** Opens a ZIP package; anything that is not one is a typed 400 error naming the format. */
-export async function openPackage(input: Buffer, format: string): Promise<JSZip> {
+export async function openPackage(input: Buffer | Uint8Array, format: string, packageKind = 'ZIP package'): Promise<JSZip> {
   try {
     return await JSZip.loadAsync(input);
   } catch {
-    throw new ConversionFailedError(`The ${format} file is not a valid ZIP package.`);
+    throw new ConversionFailedError(`The ${format} file is not a valid ${packageKind}.`);
   }
 }
 

@@ -408,6 +408,15 @@ export function compoundFileVerdict(ext: string, buf: Uint8Array): CompoundFileV
   return verdictOfRoot(ext, readCompoundFileRoot(buf));
 }
 
+export function isNonOfficeCompoundFile(buf: Uint8Array): boolean {
+  const root = readCompoundFileRoot(buf);
+  if (root.status !== 'read') return false;
+  if (root.classId !== undefined && OFFICE_CLASS_IDS.has(root.classId)) return false;
+  const byClassId = root.classId === undefined ? [] : (CLASS_ID_KINDS.get(root.classId) ?? []);
+  const byNames = kindsOfNames(root.names).filter((kind) => kind !== 'xls');
+  return byClassId.length > 0 || byNames.length > 0;
+}
+
 /** The verdict for a file read at the offsets of its directory (see `readCompoundFileRootFrom`); `unreadable` there means the file ends before its directory does. */
 export function compoundFileVerdictFrom(ext: string, source: ByteSource): CompoundFileVerdict {
   return verdictOfRoot(ext, readCompoundFileRootFrom(source));

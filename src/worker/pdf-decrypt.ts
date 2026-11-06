@@ -6,9 +6,11 @@ import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { assertPdfJbig2WithinLimits } from '../lib/conversions/pdf-jbig2-guard';
 import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tree-loop';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
+import { QPDF_MEMORY_LIMIT_MB } from '../lib/conversions/pdf-postprocess/qpdf-run';
 import { launchQpdf } from '../lib/conversions/pdf-postprocess/qpdf-runner';
 import {
   SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
   SandboxedProcessError,
   type SandboxedExecutionResult,
 } from './sandbox';
@@ -130,7 +132,7 @@ function removeQuietly(filePath: string): void {
 }
 
 function toDecryptError(err: unknown): unknown {
-  if (err instanceof SandboxedBufferLimitError) {
+  if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
     return new ConversionFailedError(PDF_DECRYPT_TOO_LARGE_MESSAGE);
   }
   if (!(err instanceof SandboxedProcessError)) {
@@ -171,6 +173,7 @@ async function runQpdfWithPassword(
       cwd: request.tempDir,
       timeoutMs: request.timeoutMs,
       maxBuffer: QPDF_MAX_OUTPUT_BYTES,
+      memoryLimitMb: QPDF_MEMORY_LIMIT_MB,
       networkIsolated: true,
       signal: request.signal ? AbortSignal.any([request.signal, overrun.signal]) : overrun.signal,
       // qpdf writes the copy to a file and prints diagnostics only.
@@ -202,6 +205,7 @@ async function launchWithStdinPassword(
     cwd: request.tempDir,
     timeoutMs: request.timeoutMs,
     maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,
+    memoryLimitMb: QPDF_MEMORY_LIMIT_MB,
     networkIsolated: true,
     stdin: Buffer.from(password, 'utf8'),
     signal: request.signal,

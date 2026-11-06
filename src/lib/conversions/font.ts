@@ -1123,96 +1123,79 @@ export function createDualCmapTable(mappings: Array<{ charCode: number; glyphId:
   const offsetFmt12 = offsetFmt4 + fmt4.length + padFmt4;
   const totalLength = offsetFmt12 + fmt12.length;
   const finalPad = (4 - (totalLength % 4)) % 4;
-
   const buf = Buffer.alloc(totalLength + finalPad);
-
-  // Table header
-  buf.writeUInt16BE(0, 0); // version = 0
-  buf.writeUInt16BE(numSubtables, 2); // numSubtables = 2
-
-  // Subtable 0: Platform 3 (Windows), Encoding 1 (Unicode BMP) -> Format 4
+  buf.writeUInt16BE(0, 0);
+  buf.writeUInt16BE(numSubtables, 2);
   buf.writeUInt16BE(3, 4);
   buf.writeUInt16BE(1, 6);
   buf.writeUInt32BE(offsetFmt4, 8);
-
-  // Subtable 1: Platform 3 (Windows), Encoding 10 (Unicode Full / UCS-4) -> Format 12
   buf.writeUInt16BE(3, 12);
   buf.writeUInt16BE(10, 14);
   buf.writeUInt32BE(offsetFmt12, 16);
-
   fmt4.copy(buf, offsetFmt4);
   fmt12.copy(buf, offsetFmt12);
-
   return buf;
 }
 
-/**
- * Parses SFNT cmap table data into a Map of unicode code point -> glyph ID.
- * Parses Format 12 (UCS-4, Astral planes) and Format 4 (BMP).
- */
+export const MAX_CMAP_FORMAT12_CODEPOINTS = 262_144;
+const MAX_UNICODE_CODEPOINT = 0x10ffff;
+
+function parseFormat12Cmap(data: Buffer, fmt12Offset: number, map: Map<number, number>): void {
+  if (fmt12Offset + 16 > data.length) throw new CorruptStreamError('Truncated cmap format 12 header.');
+  const subtableLength = data.readUInt32BE(fmt12Offset + 4);
+  const nGroups = data.readUInt32BE(fmt12Offset + 12);
+  if (nGroups > MAX_CMAP_FORMAT12_CODEPOINTS || subtableLength < 16 + nGroups * 12 || fmt12Offset + subtableLength > data.length) {
+    throw new CorruptStreamError(`Invalid cmap format 12 group count (${nGroups}).`);
+  }
+  let grpOffset = fmt12Offset + 16;
+  let mappedCodepoints = 0;
+  let prevEndCharCode = -1;
+  for (let i = 0; i < nGroups; i++, grpOffset += 12) {
+    const startCharCode = data.readUInt32BE(grpOffset);
+    const endCharCode = data.readUInt32BE(grpOffset + 4);
+    const startGlyphID = data.readUInt32BE(grpOffset + 8);
+    const rangeSpan = endCharCode - startCharCode + 1;
+    mappedCodepoints += rangeSpan;
+    if (startCharCode <= prevEndCharCode || startCharCode > endCharCode || endCharCode > MAX_UNICODE_CODEPOINT || startGlyphID + rangeSpan - 1 > 0xffff || mappedCodepoints > MAX_CMAP_FORMAT12_CODEPOINTS) {
+      throw new CorruptStreamError(`Invalid cmap format 12 group (${startCharCode}..${endCharCode}, glyph ${startGlyphID}).`);
+    }
+    prevEndCharCode = endCharCode;
+    for (let c = startCharCode; c <= endCharCode; c++) map.set(c, startGlyphID + (c - startCharCode));
+  }
+}
+
 export function parseCmapTable(data: Buffer): Map<number, number> {
   const map = new Map<number, number>();
   if (!data || data.length < 4) return map;
-
   const numSubtables = data.readUInt16BE(2);
   let fmt12Offset = -1;
   let fmt4Offset = -1;
-
   for (let i = 0; i < numSubtables; i++) {
     const recOffset = 4 + i * 8;
     if (recOffset + 8 > data.length) break;
-
     const subtableOffset = data.readUInt32BE(recOffset + 4);
     if (subtableOffset + 2 <= data.length) {
       const format = data.readUInt16BE(subtableOffset);
-      if (format === 12) {
-        fmt12Offset = subtableOffset;
-      } else if (format === 4 && fmt4Offset === -1) {
-        fmt4Offset = subtableOffset;
-      }
+      if (format === 12) fmt12Offset = subtableOffset;
+      else if (format === 4 && fmt4Offset === -1) fmt4Offset = subtableOffset;
     }
   }
-
-  // Parse Format 12 first (UCS-4 / 32-bit character codes)
-  if (fmt12Offset >= 0 && fmt12Offset + 16 <= data.length) {
-    const nGroups = data.readUInt32BE(fmt12Offset + 12);
-    let grpOffset = fmt12Offset + 16;
-
-    for (let i = 0; i < nGroups; i++) {
-      if (grpOffset + 12 > data.length) break;
-      const startCharCode = data.readUInt32BE(grpOffset);
-      const endCharCode = data.readUInt32BE(grpOffset + 4);
-      const startGlyphID = data.readUInt32BE(grpOffset + 8);
-
-      for (let c = startCharCode; c <= endCharCode; c++) {
-        map.set(c, startGlyphID + (c - startCharCode));
-      }
-      grpOffset += 12;
-    }
-  }
-
-  // Parse Format 4 for any remaining BMP codes
+  if (fmt12Offset >= 0) parseFormat12Cmap(data, fmt12Offset, map);
   if (fmt4Offset >= 0 && fmt4Offset + 16 <= data.length) {
-    const segCountX2 = data.readUInt16BE(fmt4Offset + 6);
-    const segCount = Math.floor(segCountX2 / 2);
-
+    const segCount = Math.floor(data.readUInt16BE(fmt4Offset + 6) / 2);
     if (fmt4Offset + 16 + 8 * segCount <= data.length) {
       const endCodeOffset = fmt4Offset + 14;
       const startCodeOffset = fmt4Offset + 16 + 2 * segCount;
       const idDeltaOffset = fmt4Offset + 16 + 4 * segCount;
       const idRangeOffset = fmt4Offset + 16 + 6 * segCount;
-
       for (let s = 0; s < segCount; s++) {
         const endCode = data.readUInt16BE(endCodeOffset + s * 2);
         const startCode = data.readUInt16BE(startCodeOffset + s * 2);
         const idDelta = data.readInt16BE(idDeltaOffset + s * 2);
         const rangeOffset = data.readUInt16BE(idRangeOffset + s * 2);
-
         if (startCode === 0xffff && endCode === 0xffff) continue;
-
         for (let c = startCode; c <= endCode; c++) {
-          if (map.has(c)) continue; // Format 12 takes precedence
-
+          if (map.has(c)) continue;
           let gid = 0;
           if (rangeOffset === 0) {
             gid = (c + idDelta) & 0xffff;
@@ -1223,14 +1206,11 @@ export function parseCmapTable(data: Buffer): Map<number, number> {
               gid = rawGid === 0 ? 0 : (rawGid + idDelta) & 0xffff;
             }
           }
-          if (gid !== 0) {
-            map.set(c, gid);
-          }
+          if (gid !== 0) map.set(c, gid);
         }
       }
     }
   }
-
   return map;
 }
 

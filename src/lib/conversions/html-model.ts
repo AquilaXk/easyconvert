@@ -22,6 +22,7 @@ export const HTML_MODEL_MAX_TABLE_DEPTH = 16;
 /** Most images one document may carry and the most bytes they may hold together. */
 export const HTML_MODEL_MAX_IMAGES = 2000;
 export const HTML_MODEL_MAX_IMAGE_BYTES = 256 * 1024 * 1024;
+export const HTML_MAX_TABLE_COVERED_CELLS = 250_000;
 const MAX_COLUMN_SPAN = 1000;
 const MAX_ROW_SPAN = 65_534;
 const PT_PER_PX = 0.75;
@@ -201,6 +202,7 @@ function finishInlines(runs: Inline[]): Inline[] {
 
 class HtmlModelBuilder {
   private blockCount = 0;
+  private tableCoveredCells = 0;
   private listId = 0;
   private readonly pictures: SharedPictures;
   readonly checks: Buffer[] = [];
@@ -660,6 +662,10 @@ class HtmlModelBuilder {
         skipCovered();
         const colSpan = positiveInt(td.attrs.get('colspan'), MAX_COLUMN_SPAN);
         const rowSpan = positiveInt(td.attrs.get('rowspan'), MAX_ROW_SPAN);
+        this.tableCoveredCells += colSpan * rowSpan - 1;
+        if (this.tableCoveredCells > HTML_MAX_TABLE_COVERED_CELLS) {
+          throw new PayloadLimitError(`HTML table spans cover more than ${HTML_MAX_TABLE_COVERED_CELLS} cells.`);
+        }
         const content = out.nested();
         this.anchorBlockStart(td);
         this.blocks(td.children, content, listDepth, tableDepth + 1);

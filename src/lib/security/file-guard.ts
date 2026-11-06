@@ -16,7 +16,7 @@ import {
 } from '../compound-file-kind';
 import { OOXML_VARIANT_FAMILY } from '../conversions/ooxml-variants';
 import { EncryptedOfficeDocumentError, isUnprocessableInputError } from '../types';
-import { COMPOUND_FILE_ONLY_EXTENSIONS } from '../format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, startsWithBytes } from '../format-signatures';
 
 const OOXML_EXTENSIONS: ReadonlySet<string> = new Set(['docx', 'xlsx', 'pptx', 'potx', ...Object.keys(OOXML_VARIANT_FAMILY)]);
 /** The two entries under the root of the compound file that holds an encrypted Office Open XML package ([MS-OFFCRYPTO] 2.1). */
@@ -71,14 +71,10 @@ export function assertNotSpoofedFile(buffer: Buffer | Uint8Array, declaredExtens
   assertGzippedXmlRoot(buffer, declaredExtensionOrFormatId, filename);
 }
 
-/**
- * The extension to read a directory for, when the first 64 KiB of a file cannot show the directory of a compound-only format
- * (`.sdw`, `.sdc`, `.sda`, `.shw`, `.qpw`) and the check must read the directory sectors where they lie in the file; undefined
- * otherwise. A header shorter than the window is the whole file.
- */
 function compoundExtensionToRead(header: Uint8Array, declaredExtension: string): string | undefined {
-  const ext = declaredExtension.toLowerCase().replace(/^\./, '').trim();
-  return header.length === OBJECT_HEADER_BYTES && COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) ? ext : undefined;
+  const ext = extensionOf(declaredExtension);
+  if (header.length !== OBJECT_HEADER_BYTES) return undefined;
+  return COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) || (ext === 'wpd' && startsWithBytes(header, CFBF_MAGIC)) ? ext : undefined;
 }
 
 /** The file is whole here, so a root that is not of the declared kind, or that its bytes end before, is refused. */
@@ -97,8 +93,9 @@ function assertDirectoryVerdict(verdict: CompoundFileVerdict, ext: string, filen
  */
 function assertCompoundFileKindInFile(header: Uint8Array, declaredExtension: string, filename: string | undefined, fd: number): void {
   const ext = compoundExtensionToRead(header, declaredExtension);
-  if (ext === undefined) return;
-  assertDirectoryVerdict(compoundFileVerdictFrom(ext, fileSource(fd)), ext, filename);
+  if (ext !== undefined) {
+    assertDirectoryVerdict(compoundFileVerdictFrom(ext, fileSource(fd)), ext, filename);
+  }
 }
 
 function objectSource(storage: Pick<IStorageBackend, 'openReadStream'>, key: string, size: number): AsyncByteSource {
@@ -131,8 +128,9 @@ export async function assertCompoundFileKindInObject(
   filename?: string
 ): Promise<void> {
   const ext = compoundExtensionToRead(header, declaredExtension);
-  if (ext === undefined) return;
-  assertDirectoryVerdict(await compoundFileVerdictFromAsync(ext, objectSource(storage, key, size)), ext, filename);
+  if (ext !== undefined) {
+    assertDirectoryVerdict(await compoundFileVerdictFromAsync(ext, objectSource(storage, key, size)), ext, filename);
+  }
 }
 
 /** The whole spoof check of a stored object whose first 64 KiB are `header`: the signature rules, then the directory of a compound-only format read where it lies. */

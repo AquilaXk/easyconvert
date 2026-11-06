@@ -21,6 +21,7 @@ import {
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
 import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
 import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
+import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/format-signatures';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
@@ -413,10 +414,9 @@ export async function convertXlsTarget(
 }
 
 /** The signature every OLE2 compound file starts with (MS-CFB section 2.2): the container of Word, Excel and PowerPoint 97-2003 files. */
-const OLE2_SIGNATURE: readonly number[] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+const OLE2_SIGNATURE: readonly number[] = CFBF_MAGIC;
 /** The start of a Word 5.0 for Macintosh file (a Word binary that is no compound file), which the office suite reads and the in-process reader refuses. */
-const WORD_5_MACINTOSH_SIGNATURE: readonly number[] = [0xfe, 0x37, 0x00, 0x23];
-const LEGACY_BINARY_SIGNATURES: ReadonlyArray<readonly number[]> = [OLE2_SIGNATURE, WORD_5_MACINTOSH_SIGNATURE];
+const LEGACY_BINARY_SIGNATURES: ReadonlyArray<readonly number[]> = [OLE2_SIGNATURE, ...PRE_OLE2_WORD_SIGNATURES];
 const LONGEST_SIGNATURE_BYTES = Math.max(CGM_ENCODING_PROBE_BYTES, ...LEGACY_BINARY_SIGNATURES.map((signature) => signature.length));
 
 /** The first `count` bytes of the input (the longest signature by default), read without loading the file when it is not in memory. */
@@ -481,7 +481,7 @@ export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, req
   const refused = readerRefusal && !isDestroyedStructure(refusal);
   if (interchange === undefined || !refused || request.options.signal?.aborted) return undefined;
   const head = leadingBytes(request.input);
-  if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature))) return undefined;
+  if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature)) && !isBiffStream(head)) return undefined;
   try {
     const retried = await convertThroughInterchange(deps, request, interchange);
     return { ...retried, fallbackChain: [...(retried.fallbackChain ?? []), `in-process reader refused the document: ${(refusal as Error).message}`] };

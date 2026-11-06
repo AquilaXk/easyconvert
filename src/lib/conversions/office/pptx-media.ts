@@ -35,16 +35,19 @@ export interface PptxMediaOptions {
   enabled: boolean;
   /** Most bytes one part may decode to, where the target cannot hold more than that. */
   maxPartBytes?: number;
+  xmlBudget?: InflateBudget;
 }
 
 export class PptxMedia {
   readonly enabled: boolean;
+  readonly xmlBudget: InflateBudget;
   private readonly maxPartBytes: number;
   private readonly budget = new InflateBudget(maxDocumentMediaBytes());
   private readonly parts = new Map<string, Promise<LoadedPicture>>();
 
   constructor(options: PptxMediaOptions = { enabled: true }) {
     this.enabled = options.enabled;
+    this.xmlBudget = options.xmlBudget ?? new InflateBudget();
     this.maxPartBytes = Math.min(options.maxPartBytes ?? MAX_ZIP_MEDIA_BYTES, MAX_ZIP_MEDIA_BYTES);
   }
 

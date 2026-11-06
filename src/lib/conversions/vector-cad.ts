@@ -1,7 +1,7 @@
 import sharp, { type ResizeOptions, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, EngineUnavailableError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, EngineUnavailableError, PayloadLimitError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
@@ -175,7 +175,12 @@ function parseCgmPolyElements(cgmText: string, isPolygon: boolean): string[] {
   return elements;
 }
 
+export const MAX_CGM_INPUT_CHARS = 16 * 1024 * 1024;
+
 export function parseCgmToSvg(cgmText: string): string | null {
+  if (cgmText.length > MAX_CGM_INPUT_CHARS) {
+    throw new PayloadLimitError(`CGM payload exceeds the ${MAX_CGM_INPUT_CHARS}-character limit.`);
+  }
   if (!cgmText.includes('BEGMF')) return null;
 
   const { width, height } = parseCgmDimensions(cgmText);
@@ -277,6 +282,9 @@ export async function convertVectorCad(
 
   // 9. Clear-text CGM
   if (src === 'cgm') {
+    if (inputBuffer.length > MAX_CGM_INPUT_CHARS) {
+      throw new PayloadLimitError(`CGM payload exceeds the ${MAX_CGM_INPUT_CHARS}-byte limit.`);
+    }
     const svgStr = parseCgmToSvg(inputBuffer.toString('utf-8'));
     if (svgStr === null) {
       throw new CadGeometryUnavailableError('Unsupported or unparseable .cgm vector format: fail-closed against dummy placeholder synthesis.');
@@ -952,11 +960,7 @@ export function encodeStep(mesh: CadMesh3D): string {
     lines.push(`#${modelId} = SHELL_BASED_SURFACE_MODEL('${cleanName}', (#${shellId}));`);
     lines.push(`#10 = SHAPE_REPRESENTATION('${cleanName}', (#${modelId}, #19), #15);`);
   }
-
-  lines.push('ENDSEC;');
-  lines.push('END-ISO-10303-21;');
-  lines.push('');
-
+  lines.push('ENDSEC;', 'END-ISO-10303-21;', '');
   return lines.join('\n');
 }
 
