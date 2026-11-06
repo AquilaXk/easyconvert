@@ -3219,11 +3219,7 @@ export function isFormatCompatibleWithMagicBytes(
     sniffed === 'application/vnd.ms-excel' ||
     sniffed === 'application/vnd.ms-powerpoint'
   ) {
-    if (startsWithBytes(buffer, CFBF_MAGIC)) return CFBF_EXTENSIONS.has(cleanExt);
-    if (sniffed === 'application/x-hwp') return cleanExt === 'hwp';
-    if (sniffed === 'application/msword') return cleanExt === 'doc' || cleanExt === 'dot';
-    if (sniffed === 'application/vnd.ms-excel') return cleanExt === 'xls' || cleanExt === 'xlt';
-    return false;
+    return CFBF_EXTENSIONS.has(cleanExt);
   }
 
   if (sniffed === 'audio/mpeg') return MP3_EXTENSIONS.has(cleanExt) || (ADTS_FILE_EXTENSIONS.has(cleanExt) && id3v2Payload(buffer) === 'beyond-window');
@@ -3248,9 +3244,6 @@ export function isFormatCompatibleWithMagicBytes(
   if (sniffed === 'application/postscript') return isPostScriptCompatible(cleanExt, buffer);
   if (sniffed === 'model/step') return cleanExt === 'step' || cleanExt === 'stp';
   if (sniffed === 'application/vnd.apache.parquet') return cleanExt === 'parquet';
-  if (sniffed === 'font/woff') return cleanExt === 'woff';
-  if (sniffed === 'font/woff2') return cleanExt === 'woff2';
-  if (sniffed === 'font/otf' || sniffed === 'font/ttf') return cleanExt === 'otf' || cleanExt === 'ttf';
 
   return false;
 }

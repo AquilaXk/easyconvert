@@ -656,6 +656,15 @@ function isMobiPalmDb(buf: Uint8Array): boolean {
 }
 
 const PALM_DB_EXTENSIONS: ReadonlySet<string> = new Set(['pdb', 'mobi', 'azw', 'azw3', 'azw4', 'prc']);
+const NON_CFBF_MIME_EXTENSIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  'application/x-hwp': new Set(['hwp']),
+  'application/msword': new Set(['doc', 'dot']),
+  'application/vnd.ms-excel': new Set(['xls', 'xlt']),
+  'font/woff': new Set(['woff']),
+  'font/woff2': new Set(['woff2']),
+  'font/otf': new Set(['otf', 'ttf']),
+  'font/ttf': new Set(['otf', 'ttf']),
+};
 
 const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
   djvu: isDjvu,
@@ -681,6 +690,9 @@ export function ownSignatureVerdict(ext: string, buf: Uint8Array, sniffed?: stri
   if (Object.hasOwn(OWN_SIGNATURE_CHECKS, ext)) {
     if (sniffed !== undefined && PALM_DB_EXTENSIONS.has(ext)) return false;
     return OWN_SIGNATURE_CHECKS[ext](buf);
+  }
+  if (sniffed !== undefined && Object.hasOwn(NON_CFBF_MIME_EXTENSIONS, sniffed) && !startsWithBytes(buf, CFBF_MAGIC)) {
+    return NON_CFBF_MIME_EXTENSIONS[sniffed].has(ext);
   }
   const isForeignOwnSignature =
     isDjvu(buf) ||

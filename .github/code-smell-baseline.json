@@ -2233,7 +2233,7 @@
     "rule": "complexity",
     "function": "isFormatCompatibleWithMagicBytes",
     "count": 1,
-    "maxValue": 67
+    "maxValue": 62
   },
   {
     "file": "src/lib/registry.ts",
@@ -2247,7 +2247,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3285
+    "maxValue": 3282
   },
   {
     "file": "src/lib/security/memory-shredder.ts",
