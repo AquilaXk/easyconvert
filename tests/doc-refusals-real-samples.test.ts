@@ -39,8 +39,11 @@ const DOCUMENTS: ReadonlyArray<{ id: string; why: string; phrases: readonly stri
     id: 'govdocs1-233541.doc',
     why: 'a Word 6 document written on a Macintosh, which the office suite alone reads',
     phrases: ['intellectual property and the national information infrastructure', 'the report of the working group on intellectual property rights', 'bruce a lehman'],
-    // The printed document holds the footnotes of this report at the foot of its pages (22.7% of its words, as in "See supra note 11"); the text
-    // export of the office suite, and so the text target, leaves footnotes out, as the reader of Word text does for the main story.
+    // The printed document holds the footnotes of this report at the foot of its pages (22.7% of its words, as in "See supra note 11"). The text
+    // target is the text export of the office suite, which the reference converter uses for doc to txt (its formats API names the engine "office")
+    // and which leaves footnotes out on purpose: `SwASCWriter::WriteStream` (LibreOffice sw/source/filter/ascii/wrtasc.cxx at 63a2e191, lines 128 to
+    // 207) walks the nodes of the body and the file has no footnote handling; POI's `WordExtractor.getText` (f669cec7, lines 266 to 300) leaves them to
+    // `getFootnoteText` (lines 137 to 141), and our own Word reader reads the main story only (doc-reader.ts `readMainStory`). The 25% is policy entry 169.
     maxMissingShare: 0.25,
   },
   {
