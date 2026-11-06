@@ -11,7 +11,7 @@ import {
   pdfjsJpxReducePower,
   readJbig2Globals,
 } from './pdf-picture-headers';
-import { forEachContentToken } from './pdf-stream-guard';
+import { assertDocumentStreamsWithinLimits, forEachContentToken } from './pdf-stream-guard';
 import { PDF_CONTENT_MAX_PICTURES, PDF_TEXT_MAX_IMAGE_PIXELS, PDF_WASM_DECODER_MAX_BYTES, pdfTextFailure } from './pdf-text-types';
 
 /**
@@ -250,10 +250,22 @@ export class InlinePictureCollector {
 
 /**
  * The plan for `document`'s pictures: every image object whose decode, or that of one of its masks, is past a limit is dropped.
- * The pages' pictures are then counted as pdf.js decodes them, again on each page that draws one.
+ * The pages' pictures are then counted as pdf.js decodes them, again on each page that draws one. Where the document cannot tell
+ * which definition of an object pdf.js reads (`PdfDocument.otherReadings`), the plan is that of each reading and drops what any of
+ * them drops, so that it never counts less than for the definition pdf.js reads.
  * @throws PayloadLimitError (413) for an inline picture past a limit, or when the pages decode more than PDF_CONTENT_MAX_PICTURES pictures.
  */
 export function planPictureDecoding(document: PdfDocument, inline: InlinePictureCollector): PicturePlan {
+  const dropped = new Map(planOneReading(document, inline).dropped.map((picture) => [picture.num, picture]));
+  for (const other of document.otherReadings()) {
+    const collector = new InlinePictureCollector();
+    assertDocumentStreamsWithinLimits(other, collector.visit);
+    for (const picture of planOneReading(other, collector).dropped) if (!dropped.has(picture.num)) dropped.set(picture.num, picture);
+  }
+  return { dropped: [...dropped.values()] };
+}
+
+function planOneReading(document: PdfDocument, inline: InlinePictureCollector): PicturePlan {
   const context: ScanContext = { document, prefixBudget: new InflateBudget(PICTURE_PREFIX_BUDGET_BYTES), headerBudget: new HeaderReadBudget(), globals: new Map() };
   const costs = new Map<number, PictureCost | null>();
   const costOf = (image: PdfImageStream): PictureCost | null => {

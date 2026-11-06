@@ -18,12 +18,17 @@ import { PDF_CONTENT_MAX_STATE_DEPTH } from './pdf-text-types';
  */
 export function assertPdfStreamsWithinLimits(pdf: Buffer, visitContent?: ContentVisitor): PdfDocument {
   const document = new PdfDocument(pdf, undefined, true);
+  assertDocumentStreamsWithinLimits(document, visitContent);
+  return document;
+}
+
+/** The checks of `assertPdfStreamsWithinLimits` on a document already read, for one of its other readings. */
+export function assertDocumentStreamsWithinLimits(document: PdfDocument, visitContent?: ContentVisitor): void {
   document.contentStreams((content, pageIndex) => {
     assertStateDepthWithinLimit(content);
     visitContent?.(content, pageIndex);
   });
   document.toUnicodeStreams(() => undefined);
-  return document;
 }
 
 /**

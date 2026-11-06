@@ -38,7 +38,8 @@ import {
 } from './pdf-values';
 export { MAX_PDF_PARSE_DEPTH, PdfStructureError, parseValue, skipWhite } from './pdf-values';
 export type { PdfArray, PdfDict, PdfName, PdfOpaque, PdfRef, PdfValue } from './pdf-values';
-import { type XrefEntry, XrefFormatError, headerOffset, lastStartXref, readXrefStreamRows, readXrefTable } from './pdf-xref';
+import { type PageTreeSource, PageFault, recoversByScanning } from './pdf-page-recovery';
+import { type XrefEntry, XrefFormatError, headerOffset, lastStartXref, objectHeaderAt, readXrefStreamRows, readXrefTable } from './pdf-xref';
 
 /**
  * Read-only structural view of a PDF (ISO 32000-1 sections 7.3 to 7.5) for the text extractor: an
@@ -108,13 +109,11 @@ const PICTURE_CODEC_FILTERS = new Set([...JPX_FILTERS, ...JBIG2_FILTERS, ...CCIT
 
 const MAX_OBJECT_HEADER_LOOKBACK = 40;
 const ENDSTREAM = 'endstream';
-/** `N G obj` at the start of an object (the digit limits of `objectHeaderBefore`); the keyword ends at the first character that is not a letter or digit. */
-const OBJECT_HEADER = /^(\d{1,10})[\0\t\n\f\r ]+(\d{1,5})[\0\t\n\f\r ]+obj(?![A-Za-z0-9])/;
 /** Sections of a cross-reference one file may chain through /Prev and /XRefStm; a real file has a handful, one per saved revision. */
 const MAX_PDF_XREF_SECTIONS = 10_000;
 /** Bytes beyond twice the file that the cross-reference may read: the headers and trailers of a small file. */
 const CROSS_REFERENCE_SLACK_BYTES = 64 * 1024;
-/** Decoded bytes one xref stream may have: 7 bytes a row for the most objects a file may define, with room for wider rows. */
+/** Decoded bytes the xref streams of one file may have together: 7 bytes a row for the most objects a file may define, with room for wider rows. */
 const MAX_PDF_XREF_STREAM_BYTES = 16 * 1024 * 1024;
 /**
  * White space allowed between the data a /Length names and `endstream`: a line end is one or two bytes, and the longest gap
@@ -311,6 +310,16 @@ const STARTXREF = /^startxref\s+(\d{1,15})/;
 /** Names of the `Do` operators in a content stream, in drawing order. */
 const DO_OPERATOR = /\/([^\s/<>[\](){}%]+)\s+Do(?![A-Za-z0-9*'"])/g;
 
+/**
+ * Which definition of an object number the index keeps. `preferred` is the one pdf.js reads: the cross-reference's where pdf.js
+ * follows it, the last in the file where it scans. `last` and `first` ignore the cross-reference and keep the last or the first
+ * definition in file order; `otherReadings` gives them to a caller that cannot tell which one pdf.js reads.
+ */
+export type PdfReading = 'preferred' | 'last' | 'first';
+
+/** How a fetch of an object the cross-reference lists fails in pdf.js: `entry` is an `XRefEntryException`, which makes pdf.js read the file by scanning it. */
+type FetchFault = 'entry' | 'format';
+
 export class PdfDocument {
   /** True when the trailer names an Encrypt dictionary; streams are then ciphertext this reader cannot decode. */
   encrypted = false;
@@ -329,6 +338,15 @@ export class PdfDocument {
   private readonly damagedAppearances = new Set<number>();
   /** Bytes the cross-reference may make this reader parse: sections and the objects its entries lead to (see `chargeCrossReference`). */
   private crossReferenceBytes = 0;
+  /** The decoded bytes of every cross-reference stream this reader decodes, so that a stream several sections lead to is charged for each. */
+  private readonly xrefStreamBudget = new InflateBudget(MAX_PDF_XREF_STREAM_BYTES);
+  /** Sections of the cross-reference this reader rejected; it cannot tell that pdf.js rejects every one of them. */
+  private rejectedSections = 0;
+  /** Whether a number is defined more than once in the file, so that the choice between its definitions matters. */
+  private superseded = false;
+  private followedCrossReference = false;
+  /** Whether the index may differ from the objects pdf.js reads: the cross-reference was not followed or a section was rejected, and a number has several definitions. */
+  private uncertain = false;
   private rootRef: PdfRef | null = null;
   private pageList: PageNode[] | null | undefined;
   private objectCount = 0;
@@ -345,17 +363,32 @@ export class PdfDocument {
   constructor(
     private readonly buffer: Buffer,
     private readonly budget: InflateBudget = new InflateBudget(),
-    private readonly skipUndecodable = false
+    private readonly skipUndecodable = false,
+    private readonly reading: PdfReading = 'preferred'
   ) {
     this.text = buffer.toString('latin1');
     this.scan();
     this.applyLaterLengths();
-    const crossReference = this.followCrossReference();
+    const crossReference = reading === 'preferred' ? this.followCrossReference() : null;
     this.expandObjectStreams();
     // The definition the cross-reference leads to is the one pdf.js reads, whatever the file has after it.
     if (crossReference !== null) for (const [num, entry] of crossReference) this.index.set(num, entry);
     // Anything resolved while the index was still growing may have seen a missing or older object.
     this.parsed.clear();
+    this.followedCrossReference = crossReference !== null;
+    this.uncertain = reading === 'preferred' && this.superseded && (crossReference === null || this.rejectedSections > 0);
+  }
+
+  /**
+   * The other readings of the file for a caller that decides from the objects (the picture check): the last and the first
+   * definition of every number in file order, without the cross-reference. Where this reader did not follow the cross-reference,
+   * or rejected a section of it, it cannot know that pdf.js reads the same sections, and a number with several definitions may
+   * lead to any of them; a caller that takes the worst reading never counts less than for either. Empty where the index is certain.
+   */
+  otherReadings(): PdfDocument[] {
+    if (!this.uncertain) return [];
+    const readings: PdfReading[] = this.followedCrossReference ? ['last', 'first'] : ['first'];
+    return readings.map((r) => new PdfDocument(this.buffer, new InflateBudget(), this.skipUndecodable, r));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -368,7 +401,8 @@ export class PdfDocument {
       throw new PdfStructureError(`PDF defines more than ${MAX_PDF_OBJECTS} objects.`);
     }
     const existing = this.index.get(entry.num);
-    if (!existing || entry.seq >= existing.seq) this.index.set(entry.num, entry);
+    if (existing) this.superseded = true;
+    if (!existing || (this.reading === 'first' ? entry.seq < existing.seq : entry.seq >= existing.seq)) this.index.set(entry.num, entry);
   }
 
   /** Reads "<num> <gen> " in front of an `obj` keyword at `objAt`. */
@@ -589,25 +623,28 @@ export class PdfDocument {
 
     const scanned = this.index;
     const found = new Map<number, PdfObjectEntry>();
-    const failed = new Set<number>();
+    const failed = new Map<number, FetchFault>();
     for (const [num, entry] of entries) {
       if (entry.kind !== 'offset' || entry.offset === 0) continue;
       const defined = this.definitionAt(base + entry.offset, num, entry.gen);
-      if (defined === null) failed.add(num);
-      else found.set(num, defined);
+      if ('fault' in defined) failed.set(num, defined.fault);
+      else found.set(num, defined.entry);
     }
     try {
       // What pdf.js sees is the listed objects alone, so the checks below read nothing else.
       this.index = found;
       this.parsed.clear();
-      const encrypt = this.resolve(top.entries.get('Encrypt'));
-      const encrypted = isDict(encrypt);
-      // The objects of an encrypted file's object streams are ciphertext here, so its page tree cannot be walked; nothing in such a file is read.
+      // The /Encrypt dictionary may be an object of an object stream; no other is read before it is known (an encrypted file's streams are ciphertext here).
+      const encryptRef = top.entries.get('Encrypt');
+      if (isRef(encryptRef)) this.addObjectStreamMembers(entries, found, failed, [encryptRef.num]);
+      const encrypted = isDict(this.resolve(encryptRef));
       if (!encrypted) {
         this.addObjectStreamMembers(entries, found, failed);
         const root = this.resolveDict(top.entries.get('Root'));
-        if (!root || !this.resolveDict(root.entries.get('Pages'))) return null;
-        if (this.pageEntryFailed(root, failed)) return null;
+        const pages = root?.entries.get('Pages');
+        const pagesDict = this.resolveDict(pages);
+        if (!root || !pagesDict) return null;
+        if (recoversByScanning(pagesDict, pages, this.pageTreeSource(failed))) return null;
       }
       this.encrypted = encrypted;
       const rootRef = top.entries.get('Root');
@@ -618,6 +655,17 @@ export class PdfDocument {
       this.parsed.clear();
       this.pageList = undefined;
     }
+  }
+
+  /** `XRef.fetch` on the objects the cross-reference leads to, which are the index while `followCrossReference` checks them. */
+  private pageTreeSource(failed: ReadonlyMap<number, FetchFault>): PageTreeSource {
+    return {
+      fetch: (ref) => {
+        const fault = failed.get(ref.num);
+        if (fault !== undefined) throw new PageFault(fault === 'entry');
+        return this.parsedObject(ref.num);
+      },
+    };
   }
 
   /** Reads the sections of the cross-reference newest first and returns the first section's trailer dictionary, or null when none is readable. */
@@ -636,8 +684,9 @@ export class PdfDocument {
       try {
         dict = this.readXrefSection(base + at, entries, add);
       } catch (error) {
-        if (error instanceof XrefFormatError) continue;
-        throw error;
+        if (!(error instanceof XrefFormatError)) throw error;
+        this.rejectedSections++;
+        continue;
       }
       top ??= dict;
       const hybrid = this.resolve(dict.entries.get('XRefStm'));
@@ -656,28 +705,37 @@ export class PdfDocument {
   private readXrefSection(at: number, entries: ReadonlyMap<number, XrefEntry>, add: (num: number, entry: XrefEntry) => void): PdfDict {
     const src = this.text;
     const pos = skipWhite(src, at);
-    if (src.startsWith('xref', pos) && !isRegular(src.charCodeAt(pos + 4))) {
-      const afterTrailer = readXrefTable(src, pos + 4, add);
-      this.chargeCrossReference(afterTrailer - pos);
+    if (src.startsWith('xref', pos) && !isRegular(src.charCodeAt(pos + 4))) return this.readXrefTableSection(pos, entries, add);
+    const header = objectHeaderAt(src, pos);
+    if (header?.glued !== null) throw new XrefFormatError('Invalid XRef stream header');
+    const defined = this.defineObject({ num: header.num, gen: header.gen }, header.end - 3, header.end);
+    this.chargeCrossReference(defined.resume - pos);
+    const dict = defined.entry.stream?.dict;
+    if (!dict) throw new XrefFormatError('Invalid XRef stream');
+    const decoded = this.decodeStream(defined.entry, this.xrefStreamBudget, false);
+    if (decoded === null) throw new XrefFormatError('Failed to read XRef stream');
+    // pdf.js reads /W and /Index as the dictionary holds them (`Dict.get` follows a reference to the array, not one inside it) and a missing /Index as 0 and /Size.
+    const index = this.resolve(dict.entries.get('Index'));
+    const arrayItems = (value: PdfValue): readonly unknown[] => (isArray(value) ? value.items : []);
+    const ranges = index === null || index === 0 || index === false ? [0, this.resolve(dict.entries.get('Size'))] : arrayItems(index);
+    readXrefStreamRows(Buffer.from(decoded, 'latin1'), arrayItems(this.resolve(dict.entries.get('W'))), ranges, add, MAX_PDF_OBJECTS);
+    return dict;
+  }
+
+  /** A classic table at `pos` (its `xref` keyword) and its trailer. The bytes read are charged also when the table is rejected: a table that fails near its end has been read to there. */
+  private readXrefTableSection(pos: number, entries: ReadonlyMap<number, XrefEntry>, add: (num: number, entry: XrefEntry) => void): PdfDict {
+    const src = this.text;
+    const reached = { end: pos + 4 };
+    try {
+      const afterTrailer = readXrefTable(src, pos + 4, add, reached);
       // xref.js lines 255-258: the first object of a table must be free, checked once its entries are in.
       if (entries.get(0) !== undefined && entries.get(0)?.kind !== 'free') throw new XrefFormatError('Invalid XRef table: unexpected first object');
       const dict = parseValue(src, afterTrailer, 0).value;
       if (!isDict(dict)) throw new XrefFormatError('Invalid XRef table: could not parse trailer dictionary');
       return dict;
+    } finally {
+      this.chargeCrossReference(reached.end - pos);
     }
-    const header = OBJECT_HEADER.exec(src.slice(pos, pos + MAX_OBJECT_HEADER_LOOKBACK));
-    if (header === null) throw new XrefFormatError('Invalid XRef stream header');
-    const defined = this.defineObject({ num: Number(header[1]), gen: Number(header[2]) }, pos + header[0].length - 3, pos + header[0].length);
-    this.chargeCrossReference(defined.resume - pos);
-    const dict = defined.entry.stream?.dict;
-    if (!dict) throw new XrefFormatError('Invalid XRef stream');
-    const decoded = this.decodeStream(defined.entry, new InflateBudget(MAX_PDF_XREF_STREAM_BYTES), false);
-    if (decoded === null) throw new XrefFormatError('Failed to read XRef stream');
-    const items = (value: PdfValue): readonly unknown[] => (isArray(value) ? value.items.map((item) => this.resolve(item)) : []);
-    const index = this.resolve(dict.entries.get('Index'));
-    const ranges = isArray(index) ? items(index) : [0, this.resolve(dict.entries.get('Size'))];
-    readXrefStreamRows(Buffer.from(decoded, 'latin1'), items(this.resolve(dict.entries.get('W'))), ranges, add);
-    return dict;
   }
 
   /**
@@ -693,50 +751,59 @@ export class PdfDocument {
     }
   }
 
-  /** The object whose `num gen obj` header lies at `offset` (white space and comments may come first), or null when it names another object or cannot be read (`fetchUncompressed`). */
-  private definitionAt(offset: number, num: number, gen: number): PdfObjectEntry | null {
-    if (offset < 0 || offset >= this.text.length) return null;
-    const pos = skipWhite(this.text, offset);
-    const header = OBJECT_HEADER.exec(this.text.slice(pos, pos + MAX_OBJECT_HEADER_LOOKBACK));
-    if (header === null || Number(header[1]) !== num || Number(header[2]) !== gen) return null;
+  /**
+   * The object whose header lies at `offset`, read as pdf.js reads it (`fetchUncompressed`: three tokens, the number and the
+   * generation compared as numbers, a comment or white space between them, and `obj` followed by digits taken as that integer),
+   * or the fault pdf.js throws: an `XRefEntryException` when the header names another object or is not one, another error when
+   * the object cannot be read.
+   */
+  private definitionAt(offset: number, num: number, gen: number): { entry: PdfObjectEntry } | { fault: FetchFault } {
+    if (offset < 0 || offset >= this.text.length) return { fault: 'entry' };
+    const header = objectHeaderAt(this.text, offset);
+    if (header === null || header.num !== num || header.gen !== gen) return { fault: 'entry' };
+    if (header.glued !== null) {
+      this.chargeCrossReference(header.end - offset);
+      const value = String(header.glued);
+      return { entry: { num, gen, source: value, start: 0, end: value.length, seq: header.end } };
+    }
     let defined: ReturnType<PdfDocument['defineObject']>;
     try {
-      defined = this.defineObject({ num, gen }, pos + header[0].length - 3, pos + header[0].length);
+      defined = this.defineObject({ num, gen }, header.end - 3, header.end);
     } catch (error) {
-      if (error instanceof PdfStructureError) return null;
-      throw error;
+      if (!(error instanceof PdfStructureError)) throw error;
+      // The object ran to the end of the file looking for its `endstream`.
+      this.chargeCrossReference(this.text.length - offset);
+      return { fault: 'format' };
     }
-    this.chargeCrossReference(defined.resume - pos);
-    return defined.entry;
+    this.chargeCrossReference(defined.resume - offset);
+    return { entry: defined.entry };
   }
 
-  /** Adds the objects the cross-reference puts in object streams (type 2 entries) to `found`; the ones whose stream or index is not there are `failed`. */
-  private addObjectStreamMembers(entries: Map<number, XrefEntry>, found: Map<number, PdfObjectEntry>, failed: Set<number>): void {
-    for (const [num, entry] of entries) {
-      if (entry.kind !== 'member') continue;
+  /**
+   * Adds the objects the cross-reference puts in object streams (type 2 entries; those named in `only`, or all) to `found`. Those
+   * that pdf.js cannot read are `failed`: a stream whose entry is bad or whose index is past its objects is an
+   * `XRefEntryException` (`fetchCompressed`, pdf.worker.mjs lines 59062-59125), one that is not a stream or has no /First or /N a `FormatError`.
+   */
+  private addObjectStreamMembers(entries: Map<number, XrefEntry>, found: Map<number, PdfObjectEntry>, failed: Map<number, FetchFault>, only?: readonly number[]): void {
+    for (const num of only ?? entries.keys()) {
+      const entry = entries.get(num);
+      if (entry?.kind !== 'member' || found.has(num)) continue;
       const holder = found.get(entry.offset);
-      const contents = holder?.stream && isName(holder.stream.dict.entries.get('Type'), 'ObjStm') ? this.objectStreamOf(holder) : null;
-      const member = contents?.members[entry.gen];
-      const span = contents && member ? contents.spans.get(contents.first + member.offset) : undefined;
-      if (holder && contents && span) found.set(num, { num, gen: 0, source: contents.decoded, ...span, seq: holder.seq });
-      else failed.add(num);
+      const holderEntry = entries.get(entry.offset);
+      // The reference to the stream has generation 0, which its entry must state.
+      if (holderEntry?.kind === 'offset' && holderEntry.gen !== 0) failed.set(num, 'entry');
+      else if (failed.get(entry.offset) === 'entry') failed.set(num, 'entry');
+      else if (!holder?.stream) failed.set(num, 'format');
+      else this.addObjectStreamMember(num, entry, holder, found, failed);
     }
   }
 
-  /** Whether the walk down the first or the last kid of every level of the page tree meets an object whose entry named another one. */
-  private pageEntryFailed(root: PdfDict, failed: ReadonlySet<number>): boolean {
-    if (failed.size === 0) return false;
-    for (const pick of [0, -1]) {
-      let node: PdfValue | undefined = root.entries.get('Pages');
-      for (let depth = 0; depth < MAX_PDF_PAGE_TREE_DEPTH; depth++) {
-        if (isRef(node) && failed.has(node.num)) return true;
-        const dict = this.resolveDict(node);
-        const kids = dict ? this.resolve(dict.entries.get('Kids')) : null;
-        if (!isArray(kids) || kids.items.length === 0) break;
-        node = kids.items.at(pick);
-      }
-    }
-    return false;
+  private addObjectStreamMember(num: number, entry: XrefEntry, holder: PdfObjectEntry, found: Map<number, PdfObjectEntry>, failed: Map<number, FetchFault>): void {
+    const contents = this.objectStreamOf(holder);
+    const member = contents?.members[entry.gen];
+    const span = contents && member ? contents.spans.get(contents.first + member.offset) : undefined;
+    if (contents && member && span) found.set(num, { num, gen: 0, source: contents.decoded, ...span, seq: holder.seq });
+    else failed.set(num, contents && !member ? 'entry' : 'format');
   }
 
   // ---------------------------------------------------------------------------------------------

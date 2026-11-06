@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { InlinePictureCollector, planPictureDecoding } from '../src/lib/conversions/pdf-picture-guard';
 import { assertPdfStreamsWithinLimits } from '../src/lib/conversions/pdf-stream-guard';
 import { expectNoHang } from './helpers/timing';
@@ -95,10 +96,10 @@ class Writer {
   }
 
   /** `shifted` writes the free first entry under a subsection header that starts at 1, which pdf.js reads as object 0 (xref.js 220-225). */
-  table(extraTrailer = '', shifted = false): void {
+  table(extraTrailer = '', shifted = false, spell: (num: number, at: number) => string = (_num, at) => `${String(at).padStart(10, '0')} 00000 n`): void {
     this.raw(shifted ? 'xref\n1 1\n0000000000 65535 f \n' : 'xref\n0 1\n0000000000 65535 f \n');
     const entries = [...this.offsets.entries()].sort((a, b) => a[0] - b[0]);
-    for (const [num, at] of entries) this.raw(`${num} 1\n${String(at).padStart(10, '0')} 00000 n \n`);
+    for (const [num, at] of entries) this.raw(`${num} 1\n${spell(num, at)} \n`);
     const size = Math.max(...this.offsets.keys()) + 1;
     this.raw(`trailer\n<< /Size ${size} /Root 1 0 R ${extraTrailer} >>\n`);
   }
@@ -113,9 +114,9 @@ class Writer {
 const HUGE_RAW_BYTES = 16;
 
 /** A classic table whose `xref` keyword sits at `tableAt`; the trailer is written after it. */
-function finishWithTable(writer: Writer, extraTrailer = ''): Buffer {
+function finishWithTable(writer: Writer, extraTrailer = '', spell?: (num: number, at: number) => string): Buffer {
   const tableAt = writer.offset;
-  writer.table(extraTrailer);
+  writer.table(extraTrailer, false, spell);
   return writer.finish(tableAt);
 }
 
@@ -144,11 +145,11 @@ function trailingDecoy(kind: Kind, live: number, decoy: number): Buffer {
 }
 
 /** An object stream that holds `VALUE`, an uncompressed cross-reference stream that lists it there, and a later plain definition the stream does not list. */
-function objectStreamMember(kind: Kind, live: number, decoy: number): Buffer {
+function objectStreamMember(kind: Kind, live: number, decoy: number, typed = true): Buffer {
   const writer = new Writer();
   writer.page(kind);
   const header = `${VALUE} 0\n`;
-  writer.stream(HOLDER, `/Type /ObjStm /N 1 /First ${header.length}`, Buffer.from(`${header}${live}`, 'latin1'));
+  writer.stream(HOLDER, `${typed ? '/Type /ObjStm ' : ''}/N 1 /First ${header.length}`, Buffer.from(`${header}${live}`, 'latin1'));
   const entries: Array<[number, number, number, number]> = [];
   for (let num = 0; num <= XREF_STREAM; num++) {
     const at = writer.offsets.get(num);
@@ -254,16 +255,23 @@ interface Layout {
   name: string;
   /** The file for a picture kind, whose object `VALUE` holds `live` for pdf.js and `other` elsewhere in the file. */
   build(kind: Kind, live: number, other: number): Buffer;
+  /** The file has no cross-reference to follow, so the check reads every definition of an object, not the one pdf.js reads (policy 167). */
+  readsEveryDefinition?: boolean;
 }
 
 const LAYOUTS: Layout[] = [
   { name: 'a definition after the last cross-reference section (pdf.js reads the listed one, a scan the last)', build: trailingDecoy },
   { name: 'a member of an object stream beside a later plain definition (pdf.js reads the member, a scan the plain one)', build: objectStreamMember },
+  { name: 'a stream with no /Type that holds the member (pdf.js reads the members of any stream)', build: (kind, live, other) => objectStreamMember(kind, live, other, false) },
   { name: 'an offset into the data of an earlier stream (pdf.js reads there, a scan skips the data)', build: insideStream },
   { name: 'bytes before the %PDF- header (every offset counts from the header)', build: afterJunk },
   { name: 'a first subsection that starts at 1 with the free object (it is object 0)', build: shiftedFirstSubsection },
   { name: 'an incremental update (the newest section lists the new definition)', build: incrementalUpdate },
-  { name: 'a cross-reference that leads nowhere (pdf.js scans the file, the later definition wins)', build: (kind, live, other) => brokenCrossReference(kind, other, live) },
+  {
+    name: 'a cross-reference that leads nowhere (pdf.js scans the file, the later definition wins)',
+    build: (kind, live, other) => brokenCrossReference(kind, other, live),
+    readsEveryDefinition: true,
+  },
 ];
 
 describe('the definition of an object that the picture check reads is the one pdf.js reads', () => {
@@ -275,8 +283,9 @@ describe('the definition of an object that the picture check reads is the one pd
       expect(await widthPdfjsReads(layout.build('raw', liveWidth, decoyWidth)), 'pdf.js').toBe(liveWidth);
       // The live definition past the limit, the decoy harmless: the picture is left out.
       expect(droppedBy(layout.build('ccitt', HUGE, SMALL)), 'live huge').toEqual([PICTURE]);
-      // The live definition harmless, the decoy past the limit: pdf.js never reads the decoy, so the picture stays.
-      expect(droppedBy(layout.build('ccitt', SMALL, HUGE)), 'decoy huge').toEqual([]);
+      // The live definition harmless, the decoy past the limit: pdf.js never reads the decoy, so the picture stays. Where the check
+      // cannot follow a cross-reference it takes the definition that costs more, since it cannot know which one pdf.js reads.
+      expect(droppedBy(layout.build('ccitt', SMALL, HUGE)), 'decoy huge').toEqual(layout.readsEveryDefinition ? [PICTURE] : []);
     });
   }
 });
@@ -298,5 +307,215 @@ describe('a cross-reference that leads into the same bytes again and again', () 
     for (let index = 0; index < entries; index++) writer.offsets.set(firstFake + index, writer.raw(`${firstFake + index} 0 obj\n<< /X (${filler}`));
     const pdf = finishWithTable(writer);
     await expectNoHang('20,000 entries into one string', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(/same bytes again and again/));
+  });
+});
+
+
+const pad10 = (at: number): string => String(at).padStart(10, '0');
+
+/** The ways pdf.js writes an integer of a table entry that the lexer of the guard did not read (`Lexer.getNumber`, then `Number.isInteger`). */
+const ENTRY_SPELLINGS: Array<[string, (at: number) => string]> = [
+  ['a decimal point and a zero after the offset', (at) => `${pad10(at)}.0 00000 n`],
+  ['a decimal point and nothing after the offset', (at) => `${pad10(at)}. 00000 n`],
+  ['a plus sign before the offset', (at) => `+${pad10(at)} 00000 n`],
+  ['a decimal generation', (at) => `${pad10(at)} 0.0 n`],
+  ['the type glued to the generation', (at) => `${pad10(at)} 00000n`],
+  ['a sign, a line end and the digits', (at) => `+\n${pad10(at)} 00000 n`],
+];
+
+function spelledEntry(kind: Kind, live: number, decoy: number, spell: (at: number) => string): Buffer {
+  const writer = new Writer();
+  writer.page(kind);
+  writer.object(VALUE, String(live));
+  const pdf = finishWithTable(writer, '', (num, at) => (num === VALUE ? spell(at) : `${pad10(at)} 00000 n`));
+  return Buffer.concat([pdf, Buffer.from(`${VALUE} 0 obj\n${decoy}\nendobj\n`, 'latin1')]);
+}
+
+describe('an integer the cross-reference spells as pdf.js reads it', () => {
+  for (const [name, spell] of ENTRY_SPELLINGS) {
+    it(`${name}: the section is read, so the listed definition is the one the check reads`, async () => {
+      expect(await widthPdfjsReads(spelledEntry('raw', SMALL + 3, SMALL + 14, spell)), 'pdf.js').toBe(SMALL + 3);
+      expect(droppedBy(spelledEntry('ccitt', HUGE, SMALL, spell)), 'live huge').toEqual([PICTURE]);
+      expect(droppedBy(spelledEntry('ccitt', SMALL, HUGE, spell)), 'decoy huge').toEqual([]);
+    });
+  }
+});
+
+/** The ways an object header at an offset of the table reads for pdf.js (`fetchUncompressed`: three tokens, the number and generation compared as numbers). */
+const HEADER_SPELLINGS: Array<[string, (live: number) => string]> = [
+  ['a decimal object number and a signed generation', (live) => `${VALUE}.0 +0 obj\n${live}\nendobj\n`],
+  ['a comment between the tokens', (live) => `${VALUE} %c\n0 obj\n${live}\nendobj\n`],
+  ['the value glued to the keyword (pdf.js takes the digits after obj as the value)', (live) => `${VALUE} 0 obj${live}\nendobj\n`],
+];
+
+function spelledHeader(kind: Kind, live: number, decoy: number, spell: (live: number) => string): Buffer {
+  const writer = new Writer();
+  writer.page(kind);
+  writer.offsets.set(VALUE, writer.raw(spell(live)));
+  const pdf = finishWithTable(writer);
+  return Buffer.concat([pdf, Buffer.from(`${VALUE} 0 obj\n${decoy}\nendobj\n`, 'latin1')]);
+}
+
+describe('an object header at an offset of the cross-reference that pdf.js reads', () => {
+  for (const [name, spell] of HEADER_SPELLINGS) {
+    it(`${name}: the object it names is the one the check reads`, async () => {
+      expect(await widthPdfjsReads(spelledHeader('raw', SMALL + 3, SMALL + 14, spell)), 'pdf.js').toBe(SMALL + 3);
+      expect(droppedBy(spelledHeader('ccitt', HUGE, SMALL, spell)), 'live huge').toEqual([PICTURE]);
+      expect(droppedBy(spelledHeader('ccitt', SMALL, HUGE, spell)), 'decoy huge').toEqual([]);
+    });
+  }
+});
+
+const EMPTY_NODE = 50;
+const BROKEN_KID = 51;
+
+/**
+ * A page tree whose kids are an empty Pages node, a kid whose entry cannot be read (`broken`) and the page. pdf.js walks past the
+ * empty node to the next kid, fails on the broken one with an `XRefEntryException`, and reads the file by scanning it (the later
+ * definition of `VALUE` wins); the xref lists the first.
+ */
+function emptyNodeBeforeBrokenKid(kind: Kind, live: number, decoy: number): Buffer {
+  const writer = new Writer();
+  writer.object(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  writer.object(2, `<< /Type /Pages /Kids [${EMPTY_NODE} 0 R ${BROKEN_KID} 0 R 3 0 R] /Count 1 >>`);
+  writer.object(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /Im0 ${PICTURE} 0 R >> >> >>`);
+  writer.stream(4, '', Buffer.from('q 64 0 0 32 72 700 cm /Im0 Do Q', 'latin1'));
+  writer.stream(PICTURE, pictureDictionary(kind), kind === 'jpx' ? jpxHeader(8000) : Buffer.alloc(HUGE_RAW_BYTES, 0xff));
+  writer.object(EMPTY_NODE, '<< /Type /Pages /Parent 2 0 R /Kids [] >>');
+  writer.object(BROKEN_KID, '<< /Type /Pages /Parent 2 0 R /Kids [] >>');
+  writer.offsets.set(BROKEN_KID, 9);
+  writer.object(VALUE, String(live));
+  const pdf = finishWithTable(writer);
+  return Buffer.concat([pdf, Buffer.from(`${VALUE} 0 obj\n${decoy}\nendobj\n`, 'latin1')]);
+}
+
+describe('a page tree that pdf.js walks past an empty node to a kid it cannot read', () => {
+  it("the kid's offset is wrong: pdf.js reads the file by scanning it, and so does the check", async () => {
+    // The oracle: the later definition, which the cross-reference does not list.
+    expect(await widthPdfjsReads(emptyNodeBeforeBrokenKid('raw', SMALL + 3, SMALL + 14)), 'pdf.js').toBe(SMALL + 14);
+    expect(droppedBy(emptyNodeBeforeBrokenKid('ccitt', SMALL, HUGE)), 'the later definition is huge').toEqual([PICTURE]);
+  });
+});
+
+/** A trailer dictionary that holds `/W [0 0 0]` and the same range `repeats` times. */
+function repeatedRange(repeats: number): Buffer {
+  const writer = new Writer();
+  writer.page('raw');
+  const streamAt = writer.offset;
+  writer.stream(XREF_STREAM, `/Type /XRef /Size 400000 /W [0 0 0] /Index [${'0 400000 '.repeat(repeats)}] /Root 1 0 R`, Buffer.alloc(0), false);
+  return writer.finish(streamAt);
+}
+
+describe('a cross-reference stream whose rows take no bytes', () => {
+  it('is refused instead of walked: a range repeated over the same numbers adds no object, so no cap on objects bounds the rows', async () => {
+    const pdf = repeatedRange(400);
+    expect(pdf.length).toBeLessThan(10_000);
+    await expectNoHang('400 ranges of 400,000 rows', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(PdfStructureError));
+  });
+});
+
+/** A table of 20,000 entries whose last entry is not one, and `sections` small sections that each lead to it from another offset (white space in front of `xref`). */
+function failedTableSections(sections: number): Buffer {
+  const writer = new Writer();
+  writer.page('raw');
+  const tableAt = writer.raw(' '.repeat(sections));
+  writer.raw(`xref\n0 20000\n${'0000000000 00000 f \n'.repeat(19_999)}not an entry\n`);
+  let previous: number | null = null;
+  for (let index = sections - 1; index >= 0; index--) {
+    const chain: string = previous === null ? '' : `/Prev ${previous}`;
+    previous = writer.raw(`xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 /Root 1 0 R /XRefStm ${tableAt + index} ${chain} >>\n`);
+  }
+  return writer.finish(previous as number);
+}
+
+describe('a table that fails near its end', () => {
+  it('is charged for the bytes it read: 200 sections that each lead to it would read it 200 times', async () => {
+    const pdf = failedTableSections(200);
+    expect(pdf.length).toBeLessThan(500_000);
+    await expectNoHang('200 failed reads of a 400 KB table', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(/same bytes again and again/));
+  });
+});
+
+/** An object stream that holds the /Encrypt dictionary, listed by an uncompressed cross-reference stream whose own dictionary names it. */
+function encryptInObjectStream(): Buffer {
+  const encrypt = `<< /Filter /Standard /V 1 /R 2 /O <${'00'.repeat(32)}> /U <${'11'.repeat(32)}> /P -4 >>`;
+  const encryptNum = 31;
+  const writer = new Writer();
+  writer.page('raw');
+  const header = `${encryptNum} 0\n`;
+  writer.stream(HOLDER, `/Type /ObjStm /N 1 /First ${header.length}`, Buffer.from(`${header}${encrypt}`, 'latin1'));
+  const entries: Array<[number, number, number, number]> = [];
+  for (let num = 0; num <= XREF_STREAM; num++) {
+    const at = writer.offsets.get(num);
+    entries.push(at === undefined ? [num, 0, 0, 0] : [num, 1, at, 0]);
+  }
+  entries.push([encryptNum, 2, HOLDER, 0]);
+  const rows = entries.sort((a, b) => a[0] - b[0]).map(([, type, field2, field3]) => {
+    const row = Buffer.alloc(7);
+    row.writeUInt8(type, 0);
+    row.writeUInt32BE(field2, 1);
+    row.writeUInt16BE(field3, 5);
+    return row;
+  });
+  const streamAt = writer.offset;
+  writer.stream(XREF_STREAM, `/Type /XRef /Size ${encryptNum + 1} /W [1 4 2] /Index [0 ${XREF_STREAM + 1} ${encryptNum} 1] /Root 1 0 R /Encrypt ${encryptNum} 0 R`, Buffer.concat(rows), false);
+  return writer.finish(streamAt);
+}
+
+describe('an /Encrypt dictionary inside an object stream', () => {
+  it('encrypts the file for the check as it does for pdf.js, which asks for a password', async () => {
+    const pdf = encryptInObjectStream();
+    const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
+    const task = pdfjs.getDocument({ data: new Uint8Array(pdf), isEvalSupported: false, useSystemFonts: false, disableFontFace: true, verbosity: 0 });
+    await expect(task.promise).rejects.toMatchObject({ name: 'PasswordException' });
+    await task.destroy();
+    expect(assertPdfStreamsWithinLimits(pdf, () => {}).encrypted).toBe(true);
+  });
+});
+
+/**
+ * An incremental update whose hybrid section (/XRefStm) is a run-length encoded cross-reference stream, which pdf.js reads and the
+ * check does not decode: the check rejects that section and goes on to the first revision's table, which leads to the old definition.
+ */
+function updateTheCheckCannotRead(kind: Kind, live: number, old: number): Buffer {
+  const writer = new Writer();
+  writer.page(kind);
+  writer.object(VALUE, String(old));
+  const firstTable = writer.offset;
+  writer.table();
+  const first = writer.finish(firstTable);
+  const updateObject = `${VALUE} 0 obj\n${live}\nendobj\n`;
+  const row = Buffer.alloc(7);
+  row.writeUInt8(1, 0);
+  row.writeUInt32BE(first.length, 1);
+  const encoded = Buffer.concat([Buffer.from([6]), row, Buffer.from([128])]);
+  const streamAt = first.length + updateObject.length;
+  const size = Math.max(...writer.offsets.keys()) + 1;
+  const head = `${XREF_STREAM} 0 obj\n<< /Type /XRef /Size ${size} /W [1 4 2] /Index [${VALUE} 1] /Root 1 0 R /Filter /RunLengthDecode /Length ${encoded.length} >>\nstream\n`;
+  const hybrid = Buffer.concat([Buffer.from(updateObject + head, 'latin1'), encoded, Buffer.from('\nendstream\nendobj\n', 'latin1')]);
+  const tableAt = first.length + hybrid.length;
+  const table = `xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size ${size} /Root 1 0 R /Prev ${firstTable} /XRefStm ${streamAt} >>\nstartxref\n${tableAt}\n%%EOF\n`;
+  return Buffer.concat([first, hybrid, Buffer.from(table, 'latin1')]);
+}
+
+describe('a section of the cross-reference that the check rejects and pdf.js reads', () => {
+  it('does not leave the check on the older definition: it also reads the file in order, and takes what either reading costs', async () => {
+    expect(await widthPdfjsReads(updateTheCheckCannotRead('raw', SMALL + 14, SMALL + 3)), 'pdf.js').toBe(SMALL + 14);
+    expect(droppedBy(updateTheCheckCannotRead('ccitt', HUGE, SMALL)), 'the newer definition is huge').toEqual([PICTURE]);
+    expect(droppedBy(updateTheCheckCannotRead('ccitt', SMALL, HUGE)), 'the older definition is huge').toEqual([PICTURE]);
+  });
+});
+
+describe('entries that lead to streams with no end', () => {
+  it('are charged for the search for `endstream` that each one makes: 20,000 entries inside one unterminated string would search the rest of the file 20,000 times', async () => {
+    const writer = new Writer();
+    writer.page('raw');
+    const entries = 20_000;
+    const firstFake = 100;
+    const filler = 'a'.repeat(80);
+    writer.raw('999 0 obj\n(');
+    for (let index = 0; index < entries; index++) writer.offsets.set(firstFake + index, writer.raw(`${firstFake + index} 0 obj\n<< /Length 99999999 >>\nstream\n${filler}\n`));
+    const pdf = finishWithTable(writer);
+    await expectNoHang('20,000 entries at streams with no end', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(/same bytes again and again/));
   });
 });
