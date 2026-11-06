@@ -578,6 +578,16 @@ export function canDrawInPdf(text: string): boolean {
   return findUncoveredCodePoint(text) === null;
 }
 
+/**
+ * What the output of `target` can draw, for a reader that replaces a symbol-font character the output cannot draw: a PDF draws
+ * with the installed fonts (their coverage is loaded here), and any other target has no limit.
+ */
+export async function glyphCoverageOf(target: string): Promise<((text: string) => boolean) | undefined> {
+  if (target !== 'pdf') return undefined;
+  await loadFontCoverageIndex();
+  return canDrawInPdf;
+}
+
 /** First face, in preference order, that covers every code point; null when no single face does. */
 function singleCoveringFace(codePoints: readonly number[], customFontPath?: PdfPreferredFont): PdfFontFace | null {
   return orderedFaces(customFontPath).find((face) => codePoints.every((cp) => face.font.hasGlyphForCodePoint(cp))) ?? null;
