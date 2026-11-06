@@ -35,6 +35,8 @@ const HEADER = '%PDF-';
 /** pdf.js looks for the header in the first kilobyte (`PDFDocument.checkHeader`, `find(stream, "%PDF-", 1024)`). */
 const HEADER_SEARCH_BYTES = 1024;
 const INTEGER = /^[+-]?\d+$/;
+/** The kind of an xref stream entry by its type field (0 free, 1 at an offset, 2 in an object stream). */
+const STREAM_ENTRY_KINDS = ['free', 'offset', 'member'] as const;
 
 function isWhiteCode(code: number): boolean {
   return code === CHAR_SPACE || code === CHAR_LF || code === CHAR_CR || code === CHAR_TAB || code === CHAR_FF || code === CHAR_NUL;
@@ -151,7 +153,7 @@ export function readXrefStreamRows(data: Buffer, widths: readonly unknown[], ran
       const offset = field(fieldWidths[1]);
       const gen = field(fieldWidths[2]);
       if (type !== 0 && type !== 1 && type !== 2) throw new XrefFormatError(`Invalid XRef entry type: ${type}`);
-      add((first as number) + index, { kind: type === 0 ? 'free' : type === 1 ? 'offset' : 'member', offset, gen });
+      add((first as number) + index, { kind: STREAM_ENTRY_KINDS[type], offset, gen });
     }
   }
 }

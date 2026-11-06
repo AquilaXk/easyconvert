@@ -11,6 +11,33 @@ import {
   predictorRowBytes,
   undoPredictor,
 } from './pdf-filters';
+import {
+  type PdfArray,
+  type PdfDict,
+  type PdfName,
+  type PdfOpaque,
+  type PdfRef,
+  type PdfValue,
+  MAX_GENERATION_DIGITS,
+  MAX_OBJECT_NUMBER_DIGITS,
+  PdfStructureError,
+  CHAR_LF,
+  CHAR_CR,
+  CHAR_LESS,
+  isArray,
+  isDict,
+  isDigit,
+  isName,
+  isRef,
+  isRegular,
+  decodeNameEscapes,
+  isWhite,
+  parseValue,
+  skipValue,
+  skipWhite,
+} from './pdf-values';
+export { MAX_PDF_PARSE_DEPTH, PdfStructureError, parseValue, skipWhite } from './pdf-values';
+export type { PdfArray, PdfDict, PdfName, PdfOpaque, PdfRef, PdfValue } from './pdf-values';
 import { type XrefEntry, XrefFormatError, headerOffset, lastStartXref, readXrefStreamRows, readXrefTable } from './pdf-xref';
 
 /**
@@ -22,14 +49,6 @@ import { type XrefEntry, XrefFormatError, headerOffset, lastStartXref, readXrefS
  * is readable, the object a number leads to is the one pdf.js reads through it (`followCrossReference`), because the
  * checks that run on this view are about what pdf.js will decode.
  */
-
-/** Malformed or over-complex PDF structure (cycles, runaway nesting, unterminated streams). Maps to HTTP 400. */
-export class PdfStructureError extends ConversionFailedError {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PdfStructureError';
-  }
-}
 
 /** Objects one document may define, counting those packed in object streams. */
 export const MAX_PDF_OBJECTS = 500 * 1000;
@@ -55,8 +74,6 @@ export const MAX_PDF_ANNOTATIONS = 50 * 1000;
  * Off and its on state, and no real-world PDF has more; pdf.js draws at most three of them (/AS, the on state, Off).
  */
 export const MAX_PDF_APPEARANCE_STATES = 64;
-/** Nesting of arrays and dictionaries inside one object. */
-export const MAX_PDF_PARSE_DEPTH = 32;
 /** Longest chain of indirect references followed to reach a direct value. */
 export const MAX_PDF_REFERENCE_CHAIN = 16;
 /** Largest non-stream object the structure parser reads; a bigger one cannot be a page tree node of a real file. */
@@ -90,8 +107,6 @@ export const CCITT_FILTERS: ReadonlySet<string> = new Set(['CCITTFaxDecode', 'CC
 const PICTURE_CODEC_FILTERS = new Set([...JPX_FILTERS, ...JBIG2_FILTERS, ...CCITT_FILTERS]);
 
 const MAX_OBJECT_HEADER_LOOKBACK = 40;
-const MAX_OBJECT_NUMBER_DIGITS = 10;
-const MAX_GENERATION_DIGITS = 5;
 const ENDSTREAM = 'endstream';
 /** `N G obj` at the start of an object (the digit limits of `objectHeaderBefore`); the keyword ends at the first character that is not a letter or digit. */
 const OBJECT_HEADER = /^(\d{1,10})[\0\t\n\f\r ]+(\d{1,5})[\0\t\n\f\r ]+obj(?![A-Za-z0-9])/;
@@ -108,51 +123,7 @@ const MAX_PDF_XREF_STREAM_BYTES = 16 * 1024 * 1024;
 const MAX_WHITE_BEFORE_ENDSTREAM = 16;
 const STREAM_KEYWORD = 'stream';
 
-const CHAR_NUL = 0;
-const CHAR_TAB = 9;
-const CHAR_LF = 10;
-const CHAR_FF = 12;
-const CHAR_CR = 13;
-const CHAR_SPACE = 32;
-const CHAR_0 = 48;
-const CHAR_9 = 57;
-const CHAR_PERCENT = 37;
-const CHAR_LEFT_PAREN = 40;
-const CHAR_RIGHT_PAREN = 41;
-const CHAR_PLUS = 43;
-const CHAR_MINUS = 45;
-const CHAR_DOT = 46;
-const CHAR_SLASH = 47;
-const CHAR_LESS = 60;
-const CHAR_GREATER = 62;
-const CHAR_UPPER_R = 82;
-const CHAR_LEFT_BRACKET = 91;
-const CHAR_BACKSLASH = 92;
-const CHAR_RIGHT_BRACKET = 93;
-const CHAR_LEFT_BRACE = 123;
-const CHAR_RIGHT_BRACE = 125;
 
-export type PdfValue = null | boolean | number | PdfName | PdfRef | PdfDict | PdfArray | PdfOpaque;
-export interface PdfName {
-  kind: 'name';
-  value: string;
-}
-export interface PdfRef {
-  kind: 'ref';
-  num: number;
-}
-export interface PdfDict {
-  kind: 'dict';
-  entries: Map<string, PdfValue>;
-}
-export interface PdfArray {
-  kind: 'array';
-  items: PdfValue[];
-}
-export interface PdfOpaque {
-  kind: 'string' | 'keyword';
-  value: string;
-}
 
 interface StreamSpan {
   dict: PdfDict;
@@ -272,223 +243,9 @@ interface PageNode {
   resources: PdfValue;
 }
 
-function isWhite(code: number): boolean {
-  return (
-    code === CHAR_SPACE || code === CHAR_LF || code === CHAR_CR || code === CHAR_TAB || code === CHAR_FF || code === CHAR_NUL
-  );
-}
 
 const SIMPLE_FONT_SUBTYPES = new Set(['Type1', 'MMType1', 'TrueType', 'Type3']);
 
-const DELIMITER_CODES = new Set<number>([
-  CHAR_LEFT_PAREN,
-  CHAR_RIGHT_PAREN,
-  CHAR_LESS,
-  CHAR_GREATER,
-  CHAR_LEFT_BRACKET,
-  CHAR_RIGHT_BRACKET,
-  CHAR_LEFT_BRACE,
-  CHAR_RIGHT_BRACE,
-  CHAR_SLASH,
-  CHAR_PERCENT,
-]);
-
-function isRegular(code: number): boolean {
-  return !Number.isNaN(code) && !isWhite(code) && !DELIMITER_CODES.has(code);
-}
-
-function isDigit(code: number): boolean {
-  return code >= CHAR_0 && code <= CHAR_9;
-}
-
-/**
- * The first position at or after `from` that is not white space or a comment (section 7.2.3: a comment runs from `%` to the
- * end of the line), or `limit` when the text up to there holds nothing else: a comment with no line end ends at `limit`.
- */
-export function skipWhite(src: string, from: number, limit = src.length): number {
-  let pos = from;
-  while (pos < limit) {
-    const code = src.charCodeAt(pos);
-    if (isWhite(code)) {
-      pos++;
-    } else if (code === CHAR_PERCENT) {
-      while (pos < limit && src.charCodeAt(pos) !== CHAR_LF && src.charCodeAt(pos) !== CHAR_CR) pos++;
-    } else {
-      break;
-    }
-  }
-  return pos;
-}
-
-function decodeNameEscapes(raw: string): string {
-  return raw.includes('#') ? raw.replace(/#([0-9a-fA-F]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16))) : raw;
-}
-
-/** End of a literal string starting at `pos` (which holds the opening parenthesis). */
-function endOfLiteralString(src: string, pos: number): number {
-  let depth = 0;
-  let i = pos;
-  while (i < src.length) {
-    const code = src.charCodeAt(i);
-    if (code === CHAR_BACKSLASH) {
-      i += 2;
-      continue;
-    }
-    if (code === CHAR_LEFT_PAREN) depth++;
-    if (code === CHAR_RIGHT_PAREN) {
-      depth--;
-      if (depth === 0) return i + 1;
-    }
-    i++;
-  }
-  return src.length;
-}
-
-/** End of the value that starts at `from`, without building it. */
-function skipValue(src: string, from: number): number {
-  let pos = skipWhite(src, from);
-  if (pos >= src.length) return pos;
-  let depth = 0;
-  do {
-    pos = skipWhite(src, pos);
-    if (pos >= src.length) return pos;
-    const code = src.charCodeAt(pos);
-    if (code === CHAR_LESS && src.charCodeAt(pos + 1) === CHAR_LESS) {
-      depth++;
-      pos += 2;
-    } else if (code === CHAR_GREATER && src.charCodeAt(pos + 1) === CHAR_GREATER) {
-      depth--;
-      pos += 2;
-    } else if (code === CHAR_LEFT_BRACKET) {
-      depth++;
-      pos++;
-    } else if (code === CHAR_RIGHT_BRACKET) {
-      depth--;
-      pos++;
-    } else if (code === CHAR_LEFT_PAREN) {
-      pos = endOfLiteralString(src, pos);
-    } else if (code === CHAR_LESS) {
-      const close = src.indexOf('>', pos);
-      pos = close === -1 ? src.length : close + 1;
-    } else if (code === CHAR_SLASH) {
-      pos++;
-      while (isRegular(src.charCodeAt(pos))) pos++;
-    } else if (isRegular(code)) {
-      while (isRegular(src.charCodeAt(pos))) pos++;
-    } else {
-      pos++;
-    }
-    if (depth > MAX_PDF_PARSE_DEPTH) throw new PdfStructureError('PDF object is nested too deeply.');
-  } while (depth > 0);
-  return pos;
-}
-
-/** Reads a reference tail ("<gen> R") after an object number, returning its end or -1. */
-function referenceTailEnd(src: string, from: number): number {
-  let pos = skipWhite(src, from);
-  const genStart = pos;
-  while (isDigit(src.charCodeAt(pos)) && pos - genStart < MAX_GENERATION_DIGITS) pos++;
-  if (pos === genStart) return -1;
-  pos = skipWhite(src, pos);
-  if (src.charCodeAt(pos) === CHAR_UPPER_R && !isRegular(src.charCodeAt(pos + 1))) return pos + 1;
-  return -1;
-}
-
-export function parseValue(src: string, from: number, depth: number): { value: PdfValue; end: number } {
-  if (depth > MAX_PDF_PARSE_DEPTH) throw new PdfStructureError('PDF object is nested too deeply.');
-  const pos = skipWhite(src, from);
-  if (pos >= src.length) return { value: null, end: pos };
-  const code = src.charCodeAt(pos);
-
-  if (code === CHAR_LESS && src.charCodeAt(pos + 1) === CHAR_LESS) {
-    const entries = new Map<string, PdfValue>();
-    let cursor = pos + 2;
-    while (true) {
-      cursor = skipWhite(src, cursor);
-      if (cursor >= src.length) break;
-      if (src.charCodeAt(cursor) === CHAR_GREATER && src.charCodeAt(cursor + 1) === CHAR_GREATER) {
-        cursor += 2;
-        break;
-      }
-      const key = parseValue(src, cursor, depth + 1);
-      cursor = key.end;
-      if (isName(key.value)) {
-        const valueAt = skipWhite(src, cursor);
-        if (src.charCodeAt(valueAt) === CHAR_GREATER && src.charCodeAt(valueAt + 1) === CHAR_GREATER) {
-          entries.set(key.value.value, null);
-        } else {
-          const value = parseValue(src, valueAt, depth + 1);
-          cursor = value.end;
-          entries.set(key.value.value, value.value);
-        }
-      }
-    }
-    return { value: { kind: 'dict', entries }, end: cursor };
-  }
-  if (code === CHAR_LEFT_BRACKET) {
-    const items: PdfValue[] = [];
-    let cursor = pos + 1;
-    while (true) {
-      cursor = skipWhite(src, cursor);
-      if (cursor >= src.length) break;
-      if (src.charCodeAt(cursor) === CHAR_RIGHT_BRACKET) {
-        cursor++;
-        break;
-      }
-      const item = parseValue(src, cursor, depth + 1);
-      if (item.end <= cursor) break;
-      cursor = item.end;
-      items.push(item.value);
-    }
-    return { value: { kind: 'array', items }, end: cursor };
-  }
-  if (code === CHAR_LEFT_PAREN) {
-    const end = endOfLiteralString(src, pos);
-    return { value: { kind: 'string', value: src.slice(pos + 1, end - 1) }, end };
-  }
-  if (code === CHAR_LESS) {
-    const close = src.indexOf('>', pos);
-    const end = close === -1 ? src.length : close + 1;
-    return { value: { kind: 'string', value: src.slice(pos + 1, end - 1) }, end };
-  }
-  if (code === CHAR_SLASH) {
-    let end = pos + 1;
-    while (isRegular(src.charCodeAt(end))) end++;
-    return { value: { kind: 'name', value: decodeNameEscapes(src.slice(pos + 1, end)) }, end };
-  }
-  if (isDigit(code) || code === CHAR_PLUS || code === CHAR_MINUS || code === CHAR_DOT) {
-    let end = pos + 1;
-    while (isDigit(src.charCodeAt(end)) || src.charCodeAt(end) === CHAR_DOT) end++;
-    const text = src.slice(pos, end);
-    const number = Number(text);
-    if (/^\d+$/.test(text) && text.length <= MAX_OBJECT_NUMBER_DIGITS) {
-      const refEnd = referenceTailEnd(src, end);
-      if (refEnd !== -1) return { value: { kind: 'ref', num: number }, end: refEnd };
-    }
-    return { value: Number.isNaN(number) ? 0 : number, end };
-  }
-  let end = pos;
-  while (isRegular(src.charCodeAt(end))) end++;
-  if (end === pos) return { value: null, end: pos + 1 };
-  const word = src.slice(pos, end);
-  if (word === 'true') return { value: true, end };
-  if (word === 'false') return { value: false, end };
-  if (word === 'null') return { value: null, end };
-  return { value: { kind: 'keyword', value: word }, end };
-}
-
-function isName(value: PdfValue | undefined, name?: string): value is PdfName {
-  return typeof value === 'object' && value !== null && value.kind === 'name' && (name === undefined || value.value === name);
-}
-function isDict(value: PdfValue | undefined): value is PdfDict {
-  return typeof value === 'object' && value !== null && value.kind === 'dict';
-}
-function isArray(value: PdfValue | undefined): value is PdfArray {
-  return typeof value === 'object' && value !== null && value.kind === 'array';
-}
-function isRef(value: PdfValue | undefined): value is PdfRef {
-  return typeof value === 'object' && value !== null && value.kind === 'ref';
-}
 
 /** Integer at the start of an object's body, or null when the body is not a plain non-negative integer. */
 function leadingInteger(src: string, from: number): number | null {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { InlinePictureCollector, planPictureDecoding } from '../src/lib/conversions/pdf-picture-guard';
 import { assertPdfStreamsWithinLimits } from '../src/lib/conversions/pdf-stream-guard';
+import { expectNoHang } from './helpers/timing';
 
 /**
  * Which definition of an object number the picture check reads (#783, row of #887). pdf.js does not take the last definition
@@ -288,7 +289,7 @@ describe('a trailer that no cross-reference section leads to', () => {
 });
 
 describe('a cross-reference that leads into the same bytes again and again', () => {
-  it('is refused at once: 20,000 entries at fake headers inside one unterminated string would parse the same two megabytes 20,000 times', () => {
+  it('is refused instead of read: 20,000 entries at fake headers inside one unterminated string would parse the same two megabytes 20,000 times', async () => {
     const writer = new Writer();
     writer.page('raw');
     const entries = 20_000;
@@ -296,8 +297,6 @@ describe('a cross-reference that leads into the same bytes again and again', () 
     const filler = 'a'.repeat(80);
     for (let index = 0; index < entries; index++) writer.offsets.set(firstFake + index, writer.raw(`${firstFake + index} 0 obj\n<< /X (${filler}`));
     const pdf = finishWithTable(writer);
-    const started = performance.now();
-    expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(/same bytes again and again/);
-    expect(performance.now() - started).toBeLessThan(5_000);
+    await expectNoHang('20,000 entries into one string', () => expect(() => assertPdfStreamsWithinLimits(pdf, () => {})).toThrow(/same bytes again and again/));
   });
 });

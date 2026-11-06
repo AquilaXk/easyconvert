@@ -31,11 +31,11 @@ export interface Vp9Workload {
 /**
  * Megapixels the good deadline encodes per CPU second for a picture of 1920x1080 or more, tone mapping and decoding of a 10-bit
  * source included, and the exponent by which the rate falls for a smaller picture: rate = 14 x (pixels / 1920x1080)^0.4. A
- * picture's cost per pixel falls with its size (the same footage, taken from the corpus clips scaled to 4K, 1080p, 720p, 480p,
- * 360p and 240p, gives 26, 20, 16, 11, 9 and 5.5 megapixels per CPU second), and the first estimate of a flat 15 (one clip,
- * 1,797 frames of 1080p in 241 CPU seconds) was above the measured rate for 16 of 27 corpus points, all of them smaller
- * pictures or slower footage. The curve is under the wall-clock rate of every size measured on two cores (docs/policy-decisions.md,
- * the entry that records the corpus table), and flat above 1080p, where larger pictures were measured faster.
+ * picture's cost per pixel falls with its size (one corpus clip scaled to 4K, 1080p, 720p, 480p and 240p gives 26, 20, 16, 11 and
+ * 5.5 megapixels per CPU second). The first estimate, a flat 15 from one clip (1,797 frames of 1080p in 241 CPU seconds), was
+ * above the measured wall-clock rate on two cores for 19 of 27 corpus points, all of them smaller pictures or slower footage.
+ * The curve is under every point measured on two cores (docs/policy-decisions.md, entry 167 holds the corpus table), and flat
+ * above 1080p, where larger pictures were measured faster.
  */
 const GOOD_MEGAPIXELS_PER_CPU_SECOND_AT_1080P = 14;
 const REFERENCE_PIXELS_PER_FRAME = 1920 * 1080;
