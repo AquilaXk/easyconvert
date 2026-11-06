@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { PHOTOMETRIC, RAW_SIZE, TAG, TYPE, buildTiff, imageEntries, minimalDng, withIfd0Values } from './helpers/dng-builder';
+import { PHOTOMETRIC, RAW_SIZE, TAG, TYPE, buildTiff, dngVersionEntry, imageEntries, minimalDng, withIfd0Values } from './helpers/dng-builder';
 import { withBinaryAt } from './helpers/native-tools';
 import { rawSamplePath, skipWithoutRawSamples, skipWithoutTools } from './helpers/strict-skip';
 
@@ -50,6 +50,8 @@ describe('a camera file whose decoder warns about samples outside the stated bit
   for (const target of ['jpg', 'png']) {
     it.skipIf(noTool)(`the Samsung Galaxy S23 DNG is developed to ${target} in full and the result carries the warning`, async () => {
       const bytes = s23();
+      // The independent reader of the tag: the file carries the DNGVersion the warning is accepted on.
+      expect(execFileSync(requireOracleTool('exiftool'), ['-s3', '-DNGVersion', '-'], { input: bytes, encoding: 'utf8' }).trim()).toBe('1.6.0.0');
       const result = await dispatchConversion(bytes, 'dng', target, {}, 'samsung-s23.dng');
       expect(result.engineUsed).toBe('native-raw');
       expect(result.metadata?.warnings).toEqual([expect.stringMatching(WARNING_PATTERN)]);
@@ -87,6 +89,35 @@ describe('a camera file whose decoder warns about samples outside the stated bit
     const error = await dispatchConversion(padded, 'dng', 'jpg', {}, 'samsung-s23.dng').catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(RawDecodeError);
     expect((error as RawDecodeError).message).toMatch(/\.dng file is truncated: the decoded image ends in repeated filler rows/);
+  });
+});
+
+/**
+ * LibRaw takes a file for a DNG when a directory carries tag 0xC612 (`dng_version` set by `parse_tiff_ifd`, src/metadata/tiff.cpp lines 917 to
+ * 921 of 0.21.4) and the four bytes are not all zero: `apply_tiff` reads the raw image from the directory only `if (dng_version)` (line 1622),
+ * and a file without it goes through the fixed-size tables, `parse_smal` and the other fallbacks of `identify`, whose strips this engine's
+ * check of the DNG directory does not model. The `.dng` name proves nothing of that, so the line is accepted only after the file's own tag.
+ */
+describe('a decoder line about corrupted data for a file that is named .dng', () => {
+  const line = '"$input: data corrupted at 3"';
+  const stubbed = (name: string) => decoderStub(name, decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), line);
+
+  it.each([
+    ['carries no DNGVersion tag', null],
+    ['carries a DNGVersion of four zero bytes, which LibRaw reads as no DNG', [0, 0, 0, 0]],
+  ])('is refused when the file %s, though its raw image is whole', async (_name, dngVersion) => {
+    const error = await convertWith(stubbed(`version-${String(dngVersion)}`), minimalDng(DNG_STRIP_BYTES, undefined, { dngVersion }));
+    expect(error).toBeInstanceOf(RawDecodeError);
+    expect((error as RawDecodeError).message).toMatch(/reported corrupted data in the \.dng file, and the file cannot be shown to be whole: it carries no DNGVersion tag/);
+  });
+
+  it.each([
+    ['DNGVersion 1.4.0.0', [1, 4, 0, 0]],
+    ['the lowest nonzero DNGVersion, 0.0.0.1, which LibRaw also takes for a DNG', [0, 0, 0, 1]],
+  ])('is developed with its warning when the file carries %s', async (_name, dngVersion) => {
+    const result = await convertWith(stubbed(`versioned-${String(dngVersion)}`), minimalDng(DNG_STRIP_BYTES, undefined, { dngVersion }));
+    expect(result).not.toBeInstanceOf(Error);
+    expect((result as { metadata?: { warnings?: string[] } }).metadata?.warnings).toEqual([expect.stringMatching(/corrupted data at byte 3 of the file/)]);
   });
 });
 
@@ -131,7 +162,7 @@ describe('what the decoder prints decides whether its image is developed', () =>
   it('refuses the line for a DNG whose full-resolution IFD0 is no raw image and whose raw SubIFD is cut inside its strip', async () => {
     const stub = decoderStub('cut-subifd', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), '"$input: data corrupted at 3"');
     const file = buildTiff(4096, [
-      { at: 8, entries: [...imageEntries([[2000, 1000]], { photometric: PHOTOMETRIC.yCbCr }), { tag: TAG.subIfds, type: TYPE.ifd, values: [200] }] },
+      { at: 8, entries: [...imageEntries([[2000, 1000]], { photometric: PHOTOMETRIC.yCbCr }), { tag: TAG.subIfds, type: TYPE.ifd, values: [200] }, dngVersionEntry()] },
       { at: 200, entries: imageEntries([[3000, 1200]]) },
     ]);
     const error = await convertWith(stub, file);
@@ -142,17 +173,17 @@ describe('what the decoder prints decides whether its image is developed', () =>
   it.each([
     ['a picture the size of a preview of its raw image', decodedTiff(WIDTH / 2, GOOD_ROWS / 2, GOOD_ROWS / 2), DNG_BYTES, /its raw image is not the size of the decoded picture/],
     ['a file that is no classic TIFF', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), bigTiff(), /the file is not a classic TIFF/],
-    ['a DNG that lists no raw image', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), buildTiff(4096, [{ at: 8, entries: imageEntries([[200, 100]], { photometric: PHOTOMETRIC.yCbCr }) }]), /it lists no CFA or Linear Raw image/],
+    ['a DNG that lists no raw image', decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS), buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]], { photometric: PHOTOMETRIC.yCbCr }), dngVersionEntry()] }]), /it lists no CFA or Linear Raw image/],
     [
       'a DNG with an entry through which the decoder reads a directory the check does not follow',
       decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS),
-      buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]]), { tag: TAG.hasselblad, type: TYPE.long, values: [300] }] }]),
+      buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]]), { tag: TAG.hasselblad, type: TYPE.long, values: [300] }, dngVersionEntry()] }]),
       /it holds an entry through which the decoder reads a directory this check does not follow/,
     ],
     [
       'a DNG whose ActiveArea runs backwards',
       decodedTiff(WIDTH, GOOD_ROWS, GOOD_ROWS),
-      buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]]), { tag: TAG.activeArea, type: TYPE.long, values: [100, 0, 50, 64], at: 300 }] }]),
+      buildTiff(4096, [{ at: 8, entries: [...imageEntries([[200, 100]]), { tag: TAG.activeArea, type: TYPE.long, values: [100, 0, 50, 64], at: 300 }, dngVersionEntry()] }]),
       /its ActiveArea is negative or wider or taller than 65535/,
     ],
   ])('refuses the line for %s, saying why it could not be checked', async (_name, decoded, input, reason) => {

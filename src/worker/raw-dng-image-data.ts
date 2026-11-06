@@ -72,7 +72,7 @@ import { RawDecodeError } from '../lib/types';
 
 /** What the check found: `whole`, or why the DNG's raw image cannot be shown to be in the file. */
 export type DngRawImageData =
-  | 'whole' | 'not-classic-tiff' | 'no-raw-image' | 'unmodelled-layout' | 'unreadable-layout' | 'unreadable-area' | 'dimensions' | 'outside-file';
+  | 'whole' | 'not-classic-tiff' | 'no-dng-version' | 'no-raw-image' | 'unmodelled-layout' | 'unreadable-layout' | 'unreadable-area' | 'dimensions' | 'outside-file';
 
 export interface ImageSize {
   width: number;
@@ -514,14 +514,25 @@ function refuseOtherParsers(reader: TiffReader): void {
   if (head.startsWith(CIFF_SIGNATURE, CIFF_SIGNATURE_AT)) refuse();
 }
 
+export interface DngRawImageDataOptions {
+  /**
+   * Refuse a file that carries no DNGVersion (`no-dng-version`). LibRaw reads the raw image from the directory only for a file whose
+   * tag 0xC612 left `dng_version` nonzero (`apply_tiff`, src/metadata/tiff.cpp line 1622; the tag sets it at lines 917 to 921, as
+   * `walk.dngVersion` here); any other file reaches the fixed-size tables, `parse_smal` and the other fallbacks of `identify`
+   * (src/metadata/identify.cpp), whose raw data this walk does not model, so the line the decoder printed says nothing of its strips.
+   */
+  requireDngVersion?: boolean;
+}
+
 /** Whether the DNG at `filePath` holds every strip or tile of the raw image LibRaw develops into `decoded`, the picture its decoder wrote. */
-export function dngRawImageData(filePath: string, decoded: ImageSize): DngRawImageData {
+export function dngRawImageData(filePath: string, decoded: ImageSize, { requireDngVersion = false }: DngRawImageDataOptions = {}): DngRawImageData {
   const fd = fs.openSync(filePath, 'r');
   try {
     const reader = openTiff(fd);
     if (reader === null) return 'not-classic-tiff';
     refuseOtherParsers(reader);
-    const { directories, pixelAspect } = walkDirectories(reader);
+    const { directories, pixelAspect, dngVersion } = walkDirectories(reader);
+    if (requireDngVersion && dngVersion === 0) return 'no-dng-version';
     const raw = directories.find((directory) => isRawImage(reader, directory));
     if (raw === undefined) return 'no-raw-image';
     const size = rawSize(reader, raw);
@@ -539,6 +550,7 @@ export function dngRawImageData(filePath: string, decoded: ImageSize): DngRawIma
 /** Why a DNG that printed the line is refused, for each finding of `dngRawImageData` but `whole`. */
 const UNCHECKED_DNG_REASONS: Readonly<Record<Exclude<DngRawImageData, 'whole' | 'outside-file'>, string>> = {
   'not-classic-tiff': 'the file is not a classic TIFF',
+  'no-dng-version': 'it carries no DNGVersion tag (or one of four zero bytes), so the decoder does not read it as a DNG',
   'no-raw-image': 'it lists no CFA or Linear Raw image the decoder develops',
   'unmodelled-layout': 'it holds an entry through which the decoder reads a directory this check does not follow',
   'unreadable-area': 'its ActiveArea is negative or wider or taller than 65535',

@@ -169,7 +169,7 @@ export interface DecodedRaw {
 export function assertDecodedRawWhole(decoded: DecodedRaw): void {
   const { src, inputPath, decodedPath, layout, warned } = decoded;
   if (warned) {
-    const finding = dngRawImageData(inputPath, layout);
+    const finding = dngRawImageData(inputPath, layout, { requireDngVersion: true });
     if (finding !== 'whole') throw dngRefusal(finding, src);
   }
   if (hasRepeatedTail(decodedPath, layout) || (warned && endsInRepeatedRows(decodedPath, layout))) {

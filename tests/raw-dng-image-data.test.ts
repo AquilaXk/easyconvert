@@ -590,3 +590,37 @@ describe('an entry through which LibRaw reads a directory the walk does not foll
     expect(check(file('APCCDS'))).toBe('whole');
   });
 });
+
+describe('a DNG is a file whose directories carry a DNGVersion, when the check is asked for it', () => {
+  function checkVersioned(file: Buffer): string {
+    written += 1;
+    const filePath = path.join(directory, `versioned-${written}.dng`);
+    writeFileSync(filePath, file);
+    return dngRawImageData(filePath, RAW_SIZE, { requireDngVersion: true });
+  }
+  const withVersion = (...bytes: number[]) => buildTiff(SIZE, [{ at: 8, entries: [...imageEntries([[400, 100]]), dngVersion(...bytes)] }]);
+
+  it('takes a version in IFD0, in either byte order, and any version that is not four zero bytes', () => {
+    expect(checkVersioned(withVersion(1, 4, 0, 0))).toBe('whole');
+    expect(checkVersioned(withVersion(0, 0, 0, 1))).toBe('whole');
+    expect(checkVersioned(buildTiff(SIZE, [{ at: 8, entries: [...imageEntries([[400, 100]]), dngVersion(1, 4, 0, 0)] }], { little: false }))).toBe('whole');
+  });
+
+  it('takes a version that sits in a SubIFD, as `dng_version` of LibRaw is kept across the directories it reads', () => {
+    const file = buildTiff(SIZE, [preview(8, 0, [subIfds([200], 150)]), { at: 200, entries: [...imageEntries([[400, 100]]), dngVersion(1, 6, 0, 0)] }]);
+    expect(checkVersioned(file)).toBe('whole');
+  });
+
+  it.each([
+    ['no tag', imageEntries([[400, 100]])],
+    ['four zero bytes', [...imageEntries([[400, 100]]), dngVersion(0, 0, 0, 0)]],
+    ['a version zeroed by a later tag, as LibRaw shifts the last four bytes in', [...imageEntries([[400, 100]]), dngVersion(1, 4, 0, 0), dngVersion(0, 0, 0, 0)]],
+  ])('refuses a file with %s, which the decoder does not read as a DNG', (_, entries) => {
+    expect(checkVersioned(buildTiff(SIZE, [{ at: 8, entries }]))).toBe('no-dng-version');
+  });
+
+  it('leaves the other findings to a file that has no version only when the check is not asked for', () => {
+    expect(check(buildTiff(SIZE, [{ at: 8, entries: imageEntries([[400, 100]]) }]))).toBe('whole');
+    expect(checkVersioned(buildTiff(SIZE, [{ at: 8, entries: imageEntries([[400, 100]]) }]))).toBe('no-dng-version');
+  });
+});
