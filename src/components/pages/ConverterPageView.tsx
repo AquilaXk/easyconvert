@@ -13,9 +13,7 @@ import { otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { offersConversion, type ParsedSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
-import { formatCategoryLabel } from '@/components/converter/format-specs';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
-import { ConverterBreadcrumb } from '@/components/converter/ConverterBreadcrumb';
 import { FormatCards } from '@/components/converter/FormatCards';
 import { CategoryConverters, FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
@@ -24,7 +22,6 @@ import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlug; dailyLimit: number }>) {
   const locale = useLocale();
   const tSlug = useTranslations('slugPages');
-  const tDetail = useTranslations('formatDetail');
   const copy = localizeSlugCopy(tSlug, parsed, locale);
   const totalFormatCount = REGISTRY_STATS.formatCount;
 
@@ -65,21 +62,9 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
     [targetForReverse]
   );
 
-  const categoryName = sourceFormatRegistry.category;
-  const categoryLabel = formatCategoryLabel(tDetail, categoryName);
-
   return (
     <div className="flex flex-col min-h-screen">
       <Header />
-
-      <ConverterBreadcrumb
-        categoryName={categoryName}
-        categoryLabel={categoryLabel}
-        srcKey={srcKey}
-        tgtKey={tgtKey}
-        isCategorySlug={isCategorySlug}
-        isPair={isPair}
-      />
 
       <main id="main-content" className="flex-1">
         {queue.length > 0 ? (

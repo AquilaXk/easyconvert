@@ -5,7 +5,6 @@ import { createElement, type ComponentType } from 'react';
 import { CATEGORY_WORDS, type CategoryWord } from '../src/lib/category-words';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
 import Footer from '../src/components/Footer';
 import { HomeHero } from '../src/components/Hero';
@@ -56,16 +55,7 @@ const noop = () => undefined;
 const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
 const classAttr = (element: DomElement | undefined) => (element ? attrOf(element, 'class') : null);
 
-const FOOTER_SECTION_HEADINGS = [
-  'Video Converter',
-  'Audio Converter',
-  'Image Converter',
-  'Document & Ebook',
-  'Archive & Compression',
-  'Data & Unit Tools',
-  'Web Apps',
-  'Client & Edge Tools',
-];
+const FOOTER_SECTION_HEADINGS = ['Company', 'Resources', 'Legal', 'Contact'];
 
 describe('Redesign & Free Static Architecture Verification', () => {
   it('verifies obsolete pricing page route has been completely eliminated', () => {
@@ -106,8 +96,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'Dashboard', href: '/dashboard' },
       { text: 'English', href: '/' },
       { text: '한국어', href: '/ko' },
-      { text: 'Log In', href: '/auth' },
-      { text: 'Sign Up', href: '/auth?tab=register' },
+      { text: 'Log in', href: '/auth' },
+      { text: 'Sign up', href: '/auth?tab=register' },
     ]);
     expect(presentIn(hrefsOf(header), ['/login', '/register'])).toEqual([]);
 
@@ -139,19 +129,16 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // Obsolete pricing and api links should not exist
     expect(hrefs.filter((href) => href.includes('/pricing') || href.includes('/api/v2'))).toEqual([]);
 
-    // Categorized converter directory headings
+    // Four columns of links, and no directory of conversions
     expect(headings(footer)).toEqual(FOOTER_SECTION_HEADINGS);
+    expect(hrefs.filter((href) => /-to-|-converter$/.test(href))).toEqual([]);
+    expect(presentIn(hrefs, ['/status', '/unit-converter'])).toEqual([]);
 
-    // Key conversion routes
-    expect(
-      missingFrom(hrefs, ['/mp4-to-mp3', '/jpg-to-pdf', '/pdf-to-docx', '/mp4-to-gif', '/heic-to-jpg', '/rar-to-zip'])
-    ).toEqual([]);
-
-    // Privacy badge and copyright
+    // The copyright is the only line besides the links; the claim of the upload card is not repeated
     const text = visibleText(footer);
-    expect(text).toMatch(/Encrypted transfer · Files deleted automatically/);
     expect(text).toMatch(/© 2026 EasyConvert\.com/);
-    expect(missingFrom(hrefs, ['/accessibility', '/api-docs'])).toEqual([]);
+    expect(text).not.toMatch(/Encrypted transfer/);
+    expect(missingFrom(hrefs, ['/accessibility', '/api-docs', '/privacy', '/terms', '/contact'])).toEqual([]);
   });
 
   it('verifies the frequent conversions of every category are supported pairs, and the home page has no popular-conversion cards', () => {
@@ -211,17 +198,12 @@ describe('Redesign & Free Static Architecture Verification', () => {
     }
   });
 
-  it('verifies footer directory grid uses balanced responsive layout with status link', () => {
+  it('verifies the footer sets its links in four columns, none of them out in bold', () => {
     const footer = render(Footer, {});
 
-    expect(links(footer).filter((l) => l.href === '/status')).toEqual([{ text: 'Status', href: '/status' }]);
-    // Eight directory columns on a wide screen, halving down to two on a phone.
-    const grids = allElements(footer).filter((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('xl:grid-cols-8'));
-    expect(grids.map((g) => classAttr(g))).toEqual([
-      expect.stringContaining('grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8'),
-    ]);
-    expect(allElements(grids[0]).filter((e) => e.tagName === 'h2' || e.tagName === 'h3' || e.tagName === 'h4')).toHaveLength(FOOTER_SECTION_HEADINGS.length);
-
+    const columns = allElements(footer).filter((e) => e.tagName === 'h2').map((h) => visibleText(h));
+    expect(columns).toEqual(FOOTER_SECTION_HEADINGS);
+    expect(allElements(footer).filter((e) => e.tagName === 'a' && classTokens(e).has('font-bold'))).toEqual([]);
   });
 
   it('verifies Hero implements workbench architecture with Select File CTA and interactive format tiles', () => {
@@ -232,20 +214,16 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(selectFile).toHaveLength(1);
     expect(classAttr(selectFile[0])).toMatch(/\bbtn-primary\b/);
     expect(select(hero, 'button', 'aria-haspopup', 'menu').map((b) => attrOf(b, 'aria-label'))).toEqual(['More file sources']);
-    expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here', `${REGISTRY_STATS.formatCount} formats`, 'What do you want to convert?'])).toEqual([]);
+    expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here'])).toEqual([]);
 
-    // The home page offers source chips, each a button named by what it does, not the source and target tiles of a converter page.
-    const isChip = (b: DomElement) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false;
-    const chips = select(hero, 'button').filter(isChip);
-    expect(chips.map((chip) => visibleText(chip)).slice(0, 5)).toEqual(['PDF', 'DOCX', 'DOC', 'JPG', 'PNG']);
-    // Twenty chips fill the five-column grid (four columns on a phone) with no short last row.
-    expect(chips).toHaveLength(20);
+    // The home page holds no row of trust claims and no format chips in the upload card, and no source and target tiles.
+    expect(phrasesPresent(text, ['Encrypted transfers', 'No sign-up needed', 'What do you want to convert?'])).toEqual([]);
+    expect(select(hero, 'button').filter((b) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false)).toHaveLength(0);
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
 
     const pairPage = renderSlug('png-to-jpg');
     expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
     expect(select(pairPage, 'button', 'data-testid', 'hero-target-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Target format JPG']);
-    expect(select(pairPage, 'button').filter(isChip)).toHaveLength(0);
 
     expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
     expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
@@ -261,21 +239,10 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(presentIn(features, ['bg-surface', 'shadow-elev-1', 'shadow-elev-2'])).toEqual([]);
   });
 
-  it('verifies Dynamic Converter Page implements dynamic breadcrumb navigation', () => {
-    const page = renderSlug('pdf-to-docx');
-    const breadcrumb = select(page, 'nav', 'aria-label', 'Breadcrumb');
-
-    expect(breadcrumb).toHaveLength(1);
-    // Home > category > source format > the pair; the last item is the current page.
-    const items = allElements(breadcrumb[0]).filter((e) => e.tagName === 'li');
-    expect(items.map((li) => [visibleText(li), attrOf(li, 'aria-current')])).toEqual([
-      ['Home', null],
-      ['Document', null],
-      ['pdf Converter', null],
-      ['pdf to docx', 'page'],
-    ]);
-    // A home icon, then a chevron between each pair of items.
-    expect(select(breadcrumb[0], 'svg')).toHaveLength(4);
+  it('verifies converter pages carry no breadcrumb', () => {
+    for (const slug of ['pdf-to-docx', 'pdf-converter', 'document-converter']) {
+      expect(select(renderSlug(slug), 'nav', 'aria-label', 'Breadcrumb'), slug).toHaveLength(0);
+    }
   });
 
   it('verifies a pair page holds its title, upload prompt, two format cards and no list of related conversions, and nothing that explains how to convert', () => {
@@ -366,26 +333,18 @@ describe('Redesign & Free Static Architecture Verification', () => {
     }
   );
 
-  // The category words are the categories of the registry, so the breadcrumb of a category page ends on its own word.
+  // The category words are the categories of the registry; a category page lists its formats, not the card of one of them.
   const CATEGORY_WORD_LIST = Object.keys(CATEGORY_WORDS) as CategoryWord[];
-  const BREADCRUMB_LABEL = { en: 'Breadcrumb', ko: '현재 위치' } as const;
 
-  it.each(['en', 'ko'] as const)(
-    'verifies a slug that names a category shows no format card, and a breadcrumb that ends on that category (%s)',
-    (locale) => {
-      expect(CATEGORY_WORD_LIST.length).toBeGreaterThan(0);
-      for (const word of CATEGORY_WORD_LIST) {
-        const slug = `${word}-converter`;
-        expect(formatCards(slug, locale).exists, slug).toBe(false);
-        const breadcrumb = select(renderSlug(slug, locale), 'nav', 'aria-label', BREADCRUMB_LABEL[locale])[0];
-        expect(links(breadcrumb).map((link) => link.href.replace(/^\/ko(?=\/|$)/, '') || '/'), slug).toEqual(['/']);
-        const current = select(breadcrumb, 'li').filter((item) => attrOf(item, 'aria-current') === 'page');
-        expect(current.map(visibleText), slug).toEqual([testMessages(locale).formatDetail.categories[word as 'video']]);
-      }
+  it.each(['en', 'ko'] as const)('verifies a slug that names a category shows no format card (%s)', (locale) => {
+    expect(CATEGORY_WORD_LIST.length).toBeGreaterThan(0);
+    for (const word of CATEGORY_WORD_LIST) {
+      const slug = `${word}-converter`;
+      expect(formatCards(slug, locale).exists, slug).toBe(false);
     }
-  );
+  });
 
-  // A pair of two names of one format converts nothing, so every part of the page (title, meta, tiles, breadcrumb, card and
+  // A pair of two names of one format converts nothing, so every part of the page (title, meta, tiles, card and
   // both lists) describes the one format the slug starts from, as the page of that format does.
   const ALIAS_PAIR_HEADINGS = {
     en: (name: string) => [`${name} Converter`, 'Select your file to convert', `Convert from ${name}`, `Convert to ${name}`],

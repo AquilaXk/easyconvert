@@ -64,8 +64,8 @@ function pick(host: HTMLElement, files: File[]) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-/** The outer card of the drop zone: its padding around the dashed area is part of the target. */
-const uploadCard = (host: HTMLElement) => host.querySelector('.border-dashed')!.parentElement!;
+/** The card of the drop zone: its padding around the heading and button is part of the target. */
+const uploadCard = (host: HTMLElement) => host.querySelector('h2')!.parentElement!;
 
 describe('the home hero', () => {
   it('hands on picked, dropped and pasted files with no target, and a drop on the card padding is not left to the browser', async () => {

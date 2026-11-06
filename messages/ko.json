@@ -292,11 +292,6 @@
     }
   },
   "converterPage": {
-    "breadcrumb": {
-      "label": "현재 위치",
-      "home": "홈",
-      "pair": "{src} → {tgt}"
-    },
     "formatConverter": "{format} 변환기",
     "formatCardsLabel": "형식",
     "crossLinks": {
@@ -606,35 +601,16 @@
     "extensionsListed": "{count}개"
   },
   "footer": {
-    "categories": {
-      "video": "동영상 변환기",
-      "audio": "오디오 변환기",
-      "image": "이미지 변환기",
-      "documentEbook": "문서·전자책",
-      "archive": "압축 파일",
-      "dataUnits": "데이터·단위 도구",
-      "webApps": "웹 도구",
-      "clientEdge": "브라우저 처리 도구"
+    "navLabel": "바닥글",
+    "columns": {
+      "company": "회사",
+      "resources": "자료",
+      "legal": "약관과 정책",
+      "contact": "문의"
     },
-    "secondaryNavLabel": "바닥글 보조 메뉴",
-    "copyright": "© 2026 EasyConvert.com",
-    "assurance": "암호화 전송 · 파일 자동 삭제"
+    "copyright": "© 2026 EasyConvert.com"
   },
   "formatDetail": {
-    "categories": {
-      "audio": "오디오 미디어",
-      "video": "동영상 미디어",
-      "image": "래스터 이미지",
-      "vector": "벡터 그래픽",
-      "document": "문서",
-      "spreadsheet": "스프레드시트",
-      "presentation": "슬라이드 자료",
-      "archive": "압축 파일",
-      "ebook": "전자책",
-      "font": "벡터 글꼴",
-      "cad": "CAD 도면",
-      "data": "구조화 데이터"
-    },
     "fallbackName": "{ext} 형식",
     "fallbackDesc": "{name} 형식은 여러 운영체제와 변환 도구에서 널리 지원하는 파일 형식이에요."
   },
@@ -784,19 +760,6 @@
       "targetLabel": "대상 형식 {format}",
       "fromTitle": "원본 형식 선택",
       "toTitle": "대상 형식 선택"
-    },
-    "chips": {
-      "heading": "어떤 형식을 변환할까요?",
-      "back": "뒤로",
-      "targets": "<format>{src}</format> 파일을 다음 형식으로 변환:",
-      "pick": "{format}, 변환할 형식 고르기",
-      "change": "{format}, 형식 바꾸기",
-      "allFormats": "모든 형식 보기"
-    },
-    "trust": {
-      "formats": "{count, number}개 형식 지원",
-      "encrypted": "암호화 전송",
-      "noSignup": "회원가입 없이 사용"
     }
   },
   "home": {
@@ -821,10 +784,7 @@
       "intro": "<code>POST /api/v1/convert</code>로 파일 하나의 변환을 자동화하거나, <code>POST /api/v1/jobs</code>로 여러 단계의 DAG 파이프라인을 제출하고 서명된 웹훅으로 결과를 받을 수 있어요.",
       "copiedAnnouncement": "API 예시를 클립보드에 복사했어요",
       "copyLabel": "API 예시 복사",
-      "copied": "복사됨",
-      "copy": "복사",
-      "reference": "OpenAPI 3.1 문서",
-      "manageKeys": "API 키 관리"
+      "explore": "API 살펴보기"
     }
   },
   "infoPages": {
@@ -1173,36 +1133,12 @@
     "audioConverter": "오디오 변환기",
     "archiveConverter": "압축 파일 변환기",
     "spreadsheetConverter": "스프레드시트 변환기",
-    "unitConverter": "단위 변환기",
     "pdfOcr": "PDF OCR",
     "compressPdf": "PDF 압축",
     "mergePdf": "PDF 병합",
-    "systemStatus": "시스템 상태",
     "formats": "파일 형식",
     "apiDocs": "API 문서",
     "dashboard": "대시보드",
-    "mp4Converter": "MP4 변환기",
-    "mp4ToGif": "MP4 → GIF 변환",
-    "movToMp4": "MOV → MP4 변환",
-    "mp3Converter": "MP3 변환기",
-    "mp4ToMp3": "MP4 → MP3 변환",
-    "jpgToPdf": "JPG → PDF 변환",
-    "pdfToJpg": "PDF → JPG 변환",
-    "heicToJpg": "HEIC → JPG 변환",
-    "pdfToWord": "PDF → Word 변환",
-    "epubToPdf": "EPUB → PDF 변환",
-    "documentConverter": "문서 변환기",
-    "rarToZip": "RAR → ZIP 변환",
-    "sevenZipToZip": "7Z → ZIP 변환",
-    "csvToJson": "CSV → JSON 변환",
-    "jsonToCsv": "JSON → CSV 변환",
-    "lbsToKg": "파운드 → 킬로그램 변환",
-    "saveWebsiteAsPdf": "웹사이트 PDF 저장",
-    "imageResizer": "이미지 크기 조정",
-    "websiteScreenshot": "웹사이트 스크린샷",
-    "mp4Remuxer": "MP4 리먹서",
-    "vectorConverter": "벡터 변환기",
-    "securityArchitecture": "보안 구조",
     "aboutUs": "서비스 소개",
     "privacy": "개인정보 처리방침",
     "terms": "이용약관",
@@ -1210,8 +1146,7 @@
     "acceptableUse": "이용 제한 정책",
     "security": "보안",
     "accessibility": "접근성",
-    "contact": "문의",
-    "status": "상태"
+    "contact": "문의"
   },
   "slugPages": {
     "info": {

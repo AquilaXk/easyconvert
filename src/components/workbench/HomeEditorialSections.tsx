@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { ArrowRight, Check, Copy, Lock, Cpu, Clock, Terminal } from 'lucide-react';
+import { ArrowRight, Check, Copy, Lock, Cpu, Clock } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 
 const API_CURL_EXAMPLE = [
@@ -19,48 +19,31 @@ const CODE_TAG = {
   ),
 };
 
+const SECURITY_ITEMS = [
+  { key: 'tls', Icon: Lock },
+  { key: 'sandbox', Icon: Cpu },
+  { key: 'cleanup', Icon: Clock },
+] as const;
+
 export function SecurityDataHandlingCard() {
   const t = useTranslations('home.security');
   return (
-    <div className="border-t border-rule lg:col-span-4 min-w-0 pt-6 sm:pt-7">
-      <h2 className="text-2xl text-ink">
-        {t('heading')}
-      </h2>
-      <p className="mt-1.5 text-sm text-ink-2">
-        {t('intro')}
-      </p>
+    <div className="min-w-0">
+      <h2 className="text-lg sm:text-xl text-ink">{t('heading')}</h2>
+      <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-3">{t('intro')}</p>
 
-      <div className="mt-5 divide-y divide-rule">
-        <div className="py-4 first:pt-0">
-          <div className="flex items-center gap-2 text-sm font-bold text-ink">
-            <Lock className="w-4 h-4 text-accent-ink shrink-0" />
-            <h3>{t('tls.heading')}</h3>
-          </div>
-          <p className="mt-1.5 text-xs text-ink-2 leading-relaxed">
-            {t('tls.body')}
-          </p>
-        </div>
-
-        <div className="py-4">
-          <div className="flex items-center gap-2 text-sm font-bold text-ink">
-            <Cpu className="w-4 h-4 text-accent-ink shrink-0" />
-            <h3>{t('sandbox.heading')}</h3>
-          </div>
-          <p className="mt-1.5 text-xs text-ink-2 leading-relaxed">
-            {t('sandbox.body')}
-          </p>
-        </div>
-
-        <div className="py-4 last:pb-0">
-          <div className="flex items-center gap-2 text-sm font-bold text-ink">
-            <Clock className="w-4 h-4 text-accent-ink shrink-0" />
-            <h3>{t('cleanup.heading')}</h3>
-          </div>
-          <p className="mt-1.5 text-xs text-ink-2 leading-relaxed">
-            {t('cleanup.body')}
-          </p>
-        </div>
-      </div>
+      <ul className="mt-4 space-y-3">
+        {SECURITY_ITEMS.map(({ key, Icon }) => (
+          <li key={key} className="flex gap-3 text-sm leading-5 text-ink-3">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-xs bg-accent/10 text-accent-ink">
+              <Icon aria-hidden="true" className="size-3.5" />
+            </span>
+            <span>
+              <span className="font-medium text-ink">{t(`${key}.heading`)}:</span> {t(`${key}.body`)}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -82,69 +65,38 @@ export function RestApiWorkflowCard() {
   };
 
   return (
-    <div className="border-t border-rule min-w-0 pt-6 sm:pt-7">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="max-w-2xl">
-          <h2 className="text-2xl sm:text-3xl text-ink">
-            {t('heading')}
-          </h2>
-          <p className="mt-1.5 text-sm text-ink-2 leading-relaxed">
-            {t.rich('intro', CODE_TAG)}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-5 rounded-md text-ink border border-rule overflow-hidden">
-        <div className="px-4 py-2 border-b border-rule flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-2 min-w-0 text-xs font-mono text-ink-2">
-            <Terminal className="w-3.5 h-3.5 text-accent-ink shrink-0" />
-            <span className="truncate">POST https://api.easyconvert.com/api/v1/convert</span>
-          </span>
-          <div className="flex items-center shrink-0">
-            <output aria-live="polite" className="sr-only">
-              {copied ? t('copiedAnnouncement') : ''}
-            </output>
-            <button
-              type="button"
-              aria-label={t('copyLabel')}
-              onClick={() => {
-                void handleCopy();
-              }}
-              className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-sm text-xs font-medium text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-success" />
-                  <span>{t('copied')}</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>{t('copy')}</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-        <pre className="p-4 text-xs font-mono text-ink overflow-x-auto leading-relaxed">
-          <code>{API_CURL_EXAMPLE}</code>
-        </pre>
-      </div>
-
-      <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Link
-          href="/api-docs"
-          className="btn-primary inline-flex items-center justify-center gap-2 min-h-[44px] px-4 rounded-sm text-sm font-semibold"
-        >
-          <span>{t('reference')}</span>
-          <ArrowRight className="w-4 h-4" />
+    <div className="min-w-0">
+      <h2 className="text-lg sm:text-xl text-ink">{t('heading')}</h2>
+      <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-3">
+        {t.rich('intro', CODE_TAG)}{' '}
+        <Link href="/api-docs" className="inline-flex items-center gap-1 font-medium text-accent-ink hover:underline">
+          <span>{t('explore')}</span>
+          <ArrowRight aria-hidden="true" className="size-3.5" />
         </Link>
-        <Link
-          href="/dashboard"
-          className="inline-flex items-center justify-center min-h-[44px] px-4 rounded-sm border border-rule hover:border-accent text-sm font-medium text-ink transition-colors"
-        >
-          {t('manageKeys')}
-        </Link>
+      </p>
+
+      <div className="group mt-6 border border-rule bg-sunken/40 text-ink">
+        <div className="border-b border-rule bg-canvas/60 px-3 py-2 font-mono text-[11px] uppercase tracking-wider [:lang(ko)_&]:tracking-[0.05em] text-ink-3">
+          POST /api/v1/convert
+        </div>
+        <div className="relative">
+          <output aria-live="polite" className="sr-only">
+            {copied ? t('copiedAnnouncement') : ''}
+          </output>
+          <button
+            type="button"
+            aria-label={t('copyLabel')}
+            onClick={() => {
+              void handleCopy();
+            }}
+            className="absolute right-2 top-2 inline-flex size-7 items-center justify-center rounded-xs border border-rule bg-transparent text-ink-2 transition-colors hover:bg-sunken hover:text-ink cursor-pointer lg:opacity-0 lg:group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            {copied ? <Check aria-hidden="true" className="size-3.5 text-success" /> : <Copy aria-hidden="true" className="size-3.5" />}
+          </button>
+          <pre className="overflow-x-auto px-4 py-3 pr-12 font-mono text-xs leading-[14px] text-ink">
+            <code>{API_CURL_EXAMPLE}</code>
+          </pre>
+        </div>
       </div>
     </div>
   );

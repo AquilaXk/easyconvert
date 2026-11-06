@@ -94,12 +94,12 @@ function FormatDirectoryCard({
   const activeLabel = tCategory(activeCategory.id);
 
   return (
-    <div className="border-t border-rule lg:col-span-8 min-w-0 pt-6 sm:pt-7">
+    <div id="format-catalog" className="lg:col-span-2 min-w-0">
       <div>
-        <h2 className="text-2xl sm:text-3xl text-ink">
+        <h2 className="text-lg sm:text-xl text-ink">
           {t('directoryHeading')}
         </h2>
-        <p className="mt-1.5 text-sm text-ink-2">
+        <p className="mt-3 max-w-xl text-sm leading-relaxed text-ink-3">
           {t('directoryIntro', {
             formats: REGISTRY_STATS.formatCount,
             categories: REGISTRY_STATS.categoryCount,
@@ -184,19 +184,15 @@ export default function Features() {
     REGISTRY_STATS.categories[0];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 space-y-12">
-      <section
-        id="format-catalog"
-        className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
-      >
-        <FormatDirectoryCard
-          activeCategory={activeCategory}
-          onSelectCategory={setSelectedCategory}
-        />
-        <SecurityDataHandlingCard />
-      </section>
-
-      <RestApiWorkflowCard />
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-14 grid grid-cols-1 gap-x-20 gap-y-10 lg:grid-cols-3 items-start">
+      <FormatDirectoryCard
+        activeCategory={activeCategory}
+        onSelectCategory={setSelectedCategory}
+      />
+      <SecurityDataHandlingCard />
+      <div className="lg:col-span-2 min-w-0">
+        <RestApiWorkflowCard />
+      </div>
     </div>
   );
 }
