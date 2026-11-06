@@ -189,6 +189,27 @@ describe('Launch-blocking spoof and parser bounds (#761)', () => {
       expect(isFormatCompatibleWithMagicBytes(makePalmPdbHeader('EmptyBook', 'TEXtREAd', 0), 'pdb')).toBe(false);
       expect(isFormatCompatibleWithMagicBytes(makePalmPdbHeader('UnknownApp', 'ABCD1234', 2), 'pdb')).toBe(false);
       expect(isFormatCompatibleWithMagicBytes(Buffer.alloc(40, 0x41), 'pdb')).toBe(false);
+      const fullNamePdb = makePalmPdbHeader('Universal Declaration of Human R', 'TEXtTlDc', 4);
+      fullNamePdb.write('Universal Declaration of Human R', 0, 'ascii');
+      expect(isFormatCompatibleWithMagicBytes(fullNamePdb, 'pdb')).toBe(true);
+    });
+
+    it('accepts Zstandard skippable frames, bare BIFF streams, pre-OLE2 Word headers, and HWP 3.0 headers only for their families', () => {
+      const zstdSkippable = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 0x04, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04]);
+      expect(isFormatCompatibleWithMagicBytes(zstdSkippable, 'zst')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(zstdSkippable, 'txt')).toBe(false);
+
+      const bareBiff = Buffer.from([0x09, 0x08, 0x10, 0x00, 0x00, 0x06, 0x05, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'xls')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'txt')).toBe(false);
+
+      const macWord5 = Buffer.from([0xfe, 0x37, 0x00, 0x23, 0, 0, 0, 0, 0, 0]);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'doc')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'txt')).toBe(false);
+
+      const hwp3 = Buffer.from('HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05\x00\x00', 'latin1');
+      expect(isFormatCompatibleWithMagicBytes(hwp3, 'hwp')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(hwp3, 'txt')).toBe(false);
     });
 
     it('isolates .pdf from font headers and restricts font magic bytes to font extensions', () => {

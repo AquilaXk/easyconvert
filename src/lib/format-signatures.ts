@@ -242,9 +242,50 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
   { mime: 'audio/ogg', prefix: [0x4f, 0x67, 0x67, 0x53] },
   { mime: 'application/vnd.apache.parquet', prefix: [0x50, 0x41, 0x52, 0x31] },
   { mime: 'application/postscript', prefix: [0x25, 0x21, 0x50, 0x53] },
+  { mime: 'application/msword', prefix: [0xfe, 0x37, 0x00, 0x23] },
+  { mime: 'application/msword', prefix: [0xfe, 0x37, 0x00, 0x1c] },
+  { mime: 'application/msword', prefix: [0xdb, 0xa5, 0x2d, 0x00] },
+  { mime: 'application/msword', prefix: [0x9b, 0xa5] },
+  { mime: 'application/msword', prefix: [0x31, 0xbe, 0x00, 0x00] },
+  {
+    mime: 'application/x-hwp',
+    prefix: [
+      0x48, 0x57, 0x50, 0x20, 0x44, 0x6f, 0x63, 0x75, 0x6d, 0x65, 0x6e, 0x74, 0x20, 0x46, 0x69, 0x6c, 0x65, 0x20,
+      0x56, 0x33, 0x2e, 0x30, 0x30, 0x20, 0x1a, 0x01, 0x02, 0x03, 0x04, 0x05,
+    ],
+  },
   { mime: 'application/x-elf', prefix: [0x7f, 0x45, 0x4c, 0x46] },
   { mime: 'application/x-dosexec', prefix: [0x4d, 0x5a] },
 ];
+
+const ZSTD_SKIPPABLE_HEADER_BYTES = 8;
+const ZSTD_SKIPPABLE_FIRST_BYTE_MASK = 0xf0;
+const ZSTD_SKIPPABLE_FIRST_BYTE_PREFIX = 0x50;
+const ZSTD_SKIPPABLE_MAGIC_TAIL = [0x2a, 0x4d, 0x18];
+const BIFF_BOF_RECORD_IDS: ReadonlySet<number> = new Set([0x0009, 0x0209, 0x0409, 0x0809]);
+const BIFF_BOF_MIN_LENGTH = 4;
+const BIFF_BOF_MAX_LENGTH = 20;
+
+function isZstdSkippableFrame(buf: Uint8Array): boolean {
+  return (
+    buf.length >= ZSTD_SKIPPABLE_HEADER_BYTES &&
+    (buf[0] & ZSTD_SKIPPABLE_FIRST_BYTE_MASK) === ZSTD_SKIPPABLE_FIRST_BYTE_PREFIX &&
+    startsWithBytes(buf, ZSTD_SKIPPABLE_MAGIC_TAIL, 1)
+  );
+}
+
+function isBiffStream(buf: Uint8Array): boolean {
+  if (buf.length < 4 + BIFF_BOF_MIN_LENGTH) return false;
+  const view = dataView(buf);
+  const recordId = view.getUint16(0, true);
+  const recordLength = view.getUint16(2, true);
+  return (
+    BIFF_BOF_RECORD_IDS.has(recordId) &&
+    recordLength >= BIFF_BOF_MIN_LENGTH &&
+    recordLength <= BIFF_BOF_MAX_LENGTH &&
+    buf.length >= 4 + recordLength
+  );
+}
 
 /**
  * How far into a file the PDF readers look for the `%PDF-` header: pdf.js 6.3.289 `checkHeader` (src/core/document.js lines
@@ -284,7 +325,11 @@ export function refusedWithoutSignature(ext: string, buf: Uint8Array): boolean {
 
 /** The MIME type of the first fixed signature the buffer opens with; undefined when it opens with none. */
 export function sniffFixedSignature(buf: Uint8Array): string | undefined {
-  return FIXED_SIGNATURES.find(({ prefix }) => startsWithBytes(buf, prefix))?.mime;
+  const fixed = FIXED_SIGNATURES.find(({ prefix }) => startsWithBytes(buf, prefix))?.mime;
+  if (fixed !== undefined) return fixed;
+  if (isZstdSkippableFrame(buf)) return 'application/zstd';
+  if (isBiffStream(buf)) return 'application/vnd.ms-excel';
+  return undefined;
 }
 
 /**
@@ -584,7 +629,7 @@ function hasValidPalmDbName(buf: Uint8Array): boolean {
       return false;
     }
   }
-  return seenNul;
+  return true;
 }
 
 function hasPalmDbSignature(buf: Uint8Array, signatures: ReadonlySet<string>): boolean {
