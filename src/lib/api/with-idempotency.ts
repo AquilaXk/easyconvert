@@ -7,6 +7,7 @@ import {
   isValidIdempotencyKey,
   buildScopedKey,
   computeFingerprint,
+  compareCodeUnits,
   hashStream,
   AcquireResult,
 } from './idempotency';
@@ -38,7 +39,7 @@ function normalizeJsonValue(value: unknown): unknown {
   }
   const src = value as Record<string, unknown>;
   const sorted: Record<string, unknown> = Object.create(null);
-  for (const key of Object.keys(src).sort()) {
+  for (const key of Object.keys(src).sort(compareCodeUnits)) {
     if (Object.hasOwn(src, key)) {
       setOwnField(sorted, key, normalizeJsonValue(src[key]));
     }

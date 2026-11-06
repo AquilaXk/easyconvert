@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { readyGatedRedis } from '../redis/when-ready';
+import { MIN_PRODUCTION_SEALING_KEY_LENGTH, secretForms } from '../security/secret-forms';
 
 export type StorageProviderType =
   | 's3'
@@ -134,71 +135,82 @@ function deriveVaultKey(secret: string): Buffer {
   );
 }
 
-function getVaultMasterKey(): Buffer {
+/** Raised when credentials must be sealed but no valid `STORAGE_VAULT_KEY` is configured. Reads are unaffected. */
+export class VaultKeyRequiredError extends Error {
+  readonly code = 'VAULT_KEY_REQUIRED';
+
+  constructor() {
+    super(
+      `STORAGE_VAULT_KEY must be set (at least ${MIN_PRODUCTION_SEALING_KEY_LENGTH} characters) in production to store credentials; stored credentials can still be read.`
+    );
+    this.name = 'VaultKeyRequiredError';
+  }
+}
+
+const DEV_VAULT_MASTER_KEY_SALT = 'easyconvert-dev-vault-master-key-salt';
+
+function deriveDevVaultKey(): Buffer {
+  return crypto.createHash('sha256').update(DEV_VAULT_MASTER_KEY_SALT).digest();
+}
+
+/** The key new credentials are sealed under, or null when production has no valid `STORAGE_VAULT_KEY`. */
+function resolveVaultSealingKey(): Buffer | null {
   const vaultKey = process.env.STORAGE_VAULT_KEY?.trim();
   if (process.env.NODE_ENV === 'production') {
-    if (!vaultKey || vaultKey.length < 32) {
-      throw new Error(
-        'CRITICAL SECURITY ERROR: STORAGE_VAULT_KEY must be set and at least 32 characters long in production.'
-      );
+    return vaultKey && vaultKey.length >= MIN_PRODUCTION_SEALING_KEY_LENGTH ? deriveVaultKey(vaultKey) : null;
+  }
+
+  const secret = vaultKey || process.env.KEY_ENCRYPTION_KEY?.trim() || process.env.JWT_SECRET?.trim();
+  return secret ? deriveVaultKey(secret) : deriveDevVaultKey();
+}
+
+function getVaultMasterKey(): Buffer {
+  const key = resolveVaultSealingKey();
+  if (key === null) {
+    throw new VaultKeyRequiredError();
+  }
+  return key;
+}
+
+/**
+ * Every key a stored record may have been sealed under, the sealing key first when one is valid.
+ * Built from the secrets that are set, whatever their length, so a missing or short
+ * `STORAGE_VAULT_KEY` never stops a read.
+ */
+function buildVaultDecryptionCandidates(): { keys: Buffer[]; hasSealingKey: boolean } {
+  const sealingKey = resolveVaultSealingKey();
+  const derived: Buffer[] = [
+    ...(sealingKey === null ? [] : [sealingKey]),
+    ...[process.env.STORAGE_VAULT_KEY, process.env.KEY_ENCRYPTION_KEY, process.env.JWT_SECRET]
+      .flatMap(secretForms)
+      .map(deriveVaultKey),
+    ...(process.env.NODE_ENV !== 'production' ? [deriveDevVaultKey()] : []),
+  ];
+
+  const seen = new Set<string>();
+  const keys: Buffer[] = [];
+  for (const key of derived) {
+    const hex = key.toString('hex');
+    if (!seen.has(hex)) {
+      seen.add(hex);
+      keys.push(key);
     }
-    return deriveVaultKey(vaultKey);
   }
-
-  const secret =
-    vaultKey ||
-    process.env.KEY_ENCRYPTION_KEY?.trim() ||
-    process.env.JWT_SECRET?.trim();
-
-  if (!secret) {
-    return crypto.createHash('sha256').update('easyconvert-dev-vault-master-key-salt').digest();
-  }
-
-  return deriveVaultKey(secret);
+  return { keys, hasSealingKey: sealingKey !== null };
 }
 
 export function getVaultDecryptionCandidateKeys(): Buffer[] {
-  const primary = getVaultMasterKey();
-  const seen = new Set<string>([primary.toString('hex')]);
-  const keys: Buffer[] = [primary];
-
-  const rawSecrets = [
-    process.env.STORAGE_VAULT_KEY?.trim(),
-    process.env.KEY_ENCRYPTION_KEY?.trim(),
-    process.env.JWT_SECRET?.trim(),
-  ];
-
-  for (const raw of rawSecrets) {
-    if (!raw) continue;
-    if (process.env.NODE_ENV === 'production' && raw.length < 32) continue;
-    const derived = deriveVaultKey(raw);
-    const hex = derived.toString('hex');
-    if (!seen.has(hex)) {
-      seen.add(hex);
-      keys.push(derived);
-    }
-  }
-
-  if (process.env.NODE_ENV !== 'production') {
-    const devFallback = crypto.createHash('sha256').update('easyconvert-dev-vault-master-key-salt').digest();
-    const hex = devFallback.toString('hex');
-    if (!seen.has(hex)) {
-      seen.add(hex);
-      keys.push(devFallback);
-    }
-  }
-
-  return keys;
+  return buildVaultDecryptionCandidates().keys;
 }
 
 function decryptEnvelopeWithCandidateKeys(envelope: StoredCredentialEnvelope): {
   credentials: CustomerStorageCredentials;
-  keyIndex: number;
+  sealedWithCurrentKey: boolean;
 } {
   const iv = Buffer.from(envelope.iv, 'base64');
   const tag = Buffer.from(envelope.tag, 'base64');
   const encryptedData = Buffer.from(envelope.encryptedData, 'base64');
-  const candidateKeys = getVaultDecryptionCandidateKeys();
+  const { keys: candidateKeys, hasSealingKey } = buildVaultDecryptionCandidates();
   let lastError: unknown;
 
   for (let i = 0; i < candidateKeys.length; i++) {
@@ -209,12 +221,12 @@ function decryptEnvelopeWithCandidateKeys(envelope: StoredCredentialEnvelope): {
 
       const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
       const credentials = JSON.parse(decrypted.toString('utf-8')) as CustomerStorageCredentials;
-      return { credentials, keyIndex: i };
+      return { credentials, sealedWithCurrentKey: hasSealingKey && i === 0 };
     } catch (err) {
       lastError = err;
     }
   }
-  throw lastError;
+  throw lastError ?? new Error('[CredentialsVault] No decryption key is configured.');
 }
 
 export class CredentialsVault {
@@ -374,10 +386,10 @@ export class CredentialsVault {
     }
     if (userId && envelope.userId !== userId) return false;
 
-    const { credentials, keyIndex } = decryptEnvelopeWithCandidateKeys(envelope);
-    if (keyIndex === 0) return false;
-
     const masterKey = getVaultMasterKey();
+    const { credentials, sealedWithCurrentKey } = decryptEnvelopeWithCandidateKeys(envelope);
+    if (sealedWithCurrentKey) return false;
+
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', masterKey, iv);
     cipher.setAAD(Buffer.from(envelope.id, 'utf-8'));

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { MIN_PRODUCTION_SEALING_KEY_LENGTH, secretForms } from '../security/secret-forms';
 
 const ENCRYPTION_PREFIX = 'enc:v1:';
 const DEV_SECRET_KEY_SALT = 'easyconvert-dev-secret-key-salt';
@@ -7,56 +8,78 @@ function deriveKey(secret: string): Buffer {
   return crypto.createHash('sha256').update(secret).digest();
 }
 
-function getEncryptionKey(): Buffer {
+/** Raised when new data must be sealed but no valid `KEY_ENCRYPTION_KEY` is configured. Reads are unaffected. */
+export class SecretEncryptionKeyRequiredError extends Error {
+  readonly code = 'SECRET_ENCRYPTION_KEY_REQUIRED';
+
+  constructor() {
+    super(
+      `KEY_ENCRYPTION_KEY must be set (at least ${MIN_PRODUCTION_SEALING_KEY_LENGTH} characters) in production to encrypt new secrets; existing secrets still decrypt.`
+    );
+    this.name = 'SecretEncryptionKeyRequiredError';
+  }
+}
+
+/** The secret new data is sealed under, or null when production has no valid `KEY_ENCRYPTION_KEY`. */
+function resolveSealingSecret(): string | null {
   const kek = process.env.KEY_ENCRYPTION_KEY?.trim();
   if (process.env.NODE_ENV === 'production') {
-    if (!kek || kek.length < 32) {
-      throw new Error(
-        'CRITICAL SECURITY ERROR: KEY_ENCRYPTION_KEY environment variable must be explicitly configured (min 32 characters) in production environments.'
-      );
-    }
-    return deriveKey(kek);
+    return kek && kek.length >= MIN_PRODUCTION_SEALING_KEY_LENGTH ? kek : null;
   }
-
-  const secret =
+  return (
     kek ||
     process.env.KEY_HASH_PEPPER?.trim() ||
-    process.env.JWT_SECRET?.trim();
+    process.env.JWT_SECRET?.trim() ||
+    DEV_SECRET_KEY_SALT
+  );
+}
 
-  if (!secret) {
-    return deriveKey(DEV_SECRET_KEY_SALT);
+function getEncryptionKey(): Buffer {
+  const secret = resolveSealingSecret();
+  if (secret === null) {
+    throw new SecretEncryptionKeyRequiredError();
   }
-
   return deriveKey(secret);
 }
 
-export function getDecryptionCandidateKeys(): Buffer[] {
-  const primary = getEncryptionKey();
-  const seen = new Set<string>([primary.toString('hex')]);
-  const keys: Buffer[] = [primary];
-
-  const rawSecrets = [
-    process.env.KEY_ENCRYPTION_KEY?.trim(),
-    process.env.KEY_HASH_PEPPER?.trim(),
-    process.env.KEY_HASH_PEPPER_PREVIOUS?.trim(),
-    process.env.JWT_SECRET?.trim(),
-    process.env.NODE_ENV !== 'production' ? DEV_SECRET_KEY_SALT : undefined,
+/**
+ * Every key a stored value may have been sealed under, the sealing key first when one is valid.
+ * Built from the secrets that are set, whatever their length, so a missing or short
+ * `KEY_ENCRYPTION_KEY` never stops a read.
+ */
+function buildDecryptionCandidates(): { keys: Buffer[]; hasSealingKey: boolean } {
+  const sealingSecret = resolveSealingSecret();
+  const secrets = [
+    ...(sealingSecret === null ? [] : [sealingSecret]),
+    ...secretForms(process.env.KEY_ENCRYPTION_KEY),
+    ...secretForms(process.env.KEY_HASH_PEPPER),
+    ...secretForms(process.env.KEY_HASH_PEPPER_PREVIOUS),
+    ...secretForms(process.env.JWT_SECRET),
+    ...(process.env.NODE_ENV !== 'production' ? [DEV_SECRET_KEY_SALT] : []),
   ];
 
-  for (const raw of rawSecrets) {
-    if (!raw) continue;
-    const derived = deriveKey(raw);
+  const seen = new Set<string>();
+  const keys: Buffer[] = [];
+  for (const secret of secrets) {
+    const derived = deriveKey(secret);
     const hex = derived.toString('hex');
     if (!seen.has(hex)) {
       seen.add(hex);
       keys.push(derived);
     }
   }
-
-  return keys;
+  return { keys, hasSealingKey: sealingSecret !== null };
 }
 
-function decryptWithCandidateKeys(cipherText: string): { plainText: string; keyIndex: number } {
+export function getDecryptionCandidateKeys(): Buffer[] {
+  return buildDecryptionCandidates().keys;
+}
+
+function decryptWithCandidateKeys(cipherText: string): {
+  plainText: string;
+  sealedWithCurrentKey: boolean;
+  canSeal: boolean;
+} {
   const payload = cipherText.substring(ENCRYPTION_PREFIX.length);
   const parts = payload.split(':');
   if (parts.length !== 3) {
@@ -68,19 +91,19 @@ function decryptWithCandidateKeys(cipherText: string): { plainText: string; keyI
   const tag = Buffer.from(tagB64, 'base64');
   const enc = Buffer.from(encB64, 'base64');
 
-  const candidateKeys = getDecryptionCandidateKeys();
+  const { keys: candidateKeys, hasSealingKey } = buildDecryptionCandidates();
   let lastError: unknown;
   for (let i = 0; i < candidateKeys.length; i++) {
     try {
       const decipher = crypto.createDecipheriv('aes-256-gcm', candidateKeys[i], iv);
       decipher.setAuthTag(tag);
       const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
-      return { plainText: decrypted.toString('utf8'), keyIndex: i };
+      return { plainText: decrypted.toString('utf8'), sealedWithCurrentKey: hasSealingKey && i === 0, canSeal: hasSealingKey };
     } catch (err) {
       lastError = err;
     }
   }
-  throw lastError;
+  throw lastError ?? new Error('[SecretEncryption] No decryption key is configured.');
 }
 
 /**
@@ -111,6 +134,7 @@ export function decryptSecret(cipherText: string | undefined): string | undefine
   return decryptWithCandidateKeys(cipherText).plainText;
 }
 
+/** True when the value is plain text or was sealed under a key other than the current sealing key. */
 export function needsSecretReencryption(cipherText: string | undefined): boolean {
   if (!cipherText) {
     return false;
@@ -118,10 +142,14 @@ export function needsSecretReencryption(cipherText: string | undefined): boolean
   if (!cipherText.startsWith(ENCRYPTION_PREFIX)) {
     return true;
   }
-  const { keyIndex } = decryptWithCandidateKeys(cipherText);
-  return keyIndex > 0;
+  return !decryptWithCandidateKeys(cipherText).sealedWithCurrentKey;
 }
 
+/**
+ * Reads a stored secret and re-seals it under the current sealing key when it was sealed under an
+ * older one. Without a valid sealing key (production with no usable `KEY_ENCRYPTION_KEY`) the value
+ * is returned readable and unchanged, so a read path never fails because a write is not possible.
+ */
 export function reencryptSecretIfNeeded(cipherText: string | undefined): {
   plainText: string | undefined;
   cipherText: string | undefined;
@@ -131,12 +159,14 @@ export function reencryptSecretIfNeeded(cipherText: string | undefined): {
     return { plainText: undefined, cipherText: undefined, reencrypted: false };
   }
   if (!cipherText.startsWith(ENCRYPTION_PREFIX)) {
+    if (resolveSealingSecret() === null) {
+      return { plainText: cipherText, cipherText, reencrypted: false };
+    }
     return { plainText: cipherText, cipherText: encryptSecret(cipherText), reencrypted: true };
   }
-  const { plainText, keyIndex } = decryptWithCandidateKeys(cipherText);
-  if (keyIndex === 0) {
+  const { plainText, sealedWithCurrentKey, canSeal } = decryptWithCandidateKeys(cipherText);
+  if (sealedWithCurrentKey || !canSeal) {
     return { plainText, cipherText, reencrypted: false };
   }
   return { plainText, cipherText: encryptSecret(plainText), reencrypted: true };
 }
-

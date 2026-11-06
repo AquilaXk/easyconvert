@@ -48,9 +48,10 @@ export function deriveJwtKeyId(secret: string): string {
     .slice(0, 16);
 }
 
+/** Like `JWT_SECRET`, the previous secret is used exactly as set; neither value is trimmed. */
 export function getPreviousJwtSecret(overridePrevious?: string): string | null {
-  const prev = (overridePrevious ?? process.env.JWT_SECRET_PREVIOUS)?.trim();
-  if (!prev) {
+  const prev = overridePrevious ?? process.env.JWT_SECRET_PREVIOUS;
+  if (!prev?.trim()) {
     return null;
   }
   if (prev.length < 32) {

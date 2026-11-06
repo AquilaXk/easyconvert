@@ -649,7 +649,7 @@ const SCHEMA_ENTRIES = [
     name: 'JWT_SECRET_PREVIOUS',
     area: 'auth',
     description:
-      'The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET.',
+      'The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET. Used exactly as set, like JWT_SECRET, without trimming.',
     kind: KEY_SECRET,
     requiredInProduction: false,
     secret: true,
@@ -699,7 +699,7 @@ const SCHEMA_ENTRIES = [
     name: 'KEY_ENCRYPTION_KEY',
     area: 'secrets',
     description:
-      'Key that encrypts API key webhook secrets at rest; required for encrypting new secrets in production (min 32 bytes) and falls back to KEY_HASH_PEPPER, then JWT_SECRET for decryption and in development.',
+      'Key that encrypts API key webhook secrets at rest. In production it must be set (at least 32 characters) to encrypt a new secret; without it existing secrets still decrypt under KEY_HASH_PEPPER, KEY_HASH_PEPPER_PREVIOUS or JWT_SECRET. Outside production those keys also encrypt.',
     kind: KEY_SECRET,
     requiredInProduction: false,
     secret: true,
@@ -719,7 +719,7 @@ const SCHEMA_ENTRIES = [
     name: 'STORAGE_VAULT_KEY',
     area: 'secrets',
     description:
-      'Master key of the vault that holds customer storage credentials; required for storing credentials in production (min 32 bytes) and falls back to KEY_ENCRYPTION_KEY, then JWT_SECRET for decryption and in development.',
+      'Master key of the vault that holds customer storage credentials. In production it must be set (at least 32 characters) to store credentials; without it stored credentials still decrypt under KEY_ENCRYPTION_KEY or JWT_SECRET. Outside production those keys also encrypt.',
     kind: KEY_SECRET,
     requiredInProduction: false,
     secret: true,

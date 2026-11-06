@@ -80,7 +80,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `GOOGLE_CLIENT_SECRET` | secret text; secret, never logged | none | no | web |
 
 - `JWT_SECRET`: Signs session tokens. At least 32 bytes of UTF-8 text in production; also a legacy decryption fallback key of the credential vault and of API key secret encryption.
-- `JWT_SECRET_PREVIOUS`: The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET.
+- `JWT_SECRET_PREVIOUS`: The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET. Used exactly as set, like JWT_SECRET, without trimming.
 - `GOOGLE_CLIENT_ID`: OAuth client id for Google sign-in. Without it, development uses a local mock sign-in and production refuses to sign in.
 - `GOOGLE_CLIENT_SECRET`: OAuth client secret for Google sign-in; required together with GOOGLE_CLIENT_ID.
 
@@ -98,9 +98,9 @@ Generate a secret with `openssl rand -hex 32`.
 
 - `KEY_HASH_PEPPER`: Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also a legacy decryption fallback key of API key secret encryption.
 - `KEY_HASH_PEPPER_PREVIOUS`: The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.
-- `KEY_ENCRYPTION_KEY`: Key that encrypts API key webhook secrets at rest; required for encrypting new secrets in production (min 32 bytes) and falls back to KEY_HASH_PEPPER, then JWT_SECRET for decryption and in development.
+- `KEY_ENCRYPTION_KEY`: Key that encrypts API key webhook secrets at rest. In production it must be set (at least 32 characters) to encrypt a new secret; without it existing secrets still decrypt under KEY_HASH_PEPPER, KEY_HASH_PEPPER_PREVIOUS or JWT_SECRET. Outside production those keys also encrypt.
 - `WEBHOOK_SECRET_KEK`: Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The worker dispatches webhooks and needs it too once the deployment sends them.
-- `STORAGE_VAULT_KEY`: Master key of the vault that holds customer storage credentials; required for storing credentials in production (min 32 bytes) and falls back to KEY_ENCRYPTION_KEY, then JWT_SECRET for decryption and in development.
+- `STORAGE_VAULT_KEY`: Master key of the vault that holds customer storage credentials. In production it must be set (at least 32 characters) to store credentials; without it stored credentials still decrypt under KEY_ENCRYPTION_KEY or JWT_SECRET. Outside production those keys also encrypt.
 - `JOB_SECRET_KEK`: Key-encryption key that seals signed URLs and headers inside queued jobs. At least 32 bytes of UTF-8 text, no surrounding whitespace, in production. Shared by the API and every worker.
 - `JOB_SECRET_KEK_PREVIOUS`: The previous JOB_SECRET_KEK during a rotation, so jobs sealed under it can still be opened.
 
