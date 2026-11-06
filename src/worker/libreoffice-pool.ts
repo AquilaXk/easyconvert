@@ -21,6 +21,7 @@ import {
   buildPdfExportFilterData,
 } from '../lib/conversions/pdf-export-options';
 import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
+import { writeKeepExcelObjectsSetting } from './libreoffice-profile';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
 export { ALLOWED_LIBREOFFICE_FILTERS, ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET };
@@ -177,6 +178,17 @@ export function resolveLibreOfficeFilter(
   }
 
   return LIBREOFFICE_TARGET_NAMES[tgt] ?? tgt;
+}
+
+/**
+ * The `-env:UserInstallation` argument of a run in the temporary directory `tempDir`, with the profile prepared for what the options ask: a
+ * run that keeps embedded Excel objects gets the setting written first, and is never a run of the pool, whose profiles other jobs share. The
+ * run's temporary files go into the same directory (`TMPDIR`, where the run is started), which is removed with it, so a run that is killed
+ * leaves nothing in the shared temporary directory.
+ */
+export function standaloneProfileArgument(tempDir: string, options: WorkerEngineOptions): string {
+  if (options.keepEmbeddedExcelObjects) writeKeepExcelObjectsSetting(`${tempDir}/user`);
+  return `-env:UserInstallation=file://${tempDir}/user`;
 }
 
 /**

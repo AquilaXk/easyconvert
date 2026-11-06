@@ -82,7 +82,6 @@ import { convertPostScript, type PostScriptJob } from './postscript-render';
 import { convertDjvu } from './djvu-render';
 import { convertXps, type XpsJob } from './xps-render';
 import { convertWithCalibre } from './ebook-calibre';
-import { writeKeepExcelObjectsSetting } from './libreoffice-profile';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
@@ -129,11 +128,7 @@ import {
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
-import {
-  LibreOfficePoolManager,
-  LibreOfficePoolTimeoutError,
-  resolveLibreOfficeFilter,
-} from './libreoffice-pool';
+import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter, standaloneProfileArgument } from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -379,7 +374,6 @@ async function runHeadlessOffice(
   await assertOfficeEmbeddedImagesWithinLimit(input);
   libreOfficePool.setSofficePath(sofficeBin);
 
-  // A run with its own settings never goes to the pool, whose profiles other jobs share.
   if (libreOfficePool.isEnabled() && !options.keepEmbeddedExcelObjects) {
     try {
       const poolResult = await libreOfficePool.convert(input, src, tgt, options, originalFilename);
@@ -405,7 +399,6 @@ async function runHeadlessOffice(
   try {
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, src, tempDir);
-      if (options.keepEmbeddedExcelObjects) writeKeepExcelObjectsSetting(`${tempDir}/user`);
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
@@ -416,7 +409,7 @@ async function runHeadlessOffice(
           '--norestore',
           '--nofirststartwizard',
           '--nologo',
-          `-env:UserInstallation=file://${tempDir}/user`,
+          standaloneProfileArgument(tempDir, options),
           '--convert-to',
           filterSpec,
           '--outdir',
@@ -427,7 +420,6 @@ async function runHeadlessOffice(
           cwd: tempDir,
           timeoutMs: timeout,
           maxBuffer,
-          // The suite's temporary files go into the run's own directory, which is removed with it: a run that is killed leaves nothing in the shared temporary directory (the two charts of govdocs1-001020.ppt leave 2.9 GB there).
           env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
           signal: options.signal,
