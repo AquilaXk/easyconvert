@@ -229,7 +229,7 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
 describe('the page a path with no page shows', () => {
   const WORDING: Record<TestLocale, { code: string; title: (route: string) => string; description: string; home: string }> = {
     en: { code: '404', title: (route) => `The route ${route} could not be found.`, description: 'Sorry, the page you are looking for could not be found.', home: '/' },
-    ko: { code: '404', title: (route) => `${route} 경로를 찾을 수 없어요.`, description: '주소를 다시 확인해 주세요.', home: '/ko' },
+    ko: { code: '404', title: () => '페이지를 찾을 수 없어요.', description: '찾으시는 페이지가 없거나 옮겨졌어요.', home: '/ko' },
   };
   const render = (locale: TestLocale, pathname: string) => {
     request.pathname = pathname;

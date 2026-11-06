@@ -1300,7 +1300,7 @@
   },
   "notFound": {
     "code": "404",
-    "title": "The route <path>{route}</path> could not be found.",
+    "title": "The route {route} could not be found.",
     "description": "Sorry, the page you are looking for could not be found."
   },
   "urlImport": {
