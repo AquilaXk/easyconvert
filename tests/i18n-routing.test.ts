@@ -80,7 +80,7 @@ describe('locale routing of pages', () => {
   });
 
   it('sends a superfluous /en prefix to the unprefixed URL', async () => {
-    expect(await answer('/en/status')).toMatchObject({ status: 307, location: `${ORIGIN}/status` });
+    expect(await answer('/en/api-docs')).toMatchObject({ status: 307, location: `${ORIGIN}/api-docs` });
   });
 
   it('routes converter slugs whose format holds a dot in every language, however they are cased', async () => {
@@ -143,8 +143,8 @@ describe('locale routing of pages', () => {
   it('follows a chosen language on the root, and writes no cookie on any other page', async () => {
     expect(await answer('/', { cookie: 'NEXT_LOCALE=ko' })).toMatchObject({ status: 307, location: `${ORIGIN}/ko` });
     expect((await answer('/', { ...KOREAN_BROWSER, cookie: 'NEXT_LOCALE=en' })).location).toBeNull();
-    expect((await answer('/ko/status', { cookie: 'NEXT_LOCALE=en' })).setCookie).toBeNull();
-    expect((await answer('/status', { cookie: 'NEXT_LOCALE=ko' })).setCookie).toBeNull();
+    expect((await answer('/ko/api-docs', { cookie: 'NEXT_LOCALE=en' })).setCookie).toBeNull();
+    expect((await answer('/api-docs', { cookie: 'NEXT_LOCALE=ko' })).setCookie).toBeNull();
   });
 
   it('answers the root privately and by language and cookie, so no shared cache hands one visitor another language', async () => {
@@ -153,7 +153,7 @@ describe('locale routing of pages', () => {
       expect(root.vary, JSON.stringify(headers)).toBe('Accept-Language, Cookie');
       expect(root.cacheControl, JSON.stringify(headers)).toBe('private, no-store');
     }
-    expect((await answer('/status')).cacheControl).toBeNull();
+    expect((await answer('/api-docs')).cacheControl).toBeNull();
   });
 
   it('writes the locale cookie only from the language selector, never while negotiating the root', async () => {

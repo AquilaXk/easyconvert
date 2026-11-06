@@ -49,7 +49,7 @@ const UNMEASURED_CLAIMS: Readonly<Record<TestLocale, readonly RegExp[]>> = {
 
 /** Each message that states a true property of a format or codec in one of the words above, by key. */
 const FORMAT_FACTS: ReadonlySet<string> = new Set([
-  'features.pairs.flac-mp3', 'options.audio.codecs.flac', 'status.components.pipeline-audio.description',
+  'features.pairs.flac-mp3', 'options.audio.codecs.flac',
   'formatSpecs.flac.desc', 'formatSpecs.gif.desc', 'formatSpecs.m4a.desc', 'formatSpecs.png.desc', 'formatSpecs.svg.desc',
   'formatSpecs.webp.desc',
   'formatDescriptions.alac', 'formatDescriptions.ape', 'formatDescriptions.arc', 'formatDescriptions.flac', 'formatDescriptions.pdfa',
@@ -104,8 +104,8 @@ describe('the interface copy', () => {
       for (const sample of claims[locale]) expect(claimsIn(locale, 'converterPage.sample', sample), sample).toBe(true);
     }
     const notClaims = {
-      en: [['converterPage.sample', 'Does converting PNG to JPG preserve layout and quality?'], ['features.sample', 'Breakfast menus and steadfast rules'], ['formatSpecs.mp4.desc', 'Supports fast-start web playback'], ['options.audio.codecs.flac', 'FLAC (Lossless)'], ['status.diagnostics.probes.memory-sandbox.name', 'Memory buffer check']],
-      ko: [['unitConverter.referenceHeading', 'kg → lb 빠른 환산표'], ['formatDescriptions.pdfa', '장기 보존용으로 특화된 ISO 표준 PDF예요.'], ['status.diagnostics.probes.opfs.unsupported', 'Blob 메모리 스트리밍으로 처리']],
+      en: [['converterPage.sample', 'Does converting PNG to JPG preserve layout and quality?'], ['features.sample', 'Breakfast menus and steadfast rules'], ['formatSpecs.mp4.desc', 'Supports fast-start web playback'], ['options.audio.codecs.flac', 'FLAC (Lossless)']],
+      ko: [['formatDescriptions.pdfa', '장기 보존용으로 특화된 ISO 표준 PDF예요.']],
     } as const;
     for (const locale of ['en', 'ko'] as const) {
       for (const [key, sample] of notClaims[locale]) expect(claimsIn(locale, key, sample), sample).toBe(false);

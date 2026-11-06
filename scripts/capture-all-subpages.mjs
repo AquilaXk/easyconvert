@@ -44,8 +44,6 @@ async function captureAllSubpages() {
 
   const subpages = [
     { name: 'pdf-converter', path: '/pdf-converter', out: 'public/screenshots/fidelity_pdf_converter.png' },
-    { name: 'unit-converter', path: '/unit-converter', out: 'public/screenshots/unit_converter_page.png' },
-    { name: 'status', path: '/status', out: 'public/screenshots/status_page.png' },
   ];
 
   for (const page of subpages) {

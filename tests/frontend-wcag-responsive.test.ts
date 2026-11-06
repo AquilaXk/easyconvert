@@ -24,11 +24,6 @@ import { resolveOAuthErrorKey } from '../src/components/auth/AuthForms';
 import ApiDocsPage from '../src/components/pages/ApiDocsPageView';
 import { API_DOC_TOPICS, apiDocsHref } from '../src/components/api-docs/topics';
 import { writeClipboardText } from '../src/hooks/useCopyFeedback';
-import StatusPage from '../src/components/pages/StatusPageView';
-import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
-import { collectEdgeDiagnostics, probeWasmSimd } from '../src/components/status/status-probes';
-import UnitConverterPage from '../src/components/pages/UnitConverterPageView';
-import { formatEditableDecimal } from '../src/lib/unit-catalog';
 import OptionsModal from '../src/components/OptionsModal';
 import {
   computeVisibleSections,
@@ -385,7 +380,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(visibleText(errorQueue)).not.toContain('Corrupt PNG header signature');
   });
 
-  it('handles OAuth error allowlists and unsupported diagnostics', () => {
+  it('handles OAuth error allowlists', () => {
     const tOAuth = testTranslator('en', 'auth');
     const oauthMessage = (code: string | null) => {
       const key = resolveOAuthErrorKey(code);
@@ -396,16 +391,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(oauthMessage('100%')).toBe('Authentication failed. Please try signing in again.');
     expect(oauthMessage('Call +1-800-PHISH')).toBe('Authentication failed. Please try signing in again.');
     expect(oauthMessage('account_linking_required')).toMatch(/Sign in with your password first/);
-
-    const diagDom = render(DiagnosticResultsCard, {
-      results: [
-        { id: 'wasm', latencyMs: 1, supported: true },
-        { id: 'opfs', latencyMs: 1, supported: false },
-      ],
-    });
-    expect(
-      phrasesMissing(visibleText(diagDom), ['1/2 Active', 'Unavailable', 'Hardware SIMD enabled', 'Blob memory streaming active'])
-    ).toEqual([]);
   });
 
   it('maintains WCAG 2.1 AA landmarks, single h1, non-skipping heading levels, and labeled 16px controls across routes', () => {
@@ -416,8 +401,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       { name: '/contact', dom: render(ConverterPageView, { parsed: parsedSlug('contact'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/auth', dom: render(AuthPage, {}) },
       ...API_DOC_TOPICS.map((topic) => ({ name: apiDocsHref(topic.slug), dom: render(ApiDocsPage, { topic: topic.slug }) })),
-      { name: '/status', dom: render(StatusPage, {}) },
-      { name: '/unit-converter', dom: render(UnitConverterPage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
     ];
 
     for (const route of routes) {
@@ -601,46 +584,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(guideTabs.map((t) => attrOf(t, 'tabindex'))).toEqual(['0', '-1', '-1']);
     expect(select(guideDom, 'div', 'id', 'sdk-guide-tabpanel')).toHaveLength(1);
     expect(attrOf(select(guideDom, 'div', 'id', 'sdk-guide-tabpanel')[0], 'role')).toBe('tabpanel');
-
-    const statusDom = render(StatusPage, {});
-    const statusTablists = allElements(statusDom).filter((el) => attrOf(el, 'role') === 'tablist');
-    expect(statusTablists).toHaveLength(1);
-    expect(attrOf(statusTablists[0], 'aria-label')).toBe('Component categories');
-    const statusTabs = allElements(statusDom).filter((el) => attrOf(el, 'role') === 'tab');
-    expect(statusTabs).toHaveLength(4);
-    expect(statusTabs.map((t) => attrOf(t, 'tabindex'))).toEqual(['0', '-1', '-1', '-1']);
-    const statusTabpanel = select(statusDom, 'div', 'id', 'status-components-tabpanel');
-    expect(statusTabpanel).toHaveLength(1);
-    expect(attrOf(statusTabpanel[0], 'role')).toBe('tabpanel');
-    expect(select(statusDom, 'output', 'aria-live', 'polite').length).toBeGreaterThanOrEqual(1);
-
-    expect(probeWasmSimd().supported).toBe(true);
-
-    const validateSpy = vi.spyOn(WebAssembly, 'validate').mockReturnValueOnce(false);
-    try {
-      const probes = collectEdgeDiagnostics();
-      const wasmProbe = probes.find((p) => p.id === 'wasm')!;
-      expect(wasmProbe.supported).toBe(false);
-      const probeDom = render(DiagnosticResultsCard, { results: [wasmProbe] });
-      expect(visibleText(probeDom)).toContain('WebAssembly 128-bit SIMD unavailable');
-    } finally {
-      validateSpy.mockRestore();
-    }
-  });
-
-  it('formats unit swap decimals as plain editable decimal strings without scientific notation or premature zeroing', () => {
-    const editablePattern = /^-?\d+(\.\d+)?$/;
-    expect(formatEditableDecimal(1e-7, 8)).toBe('0.0000001');
-    expect(formatEditableDecimal(1e-9, 6)).toBe('0.000000001');
-    expect(formatEditableDecimal(-1e-9, 6)).toBe('-0.000000001');
-    expect(formatEditableDecimal(1e-22, 6)).toBe('0.0000000000000000000001');
-    expect(formatEditableDecimal(1e21, 6)).toBe('1000000000000000000000');
-    expect(formatEditableDecimal(0, 6)).toBe('0');
-    expect(formatEditableDecimal(Number.NaN, 6)).toBe('0');
-
-    for (const sample of [1e-7, 1e-9, -1e-9, 1e-15, 1e-22, -1e-22, 0.45359237, 100, 1e21]) {
-      expect(formatEditableDecimal(sample, 6)).toMatch(editablePattern);
-    }
   });
 
   it('guards clipboard writes against missing APIs and rejected permissions before reporting success', async () => {

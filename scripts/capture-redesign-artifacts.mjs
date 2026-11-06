@@ -316,22 +316,6 @@ ss = await send('Page.captureScreenshot', {
 });
 saveImage('slug_converter_page.png', Buffer.from(ss.data, 'base64'));
 
-// 4. Status Page (/status)
-await send('Page.navigate', { url: 'http://localhost:3000/status' });
-await new Promise(r => setTimeout(r, 1800));
-await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
-await new Promise(r => setTimeout(r, 300));
-ss = await send('Page.captureScreenshot', { format: 'png' });
-saveImage('status_page.png', Buffer.from(ss.data, 'base64'));
-
-// 5. Unit Converter Page (/unit-converter)
-await send('Page.navigate', { url: 'http://localhost:3000/unit-converter' });
-await new Promise(r => setTimeout(r, 1800));
-await send('Runtime.evaluate', { expression: `window.scrollTo(0, 0);` });
-await new Promise(r => setTimeout(r, 300));
-ss = await send('Page.captureScreenshot', { format: 'png' });
-saveImage('unit_converter_page.png', Buffer.from(ss.data, 'base64'));
-
 ws.close();
 chromeProc.kill();
 try {

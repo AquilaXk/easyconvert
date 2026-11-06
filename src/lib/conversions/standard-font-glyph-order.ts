@@ -17,13 +17,21 @@ import { readAdvanceWidths, readUnicodeCmap } from './truetype-cmap';
  * the canonical equivalent of U+003B, for the semicolon at 30), leaves 155 out, and gives other characters from 179 on.
  * So the table is glyph ids 3 to 171 without 155.
  *
+ * Past 171 the same pdfjs map lists 22 glyph ids that the installed fonts agree with (`getGlyphMapForStandardFonts`, standard_fonts.js
+ * lines 514 to 535): the four smart quotes at 179 to 182, `Aacute`, `Iacute`, `Oacute`, `Uacute`, the caron and `Lslash` to `zcaron`
+ * (200 to 229), `Yacute`, `yacute`, `cacute`, `Ccaron`, `ccaron`, `Abreve` and `Aogonek`. They are read the same way, against the
+ * widths of their glyphs (the same two references; the Times widths are `getMetrics` names), and only when the base table has
+ * been read for the font. One width of them that is not the reference's (or one the reference lacks) takes the 22 away and leaves
+ * the base table, since the order of the font past 171 is then not the one pdfjs lists. The ids pdfjs does not list (the dashes
+ * at 177 and 178, `Agrave` at 172 and the others up to 261) have no source and keep the reading they had.
+ *
  * A name is a guess, so the widths decide: the font is read this way only when /W gives every CID of the table it lists
  * the width the reference font has for that glyph. The names follow `getStdFontMap` (standard_fonts.js lines 54 to 64
  * and 85 to 99) after `normalizeFontName` (fonts_utils.js lines 167 to 169); the reference for Arial is the Liberation
  * Sans font that pdfjs-dist ships and pdfjs draws Arial with (`getFontNameToFileMap`, standard_fonts.js lines 108 to 111),
  * and for Times New Roman the widths pdfjs keeps for Times (`getMetrics`, src/core/metrics.js lines 1492 to 2762).
  *
- * Limits, against pdfjs's: the table is 169 of the 258 standard names, so at most 168 CIDs of a font get text; /W is read
+ * Limits, against pdfjs's: the table is 169 of the 258 standard names and 22 more, so at most 190 CIDs of a font get text; /W is read
  * with pdfjs's rules (`extractWidths`, src/core/evaluator.js lines 4129 to 4158) but only for those CIDs, so a range is
  * filled in one step where pdfjs walks every CID it spans; a CID that /W does not list (pdfjs gives it /DW, line 4127)
  * or that lies outside the table keeps the reading it had; a name longer than a PDF name may be is no font name.
@@ -49,6 +57,19 @@ const FIRST_GID = 3;
 const LAST_GID = 171;
 /** `pi` in the Macintosh order, an unmapped `pi1` in those fonts; pdfjs's map for them leaves it out too. */
 const GIDS_LEFT_OUT = new Set([155]);
+/**
+ * The glyph ids past LAST_GID that `getGlyphMapForStandardFonts` lists up to the first id of another version of the fonts (261 and
+ * up follow one version: Cyrillic at 570 to 633 where the installed Arial has other glyphs at 493 and 494), with their code
+ * points (the Adobe Glyph List values of `quotedblleft` and the others in the order of the comment above).
+ */
+const PAST_TABLE: ReadonlyArray<readonly [gid: number, codePoint: number]> = [
+  [179, 0x201c], [180, 0x201d], [181, 0x2018], [182, 0x2019], [200, 0xc1], [203, 0xcd], [207, 0xd3], [210, 0xda], [223, 0x2c7],
+  [224, 0x141], [225, 0x142], [226, 0x160], [227, 0x161], [228, 0x17d], [229, 0x17e], [233, 0xdd], [234, 0xfd], [252, 0x107],
+  [253, 0x10c], [254, 0x10d], [258, 0x102], [260, 0x104],
+];
+const PAST_FIRST_GID = PAST_TABLE[0][0];
+const PAST_LAST_GID = PAST_TABLE[PAST_TABLE.length - 1][0];
+
 /** Glyph ids 0 to LAST_GID of `MacStandardGlyphOrdering`, the 258 standard Macintosh glyph names (`post` format 1). */
 const MAC_STANDARD_GLYPH_NAMES: readonly string[] = [
   '.notdef', '.null', 'nonmarkingreturn', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent',
@@ -122,6 +143,14 @@ const TIMES_WIDTHS: Record<Extract<StandardFont, `Times-${string}`>, readonly nu
   'Times-BoldItalic': [250, 389, 555, 500, 500, 833, 778, 278, 333, 333, 500, 570, 250, 333, 250, 278, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 333, 333, 570, 570, 570, 500, 832, 667, 667, 667, 722, 667, 667, 722, 778, 389, 500, 667, 611, 889, 722, 722, 611, 722, 667, 556, 611, 722, 667, 889, 667, 611, 611, 333, 278, 333, 570, 500, 333, 500, 500, 444, 500, 444, 333, 500, 556, 278, 278, 500, 278, 778, 556, 500, 500, 500, 389, 389, 278, 556, 444, 667, 500, 444, 389, 348, 220, 348, 570, 667, 667, 667, 667, 722, 722, 722, 500, 500, 500, 500, 500, 500, 444, 444, 444, 444, 444, 278, 278, 278, 278, 556, 500, 500, 500, 500, 500, 556, 556, 556, 556, 500, 400, 500, 500, 500, 350, 500, 500, 747, 747, 1000, 333, 333, 549, 944, 722, 0, 570, 549, 549, 500, 576, 494, 600, 0, 0, 0, 266, 300, 0, 722, 500, 500, 389, 606, 549, 500, 0, 612, 500, 500, 1000],
 };
 
+/** The widths pdfjs keeps for the Times fonts at the ids of PAST_TABLE (`getMetrics`, in that order: `quotedblleft` to `Aogonek`). */
+const TIMES_PAST_WIDTHS: Record<Extract<StandardFont, `Times-${string}`>, readonly number[]> = {
+  'Times-Roman': [444, 444, 333, 333, 722, 333, 722, 722, 333, 611, 278, 556, 389, 611, 444, 722, 500, 444, 667, 444, 722, 722],
+  'Times-Bold': [500, 500, 333, 333, 722, 389, 778, 722, 333, 667, 278, 556, 389, 667, 444, 722, 500, 444, 722, 444, 722, 722],
+  'Times-Italic': [556, 556, 333, 333, 611, 333, 722, 722, 333, 556, 278, 500, 389, 556, 389, 556, 444, 444, 667, 444, 611, 611],
+  'Times-BoldItalic': [500, 500, 333, 333, 667, 389, 722, 722, 333, 611, 278, 556, 389, 611, 389, 611, 444, 444, 667, 444, 667, 667],
+};
+
 /** The Liberation Sans file of pdfjs-dist's `standard_fonts` that pdfjs draws each Helvetica font with. */
 const LIBERATION_FILES: Record<Extract<StandardFont, `Helvetica${string}`>, string> = {
   Helvetica: 'LiberationSans-Regular.ttf',
@@ -138,7 +167,7 @@ function codePointOf(gid: number): number {
   return macCodePoints[gid];
 }
 
-/** The width of each glyph of the table in a Liberation Sans font, through its cmap and `hmtx`; NaN where it has none. */
+/** The width of each glyph of the table, and of the 22 past it, in a Liberation Sans font, through its cmap and `hmtx`; NaN where it has none. */
 function liberationWidths(file: string): Float64Array | null {
   const folder = pdfjsDataUrl('standard_fonts');
   let program: Buffer;
@@ -151,23 +180,33 @@ function liberationWidths(file: string): Float64Array | null {
   const cmap = readUnicodeCmap(program);
   const advances = readAdvanceWidths(program);
   if (cmap === null || advances === null) return null;
-  const widths = new Float64Array(LAST_GID - FIRST_GID + 1).fill(Number.NaN);
-  for (let gid = FIRST_GID; gid <= LAST_GID; gid++) {
-    const glyph = cmap.glyphOfBmpCodePoint[codePointOf(gid)];
+  const widths = new Float64Array(PAST_LAST_GID - FIRST_GID + 1).fill(Number.NaN);
+  const setWidth = (gid: number, codePoint: number): void => {
+    const glyph = cmap.glyphOfBmpCodePoint[codePoint];
     if (glyph !== 0 && glyph < advances.length) widths[gid - FIRST_GID] = advances[glyph] * GLYPH_SPACE_UNITS;
-  }
+  };
+  for (let gid = FIRST_GID; gid <= LAST_GID; gid++) setWidth(gid, codePointOf(gid));
+  for (const [gid, codePoint] of PAST_TABLE) setWidth(gid, codePoint);
   return widths;
 }
 
 const referenceCache = new Map<StandardFont, Float64Array | null>();
 
-/** The width of each glyph of the table in the reference for `font`, in glyph space units; NaN where it has none. */
+/** The Times widths of the table and of the glyphs past it, by glyph id from FIRST_GID; NaN where pdfjs keeps none (and between the two). */
+function timesWidths(font: Extract<StandardFont, `Times-${string}`>): Float64Array {
+  const widths = new Float64Array(PAST_LAST_GID - FIRST_GID + 1).fill(Number.NaN);
+  TIMES_WIDTHS[font].forEach((width, index) => {
+    if (width !== 0) widths[index] = width;
+  });
+  PAST_TABLE.forEach(([gid], index) => (widths[gid - FIRST_GID] = TIMES_PAST_WIDTHS[font][index]));
+  return widths;
+}
+
+/** The width of each glyph of the table and of the 22 past it in the reference for `font`, in glyph space units, by glyph id from FIRST_GID; NaN where it has none. */
 function referenceWidths(font: StandardFont): Float64Array | null {
   if (!referenceCache.has(font)) {
     const widths =
-      font in LIBERATION_FILES
-        ? liberationWidths(LIBERATION_FILES[font as keyof typeof LIBERATION_FILES])
-        : Float64Array.from(TIMES_WIDTHS[font as keyof typeof TIMES_WIDTHS], (width) => (width === 0 ? Number.NaN : width));
+      font in LIBERATION_FILES ? liberationWidths(LIBERATION_FILES[font as keyof typeof LIBERATION_FILES]) : timesWidths(font as Extract<StandardFont, `Times-${string}`>);
     referenceCache.set(font, widths);
   }
   return referenceCache.get(font) ?? null;
@@ -194,6 +233,19 @@ export function standardOrderTexts(name: string | null, widths: (first: number, 
     const expected = reference[cid - FIRST_GID];
     if (!(Math.abs(width - expected) <= WIDTH_TOLERANCE)) return [];
     entries.push([cid, codePointOf(cid)]);
+  }
+  return entries.length === 0 ? entries : [...entries, ...pastTableTexts(reference, widths)];
+}
+
+/** The glyphs past LAST_GID that pdfjs lists, for the CIDs `widths` lists with their reference width; none when one listed CID has another width. */
+function pastTableTexts(reference: Float64Array, widths: (first: number, last: number) => Map<number, number>): CidText[] {
+  const listed = widths(PAST_FIRST_GID, PAST_LAST_GID);
+  const entries: CidText[] = [];
+  for (const [cid, codePoint] of PAST_TABLE) {
+    const width = listed.get(cid);
+    if (width === undefined) continue;
+    if (!(Math.abs(width - reference[cid - FIRST_GID]) <= WIDTH_TOLERANCE)) return [];
+    entries.push([cid, codePoint]);
   }
   return entries;
 }

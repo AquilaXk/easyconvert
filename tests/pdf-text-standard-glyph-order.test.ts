@@ -142,12 +142,84 @@ describe('Arial and Times New Roman fonts whose program names no glyph', () => {
     expect(hasControlCharacters(text)).toBe(false);
   });
 
-  it('gives the CIDs past glyph id 171 no text of the order, where the fonts leave it', () => {
-    // CID 180 is quotedblleft in the Macintosh order and quotedblright in Arial; both are 333 wide, so only the cut tells them apart.
-    const widths = new Map([...ARIAL_WIDTHS, [180, 333]]);
+  it('gives the CIDs past glyph id 171 that pdfjs lists no text of the order, where the fonts leave it', () => {
+    // CID 177 is endash in Arial and 172 is Agrave: pdfjs's map for standard fonts lists neither, so no source gives them.
+    const widths = new Map([...ARIAL_WIDTHS, [172, 667], [177, 556]]);
     const entries = standardOrderTexts('ArialMT', (first, last) => new Map([...widths].filter(([cid]) => cid >= first && cid <= last)));
-    expect(entries.map(([cid]) => cid)).not.toContain(180);
+    expect(entries.map(([cid]) => cid)).not.toContain(172);
+    expect(entries.map(([cid]) => cid)).not.toContain(177);
     expect(entries).toHaveLength(ARIAL_WIDTHS.size);
+  });
+});
+
+/**
+ * The glyph ids 172 and up of Arial and Times New Roman that pdfjs's map for standard fonts written as CID fonts lists
+ * (`getGlyphMapForStandardFonts`, pdf.js 6.3.289 `src/core/standard_fonts.js` lines 514 to 535: the four smart quotes at 179 to
+ * 182 and eighteen accented letters). The independent oracle for the order is the installed Arial and Times New Roman (v5.01,
+ * fontTools 4.66.1, `getBestCmap()` at glyph id = CID): 179 quotedblleft, 180 quotedblright, 181 quoteleft, 182 quoteright, 200
+ * Aacute, 203 Iacute, 207 Oacute, 210 Uacute, 223 caron, 224 Lslash, 225 lslash, 226 Scaron, 227 scaron, 228 Zcaron, 229 zcaron,
+ * 233 Yacute, 234 yacute, 252 cacute, 253 Ccaron, 254 ccaron, 258 Abreve, 260 Aogonek, in Arial, Arial Bold, Times New Roman and
+ * Times New Roman Italic alike. The widths are those the distiller wrote in `cc-4000041.pdf` (Arial Bold: 179 and 180 are 500)
+ * and the reference widths of the quotes in Arial (Liberation Sans, 333 and 222) and Times (pdfjs `getMetrics`: 444 and 333).
+ */
+describe('Arial and Times New Roman glyphs past glyph id 171 that pdfjs gives a character', () => {
+  const PAST_ORACLE: ReadonlyArray<readonly [number, number]> = [
+    [179, 0x201c], [180, 0x201d], [181, 0x2018], [182, 0x2019], [200, 0xc1], [203, 0xcd], [207, 0xd3], [210, 0xda], [223, 0x2c7],
+    [224, 0x141], [225, 0x142], [226, 0x160], [227, 0x161], [228, 0x17d], [229, 0x17e], [233, 0xdd], [234, 0xfd], [252, 0x107],
+    [253, 0x10c], [254, 0x10d], [258, 0x102], [260, 0x104],
+  ];
+  const ARIAL_QUOTES = new Map([[179, 333], [180, 333], [181, 222], [182, 222]]);
+  const ARIAL_BOLD_QUOTES = new Map([[179, 500], [180, 500]]);
+  const TIMES_QUOTES = new Map([[179, 444], [180, 444], [181, 333], [182, 333]]);
+  /** The sentence of `cc-4000041.pdf` page 14 that Poppler prints as `Logic ³1´ Switch On`, in the Arial Bold of that file. */
+  const BOLD_QUOTED = 'Logic \u201c1\u201d Switch On';
+  const BOLD_QUOTED_CIDS = [47, 82, 74, 76, 70, 3, 179, 20, 180, 3, 54, 90, 76, 87, 70, 75, 3, 50, 81];
+  const BOLD_QUOTED_WIDTHS = new Map([[3, 278], [20, 556], [47, 611], [50, 778], [54, 667], [70, 556], [74, 611], [75, 611], [76, 278], [81, 611], [82, 611], [87, 333], [90, 778], ...ARIAL_BOLD_QUOTES]);
+  const rangeOf = (widths: Map<number, number>) => (first: number, last: number) => new Map([...widths].filter(([cid]) => cid >= first && cid <= last));
+
+  it('reads the smart quotes of an Arial Bold font of CID-keyed CFF outlines, as the page shows them where Poppler prints the codes', async () => {
+    const pdf = legacyFontPdf({ name: 'HGIJPA+Arial-BoldMT', cids: BOLD_QUOTED_CIDS, widths: wArray(BOLD_QUOTED_WIDTHS), program: 'cff' });
+    expect(await textOf(pdf)).toBe(BOLD_QUOTED);
+  });
+
+  it('reads the smart quotes of an Arial font of TrueType outlines without cmap and post', async () => {
+    const widths = new Map([[3, 278], [20, 556], [47, 556], ...ARIAL_QUOTES]);
+    const pdf = legacyFontPdf({ name: 'ArialMT', cids: [47, 3, 179, 20, 180, 3, 181, 20, 182], widths: wArray(widths) });
+    expect(await textOf(pdf)).toBe('L \u201c1\u201d \u20181\u2019');
+  });
+
+  it('reads the smart quotes of a Times New Roman font against the widths pdfjs keeps for Times', async () => {
+    const widths = new Map([[3, 250], [76, 278], [87, 278], [86, 389], ...TIMES_QUOTES]);
+    const pdf = legacyFontPdf({ name: 'BGKUVQ+TimesNewRomanPSMT', cids: [76, 87, 182, 86, 3, 179, 76, 87, 180], widths: wArray(widths) });
+    expect(await textOf(pdf)).toBe('it\u2019s \u201cit\u201d');
+  });
+
+  /** Advance widths of those 22 glyphs in the installed Arial (2,048 units to the em, rounded to thousandths) and Times New Roman. */
+  const ARIAL_PAST_WIDTHS = [333, 333, 222, 222, 667, 278, 778, 722, 333, 556, 222, 667, 500, 611, 500, 667, 500, 500, 722, 500, 667, 667];
+  const TIMES_PAST_WIDTHS = [444, 444, 333, 333, 722, 333, 722, 722, 333, 611, 278, 556, 389, 611, 444, 722, 500, 444, 667, 444, 722, 722];
+
+  it.each([
+    ['ArialMT', 278, ARIAL_PAST_WIDTHS],
+    ['TimesNewRomanPSMT', 250, TIMES_PAST_WIDTHS],
+  ] as const)('gives each of the 22 glyph ids the character the installed fonts have there: %s', (name, spaceWidth, pastWidths) => {
+    const widths = new Map<number, number>([[3, spaceWidth], ...PAST_ORACLE.map(([gid], index) => [gid, pastWidths[index]] as const)]);
+    expect(standardOrderTexts(name, rangeOf(widths))).toEqual([[3, 0x20], ...PAST_ORACLE]);
+  });
+
+  it('reads the base table as before when one listed CID of the pdfjs list has another width than its glyph in Arial', () => {
+    const widths = new Map([...ARIAL_WIDTHS, [179, 333], [180, 500]]);
+    const entries = standardOrderTexts('ArialMT', rangeOf(widths));
+    expect(entries).toHaveLength(ARIAL_WIDTHS.size);
+    expect(entries.map(([cid]) => cid)).not.toContain(179);
+  });
+
+  it('gives a font that lists only CIDs past the table no text, since nothing shows the table is the order of that font', () => {
+    expect(standardOrderTexts('ArialMT', rangeOf(ARIAL_QUOTES))).toEqual([]);
+  });
+
+  it('gives no text to the CIDs past 171 that pdfjs does not list: endash at 177 and emdash at 178 of Arial', () => {
+    const widths = new Map([...ARIAL_WIDTHS, [177, 556], [178, 1000], ...ARIAL_QUOTES]);
+    expect(standardOrderTexts('ArialMT', rangeOf(widths)).map(([cid]) => cid)).not.toEqual(expect.arrayContaining([177]));
   });
 });
 
@@ -302,5 +374,14 @@ describe('real files written by print-to-PDF distillers', () => {
     for (const shown of ['Renesas Electronics hereby expressly disclaims any warranties', 'You shall not alter, modify, copy, or reverse engineer']) {
       expect(text).toContain(shown);
     }
+  }, TIMEOUT_MS);
+
+  it('cc-4000041.pdf: reads the smart quotes at glyph ids 179 and 180 of its Arial Bold CFF font, which Poppler prints as the codes ³ and ´', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'cc-4000041.pdf');
+    const text = (await convertFile(bytes, 'pdf', 'txt', {}, 'cc-4000041.pdf')).buffer.toString('utf8');
+    // The same page sets \u201cSwitch On\u201d in a font that has a ToUnicode map, which is the reading of these two lines.
+    expect(text).toContain('Logic \u201c1\u201d Switch On');
+    expect(text).toContain('Switch Output Logic \u201c1\u201d = Switch On');
+    expect(text).not.toMatch(/\u00b3|\u00b4/);
   }, TIMEOUT_MS);
 });

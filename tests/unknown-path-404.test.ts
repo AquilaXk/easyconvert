@@ -72,6 +72,7 @@ const NO_PAGE: Record<string, readonly string[]> = {
   'a utility page of a format its operation does not run': [
     'merge-xyz', 'merge-docx', 'merge-jpg', 'merge-txt', 'compress-gif', 'compress-docx', 'compress-xyz', 'compress-png', 'compress-jpg', 'merge-', 'compress-',
   ],
+  'the status page and the unit converter, which the site no longer has': ['status', 'unit-converter', 'lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet'],
   'a name that lowercases to a page name only by Unicode rules (the Kelvin sign is the capital of k)': ['lbs-to-\u212Ag', '\u212Ag-to-lbs', 'm\u212Av-to-mp4', 'm\u212Av-converter'],
   'a path that names a file': ['backup.zip', 'foo-to-bar.php', 'x.php-converter', 'zip-to-x.tar.gz', 'pdf-to-docx.php'],
   'a page name with a space, a tab, a line break or a slash around it': [
@@ -85,8 +86,7 @@ const PAGE: Record<string, readonly string[]> = {
   'the converter of a format or a category': ['pdf-converter', 'jpeg-converter', 'tar.gz-converter', 'video-converter', 'image-converter', 'document-converter', 'data-converter', 'Video-Converter'],
   'the OCR page': ['pdf-ocr'],
   'a utility page of a format its operation runs': ['merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'],
-  'a unit pair': ['lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet'],
-  'a site page': ['security', 'about', 'contact', 'accessibility', 'status'],
+  'a site page': ['security', 'about', 'contact', 'accessibility'],
 };
 
 describe('a path the site does not offer is answered 404 in every locale', () => {
@@ -229,24 +229,21 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
 describe('the page a path with no page shows', () => {
   const WORDING: Record<TestLocale, { code: string; title: (route: string) => string; description: string; home: string }> = {
     en: { code: '404', title: (route) => `The route ${route} could not be found.`, description: 'Sorry, the page you are looking for could not be found.', home: '/' },
-    ko: { code: '페이지 없음', title: (route) => `${route} 경로를 찾을 수 없어요.`, description: '주소를 다시 확인해 주세요.', home: '/ko' },
+    ko: { code: '404', title: () => '페이지를 찾을 수 없어요.', description: '찾으시는 페이지가 없거나 옮겨졌어요.', home: '/ko' },
   };
   const render = (locale: TestLocale, pathname: string) => {
     request.pathname = pathname;
     return renderDom(createElement(NotFoundPageView), locale);
   };
 
-  it.each(routing.locales)('shows in %s a thin header with the logo linked home alone, then a code, one heading that names the route and one sentence, and no footer', (locale) => {
+  it.each(routing.locales)('shows in %s the header and the footer of every page around a code, one heading that names the route and one sentence', (locale) => {
     const page = render(locale, locale === 'en' ? '/nonexistent-page-xyz' : '/ko/nonexistent-page-xyz');
-    const [header] = select(page, 'header');
-    expect(links(header)).toEqual([{ text: 'EasyConvert', href: WORDING[locale].home }]);
-    expect(allElements(header).filter((element) => ['nav', 'button'].includes(element.tagName))).toEqual([]);
-    expect(links(page)).toHaveLength(1);
+    expect(select(page, 'header')).toHaveLength(1);
+    expect(select(page, 'footer')).toHaveLength(1);
+    expect(links(select(page, 'header')[0]).some((link) => link.href === WORDING[locale].home)).toBe(true);
     const main = select(page, 'main')[0];
     expect(headings(main)).toEqual([WORDING[locale].title('nonexistent-page-xyz')]);
     expect(visibleText(main)).toBe(`${WORDING[locale].code} ${WORDING[locale].title('nonexistent-page-xyz')} ${WORDING[locale].description}`);
-    expect(select(page, 'header')).toHaveLength(1);
-    expect(select(page, 'footer')).toHaveLength(0);
   });
 
   it.each([

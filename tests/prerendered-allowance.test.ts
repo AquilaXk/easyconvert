@@ -8,11 +8,10 @@ vi.mock('next-intl/server', async (importOriginal) => ({
 }));
 
 import HomePage from '../src/app/[locale]/page';
-import UnitConverterPage from '../src/app/[locale]/unit-converter/page';
 import ConverterPage from '../src/app/[locale]/[slug]/page';
 
 /**
- * The page modules read the anonymous allowance when they render, which for the prerendered home and unit converter pages
+ * The page modules read the anonymous allowance when they render, which for the prerendered home page
  * is `next build`; the image passes ANONYMOUS_DAILY_LIMIT to the build for that reason (Dockerfile.web).
  */
 
@@ -20,7 +19,6 @@ const english = (params: Record<string, string> = {}) => Promise.resolve({ local
 
 const PAGES: Array<[string, () => Promise<ReactElement>]> = [
   ['the home page', () => HomePage({ params: english() })],
-  ['the unit converter page', () => UnitConverterPage({ params: english() })],
   ['a converter page', () => ConverterPage({ params: english({ slug: 'pdf-to-docx' }) })],
 ];
 
