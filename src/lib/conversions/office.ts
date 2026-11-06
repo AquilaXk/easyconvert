@@ -11,7 +11,7 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, DecompressionLimitError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { calibreEngineUnavailable, isCalibreEbookTarget } from './calibre-ebook-targets';
@@ -610,8 +610,9 @@ function odfParagraphText(content: string): string {
  */
 async function readOdtText(input: Buffer): Promise<string> {
   const zip = await openPackage(input, 'ODT');
+  const budget = new InflateBudget();
   const mimetypeEntry = zip.file('mimetype');
-  const mimetype = mimetypeEntry ? await readZipEntryText(mimetypeEntry, { maxBytes: MAX_MIMETYPE_ENTRY_BYTES }) : undefined;
+  const mimetype = mimetypeEntry ? await readZipEntryText(mimetypeEntry, { maxBytes: MAX_MIMETYPE_ENTRY_BYTES, budget }) : undefined;
   if (mimetype !== undefined && !mimetype.startsWith(ODF_TEXT_MIMETYPE_PREFIX)) {
     throw new ConversionFailedError('The ODT file is not an OpenDocument text document.');
   }
@@ -619,12 +620,12 @@ async function readOdtText(input: Buffer): Promise<string> {
   if (!content) throw new ConversionFailedError('The ODT file has no content.xml.');
   const manifest = zip.file(ODF_MANIFEST_PATH);
   if (manifest) {
-    const entry = safeExtractXmlElements(await readZipEntryText(manifest), 'manifest:file-entry').find((el) => el.attrs['manifest:full-path'] === 'content.xml');
+    const entry = safeExtractXmlElements(await readZipEntryText(manifest, { budget }), 'manifest:file-entry').find((el) => el.attrs['manifest:full-path'] === 'content.xml');
     if (entry?.content.includes('encryption-data')) {
       throw new EncryptedOfficeDocumentError('The ODT file is password protected, so its text cannot be read.');
     }
   }
-  const xml = decodeXmlBytes(await readZipEntryBytes(content), 'ODT content.xml');
+  const xml = decodeXmlBytes(await readZipEntryBytes(content, { budget }), 'ODT content.xml');
   assertWellFormedXml('content.xml', xml, 'ODT');
   const paragraphs: string[] = [];
   let totalChars = 0;
@@ -657,74 +658,57 @@ async function docxTextToPptx(text: string, options: ConversionOptions, baseName
   };
 }
 
-/**
- * DOCX Source Parser & Converter
- */
-async function convertDocxSource(
-  inputBuffer: Buffer,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
-  const zip = await openPackage(inputBuffer, 'DOCX');
-  const docXmlFile = zip.file('word/document.xml');
-  if (!docXmlFile) {
-    throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
-  }
-
-  const xmlText = await readZipEntryText(docXmlFile);
-  assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
-
-  // Documents without charts or drawing shapes are read into the structured model (styles, numbering, images,
-  // notes); the targets it serves are written from it. Documents with shapes keep the drawing-aware reader below.
-  const read = await readDocxModel(zip);
-  if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) {
-    return convertModelTarget(read.model, tgt, options, baseName);
-  }
-  if (!read.drawsShapes && tgt === 'pptx') {
-    return docxTextToPptx(documentToText(read.model), options, baseName);
-  }
-
-  // Load chart relationships and parts if present
+async function loadDocxChartMap(zip: JSZip, budget: InflateBudget): Promise<Map<string, string>> {
   const chartMap = new Map<string, string>();
+  const chartXmlByPath = new Map<string, string>();
+  const readCached = async (entry: JSZip.JSZipObject): Promise<string> => {
+    const existing = chartXmlByPath.get(entry.name);
+    if (existing !== undefined) return existing;
+    const text = await readZipEntryText(entry, { budget });
+    chartXmlByPath.set(entry.name, text);
+    return text;
+  };
   const docRelsFile = zip.file('word/_rels/document.xml.rels');
   if (docRelsFile) {
-    const relsXml = await readZipEntryText(docRelsFile);
+    const relsXml = await readZipEntryText(docRelsFile, { budget });
     for (const rEl of safeExtractXmlElements(relsXml, 'Relationship')) {
       const rId = rEl.attrs.Id;
       const target = rEl.attrs.Target;
-      if (rId && target) {
-        const chartPath = target.startsWith('/')
-          ? target.slice(1)
-          : target.startsWith('word/')
-          ? target
-          : `word/${target}`;
-        const cFile = zip.file(chartPath) || zip.file(target);
-        if (cFile) {
-          const cXml = await readZipEntryText(cFile);
-          chartMap.set(rId, cXml);
-        }
-      }
+      if (!rId || !target) continue;
+      const stripped = target.startsWith('/') ? target.slice(1) : target;
+      const chartPath = stripped.startsWith('word/') ? stripped : `word/${stripped}`;
+      const cFile = zip.file(chartPath) || zip.file(target);
+      if (cFile) chartMap.set(rId, await readCached(cFile));
     }
   }
   for (const fName of Object.keys(zip.files)) {
-    if (/^word\/charts\/chart\d+\.xml$/i.test(fName)) {
-      const cXml = await readZipEntryText(zip.files[fName]);
-      chartMap.set(fName, cXml);
-    }
+    if (/^word\/charts\/chart\d+\.xml$/i.test(fName)) chartMap.set(fName, await readCached(zip.files[fName]));
   }
+  return chartMap;
+}
 
-  // Load table styles from word/styles.xml if present
+async function convertDocxSource(inputBuffer: Buffer, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  const zip = await openPackage(inputBuffer, 'DOCX');
+  const docXmlFile = zip.file('word/document.xml');
+  if (!docXmlFile) throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
+  if (MODEL_DOCX_TARGETS.has(tgt) || tgt === 'pptx') {
+    const read = await readDocxModel(zip);
+    if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) return convertModelTarget(read.model, tgt, options, baseName);
+    if (!read.drawsShapes && tgt === 'pptx') return docxTextToPptx(documentToText(read.model), options, baseName);
+  }
+  const budget = new InflateBudget();
+  const xmlText = await readZipEntryText(docXmlFile, { budget });
+  assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
+  const chartMap = await loadDocxChartMap(zip, budget);
   let styleMap: Map<string, WordTableStyle> | undefined;
   const stylesFile = zip.file('word/styles.xml');
   if (stylesFile) {
     try {
-      const stylesXml = await readZipEntryText(stylesFile);
-      styleMap = parseWordStyles(stylesXml);
-    } catch {}
+      styleMap = parseWordStyles(await readZipEntryText(stylesFile, { budget }));
+    } catch (err) {
+      if (err instanceof DecompressionLimitError) throw err;
+    }
   }
-
-  // Extract paragraphs, headings, and tables in sequential document order
   const { paragraphs, tables, elements } = parseDocxXml(xmlText, chartMap, styleMap);
 
   // DOCX -> TXT
@@ -5095,14 +5079,14 @@ async function readWorksheetCharts(zip: JSZip, drawingParts: readonly string[], 
   for (const drawingPart of drawingParts) {
     const drawingFile = zip.file(drawingPart);
     if (!drawingFile) continue;
-    const drawingXml = await readZipEntryText(drawingFile);
+    const drawingXml = await readZipEntryText(drawingFile, { budget: options.budget });
     const chartIds = [...drawingXml.matchAll(/<(?:\w+:)?chart\b[^>]*?\br:id="([^"]+)"/g)].map((match) => match[1]);
     if (chartIds.length === 0) continue;
     const wanted = new Set(chartIds);
     const references = await readPartRelationships(zip, drawingPart, options, (id, _type, external) => !external && wanted.has(id));
     for (const chartId of chartIds) {
       const chartFile = zip.file(references.get(chartId)?.target ?? '');
-      const chart = chartFile ? parseOpenXmlChart(await readZipEntryText(chartFile)) : null;
+      const chart = chartFile ? parseOpenXmlChart(await readZipEntryText(chartFile, { budget: options.budget })) : null;
       if (chart) charts.push(chart);
     }
   }
@@ -5172,10 +5156,10 @@ async function readSheetAnnotations(
  * cells, and a table past that is refused (413) rather than cut. The items are handed to the list one at a time as the scanner finds
  * them; the list itself is held whole, bounded by that count and not by bytes.
  */
-async function readSharedStrings(zip: JSZip): Promise<string[]> {
+async function readSharedStrings(zip: JSZip, budget?: InflateBudget): Promise<string[]> {
   const sstFile = zip.file('xl/sharedStrings.xml');
   if (!sstFile) return [];
-  const sstXml = await readZipEntryText(sstFile);
+  const sstXml = await readZipEntryText(sstFile, { budget });
   const strings: string[] = [];
   const limit = { maxElements: XLSX_MAX_MATERIALISED_CELLS + 1 };
   safeExtractXmlElements(sstXml, 'si', { ...limit, onElement: (si) => strings.push(safeExtractAllText(withoutElements(si.content, PHONETIC_RUN), 't')) });
@@ -5193,10 +5177,12 @@ async function readSharedStrings(zip: JSZip): Promise<string[]> {
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
   const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
     ? (zipOrBuffer as JSZip)
-    : await JSZip.loadAsync(zipOrBuffer as Buffer | Uint8Array);
+    : await openPackage(zipOrBuffer as Buffer | Uint8Array, 'XLSX');
+
+  const partOptions = { budget: new InflateBudget(), relationships: newRelationshipAllowance() };
 
   // 1. Parse shared strings
-  const sharedStrings = await readSharedStrings(zip);
+  const sharedStrings = await readSharedStrings(zip, partOptions.budget);
 
   // 2. Parse NumberFormats, Fonts, Fills, Borders, and Cell Styles from xl/styles.xml
   const styleNumFmtMap = new Map<number, number>();
@@ -5213,7 +5199,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
   const stylesFile = zip.file('xl/styles.xml');
   if (stylesFile) {
-    const stylesXml = await readZipEntryText(stylesFile);
+    const stylesXml = await readZipEntryText(stylesFile, { budget: partOptions.budget });
 
     // Parse custom <numFmt numFmtId="..." formatCode="..."/>
     const numFmtRegex = /<numFmt\s+[^>]*?numFmtId="(\d+)"[^>]*?formatCode="([^"]*)"/gi;
@@ -5317,8 +5303,6 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   }
 
   // 3. Discover all worksheets from workbook.xml and workbook.xml.rels
-  // One decoded-byte budget (a sheet of a million rows is hundreds of MB of XML) and one relationship scan allowance for the workbook.
-  const partOptions = { budget: new InflateBudget(), relationships: newRelationshipAllowance() };
   const { workbookXml: wbXml, sheets: sheetEntries } = await discoverXlsxSheets(zip, partOptions);
   if (sheetEntries.length === 0) throw new ConversionFailedError(XLSX_NO_WORKSHEETS_MESSAGE);
   const printAreaBySheetIndex = new Map<number, OfficeWorksheetPrintArea>();
@@ -6038,7 +6022,7 @@ export async function parsePptxSlideSceneGraph(
           const dataPath = resolveZipPath('ppt/slides', target);
           const dataFile = zip.file(dataPath) || zip.file(`ppt/${target}`);
           if (dataFile) {
-            const dataXml = await readZipEntryText(dataFile);
+            const dataXml = await readZipEntryText(dataFile, { budget: media.xmlBudget });
             const ptEls = safeExtractXmlElements(dataXml, 'dgm:pt');
             const nodeTexts: string[] = [];
             for (const pt of ptEls) {
@@ -6178,7 +6162,7 @@ export async function parsePptxSlideSceneGraph(
           const chartPath = resolveZipPath('ppt/slides', target);
           const chartFile = zip.file(chartPath) || zip.file(`ppt/${target}`);
           if (chartFile) {
-            const chartXml = await readZipEntryText(chartFile);
+            const chartXml = await readZipEntryText(chartFile, { budget: media.xmlBudget });
             chartData = parseOpenXmlChart(chartXml);
           }
         } else if (
@@ -6419,6 +6403,7 @@ async function convertPptxSource(
   baseName: string
 ): Promise<ConversionResult> {
   const zip = await openPackage(inputBuffer, 'PPTX');
+  const slideBudget = new InflateBudget();
 
   // 1. Parse presentation slide size from ppt/presentation.xml (in EMUs, 12700 EMUs = 1 pt)
   let slideWidth = 960; // 16:9 standard width in points (12,192,000 EMUs)
@@ -6426,7 +6411,7 @@ async function convertPptxSource(
 
   const presFile = zip.file('ppt/presentation.xml');
   if (presFile) {
-    const presXml = await readZipEntryText(presFile);
+    const presXml = await readZipEntryText(presFile, { budget: slideBudget });
     const sldSzEl = safeExtractFirstXmlElement(presXml, 'p:sldSz');
     if (sldSzEl?.attrs.cx && sldSzEl?.attrs.cy) {
       const cx = parseInt(sldSzEl.attrs.cx, 10);
@@ -6448,11 +6433,11 @@ async function convertPptxSource(
     });
 
   const slides: VisualSlide[] = [];
-  const slideBudget = new InflateBudget();
   // Only the HTML and PDF targets draw pictures; an HTML page also cannot hold more than a string can.
   const media = new PptxMedia({
     enabled: tgt === 'html' || tgt === 'pdf',
     maxPartBytes: tgt === 'html' ? Math.floor(HTML_MAX_EMBEDDED_BASE64_CHARS / 4) * 3 : undefined,
+    xmlBudget: slideBudget,
   });
 
   for (let i = 0; i < slideFiles.length; i++) {
@@ -6479,7 +6464,7 @@ async function convertPptxSource(
     const relsFile = zip.file(relsFileName);
     const relsMap = new Map<string, string>();
     if (relsFile) {
-      const relsXml = await readZipEntryText(relsFile);
+      const relsXml = await readZipEntryText(relsFile, { budget: slideBudget });
       for (const rEl of safeExtractXmlElements(relsXml, 'Relationship')) {
         if (rEl.attrs.Id && rEl.attrs.Target) {
           relsMap.set(rEl.attrs.Id, rEl.attrs.Target);
@@ -6487,16 +6472,7 @@ async function convertPptxSource(
       }
     }
 
-    const shapes = await parsePptxSlideSceneGraph(
-      xml,
-      identityMatrix(),
-      slideWidth,
-      slideHeight,
-      relsMap,
-      zip,
-      texts,
-      media
-    );
+    const shapes = await parsePptxSlideSceneGraph(xml, identityMatrix(), slideWidth, slideHeight, relsMap, zip, texts, media);
 
     slides.push({
       number: i + 1,
@@ -6579,9 +6555,10 @@ async function convertOdpSource(
 ): Promise<ConversionResult> {
   const slides: { number: number; texts: string[] }[] = [];
   const zip = await openPackage(inputBuffer, 'ODP');
+  const budget = new InflateBudget();
   const contentXmlFile = zip.file('content.xml');
   if (!contentXmlFile) throw new ConversionFailedError('The ODP file has no content.xml.');
-  const xml = await readZipEntryText(contentXmlFile);
+  const xml = await readZipEntryText(contentXmlFile, { budget });
   assertWellFormedXml('content.xml', xml, 'ODP');
   let pageNum = 1;
   for (const pageEl of safeExtractXmlElements(xml, 'draw:page')) {
@@ -6666,11 +6643,11 @@ function odfElementText(xml: string, tag: string): string | undefined {
  * The chart in an OpenDocument chart package (the `package_stream` an office suite stores in the compound file of an embedded
  * chart): its type, titles, and the table that holds its data (series names in the header row, categories in the first column).
  */
-async function readOdfChartPackage(bytes: Buffer): Promise<OpenXmlChartData | null> {
-  const zip = await JSZip.loadAsync(bytes);
+async function readOdfChartPackage(bytes: Buffer, budget = new InflateBudget()): Promise<OpenXmlChartData | null> {
+  const zip = await openPackage(bytes, 'ODF chart');
   const contentFile = zip.file('content.xml');
   if (!contentFile) return null;
-  const content = await readZipEntryText(contentFile);
+  const content = await readZipEntryText(contentFile, { budget });
   const chartEl = safeExtractFirstXmlElement(content, 'chart:chart');
   if (!chartEl) return null;
   const plotStart = chartEl.content.indexOf('<chart:plot-area');
@@ -6713,13 +6690,14 @@ async function readOdfChartPackage(bytes: Buffer): Promise<OpenXmlChartData | nu
  */
 async function readEmbeddedCharts(objects: readonly Buffer[], slideNumber: number, warnings: string[]): Promise<OpenXmlChartData[]> {
   const charts: OpenXmlChartData[] = [];
+  const chartBudget = new InflateBudget();
   for (const object of objects) {
     if (!isCfbfContainer(object)) continue;
     try {
       const container = parseCfbf(object);
       const odfPackage = container.streams.get(ODF_CHART_STORAGE_STREAM);
       if (odfPackage !== undefined) {
-        const chart = await readOdfChartPackage(odfPackage);
+        const chart = await readOdfChartPackage(odfPackage, chartBudget);
         if (chart) charts.push(chart);
         continue;
       }
@@ -6813,12 +6791,8 @@ async function convertPotxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(inputBuffer);
-  } catch {
-    throw new ConversionFailedError('The POTX file is not a valid OpenXML package.');
-  }
+  const zip = await openPackage(inputBuffer, 'POTX', 'OpenXML package');
+  const budget = new InflateBudget();
   if (!zip.file('ppt/presentation.xml')) {
     throw new ConversionFailedError('The POTX package has no ppt/presentation.xml part.');
   }
@@ -6828,7 +6802,7 @@ async function convertPotxSource(
     if (!contentTypes) {
       throw new ConversionFailedError(`The POTX package has no ${CONTENT_TYPES_PART} part.`);
     }
-    const xml = (await readZipEntryText(contentTypes)).replace(POTX_TEMPLATE_MAIN_CONTENT_TYPE, PPTX_MAIN_CONTENT_TYPE);
+    const xml = (await readZipEntryText(contentTypes, { budget })).replace(POTX_TEMPLATE_MAIN_CONTENT_TYPE, PPTX_MAIN_CONTENT_TYPE);
     zip.file(CONTENT_TYPES_PART, xml);
     const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     return {
@@ -7376,7 +7350,7 @@ interface ComicPage {
 }
 
 /** The page images of a ZIP comic archive in natural name order; each is read, size-checked and decoded only when bound. */
-function zipComicPages(zip: JSZip, label: string): ComicPage[] {
+function zipComicPages(zip: JSZip, label: string, budget = new InflateBudget()): ComicPage[] {
   return Object.keys(zip.files)
     .filter((name) => !zip.files[name].dir && CBZ_IMAGE_PATTERN.test(name) && !CBZ_JUNK_MEMBER_PATTERN.test(name))
     .sort(compareNaturally)
@@ -7387,7 +7361,7 @@ function zipComicPages(zip: JSZip, label: string): ComicPage[] {
         if (declared !== undefined && declared > CBZ_MAX_PAGE_BYTES) {
           throw new ConversionFailedError(`CBZ page "${name}" declares ${declared} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
         }
-        return readZipEntryBytes(zip.files[name], { maxBytes: CBZ_MAX_PAGE_BYTES });
+        return readZipEntryBytes(zip.files[name], { maxBytes: CBZ_MAX_PAGE_BYTES, budget });
       },
     }));
 }
@@ -7446,13 +7420,9 @@ async function convertCbzSource(
   if (tgt !== 'pdf') {
     throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
   }
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(inputBuffer);
-  } catch {
-    throw new ConversionFailedError('The CBZ file is not a valid ZIP archive.');
-  }
-  return bindComicPagesToPdf(zipComicPages(zip, ''), 'CBZ', baseName);
+  const zip = await openPackage(inputBuffer, 'CBZ', 'ZIP archive');
+  const budget = new InflateBudget();
+  return bindComicPagesToPdf(zipComicPages(zip, '', budget), 'CBZ', baseName);
 }
 
 /** Comic Book Collection (CBC): the most volumes one collection may list, and the largest volume archive read. */
@@ -7464,10 +7434,10 @@ const CBC_VOLUME_PATTERN = /\.(cbz|cbr|cb7)$/i;
 const CBC_LISTING_LINE = /^(.+?\.(?:cbz|cbr|cb7))\s*:/i;
 
 /** The page images of one volume of a collection: a CBZ is read lazily, a CBR or CB7 is unpacked by the archive readers. */
-async function cbcVolumePages(name: string, bytes: Buffer): Promise<ComicPage[]> {
+async function cbcVolumePages(name: string, bytes: Buffer, budget: InflateBudget): Promise<ComicPage[]> {
   const lower = name.toLowerCase();
   if (lower.endsWith('.cbz')) {
-    return zipComicPages(await openPackage(bytes, `CBC volume ${name}`), name);
+    return zipComicPages(await openPackage(bytes, `CBC volume ${name}`), name, budget);
   }
   let members: { filename: string; buffer: Buffer }[];
   try {
@@ -7496,6 +7466,8 @@ async function cbcVolumePages(name: string, bytes: Buffer): Promise<ComicPage[]>
  */
 async function readCbcPages(input: Buffer): Promise<ComicPage[]> {
   const zip = await openPackage(input, 'CBC');
+  const outerBudget = new InflateBudget(CBC_MAX_VOLUME_BYTES);
+  const pageBudget = new InflateBudget();
   const present = Object.keys(zip.files).filter((n) => !zip.files[n].dir && CBC_VOLUME_PATTERN.test(n) && !CBZ_JUNK_MEMBER_PATTERN.test(n));
   if (present.length === 0) throw new ConversionFailedError('The CBC archive holds no comic volumes (.cbz, .cbr or .cb7).');
   if (present.length > CBC_MAX_VOLUMES) throw new ConversionFailedError(`The CBC archive holds ${present.length} volumes, more than the ${CBC_MAX_VOLUMES} volume limit.`);
@@ -7503,7 +7475,7 @@ async function readCbcPages(input: Buffer): Promise<ComicPage[]> {
   const listed: string[] = [];
   const listing = zip.file(CBC_LISTING_NAME);
   if (listing) {
-    for (const line of (await readZipEntryText(listing)).split(/\r?\n/)) {
+    for (const line of (await readZipEntryText(listing, { budget: outerBudget })).split(/\r?\n/)) {
       const volume = CBC_LISTING_LINE.exec(line.trim())?.[1];
       if (volume === undefined || listed.includes(volume)) continue;
       if (!present.includes(volume)) throw new ConversionFailedError(`The CBC listing names "${volume}", which is not in the archive.`);
@@ -7514,8 +7486,8 @@ async function readCbcPages(input: Buffer): Promise<ComicPage[]> {
 
   const pages: ComicPage[] = [];
   for (const volume of ordered) {
-    const bytes = await readPackageEntry(zip, volume, CBC_MAX_VOLUME_BYTES, 'CBC listing'); // NOSONAR S9382: one volume in memory at a time
-    pages.push(...(await cbcVolumePages(volume, bytes))); // NOSONAR S9382: sequential to bound memory
+    const bytes = await readPackageEntry(zip, volume, CBC_MAX_VOLUME_BYTES, 'CBC listing', outerBudget); // NOSONAR S9382: one volume in memory at a time
+    pages.push(...(await cbcVolumePages(volume, bytes, pageBudget))); // NOSONAR S9382: sequential to bound memory
     if (pages.length > CBZ_MAX_PAGES) throw new ConversionFailedError(`The CBC collection holds more than the ${CBZ_MAX_PAGES} page limit.`);
   }
   return pages;
@@ -8142,12 +8114,13 @@ export async function convertOdsSource(
   baseName: string
 ): Promise<ConversionResult> {
   const zip = await openPackage(inputBuffer, 'ODS');
+  const budget = new InflateBudget();
   const contentXml = zip.file('content.xml');
   if (!contentXml) {
     throw new ConversionFailedError('Invalid ODS workbook: content.xml not found.');
   }
 
-  const xml = await readZipEntryText(contentXml);
+  const xml = await readZipEntryText(contentXml, { budget });
   assertWellFormedXml('content.xml', xml, 'ODS');
   const rows: string[][] = [];
   const rowElements = safeExtractXmlElements(xml, 'table:table-row');
@@ -9374,14 +9347,10 @@ const ODF_GRAPHICS_MIMETYPE_PREFIX = 'application/vnd.oasis.opendocument.graphic
  * with a typed 503 error. It never answers with the drawing's text under another format's name.
  */
 export async function assertOpenDocumentGraphic(inputBuffer: Buffer, src: string): Promise<void> {
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(inputBuffer);
-  } catch {
-    throw new ConversionFailedError(`The ${src.toUpperCase()} file is not a valid OpenDocument package.`);
-  }
+  const zip = await openPackage(inputBuffer, src.toUpperCase(), 'OpenDocument package');
+  const budget = new InflateBudget();
   const mimetypeEntry = zip.file('mimetype');
-  const mimetype = mimetypeEntry ? await readZipEntryText(mimetypeEntry, { maxBytes: MAX_MIMETYPE_ENTRY_BYTES }) : undefined;
+  const mimetype = mimetypeEntry ? await readZipEntryText(mimetypeEntry, { maxBytes: MAX_MIMETYPE_ENTRY_BYTES, budget }) : undefined;
   if (!mimetype?.startsWith(ODF_GRAPHICS_MIMETYPE_PREFIX) || !zip.file('content.xml')) {
     throw new ConversionFailedError(`The ${src.toUpperCase()} file is not an OpenDocument drawing.`);
   }
@@ -9396,11 +9365,12 @@ async function convertOpenDocumentGraphicSource(inputBuffer: Buffer, src: string
 async function readGenericEbookText(input: Buffer, src: string): Promise<string> {
   if (src === 'htmlz' || src === 'txtz') {
     const zip = await openPackage(input, src.toUpperCase());
+    const budget = new InflateBudget();
     const mainName = src === 'htmlz' ? 'index.html' : 'index.txt';
     const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
     const entryName = names.includes(mainName) ? mainName : names.sort((a, b) => a.localeCompare(b)).find((name) => (src === 'htmlz' ? /\.(x?html?)$/i : /\.txt$/i).test(name));
     if (!entryName) throw new ConversionFailedError(`The ${src.toUpperCase()} archive has no ${mainName}.`);
-    const decoded = decodeXmlBytes(await readPackageEntry(zip, entryName, EPUB_MAX_CHAPTER_BYTES, `${src.toUpperCase()} archive`), `${src.toUpperCase()} text`);
+    const decoded = decodeXmlBytes(await readPackageEntry(zip, entryName, EPUB_MAX_CHAPTER_BYTES, `${src.toUpperCase()} archive`, budget), `${src.toUpperCase()} text`);
     const text = src === 'htmlz' ? htmlToText(decoded) : decoded.trim();
     if (text === '') throw new ConversionFailedError(`The ${src.toUpperCase()} archive holds no text.`);
     return text;

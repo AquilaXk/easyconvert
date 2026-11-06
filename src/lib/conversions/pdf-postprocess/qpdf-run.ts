@@ -5,6 +5,7 @@ import path from 'node:path';
 import { EngineUnavailableError, InvalidPageRangeError, PdfPostprocessError } from '../../types';
 import {
   SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
   type SandboxedExecutionResult,
@@ -24,6 +25,7 @@ import { PAGE_TREE_LOOP_MESSAGE, reportsPageTreeLoop } from './page-tree-loop';
 
 /** Longest qpdf may spend on one run; a hostile document cannot hold a job beyond it. */
 export const QPDF_RUN_TIMEOUT_MS = 60_000;
+export const QPDF_MEMORY_LIMIT_MB = 512;
 /** qpdf rewrites a document into one of about its own size; the output cap is this multiple of the input (with a floor). */
 const QPDF_OUTPUT_SIZE_FACTOR = 4;
 const QPDF_MIN_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -100,6 +102,9 @@ export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir'
   if (error instanceof SandboxedBufferLimitError) {
     return new PdfPostprocessError(`${action} failed: the result exceeds the allowed size.`);
   }
+  if (error instanceof SandboxedMemoryLimitError) {
+    return new PdfPostprocessError(`${action} failed: the document exceeds the ${QPDF_MEMORY_LIMIT_MB} MB memory limit.`);
+  }
   if (error instanceof SandboxedTimeoutError) {
     return new PdfPostprocessError(`${action} failed: it took longer than ${QPDF_RUN_TIMEOUT_MS / 1000} seconds.`);
   }
@@ -136,6 +141,7 @@ export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocati
       cwd: invocation.cwd ?? workspace.dir,
       timeoutMs: QPDF_RUN_TIMEOUT_MS,
       maxBuffer: workspace.maxOutputBytes + QPDF_STDERR_SLACK_BYTES,
+      memoryLimitMb: QPDF_MEMORY_LIMIT_MB,
       networkIsolated: true,
       stdin: invocation.stdin,
       signal: invocation.signal,

@@ -1,6 +1,7 @@
 import { ConversionFailedError } from '../types';
 import type { ConversionResult } from '../types';
 import { openPackage } from './package-access';
+import { InflateBudget } from './bounded-inflate';
 import { readZipEntryText } from './zip-entry-reader';
 
 /** The Office Open XML package families, each read by the reader of its plain format. */
@@ -78,6 +79,7 @@ export async function ooxmlVariantAsPlainPackage(
   const label = variant.toUpperCase();
   const facts = FAMILY_FACTS[family];
   const zip = await openPackage(inputBuffer, label);
+  const budget = new InflateBudget();
   const typesEntry = zip.file(CONTENT_TYPES_PART);
   if (!typesEntry) throw new ConversionFailedError(`The ${label} package has no ${CONTENT_TYPES_PART} part.`);
   if (!zip.file(facts.mainPart.slice(1))) {
@@ -86,7 +88,7 @@ export async function ooxmlVariantAsPlainPackage(
 
   const macroParts = new Set<string>();
   const relationshipsEntry = zip.file(facts.mainRelationships);
-  let relationships = relationshipsEntry ? await readZipEntryText(relationshipsEntry) : '';
+  let relationships = relationshipsEntry ? await readZipEntryText(relationshipsEntry, { budget }) : '';
   relationships = relationships.replace(XML_ELEMENT, (element) => {
     const type = attribute(element, 'Type');
     const target = attribute(element, 'Target');
@@ -95,7 +97,7 @@ export async function ooxmlVariantAsPlainPackage(
     return '';
   });
 
-  const types = (await readZipEntryText(typesEntry)).replace(XML_ELEMENT, (element) => {
+  const types = (await readZipEntryText(typesEntry, { budget })).replace(XML_ELEMENT, (element) => {
     const contentType = attribute(element, 'ContentType');
     if (contentType === undefined) return element;
     if (MACRO_CONTENT_TYPE.test(contentType)) return '';

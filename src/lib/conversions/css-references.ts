@@ -199,7 +199,10 @@ class CssScanner {
     if (ch === MARKUP_OPEN) refuseMarkup();
     if (ch === BACKSLASH) refuseEscape();
     if (isNonAscii(ch)) refuseNonAscii();
-    if (ch === '@' && startsIdentifier(css, this.i + 1)) {
+    if (ch === '@') {
+      if (!startsIdentifier(css, this.i + 1)) {
+        throw new ConversionFailedError('HTML CSS may not contain "@" unless followed directly by an at-rule name');
+      }
       this.i++;
       return { kind: 'at', value: lowerAscii(this.identifier()) };
     }

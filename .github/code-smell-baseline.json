@@ -616,7 +616,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3479
+    "maxValue": 3459
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",
@@ -1288,7 +1288,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9557
+    "maxValue": 9527
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1323,12 +1323,6 @@
     "rule": "no-nested-ternary",
     "function": "computeGroupTransformMatrix",
     "count": 2
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "no-nested-ternary",
-    "function": "convertDocxSource",
-    "count": 1
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2239,7 +2233,7 @@
     "rule": "complexity",
     "function": "isFormatCompatibleWithMagicBytes",
     "count": 1,
-    "maxValue": 83
+    "maxValue": 67
   },
   {
     "file": "src/lib/registry.ts",
@@ -2253,7 +2247,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3307
+    "maxValue": 3285
   },
   {
     "file": "src/lib/security/memory-shredder.ts",

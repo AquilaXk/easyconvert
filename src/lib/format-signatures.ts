@@ -8,7 +8,7 @@
  * is the source of the byte pattern; where they disagree with the format specification, the specification decides.
  */
 
-import { compoundFileVerdict } from './compound-file-kind';
+import { compoundFileVerdict, isNonOfficeCompoundFile } from './compound-file-kind';
 
 /**
  * How many leading bytes of a file the spoof check reads (and the storage layer hands it): enough for every rule here. A
@@ -45,7 +45,7 @@ export function gzippedXmlRootOf(ext: string): string | undefined {
 }
 
 /** Names that a gzip member may carry. */
-const GZIP_EXTENSIONS: ReadonlySet<string> = new Set(['gz', 'tgz', 'gzip', 'tar.gz']);
+export const GZIP_EXTENSIONS: ReadonlySet<string> = new Set(['gz', 'tgz', 'gzip', 'tar.gz']);
 /** gzip member header (RFC 1952 section 2.3): ID1, ID2, compression method, flags, then MTIME, XFL and OS. */
 const GZIP_HEADER_BYTES = 10;
 const GZIP_DEFLATE_METHOD = 8;
@@ -199,7 +199,8 @@ export const CGM_ENCODING_PROBE_BYTES = 64;
 
 /** Whether the bytes are a clear-text CGM, the one encoding of a format the office suite reads that the in-process parser reads too. */
 export function isClearTextCgm(head: Uint8Array): boolean {
-  return CLEAR_TEXT_CGM_PATTERN.test(LATIN1.decode(head.subarray(0, CGM_ENCODING_PROBE_BYTES)));
+  const probe = head.subarray(0, CGM_ENCODING_PROBE_BYTES);
+  return !probe.includes(0) && CLEAR_TEXT_CGM_PATTERN.test(LATIN1.decode(probe));
 }
 
 /** Container signatures that the registry reads in more than one place. */
@@ -277,20 +278,8 @@ export function pdfFromHeader<T extends Uint8Array>(pdf: T): T {
   return offset > 0 ? (pdf.subarray(offset) as T) : pdf;
 }
 
-/** Images whose readers accept nothing but their signature at the first byte. */
-const SIGNATURE_FIRST_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['png', 'gif', 'webp']);
-
-/**
- * Whether a file whose first bytes the registry sniffs as no kind must be refused under the name `ext`: always as a PNG,
- * GIF or WebP image, and as a PDF unless its header lies in the first 1,024 bytes. A file of a sniffed kind never reaches
- * this test; the registry compares that kind with the extension, and a kind it has no comparison for (a font, for one)
- * passes under any name, as before this test existed. What passes here as a PDF is every file that carries `%PDF-` in its
- * first kilobyte, whatever else it is (a PostScript program behind a line break, an HTML page), so a tool that decides
- * what a file is from its first bytes must be handed `pdfFromHeader` of it, not the upload.
- */
 export function refusedWithoutSignature(ext: string, buf: Uint8Array): boolean {
-  if (ext === 'pdf') return !hasPdfHeader(buf);
-  return SIGNATURE_FIRST_IMAGE_EXTENSIONS.has(ext);
+  return ext === 'pdf' && !hasPdfHeader(buf);
 }
 
 /** The MIME type of the first fixed signature the buffer opens with; undefined when it opens with none. */
@@ -393,7 +382,7 @@ function isCgm(buf: Uint8Array): boolean {
  * cannot be searched, so a file that fills the whole header window with no such name is taken on its container signature.
  */
 function isVisio(buf: Uint8Array): boolean {
-  if (!startsWithBytes(buf, CFBF_MAGIC)) return false;
+  if (!startsWithBytes(buf, CFBF_MAGIC) || isNonOfficeCompoundFile(buf)) return false;
   return includesBytes(buf, VISIO_STREAM_NAME) || buf.length === HEADER_WINDOW_BYTES;
 }
 
@@ -540,7 +529,84 @@ const COMPOUND_FILE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
   [...COMPOUND_FILE_ONLY_EXTENSIONS].map((ext) => [ext, (buf: Uint8Array) => isCompoundFileOfKind(ext, buf)])
 );
 
-/** The sources the office suite imports that open with a signature of their own, so that no other kind of file reaches the suite under their name. */
+const LOTUS_WORD_PRO_MAGICS: readonly (readonly number[])[] = [
+  [0x57, 0x6f, 0x72, 0x64, 0x50, 0x72, 0x6f, 0x00],
+  [0x57, 0x6f, 0x72, 0x64, 0x50, 0x72, 0x6f, 0x0d],
+];
+const WORDPERFECT_MAGIC = [0xff, 0x57, 0x50, 0x43];
+const SONY_LRF_MAGIC = [0x4c, 0x00, 0x52, 0x00, 0x46, 0x00, 0x00, 0x00];
+const PALM_PDB_NAME_BYTES = 32;
+const PALM_PDB_TYPE_OFFSET = 60;
+const PALM_PDB_TYPE_BYTES = 8;
+const PALM_PDB_NEXT_RECORD_LIST_OFFSET = 72;
+const PALM_PDB_NUM_RECORDS_OFFSET = 76;
+const PALM_PDB_HEADER_BYTES = 78;
+const PALM_PDB_SIGNATURES: ReadonlySet<string> = new Set([
+  'TEXtREAd',
+  'DataPlkr',
+  'TEXtTlDc',
+  'zTXTGPlm',
+  'PNRdPPrs',
+  'PNRdPPr2',
+  'DataSprd',
+  'ToGoToGo',
+]);
+const PALM_MOBI_SIGNATURES: ReadonlySet<string> = new Set(['BOOKMOBI', 'TEXtREAd']);
+const NON_PALM_ASCII_PREFIXES: readonly (readonly number[])[] = [
+  ID3_MAGIC,
+  [0x52, 0x49, 0x46, 0x46],
+  [0x77, 0x4f, 0x46, 0x46],
+  [0x77, 0x4f, 0x46, 0x32],
+  [0x4f, 0x54, 0x54, 0x4f],
+  [0x49, 0x53, 0x4f, 0x2d, 0x31, 0x30, 0x33, 0x30, 0x33, 0x2d, 0x32, 0x31],
+];
+
+function isLotusWordPro(buf: Uint8Array): boolean {
+  return LOTUS_WORD_PRO_MAGICS.some((magic) => startsWithBytes(buf, magic));
+}
+
+function isWordPerfect(buf: Uint8Array): boolean {
+  return startsWithBytes(buf, WORDPERFECT_MAGIC) || isCompoundFileOfKind('wpd', buf);
+}
+
+function isSonyLrf(buf: Uint8Array): boolean {
+  return startsWithBytes(buf, SONY_LRF_MAGIC);
+}
+
+function hasValidPalmDbName(buf: Uint8Array): boolean {
+  if (buf[0] < 0x20 || buf[0] === 0x7f || buf[0] === 0xff) return false;
+  let seenNul = false;
+  for (let i = 0; i < PALM_PDB_NAME_BYTES; i++) {
+    const b = buf[i];
+    if (b === 0) {
+      seenNul = true;
+    } else if (seenNul || b < 0x20 || b === 0x7f || b === 0xff) {
+      return false;
+    }
+  }
+  return seenNul;
+}
+
+function hasPalmDbSignature(buf: Uint8Array, signatures: ReadonlySet<string>): boolean {
+  if (buf.length < PALM_PDB_HEADER_BYTES || !hasValidPalmDbName(buf) || isLotusWordPro(buf)) return false;
+  if (NON_PALM_ASCII_PREFIXES.some((prefix) => startsWithBytes(buf, prefix))) return false;
+  if (LATIN1.decode(buf.subarray(0, PALM_PDB_HEADER_BYTES)).includes(PDF_HEADER) || sniffFixedSignature(buf) !== undefined || isDjvu(buf)) return false;
+  if (dataView(buf).getUint32(PALM_PDB_NEXT_RECORD_LIST_OFFSET, false) !== 0) return false;
+  const numRecords = (buf[PALM_PDB_NUM_RECORDS_OFFSET] << 8) | buf[PALM_PDB_NUM_RECORDS_OFFSET + 1];
+  if (numRecords < 1) return false;
+  return signatures.has(LATIN1.decode(buf.subarray(PALM_PDB_TYPE_OFFSET, PALM_PDB_TYPE_OFFSET + PALM_PDB_TYPE_BYTES)));
+}
+
+function isPalmDocPdb(buf: Uint8Array): boolean {
+  return hasPalmDbSignature(buf, PALM_PDB_SIGNATURES);
+}
+
+function isMobiPalmDb(buf: Uint8Array): boolean {
+  return hasPalmDbSignature(buf, PALM_MOBI_SIGNATURES);
+}
+
+const PALM_DB_EXTENSIONS: ReadonlySet<string> = new Set(['pdb', 'mobi', 'azw', 'azw3', 'azw4', 'prc']);
+
 const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
   djvu: isDjvu,
   djv: isDjvu,
@@ -549,14 +615,29 @@ const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
   cgm: isCgm,
   vsd: isVisio,
   cdr: isCorelDraw,
+  lwp: isLotusWordPro,
+  wpd: isWordPerfect,
+  lrf: isSonyLrf,
+  pdb: isPalmDocPdb,
+  mobi: isMobiPalmDb,
+  azw: isMobiPalmDb,
+  azw3: isMobiPalmDb,
+  azw4: isMobiPalmDb,
+  prc: isMobiPalmDb,
   ...COMPOUND_FILE_CHECKS,
 };
 
-/**
- * Whether the bytes carry the signature of `ext`; undefined for a format whose signature is not checked here. A DjVu file
- * is no other format, so it is refused under any other name whose signature is not checked here.
- */
-export function ownSignatureVerdict(ext: string, buf: Uint8Array): boolean | undefined {
-  if (Object.hasOwn(OWN_SIGNATURE_CHECKS, ext)) return OWN_SIGNATURE_CHECKS[ext](buf);
-  return isDjvu(buf) ? false : undefined;
+export function ownSignatureVerdict(ext: string, buf: Uint8Array, sniffed?: string): boolean | undefined {
+  if (Object.hasOwn(OWN_SIGNATURE_CHECKS, ext)) {
+    if (sniffed !== undefined && PALM_DB_EXTENSIONS.has(ext)) return false;
+    return OWN_SIGNATURE_CHECKS[ext](buf);
+  }
+  const isForeignOwnSignature =
+    isDjvu(buf) ||
+    isLotusWordPro(buf) ||
+    isSonyLrf(buf) ||
+    (sniffed === undefined && (isPalmDocPdb(buf) || isMobiPalmDb(buf))) ||
+    startsWithBytes(buf, WORDPERFECT_MAGIC) ||
+    (startsWithBytes(buf, CFBF_MAGIC) && isNonOfficeCompoundFile(buf));
+  return isForeignOwnSignature ? false : undefined;
 }

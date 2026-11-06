@@ -1,4 +1,5 @@
 import type JSZip from 'jszip';
+import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes } from './zip-entry-reader';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { decodeXmlBytes, openPackage, readPackageEntry, resolvePackagePath } from './package-access';
@@ -51,11 +52,11 @@ export interface EpubPackage {
   read(path: string, what: string): Promise<Buffer>;
 }
 
-async function encryptedPaths(zip: JSZip): Promise<Set<string>> {
+async function encryptedPaths(zip: JSZip, budget: InflateBudget): Promise<Set<string>> {
   const encrypted = new Set<string>();
   const file = zip.file(EPUB_ENCRYPTION_PATH);
   if (!file) return encrypted;
-  const root = parseXmlTree(decodeXmlBytes(await readZipEntryBytes(file), 'EPUB encryption.xml'), EPUB_ENCRYPTION_PATH, 'EPUB');
+  const root = parseXmlTree(decodeXmlBytes(await readZipEntryBytes(file, { budget }), 'EPUB encryption.xml'), EPUB_ENCRYPTION_PATH, 'EPUB');
   const stack: XmlElement[] = [root];
   while (stack.length > 0) {
     const element = stack.pop() as XmlElement;
@@ -77,9 +78,10 @@ function text(element: XmlElement | undefined): string | undefined {
 
 export async function openEpubPackage(input: Buffer): Promise<EpubPackage> {
   const zip = await openPackage(input, 'EPUB');
+  const budget = new InflateBudget();
   const container = zip.file(EPUB_CONTAINER_PATH);
   if (!container) throw new ConversionFailedError(`The EPUB has no ${EPUB_CONTAINER_PATH}, so its package document cannot be found.`);
-  const containerRoot = parseXmlTree(decodeXmlBytes(await readZipEntryBytes(container), 'EPUB container.xml'), EPUB_CONTAINER_PATH, 'EPUB');
+  const containerRoot = parseXmlTree(decodeXmlBytes(await readZipEntryBytes(container, { budget }), 'EPUB container.xml'), EPUB_CONTAINER_PATH, 'EPUB');
   const rootfiles = firstChild(containerRoot, 'rootfiles');
   const rootfile = (rootfiles ? childElements(rootfiles, 'rootfile') : []).find(
     (el) => el.attrs.get('full-path') && (el.attrs.get('media-type') ?? EPUB_PACKAGE_MEDIA_TYPE) === EPUB_PACKAGE_MEDIA_TYPE
@@ -88,7 +90,7 @@ export async function openEpubPackage(input: Buffer): Promise<EpubPackage> {
   const packagePath = resolvePackagePath('', rootfile.attrs.get('full-path') as string);
   const packageDirectory = packagePath.includes('/') ? packagePath.slice(0, packagePath.lastIndexOf('/') + 1) : '';
   const packageRoot = parseXmlTree(
-    decodeXmlBytes(await readPackageEntry(zip, packagePath, EPUB_MAX_CHAPTER_BYTES, 'EPUB container.xml'), 'EPUB package document'),
+    decodeXmlBytes(await readPackageEntry(zip, packagePath, EPUB_MAX_CHAPTER_BYTES, 'EPUB container.xml', budget), 'EPUB package document'),
     packagePath,
     'EPUB'
   );
@@ -120,7 +122,7 @@ export async function openEpubPackage(input: Buffer): Promise<EpubPackage> {
   if (itemrefs.length > EPUB_MAX_SPINE_ITEMS) {
     throw new PayloadLimitError(`The EPUB spine lists more than ${EPUB_MAX_SPINE_ITEMS} content documents.`);
   }
-  const encrypted = await encryptedPaths(zip);
+  const encrypted = await encryptedPaths(zip, budget);
   const spine: EpubSpineItem[] = itemrefs.map((itemref) => {
     const idref = itemref.attrs.get('idref') ?? '';
     const item = manifest.get(idref);
@@ -135,6 +137,6 @@ export async function openEpubPackage(input: Buffer): Promise<EpubPackage> {
     language: text(metadata ? firstChild(metadata, 'language') : undefined),
     spine,
     items,
-    read: (path, what) => readPackageEntry(zip, path, EPUB_MAX_CHAPTER_BYTES, what),
+    read: (path, what) => readPackageEntry(zip, path, EPUB_MAX_CHAPTER_BYTES, what, budget),
   };
 }

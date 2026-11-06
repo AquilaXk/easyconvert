@@ -1,4 +1,5 @@
 import type JSZip from 'jszip';
+import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes } from './zip-entry-reader';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
@@ -123,18 +124,18 @@ function findDescendants(root: XmlElement, local: string): XmlElement[] {
   return found;
 }
 
-async function readPart(zip: JSZip, partPath: string, limit: number): Promise<Buffer | undefined> {
+async function readPart(zip: JSZip, partPath: string, limit: number, budget?: InflateBudget): Promise<Buffer | undefined> {
   const entry = zip.file(partPath);
   if (!entry) return undefined;
   const declared = (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
   if (declared !== undefined && declared > limit) {
     throw new PayloadLimitError(`"${partPath}" declares ${declared} bytes, more than the ${limit} byte limit.`);
   }
-  return readZipEntryBytes(entry, { maxBytes: limit, label: `"${partPath}"` });
+  return readZipEntryBytes(entry, { maxBytes: limit, label: `"${partPath}"`, budget });
 }
 
-async function readXmlPart(zip: JSZip, partPath: string): Promise<XmlElement | undefined> {
-  const bytes = await readPart(zip, partPath, DOCX_MAX_XML_PART_BYTES);
+async function readXmlPart(zip: JSZip, partPath: string, budget?: InflateBudget): Promise<XmlElement | undefined> {
+  const bytes = await readPart(zip, partPath, DOCX_MAX_XML_PART_BYTES, budget);
   if (!bytes) return undefined;
   const text = bytes.toString('utf8').replace(/^﻿/, '');
   return parseXmlTree(text, partPath, PACKAGE_LABEL);
@@ -167,10 +168,10 @@ function directoryOf(partPath: string): string {
   return slash < 0 ? '' : partPath.slice(0, slash + 1);
 }
 
-async function readRelationships(zip: JSZip, partPath: string): Promise<Map<string, Relationship>> {
+async function readRelationships(zip: JSZip, partPath: string, budget?: InflateBudget): Promise<Map<string, Relationship>> {
   const directory = directoryOf(partPath);
   const name = partPath.slice(directory.length);
-  const root = await readXmlPart(zip, `${directory}_rels/${name}.rels`);
+  const root = await readXmlPart(zip, `${directory}_rels/${name}.rels`, budget);
   const relationships = new Map<string, Relationship>();
   if (!root) return relationships;
   for (const rel of childElements(root, 'Relationship')) {
@@ -791,8 +792,8 @@ function breakTypeOf(sectPr: XmlElement | undefined): SectionBreakType {
   return (type !== undefined && SECTION_TYPES.has(type) ? type : DEFAULT_SECTION_TYPE) as SectionBreakType;
 }
 
-async function readCoreProperties(zip: JSZip): Promise<{ title?: string; author?: string; language?: string }> {
-  const root = await readXmlPart(zip, CORE_PROPERTIES_PART);
+async function readCoreProperties(zip: JSZip, budget?: InflateBudget): Promise<{ title?: string; author?: string; language?: string }> {
+  const root = await readXmlPart(zip, CORE_PROPERTIES_PART, budget);
   if (!root) return {};
   const text = (name: string): string | undefined => {
     const value = firstChild(root, name);
@@ -803,8 +804,8 @@ async function readCoreProperties(zip: JSZip): Promise<{ title?: string; author?
 }
 
 /** Resolves the main document part of the package: the target of the office-document relationship of `_rels/.rels`. */
-async function mainPartPath(zip: JSZip): Promise<string> {
-  const root = await readXmlPart(zip, ROOT_RELATIONSHIPS);
+async function mainPartPath(zip: JSZip, budget?: InflateBudget): Promise<string> {
+  const root = await readXmlPart(zip, ROOT_RELATIONSHIPS, budget);
   if (root) {
     for (const rel of childElements(root, 'Relationship')) {
       const target = rel.attrs.get('Target');
@@ -822,24 +823,25 @@ async function mainPartPath(zip: JSZip): Promise<string> {
  * refused with a typed error.
  */
 export async function readDocxModel(zip: JSZip): Promise<DocxReadResult> {
-  const mainPath = await mainPartPath(zip);
+  const budget = new InflateBudget();
+  const mainPath = await mainPartPath(zip, budget);
   if (!zip.file(mainPath)) throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
-  const documentRoot = await readXmlPart(zip, mainPath);
+  const documentRoot = await readXmlPart(zip, mainPath, budget);
   if (!documentRoot) throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
 
-  const documentRelationships = await readRelationships(zip, mainPath);
+  const documentRelationships = await readRelationships(zip, mainPath, budget);
   const directory = directoryOf(mainPath);
   const partByRelationship = (suffix: string, fallback: string): string => relationshipOfType(documentRelationships, suffix)?.target ?? `${directory}${fallback}`;
 
-  const stylesRoot = await readXmlPart(zip, partByRelationship(STYLES_RELATIONSHIP, 'styles.xml'));
+  const stylesRoot = await readXmlPart(zip, partByRelationship(STYLES_RELATIONSHIP, 'styles.xml'), budget);
   const styles = new StyleSheet(stylesRoot);
-  const numberingRoot = await readXmlPart(zip, partByRelationship(NUMBERING_RELATIONSHIP, 'numbering.xml'));
+  const numberingRoot = await readXmlPart(zip, partByRelationship(NUMBERING_RELATIONSHIP, 'numbering.xml'), budget);
   const numbering = new NumberingDefinitions(numberingRoot, styles.numberingStyles());
 
   const footnotesPath = partByRelationship(FOOTNOTES_RELATIONSHIP, 'footnotes.xml');
   const endnotesPath = partByRelationship(ENDNOTES_RELATIONSHIP, 'endnotes.xml');
-  const footnoteRelationships = zip.file(footnotesPath) ? await readRelationships(zip, footnotesPath) : new Map<string, Relationship>();
-  const endnoteRelationships = zip.file(endnotesPath) ? await readRelationships(zip, endnotesPath) : new Map<string, Relationship>();
+  const footnoteRelationships = zip.file(footnotesPath) ? await readRelationships(zip, footnotesPath, budget) : new Map<string, Relationship>();
+  const endnoteRelationships = zip.file(endnotesPath) ? await readRelationships(zip, endnotesPath, budget) : new Map<string, Relationship>();
 
   const context = new DocumentContext();
   const images = await loadImages(zip, [documentRelationships, footnoteRelationships, endnoteRelationships], context.warnings);
@@ -859,7 +861,7 @@ export async function readDocxModel(zip: JSZip): Promise<DocxReadResult> {
 
   const readNotes = async (partPath: string, relationships: ReadonlyMap<string, Relationship>, order: readonly number[], elementName: string): Promise<NoteDefinition[]> => {
     if (order.length === 0) return [];
-    const root = await readXmlPart(zip, partPath);
+    const root = await readXmlPart(zip, partPath, budget);
     const byId = new Map<number, XmlElement>();
     if (root) {
       for (const note of childElements(root, elementName)) {
@@ -884,7 +886,7 @@ export async function readDocxModel(zip: JSZip): Promise<DocxReadResult> {
   const footnotes = await readNotes(footnotesPath, footnoteRelationships, reader.noteOrder.footnote, 'footnote');
   const endnotes = await readNotes(endnotesPath, endnoteRelationships, reader.noteOrder.endnote, 'endnote');
 
-  const core = await readCoreProperties(zip);
+  const core = await readCoreProperties(zip, budget);
   const model = assembleDocument({
     sections,
     context,

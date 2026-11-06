@@ -1,5 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
   // ==========================================
@@ -3134,10 +3134,13 @@ const SEVEN_ZIP_EXTENSIONS: ReadonlySet<string> = new Set(['7z', 'cb7']);
 const BZIP_EXTENSIONS: ReadonlySet<string> = new Set(['bz2', 'bz', 'tbz', 'tbz2', 'tar.bz2', 'tar.bz']);
 const ZSTD_EXTENSIONS: ReadonlySet<string> = new Set(['zst', 'zstd', 'tar.zst']);
 const RAR_EXTENSIONS: ReadonlySet<string> = new Set(['rar', 'cbr']);
-// Text-based formats: a binary signature under their names is a mismatch.
-const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
-  'csv', 'tsv', 'txt', 'text', 'json', 'jsonl', 'ndjson', 'md', 'markdown',
-  'xml', 'html', 'htm', 'yaml', 'yml', 'sql', 'rtf', 'tab', 'toml'
+
+const STRICT_SNIFFED_ONLY_EXTENSIONS: ReadonlySet<string> = new Set([
+  ...PNG_EXTENSIONS, ...GIF_EXTENSIONS, ...WEBP_EXTENSIONS, ...BMP_EXTENSIONS, ...AVIF_EXTENSIONS, ...HEIF_EXTENSIONS,
+  ...TIFF_EXTENSIONS, 'jpg', 'jpeg', 'jpe', 'jfif', 'ultrahdr', 'ai', 'parquet', 'woff', 'woff2', 'otf', 'ttf',
+  ...ZIP_EXTENSIONS, ...CFBF_EXTENSIONS, ...SEVEN_ZIP_EXTENSIONS, ...GZIP_EXTENSIONS, ...BZIP_EXTENSIONS, ...ZSTD_EXTENSIONS,
+  ...RAR_EXTENSIONS, ...WAV_EXTENSIONS, ...FLAC_EXTENSIONS, ...OGG_EXTENSIONS,
+  ...MP3_EXTENSIONS, ...MKV_EXTENSIONS, ...WEBM_EXTENSIONS,
 ]);
 
 /** The MIME type a ZIP package sniffs as for the extensions of its own kind (a package that sniffs as plain ZIP is accepted under each of them). */
@@ -3173,36 +3176,15 @@ export function isFormatCompatibleWithMagicBytes(
     return false;
   }
 
-  // The drawings the office suite imports must open with the signature of their own format (CorelDRAW, Visio, EMF, WMF, CGM).
-  const ownSignature = ownSignatureVerdict(cleanExt, buffer);
+  const ownSignature = ownSignatureVerdict(cleanExt, buffer, sniffed);
   if (ownSignature !== undefined) return ownSignature;
 
   // A format that exists only as a compound file or as a gzip member of XML has no other signature to fall back on.
   if (lacksOwnSignature(cleanExt, sniffed)) return false;
 
-  // If no definitive magic bytes were identified, allow unless declared format has strict signature
   if (!sniffed) {
-    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-    // Strict binary formats that MUST have valid magic if buffer >= 8 bytes
-    if (buf.length >= 8) {
-      if (refusedWithoutSignature(cleanExt, buf)) {
-        return false;
-      }
-      if ((cleanExt === 'jpg' || cleanExt === 'jpeg') && (buf[0] !== 0xff || buf[1] !== 0xd8)) {
-        return false;
-      }
-      if ((cleanExt === 'tif' || cleanExt === 'tiff') && buf[0] !== 0x49 && buf[0] !== 0x4d) {
-        return false;
-      }
-      if (cleanExt === 'parquet' && buf.toString('ascii', 0, 4) !== 'PAR1') {
-        return false;
-      }
-      if (ZIP_EXTENSIONS.has(cleanExt) && (buf[0] !== 0x50 || buf[1] !== 0x4b)) {
-        return false;
-      }
-      if (SEVEN_ZIP_EXTENSIONS.has(cleanExt) && (buf[0] !== 0x37 || buf[1] !== 0x7a)) {
-        return false;
-      }
+    if (refusedWithoutSignature(cleanExt, buffer) || STRICT_SNIFFED_ONLY_EXTENSIONS.has(cleanExt)) {
+      return false;
     }
     return true;
   }
@@ -3262,15 +3244,11 @@ export function isFormatCompatibleWithMagicBytes(
   if (sniffed === 'application/postscript') return isPostScriptCompatible(cleanExt, buffer);
   if (sniffed === 'model/step') return cleanExt === 'step' || cleanExt === 'stp';
   if (sniffed === 'application/vnd.apache.parquet') return cleanExt === 'parquet';
+  if (sniffed === 'font/woff') return cleanExt === 'woff';
+  if (sniffed === 'font/woff2') return cleanExt === 'woff2';
+  if (sniffed === 'font/otf' || sniffed === 'font/ttf') return cleanExt === 'otf' || cleanExt === 'ttf';
 
-  // Text-based format attempting to pass binary magic bytes is incompatible
-  if (TEXT_EXTENSIONS.has(cleanExt)) {
-    if (!sniffed.startsWith('text/') && sniffed !== 'application/json' && sniffed !== 'application/xml') {
-      return false;
-    }
-  }
-
-  return true;
+  return false;
 }
 
 /**
