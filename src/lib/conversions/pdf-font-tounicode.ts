@@ -1,5 +1,6 @@
 import { ConversionFailedError } from '../types';
 import { InflateBudget } from './bounded-inflate';
+import { parseCff } from './font-cff';
 import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase, SimpleFontDictionary } from './pdf-document';
 import { type PdfObjectDefinition, withIncrementalUpdate } from './pdf-incremental-update';
 import { numericGlyphNameTexts } from './pdf-numeric-glyph-names';
@@ -126,6 +127,8 @@ interface OwnMap {
 /** What has been read so far, by the bytes object of the stream: fonts that share a program or a map (the same bytes object) read it once. */
 interface Known {
   programs: Map<Buffer, ProgramText>;
+  /** The codes a CFF program can select, ascending, by the bytes object of the stream; null for a program that does not read. */
+  cffCodes: Map<Buffer, readonly number[] | null>;
   maps: Map<Buffer, OwnMap>;
   /** The bodies built from a program's cmap, by own map, program and CID-to-glyph map: the 64 fonts of a document that were written from one font share one. */
   bodies: Map<string, MapBody | null>;
@@ -195,17 +198,13 @@ function cidCountOf({ cidToGid }: TrueTypeFont, glyphCount: number): number {
 }
 
 /**
- * The codes of a TrueType font that the font's own map gives no text, for a font whose own map pdfjs would complete with the
- * CID itself: the program's text where it has one, and a gap where it has none. Null when the codes cannot be counted
- * (a program without a glyph count).
+ * The `codes` (ascending) that the font's own map gives no text, for a font whose own map pdfjs would complete with the CID
+ * itself: the text in `texts` where the program has one, and a gap where it has none.
  */
-function missingCodes(font: CompositeFontDictionary, trueType: TrueTypeFont, own: string, coverage: ToUnicodeCoverage): MapBody | null {
-  const glyphCount = trueType.text.glyphCount;
-  if (glyphCount === null) return null;
-  const texts = new Map(programTexts(font, trueType, true));
+function completedBody(codes: Iterable<number>, texts: Map<number, number>, own: string, coverage: ToUnicodeCoverage): MapBody {
   const entries: CidText[] = [];
   const gaps: Gap[] = [];
-  for (let cid = 0, cidCount = cidCountOf(trueType, glyphCount); cid < cidCount; cid++) {
+  for (const cid of codes) {
     if (coverage.covers(cid)) continue;
     const text = texts.get(cid);
     const last = gaps[gaps.length - 1];
@@ -214,6 +213,50 @@ function missingCodes(font: CompositeFontDictionary, trueType: TrueTypeFont, own
     else gaps.push([cid, cid]);
   }
   return { entries, gaps, own };
+}
+
+/** The codes of a TrueType font that the font's own map gives no text. Null when the codes cannot be counted (a program without a glyph count). */
+function missingCodes(font: CompositeFontDictionary, trueType: TrueTypeFont, own: string, coverage: ToUnicodeCoverage): MapBody | null {
+  const glyphCount = trueType.text.glyphCount;
+  if (glyphCount === null) return null;
+  return completedBody(range(cidCountOf(trueType, glyphCount)), new Map(programTexts(font, trueType, true)), own, coverage);
+}
+
+/** The integers from 0 up to, not including, `count`. */
+function* range(count: number): Generator<number> {
+  for (let code = 0; code < count; code++) yield code;
+}
+
+/**
+ * The codes a CFF program of a CIDFontType0 font can select, ascending: the CIDs of the charset of a CID-keyed program, and for a
+ * program that is not CID-keyed its glyph ids, since its CIDs are its glyph ids (ISO 32000-1 section 9.7.4.2; Apache PDFBox
+ * `PDCIDFontType0.codeToGID`, 3.0 at 649bf11a, lines 427 to 446, and `hasGlyph`, lines 394 to 409). pdf.js reads the same two kinds:
+ * the glyph count from the CharStrings INDEX and the CIDs from the charset of a CID-keyed font (`src/core/cff_parser.js` v6.3.289,
+ * lines 274 and 322 to 360). Null when the program does not read as CFF 1 (font-cff.ts checks every offset and count against the
+ * bytes before it follows it).
+ */
+function cffCodesOf(program: Buffer, { cffCodes }: Known): readonly number[] | null {
+  if (!cffCodes.has(program)) {
+    let codes: number[] | null = null;
+    try {
+      const cff = parseCff(program);
+      codes = cff.isCidKeyed && cff.charset !== null ? [...new Set(cff.charset)].sort((first, second) => first - second) : [...range(cff.numGlyphs)];
+    } catch (error) {
+      if (!(error instanceof ConversionFailedError)) throw error;
+    }
+    cffCodes.set(program, codes);
+  }
+  return cffCodes.get(program) ?? null;
+}
+
+/**
+ * The codes a CFF font (CIDFontType0) can select that the font's own map gives no text: the text of the glyph order of Arial or Times
+ * New Roman where the font's name and widths show it to be one (a CID-keyed program names no glyph), and a gap otherwise.
+ */
+function missingCffCodes(font: CompositeFontDictionary, own: string, coverage: ToUnicodeCoverage, known: Known): MapBody | null {
+  const program = font.cffProgram();
+  const codes = program === null ? null : cffCodesOf(program, known);
+  return codes === null ? null : completedBody(codes, new Map(standardOrderTexts(font.descendantName, font.cidWidths)), own, coverage);
 }
 
 /** A small number for a text or a bytes object, the same for the same one, to key what is built from them. */
@@ -253,6 +296,7 @@ function mapCompletingOwn(font: CompositeFontDictionary, known: Known): MapBody 
   const own = ownMapOf(data, known);
   if (own.coverage === 'inherits') return null;
   if (!own.coverage.listsCodes) return mapFromProgram(font, known);
+  if (font.descendant === CFF_CIDFONT) return missingCffCodes(font, own.text, own.coverage, known);
   const trueType = trueTypeFontOf(font, known);
   if (trueType === null) return null;
   const { text, coverage } = own;
@@ -272,7 +316,7 @@ const codesOf = ({ entries, gaps }: MapBody): number => entries.length + gaps.re
 
 function fontMaps(fonts: CompositeFontDictionary[], simpleFonts: SimpleFontDictionary[]): FontMap[] {
   const maps: FontMap[] = [];
-  const known: Known = { programs: new Map(), maps: new Map(), bodies: new Map(), keys: new Map() };
+  const known: Known = { programs: new Map(), cffCodes: new Map(), maps: new Map(), bodies: new Map(), keys: new Map() };
   const budget: MapBudget = { codes: 0, copiedBytes: 0 };
   const charged = new Set<MapBody>();
   const add = (font: FontMap['font'], body: MapBody | null, codeBytes: CodeBytes): void => {
