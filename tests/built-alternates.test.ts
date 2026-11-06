@@ -42,7 +42,7 @@ afterEach(() => {
 
 const ABSOLUTE = {
   'en.html': page(`${ORIGIN}/`, { en: `${ORIGIN}/`, ko: `${ORIGIN}/ko`, 'x-default': `${ORIGIN}/` }),
-  'ko/status.html': page(`${ORIGIN}/ko/status`, { en: `${ORIGIN}/status`, ko: `${ORIGIN}/ko/status`, 'x-default': `${ORIGIN}/status` }),
+  'ko/api-docs.html': page(`${ORIGIN}/ko/api-docs`, { en: `${ORIGIN}/api-docs`, ko: `${ORIGIN}/ko/api-docs`, 'x-default': `${ORIGIN}/api-docs` }),
   'en/account.html': '<!DOCTYPE html><html><head></head><body></body></html>',
 };
 

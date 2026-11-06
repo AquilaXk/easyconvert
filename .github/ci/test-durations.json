@@ -941,7 +941,6 @@
   "tests/spreadsheet-page-images.test.ts": 92.8,
   "tests/spreadsheet-sheet-modes-print-area.test.ts": 0.3,
   "tests/ssrf-safe-lookup.test.ts": 0,
-  "tests/status-and-unit-converter.test.ts": 0.2,
   "tests/storage-bucket-names.test.ts": 0,
   "tests/storage-byos-vault-and-adapters.test.ts": 0.1,
   "tests/storage-config-secrets.test.ts": 0,

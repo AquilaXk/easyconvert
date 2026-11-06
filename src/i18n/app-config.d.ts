@@ -8,8 +8,6 @@ declare module 'next-intl' {
     Messages: typeof messages & {
       formatDescriptions: Record<string, string>;
       formatCategories: Record<FormatCategory, string>;
-      unitCategories: Record<string, string>;
-      unitNames: Record<string, string>;
     };
   }
 }

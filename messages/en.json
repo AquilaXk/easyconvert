@@ -245,15 +245,11 @@
     }
   },
   "auth": {
-    "loginHeading": "Sign in to EasyConvert",
-    "registerHeading": "Create an EasyConvert account",
-    "intro": "Manage developer API keys, webhooks, and conversion history.",
-    "modeLabel": "Sign in or sign up",
-    "tabs": {
-      "login": "Sign In",
-      "register": "Sign Up"
-    },
-    "emailDivider": "or continue with email",
+    "loginHeading": "Sign In",
+    "registerHeading": "Sign Up",
+    "switchToRegister": "Don't have an account? <link>Sign up</link>.",
+    "switchToLogin": "Already have an account? <link>Sign in</link>.",
+    "emailDivider": "or",
     "loading": "Loading authentication form",
     "form": {
       "google": "Continue with Google",
@@ -528,33 +524,6 @@
       "signOutNetwork": "The connection dropped and you were not signed out. Try again."
     }
   },
-  "faq": {
-    "title": "Frequently Asked Questions",
-    "subtitle": "Answers about format support, execution boundaries, and batch limits.",
-    "paidLimits": "The Pro plan raises it to {pro} and the Enterprise plan to {enterprise}.",
-    "items": {
-      "free": {
-        "q": "Is EasyConvert free to use?",
-        "a": "Yes. Without an account you can run up to {dailyLimit} conversions a day on our servers, each file up to {maxSize}. Conversions that run in your browser have no daily limit.{paidLimits}"
-      },
-      "handling": {
-        "q": "How are my files handled during conversion?",
-        "a": "Some image, audio, and data conversions run in your browser, and their files stay on your device. Formats that need native codecs or document engines are sent over TLS 1.3 to isolated workers on our servers. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
-      },
-      "maxSize": {
-        "q": "What is the maximum file size limit?",
-        "a": "EasyConvert takes files of up to {maxSize} each, with or without an account.{paidLimits} Browser-executed conversions start immediately without waiting for network uploads, and a file that needs the server goes up in parts, so a large upload shows its progress and can be cancelled."
-      },
-      "batch": {
-        "q": "Can I convert multiple files in one batch?",
-        "a": "Yes. Drop or select multiple files to queue them together, assign a shared or per-file output format, tune optional parameters, and download finished files individually or as one ZIP archive."
-      },
-      "install": {
-        "q": "Do I need to install desktop software or browser plugins?",
-        "a": "No installation is needed. EasyConvert runs in modern web browsers across macOS, Windows, Linux, iOS, and Android."
-      }
-    }
-  },
   "features": {
     "directoryHeading": "Supported Format Directory",
     "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
@@ -796,6 +765,10 @@
       "architecture": {
         "heading": "Browser and Server Conversion",
         "body": "Some formats run on your device through WebAssembly and WebCodecs. The others run in isolated workers on our servers, reached over TLS 1.3. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
+      },
+      "contact": {
+        "heading": "Contact",
+        "page": "Contact page"
       }
     },
     "security": {
@@ -875,14 +848,6 @@
     "apiDocs": {
       "title": "API documentation | EasyConvert",
       "description": "Documentation of the EasyConvert API: the base URL, API keys, errors, limits and every endpoint with its request and answer."
-    },
-    "status": {
-      "title": "Browser Edge Engine Status | EasyConvert",
-      "description": "Live operational status, browser engine diagnostics, and capability probes for EasyConvert WebAssembly, WebCodecs, and OPFS conversion pipelines."
-    },
-    "unitConverter": {
-      "title": "Free Online Unit Converter | EasyConvert",
-      "description": "Convert length, weight, temperature, volume, area, speed, time, digital storage, energy, and pressure units in your browser."
     },
     "converter": {
       "title": "{title} | EasyConvert"
@@ -1162,32 +1127,14 @@
         "title": "Security Overview",
         "description": "How files are protected: TLS encryption in transit and an isolated worker for each job. A converted file is deleted 10 minutes after you download it, or an hour after conversion if you never do."
       },
-      "status": {
-        "title": "System Status",
-        "description": "Checks which browser features this device offers for the conversions that run in the browser."
-      },
       "accessibility": {
         "title": "Accessibility Statement",
         "description": "Keyboard navigation, screen reader landmarks, colour contrast, and WCAG 2.1 AA conformance details for EasyConvert."
-      },
-      "unit": {
-        "title": "Unit Converter",
-        "description": "Convert weight, length, volume, temperature, and data units in your browser."
       }
     },
     "ocr": {
       "title": "PDF OCR Converter",
       "description": "Recognize the text of scanned PDFs and images, and get a PDF whose text you can search and select. You can choose the recognition language in the options."
-    },
-    "unitPair": {
-      "title": "{src} to {tgt} Unit Converter",
-      "description": "Convert {src} to {tgt} in your browser."
-    },
-    "units": {
-      "lbs": "Pounds (lbs)",
-      "kg": "Kilograms (kg)",
-      "feet": "Feet (ft)",
-      "meters": "Meters (m)"
     },
     "pair": {
       "title": "{src} to {tgt} Converter",
@@ -1282,198 +1229,9 @@
       "compression": "compression level"
     }
   },
-  "status": {
-    "componentsHeading": "Engine & Pipeline Components",
-    "operationalReady": "Operational & Ready",
-    "categoriesLabel": "Component categories",
-    "operational": "Operational",
-    "categories": {
-      "all": "All Components ({count})",
-      "core": "Compute Core ({count})",
-      "pipeline": "Pipelines ({count})",
-      "privacy": "Privacy & Retention ({count})"
-    },
-    "components": {
-      "wasm-simd": {
-        "name": "SIMD WebAssembly Core Engine",
-        "description": "128-bit vector-accelerated transformations for documents and binary streams"
-      },
-      "webcodecs-vpu": {
-        "name": "WebCodecs VPU Transcoding Accelerator",
-        "description": "Direct GPU/VPU hardware acceleration for H.264, VP9, and audio codecs"
-      },
-      "opfs-storage": {
-        "name": "Origin Private File System (OPFS) Streaming Storage",
-        "description": "Low-overhead virtual disk streaming for large multi-hundred-megabyte files"
-      },
-      "workers-pool": {
-        "name": "Multithreaded Web Worker Thread Pool",
-        "description": "Non-blocking concurrent worker isolation matching CPU core topology"
-      },
-      "pipeline-document": {
-        "name": "Document & Office Pipeline (PDF, DOCX, XLSX, PPTX)",
-        "description": "Document rendering, vector text layout, and structured table reconstruction"
-      },
-      "pipeline-imaging": {
-        "name": "Raster & Vector Imaging Pipeline (PNG, JPG, WEBP, SVG, HEIC)",
-        "description": "Color-calibrated resampling and vector geometry rasterization"
-      },
-      "pipeline-audio": {
-        "name": "Audio DSP Pipeline (MP3, WAV, FLAC, AAC, OGG)",
-        "description": "32-bit floating-point audio processing, resampling, and lossless codecs"
-      },
-      "pipeline-video": {
-        "name": "Video Container Remuxing & Transmuxing (MP4, MKV, WEBM)",
-        "description": "Container repackaging, codec transcoding, and timestamp synchronization"
-      },
-      "pipeline-ocr": {
-        "name": "OCR Engine (Tesseract Wasm LSTM Core)",
-        "description": "Optical character recognition with searchable PDF text layer synthesis"
-      },
-      "pipeline-archive": {
-        "name": "Stream Archive & Compression Engine (ZIP, 7Z, TAR, GZ)",
-        "description": "Deflate, LZMA2, and BZip2 streaming archive packing and extraction"
-      },
-      "pipeline-cad": {
-        "name": "CAD & Geometric Engine (DXF, SVG)",
-        "description": "Spline tessellation, IEEE 754 coordinate precision, and vector export"
-      },
-      "privacy-in-browser": {
-        "name": "In-Browser File Handling",
-        "description": "A file converted in the browser stays on this device and is not uploaded"
-      },
-      "privacy-scrubbing": {
-        "name": "Releasing Converted Files",
-        "description": "Buffers are released when you remove a file or clear the queue"
-      },
-      "privacy-crypto": {
-        "name": "In-Browser SHA-256 Hash Check",
-        "description": "Local bitstream integrity checks using the Web Crypto API"
-      }
-    },
-    "sandbox": {
-      "heading": "Local Browser Sandbox Execution",
-      "body": "Conversions the browser supports run with WebAssembly in an isolated worker of this tab, so their files are not uploaded. Other conversions run on our servers.",
-      "noUpload": "No upload for in-browser conversions",
-      "simd": "Hardware SIMD & WebCodecs Support",
-      "noBrowserLimit": "No daily limit in the browser"
-    },
-    "announcements": {
-      "running": "Running browser edge diagnostics...",
-      "complete": "Edge diagnostics complete. {active} of {total} capabilities active."
-    },
-    "checkedAt": "Browser status checked at {time}",
-    "telemetryActive": "Checking status in the browser sandbox",
-    "overview": {
-      "heading": "In-Browser Conversion Check",
-      "ready": "Ready",
-      "intro": "This page checks what this browser supports for the conversions that run in it.",
-      "running": "Testing Edge Engines...",
-      "run": "Run Edge Diagnostics",
-      "inBrowser": "Runs in this browser"
-    },
-    "diagnostics": {
-      "heading": "Live Browser Edge Diagnostic Results",
-      "activeCount": "{active}/{total} Active",
-      "unavailable": "Unavailable",
-      "probes": {
-        "wasm": {
-          "name": "WebAssembly SIMD Vector Acceleration",
-          "supported": "Hardware SIMD enabled (128-bit vectorization)",
-          "unsupported": "WebAssembly 128-bit SIMD unavailable"
-        },
-        "webcodecs": {
-          "name": "WebCodecs GPU Hardware Pipeline",
-          "supported": "Hardware video and audio codec VPU available",
-          "unsupported": "CPU software transmuxer active"
-        },
-        "opfs": {
-          "name": "Origin Private File System (OPFS)",
-          "supported": "Native streaming storage supported",
-          "unsupported": "Blob memory streaming active"
-        },
-        "workers": {
-          "name": "Multithreaded Web Workers",
-          "supported": "{cores} CPU logical execution threads detected",
-          "unsupported": "{cores} CPU logical execution threads detected"
-        },
-        "memory-sandbox": {
-          "name": "Memory Buffer Check",
-          "supported": "Memory allocation and zeroing verified",
-          "unsupported": "Memory allocation failed"
-        }
-      }
-    },
-    "metrics": {
-      "execution": {
-        "label": "Execution Model",
-        "value": "Browser and Server",
-        "caption": "WebAssembly in the browser, workers on the server"
-      },
-      "storage": {
-        "label": "Persistent Storage",
-        "value": "1 hour at most",
-        "caption": "Deleted 10 minutes after download"
-      },
-      "concurrency": {
-        "label": "Hardware Concurrency",
-        "value": "{cores} Threads",
-        "caption": "Detected CPU execution units"
-      },
-      "privacy": {
-        "label": "Privacy Sandbox",
-        "value": "Active",
-        "caption": "In-browser files stay in this tab"
-      }
-    }
-  },
-  "statusPage": {
-    "heading": "System Operational Status",
-    "intro": "Real-time capability checks, latency probes, and component status for in-browser WebAssembly, WebCodecs, and OPFS conversion pipelines."
-  },
   "theme": {
     "toLight": "Switch to light mode",
     "toDark": "Switch to dark mode"
-  },
-  "unitConverter": {
-    "categoriesLegend": "Unit categories",
-    "heading": "{from} to {to} Converter",
-    "intro": "Converted in your browser, with no request to a server.",
-    "decimals": "Decimals",
-    "decimalsValue": "{digits} decimals",
-    "fromValue": "From Value",
-    "sourceUnit": "Source Unit",
-    "swap": "Swap source and target units",
-    "result": "Converted Result ({symbol})",
-    "copyLabel": "Copy converted result",
-    "copied": "Copied",
-    "copy": "Copy",
-    "copiedAnnouncement": "Copied converted result to clipboard.",
-    "targetUnit": "Target Unit",
-    "formula": "Formula",
-    "private": "Calculated in your browser",
-    "breakdownHeading": "{value} {from} Converted to All {category} Units",
-    "unitCount": "{count} units",
-    "rowCopied": "Copied {name} value to clipboard.",
-    "rowCopyLabel": "Copy {name} value",
-    "referenceHeading": "{from} to {to} Quick Reference Table",
-    "popularHeading": "Popular Unit Conversions",
-    "popular": {
-      "lbs-kg": "Pounds to Kilograms",
-      "kg-lbs": "Kilograms to Pounds",
-      "feet-meters": "Feet to Meters",
-      "meters-feet": "Meters to Feet",
-      "celsius-fahrenheit": "Celsius to Fahrenheit",
-      "fahrenheit-celsius": "Fahrenheit to Celsius",
-      "mb-gb": "Megabytes to Gigabytes",
-      "miles-km": "Miles to Kilometers",
-      "inches-cm": "Inches to Centimeters",
-      "bar-psi": "Bar to PSI"
-    }
-  },
-  "unitConverterPage": {
-    "heading": "Universal Unit Converter",
-    "intro": "Convert measurements across 10 physical and digital categories with bidirectional calculations and multi-unit reference tables."
   },
   "notFound": {
     "code": "404",
