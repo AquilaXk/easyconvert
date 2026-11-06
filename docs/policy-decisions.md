@@ -209,6 +209,7 @@ Security
 155. [Complete startup configuration schema coverage across literal and computed environment variables](#155-complete-startup-configuration-schema-coverage-across-literal-and-computed-environment-variables)
 156. [OAuth canonical origin, webhook SSRF and redirect refusal, atomic registration rate limiting, bounded thumbnail timestamps, and DAG, LibreOffice, qpdf, and bzip2 stream hardening](#156-oauth-canonical-origin-webhook-ssrf-and-redirect-refusal-atomic-registration-rate-limiting-bounded-thumbnail-timestamps-and-dag-libreoffice-qpdf-and-bzip2-stream-hardening)
 157. [Fail-closed binary format signature checks, CGM and HTML table span bounds, CSS at-rule token validation, qpdf sandbox memory cap, Format 12 cmap bounds, and unified `openPackage` ZIP reading](#157-fail-closed-binary-format-signature-checks-cgm-and-html-table-span-bounds-css-at-rule-token-validation-qpdf-sandbox-memory-cap-format-12-cmap-bounds-and-unified-openpackage-zip-reading)
+158. [Separate production keys for webhook secrets and storage credentials, JWT `kid` with `JWT_SECRET_PREVIOUS` rotation, spoof checks on every stored input, and authenticate-before-parse on batch uploads](#158-separate-production-keys-for-webhook-secrets-and-storage-credentials-jwt-kid-with-jwt_secret_previous-rotation-spoof-checks-on-every-stored-input-and-authenticate-before-parse-on-batch-uploads)
 
 ---
 
@@ -5763,3 +5764,24 @@ Security
 - **Verified by**: `tests/spoof-and-parser-bounds.test.ts`, `tests/spoof-check-variants.test.ts`, `tests/unbounded-inflate-scan.test.ts`, `tests/font-astral-cmap-format12.test.ts`, `tests/cgm-source-redos.test.ts`, and `tests/qpdf-runner-qpdf.test.ts`.
 - **Revisit when**: a new binary container format without a magic-byte signature in `sniffMimeTypeFromMagicBytes` is added to the registry.
 
+
+## 158. Separate production keys for webhook secrets and storage credentials, JWT `kid` with `JWT_SECRET_PREVIOUS` rotation, spoof checks on every stored input, and authenticate-before-parse on batch uploads
+
+- **Status**: Implemented (epic #761), decided 2026-11-06.
+- **Decision**:
+  - **Production requires explicit keys (`src/lib/api-keys/secret-encryption.ts`, `src/lib/storage/credentials-vault.ts`).** In production `encryptSecret` seals only under `KEY_ENCRYPTION_KEY` and `CredentialsVault.store` only under `STORAGE_VAULT_KEY`, each at least `32` characters after trimming, and both throw otherwise. Outside production the previous fallbacks (`KEY_HASH_PEPPER`, `JWT_SECRET`, the development salt) still apply. Decryption keeps trying the legacy fallback keys, so ciphertexts written before this change stay readable. `needsSecretReencryption` and `CredentialsVault.rotate` re-encrypt records that a fallback key decrypted under the primary key.
+  - **JWT `kid` and `JWT_SECRET_PREVIOUS` (`src/lib/auth/jwt.ts`, `src/lib/config/schema.ts`).** `signJwt` adds a `kid` header derived from the signing secret (first `16` hex characters of a domain-separated SHA-256). `verifyJwt` tries the key whose `kid` matches first, then `JWT_SECRET_PREVIOUS` (optional, at least `32` characters when set). Tokens without a `kid` still verify.
+  - **Spoof checks on every stored input (`src/app/api/queue/jobs/route.ts`, `src/app/api/v1/jobs/route.ts`, `src/lib/streaming/large-payload-streamer.ts`, `src/lib/jobs/graph.ts`).** Multipart, inline, and stored-key inputs of `/api/queue/jobs` and every `import.upload` node of a graph on `/api/v1/jobs` pass the magic-byte check against the format of their own key. Multipart uploads verify compound-file directory kinds after completion and delete a spoofed object.
+  - **Authenticate before parsing (`src/app/api/convert/batch/route.ts`, `src/lib/api/multipart-body.ts`).** `/api/convert/batch` validates access, then the `multipart/form-data` content type (`415`), then parses the body (`400` on a malformed one). `/api/queue/jobs` and `/api/v1/jobs` answer a malformed body with `400`.
+  - **Prototype-safe idempotency fingerprints (`src/lib/api/with-idempotency.ts`).** Form and JSON bodies are fingerprinted from null-prototype objects with sorted own keys, so `__proto__`, `constructor`, and `toString` fields change the fingerprint.
+  - **`ab_base_ref` validation (`.github/workflows/nightly.yml`).** The nightly A/B job rejects a ref that starts with `-`, contains `..`, or falls outside `[0-9A-Za-z._/-]{1,256}`, and passes it to `git fetch` after `--`.
+- **Why**:
+  - **One leaked or rotated key must not open every secret store.** Falling back from the vault key to the webhook key to the session key in production tied three secrets to one value and made session-key rotation break stored data. Stored inputs other than the first upload, a JSON body that shadows `Object.prototype`, and a body parsed before authentication were gaps in the #761 review.
+- **Trade-offs**:
+  - **A production deployment that never set `KEY_ENCRYPTION_KEY` or `STORAGE_VAULT_KEY` fails at the first webhook secret or credential write and at any read through the primary key.** The keys are not required at startup because the web process may run without webhooks or storage credentials. Set them before deploying and keep the old key as a fallback until `rotate` has run.
+  - **Keys are trimmed before use, so a key stored with surrounding whitespace no longer derives the same value.**
+- **Alternatives rejected**:
+  - **Keeping the production fallback chain.** One value would still protect sessions, webhook secrets, and storage credentials.
+  - **A startup-time requirement for the two keys.** It would stop deployments that use neither feature.
+- **Verified by**: `tests/api-auth-upload-and-idempotency-hardening.test.ts`, `tests/config-schema.test.ts`, and `tests/ci-workflows.test.ts`.
+- **Revisit when**: webhooks or stored storage credentials become mandatory for every deployment, at which point both keys become required at startup.
