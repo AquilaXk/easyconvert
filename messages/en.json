@@ -292,11 +292,6 @@
     }
   },
   "converterPage": {
-    "breadcrumb": {
-      "label": "Breadcrumb",
-      "home": "Home",
-      "pair": "{src} to {tgt}"
-    },
     "formatConverter": "{format} Converter",
     "formatCardsLabel": "Formats",
     "crossLinks": {
@@ -606,35 +601,16 @@
     "extensionsListed": "{count} listed"
   },
   "footer": {
-    "categories": {
-      "video": "Video Converter",
-      "audio": "Audio Converter",
-      "image": "Image Converter",
-      "documentEbook": "Document & Ebook",
-      "archive": "Archive & Compression",
-      "dataUnits": "Data & Unit Tools",
-      "webApps": "Web Apps",
-      "clientEdge": "Client & Edge Tools"
+    "navLabel": "Footer",
+    "columns": {
+      "company": "Company",
+      "resources": "Resources",
+      "legal": "Legal",
+      "contact": "Contact"
     },
-    "secondaryNavLabel": "Footer secondary",
-    "copyright": "© 2026 EasyConvert.com",
-    "assurance": "Encrypted transfer · Files deleted automatically"
+    "copyright": "© 2026 EasyConvert.com"
   },
   "formatDetail": {
-    "categories": {
-      "audio": "Audio Media",
-      "video": "Video Media",
-      "image": "Raster Image",
-      "vector": "Vector Graphic",
-      "document": "Document",
-      "spreadsheet": "Spreadsheet",
-      "presentation": "Slide Deck",
-      "archive": "Archive Package",
-      "ebook": "Digital E-Book",
-      "font": "Vector Font",
-      "cad": "CAD Drawing",
-      "data": "Structured Data"
-    },
     "fallbackName": "{ext} Format",
     "fallbackDesc": "{name} is a structured file format supported across modern operating systems and conversion workflows."
   },
@@ -784,19 +760,6 @@
       "targetLabel": "Target format {format}",
       "fromTitle": "Convert from format",
       "toTitle": "Convert to format"
-    },
-    "chips": {
-      "heading": "What do you want to convert?",
-      "back": "Back",
-      "targets": "Convert <format>{src}</format> to:",
-      "pick": "{format}, choose a target",
-      "change": "{format}, change format",
-      "allFormats": "See all formats"
-    },
-    "trust": {
-      "formats": "{count, number} formats",
-      "encrypted": "Encrypted transfers",
-      "noSignup": "No sign-up needed"
     }
   },
   "home": {
@@ -821,10 +784,7 @@
       "intro": "Automate single-file conversions via <code>POST /api/v1/convert</code> or submit multi-step DAG pipelines to <code>POST /api/v1/jobs</code> with signed webhook delivery.",
       "copiedAnnouncement": "Copied API example to clipboard",
       "copyLabel": "Copy API example",
-      "copied": "Copied",
-      "copy": "Copy",
-      "reference": "OpenAPI 3.1 Reference",
-      "manageKeys": "Manage API Keys"
+      "explore": "Explore the API"
     }
   },
   "infoPages": {
@@ -1173,36 +1133,12 @@
     "audioConverter": "Audio Converter",
     "archiveConverter": "Archive Converter",
     "spreadsheetConverter": "Spreadsheet Converter",
-    "unitConverter": "Unit Converter",
     "pdfOcr": "PDF OCR",
     "compressPdf": "Compress PDF",
     "mergePdf": "Merge PDF",
-    "systemStatus": "System Status",
     "formats": "Formats",
     "apiDocs": "API Docs",
     "dashboard": "Dashboard",
-    "mp4Converter": "MP4 Converter",
-    "mp4ToGif": "MP4 to GIF",
-    "movToMp4": "MOV to MP4",
-    "mp3Converter": "MP3 Converter",
-    "mp4ToMp3": "MP4 to MP3",
-    "jpgToPdf": "JPG to PDF",
-    "pdfToJpg": "PDF to JPG",
-    "heicToJpg": "HEIC to JPG",
-    "pdfToWord": "PDF to Word",
-    "epubToPdf": "EPUB to PDF",
-    "documentConverter": "Document Converter",
-    "rarToZip": "RAR to ZIP",
-    "sevenZipToZip": "7Z to ZIP",
-    "csvToJson": "CSV to JSON",
-    "jsonToCsv": "JSON to CSV",
-    "lbsToKg": "Lbs to Kg",
-    "saveWebsiteAsPdf": "Save Website as PDF",
-    "imageResizer": "Image Resizer",
-    "websiteScreenshot": "Website Screenshot",
-    "mp4Remuxer": "MP4 Remuxer",
-    "vectorConverter": "Vector Converter",
-    "securityArchitecture": "Security Architecture",
     "aboutUs": "About Us",
     "privacy": "Privacy",
     "terms": "Terms",
@@ -1210,8 +1146,7 @@
     "acceptableUse": "Acceptable Use",
     "security": "Security",
     "accessibility": "Accessibility",
-    "contact": "Contact",
-    "status": "Status"
+    "contact": "Contact"
   },
   "slugPages": {
     "info": {
@@ -1558,8 +1493,8 @@
   },
   "userNav": {
     "dashboard": "Dashboard",
-    "logIn": "Log In",
-    "signUp": "Sign Up"
+    "logIn": "Log in",
+    "signUp": "Sign up"
   },
   "errors": {
     "generic": {
