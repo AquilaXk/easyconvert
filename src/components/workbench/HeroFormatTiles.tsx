@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, RefreshCw } from 'lucide-react';
 import { getAvailableTargetFormats } from '@/lib/registry';
 import FormatPickerButton from './FormatPickerButton';
 import { FormatIcon } from './FormatIcon';
@@ -21,13 +21,29 @@ const TILE_CLASS =
 function TileFace({ format, display }: Readonly<{ format: string; display: string }>) {
   return (
     <>
-      <FormatIcon format={format} className="size-6 text-ink-2" />
+      <FormatIcon format={format} className="size-6 sm:size-8 text-ink-2" />
       <span className="text-sm font-bold uppercase">{display}</span>
       <ChevronDown
         aria-hidden="true"
-        className="absolute right-2 bottom-2 size-3.5 text-ink-3 transition-transform duration-200 group-aria-expanded:rotate-180"
+        className="absolute right-2 bottom-2 size-2.5 text-ink-3 transition-transform duration-200 group-aria-expanded:rotate-180"
       />
     </>
+  );
+}
+
+/** The connector between the tiles: a circle with the swap icon between two lines that fade from the rule colour to the accent, and the joining word under it (read aloud in Korean, where the circle alone shows it). */
+function TileConnector({ joiner }: Readonly<{ joiner: string }>) {
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div aria-hidden="true" className="flex items-center">
+        <span className="h-px w-5 sm:w-7 bg-gradient-to-r from-rule to-accent/70" />
+        <span className="mx-1 flex size-10 items-center justify-center rounded-full border border-accent/40 bg-accent/15 text-accent-ink">
+          <RefreshCw className="size-4" />
+        </span>
+        <span className="h-px w-5 sm:w-7 bg-gradient-to-l from-rule to-accent/70" />
+      </div>
+      <span className="text-[10.4px] font-medium uppercase tracking-[0.25em] text-ink-3 [:lang(ko)_&]:sr-only">{joiner}</span>
+    </div>
   );
 }
 
@@ -48,7 +64,7 @@ export default function HeroFormatTiles({
   const targetDisplay = isAnyTarget ? t('any') : normalizedTarget.toUpperCase();
 
   return (
-    <div className="inline-flex items-center justify-center gap-3 sm:gap-5">
+    <div className="inline-flex items-center justify-center gap-[17px]">
       <FormatPickerButton
         testId="hero-source-format-btn"
         ariaLabel={t('sourceLabel', { format: sourceDisplay })}
@@ -60,7 +76,7 @@ export default function HeroFormatTiles({
         <TileFace format={normalizedSource} display={sourceDisplay} />
       </FormatPickerButton>
 
-      <span className="text-xs uppercase tracking-widest text-ink-3 font-medium">{t('joiner')}</span>
+      <TileConnector joiner={t('joiner')} />
 
       <FormatPickerButton
         testId="hero-target-format-btn"

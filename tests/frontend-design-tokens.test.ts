@@ -172,8 +172,6 @@ describe('design tokens', () => {
       ...['canvas', 'surface', 'sunken'].map((bg): [string, string] => [placeholderToken!, bg]),
       ['on-accent', 'accent'],
       ['on-accent', 'accent-hover'],
-      ['on-accent', 'accent-to'],
-      ['on-accent', 'accent-to-hover'],
       ['accent-ink', 'accent-soft'],
       ['success', 'success-soft'],
       ['warning', 'warning-soft'],

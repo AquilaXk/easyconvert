@@ -128,10 +128,8 @@ export default function Header() {
                 onClick={() => setIsToolsOpen((open) => !open)}
                 aria-haspopup="true"
                 aria-expanded={isToolsOpen}
-                className={`min-h-[44px] px-3 inline-flex items-center gap-1.5 text-sm font-medium rounded-sm transition-colors cursor-pointer ${
-                  isToolsOpen
-                    ? 'text-ink'
-                    : 'text-ink-2 hover:text-ink'
+                className={`px-2.5 py-1.5 inline-flex items-center gap-1.5 text-sm font-medium rounded-xs transition-colors cursor-pointer hover:text-ink hover:bg-sunken/50 ${
+                  isToolsOpen ? 'text-ink bg-sunken/50' : 'text-ink-2'
                 }`}
               >
                 <span>{t('tools')}</span>
@@ -150,7 +148,7 @@ export default function Header() {
                         key={tool.key}
                         href={tool.href}
                         onClick={() => setIsToolsOpen(false)}
-                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-2 rounded-sm text-xs font-medium text-ink-2 hover:text-ink hover:bg-sunken inline-flex items-center transition-colors"
+                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-2 rounded-xs text-xs font-medium text-ink-2 hover:text-ink hover:bg-sunken/50 inline-flex items-center transition-colors"
                       >
                         {tLinks(tool.key)}
                       </Link>
@@ -164,7 +162,7 @@ export default function Header() {
               <Link
                 key={item.key}
                 href={item.href}
-                className="min-h-[44px] px-3 inline-flex items-center text-sm font-medium text-ink-2 hover:text-ink rounded-sm transition-colors"
+                className="px-2.5 py-1.5 inline-flex items-center text-sm font-medium text-ink-2 hover:text-ink hover:bg-sunken/50 rounded-xs transition-colors"
               >
                 {tLinks(item.key)}
               </Link>
@@ -179,7 +177,7 @@ export default function Header() {
             type="button"
             onClick={toggleDarkMode}
             aria-label={isDark ? tTheme('toLight') : tTheme('toDark')}
-            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
+            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-xs text-ink-2 hover:text-ink hover:bg-sunken/50 transition-colors cursor-pointer"
           >
             {isDark ? (
               <Sun className="size-4 shrink-0" />
@@ -197,7 +195,7 @@ export default function Header() {
             onClick={() => setIsMobileMenuOpen(true)}
             aria-label={t('openMenu')}
             aria-expanded={isMobileMenuOpen}
-            className="lg:hidden min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
+            className="lg:hidden min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-xs text-ink-2 hover:text-ink hover:bg-sunken/50 transition-colors cursor-pointer"
           >
             <Menu className="w-5 h-5" />
           </button>

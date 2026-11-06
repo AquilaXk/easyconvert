@@ -164,15 +164,13 @@ describe('the web image', () => {
 });
 
 describe('the footer', () => {
-  it.each(LOCALES)('links to every legal page in %s and sets the privacy policy out in bold', (locale) => {
+  it.each(LOCALES)('links to every legal page in %s and sets none of them out in bold', (locale) => {
     const footer = renderDom(createElement(Footer), locale);
     const prefix = locale === 'en' ? '' : `/${locale}`;
     const hrefs = links(footer).map((link) => link.href);
     for (const { path: pathname } of Object.values(LEGAL_DOCUMENTS)) expect(hrefs).toContain(`${prefix}${pathname}`);
-    const privacy = select(footer, 'a', 'href', `${prefix}/privacy`);
-    const terms = select(footer, 'a', 'href', `${prefix}/terms`);
-    expect(privacy.length).toBeGreaterThan(0);
-    expect(privacy.every((a) => classTokens(a).has('font-bold'))).toBe(true);
-    expect(terms.some((a) => classTokens(a).has('font-bold'))).toBe(false);
+    const legal = Object.values(LEGAL_DOCUMENTS).flatMap(({ path: pathname }) => select(footer, 'a', 'href', `${prefix}${pathname}`));
+    expect(legal.length).toBeGreaterThan(0);
+    expect(legal.some((a) => classTokens(a).has('font-bold'))).toBe(false);
   });
 });

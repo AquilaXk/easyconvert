@@ -139,12 +139,12 @@ describe('the signed-in person of the viewer', () => {
     const signedIn = visibleText(renderDom(createElement(UserNav, {})));
     expect(signedIn).toContain('Ada');
     expect(signedIn).toContain('Pro');
-    expect(signedIn).not.toContain('Log In');
+    expect(signedIn).not.toContain('Log in');
 
     shownAccount.current = null;
     const visitor = visibleText(renderDom(createElement(UserNav, { mobile: true })));
-    expect(visitor).toContain('Log In');
-    expect(visitor).toContain('Sign Up');
+    expect(visitor).toContain('Log in');
+    expect(visitor).toContain('Sign up');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

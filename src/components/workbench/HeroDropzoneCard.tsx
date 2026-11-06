@@ -17,11 +17,9 @@ interface HeroDropzoneCardProps {
   onImportFile: (file: File) => void;
   /** The conversions a day the server allows an anonymous caller, read on the server. */
   dailyLimit: number;
-  /** What the card shows under the select button: the format chips of the home page. */
-  children?: React.ReactNode;
 }
 
-/** The upload card: a dashed drop area with the select-file split button, and the limits of the viewer's plan under it. */
+/** The upload card: one bordered drop area with the select-file split button, and the limits of the viewer's plan under it. */
 export default function HeroDropzoneCard({
   isDragOver,
   onDragOver,
@@ -30,7 +28,6 @@ export default function HeroDropzoneCard({
   onOpenFileDialog,
   onImportFile,
   dailyLimit,
-  children,
 }: Readonly<HeroDropzoneCardProps>) {
   const t = useTranslations('hero.dropzone');
   const fileLimitCopy = useFileLimitCopy();
@@ -47,27 +44,20 @@ export default function HeroDropzoneCard({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        className="rounded-xl border border-rule bg-surface p-3 sm:p-[18px] shadow-elev-2"
+        className={`rounded-xs border bg-surface px-6 py-8 sm:px-10 sm:py-10 text-center shadow-elev-2 transition-colors duration-200 ${
+          isDragOver ? 'border-accent bg-accent-soft' : 'border-rule hover:border-rule-strong/40'
+        }`}
       >
-        <div
-          className={`rounded-md border-2 border-dashed px-4 py-7 sm:px-6 sm:py-8 text-center transition-colors duration-200 ${
-            isDragOver ? 'border-accent bg-accent-soft' : 'border-accent-edge'
-          }`}
-        >
-          <div className="mx-auto mb-4 size-14 rounded-sm border border-accent-edge bg-accent-soft text-accent-ink flex items-center justify-center">
-            <Upload aria-hidden="true" className="size-6" />
-          </div>
-          <h2 className="text-[22px] font-normal tracking-[-0.04em] text-ink">{t('heading')}</h2>
-          <p className="mt-1.5 text-sm text-ink-3">{t('hint')}</p>
-          <FileSourceButton
-            variant="primary"
-            label={t('selectFile')}
-            onPickDevice={onOpenFileDialog}
-            onImportFile={onImportFile}
-            className="mt-5"
-          />
-          {children}
-        </div>
+        <Upload aria-hidden="true" className="mx-auto mb-6 size-10 text-accent-ink" />
+        <h2 className="text-xl sm:text-2xl text-ink">{t('heading')}</h2>
+        <p className="mt-1 text-sm sm:text-base text-ink-3">{t('hint')}</p>
+        <FileSourceButton
+          variant="primary"
+          label={t('selectFile')}
+          onPickDevice={onOpenFileDialog}
+          onImportFile={onImportFile}
+          className="mt-6"
+        />
       </div>
       <p className="mt-3 px-2 text-center text-[13px] font-semibold text-ink-3 tabular-nums">
         {limits.map((limit, index) => (

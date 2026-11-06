@@ -7,8 +7,6 @@ type Href = ComponentProps<typeof Link>['href'];
 export interface SiteLink {
   key: string;
   href: Href;
-  /** Set out from the links beside it, as the privacy policy must be. */
-  emphasized?: boolean;
 }
 
 export const TOOL_ROUTES = [
@@ -18,11 +16,9 @@ export const TOOL_ROUTES = [
   { key: 'audioConverter', href: '/audio-converter' },
   { key: 'archiveConverter', href: '/archive-converter' },
   { key: 'spreadsheetConverter', href: '/spreadsheet-converter' },
-  { key: 'unitConverter', href: '/unit-converter' },
   { key: 'pdfOcr', href: '/pdf-ocr' },
   { key: 'compressPdf', href: '/compress-pdf' },
   { key: 'mergePdf', href: '/merge-pdf' },
-  { key: 'systemStatus', href: '/status' },
 ] as const satisfies readonly SiteLink[];
 
 export const PRIMARY_LINKS = [
@@ -31,94 +27,39 @@ export const PRIMARY_LINKS = [
   { key: 'dashboard', href: '/dashboard' },
 ] as const satisfies readonly SiteLink[];
 
-export interface DirectoryCategory {
+export interface FooterColumn {
   key: string;
   links: readonly SiteLink[];
 }
 
-/** The footer directory: each category heading is `footer.categories.<key>`. */
-export const DIRECTORY_CATEGORIES = [
+/** The footer's columns: each heading is `footer.columns.<key>`. */
+export const FOOTER_COLUMNS = [
   {
-    key: 'video',
+    key: 'company',
     links: [
-      { key: 'mp4Converter', href: '/mp4-converter' },
-      { key: 'mp4ToGif', href: '/mp4-to-gif' },
-      { key: 'movToMp4', href: '/mov-to-mp4' },
-      { key: 'videoConverter', href: '/video-converter' },
+      { key: 'aboutUs', href: '/about' },
+      { key: 'security', href: '/security' },
     ],
   },
   {
-    key: 'audio',
+    key: 'resources',
     links: [
-      { key: 'mp3Converter', href: '/mp3-converter' },
-      { key: 'mp4ToMp3', href: '/mp4-to-mp3' },
-      { key: 'audioConverter', href: '/audio-converter' },
+      { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
+      { key: 'apiDocs', href: '/api-docs' },
     ],
   },
   {
-    key: 'image',
+    key: 'legal',
     links: [
-      { key: 'jpgToPdf', href: '/jpg-to-pdf' },
-      { key: 'pdfToJpg', href: '/pdf-to-jpg' },
-      { key: 'heicToJpg', href: '/heic-to-jpg' },
-      { key: 'imageConverter', href: '/image-converter' },
+      { key: 'privacy', href: '/privacy' },
+      { key: 'terms', href: '/terms' },
+      { key: 'acceptableUse', href: '/acceptable-use' },
+      { key: 'dpa', href: '/dpa' },
+      { key: 'accessibility', href: '/accessibility' },
     ],
   },
   {
-    key: 'documentEbook',
-    links: [
-      { key: 'pdfToWord', href: '/pdf-to-docx' },
-      { key: 'epubToPdf', href: '/epub-to-pdf' },
-      { key: 'documentConverter', href: '/document-converter' },
-    ],
+    key: 'contact',
+    links: [{ key: 'contact', href: '/contact' }],
   },
-  {
-    key: 'archive',
-    links: [
-      { key: 'rarToZip', href: '/rar-to-zip' },
-      { key: 'sevenZipToZip', href: '/7z-to-zip' },
-      { key: 'compressPdf', href: '/compress-pdf' },
-      { key: 'archiveConverter', href: '/archive-converter' },
-    ],
-  },
-  {
-    key: 'dataUnits',
-    links: [
-      { key: 'csvToJson', href: '/csv-to-json' },
-      { key: 'jsonToCsv', href: '/json-to-csv' },
-      { key: 'lbsToKg', href: '/lbs-to-kg' },
-      { key: 'unitConverter', href: '/unit-converter' },
-    ],
-  },
-  {
-    key: 'webApps',
-    links: [
-      { key: 'saveWebsiteAsPdf', href: '/save-website-as-pdf' },
-      { key: 'imageResizer', href: '/image-converter' },
-      { key: 'websiteScreenshot', href: '/website-png-screenshot' },
-      { key: 'pdfOcr', href: '/pdf-ocr' },
-    ],
-  },
-  {
-    key: 'clientEdge',
-    links: [
-      { key: 'mp4Remuxer', href: '/mp4-converter' },
-      { key: 'vectorConverter', href: '/vector-converter' },
-      { key: 'securityArchitecture', href: '/security' },
-    ],
-  },
-] as const satisfies readonly DirectoryCategory[];
-
-export const SECONDARY_LINKS = [
-  { key: 'aboutUs', href: '/about' },
-  { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
-  { key: 'apiDocs', href: '/api-docs' },
-  { key: 'privacy', href: '/privacy', emphasized: true },
-  { key: 'terms', href: '/terms' },
-  { key: 'acceptableUse', href: '/acceptable-use' },
-  { key: 'dpa', href: '/dpa' },
-  { key: 'security', href: '/security' },
-  { key: 'accessibility', href: '/accessibility' },
-  { key: 'contact', href: '/contact' },
-  { key: 'status', href: '/status' },
-] as const satisfies readonly SiteLink[];
+] as const satisfies readonly FooterColumn[];

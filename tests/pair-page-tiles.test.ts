@@ -76,7 +76,7 @@ function filesOf(files: File[]): FileList {
 function drop(host: HTMLElement, files: File[]) {
   const event = new Event('drop', { bubbles: true, cancelable: true });
   Object.defineProperty(event, 'dataTransfer', { value: { files: filesOf(files) } });
-  host.querySelector('.border-dashed')!.dispatchEvent(event);
+  host.querySelector('main h2')!.parentElement!.dispatchEvent(event);
 }
 
 function paste(files: File[]) {
