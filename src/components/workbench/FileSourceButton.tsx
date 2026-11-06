@@ -9,8 +9,8 @@ import { usePopoverDismiss } from './usePopoverDismiss';
 /** How the split button reads: the drop zone's primary "select file" or the file bar's secondary "add more files". */
 const VARIANTS = {
   primary: {
-    main: 'btn-primary min-h-[48px] px-6 text-base sm:text-lg font-medium rounded-l-xs',
-    toggle: 'btn-primary min-h-[48px] w-12 border-l border-on-accent/25 rounded-r-xs',
+    main: 'bg-accent text-on-accent transition-colors hover:bg-accent-hover min-h-[48px] px-6 text-base sm:text-lg font-medium rounded-l-xs',
+    toggle: 'bg-accent text-on-accent transition-colors hover:bg-accent-hover min-h-[48px] w-12 border-l border-on-accent/25 rounded-r-xs',
     menu: 'top-full mt-2',
   },
   secondary: {
