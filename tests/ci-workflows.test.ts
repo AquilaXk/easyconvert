@@ -461,9 +461,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 29 on a runner and 4 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(33);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(29);
+  it('reads every job of every workflow file: 27 on a runner and 4 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(31);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(27);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
   });
 
@@ -894,61 +894,7 @@ describe('files of the base that a pull request job compares with', () => {
   });
 });
 
-describe('workflow permissions, action pinning, checkout credentials, and ref validation hardening (#761)', () => {
-  const claudeRaw = read(path.join(WORKFLOWS, 'claude.yml'));
-  const claudeReviewRaw = read(path.join(WORKFLOWS, 'claude-code-review.yml'));
-  const soakRaw = read(path.join(WORKFLOWS, 'soak-test.yml'));
-  const claudeWorkflow = parse(claudeRaw) as Workflow & {
-    jobs: Record<string, Job & { permissions?: Record<string, string> }>;
-  };
-  const claudeReviewWorkflow = parse(claudeReviewRaw) as Workflow & {
-    jobs: Record<string, Job & { permissions?: Record<string, string> }>;
-  };
-  const soakWorkflow = parse(soakRaw) as Workflow;
-
-  it.each([
-    ['claude.yml', claudeRaw, claudeWorkflow],
-    ['claude-code-review.yml', claudeReviewRaw, claudeReviewWorkflow],
-    ['soak-test.yml', soakRaw, soakWorkflow],
-  ])('pins every external action to a 40-char commit SHA with a version comment in %s', (name, raw, wf) => {
-    for (const { job, step } of stepsOf(wf)) {
-      if (!step.uses || step.uses.startsWith('./')) continue;
-      const [, ref] = step.uses.split('@');
-      expect(ref, `${name} ${job} -> ${step.uses}`).toMatch(FULL_SHA);
-    }
-    const pinned = raw
-      .split('\n')
-      .map((line) => line.trim().replace(/^-\s*/, ''))
-      .filter((line) => line.startsWith('uses:') && !line.startsWith('uses: ./'));
-    expect(pinned.length).toBeGreaterThan(0);
-    for (const line of pinned) {
-      expect(line, `${name} -> ${line}`).toMatch(SHA_PINNED_COMMENT);
-    }
-  });
-
-  it('removes id-token permissions and disables checkout credential persistence on claude workflows', () => {
-    for (const [name, wf, jobName] of [
-      ['claude.yml', claudeWorkflow, 'claude'],
-      ['claude-code-review.yml', claudeReviewWorkflow, 'review'],
-    ] as const) {
-      const job = wf.jobs[jobName];
-      expect(job.permissions?.['id-token'], `${name} must not grant id-token`).toBeUndefined();
-      expect(job['timeout-minutes'], `${name} needs timeout-minutes`).toBeGreaterThan(0);
-      expect(job['timeout-minutes'], `${name} timeout-minutes within cap`).toBeLessThanOrEqual(MAX_JOB_TIMEOUT_MINUTES);
-      const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
-      expect(checkout?.with?.['persist-credentials'], `${name} checkout persist-credentials`).toBe(false);
-    }
-  });
-
-  it('sets least-privilege read permissions, checkout credential limits, and job timeout on soak-test.yml', () => {
-    expect(soakWorkflow.permissions).toEqual({ contents: 'read' });
-    const job = soakWorkflow.jobs['endurance-soak'];
-    expect(job['timeout-minutes']).toBeGreaterThan(0);
-    expect(job['timeout-minutes']).toBeLessThanOrEqual(MAX_JOB_TIMEOUT_MINUTES);
-    const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
-    expect(checkout?.with?.['persist-credentials']).toBe(false);
-  });
-
+describe('nightly ab_base_ref validation (#761)', () => {
   it('validates ab_base_ref in nightly.yml before git fetch and passes it after --', () => {
     const baseStep = nightly.jobs['bench-ab-speed'].steps.find((step) => step.id === 'base');
     expect(baseStep?.env?.AB_BASE_REF).toBe('${{ inputs.ab_base_ref }}');
@@ -958,4 +904,3 @@ describe('workflow permissions, action pinning, checkout credentials, and ref va
     expect(baseStep?.run).toContain('git fetch --no-tags --depth=1 origin -- "$AB_BASE_REF"');
   });
 });
-

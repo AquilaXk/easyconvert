@@ -1,56 +1,15 @@
-## Related Issue
-
-- Closes #
-- Related / Depends on:
-
 ## Summary
 
-- Problem:
-- Outcome:
-
-## Changes
-
-- 
-- 
-
-## Scope
-
-### Included
-
-- 
-
-### Excluded
-
-- 
+- What changed and why. Link the issue if there is one (`Closes #`).
 
 ## Verification
 
-| Check | Command / Evidence | Status |
-|---|---|---|
-| Linter | `npm run lint` | Pass |
-| Tests | `npm test` | Pass |
-| Build | `npm run build` | Pass |
+- `<command>`: result
 
 ### Not Run
 
 - None
 
-## Risk & Delivery
-
-- Risk: Low / Medium / High
-- Main risk:
-- Rollout / rollback / recovery: Not required
-
-## Review Guide
-
-- Review first:
-- Key decision / trade-off:
-
-## Checklist
-
-- [ ] All automated tests and linter pass locally.
-- [ ] Claude Code review findings are addressed and all review threads are resolved.
-- [ ] Changes match acceptance criteria of the related issue.
-- [ ] No extraneous files or secrets included.
-- [ ] If a policy or default changed: `docs/policy-decisions.md` is updated with the decision, why it is right in practice, its benefits and trade-offs, the alternatives rejected, and how it is verified.
-- [ ] If a conversion family changed: `parity quality` passes. Speed parity is measured nightly on `main` (a row listed in `bench/parity-gaps.json` fails when its median falls below the 99% prediction bound of its CI history or below 65% of the median of that history, whichever is higher); for a speed change, compare the branch with `main` first: `gh workflow run nightly.yml --ref <branch> -f ab_base_ref=main`.
+<!-- Risky change (security, data deletion or retention, payment, deploy, migration): add one line, for example
+Risky-change review: 0 blocking (head abc1234)
+If a policy or default changed, update docs/policy-decisions.md in this PR. -->

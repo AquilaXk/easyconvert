@@ -13,18 +13,18 @@ body:
       label: Problem / Motivation
       description: What problem does this solve or what use case does it address?
     validations:
-      required: true
+      required: false
   - type: textarea
     id: proposed_solution
     attributes:
       label: Proposed Solution
       description: How should this work? (Supported formats, parameters, expected output)
     validations:
-      required: true
+      required: false
   - type: textarea
     id: acceptance_criteria
     attributes:
       label: Acceptance Criteria
       description: Specific conditions for this task to be considered complete.
     validations:
-      required: true
+      required: false
