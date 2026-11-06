@@ -46,6 +46,36 @@ const TAG_IMAGE_OFFSET = 0xbcc0;
 const TYPE_BYTE = 1;
 const TYPE_USHORT = 3;
 const TYPE_ULONG = 4;
+/**
+ * The most directories one container may chain. The reference reader follows the chain until an offset of 0 and grows its table
+ * by one for each (GhostPDL jpegxr/cr_parse.c `jxr_read_image_container`, lines 185 to 199); a file holds one directory for each
+ * image, and an image with its alpha plane is two.
+ */
+const MAX_DIRECTORIES = 64;
+/**
+ * The reference reads an array of a tag that does not fit in the entry from the offset the entry holds, whose element size is
+ * that of its type (`read_ifd`, lines 1470 to 1650): bytes (types 1, 2, 6, 7), shorts (3, 8), longs (4, 9, 11), and always
+ * from an offset the 8-byte values (5, 10, 12). An array of up to this many bytes sits in the entry itself.
+ */
+const INLINE_VALUE_BYTES = 4;
+const ARRAY_ELEMENT_BYTES = new Map<number, number>([
+  [1, 1],
+  [2, 1],
+  [6, 1],
+  [7, 1],
+  [3, 2],
+  [8, 2],
+  [4, 4],
+  [9, 4],
+  [11, 4],
+  [5, 8],
+  [10, 8],
+  [12, 8],
+]);
+const SHORT_TYPES = new Set([TYPE_USHORT, 8]);
+const ALWAYS_OUT_OF_LINE_TYPES = new Set([5, 10, 12]);
+/** The reference counts a short array with a 16-bit counter (`uint16_t cdx`, line 1576), so a count past this is a loop that never ends. */
+const MAX_SHORT_ARRAY_COUNT = 0xffff;
 const STREAM_SIGNATURE = Buffer.from('WMPHOTO\0', 'latin1');
 /** After the signature: a byte of version, a byte of flags, the byte of flags that holds the short header flag, and a byte of colour format and bit depth. */
 const STREAM_FLAG_BYTES = 4;
@@ -56,15 +86,57 @@ function unreadable(reason: string): ConversionFailedError {
   return new ConversionFailedError(`Invalid image: the JPEG XR header could not be read (${reason}).`);
 }
 
-/** The offset of the codestream of the first image of the container: tag 0xBCC0 of its first directory, of a count of 1 and the type byte, short or long. */
+/** Refuses an entry whose array the reference would read from outside the file, or never finish reading. */
+function assertEntryReadable(bytes: Buffer, at: number): void {
+  const type = bytes.readUInt16LE(at + 2);
+  const count = bytes.readUInt32LE(at + 4);
+  const elementBytes = ARRAY_ELEMENT_BYTES.get(type);
+  if (elementBytes === undefined) return;
+  if (SHORT_TYPES.has(type) && count > MAX_SHORT_ARRAY_COUNT) throw unreadable(`a tag holds more than ${MAX_SHORT_ARRAY_COUNT} values`);
+  if (count * elementBytes <= INLINE_VALUE_BYTES && !ALWAYS_OUT_OF_LINE_TYPES.has(type)) return;
+  const offset = bytes.readUInt32LE(at + 8);
+  if (offset % 2 !== 0) throw unreadable('a tag array is at an odd offset');
+  if (offset + count * elementBytes > bytes.length) throw unreadable('a tag array runs past the end of the file');
+}
+
+/** The entries of the directory at `directory`, each as the offset of its 12 bytes, and the offset of the next directory (0 at the end of the chain). */
+function readDirectory(bytes: Buffer, directory: number): { entries: number[]; next: number } {
+  if (directory % 2 !== 0 || directory + IFD_COUNT_BYTES > bytes.length) throw unreadable('the directory is not inside the file');
+  const count = bytes.readUInt16LE(directory);
+  const next = directory + IFD_COUNT_BYTES + count * IFD_ENTRY_BYTES;
+  if (next + NEXT_DIRECTORY_BYTES > bytes.length) throw unreadable('the directory runs past the end of the file');
+  return {
+    entries: Array.from({ length: count }, (_unused, index) => directory + IFD_COUNT_BYTES + index * IFD_ENTRY_BYTES),
+    next: bytes.readUInt32LE(next),
+  };
+}
+
+/**
+ * The offset of the codestream of the first image of the container: tag 0xBCC0 of its first directory, of a count of 1 and the
+ * type byte, short or long. The renderer reads every directory of the chain and the arrays they hold, so those are checked
+ * too (a loop of directories, a chain without end, an array that never finishes reading or lies outside the file are refused).
+ */
 function codestreamOffset(bytes: Buffer): number {
   if (bytes[3] > CONTAINER_VERSION_MAX) throw unreadable('unknown container version');
-  const directory = bytes.readUInt32LE(IFD_OFFSET_AT);
-  if (directory % 2 !== 0 || directory + IFD_COUNT_BYTES > bytes.length) throw unreadable('the directory is not inside the file');
-  const entries = bytes.readUInt16LE(directory);
-  if (directory + IFD_COUNT_BYTES + entries * IFD_ENTRY_BYTES + NEXT_DIRECTORY_BYTES > bytes.length) throw unreadable('the directory runs past the end of the file');
-  for (let index = 0; index < entries; index += 1) {
-    const at = directory + IFD_COUNT_BYTES + index * IFD_ENTRY_BYTES;
+  const first = bytes.readUInt32LE(IFD_OFFSET_AT);
+  if (first === 0) throw unreadable('the container has no directory');
+  const seen = new Set<number>();
+  let imageOffset: number | undefined;
+  for (let directory = first; directory !== 0;) {
+    if (seen.has(directory)) throw unreadable('the directories loop');
+    if (seen.size === MAX_DIRECTORIES) throw unreadable(`the container chains more than ${MAX_DIRECTORIES} directories`);
+    seen.add(directory);
+    const { entries, next } = readDirectory(bytes, directory);
+    for (const at of entries) assertEntryReadable(bytes, at);
+    if (directory === first) imageOffset = imageOffsetOf(bytes, entries);
+    directory = next;
+  }
+  return imageOffset as number;
+}
+
+/** The value of tag 0xBCC0 among the entries of the first directory. */
+function imageOffsetOf(bytes: Buffer, entries: readonly number[]): number {
+  for (const at of entries) {
     if (bytes.readUInt16LE(at) !== TAG_IMAGE_OFFSET) continue;
     const type = bytes.readUInt16LE(at + 2);
     if (bytes.readUInt32LE(at + 4) !== 1) throw unreadable('the image offset has a count other than 1');
