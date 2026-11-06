@@ -301,12 +301,20 @@
     "formatCardsLabel": "형식",
     "crossLinks": {
       "from": {
-        "heading": "{format} 파일 변환"
+        "heading": "{format} 파일 변환",
+        "intro": "{format} 파일을 변환할 형식을 골라 주세요."
       },
       "to": {
-        "heading": "{format} 형식으로 변환"
+        "heading": "{format} 형식으로 변환",
+        "intro": "{format} 형식으로 바꿀 원본 형식을 골라 주세요."
       },
-      "pair": "{src} → {tgt}"
+      "pair": "{src} → {tgt}",
+      "eyebrow": "변환 종류",
+      "category": {
+        "eyebrow": "제공 변환기",
+        "heading": "{category} 변환기",
+        "intro": "이 분류에서 지원하는 형식마다 전용 변환기가 열려요."
+      }
     }
   },
   "dashboard": {
@@ -775,21 +783,6 @@
       "targetLabel": "대상 형식 {format}",
       "fromTitle": "원본 형식 선택",
       "toTitle": "대상 형식 선택"
-    },
-    "popular": {
-      "label": "인기 변환",
-      "pairs": {
-        "pdfToWord": "PDF → Word",
-        "wordToPdf": "Word → PDF",
-        "jpgToPng": "JPG → PNG",
-        "pngToJpg": "PNG → JPG",
-        "heicToJpg": "HEIC → JPG",
-        "imageToWebp": "이미지 → WebP",
-        "videoToMp3": "동영상 → MP3",
-        "movToMp4": "MOV → MP4",
-        "epubToPdf": "EPUB → PDF",
-        "excelToPdf": "Excel → PDF"
-      }
     },
     "chips": {
       "heading": "어떤 형식을 변환할까요?",

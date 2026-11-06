@@ -26,7 +26,7 @@ function categoryIcon(category: string): LucideIcon {
   return Object.hasOwn(CATEGORY_ICONS, category) ? CATEGORY_ICONS[category as FormatCategory] : CATEGORY_ICONS.document;
 }
 
-/** The glyph of a format's category: the file-type icon of a file row, a format tile and a popular-conversion card. */
+/** The glyph of a format's category: the file-type icon of a file row, and a format tile. */
 export function FormatIcon({ format, className }: Readonly<{ format: string; className: string }>) {
   const Icon = categoryIcon(FORMAT_REGISTRY[format.toLowerCase()]?.category ?? 'document');
   return <Icon aria-hidden="true" className={className} />;

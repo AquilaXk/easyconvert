@@ -153,29 +153,25 @@ function FormatDirectoryCard({
         </div>
 
         <div className="pt-5 border-t border-rule">
-          <h3 className="text-sm font-bold text-ink mb-3">
+          <h3 className="mb-3 font-mono text-[11px] text-ink-3">
             {t('pairsHeading', { category: activeLabel })}
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <ul className="space-y-2">
             {popularPairs.map((pair) => (
-              <Link
-                key={`${pair.from}-${pair.to}`}
-                href={`/${pair.from}-to-${pair.to}`}
-                className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-md border border-rule hover:border-accent transition-colors"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
+              <li key={`${pair.from}-${pair.to}`}>
+                <Link href={`/${pair.from}-to-${pair.to}`} className="block">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-xs uppercase text-ink">
                     <span>{pair.from}</span>
-                    <ArrowRight className="w-3.5 h-3.5 text-ink-3" />
+                    <ArrowRight aria-hidden="true" className="size-3 text-ink-3" />
                     <span>{pair.to}</span>
                   </span>
-                </div>
-                <span className="mt-1.5 text-xs text-ink-2 leading-snug">
-                  {t(`pairs.${pair.from}-${pair.to}` as PairSummaryKey)}
-                </span>
-              </Link>
+                  <span className="block text-xs leading-[16.5px] text-ink-3">
+                    {t(`pairs.${pair.from}-${pair.to}` as PairSummaryKey)}
+                  </span>
+                </Link>
+              </li>
             ))}
-          </div>
+          </ul>
         </div>
       </div>
     </div>

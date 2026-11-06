@@ -9,14 +9,13 @@ import { REGISTRY_STATS } from '../src/lib/registry-stats';
 import Header from '../src/components/Header';
 import Footer from '../src/components/Footer';
 import { HomeHero } from '../src/components/Hero';
-import Features from '../src/components/Features';
+import Features, { POPULAR_PAIRS_BY_CATEGORY } from '../src/components/Features';
 import FormatSelector from '../src/components/FormatSelector';
 import FaqSection from '../src/components/FaqSection';
 import StatusDashboard from '../src/components/StatusDashboard';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import HomePageView from '../src/components/pages/HomePageView';
-import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
 import { FORMAT_NAME_ALIASES, isSameFormat } from '../src/lib/format-aliases';
 import type { ConversionQueueItem } from '../src/lib/types';
 import {
@@ -155,27 +154,13 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(missingFrom(hrefs, ['/accessibility', '/api-docs'])).toEqual([]);
   });
 
-  it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
-    for (const pair of POPULAR_CONVERSIONS) {
+  it('verifies the frequent conversions of every category are supported pairs, and the home page has no popular-conversion cards', () => {
+    for (const pair of Object.values(POPULAR_PAIRS_BY_CATEGORY).flat()) {
       const srcDef = FORMAT_REGISTRY[pair.from];
       expect(srcDef, `Source format ${pair.from} should exist`).toBeDefined();
       expect(srcDef.targetFormats.includes(pair.to), `Source ${pair.from} should support target ${pair.to}`).toBe(true);
     }
-
-    const popular = select(renderHome(), 'nav', 'aria-label', 'Popular conversions');
-    expect(popular).toHaveLength(1);
-    expect(links(popular[0])).toEqual([
-      { text: 'PDF to Word', href: '/pdf-to-docx' },
-      { text: 'Word to PDF', href: '/docx-to-pdf' },
-      { text: 'JPG to PNG', href: '/jpg-to-png' },
-      { text: 'PNG to JPG', href: '/png-to-jpg' },
-      { text: 'HEIC to JPG', href: '/heic-to-jpg' },
-      { text: 'Image to WebP', href: '/png-to-webp' },
-      { text: 'Video to MP3', href: '/mp4-to-mp3' },
-      { text: 'MOV to MP4', href: '/mov-to-mp4' },
-      { text: 'EPUB to PDF', href: '/epub-to-pdf' },
-      { text: 'Excel to PDF', href: '/xlsx-to-pdf' },
-    ]);
+    expect(select(renderHome(), 'nav', 'aria-label', 'Popular conversions')).toHaveLength(0);
   });
 
   it('verifies parseConverterSlug properly routes dynamic converter and informational paths', () => {
@@ -293,7 +278,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(select(breadcrumb[0], 'svg')).toHaveLength(4);
   });
 
-  it('verifies a pair page holds its title, upload prompt, two format cards and related conversions, and nothing that explains how to convert', () => {
+  it('verifies a pair page holds its title, upload prompt, two format cards and no list of related conversions, and nothing that explains how to convert', () => {
     const main = select(renderSlug('pdf-to-docx'), 'main')[0];
 
     expect(headings(main)).toEqual([
@@ -301,9 +286,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
       'Select your file to convert',
       'PDF Portable Document Format',
       'DOCX Office Open XML Document',
-      'Convert from PDF',
-      'Convert to DOCX',
     ]);
+    expect(links(main).filter((link) => / to /.test(link.text))).toEqual([]);
     expect(links(main).filter((link) => link.text.endsWith(' Converter'))).toEqual([
       { text: 'PDF Converter', href: '/pdf-converter' },
       { text: 'DOCX Converter', href: '/docx-converter' },
@@ -337,7 +321,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(links(format).filter((link) => link.text.endsWith(' Converter'))).toEqual([]);
 
     const category = select(renderSlug('document-converter'), 'main')[0];
-    expect(headings(category)).toEqual(['Document Converter', 'Select your file to convert', 'Convert from DOCX', 'Convert to DOCX']);
+    expect(headings(category)).toEqual(['Document Converter', 'Select your file to convert', 'Converters for Documents']);
+    expect(links(category).map((link) => link.href)).toContain('/docx-converter');
   });
 
   // The section of the format cards is named for a screen reader; it is the one place the cards are told from the headings around them.

@@ -197,6 +197,7 @@ Interface
 141. [The web interface is offered in English and Korean: English at the unprefixed URLs, Korean under /ko, every visible string in a messages file per language](#141-the-web-interface-is-offered-in-english-and-korean-english-at-the-unprefixed-urls-korean-under-ko-every-visible-string-in-a-messages-file-per-language)
 145. [A path the site offers no page at is answered 404 by one rule of the slug parser, as the reference converter answers it, and a 404 page shows a thin header with the logo, a code, a heading that names the route and one sentence](#145-a-path-the-site-offers-no-page-at-is-answered-404-by-one-rule-of-the-slug-parser-as-the-reference-converter-answers-it-and-a-404-page-shows-a-thin-header-with-the-logo-a-code-a-heading-that-names-the-route-and-one-sentence)
 150. [The API documentation is a written multi-topic reference generated from the OpenAPI 3.1 contract, and README format and conversion counts are enforced by a generated registry snapshot](#150-the-api-documentation-is-a-written-multi-topic-reference-generated-from-the-openapi-31-contract-and-readme-format-and-conversion-counts-are-enforced-by-a-generated-registry-snapshot)
+158. [Conversion-name pills and cards are removed from pair pages and the home hero, and the lists on format and category pages become small monospace chips in a dashed box](#158-conversion-name-pills-and-cards-are-removed-from-pair-pages-and-the-home-hero-and-the-lists-on-format-and-category-pages-become-small-monospace-chips-in-a-dashed-box)
 
 Legal
 
@@ -5763,3 +5764,22 @@ Security
 - **Verified by**: `tests/spoof-and-parser-bounds.test.ts`, `tests/spoof-check-variants.test.ts`, `tests/unbounded-inflate-scan.test.ts`, `tests/font-astral-cmap-format12.test.ts`, `tests/cgm-source-redos.test.ts`, and `tests/qpdf-runner-qpdf.test.ts`.
 - **Revisit when**: a new binary container format without a magic-byte signature in `sniffMimeTypeFromMagicBytes` is added to the registry.
 
+## 158. Conversion-name pills and cards are removed from pair pages and the home hero, and the lists on format and category pages become small monospace chips in a dashed box
+
+- **Status**: Implemented, QA request of 2026-11-03 (scope) and 2026-11-06 (change). Narrows the block styling of entry 139 for the blocks that hold a conversion name.
+- **Decision**:
+  - **Pair pages carry no list of related conversions (`src/components/pages/ConverterPageView.tsx`).** The "Convert from X" and "Convert to Y" grids of "X to Y" pills are removed from pair pages such as `/pdf-to-docx`; the page ends after the two format cards. The reference converter's pair page has no such block.
+  - **The home hero carries no row of popular-conversion icon cards (`src/components/Hero.tsx`).** `src/components/workbench/PopularConversions.tsx` and the `hero.popular` messages are deleted.
+  - **Frequent conversions of the home format directory are a plain list (`src/components/Features.tsx`).** Each row is the pair in monospace 12 px with a 12 px arrow, a one-line 12 px note in `ink-3` (line height 16.5 px), 8 px between rows, no border and no hover; the list heading is monospace 11 px in `ink-3`. Measured on the reference home: pair mono 12 px, note 12 px with line height 16.5 px, no visible hover.
+  - **Format pages (`/pdf-converter`) list conversions as chips (`src/components/converter/FormatCrossLinks.tsx`).** Two blocks ("Convert from X", "Convert to X"), side by side from `lg` with a 40 px by 32 px gap, each with an 11 px uppercase eyebrow, a heading (`text-lg sm:text-xl`, 600), a one-line intro and a dashed 1 px `rule` box with 16 px padding and `canvas` at 30%. Chips are monospace 12 px uppercase, padding 4 px by 10 px, 1 px `rule` border, radius `xs` (2.4 px), `surface` at 80%; on hover the border is `accent` at 40%, the fill `accent` at 5% and the text `accent-ink`. Every conversion is listed (the earlier cut at 30 sources is removed). The reference uses its red primary; ours keeps the blue brand tokens.
+  - **Category pages (`/video-converter`) list every format of the category (`CategoryConverters` in the same file).** One block "Converters for {category}" with the same chips, each linking its format page (`/mp4-converter`).
+  - **Not copied:** the grid pattern inside the dashed box and the chip shadow, which are decoration; the reference's eyebrow icon.
+- **Why**:
+  - **QA judged the bordered conversion-name pills and cards slop, with their hover.** The reference shows each list once in a quiet form and has none on pair pages, so a smaller, flatter block matches it.
+- **Trade-offs**:
+  - **Pair pages lose their pills to the other conversions of both formats** (every target of the source and up to 30 sources of the target). Crawl paths to those pairs now run through the format pages, the category pages, the home directory and the sitemap; each pair page keeps links to its two format pages through the format cards.
+  - **Chips are about 28 px tall, below the 44 px touch target** of the pills they replace. QA chose the reference's size.
+- **Alternatives rejected**:
+  - **Keeping the pills on pair pages with the new chip style.** The reference has no such block on pair pages.
+- **Verified by**: `tests/redesign-verification.test.ts`, `tests/internal-links.test.ts`
+- **Revisit when**: search coverage of pair pages drops after launch, or a reference change adds a related-conversions block to its pair page.

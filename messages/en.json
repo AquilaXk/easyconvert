@@ -301,12 +301,20 @@
     "formatCardsLabel": "Formats",
     "crossLinks": {
       "from": {
-        "heading": "Convert from {format}"
+        "heading": "Convert from {format}",
+        "intro": "Pick a target format to start a {format} conversion."
       },
       "to": {
-        "heading": "Convert to {format}"
+        "heading": "Convert to {format}",
+        "intro": "Pick a source format to convert into {format}."
       },
-      "pair": "{src} to {tgt}"
+      "pair": "{src} to {tgt}",
+      "eyebrow": "Conversion types",
+      "category": {
+        "eyebrow": "Available converters",
+        "heading": "Converters for {category}",
+        "intro": "Every format we support in this category opens its own converter."
+      }
     }
   },
   "dashboard": {
@@ -775,21 +783,6 @@
       "targetLabel": "Target format {format}",
       "fromTitle": "Convert from format",
       "toTitle": "Convert to format"
-    },
-    "popular": {
-      "label": "Popular conversions",
-      "pairs": {
-        "pdfToWord": "PDF to Word",
-        "wordToPdf": "Word to PDF",
-        "jpgToPng": "JPG to PNG",
-        "pngToJpg": "PNG to JPG",
-        "heicToJpg": "HEIC to JPG",
-        "imageToWebp": "Image to WebP",
-        "videoToMp3": "Video to MP3",
-        "movToMp4": "MOV to MP4",
-        "epubToPdf": "EPUB to PDF",
-        "excelToPdf": "Excel to PDF"
-      }
     },
     "chips": {
       "heading": "What do you want to convert?",

@@ -7,7 +7,6 @@ import { REGISTRY_STATS } from '@/lib/registry-stats';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
 import SourceChipPicker from './workbench/SourceChipPicker';
-import PopularConversions from './workbench/PopularConversions';
 import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload } from './hero/useHeroUpload';
 import type { PairTiles } from './hero/usePairTiles';
@@ -39,7 +38,7 @@ interface HomeHeroProps {
   dailyLimit: number;
 }
 
-/** The home page's hero: the title and trust row beside the upload card with the source chips, then the popular conversions. */
+/** The home page's hero: the title and trust row beside the upload card with the source chips. */
 export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps>) {
   const t = useTranslations('hero');
   const upload = useHeroUpload(onFilesSelected, undefined);
@@ -61,7 +60,6 @@ export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps
             </HeroDropzoneCard>
           </div>
         </div>
-        <PopularConversions />
       </div>
     </section>
   );

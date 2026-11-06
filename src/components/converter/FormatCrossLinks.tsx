@@ -1,84 +1,104 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import { ArrowRight } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
+import type { FormatCategory } from '@/lib/types';
+import { REGISTRY_STATS } from '@/lib/registry-stats';
 
-interface ConversionGridCardProps {
-  formatName: string;
-  formats: string[];
-  direction: 'from' | 'to';
+const CHIP_CLASS =
+  'inline-flex items-center rounded-xs border border-rule bg-surface/80 px-2.5 py-1 font-mono text-xs uppercase text-ink transition-colors hover:border-accent/40 hover:bg-accent/5 hover:text-accent-ink';
+
+interface ChipBlockProps {
+  eyebrow: string;
+  heading: string;
+  intro: string;
+  chips: ReadonlyArray<{ href: string; label: string }>;
 }
 
-function ConversionGridCard({
-  formatName,
-  formats,
-  direction,
-}: Readonly<ConversionGridCardProps>) {
-  const t = useTranslations('converterPage.crossLinks');
-  const isFrom = direction === 'from';
-  const upperName = formatName.toUpperCase();
-
+/** A heading and a one-line intro over a dashed box of small monospace chips, each a link. */
+function ChipBlock({ eyebrow, heading, intro, chips }: Readonly<ChipBlockProps>) {
   return (
-    <div className="border-t border-rule pt-6">
-      <h2 className="text-xl sm:text-2xl text-ink mb-5">
-        {t(`${direction}.heading`, { format: upperName })}
-      </h2>
-
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
-        {formats.map((fmt) => {
-          const fromFmt = isFrom ? formatName : fmt;
-          const toFmt = isFrom ? fmt : formatName;
-          return (
-            <Link
-              key={fmt}
-              href={`/${fromFmt.toLowerCase()}-to-${toFmt.toLowerCase()}`}
-              className="min-h-[44px] sm:min-h-[40px] flex items-center justify-between gap-2 px-3 py-2 rounded-sm bg-sunken border border-rule hover:border-accent hover:bg-accent-soft text-xs font-semibold text-ink transition-colors group"
-            >
-              <span className="truncate">
-                {t('pair', { src: fromFmt.toUpperCase(), tgt: toFmt.toUpperCase() })}
-              </span>
-              <ArrowRight className="w-3.5 h-3.5 text-ink-3 group-hover:text-accent-ink shrink-0 transition-colors" />
+    <article className="min-w-0">
+      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-ink-3">{eyebrow}</div>
+      <h2 className="mt-2 text-lg font-semibold tracking-tight text-ink sm:text-xl">{heading}</h2>
+      <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-3">{intro}</p>
+      <div className="mt-4 border border-dashed border-rule bg-canvas/30 p-4">
+        <div className="flex flex-wrap gap-1.5">
+          {chips.map((chip) => (
+            <Link key={chip.href} href={chip.href} className={CHIP_CLASS}>
+              {chip.label}
             </Link>
-          );
-        })}
+          ))}
+        </div>
       </div>
-    </div>
+    </article>
   );
 }
 
 interface FormatCrossLinksProps {
-  sourceFormat: string;
-  convertFromTargets: string[];
-  targetForReverse: string;
-  convertToSources: string[];
+  format: string;
+  /** The formats `format` converts to. */
+  targets: string[];
+  /** The formats that convert to `format`. */
+  sources: string[];
 }
 
-export function FormatCrossLinks({
-  sourceFormat,
-  convertFromTargets,
-  targetForReverse,
-  convertToSources,
-}: Readonly<FormatCrossLinksProps>) {
-  if (convertFromTargets.length === 0 && convertToSources.length === 0) {
+/** The format page's two lists of conversions, from the format and to it. */
+export function FormatCrossLinks({ format, targets, sources }: Readonly<FormatCrossLinksProps>) {
+  const t = useTranslations('converterPage.crossLinks');
+  if (targets.length === 0 && sources.length === 0) {
     return null;
   }
+  const upper = format.toUpperCase();
+  const chipsOf = (others: string[], isFrom: boolean) =>
+    others.map((other) => {
+      const from = isFrom ? format : other;
+      const to = isFrom ? other : format;
+      return {
+        href: `/${from.toLowerCase()}-to-${to.toLowerCase()}`,
+        label: t('pair', { src: from.toUpperCase(), tgt: to.toUpperCase() }),
+      };
+    });
 
   return (
-    <section className="max-w-5xl mx-auto px-4 sm:px-6 my-12 space-y-6">
-      {convertFromTargets.length > 0 && (
-        <ConversionGridCard
-          formatName={sourceFormat}
-          formats={convertFromTargets}
-          direction="from"
+    <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-12 pb-16 grid gap-x-10 gap-y-8 lg:grid-cols-2">
+      {targets.length > 0 && (
+        <ChipBlock
+          eyebrow={t('eyebrow')}
+          heading={t('from.heading', { format: upper })}
+          intro={t('from.intro', { format: upper })}
+          chips={chipsOf(targets, true)}
         />
       )}
-      {convertToSources.length > 0 && (
-        <ConversionGridCard
-          formatName={targetForReverse}
-          formats={convertToSources}
-          direction="to"
+      {sources.length > 0 && (
+        <ChipBlock
+          eyebrow={t('eyebrow')}
+          heading={t('to.heading', { format: upper })}
+          intro={t('to.intro', { format: upper })}
+          chips={chipsOf(sources, false)}
         />
       )}
+    </section>
+  );
+}
+
+/** The category page's list of every format of the category, each linking its own converter. */
+export function CategoryConverters({ category }: Readonly<{ category: FormatCategory }>) {
+  const t = useTranslations('converterPage.crossLinks.category');
+  const tCategory = useTranslations('formatCategories');
+  const stat = REGISTRY_STATS.categories.find((entry) => entry.id === category);
+  if (!stat) {
+    return null;
+  }
+  const label = tCategory(category);
+
+  return (
+    <section className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-12 pb-16">
+      <ChipBlock
+        eyebrow={t('eyebrow')}
+        heading={t('heading', { category: label })}
+        intro={t('intro')}
+        chips={stat.formats.map((fmt) => ({ href: `/${fmt.id}-converter`, label: fmt.extension }))}
+      />
     </section>
   );
 }
