@@ -105,9 +105,24 @@ export const asciiEntry = (tag: number, text: string, at = 0): TiffEntrySpec => 
 
 const DATA_AT = 128;
 
-/** A DNG whose raw image is one strip of `stripBytes` at byte 128, cut to `size` bytes when that is shorter. */
-export function minimalDng(stripBytes: number, size = DATA_AT + stripBytes, options: { little?: boolean } = {}): Buffer {
-  return buildTiff(Math.max(size, DATA_AT), [{ at: 8, entries: imageEntries([[DATA_AT, stripBytes]]) }], options).subarray(0, size);
+/** The DNGVersion tag as a DNG of 1.4 writes it. */
+export const DNG_VERSION_1_4 = [1, 4, 0, 0] as const;
+
+/** The DNGVersion entry of `bytes` (four of them, as the tag holds). */
+export const dngVersionEntry = (bytes: readonly number[] = DNG_VERSION_1_4): TiffEntrySpec => ({ tag: TAG.dngVersion, type: TYPE.byte, values: [...bytes] });
+
+/**
+ * A DNG whose raw image is one strip of `stripBytes` at byte 128, cut to `size` bytes when that is shorter. It carries a DNGVersion
+ * of 1.4.0.0 unless `dngVersion` says otherwise: four bytes, or null for no tag.
+ */
+export function minimalDng(
+  stripBytes: number,
+  size = DATA_AT + stripBytes,
+  options: { little?: boolean; dngVersion?: readonly number[] | null } = {}
+): Buffer {
+  const { dngVersion = DNG_VERSION_1_4, ...tiff } = options;
+  const entries = [...imageEntries([[DATA_AT, stripBytes]]), ...(dngVersion === null ? [] : [dngVersionEntry(dngVersion)])];
+  return buildTiff(Math.max(size, DATA_AT), [{ at: 8, entries }], tiff).subarray(0, size);
 }
 
 /** A copy of `file` whose IFD0 entry `tag` holds `values` (numerator and denominator pairs for a RATIONAL) over its own, as many. */

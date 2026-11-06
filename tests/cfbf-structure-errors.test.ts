@@ -1,4 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { defaultResolver, OLEFILE_PSEUDO_TOOL } from '../bench/tools';
 import { buildCfbfContainer } from '../src/lib/conversions/cfbf-writer';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
@@ -8,6 +10,7 @@ import { isEncryptedWordDocument } from '../src/lib/conversions/office/doc-reade
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import { CompoundFileStructureError, CorruptStreamError } from '../src/lib/types';
 import { entryFields, entryId, miniFatSectors, moveChainSectorToEnd, setEntry, setFatEntry } from './helpers/cfbf-layout';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * One cause for a destroyed table of contents. A compound file keeps where its streams are in three chains (the directory, the mini
@@ -51,6 +54,27 @@ const rootStart = (file: Buffer): number => entryFields(file, ROOT_ENTRY_ID).sta
 const directoryStart = (file: Buffer): number => file.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET);
 const miniFatStart = (file: Buffer): number => file.readUInt32LE(FIRST_MINI_FAT_SECTOR_OFFSET);
 const startOf = (file: Buffer, name: string): number => entryFields(file, entryId(file, name)).start;
+
+const olefilePython = defaultResolver()(OLEFILE_PSEUDO_TOOL);
+const noOlefile = skipUnless('python3 with olefile', olefilePython !== null);
+const OLEFILE_SCRIPT = [
+  'import io, sys, olefile',
+  'data = sys.stdin.buffer.read()',
+  'ole = olefile.OleFileIO(io.BytesIO(data), raise_defects=olefile.DEFECT_INCORRECT)',
+  'ole.openstream(sys.argv[1]).read()',
+  "print('ok')",
+].join('\n');
+
+/**
+ * What olefile 0.47 says of the file when it reads the stream `name` and treats a defect of its own `DEFECT_INCORRECT` level as an
+ * error (olefile.py of 0.47: 'incomplete OLE stream' when a chain ends before the sectors its size needs, line 662 of `OleStream.__init__`,
+ * and 'double reference for OLE stream/storage' when an entry is reached twice, line 1828 of `_load_direntry`): 'ok' when it reads the
+ * file, else the text of the error.
+ */
+function olefileSays(file: Buffer, name: string): string {
+  const run = spawnSync(olefilePython as string, ['-I', '-c', OLEFILE_SCRIPT, name], { input: file, encoding: 'utf8' });
+  return run.status === 0 ? run.stdout.trim() : (run.stderr.trim().split('\n').pop() ?? '');
+}
 
 const refusalOf = (file: Buffer): unknown => {
   try {
@@ -271,6 +295,43 @@ describe('the mini stream chain of the root entry', () => {
     });
   });
 
+  describe('shorter than the size its root entry declares', () => {
+    /** The root entry declares two sectors of mini stream and its chain holds one: the streams of the file all lie in the first. */
+    const shortChain = (): Buffer => {
+      const file = smallAndLarge();
+      setEntry(file, ROOT_ENTRY_ID, { size: 2 * SECTOR_BYTES });
+      return file;
+    };
+    /** Three streams whose mini stream spans two sectors, with the chain cut after the first: the later streams lie in the lost tail. */
+    const lostTail = (): Buffer => {
+      const file = needingTwoMiniFatSectors();
+      setFatEntry(file, rootStart(file), END_OF_CHAIN);
+      return file;
+    };
+
+    it.each([
+      ['no small stream lies in the missing part', shortChain],
+      ['small streams lie in the missing part', lostTail],
+    ])('is refused as a destroyed structure, and not stream by stream, when %s', (_, build) => {
+      expectStructureRefusal(build(), /its root entry declares \d+ bytes of mini stream and its sector chain holds \d+/);
+    });
+
+    it.skipIf(noOlefile).each([
+      ['no small stream lies in the missing part', shortChain],
+      ['small streams lie in the missing part', lostTail],
+    ])('is a defect of olefile too when %s', (_, build) => {
+      expect(olefileSays(build(), 'A')).toMatch(/incomplete OLE stream/);
+      expect(olefileSays(smallAndLarge(), 'A')).toBe('ok');
+    });
+
+    it('is not refused when the chain holds the size exactly, or more', () => {
+      expect(parseCfbf(needingTwoMiniFatSectors()).paths.get('A')).toEqual(filled(MINI_STREAM_NEEDING_TWO_MINI_FAT_SECTORS_BYTES, 0x41));
+      const file = smallAndLarge();
+      setEntry(file, ROOT_ENTRY_ID, { size: SECTOR_BYTES });
+      expect(parseCfbf(file).paths.get('A')).toEqual(filled(SMALL_STREAM_BYTES, 0x41));
+    });
+  });
+
   it.each([
     ['starts at the end-of-chain marker', { start: END_OF_CHAIN }],
     ['starts at the free marker', { start: FREE_SECTOR }],
@@ -285,6 +346,28 @@ describe('the mini stream chain of the root entry', () => {
     const file = streams(LARGE_STREAM_BYTES);
     setEntry(file, ROOT_ENTRY_ID, { start: BEYOND_THE_FILE, size: SMALL_STREAM_BYTES });
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(LARGE_STREAM_BYTES, 0x41));
+  });
+});
+
+describe('the directory tree', () => {
+  it('is read when every entry is reached once', () => {
+    expect([...parseCfbf(smallAndLarge()).paths.keys()]).toEqual(['A', 'B']);
+  });
+
+  it.each([
+    ['the right link of a stream', { right: ROOT_ENTRY_ID }],
+    ['the left link of a stream', { left: ROOT_ENTRY_ID }],
+  ])('is refused as a destroyed structure when %s leads back to the root entry', (_, link) => {
+    const file = smallAndLarge();
+    setEntry(file, entryId(file, 'B'), link);
+    expectStructureRefusal(file, /the directory tree reaches entry 0 twice/);
+  });
+
+  it.skipIf(noOlefile)('is a defect of olefile too when a link leads back to the root entry', () => {
+    const file = smallAndLarge();
+    setEntry(file, entryId(file, 'B'), { right: ROOT_ENTRY_ID });
+    expect(olefileSays(file, 'A')).toMatch(/double reference for OLE stream\/storage/);
+    expect(olefileSays(smallAndLarge(), 'A')).toBe('ok');
   });
 });
 
