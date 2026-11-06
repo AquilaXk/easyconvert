@@ -20,8 +20,6 @@ const VIEWS: Record<Exclude<ClientMessagesPage, 'layout'>, string> = {
   auth: 'src/components/pages/AuthPageView.tsx',
   dashboard: 'src/components/pages/DashboardPageView.tsx',
   apiDocs: 'src/components/pages/ApiDocsPageView.tsx',
-  status: 'src/components/pages/StatusPageView.tsx',
-  unitConverter: 'src/components/pages/UnitConverterPageView.tsx',
   notFound: 'src/components/pages/NotFoundPageView.tsx',
 };
 

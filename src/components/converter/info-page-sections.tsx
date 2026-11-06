@@ -1,5 +1,8 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
+import { Link } from '@/i18n/navigation';
+
+const SUPPORT_EMAIL = 'support@aquilaxk.site';
 
 /** The sections of each policy page, in order; each one's heading and body are `infoPages.<page>.<section>`. */
 const POLICY_SECTIONS = {
@@ -52,37 +55,55 @@ export function PolicySections({
   );
 }
 
+export function AboutContent({ totalFormatCount, dailyLimit }: Readonly<{ totalFormatCount: number; dailyLimit: number }>) {
+  const t = useTranslations('infoPages.about.contact');
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 lg:gap-12">
+      <div className="lg:col-span-2 max-w-3xl space-y-6">
+        <PolicySections infoType="about" totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />
+      </div>
+      <aside className="self-start border border-rule bg-surface p-6 space-y-3">
+        <h2 className="text-base font-semibold text-ink">{t('heading')}</h2>
+        <ul className="space-y-2">
+          <li>
+            <Link href="/contact" className="text-accent-ink hover:underline">
+              {t('page')}
+            </Link>
+          </li>
+          <li>
+            <a href={`mailto:${SUPPORT_EMAIL}`} className="text-accent-ink hover:underline break-all">
+              {SUPPORT_EMAIL}
+            </a>
+          </li>
+        </ul>
+      </aside>
+    </div>
+  );
+}
+
 export function ContactContent() {
   const t = useTranslations('infoPages.contact');
   return (
-    <div className="space-y-5">
+    <div className="border border-rule bg-surface p-6 space-y-6">
       <div className="space-y-2">
-        <h2 className="text-xl text-ink">{t('heading')}</h2>
+        <h2 className="text-base font-semibold text-ink">{t('heading')}</h2>
         <p>{t('intro')}</p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-        <div className="p-5 rounded-md border border-rule space-y-2">
-          <h3 className="font-bold text-ink text-sm">{t('email.heading')}</h3>
-          <p className="text-xs text-ink-2">{t('email.body')}</p>
-          <a
-            href="mailto:support@aquilaxk.site"
-            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded-md"
-          >
-            support@aquilaxk.site
-          </a>
-        </div>
+      <div className="border-t border-rule pt-6 space-y-1">
+        <h3 className="font-medium text-ink">{t('email.heading')}</h3>
+        <p className="text-ink-3">{t('email.body')}</p>
+        <a href={`mailto:${SUPPORT_EMAIL}`} className="inline-block text-accent-ink hover:underline">
+          {SUPPORT_EMAIL}
+        </a>
+      </div>
 
-        <div className="p-5 rounded-md border border-rule space-y-2">
-          <h3 className="font-bold text-ink text-sm">{t('bugs.heading')}</h3>
-          <p className="text-xs text-ink-2">{t('bugs.body')}</p>
-          <a
-            href="mailto:support@aquilaxk.site?subject=Bug%20Report"
-            className="min-h-[44px] inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline rounded-md"
-          >
-            {t('bugs.link')}
-          </a>
-        </div>
+      <div className="border-t border-rule pt-6 space-y-1">
+        <h3 className="font-medium text-ink">{t('bugs.heading')}</h3>
+        <p className="text-ink-3">{t('bugs.body')}</p>
+        <a href={`mailto:${SUPPORT_EMAIL}?subject=Bug%20Report`} className="inline-block text-accent-ink hover:underline">
+          {t('bugs.link')}
+        </a>
       </div>
     </div>
   );

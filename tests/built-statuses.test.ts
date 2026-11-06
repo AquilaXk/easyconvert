@@ -17,7 +17,7 @@ const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'check-built-statuses.mj
 const run = promisify(execFile);
 const servers: Server[] = [];
 
-const PAGES = new Set(['/pdf-to-jpg', '/ko/pdf-to-jpg', '/dashboard/api-keys', '/api-docs', '/status', '/unit-converter', '/auth']);
+const PAGES = new Set(['/pdf-to-jpg', '/ko/pdf-to-jpg', '/dashboard/api-keys', '/api-docs', '/auth']);
 const REDIRECTS = new Set(['/account']);
 
 const titles = (pathname: string) => testMessages(/^\/ko\//i.test(pathname) ? 'ko' : 'en').meta;

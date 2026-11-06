@@ -10,8 +10,6 @@ import Footer from '../src/components/Footer';
 import { HomeHero } from '../src/components/Hero';
 import Features, { POPULAR_PAIRS_BY_CATEGORY } from '../src/components/Features';
 import FormatSelector from '../src/components/FormatSelector';
-import FaqSection from '../src/components/FaqSection';
-import StatusDashboard from '../src/components/StatusDashboard';
 import ConversionQueue from '../src/components/ConversionQueue';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
 import HomePageView from '../src/components/pages/HomePageView';
@@ -34,7 +32,7 @@ import {
 } from './helpers/rendered-dom';
 import { parsedSlug, slugPageCopy, type TestLocale } from './helpers/intl';
 import { testMessages } from './helpers/intl-messages';
-import { ANONYMOUS_DAILY_CONVERSIONS, getAnonymousDailyLimit } from '../src/lib/plan-limits';
+import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 
 /**
  * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
@@ -116,7 +114,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const script = fs.readFileSync(captureScriptPath, 'utf-8');
     const captured = [...script.matchAll(/path: '([^']+)'/g)].map((m) => m[1]);
 
-    expect(captured).toEqual(['/pdf-converter', '/unit-converter', '/status']);
+    expect(captured).toEqual(['/pdf-converter']);
     expect(presentIn(captured, ['/login', '/register'])).toEqual([]);
   });
 
@@ -156,19 +154,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(pdfToWord.sourceFormat).toBe('pdf');
     expect(pdfToWord.targetFormat).toBe('docx');
 
-    const status = parsedSlug('status');
-    expect(status.isInfoPage).toBe(true);
-    expect(status.infoType).toBe('status');
-    expect(slugPageCopy('status').title).toBe('System Status');
-
-    const unitConverter = parsedSlug('unit-converter');
-    expect(unitConverter.isInfoPage).toBe(true);
-    expect(unitConverter.infoType).toBe('unit');
-
-    const lbsToKg = parsedSlug('lbs-to-kg');
-    expect(lbsToKg.isInfoPage).toBe(true);
-    expect(lbsToKg.infoType).toBe('unit');
-    expect(slugPageCopy('lbs-to-kg').title).toMatch(/LBS to KG/);
+    // The status and unit converter pages are gone: their slugs are no page.
+    expect(['status', 'unit-converter', 'lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet'].map((slug) => parseConverterSlug(slug))).toEqual([null, null, null, null, null, null]);
   });
 
   it('verifies pair and category slugs resolve to registered formats', () => {
@@ -408,7 +395,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies a page with no ad network configured shows no ad frame and reserves no space for one', () => {
-    for (const page of [renderSlug('pdf-to-docx'), renderSlug('lbs-to-kg'), renderQueue('completed')]) {
+    for (const page of [renderSlug('pdf-to-docx'), renderSlug('about'), renderQueue('completed')]) {
       expect(select(page, 'aside', 'aria-label', 'Advertisement')).toHaveLength(0);
       expect(visibleText(page)).not.toMatch(/Advertisement|728 × 90|Leaderboard|Placement/);
       expect(allElements(page).filter((e) => /min-h-\[50px\]/.test(attrOf(e, 'class') ?? ''))).toEqual([]);
@@ -426,31 +413,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
     expect(phrasesMissing(text, ['Up to 1 GiB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
     expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
-  });
-
-  it('verifies StatusDashboard purges fake uptime stats, fake incident logs, and fake modals', () => {
-    const dashboard = render(StatusDashboard, {} as never);
-    const text = visibleText(dashboard);
-
-    // Must NOT contain fake 99.99% claims, a made-up incident log or a subscription modal
-    expect(phrasesPresent(text, ['99.99%', 'WebCodecs GPU Hardware Buffer Optimization', 'Subscribe to Status Updates'])).toEqual([]);
-    expect(headings(dashboard).filter((h) => /incident/i.test(h))).toEqual([]);
-    expect(select(dashboard, 'dialog')).toHaveLength(0);
-
-    // Must contain genuine client edge telemetry and diagnostics
-    expect(
-      phrasesMissing(text, [
-        'Run Edge Diagnostics',
-        'SIMD WebAssembly Core Engine',
-        'WebCodecs VPU Transcoding Accelerator',
-        'Origin Private File System (OPFS)',
-        'In-Browser File Handling',
-        'Runs in this browser',
-      ])
-    ).toEqual([]);
-    // It claims no storage it does not have: the server keeps a result for an hour at most
-    expect(phrasesPresent(text, ['100% In-Browser', '0 Bytes', 'Zero permanent retention'])).toEqual([]);
-    expect(phrasesMissing(text, ['1 hour at most', 'Deleted 10 minutes after download'])).toEqual([]);
   });
 
   it('verifies informational pages eliminate forgot-password and fake alert forms', () => {
@@ -471,31 +433,8 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(pairs.filter(([alias, format]) => alias === format || Object.hasOwn(FORMAT_NAME_ALIASES, format))).toEqual([]);
   });
 
-  it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
-    const faq = render(FaqSection, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS });
-    const triggers = select(faq, 'button').filter((b) => attrOf(b, 'aria-controls') !== null);
-
-    // Five questions, each a button that controls its own answer region; only the open one is in the markup.
-    expect(triggers.map((b) => attrOf(b, 'aria-controls'))).toEqual([0, 1, 2, 3, 4].map((i) => `faq-answer-${i}`));
-    expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
-    const regions = select(faq, 'div', 'role', 'region');
-    expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
-    expect(visibleText(regions[0])).toMatch(/^Yes\. Without an account you can run up to 10 conversions a day on our servers, each file up to 1 GiB\./);
-    expect(visibleText(regions[0])).not.toMatch(/Pro|Enterprise/);
-  });
-
-  it('states the allowance the server reads, so an operator override reads the same on the page as in the refusal', () => {
-    vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '7');
-    try {
-      const faq = render(FaqSection, { dailyLimit: getAnonymousDailyLimit() });
-      expect(visibleText(select(faq, 'div', 'role', 'region')[0])).toMatch(/run up to 7 conversions a day/);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
   it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
-    for (const slug of ['pdf-to-docx', 'contact', 'status', 'unit-converter']) {
+    for (const slug of ['pdf-to-docx', 'contact', 'about']) {
       const page = renderSlug(slug);
       const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
       // The body paints the canvas colour of both themes, so the page root carries layout only and never covers it.

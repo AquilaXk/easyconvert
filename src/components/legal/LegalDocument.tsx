@@ -16,9 +16,9 @@ const PROSE_CLASS = [
 ].join(' ');
 
 const SECTION_CLASS =
-  '[&_h2]:scroll-mt-24 [&_h2]:mt-10 [&_h2]:pt-10 [&_h2]:border-t [&_h2]:border-rule [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-ink [&_h2:first-child]:mt-0 [&_h2:first-child]:pt-0 [&_h2:first-child]:border-t-0';
+  '[&_h2]:scroll-mt-24 [&_h2]:mt-12 [&_h2]:text-2xl [&_h2]:font-bold [&_h2]:text-ink [&_h2:first-child]:mt-0';
 
-/** A legal page: its version date above the title, the introduction, then the table of contents beside the sections. */
+/** A legal page: its version date above the title, the introduction, then the list of its sections beside them. */
 export function LegalDocument({ id, locale }: Readonly<{ id: LegalDocumentId; locale: AppLocale }>) {
   const t = useTranslations('legal');
   const format = useFormatter();
@@ -37,14 +37,11 @@ export function LegalDocument({ id, locale }: Readonly<{ id: LegalDocumentId; lo
       </header>
 
       <div className="mt-8 pt-8 border-t border-rule grid grid-cols-1 lg:grid-cols-[13rem_minmax(0,1fr)] gap-8 lg:gap-12">
-        <nav aria-labelledby="legal-contents" className="lg:sticky lg:top-24 lg:self-start">
-          <h2 id="legal-contents" className="text-sm font-semibold text-ink">
-            {t('contents')}
-          </h2>
-          <ol className="mt-3 space-y-2 text-sm">
+        <nav aria-label={t('contents')} className="lg:sticky lg:top-24 lg:self-start">
+          <ol className="text-sm font-medium">
             {page.sections.map((section) => (
               <li key={section.id}>
-                <a href={`#${section.id}`} className="text-ink-2 hover:text-accent-ink">
+                <a href={`#${section.id}`} className="block py-1 text-ink-3 hover:text-ink">
                   {section.title}
                 </a>
               </li>

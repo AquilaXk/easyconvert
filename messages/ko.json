@@ -245,15 +245,11 @@
     }
   },
   "auth": {
-    "loginHeading": "EasyConvert 로그인",
-    "registerHeading": "EasyConvert 계정 만들기",
-    "intro": "개발자 API 키, 웹훅, 변환 기록을 관리해요.",
-    "modeLabel": "로그인 또는 회원가입",
-    "tabs": {
-      "login": "로그인",
-      "register": "회원가입"
-    },
-    "emailDivider": "또는 이메일로 계속",
+    "loginHeading": "로그인",
+    "registerHeading": "회원가입",
+    "switchToRegister": "계정이 없나요? <link>회원가입</link>",
+    "switchToLogin": "이미 계정이 있나요? <link>로그인</link>",
+    "emailDivider": "또는",
     "loading": "로그인 양식을 불러오는 중이에요",
     "form": {
       "google": "Google로 계속",
@@ -528,33 +524,6 @@
       "signOutNetwork": "연결이 끊겨 로그아웃하지 못했어요. 다시 시도해 주세요."
     }
   },
-  "faq": {
-    "title": "자주 묻는 질문",
-    "subtitle": "지원 형식, 처리 위치, 일괄 변환 한도에 대한 답변이에요.",
-    "paidLimits": "Pro 요금제는 {pro}, Enterprise 요금제는 {enterprise}까지 늘어나요.",
-    "items": {
-      "free": {
-        "q": "EasyConvert는 무료인가요?",
-        "a": "네. 계정 없이도 서버에서 하루 {dailyLimit}회까지, 파일당 최대 {maxSize}까지 변환할 수 있어요. 브라우저에서 처리하는 변환에는 하루 횟수 제한이 없어요.{paidLimits}"
-      },
-      "handling": {
-        "q": "변환하는 동안 파일은 어떻게 처리되나요?",
-        "a": "일부 이미지, 오디오, 데이터 변환은 브라우저에서 처리해서 파일이 내 기기를 떠나지 않아요. 네이티브 코덱이나 문서 엔진이 필요한 형식은 TLS 1.3으로 암호화해 서버의 격리된 작업 환경으로 보내요. 변환한 파일은 내려받고 10분 뒤에, 내려받지 않으면 변환하고 1시간 뒤에 삭제돼요."
-      },
-      "maxSize": {
-        "q": "파일 크기는 얼마까지 가능한가요?",
-        "a": "계정이 있든 없든 파일당 최대 {maxSize}까지 변환할 수 있어요.{paidLimits} 브라우저에서 처리하는 변환은 업로드를 기다리지 않고 바로 시작해요. 서버가 필요한 파일은 여러 부분으로 나눠 올리기 때문에 큰 파일도 진행률을 보고 취소할 수 있어요."
-      },
-      "batch": {
-        "q": "여러 파일을 한 번에 변환할 수 있나요?",
-        "a": "네. 여러 파일을 끌어다 놓거나 선택해 대기열에 함께 추가하세요. 출력 형식을 한꺼번에 또는 파일마다 정하고, 필요한 옵션을 조정한 뒤 완료된 파일을 하나씩 또는 ZIP 파일 하나로 받을 수 있어요."
-      },
-      "install": {
-        "q": "데스크톱 프로그램이나 브라우저 플러그인을 설치해야 하나요?",
-        "a": "설치할 필요 없어요. EasyConvert는 macOS, Windows, Linux, iOS, Android의 최신 웹 브라우저에서 동작해요."
-      }
-    }
-  },
   "features": {
     "directoryHeading": "지원 파일 형식",
     "directoryIntro": "{categories}개 분류, {formats}개 형식, 변환 조합 {pairs}개를 살펴보세요.",
@@ -796,6 +765,10 @@
       "architecture": {
         "heading": "브라우저 변환과 서버 변환",
         "body": "일부 형식은 WebAssembly와 WebCodecs로 내 기기에서 처리해요. 나머지는 TLS 1.3으로 암호화해 서버의 격리된 작업 환경에서 처리해요. 변환한 파일은 내려받고 10분 뒤에, 내려받지 않으면 변환하고 1시간 뒤에 삭제돼요."
+      },
+      "contact": {
+        "heading": "문의",
+        "page": "문의 페이지"
       }
     },
     "security": {
@@ -876,14 +849,6 @@
       "title": "API 문서 | EasyConvert",
       "description": "EasyConvert API 문서예요. 기본 URL, API 키, 오류, 한도와 엔드포인트마다 요청과 응답을 설명해요."
     },
-    "status": {
-      "title": "브라우저 엔진 상태 | EasyConvert",
-      "description": "EasyConvert의 WebAssembly, WebCodecs, OPFS 변환 파이프라인에 대한 실시간 운영 상태, 브라우저 엔진 진단, 기능 점검 결과예요."
-    },
-    "unitConverter": {
-      "title": "무료 온라인 단위 변환기 | EasyConvert",
-      "description": "길이, 무게, 온도, 부피, 넓이, 속도, 시간, 디지털 저장 용량, 에너지, 압력 단위를 브라우저에서 변환해요."
-    },
     "converter": {
       "title": "{title} | EasyConvert"
     },
@@ -892,7 +857,7 @@
     },
     "notFound": {
       "title": "페이지를 찾을 수 없어요 | EasyConvert",
-      "description": "주소를 다시 확인해 주세요."
+      "description": "찾으시는 페이지가 없거나 옮겨졌어요."
     }
   },
   "options": {
@@ -1162,32 +1127,14 @@
         "title": "보안 개요",
         "description": "전송 구간은 TLS로 암호화하고, 작업마다 격리된 환경에서 처리해요. 변환한 파일은 내려받고 10분 뒤에, 내려받지 않으면 변환하고 1시간 뒤에 삭제돼요."
       },
-      "status": {
-        "title": "시스템 상태",
-        "description": "브라우저에서 처리하는 변환에 필요한 기능을 이 기기가 지원하는지 확인해요."
-      },
       "accessibility": {
         "title": "접근성 안내",
         "description": "EasyConvert의 키보드 탐색, 화면 낭독기 랜드마크, 색 대비, WCAG 2.1 AA 준수 내용을 안내해요."
-      },
-      "unit": {
-        "title": "단위 변환기",
-        "description": "무게, 길이, 부피, 온도, 데이터 단위를 브라우저에서 변환해요."
       }
     },
     "ocr": {
       "title": "PDF OCR 변환기",
       "description": "스캔한 PDF와 이미지의 글자를 인식해 검색하고 선택할 수 있는 PDF로 만들어요. 인식할 언어는 옵션에서 고를 수 있어요."
-    },
-    "unitPair": {
-      "title": "{src} → {tgt} 단위 변환기",
-      "description": "{src} 값을 {tgt} 값으로 브라우저에서 변환해요."
-    },
-    "units": {
-      "lbs": "파운드(lbs)",
-      "kg": "킬로그램(kg)",
-      "feet": "피트(ft)",
-      "meters": "미터(m)"
     },
     "pair": {
       "title": "{src} → {tgt} 변환기",
@@ -1282,203 +1229,14 @@
       "compression": "압축 수준"
     }
   },
-  "status": {
-    "componentsHeading": "엔진과 파이프라인 구성 요소",
-    "operationalReady": "정상 운영 중",
-    "categoriesLabel": "구성 요소 분류",
-    "operational": "정상",
-    "categories": {
-      "all": "전체 구성 요소 ({count})",
-      "core": "연산 핵심 ({count})",
-      "pipeline": "파이프라인 ({count})",
-      "privacy": "개인정보와 보관 ({count})"
-    },
-    "components": {
-      "wasm-simd": {
-        "name": "SIMD WebAssembly 핵심 엔진",
-        "description": "문서와 바이너리 스트림을 128비트 벡터 가속으로 변환"
-      },
-      "webcodecs-vpu": {
-        "name": "WebCodecs VPU 트랜스코딩 가속기",
-        "description": "H.264, VP9, 오디오 코덱을 GPU/VPU 하드웨어로 직접 가속"
-      },
-      "opfs-storage": {
-        "name": "OPFS(출처 전용 파일 시스템) 스트리밍 저장소",
-        "description": "수백 MB 크기의 큰 파일도 부담 없이 가상 디스크로 스트리밍"
-      },
-      "workers-pool": {
-        "name": "멀티스레드 Web Worker 스레드 풀",
-        "description": "CPU 코어 구성에 맞춘 비차단 동시 작업자 격리"
-      },
-      "pipeline-document": {
-        "name": "문서·오피스 파이프라인(PDF, DOCX, XLSX, PPTX)",
-        "description": "문서 렌더링, 벡터 텍스트 배치, 표 구조 복원"
-      },
-      "pipeline-imaging": {
-        "name": "래스터·벡터 이미지 파이프라인(PNG, JPG, WEBP, SVG, HEIC)",
-        "description": "색 보정 리샘플링과 벡터 도형 래스터화"
-      },
-      "pipeline-audio": {
-        "name": "오디오 DSP 파이프라인(MP3, WAV, FLAC, AAC, OGG)",
-        "description": "32비트 부동소수점 오디오 처리, 리샘플링, 무손실 코덱"
-      },
-      "pipeline-video": {
-        "name": "동영상 컨테이너 리먹싱·트랜스먹싱(MP4, MKV, WEBM)",
-        "description": "컨테이너 재구성, 코덱 트랜스코딩, 타임스탬프 동기화"
-      },
-      "pipeline-ocr": {
-        "name": "OCR 엔진(Tesseract Wasm LSTM 코어)",
-        "description": "문자를 인식해 검색 가능한 PDF 텍스트 레이어 생성"
-      },
-      "pipeline-archive": {
-        "name": "스트림 압축 엔진(ZIP, 7Z, TAR, GZ)",
-        "description": "Deflate, LZMA2, BZip2 스트리밍 압축과 해제"
-      },
-      "pipeline-cad": {
-        "name": "CAD·도형 엔진(DXF, SVG)",
-        "description": "스플라인 분할, IEEE 754 좌표 정밀도, 벡터 내보내기"
-      },
-      "privacy-in-browser": {
-        "name": "브라우저 안 파일 처리",
-        "description": "브라우저에서 변환한 파일은 이 기기에만 있고 업로드되지 않아요"
-      },
-      "privacy-scrubbing": {
-        "name": "변환 파일 해제",
-        "description": "파일을 지우거나 대기열을 비우면 버퍼를 해제해요"
-      },
-      "privacy-crypto": {
-        "name": "브라우저 SHA-256 해시 확인",
-        "description": "Web Crypto API로 로컬에서 비트스트림 무결성 확인"
-      }
-    },
-    "sandbox": {
-      "heading": "브라우저 샌드박스에서 직접 실행",
-      "body": "브라우저에서 처리할 수 있는 변환은 이 탭의 격리된 작업자에서 WebAssembly로 실행해서 파일을 업로드하지 않아요. 그 밖의 변환은 서버에서 처리해요.",
-      "noUpload": "브라우저 변환은 업로드 없음",
-      "simd": "하드웨어 SIMD와 WebCodecs 지원",
-      "noBrowserLimit": "브라우저 변환은 하루 횟수 제한 없음"
-    },
-    "announcements": {
-      "running": "브라우저 진단을 실행하는 중이에요...",
-      "complete": "브라우저 진단을 마쳤어요. 기능 {total}개 중 {active}개를 쓸 수 있어요."
-    },
-    "checkedAt": "브라우저 상태 확인 시각 {time}",
-    "telemetryActive": "브라우저 샌드박스에서 상태를 확인하고 있어요",
-    "overview": {
-      "heading": "브라우저 변환 점검",
-      "ready": "준비됨",
-      "intro": "이 브라우저가 브라우저 변환에 필요한 기능을 지원하는지 확인해요.",
-      "running": "브라우저 엔진을 점검하는 중이에요...",
-      "run": "브라우저 진단 실행",
-      "inBrowser": "이 브라우저에서 실행"
-    },
-    "diagnostics": {
-      "heading": "브라우저 실시간 진단 결과",
-      "activeCount": "{total}개 중 {active}개 사용 가능",
-      "unavailable": "사용 불가",
-      "probes": {
-        "wasm": {
-          "name": "WebAssembly SIMD 벡터 가속",
-          "supported": "하드웨어 SIMD 사용 가능(128비트 벡터 연산)",
-          "unsupported": "WebAssembly 128비트 SIMD를 사용할 수 없어요"
-        },
-        "webcodecs": {
-          "name": "WebCodecs GPU 하드웨어 파이프라인",
-          "supported": "동영상·오디오 하드웨어 코덱 VPU 사용 가능",
-          "unsupported": "CPU 소프트웨어 트랜스먹서로 처리"
-        },
-        "opfs": {
-          "name": "OPFS(출처 전용 파일 시스템)",
-          "supported": "기본 스트리밍 저장소 지원",
-          "unsupported": "Blob 메모리 스트리밍으로 처리"
-        },
-        "workers": {
-          "name": "멀티스레드 Web Worker",
-          "supported": "CPU 논리 실행 스레드 {cores}개 감지",
-          "unsupported": "CPU 논리 실행 스레드 {cores}개 감지"
-        },
-        "memory-sandbox": {
-          "name": "메모리 버퍼 확인",
-          "supported": "메모리 할당과 초기화 확인",
-          "unsupported": "메모리를 할당하지 못했어요"
-        }
-      }
-    },
-    "metrics": {
-      "execution": {
-        "label": "실행 방식",
-        "value": "브라우저와 서버",
-        "caption": "브라우저는 WebAssembly, 서버는 격리된 작업 환경"
-      },
-      "storage": {
-        "label": "영구 저장",
-        "value": "최대 1시간",
-        "caption": "내려받고 10분 뒤 삭제"
-      },
-      "concurrency": {
-        "label": "하드웨어 동시성",
-        "value": "스레드 {cores}개",
-        "caption": "감지된 CPU 실행 단위"
-      },
-      "privacy": {
-        "label": "개인정보 샌드박스",
-        "value": "사용 중",
-        "caption": "브라우저 변환 파일은 이 탭 안에만 있어요"
-      }
-    }
-  },
-  "statusPage": {
-    "heading": "시스템 운영 상태",
-    "intro": "브라우저 안의 WebAssembly, WebCodecs, OPFS 변환 파이프라인에 대한 실시간 기능 점검, 지연 시간 측정, 구성 요소 상태예요."
-  },
   "theme": {
     "toLight": "라이트 모드로 전환",
     "toDark": "다크 모드로 전환"
   },
-  "unitConverter": {
-    "categoriesLegend": "단위 분류",
-    "heading": "{from} → {to} 변환",
-    "intro": "서버에 요청하지 않고 브라우저에서 계산해요.",
-    "decimals": "소수 자릿수",
-    "decimalsValue": "소수점 {digits}자리",
-    "fromValue": "입력 값",
-    "sourceUnit": "원본 단위",
-    "swap": "원본 단위와 대상 단위 바꾸기",
-    "result": "변환 결과({symbol})",
-    "copyLabel": "변환 결과 복사",
-    "copied": "복사됨",
-    "copy": "복사",
-    "copiedAnnouncement": "변환 결과를 클립보드에 복사했어요.",
-    "targetUnit": "대상 단위",
-    "formula": "계산식",
-    "private": "브라우저에서 계산",
-    "breakdownHeading": "{category} 단위로 환산한 {value} {from}",
-    "unitCount": "단위 {count}개",
-    "rowCopied": "{name} 값을 클립보드에 복사했어요.",
-    "rowCopyLabel": "{name} 값 복사",
-    "referenceHeading": "{from} → {to} 빠른 환산표",
-    "popularHeading": "자주 쓰는 단위 변환",
-    "popular": {
-      "lbs-kg": "파운드 → 킬로그램",
-      "kg-lbs": "킬로그램 → 파운드",
-      "feet-meters": "피트 → 미터",
-      "meters-feet": "미터 → 피트",
-      "celsius-fahrenheit": "섭씨 → 화씨",
-      "fahrenheit-celsius": "화씨 → 섭씨",
-      "mb-gb": "메가바이트 → 기가바이트",
-      "miles-km": "마일 → 킬로미터",
-      "inches-cm": "인치 → 센티미터",
-      "bar-psi": "바 → PSI"
-    }
-  },
-  "unitConverterPage": {
-    "heading": "통합 단위 변환기",
-    "intro": "물리 단위와 디지털 단위 10개 분류를 양방향으로 계산하고, 여러 단위를 한 번에 비교하는 환산표도 보여 줘요."
-  },
   "notFound": {
-    "code": "페이지 없음",
-    "title": "{route} 경로를 찾을 수 없어요.",
-    "description": "주소를 다시 확인해 주세요."
+    "code": "404",
+    "title": "{route, select, other {페이지를 찾을 수 없어요.}}",
+    "description": "찾으시는 페이지가 없거나 옮겨졌어요."
   },
   "urlImport": {
     "heading": "URL로 파일 추가",
@@ -1813,97 +1571,6 @@
     "txtz": "메타데이터를 함께 ZIP으로 묶은 UTF-8 일반 텍스트 전자책 컨테이너예요.",
     "oeb": "구형 전자책 형식인 Open eBook Publication Structure예요.",
     "et": "Kingsoft WPS Office 통합 문서 스프레드시트 형식이에요."
-  },
-  "unitCategories": {
-    "weight": "무게·질량",
-    "length": "길이",
-    "temperature": "온도",
-    "area": "넓이",
-    "volume": "부피",
-    "speed": "속도",
-    "digital": "디지털 저장 용량",
-    "time": "시간",
-    "pressure": "압력",
-    "energy": "에너지"
-  },
-  "unitNames": {
-    "weight-kg": "킬로그램",
-    "weight-g": "그램",
-    "weight-mg": "밀리그램",
-    "weight-mcg": "마이크로그램",
-    "weight-lbs": "파운드",
-    "weight-oz": "온스",
-    "weight-stone": "스톤",
-    "weight-ton": "미터톤",
-    "weight-carat": "캐럿",
-    "length-meters": "미터",
-    "length-km": "킬로미터",
-    "length-cm": "센티미터",
-    "length-mm": "밀리미터",
-    "length-um": "마이크로미터",
-    "length-feet": "피트",
-    "length-inches": "인치",
-    "length-yards": "야드",
-    "length-miles": "마일",
-    "length-nautical": "해리",
-    "temperature-celsius": "섭씨",
-    "temperature-fahrenheit": "화씨",
-    "temperature-kelvin": "켈빈",
-    "temperature-rankine": "랭킨",
-    "area-sqm": "제곱미터",
-    "area-sqkm": "제곱킬로미터",
-    "area-sqft": "제곱피트",
-    "area-sqyd": "제곱야드",
-    "area-acres": "에이커",
-    "area-hectares": "헥타르",
-    "area-sqmi": "제곱마일",
-    "volume-liters": "리터",
-    "volume-ml": "밀리리터",
-    "volume-cubm": "세제곱미터",
-    "volume-gallons": "미국 갤런",
-    "volume-impgal": "영국 갤런",
-    "volume-quarts": "미국 쿼트",
-    "volume-pints": "미국 파인트",
-    "volume-floz": "미국 액량 온스",
-    "volume-cups": "미국 컵",
-    "volume-tbsp": "테이블스푼",
-    "volume-tsp": "티스푼",
-    "speed-kmh": "시속 킬로미터",
-    "speed-mph": "시속 마일",
-    "speed-ms": "초속 미터",
-    "speed-knots": "노트",
-    "speed-fts": "초속 피트",
-    "speed-mach": "마하(음속)",
-    "digital-bytes": "바이트",
-    "digital-kb": "킬로바이트(10진)",
-    "digital-mb": "메가바이트(10진)",
-    "digital-gb": "기가바이트(10진)",
-    "digital-tb": "테라바이트(10진)",
-    "digital-pb": "페타바이트(10진)",
-    "digital-kib": "키비바이트(2진)",
-    "digital-mib": "메비바이트(2진)",
-    "digital-gib": "기비바이트(2진)",
-    "digital-tib": "테비바이트(2진)",
-    "time-seconds": "초",
-    "time-minutes": "분",
-    "time-hours": "시간",
-    "time-days": "일",
-    "time-weeks": "주",
-    "time-months": "개월(평균 30.44일)",
-    "time-years": "년(365.25일)",
-    "pressure-pascal": "파스칼",
-    "pressure-kpa": "킬로파스칼",
-    "pressure-bar": "바",
-    "pressure-psi": "제곱인치당 파운드",
-    "pressure-atm": "표준 기압",
-    "pressure-torr": "토르(mmHg)",
-    "energy-joules": "줄",
-    "energy-kj": "킬로줄",
-    "energy-cal": "칼로리",
-    "energy-kcal": "킬로칼로리",
-    "energy-wh": "와트시",
-    "energy-kwh": "킬로와트시",
-    "energy-btu": "영국 열량 단위"
   },
   "errors": {
     "generic": {
