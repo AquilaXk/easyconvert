@@ -121,11 +121,16 @@ interface LossyTarget {
   codec: 'opus' | 'aac';
   tool: string;
   encoderArgs: readonly string[];
+  /** The encoder delay at the encoded rate that a raw stream of this codec does not signal, or null where the container signals it. */
+  primingSamples: number | null;
 }
 
+/** libavcodec/aacenc.c (FFmpeg n9.0.2 line 1165, n7.1.5 line 1248): `avctx->initial_padding = 1024`. The ADTS stream written here has no edit list. */
+const AAC_PRIMING_SAMPLES = 1_024;
+
 const LOSSY: readonly LossyTarget[] = [
-  { target: 'opus', codec: 'opus', tool: 'ffmpeg libopus', encoderArgs: ['-c:a', 'libopus'] },
-  { target: 'aac', codec: 'aac', tool: 'ffmpeg aac', encoderArgs: ['-c:a', 'aac', '-f', 'adts'] },
+  { target: 'opus', codec: 'opus', tool: 'ffmpeg libopus', encoderArgs: ['-c:a', 'libopus'], primingSamples: null },
+  { target: 'aac', codec: 'aac', tool: 'ffmpeg aac', encoderArgs: ['-c:a', 'aac', '-f', 'adts'], primingSamples: AAC_PRIMING_SAMPLES },
 ];
 
 /** ffmpeg's flac encoder default, which is the level the project's FLAC path uses. */
@@ -226,11 +231,15 @@ export const runAudio: FamilyRunner = async (ctx) => {
           const channels = sourceProbe.channels ?? 1;
           const sourceLoudness = measureLoudness(ffmpeg, sourceFile);
           const measure = (file: string): Encoded => {
-            const seconds = Number(probeFile(plan.paths.ffprobe, file).format.duration);
+            const probe = probeFile(plan.paths.ffprobe, file);
+            const seconds = Number(probe.format.duration);
             const loudness = measureLoudness(ffmpeg, file);
+            // The delay is counted at the encoded rate; the decode the score aligns is at the source's rate.
+            const encodedRate = Number(probe.streams[0].sample_rate);
+            const priming = lossy.primingSamples === null ? undefined : Math.round((lossy.primingSamples * sampleRate) / encodedRate);
             return {
               kbps: (fileSize(file) * BITS_PER_BYTE) / seconds / BITS_PER_KILOBIT,
-              snr: measureAudioSnr(ffmpeg, file, sourceFile, sampleRate, channels),
+              snr: measureAudioSnr(ffmpeg, file, sourceFile, sampleRate, channels, priming),
               loudnessShift: Math.abs(loudness.integrated - sourceLoudness.integrated),
               truePeakShift: loudness.truePeak - sourceLoudness.truePeak,
             };

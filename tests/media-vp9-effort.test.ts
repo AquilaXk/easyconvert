@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildFfmpegArguments, buildTwoPassArguments } from '../src/lib/conversions/media-ffmpeg-args';
 import { probeStreamLayout, resolveFfprobeBinary } from '../src/lib/conversions/media-ffprobe';
+import { computeMediaTimeoutMs } from '../src/lib/conversions/media-job-limit';
 import { vp9DeadlineFor } from '../src/lib/conversions/media-vp9-effort';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
@@ -55,21 +56,21 @@ describe('the deadline for a workload', () => {
     expect(vp9DeadlineFor({ ...FHD, frames: HDR_CLIP_FRAMES, durationSec: HDR_CLIP_SECONDS, tierMaxMs: DEFAULT_TIER_MAX_MS })).toBe('realtime');
   });
 
-  // 30 s of 1080p at 30 fps is 900 frames of 2,073,600 pixels: 1,866.24 megapixels, which at 15 megapixels per CPU
-  // second on two cores is 62.208 s. The job's limit is min(ceiling, 3 x 30 + 60 = 150 s) and half of it is the allowance.
+  // 30 s of 1080p at 30 fps is 900 frames of 2,073,600 pixels: 1,866.24 megapixels, which at 14 megapixels per CPU
+  // second on two cores is 66.651 s. The job's limit is min(ceiling, 3 x 30 + 60 = 150 s) and half of it is the allowance.
   const stageClip = { ...FHD, frames: 900, durationSec: 30 };
 
-  it('a 30 s 1080p clip fits half of its 150 s limit (75 s allowance against 62.208 s) and keeps the good deadline', () => {
+  it('a 30 s 1080p clip fits half of its 150 s limit (75 s allowance against 66.651 s) and keeps the good deadline', () => {
     expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: DEFAULT_TIER_MAX_MS })).toBe('good');
   });
 
-  it('the same clip under a 100 s stage limit has a 50 s allowance against 62.208 s and takes the realtime deadline', () => {
+  it('the same clip under a 100 s stage limit has a 50 s allowance against 66.651 s and takes the realtime deadline', () => {
     expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 100_000 })).toBe('realtime');
   });
 
-  it('the allowance is exactly half of the stage limit: 62.208 s fits a limit of 124.416 s but not one of 124.4 s', () => {
-    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 124_416 })).toBe('good');
-    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 124_400 })).toBe('realtime');
+  it('the allowance is exactly half of the stage limit: 66.651 s fits a limit of 133.303 s but not one of 133.3 s', () => {
+    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 133_303 })).toBe('good');
+    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 133_300 })).toBe('realtime');
   });
 
   it('more frames of the same picture never return to the good deadline', () => {
@@ -81,6 +82,38 @@ describe('the deadline for a workload', () => {
     }
     expect(seenRealtime).toBe(true);
   });
+});
+
+/**
+ * The slowest encode of each picture size among the clips of the real-world corpus, at the good deadline with cpu-used 2 and
+ * the product's arguments, pinned to two cores (`taskset -c 0,1`, libvpx 1.14, FFmpeg 6.1.1, Ubuntu 24.04 arm64, Lima VM
+ * `default`): megapixels encoded per wall second. The same clips scaled to other sizes are in the rows of their size (a
+ * clip's cost per pixel falls with the picture size: the 1080p HDR10 clip gives 29.4, the same footage at 426x240 gives 9.8).
+ */
+const CORPUS_TWO_CORE_MEGAPIXELS_PER_SECOND: ReadonlyArray<readonly [string, number, number, number]> = [
+  ['fate-lmlm4_cifat30fps.divx', 320, 240, 16.1],
+  ['ffs-encoded.m4v', 352, 288, 10.4],
+  ['wc-hummingbird-hlg-05.webm scaled', 426, 240, 9.8],
+  ['ffs-p6040064a.mp4 scaled', 640, 360, 16.7],
+  ['ffs-p6040064a.mp4', 640, 480, 16.9],
+  ['ffs-p6040064a.mp4 scaled', 854, 480, 17.5],
+  ['wc-urmia_lake_drought.webm', 720, 1080, 25.6],
+  ['ffs-p6040064a.mp4 scaled', 1280, 720, 22.9],
+  ['jellyfin-1080p-hevc-hdr10-3m.mp4', 1920, 1080, 29.4],
+  ['wc-hummingbird-hlg-02.webm', 3840, 2160, 43.5],
+];
+
+describe('the deadline against the encode times measured on the corpus', () => {
+  const CLIP_SECONDS = 60;
+  const ENCODE_SHARE = 0.5;
+  for (const [clip, width, height, measured] of CORPUS_TWO_CORE_MEGAPIXELS_PER_SECOND) {
+    it(`takes the realtime deadline for ${width}x${height} frames that the slowest corpus clip (${clip}, ${measured} megapixels per second on two cores) would not finish in half of the limit`, () => {
+      const allowanceSeconds = (computeMediaTimeoutMs(CLIP_SECONDS, DEFAULT_TIER_MAX_MS) / 1000) * ENCODE_SHARE;
+      // Frames whose measured encode time is 1% past the allowance; the clip length of 60 s sets the limit.
+      const frames = Math.ceil((1.01 * allowanceSeconds * measured * 1e6) / (width * height));
+      expect(vp9DeadlineFor({ width, height, frames, durationSec: CLIP_SECONDS, tierMaxMs: DEFAULT_TIER_MAX_MS })).toBe('realtime');
+    });
+  }
 });
 
 let workDir: string;

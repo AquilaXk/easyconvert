@@ -130,12 +130,17 @@ export function estimateLagSamples(source: Int16Array, distorted: Int16Array, ch
 
 /**
  * Signal-to-noise ratio of a decoded output against its source in dB, taken with ffmpeg's `asdr` (signal to
- * distortion ratio, 10 log10 of source energy over error energy) after the two are aligned and brought to the
+ * distortion ratio, 10 log10 of the energy of its first input, the decoded output, over error energy) after the two are aligned and brought to the
  * source's rate and channel layout. The `apsnr` filter reports figures near 166 dB for a 64 kbit/s lossy encode
  * in this ffmpeg build, which no waveform comparison supports, so it is not used for the score.
+ *
+ * `primingSamples` is the encoder delay that the stream does not signal, in samples at `sampleRate` (a raw ADTS
+ * stream has no edit list, so the decoder writes the 1,024 samples that `aacenc.c` states as `initial_padding` before
+ * the music). When it is given, the two are aligned by it; the cross-correlation guess is for streams whose delay is
+ * not known, because on bass-heavy music at low bit rates a spurious peak one period away can be the strongest.
  */
-export function measureAudioSnr(ffmpeg: string, distorted: string, source: string, sampleRate: number, channels: number): number {
-  const lag = estimateLagSamples(decodePcm(ffmpeg, source, sampleRate, channels), decodePcm(ffmpeg, distorted, sampleRate, channels), channels);
+export function measureAudioSnr(ffmpeg: string, distorted: string, source: string, sampleRate: number, channels: number, primingSamples?: number): number {
+  const lag = primingSamples ?? estimateLagSamples(decodePcm(ffmpeg, source, sampleRate, channels), decodePcm(ffmpeg, distorted, sampleRate, channels), channels);
   const common = `aresample=${sampleRate},aformat=sample_fmts=s16:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}`;
   const align = lag >= 0 ? `atrim=start_sample=${lag},asetpts=PTS-STARTPTS` : `adelay=${-lag}S:all=1`;
   const run = spawnSync(

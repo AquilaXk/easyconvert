@@ -34,10 +34,11 @@ import { PDF_CONTENT_MAX_PICTURES, PDF_TEXT_MAX_IMAGE_PIXELS, PDF_WASM_DECODER_M
  * picture codec filter for a picture, an /SMask or /Mask without /Subtype included.
  *
  * The check is advisory. The 256 MiB memory maximum of the decoders (pdf-wasm-memory.ts) and the 60 s deadline of the text thread
- * are what bind. This scan reads the objects in file order, where pdf.js follows the cross-reference (duplicate object numbers,
- * object streams, a trailer that names an /Encrypt), so a crafted file can show the check an object other than the one pdf.js
- * decodes; and the header reads below are bounded by a byte budget (HEADER_READ_BUDGET_BYTES), after which the remaining
- * pictures are left to the maximum.
+ * are what bind. The objects are the ones pdf.js reads: `PdfDocument` resolves a number through the cross-reference as pdf.js
+ * does (duplicate definitions, offsets into a stream, object streams, the trailer that names an /Encrypt), and scans the file
+ * in file order only where pdf.js scans it (pdf-document.ts, `followCrossReference`); an object the cross-reference does not
+ * list keeps its file-order definition. The header reads below are bounded by a byte budget (HEADER_READ_BUDGET_BYTES), after
+ * which the remaining pictures are left to the maximum.
  */
 
 /** Three quarters of the decoder's memory maximum: the rest holds the module's own data, the coded bytes and its 5 % growth steps. */

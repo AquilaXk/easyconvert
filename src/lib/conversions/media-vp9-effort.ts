@@ -29,10 +29,17 @@ export interface Vp9Workload {
 }
 
 /**
- * Pixels the good deadline encodes per CPU second, tone mapping and decoding of a 10-bit source included: 1,797 frames
- * of 1080p (3.73 gigapixels) took 241 CPU seconds, which is 15.4. Taken as 15.
+ * Megapixels the good deadline encodes per CPU second for a picture of 1920x1080 or more, tone mapping and decoding of a 10-bit
+ * source included, and the exponent by which the rate falls for a smaller picture: rate = 14 x (pixels / 1920x1080)^0.4. A
+ * picture's cost per pixel falls with its size (the same footage, taken from the corpus clips scaled to 4K, 1080p, 720p, 480p,
+ * 360p and 240p, gives 26, 20, 16, 11, 9 and 5.5 megapixels per CPU second), and the first estimate of a flat 15 (one clip,
+ * 1,797 frames of 1080p in 241 CPU seconds) was above the measured rate for 16 of 27 corpus points, all of them smaller
+ * pictures or slower footage. The curve is under the wall-clock rate of every size measured on two cores (docs/policy-decisions.md,
+ * the entry that records the corpus table), and flat above 1080p, where larger pictures were measured faster.
  */
-const GOOD_MEGAPIXELS_PER_CPU_SECOND = 15;
+const GOOD_MEGAPIXELS_PER_CPU_SECOND_AT_1080P = 14;
+const REFERENCE_PIXELS_PER_FRAME = 1920 * 1080;
+const RATE_EXPONENT_BELOW_1080P = 0.4;
 /** Cores one job may count on. */
 const ASSUMED_CORES_PER_JOB = 2;
 /** Part of the time limit the encode may use; the rest is for reading the file, audio, muxing and a slow host. */
@@ -40,10 +47,16 @@ const ENCODE_SHARE_OF_LIMIT = 0.5;
 const PIXELS_PER_MEGAPIXEL = 1_000_000;
 const MS_PER_SECOND = 1000;
 
+/** Megapixels per CPU second the good deadline encodes for frames of `pixelsPerFrame`. */
+function goodMegapixelsPerCpuSecond(pixelsPerFrame: number): number {
+  return GOOD_MEGAPIXELS_PER_CPU_SECOND_AT_1080P * Math.min(1, Math.max(pixelsPerFrame, 1) / REFERENCE_PIXELS_PER_FRAME) ** RATE_EXPONENT_BELOW_1080P;
+}
+
 /** The deadline for a job: "good" unless its estimated encode time at that setting is past its share of the time limit. */
 export function vp9DeadlineFor(workload: Vp9Workload): Vp9Deadline {
-  const megapixels = (workload.width * workload.height * workload.frames) / PIXELS_PER_MEGAPIXEL;
-  const estimatedSeconds = megapixels / GOOD_MEGAPIXELS_PER_CPU_SECOND / ASSUMED_CORES_PER_JOB;
+  const pixelsPerFrame = workload.width * workload.height;
+  const megapixels = (pixelsPerFrame * workload.frames) / PIXELS_PER_MEGAPIXEL;
+  const estimatedSeconds = megapixels / goodMegapixelsPerCpuSecond(pixelsPerFrame) / ASSUMED_CORES_PER_JOB;
   const allowedSeconds = (computeMediaTimeoutMs(workload.durationSec, workload.tierMaxMs) / MS_PER_SECOND) * ENCODE_SHARE_OF_LIMIT;
   return estimatedSeconds > allowedSeconds ? 'realtime' : 'good';
 }
