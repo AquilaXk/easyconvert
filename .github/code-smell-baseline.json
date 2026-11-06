@@ -43,7 +43,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 170
+    "maxValue": 164
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -57,7 +57,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 497
+    "maxValue": 476
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -130,12 +130,6 @@
     "count": 2
   },
   {
-    "file": "src/lib/api/idempotency.ts",
-    "rule": "no-nested-ternary",
-    "function": "canonicalJSON",
-    "count": 1
-  },
-  {
     "file": "src/lib/api/problem-details.ts",
     "rule": "max-params",
     "function": "createProblemDetailsResponse",
@@ -153,13 +147,6 @@
     "rule": "no-nested-ternary",
     "function": "handleAcquireOutcome",
     "count": 1
-  },
-  {
-    "file": "src/lib/auth/jwt.ts",
-    "rule": "complexity",
-    "function": "verifyJwt",
-    "count": 1,
-    "maxValue": 32
   },
   {
     "file": "src/lib/auth/redis-user-store.ts",
@@ -2050,14 +2037,14 @@
     "rule": "complexity",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 101
+    "maxValue": 98
   },
   {
     "file": "src/lib/jobs/graph.ts",
     "rule": "max-lines-per-function",
     "function": "validateJobGraph",
     "count": 1,
-    "maxValue": 362
+    "maxValue": 358
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",

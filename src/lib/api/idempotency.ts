@@ -58,6 +58,12 @@ export interface IdempotencyStore {
   reset?(): Promise<void> | void;
 }
 
+/** Orders strings by UTF-16 code unit, independent of locale, so fingerprints stay byte-stable. */
+export function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 /**
  * Deterministically serializes an arbitrary JSON-compatible value with sorted object keys
  * conforming to RFC 8785 JSON Canonicalization Scheme principles.
@@ -83,7 +89,7 @@ export function canonicalJSON(val: unknown): string {
     );
   }
   const obj = val as Record<string, unknown>;
-  const keys = Object.keys(obj).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const keys = Object.keys(obj).sort(compareCodeUnits);
   const pairs: string[] = [];
   for (const k of keys) {
     const v = obj[k];

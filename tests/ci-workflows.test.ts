@@ -893,3 +893,14 @@ describe('files of the base that a pull request job compares with', () => {
     }
   });
 });
+
+describe('nightly ab_base_ref validation (#761)', () => {
+  it('validates ab_base_ref in nightly.yml before git fetch and passes it after --', () => {
+    const baseStep = nightly.jobs['bench-ab-speed'].steps.find((step) => step.id === 'base');
+    expect(baseStep?.env?.AB_BASE_REF).toBe('${{ inputs.ab_base_ref }}');
+    expect(baseStep?.run).toContain('"$AB_BASE_REF" == -*');
+    expect(baseStep?.run).toContain('"$AB_BASE_REF" == *..*');
+    expect(baseStep?.run).toContain('^[0-9A-Za-z._/-]{1,256}$');
+    expect(baseStep?.run).toContain('git fetch --no-tags --depth=1 origin -- "$AB_BASE_REF"');
+  });
+});

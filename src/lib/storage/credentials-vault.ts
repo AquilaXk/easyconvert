@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { readyGatedRedis } from '../redis/when-ready';
+import { MIN_PRODUCTION_SEALING_KEY_LENGTH, secretForms } from '../security/secret-forms';
 
 export type StorageProviderType =
   | 's3'
@@ -122,22 +123,7 @@ export class CredentialsVaultPersistenceError extends Error {
   }
 }
 
-function getVaultMasterKey(): Buffer {
-  const secret =
-    process.env.STORAGE_VAULT_KEY ||
-    process.env.KEY_ENCRYPTION_KEY ||
-    process.env.JWT_SECRET;
-
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        '[CredentialsVault] FATAL: STORAGE_VAULT_KEY or JWT_SECRET is strictly required in production.'
-      );
-    }
-    return crypto.createHash('sha256').update('easyconvert-dev-vault-master-key-salt').digest();
-  }
-
-  // Derive 32 bytes using HKDF
+function deriveVaultKey(secret: string): Buffer {
   return Buffer.from(
     crypto.hkdfSync(
       'sha256',
@@ -147,6 +133,100 @@ function getVaultMasterKey(): Buffer {
       32
     )
   );
+}
+
+/** Raised when credentials must be sealed but no valid `STORAGE_VAULT_KEY` is configured. Reads are unaffected. */
+export class VaultKeyMissingError extends Error {
+  readonly code = 'VAULT_KEY_MISSING';
+
+  constructor() {
+    super(
+      `STORAGE_VAULT_KEY must be set (at least ${MIN_PRODUCTION_SEALING_KEY_LENGTH} characters) in production to store credentials; stored credentials can still be read.`
+    );
+    this.name = 'VaultKeyMissingError';
+  }
+}
+
+const DEV_VAULT_MASTER_KEY_SALT = 'easyconvert-dev-vault-master-key-salt';
+
+function deriveDevVaultKey(): Buffer {
+  return crypto.createHash('sha256').update(DEV_VAULT_MASTER_KEY_SALT).digest();
+}
+
+/** The key new credentials are sealed under, or null when production has no valid `STORAGE_VAULT_KEY`. */
+function resolveVaultSealingKey(): Buffer | null {
+  const vaultKey = process.env.STORAGE_VAULT_KEY?.trim();
+  if (process.env.NODE_ENV === 'production') {
+    return vaultKey && vaultKey.length >= MIN_PRODUCTION_SEALING_KEY_LENGTH ? deriveVaultKey(vaultKey) : null;
+  }
+
+  const secret = vaultKey || process.env.KEY_ENCRYPTION_KEY?.trim() || process.env.JWT_SECRET?.trim();
+  return secret ? deriveVaultKey(secret) : deriveDevVaultKey();
+}
+
+function getVaultMasterKey(): Buffer {
+  const key = resolveVaultSealingKey();
+  if (key === null) {
+    throw new VaultKeyMissingError();
+  }
+  return key;
+}
+
+/**
+ * Every key a stored record may have been sealed under, the sealing key first when one is valid.
+ * Built from the secrets that are set, whatever their length, so a missing or short
+ * `STORAGE_VAULT_KEY` never stops a read.
+ */
+function buildVaultDecryptionCandidates(): { keys: Buffer[]; hasSealingKey: boolean } {
+  const sealingKey = resolveVaultSealingKey();
+  const derived: Buffer[] = [
+    ...(sealingKey === null ? [] : [sealingKey]),
+    ...[process.env.STORAGE_VAULT_KEY, process.env.KEY_ENCRYPTION_KEY, process.env.JWT_SECRET]
+      .flatMap(secretForms)
+      .map(deriveVaultKey),
+    ...(process.env.NODE_ENV !== 'production' ? [deriveDevVaultKey()] : []),
+  ];
+
+  const seen = new Set<string>();
+  const keys: Buffer[] = [];
+  for (const key of derived) {
+    const hex = key.toString('hex');
+    if (!seen.has(hex)) {
+      seen.add(hex);
+      keys.push(key);
+    }
+  }
+  return { keys, hasSealingKey: sealingKey !== null };
+}
+
+export function getVaultDecryptionCandidateKeys(): Buffer[] {
+  return buildVaultDecryptionCandidates().keys;
+}
+
+function decryptEnvelopeWithCandidateKeys(envelope: StoredCredentialEnvelope): {
+  credentials: CustomerStorageCredentials;
+  sealedWithCurrentKey: boolean;
+} {
+  const iv = Buffer.from(envelope.iv, 'base64');
+  const tag = Buffer.from(envelope.tag, 'base64');
+  const encryptedData = Buffer.from(envelope.encryptedData, 'base64');
+  const { keys: candidateKeys, hasSealingKey } = buildVaultDecryptionCandidates();
+  let lastError: unknown;
+
+  for (let i = 0; i < candidateKeys.length; i++) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', candidateKeys[i], iv);
+      decipher.setAAD(Buffer.from(envelope.id, 'utf-8'));
+      decipher.setAuthTag(tag);
+
+      const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
+      const credentials = JSON.parse(decrypted.toString('utf-8')) as CustomerStorageCredentials;
+      return { credentials, sealedWithCurrentKey: hasSealingKey && i === 0 };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError ?? new Error('[CredentialsVault] No decryption key is configured.');
 }
 
 export class CredentialsVault {
@@ -268,22 +348,80 @@ export class CredentialsVault {
     }
 
     try {
-      const masterKey = getVaultMasterKey();
-      const iv = Buffer.from(envelope.iv, 'base64');
-      const tag = Buffer.from(envelope.tag, 'base64');
-      const encryptedData = Buffer.from(envelope.encryptedData, 'base64');
-
-      const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey, iv);
-      decipher.setAAD(Buffer.from(envelope.id, 'utf-8'));
-      decipher.setAuthTag(tag);
-
-      const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-      const credentials = JSON.parse(decrypted.toString('utf-8')) as CustomerStorageCredentials;
-      return credentials;
+      return decryptEnvelopeWithCandidateKeys(envelope).credentials;
     } catch (err) {
       console.error(`[CredentialsVault] Failed to decrypt credential "${credentialRef}":`, err);
       throw new Error(`[CredentialsVault] Decryption failed or authentication tag mismatch`);
     }
+  }
+
+  /**
+   * Re-encrypts credentials that were encrypted under a legacy fallback key so they use
+   * the primary `STORAGE_VAULT_KEY`. Accepts either a single `cred_...` reference or a `userId`/`tenantId`.
+   */
+  async rotate(credentialRefOrUserId: string, userId?: string): Promise<boolean> {
+    if (!credentialRefOrUserId) return false;
+    if (!credentialRefOrUserId.startsWith('cred_')) {
+      const refs = await this.listByUser(credentialRefOrUserId);
+      let rotatedAny = false;
+      for (const ref of refs) {
+        if (await this.rotateEnvelope(ref, credentialRefOrUserId)) {
+          rotatedAny = true;
+        }
+      }
+      return rotatedAny;
+    }
+    return this.rotateEnvelope(credentialRefOrUserId, userId);
+  }
+
+  private async rotateEnvelope(credentialRef: string, userId?: string): Promise<boolean> {
+    const envelope = this.redisClient
+      ? await this.readEnvelope(this.redisClient, credentialRef)
+      : (this.inMemoryStore.get(credentialRef) ?? null);
+
+    if (!envelope) return false;
+    if (envelope.expiresAt && Date.now() > envelope.expiresAt) {
+      await this.delete(credentialRef);
+      return false;
+    }
+    if (userId && envelope.userId !== userId) return false;
+
+    const masterKey = getVaultMasterKey();
+    const { credentials, sealedWithCurrentKey } = decryptEnvelopeWithCandidateKeys(envelope);
+    if (sealedWithCurrentKey) return false;
+
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', masterKey, iv);
+    cipher.setAAD(Buffer.from(envelope.id, 'utf-8'));
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(credentials), 'utf-8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+
+    const updated: StoredCredentialEnvelope = {
+      ...envelope,
+      iv: iv.toString('base64'),
+      tag: tag.toString('base64'),
+      encryptedData: encrypted.toString('base64'),
+    };
+
+    if (this.redisClient) {
+      try {
+        const key = `${VAULT_PREFIX}${envelope.id}`;
+        const serialized = JSON.stringify(updated);
+        if (envelope.expiresAt) {
+          const remainingTtl = Math.max(1, Math.ceil((envelope.expiresAt - Date.now()) / 1000));
+          await this.redisClient.setex(key, remainingTtl, serialized);
+        } else {
+          await this.redisClient.set(key, serialized);
+        }
+      } catch (err) {
+        console.error('[CredentialsVault] Redis rotate save failed:', err);
+        throw new CredentialsVaultPersistenceError({ cause: err });
+      }
+    } else {
+      this.inMemoryStore.set(envelope.id, updated);
+    }
+
+    return true;
   }
 
   /**

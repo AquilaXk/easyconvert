@@ -15,8 +15,15 @@ const DEFAULT_EXPIRATION_SECONDS = 7 * 24 * 60 * 60; // 7 days
 export const DEFAULT_JWT_ISSUER = 'easyconvert';
 export const DEFAULT_JWT_AUDIENCE = 'easyconvert-api';
 
+export interface JwtHeader {
+  alg: 'HS256';
+  typ: 'JWT';
+  kid?: string;
+}
+
 export interface SignJwtOptions {
   secret?: string;
+  kid?: string;
   expiresInSeconds?: number;
   issuer?: string;
   audience?: string;
@@ -26,9 +33,33 @@ export interface SignJwtOptions {
 
 export interface VerifyJwtOptions {
   secret?: string;
+  previousSecret?: string;
   issuer?: string | string[];
   audience?: string | string[];
   expectedSessionVersion?: number;
+}
+
+export function deriveJwtKeyId(secret: string): string {
+  return crypto
+    .createHash('sha256')
+    .update('easyconvert:jwt-kid:v1:')
+    .update(secret)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/** Like `JWT_SECRET`, the previous secret is used exactly as set; neither value is trimmed. */
+export function getPreviousJwtSecret(overridePrevious?: string): string | null {
+  const prev = overridePrevious ?? process.env.JWT_SECRET_PREVIOUS;
+  if (!prev?.trim()) {
+    return null;
+  }
+  if (prev.length < 32) {
+    throw new Error(
+      'CRITICAL SECURITY ERROR: JWT_SECRET_PREVIOUS environment variable must be at least 32 characters long when set.'
+    );
+  }
+  return prev;
 }
 
 function base64UrlEncode(str: string): string {
@@ -48,6 +79,7 @@ export function signJwt(
   expiresInSeconds: number = DEFAULT_EXPIRATION_SECONDS
 ): string {
   let secret: string | undefined;
+  let customKid: string | undefined;
   let expSeconds = expiresInSeconds;
   let issuer = DEFAULT_JWT_ISSUER;
   let audience = DEFAULT_JWT_AUDIENCE;
@@ -58,6 +90,7 @@ export function signJwt(
     secret = secretOrOptions;
   } else if (secretOrOptions && typeof secretOrOptions === 'object') {
     secret = secretOrOptions.secret;
+    customKid = secretOrOptions.kid;
     if (typeof secretOrOptions.expiresInSeconds === 'number') {
       expSeconds = secretOrOptions.expiresInSeconds;
     }
@@ -76,9 +109,10 @@ export function signJwt(
   }
 
   const activeSecret = secret ?? getJwtSecret();
-  const header = {
+  const header: JwtHeader = {
     alg: 'HS256',
     typ: 'JWT',
+    kid: customKid ?? deriveJwtKeyId(activeSecret),
   };
 
   const now = Math.floor(Date.now() / 1000);
@@ -110,6 +144,43 @@ export function signJwt(
 /**
  * Verifies an RFC 7519 JSON Web Token and returns its payload, or null if invalid or expired.
  */
+function parseJwtHeader(encodedHeader: string): JwtHeader | null {
+  try {
+    const parsed = JSON.parse(base64UrlDecode(encodedHeader));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.alg !== 'HS256') {
+      return null;
+    }
+    return parsed as JwtHeader;
+  } catch {
+    return null;
+  }
+}
+
+/** Checks the signature against the active secret and the previous one, trying the key named by `kid` first. */
+function signatureMatchesAnyKey(
+  dataToSign: string,
+  signature: string,
+  header: JwtHeader,
+  activeSecret: string,
+  previousSecret: string | null
+): boolean {
+  const candidates: string[] = [activeSecret];
+  if (previousSecret && previousSecret !== activeSecret) {
+    candidates.push(previousSecret);
+  }
+
+  const kid = typeof header.kid === 'string' && header.kid.length > 0 ? header.kid : undefined;
+  const ordered = kid
+    ? [...candidates.filter((s) => deriveJwtKeyId(s) === kid), ...candidates.filter((s) => deriveJwtKeyId(s) !== kid)]
+    : candidates;
+
+  const sigBuffer = Buffer.from(signature, 'utf-8');
+  return ordered.some((candidate) => {
+    const expected = Buffer.from(crypto.createHmac('sha256', candidate).update(dataToSign).digest('base64url'), 'utf-8');
+    return sigBuffer.length === expected.length && crypto.timingSafeEqual(sigBuffer, expected);
+  });
+}
+
 export function verifyJwt<T = SessionPayload>(
   token: string,
   secretOrOptions?: string | VerifyJwtOptions
@@ -134,27 +205,18 @@ export function verifyJwt<T = SessionPayload>(
 
   const [encodedHeader, encodedPayload, signature] = parts;
 
-  try {
-    const header = JSON.parse(base64UrlDecode(encodedHeader));
-    if (!header || typeof header !== 'object' || Array.isArray(header) || header.alg !== 'HS256') {
-      return null;
-    }
-  } catch {
+  const header = parseJwtHeader(encodedHeader);
+  if (!header) {
     return null;
   }
 
   const activeSecret = secret ?? getJwtSecret();
-  const dataToSign = `${encodedHeader}.${encodedPayload}`;
+  const previousSecret =
+    secret !== undefined && options?.previousSecret === undefined
+      ? null
+      : getPreviousJwtSecret(options?.previousSecret);
 
-  const expectedSignature = crypto
-    .createHmac('sha256', activeSecret)
-    .update(dataToSign)
-    .digest('base64url');
-
-  const sigBuffer = Buffer.from(signature, 'utf-8');
-  const expectedBuffer = Buffer.from(expectedSignature, 'utf-8');
-
-  if (sigBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+  if (!signatureMatchesAnyKey(`${encodedHeader}.${encodedPayload}`, signature, header, activeSecret, previousSecret)) {
     return null;
   }
 
