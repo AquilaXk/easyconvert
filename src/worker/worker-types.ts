@@ -28,6 +28,12 @@ export interface WorkerEngineOptions extends ConversionOptions {
    * for a spreadsheet that becomes the first page image; the request schema has no such field.
    */
   pdfExportPageRange?: string;
+  /**
+   * Runs the office suite in a profile of its own that leaves the Excel objects of a Microsoft document as objects instead of converting
+   * them to Calc objects (`writeKeepExcelObjectsSetting`). Set by the worker for the second run of a presentation the first run failed on;
+   * the request schema has no such field.
+   */
+  keepEmbeddedExcelObjects?: boolean;
 }
 
 export interface WorkerConversionResult extends ConversionResult {

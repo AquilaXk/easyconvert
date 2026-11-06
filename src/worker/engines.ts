@@ -26,7 +26,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -128,11 +128,7 @@ import {
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
-import {
-  LibreOfficePoolManager,
-  LibreOfficePoolTimeoutError,
-  resolveLibreOfficeFilter,
-} from './libreoffice-pool';
+import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter, standaloneProfileArgument } from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -378,7 +374,7 @@ async function runHeadlessOffice(
   await assertOfficeEmbeddedImagesWithinLimit(input);
   libreOfficePool.setSofficePath(sofficeBin);
 
-  if (libreOfficePool.isEnabled()) {
+  if (libreOfficePool.isEnabled() && !options.keepEmbeddedExcelObjects) {
     try {
       const poolResult = await libreOfficePool.convert(input, src, tgt, options, originalFilename);
       if (poolResult) {
@@ -413,7 +409,7 @@ async function runHeadlessOffice(
           '--norestore',
           '--nofirststartwizard',
           '--nologo',
-          `-env:UserInstallation=file://${tempDir}/user`,
+          standaloneProfileArgument(tempDir, options),
           '--convert-to',
           filterSpec,
           '--outdir',
@@ -424,7 +420,7 @@ async function runHeadlessOffice(
           cwd: tempDir,
           timeoutMs: timeout,
           maxBuffer,
-          env: { HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+          env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
           signal: options.signal,
         }
@@ -456,7 +452,7 @@ async function runHeadlessOffice(
     return null;
   }
 }
-export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(runHeadlessOffice)), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
+export const convertWithHeadlessOffice = withMetafileInk(withMetafileFrame(withLegacyOfficeRecovery(withEmbeddedWorkbookRetry(runHeadlessOffice))), () => resolveBinary(BINARY_PATHS.pdftoppm, process.env.PDFTOPPM_PATH), discardPersistedOutput);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.

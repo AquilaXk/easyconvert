@@ -25,7 +25,7 @@ import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/forma
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
-import { SandboxedProcessError, rethrowSandboxUnavailable } from './sandbox';
+import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError, rethrowSandboxUnavailable } from './sandbox';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
 /**
@@ -181,6 +181,42 @@ export function withLegacyOfficeRecovery(run: OfficeSuiteRun): OfficeSuiteRun {
         return await run(retry, sourceFormat, targetFormat, options, originalFilename);
       } catch (retryErr) {
         throw answerFor(retryErr);
+      }
+    }
+  };
+}
+
+/**
+ * Whether a run of the office suite on `sourceFormat` ended without a verdict on the file: it ran out of time, memory or output, was
+ * stopped by a signal, or wrote nothing. A failure to load the file is a verdict (the file is damaged, encrypted or not that format), and so
+ * is every typed failure.
+ */
+function endedWithoutVerdict(err: unknown): boolean {
+  if (err instanceof SandboxedTimeoutError || err instanceof SandboxedMemoryLimitError || err instanceof SandboxedBufferLimitError) return true;
+  if (err instanceof SandboxedProcessError) return !LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message);
+  return err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message);
+}
+
+/**
+ * `run`, once more with the Excel objects of the presentation left as objects when the first run of a PowerPoint 97-2003 presentation
+ * ended without a verdict. The suite converts each embedded chart to a Calc chart, and one whose series name whole columns gets a table
+ * of 1,048,578 rows: `govdocs1-001020.ppt` has two (770 MB of `content.xml` each), takes 13 s to print and then fails to store an
+ * ODP on LibreOffice 25.2, runs for 21 to 29 s on 24.2 and past the 45 s stage limit next to other jobs. With `ExcelToCalc` off the same
+ * file converts in under a second (`writeKeepExcelObjectsSetting`). A presentation that converts the first time is never touched, so
+ * the charts of every other presentation stay charts. When the second run fails too, the first failure is the answer: it says what is
+ * wrong with the file, and the second only failed the same way.
+ */
+export function withEmbeddedWorkbookRetry(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    try {
+      return await run(input, sourceFormat, targetFormat, options, originalFilename);
+    } catch (err) {
+      if (officeReadingFormat(sourceFormat) !== 'ppt' || options?.keepEmbeddedExcelObjects || options?.signal?.aborted || !endedWithoutVerdict(err)) throw err;
+      try {
+        return await run(input, sourceFormat, targetFormat, { ...options, keepEmbeddedExcelObjects: true }, originalFilename);
+      } catch {
+        options?.signal?.throwIfAborted();
+        throw err;
       }
     }
   };

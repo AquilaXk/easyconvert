@@ -1024,7 +1024,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     docx: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'xps'],
     dot: ['doc', 'jpg', 'png', 'rtf'],
     dotx: ['doc', 'jpg', 'png', 'rtf'],
-    dps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
+    dps: ['eps', 'md', 'swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
