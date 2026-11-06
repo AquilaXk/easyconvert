@@ -36,13 +36,14 @@ import {
   xlsxMaxCellTextChars,
 } from './office/spreadsheet-limits';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
-import { PdfUnicodeTextWriter, canDrawInPdf, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
+import { PdfUnicodeTextWriter, glyphCoverageOf, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
 import { readXpsText } from './office/xps-reader';
 import { readBiffCharts } from './office/biff-chart';
 import { decodeRk, readBiffCellRecord, type BiffCellContext } from './office/biff-cell-records';
 import { readPptSlides } from './office/ppt-reader';
+import { PptxSymbolRuns } from './office/pptx-symbol-runs';
 import { readMobiText } from './office/mobi-reader';
 import { readPmlText } from './office/pml-reader';
 import { extractPrintReplicaPdf } from './office/print-replica';
@@ -6433,6 +6434,7 @@ async function convertPptxSource(
     });
 
   const slides: VisualSlide[] = [];
+  const symbolRuns = new PptxSymbolRuns(await glyphCoverageOf(tgt));
   // Only the HTML and PDF targets draw pictures; an HTML page also cannot hold more than a string can.
   const media = new PptxMedia({
     enabled: tgt === 'html' || tgt === 'pdf',
@@ -6441,8 +6443,9 @@ async function convertPptxSource(
   });
 
   for (let i = 0; i < slideFiles.length; i++) {
-    const xml = await readZipEntryText(zip.files[slideFiles[i]], { budget: slideBudget });
+    let xml = await readZipEntryText(zip.files[slideFiles[i]], { budget: slideBudget });
     assertWellFormedXml(slideFiles[i], xml, 'PPTX');
+    xml = symbolRuns.map(xml);
 
     // Extract slide background color
     let backgroundColor: string | undefined;
@@ -6453,11 +6456,7 @@ async function convertPptxSource(
     }
 
     // Extract all text content
-    const texts: string[] = [];
-    for (const tEl of safeExtractXmlElements(xml, 'a:t')) {
-      const clean = safeDecodeXmlEntities(tEl.content).trim();
-      if (clean) texts.push(clean);
-    }
+    const texts = safeExtractXmlElements(xml, 'a:t').map((tEl) => safeDecodeXmlEntities(tEl.content).trim()).filter(Boolean);
 
     // Load relationships for media and parts
     const relsFileName = slideFiles[i].replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
@@ -6485,6 +6484,7 @@ async function convertPptxSource(
   }
 
   if (slides.length === 0) throw new ConversionFailedError('The PPTX file has no slides.');
+  symbolRuns.report();
 
   // PPTX -> TXT
   if (tgt === 'txt') {
@@ -6731,9 +6731,7 @@ async function convertPptSource(
   baseName: string
 ): Promise<ConversionResult> {
   const warnings: string[] = [];
-  // A PDF draws with installed fonts: a symbol-font character none of them covers shows as U+FFFD and is reported.
-  if (tgt === 'pdf') await loadFontCoverageIndex();
-  const readSlides = readPptSlides(inputBuffer, warnings, tgt === 'pdf' ? canDrawInPdf : undefined);
+  const readSlides = readPptSlides(inputBuffer, warnings, await glyphCoverageOf(tgt));
   const slides = [];
   for (const slide of readSlides) slides.push({ ...slide, charts: await readEmbeddedCharts(slide.embedded, slide.number, warnings) });
   // The text targets list what the charts say as lines of the slide; the PDF draws the charts.

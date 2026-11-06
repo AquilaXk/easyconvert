@@ -410,14 +410,7 @@ async function convertSvgSource(
 
   // SVG -> DWG
   if (tgt === 'dwg') {
-    const dxfString = svgToDxf(inputBuffer.toString('utf-8'));
-    const dwgBuffer = dxfToDwg(dxfString);
-    return {
-      buffer: dwgBuffer,
-      mimeType: 'image/vnd.dwg',
-      filename: `${baseName}.dwg`,
-      size: dwgBuffer.length,
-    };
+    dxfToDwg(svgToDxf(inputBuffer.toString('utf-8')));
   }
 
   // Vector targets are written from the SVG geometry and never rasterize it.
