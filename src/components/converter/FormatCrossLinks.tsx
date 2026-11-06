@@ -18,7 +18,7 @@ interface ChipBlockProps {
 function ChipBlock({ eyebrow, heading, intro, chips }: Readonly<ChipBlockProps>) {
   return (
     <article className="min-w-0">
-      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-ink-3">{eyebrow}</div>
+      <div className="text-[11px] font-medium uppercase tracking-[0.18em] [:lang(ko)_&]:tracking-[0.05em] text-ink-3">{eyebrow}</div>
       <h2 className="mt-2 text-lg font-semibold tracking-tight text-ink sm:text-xl">{heading}</h2>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-3">{intro}</p>
       <div className="mt-4 border border-dashed border-rule bg-canvas/30 p-4">
