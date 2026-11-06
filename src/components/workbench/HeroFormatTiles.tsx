@@ -31,7 +31,7 @@ function TileFace({ format, display }: Readonly<{ format: string; display: strin
   );
 }
 
-/** The connector between the tiles: a circle with the swap icon between two lines that fade from the rule colour to the accent, and the joining word under it. */
+/** The connector between the tiles: a circle with the swap icon between two lines that fade from the rule colour to the accent, and the joining word under it (read aloud in Korean, where the circle alone shows it). */
 function TileConnector({ joiner }: Readonly<{ joiner: string }>) {
   return (
     <div className="flex flex-col items-center gap-2">
@@ -42,7 +42,7 @@ function TileConnector({ joiner }: Readonly<{ joiner: string }>) {
         </span>
         <span className="h-px w-5 sm:w-7 bg-gradient-to-l from-rule to-accent/70" />
       </div>
-      <span className="text-[10.4px] font-medium uppercase tracking-[0.25em] [:lang(ko)_&]:tracking-[0.05em] text-ink-3">{joiner}</span>
+      <span className="text-[10.4px] font-medium uppercase tracking-[0.25em] text-ink-3 [:lang(ko)_&]:sr-only">{joiner}</span>
     </div>
   );
 }

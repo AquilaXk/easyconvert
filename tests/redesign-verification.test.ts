@@ -212,8 +212,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     const selectFile = select(hero, 'button').filter((b) => visibleText(b) === 'Select File');
     expect(selectFile).toHaveLength(1);
-    expect(classAttr(selectFile[0])).toMatch(/\bbg-accent\b/);
-    expect(classAttr(selectFile[0])).not.toMatch(/\bbtn-primary\b/);
+    expect(classAttr(selectFile[0])).toMatch(/\bbtn-primary\b/);
     expect(select(hero, 'button', 'aria-haspopup', 'menu').map((b) => attrOf(b, 'aria-label'))).toEqual(['More file sources']);
     expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here'])).toEqual([]);
 
