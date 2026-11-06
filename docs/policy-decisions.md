@@ -208,6 +208,7 @@ Security
 154. [Edge OCR engine, WebAssembly core, and language data are served from SHA-256-verified first-party assets with zero third-party CDN requests](#154-edge-ocr-engine-webassembly-core-and-language-data-are-served-from-sha-256-verified-first-party-assets-with-zero-third-party-cdn-requests)
 155. [Complete startup configuration schema coverage across literal and computed environment variables](#155-complete-startup-configuration-schema-coverage-across-literal-and-computed-environment-variables)
 156. [OAuth canonical origin, webhook SSRF and redirect refusal, atomic registration rate limiting, bounded thumbnail timestamps, and DAG, LibreOffice, qpdf, and bzip2 stream hardening](#156-oauth-canonical-origin-webhook-ssrf-and-redirect-refusal-atomic-registration-rate-limiting-bounded-thumbnail-timestamps-and-dag-libreoffice-qpdf-and-bzip2-stream-hardening)
+157. [Fail-closed binary format signature checks, CGM and HTML table span bounds, CSS at-rule token validation, qpdf sandbox memory cap, Format 12 cmap bounds, and unified `openPackage` ZIP reading](#157-fail-closed-binary-format-signature-checks-cgm-and-html-table-span-bounds-css-at-rule-token-validation-qpdf-sandbox-memory-cap-format-12-cmap-bounds-and-unified-openpackage-zip-reading)
 
 ---
 
