@@ -114,7 +114,7 @@ export async function judgeJobs(jobs: readonly Job[], options: JudgeOptions): Pr
           format: job.file.format,
           target: job.target,
           emptyInput: job.file.emptyInput === true,
-          deadlineMs: scaledDeadlineMs(options.deadlineMs, pages.get(job.file.id) ?? 0),
+          deadlineMs: scaledDeadlineMs(options.deadlineMs, pages.get(job.file.id) ?? 0, pool.ocrPageBudgetMs),
         })),
         () => {
           done++;

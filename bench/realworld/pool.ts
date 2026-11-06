@@ -7,8 +7,8 @@ import { fork, type ChildProcess } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
-import { OCR_PAGE_CONCURRENCY_ENV } from '../../src/lib/conversions/ocr-page-batch';
-import { ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
+import { OCR_MAX_INFLIGHT_PAGES, OCR_PAGE_CONCURRENCY_ENV } from '../../src/lib/conversions/ocr-page-batch';
+import { OCR_PAGE_BUDGET_ENV, ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
 import { crashDetail, isTypedRefusal, type Verdict } from './verdict';
 
 const CHILD_SCRIPT = path.join(__dirname, 'child.ts');
@@ -41,12 +41,23 @@ export const MAX_JOB_DEADLINE_MS = (NIGHTLY_SHARD_TIMEOUT_MS / 2 * NIGHTLY_WORKE
  * still being read is not reported as hung while the converter's own limits (a typed 413) are what bound it. A file
  * that is not read by OCR keeps the base deadline: its work is bounded by the parser deadline, not by pages.
  */
-export function scaledDeadlineMs(baseMs: number, pages: number): number {
-  return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * ocrPageBudgetMs()));
+export function scaledDeadlineMs(baseMs: number, pages: number, pageBudgetMs: number = ocrPageBudgetMs()): number {
+  return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * pageBudgetMs));
 }
 
 export function childOcrPageConcurrency(workers: number, cpus: number = os.availableParallelism()): number {
   return Math.max(1, Math.floor(cpus / Math.max(1, workers)));
+}
+
+/**
+ * The page budget of a job server (ocr-work-budget.ts). The converter's default is measured with a document's pages read up to
+ * `OCR_MAX_INFLIGHT_PAGES` at a time and a page cut into bands; a job server that is given a share of the cores reads fewer at once
+ * (`childOcrPageConcurrency`), so each page takes proportionally longer, and the same document would be refused by a limit that is
+ * about the pace of a production worker and not about the document. The budget grows by the parallelism the server gives up, so a
+ * file is refused only where it would be on a worker that has the cores.
+ */
+export function childOcrPageBudgetMs(workers: number, cpus: number = os.availableParallelism(), baseMs: number = ocrPageBudgetMs()): number {
+  return baseMs * Math.ceil(OCR_MAX_INFLIGHT_PAGES / childOcrPageConcurrency(workers, cpus));
 }
 
 /** A job the pool runs: what the job server needs, and optionally its own deadline in place of the pool's. */
@@ -76,12 +87,19 @@ interface Slot {
   busy: boolean;
 }
 
+/** The page budget the job servers of a pool work to: the caller's own setting, else the share of the cores each server has. */
+function poolPageBudgetMs(options: PoolOptions): number {
+  const override = Number(options.env[OCR_PAGE_BUDGET_ENV]);
+  return Number.isInteger(override) && override > 0 ? override : childOcrPageBudgetMs(options.workers);
+}
+
 function spawnChild(options: PoolOptions): Promise<ChildProcess> {
   const child = fork(CHILD_SCRIPT, [], {
     execArgv: ['--import', 'tsx', `--max-old-space-size=${options.heapMb}`],
     env: {
       ...options.env,
       [OCR_PAGE_CONCURRENCY_ENV]: options.env[OCR_PAGE_CONCURRENCY_ENV] ?? String(childOcrPageConcurrency(options.workers)),
+      [OCR_PAGE_BUDGET_ENV]: String(poolPageBudgetMs(options)),
     },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     detached: true,
@@ -115,6 +133,11 @@ export class JobPool {
   private nextId = 1;
 
   private constructor(private readonly options: PoolOptions) {}
+
+  /** The page budget of the job servers, for the deadline of a job that is read by OCR. */
+  get ocrPageBudgetMs(): number {
+    return poolPageBudgetMs(this.options);
+  }
 
   static async start(options: PoolOptions): Promise<JobPool> {
     const pool = new JobPool(options);
