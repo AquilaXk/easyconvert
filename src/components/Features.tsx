@@ -6,6 +6,7 @@ import { ArrowRight } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import type { FormatCategory } from '@/lib/types';
 import { CategoryRegistryStat, REGISTRY_STATS } from '@/lib/registry-stats';
+import { categoryIcon } from './workbench/FormatIcon';
 import { RestApiWorkflowCard, SecurityDataHandlingCard } from './workbench/HomeEditorialSections';
 
 /** A common pair of a category; its one-line summary is `features.pairs.<from>-<to>` in the messages. */
@@ -94,7 +95,7 @@ function FormatDirectoryCard({
 
   return (
     <div className="border-t border-rule lg:col-span-8 min-w-0 pt-6 sm:pt-7">
-      <div className="border-b border-rule pb-5">
+      <div>
         <h2 className="text-2xl sm:text-3xl text-ink">
           {t('directoryHeading')}
         </h2>
@@ -106,15 +107,10 @@ function FormatDirectoryCard({
           })}
         </p>
 
-        <div className="mt-5 flex flex-wrap gap-2">
+        <div className="mt-5 flex flex-wrap gap-x-4 gap-y-1">
           {REGISTRY_STATS.categories.map((cat) => {
             const isSelected = cat.id === activeCategory.id;
-            const buttonStyle = isSelected
-              ? 'bg-accent text-on-accent border-accent font-semibold'
-              : 'text-ink-2 border-rule hover:border-accent hover:text-ink';
-            const badgeStyle = isSelected
-              ? 'bg-sunken text-ink'
-              : 'bg-sunken text-ink-3';
+            const Icon = categoryIcon(cat.id);
 
             return (
               <button
@@ -122,29 +118,31 @@ function FormatDirectoryCard({
                 type="button"
                 aria-pressed={isSelected}
                 onClick={() => onSelectCategory(cat.id)}
-                className={`inline-flex items-center gap-2 min-h-[44px] px-3.5 rounded-sm border text-xs transition-colors cursor-pointer ${buttonStyle}`}
+                className={`inline-flex items-center gap-1.5 py-1 text-xs transition-colors cursor-pointer ${
+                  isSelected ? 'text-accent-ink' : 'text-ink-3 hover:text-ink'
+                }`}
               >
-                <span>{tCategory(cat.id)}</span>
-                <span className={`px-1.5 py-0.5 rounded-md text-[11px] ${badgeStyle}`}>
-                  {cat.count}
-                </span>
+                <Icon aria-hidden="true" className="size-3" />
+                <span className="font-medium">{tCategory(cat.id)}</span>
+                <span className="font-mono text-[10px] text-ink-3">{cat.count}</span>
               </button>
             );
           })}
         </div>
       </div>
 
-      <div className="pt-5 space-y-6">
+      <div className="mt-4 border-t border-rule pt-4 space-y-6">
         <div>
-          <h3 className="mb-3 text-sm font-bold text-ink">
-            {t('extensionsHeading', { category: activeLabel, count: activeCategory.count })}
-          </h3>
-          <div className="flex flex-wrap gap-2">
+          <div className="mb-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-wider [:lang(ko)_&]:tracking-[0.05em] text-ink-3">
+            <h3>{t('extensionsHeading', { category: activeLabel })}</h3>
+            <span>{t('extensionsListed', { count: activeCategory.count })}</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
             {activeCategory.formats.map((fmt) => (
               <Link
                 key={fmt.id}
                 href={`/${fmt.id}-converter`}
-                className="inline-flex items-center justify-center min-h-[44px] px-3 rounded-sm hover:bg-accent-soft border border-rule hover:border-accent text-xs font-semibold uppercase text-ink transition-colors"
+                className="bg-surface/60 px-2 py-1 font-mono text-[11px] uppercase tracking-wide text-ink transition-colors hover:text-accent-ink"
               >
                 {fmt.extension}
               </Link>
@@ -153,29 +151,25 @@ function FormatDirectoryCard({
         </div>
 
         <div className="pt-5 border-t border-rule">
-          <h3 className="text-sm font-bold text-ink mb-3">
+          <h3 className="mb-3 font-mono text-[11px] [:lang(ko)_&]:tracking-[0.05em] text-ink-3">
             {t('pairsHeading', { category: activeLabel })}
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <ul className="space-y-2">
             {popularPairs.map((pair) => (
-              <Link
-                key={`${pair.from}-${pair.to}`}
-                href={`/${pair.from}-to-${pair.to}`}
-                className="group flex flex-col justify-between min-h-[44px] p-3.5 rounded-md border border-rule hover:border-accent transition-colors"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase text-ink group-hover:text-accent-ink">
+              <li key={`${pair.from}-${pair.to}`}>
+                <Link href={`/${pair.from}-to-${pair.to}`} className="block">
+                  <span className="inline-flex items-center gap-1.5 font-mono text-xs uppercase text-ink">
                     <span>{pair.from}</span>
-                    <ArrowRight className="w-3.5 h-3.5 text-ink-3" />
+                    <ArrowRight aria-hidden="true" className="size-3 text-ink-3" />
                     <span>{pair.to}</span>
                   </span>
-                </div>
-                <span className="mt-1.5 text-xs text-ink-2 leading-snug">
-                  {t(`pairs.${pair.from}-${pair.to}` as PairSummaryKey)}
-                </span>
-              </Link>
+                  <span className="block text-xs leading-[16.5px] text-ink-3">
+                    {t(`pairs.${pair.from}-${pair.to}` as PairSummaryKey)}
+                  </span>
+                </Link>
+              </li>
             ))}
-          </div>
+          </ul>
         </div>
       </div>
     </div>

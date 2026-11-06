@@ -9,7 +9,6 @@ import ConverterPageView from '../src/components/pages/ConverterPageView';
 import HomePageView from '../src/components/pages/HomePageView';
 import { DIRECTORY_CATEGORIES, PRIMARY_LINKS, SECONDARY_LINKS, TOOL_ROUTES, type SiteLink } from '../src/components/site-links';
 import { COMMON_TARGETS } from '../src/components/workbench/SourceChipPicker';
-import { POPULAR_CONVERSIONS } from '../src/components/workbench/PopularConversions';
 import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { CATEGORY_WORDS } from '../src/lib/category-words';
@@ -21,7 +20,7 @@ import type { TestLocale } from './helpers/intl-messages';
 /**
  * Every link the site renders to one of its own pages leads to a page that exists: a route of its own under src/app/[locale]
  * or a slug the parser reads as a page. The links of the site chrome, the home page and the converter pages are read from
- * what a visitor receives, and the tables that feed the home page (the chips, the popular conversions, the directory) are
+ * what a visitor receives, and the tables that feed the home page (the chips, the directory) are
  * read as data, since a render shows one state of each.
  */
 
@@ -71,7 +70,6 @@ describe('the links the site renders lead to pages that exist', () => {
 
   it('holds for the conversions the home page lists, the pairs of its directory and the targets of its chips', () => {
     const pairs = [
-      ...POPULAR_CONVERSIONS,
       ...Object.values(POPULAR_PAIRS_BY_CATEGORY).flat(),
       ...Object.entries(COMMON_TARGETS).flatMap(([from, targets]) => targets.map((to) => ({ from, to }))),
     ];

@@ -17,7 +17,7 @@ import { formatCategoryLabel } from '@/components/converter/format-specs';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import { ConverterBreadcrumb } from '@/components/converter/ConverterBreadcrumb';
 import { FormatCards } from '@/components/converter/FormatCards';
-import { FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
+import { CategoryConverters, FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
 /** A converter or information page, as the server's page parsed its slug; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
@@ -127,12 +127,12 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
           <>
             {!isCategorySlug && <FormatCards ids={isPair ? [srcKey, tgtKey] : [srcKey]} />}
 
-            <FormatCrossLinks
-              sourceFormat={parsed.sourceFormat}
-              convertFromTargets={convertFromTargets}
-              targetForReverse={targetForReverse}
-              convertToSources={convertToSources.slice(0, 30)}
-            />
+            {parsed.copy.kind === 'format' && parsed.copy.name.kind === 'category' && (
+              <CategoryConverters category={parsed.copy.name.id} />
+            )}
+            {parsed.copy.kind === 'format' && parsed.copy.name.kind !== 'category' && (
+              <FormatCrossLinks format={parsed.sourceFormat} targets={convertFromTargets} sources={convertToSources} />
+            )}
           </>
         )}
       </main>
