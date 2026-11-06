@@ -30,6 +30,7 @@ import {
 } from '@/lib/api/problem-details';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
+import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,26 +53,33 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
   return problem ? { problem } : { options: parsed };
 }
 
+/** The files and fields of a batch request, or the refusal for a malformed body or an empty file list. */
+async function readBatchForm(
+  req: NextRequest,
+  instanceUri: string
+): Promise<{ files: File[]; targetFormatsRaw: string | null; optionsRaw: string | null } | { refusal: Response }> {
+  const body = await readMultipartForm(req);
+  if (body.malformed) {
+    return { refusal: createProblemDetailsResponse(400, 'Invalid or malformed multipart/form-data body.', instanceUri, 'Bad Request') };
+  }
+  const files = body.form.getAll('files').filter((entry): entry is File => entry instanceof Blob);
+  if (files.length === 0) {
+    return { refusal: NextResponse.json({ success: false, error: 'No files provided for batch conversion.' }, { status: 400 }) };
+  }
+  return {
+    files,
+    targetFormatsRaw: body.form.get('targetFormats') as string | null,
+    optionsRaw: body.form.get('options') as string | null,
+  };
+}
+
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
 
   try {
-    const formData = await req.formData();
-    const files = formData.getAll('files') as File[];
-    const targetFormatsRaw = formData.get('targetFormats') as string | null;
-    const optionsRaw = formData.get('options') as string | null;
-
-    if (!files || files.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'No files provided for batch conversion.' },
-        { status: 400 }
-      );
-    }
-
-    // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit. The units are reserved once
-    // the files to convert are known, one for each.
+    // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit BEFORE reading the multipart body.
     const auth = await validateApiAccess(req, {
       requiredUnits: 0,
       requiredScope: 'convert:write',
@@ -89,11 +97,21 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
+    if (!isMultipartBody(req)) {
+      return createProblemDetailsResponse(415, 'Content-Type must be multipart/form-data.', instanceUri, 'Unsupported Media Type');
+    }
+
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
+
+    const form = await readBatchForm(req, instanceUri);
+    if ('refusal' in form) {
+      return form.refusal;
+    }
+    const { files, targetFormatsRaw, optionsRaw } = form;
 
     for (const f of files) {
       if (f.size === 0) {

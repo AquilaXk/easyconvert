@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getFormatByExtension } from '@/lib/registry';
+import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { assertAllowedLibreOfficeFilter } from '@/lib/conversions/pdf-export-options';
 import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
@@ -121,6 +122,17 @@ function extractExtension(target: string | undefined): string | undefined {
   const clean = target.split('?')[0].split('#')[0];
   const ext = path.extname(clean).replace(/^\./, '').toLowerCase().trim();
   return ext || undefined;
+}
+
+/** The format of an upload node: its own stored key first, then the request's filename and declared format. */
+function uploadNodeFormat(storageKey: string | undefined, options: GraphValidationOptions): string {
+  return (
+    (storageKey && !isInlineInputKey(storageKey) ? extractExtension(storageKey) : undefined) ||
+    extractExtension(options.sourceFilename) ||
+    extractExtension(storageKey) ||
+    options.sourceFormat?.toLowerCase() ||
+    UNKNOWN_FORMAT
+  );
 }
 
 /**
@@ -602,11 +614,7 @@ export function validateJobGraph(
 
     switch (op) {
       case 'import.upload': {
-        inferredFormats[nodeId] =
-          extractExtension(options.sourceFilename) ||
-          extractExtension(node.storageKey) ||
-          options.sourceFormat?.toLowerCase() ||
-          UNKNOWN_FORMAT;
+        inferredFormats[nodeId] = uploadNodeFormat(node.storageKey, options);
         break;
       }
       case 'import.url': {

@@ -821,4 +821,13 @@ describe('loadConfig', () => {
   it('rejects a raw value longer than the variable allows before parsing it', () => {
     expect(failures({ REDIS_HOST: 'h'.repeat(5000) })).toEqual([{ variable: 'REDIS_HOST', rule: 'must be at most 4096 characters' }]);
   });
+
+  it('validates JWT_SECRET_PREVIOUS as an optional secret of at least 32 bytes in production', () => {
+    expect(failures({ ...WEB_PRODUCTION, JWT_SECRET_PREVIOUS: ascii(31) }, 'web')).toEqual([
+      { variable: 'JWT_SECRET_PREVIOUS', rule: 'must be at least 32 bytes (UTF-8 text, not decoded) in production' },
+    ]);
+    expect(parseConfig({ ...WEB_PRODUCTION, JWT_SECRET_PREVIOUS: ascii(32) }, { role: 'web' }).JWT_SECRET_PREVIOUS).toBe(ascii(32));
+    expect(parseConfig({}).JWT_SECRET_PREVIOUS).toBeUndefined();
+  });
 });
+

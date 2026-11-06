@@ -401,7 +401,11 @@ jobs:
       - name: Check out the commit to compare with
         id: base
         run: |
-          git fetch --no-tags --depth=1 origin "$AB_BASE_REF"
+          if [[ "$AB_BASE_REF" == -* || "$AB_BASE_REF" == *..* || ! "$AB_BASE_REF" =~ ^[0-9A-Za-z._/-]{1,256}$ ]]; then
+            echo "::error::Invalid ab_base_ref: $AB_BASE_REF"
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin -- "$AB_BASE_REF"
           git worktree add --detach ab-base FETCH_HEAD
           bash scripts/ab-base-dependencies.sh false >> "$GITHUB_OUTPUT"
         env:

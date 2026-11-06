@@ -7,6 +7,7 @@ import {
   isValidIdempotencyKey,
   buildScopedKey,
   computeFingerprint,
+  compareCodeUnits,
   hashStream,
   AcquireResult,
 } from './idempotency';
@@ -20,6 +21,32 @@ const LOCK_TTL_MS = 60_000;
 const RECORD_ATTEMPTS = 3;
 const RECORD_RETRY_DELAY_MS = 50;
 
+function setOwnField(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function normalizeJsonValue(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalizeJsonValue);
+  }
+  const src = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = Object.create(null);
+  for (const key of Object.keys(src).sort(compareCodeUnits)) {
+    if (Object.hasOwn(src, key)) {
+      setOwnField(sorted, key, normalizeJsonValue(src[key]));
+    }
+  }
+  return sorted;
+}
+
 /**
  * Extracts non-file fields and hashes file blobs from multipart form data.
  */
@@ -27,7 +54,7 @@ async function extractFormDataFingerprint(formData: FormData): Promise<{
   bodyWithoutFile: Record<string, unknown>;
   fileSha256: string;
 }> {
-  const bodyWithoutFile: Record<string, unknown> = {};
+  const bodyWithoutFile: Record<string, unknown> = Object.create(null);
   const fileBlobs: { name?: string; type?: string; blob: Blob }[] = [];
 
   for (const [key, value] of formData.entries()) {
@@ -38,19 +65,19 @@ async function extractFormDataFingerprint(formData: FormData): Promise<{
       const type = typeof blob.type === 'string' ? blob.type : undefined;
       fileBlobs.push({ name, type, blob });
       if (key === 'file') {
-        bodyWithoutFile._file = { name, type, size: blob.size };
+        setOwnField(bodyWithoutFile, '_file', { name, type, size: blob.size });
       } else {
-        bodyWithoutFile[key] = { _isBlob: true, name, type, size: blob.size };
+        setOwnField(bodyWithoutFile, key, { _isBlob: true, name, type, size: blob.size });
       }
-    } else if (key in bodyWithoutFile) {
+    } else if (Object.hasOwn(bodyWithoutFile, key)) {
       const existing = bodyWithoutFile[key];
       if (Array.isArray(existing)) {
         existing.push(value);
       } else {
-        bodyWithoutFile[key] = [existing, value];
+        setOwnField(bodyWithoutFile, key, [existing, value]);
       }
     } else {
-      bodyWithoutFile[key] = value;
+      setOwnField(bodyWithoutFile, key, value);
     }
   }
 
@@ -80,16 +107,18 @@ async function extractJsonFingerprint(req: NextRequest | Request): Promise<{
   try {
     const text = await req.text();
     if (!text || text.trim().length === 0) {
-      return { bodyWithoutFile: {}, fileSha256: '' };
+      return { bodyWithoutFile: Object.create(null), fileSha256: '' };
     }
     try {
       const parsed = JSON.parse(text);
-      return { bodyWithoutFile: parsed, fileSha256: '' };
+      return { bodyWithoutFile: normalizeJsonValue(parsed), fileSha256: '' };
     } catch {
-      return { bodyWithoutFile: { _raw: text }, fileSha256: '' };
+      const rawObj: Record<string, unknown> = Object.create(null);
+      setOwnField(rawObj, '_raw', text);
+      return { bodyWithoutFile: rawObj, fileSha256: '' };
     }
   } catch {
-    return { bodyWithoutFile: {}, fileSha256: '' };
+    return { bodyWithoutFile: Object.create(null), fileSha256: '' };
   }
 }
 
