@@ -168,6 +168,33 @@ function directoryOf(path: string): string {
   return path.slice(0, path.lastIndexOf('/') + 1);
 }
 
+/** The buffers that hold a part name in GhostXPS are 1,024 bytes (`char partname[1024]`), so a name is cut at 1,023 bytes and a terminator. */
+const GHOSTXPS_NAME_BYTES = 1_023;
+
+/** `text` cut to the bytes a GhostXPS name buffer holds. */
+export function withinNameBuffer(text: string): string {
+  const bytes = Buffer.from(text, 'utf8');
+  return bytes.length <= GHOSTXPS_NAME_BYTES ? text : bytes.subarray(0, GHOSTXPS_NAME_BYTES).toString('utf8');
+}
+
+/**
+ * The name of the part that GhostXPS reads for `name`, held by a part in `holderDirectory` (a path ending in a slash, or empty for the
+ * root): `xps_absolute_path` and `xps_clean_path` (GhostPDL xps/xpsmem.c lines 60 to 132, read for behaviour). A name that starts with a
+ * slash is the part name, any other follows the directory of the holder; empty and `.` elements go and `..` removes the element before
+ * it, and at the root it is dropped. The name is not decoded (a `%20` is three characters of the name) and keeps a `#` or a space as
+ * they are, which `resolvePackagePath` does not: it decodes, cuts at `#` and refuses a name that leaves the package.
+ */
+export function xpsAbsolutePath(holderDirectory: string, name: string): string {
+  const baseUri = holderDirectory === '' ? '' : `/${holderDirectory.slice(0, -1)}`;
+  const kept: string[] = [];
+  for (const element of withinNameBuffer(name.startsWith('/') ? name : `${baseUri}/${name}`).split('/')) {
+    if (element === '' || element === '.') continue;
+    if (element === '..') kept.pop();
+    else kept.push(element);
+  }
+  return kept.join('/');
+}
+
 /** The parts a list of references names, resolved against the directory of the part that holds them. */
 function referencedParts(holder: string, root: XmlElement, referenceName: string): string[] {
   return childElements(root, referenceName).flatMap((reference) => {
@@ -244,7 +271,8 @@ export function descendantsOf(root: XmlElement): XmlElement[] {
  * document joining the list. The reader's limits hold: at most 1,000 documents and 10,000 pages, every part named once
  * (GhostXPS skips a repeated name; here it is refused, so a cycle of documents ends at once), one inflate budget for the
  * parts read. A package that names more than one sequence is refused: GhostXPS draws the last one, and the list would be of
- * another. The names are those the documents give, resolved to package paths; the page parts themselves are not read.
+ * another. The names are those the documents give, joined the way the renderer joins them (`xpsAbsolutePath`: not decoded, so a page
+ * named with `%20` is a part of that name); the page parts themselves are not read.
  */
 export async function renderedXpsPageParts(input: Buffer, signal?: AbortSignal): Promise<string[]> {
   const source = new XpsPackage(await openPackage(input, LABEL), signal);
@@ -259,7 +287,7 @@ export async function renderedXpsPageParts(input: Buffer, signal?: AbortSignal):
     for (const element of descendantsOf(root)) {
       const reference = element.attrs.get('Source');
       if (reference === undefined) continue;
-      const target = resolvePackagePath(directoryOf(part), reference);
+      const target = xpsAbsolutePath(directoryOf(part), reference);
       if (element.local === 'DocumentReference') {
         claimOnce(namedParts, target, 'fixed document');
         metadataParts.push(target);

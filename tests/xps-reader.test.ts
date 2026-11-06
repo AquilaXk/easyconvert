@@ -6,7 +6,7 @@ import JSZip from 'jszip';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertFile } from '../src/lib/conversions';
 import { buildOpenXpsPackage } from '../src/lib/conversions/openxps';
-import { readXpsPages } from '../src/lib/conversions/office/xps-reader';
+import { readXpsPages, renderedXpsPageParts } from '../src/lib/conversions/office/xps-reader';
 import { ConversionFailedError, CorruptStreamError, DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { pythonModuleAvailable, runPythonHelper } from './helpers/python-oracle';
@@ -367,5 +367,26 @@ describe('XPS package limits', () => {
     const xps = await xpsOf([[{ x: 10, y: 10, text: 'page one' }]]);
     const reason = new Error('the client closed the connection');
     await expect(convertFile(xps, 'xps', 'txt', { signal: AbortSignal.abort(reason) }, 'one.xps')).rejects.toBe(reason);
+  });
+});
+
+describe('the page parts the renderer draws', () => {
+  // Oracle: xps_absolute_path (GhostPDL xps/xpsmem.c lines 60 to 132) joins and cleans the name of a PageContent Source and does not
+  // decode it. Measured with GhostXPS 10.07.1: a page named `/Documents/1/a%20b.fpage` in a package that holds `a b.fpage` is not found.
+  const pageNamed = async (source: string, partName: string): Promise<string[]> => {
+    const xps = await xpsOfParts(['/Documents/1/FixedDoc.fdoc'], { 'Documents/1/FixedDoc.fdoc': fixedDocument([source]), [partName]: fixedPage('only') });
+    return renderedXpsPageParts(xps);
+  };
+
+  it('names a page by its text as it is written, not decoded', async () => {
+    expect(await pageNamed('Pages/a%20b.fpage', 'Documents/1/Pages/a b.fpage')).toEqual(['Documents/1/Pages/a%20b.fpage']);
+  });
+
+  it('keeps a # in the name, and lets .. above the root stay at the root', async () => {
+    expect(await pageNamed('/../Documents/1/p#1.fpage', 'Documents/1/p#1.fpage')).toEqual(['Documents/1/p#1.fpage']);
+  });
+
+  it('joins a relative name to the folder of the document that holds it', async () => {
+    expect(await pageNamed('./Pages/../Pages/1.fpage', 'Documents/1/Pages/1.fpage')).toEqual(['Documents/1/Pages/1.fpage']);
   });
 });
