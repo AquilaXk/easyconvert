@@ -639,9 +639,19 @@ const SCHEMA_ENTRIES = [
     name: 'JWT_SECRET',
     area: 'auth',
     description:
-      'Signs session tokens. At least 32 bytes of UTF-8 text in production; also the last fallback key of the credential vault and of API key secret encryption.',
+      'Signs session tokens. At least 32 bytes of UTF-8 text in production; also a legacy decryption fallback key of the credential vault and of API key secret encryption.',
     kind: KEY_SECRET,
     requiredInProduction: true,
+    secret: true,
+    roles: WEB,
+  },
+  {
+    name: 'JWT_SECRET_PREVIOUS',
+    area: 'auth',
+    description:
+      'The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET.',
+    kind: KEY_SECRET,
+    requiredInProduction: false,
     secret: true,
     roles: WEB,
   },
@@ -669,7 +679,7 @@ const SCHEMA_ENTRIES = [
     name: 'KEY_HASH_PEPPER',
     area: 'secrets',
     description:
-      'Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also the second fallback key of API key secret encryption.',
+      'Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also a legacy decryption fallback key of API key secret encryption.',
     kind: KEY_SECRET,
     requiredInProduction: true,
     secret: true,
@@ -689,7 +699,7 @@ const SCHEMA_ENTRIES = [
     name: 'KEY_ENCRYPTION_KEY',
     area: 'secrets',
     description:
-      'Key that encrypts API key webhook secrets at rest; falls back to KEY_HASH_PEPPER, then JWT_SECRET. Also the second fallback key of the credential vault.',
+      'Key that encrypts API key webhook secrets at rest; required for encrypting new secrets in production (min 32 bytes) and falls back to KEY_HASH_PEPPER, then JWT_SECRET for decryption and in development.',
     kind: KEY_SECRET,
     requiredInProduction: false,
     secret: true,
@@ -708,7 +718,8 @@ const SCHEMA_ENTRIES = [
   {
     name: 'STORAGE_VAULT_KEY',
     area: 'secrets',
-    description: 'Master key of the vault that holds customer storage credentials; falls back to KEY_ENCRYPTION_KEY, then JWT_SECRET.',
+    description:
+      'Master key of the vault that holds customer storage credentials; required for storing credentials in production (min 32 bytes) and falls back to KEY_ENCRYPTION_KEY, then JWT_SECRET for decryption and in development.',
     kind: KEY_SECRET,
     requiredInProduction: false,
     secret: true,

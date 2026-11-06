@@ -15,7 +15,7 @@ import { pipeline } from 'node:stream/promises';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { IStorageBackend } from '../storage';
-import { assertNotSpoofedFile } from '../security/file-guard';
+import { assertCompoundFileKindInObject, assertNotSpoofedFile } from '../security/file-guard';
 
 export interface LargePayloadStreamConfig {
   /** Size of individual transfer chunks in bytes. Default: 64KB (65,536 bytes) */
@@ -645,8 +645,11 @@ export async function pipeStreamToStorageMultipart(
   }
 
   const initialBuffer = Buffer.concat(initialChunks);
+  const headerSlice = initialBuffer.length > SNIFF_HEADER_BYTES
+    ? initialBuffer.subarray(0, SNIFF_HEADER_BYTES)
+    : initialBuffer;
   // Fail-closed verification against spoofed file extensions using initial-chunk MIME magic sniffing
-  assertNotSpoofedFile(initialBuffer, sourceExtension, filename);
+  assertNotSpoofedFile(headerSlice, sourceExtension, filename);
 
   // 2. Initiate multipart session in storage
   const init = await storage.initiateMultipartUpload(filename, mimeType, expectedTotalSize, undefined, partSizeBytes);
@@ -700,6 +703,14 @@ export async function pipeStreamToStorageMultipart(
     }
 
     const completed = await storage.completeMultipartUpload(uploadId);
+    try {
+      await assertCompoundFileKindInObject(storage, completed.key, totalBytes, headerSlice, sourceExtension, filename);
+    } catch (spoofErr) {
+      try {
+        await storage.deleteObject(completed.key);
+      } catch {}
+      throw spoofErr;
+    }
     const elapsedMs = Math.max(1, Date.now() - startTime);
     const sha256Digest = hasher.digest('hex');
     const peakHeapDeltaBytes = Math.max(0, peakHeap - initialHeap);

@@ -8,17 +8,22 @@ function deriveKey(secret: string): Buffer {
 }
 
 function getEncryptionKey(): Buffer {
-  const secret =
-    process.env.KEY_ENCRYPTION_KEY ||
-    process.env.KEY_HASH_PEPPER ||
-    process.env.JWT_SECRET;
-
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
+  const kek = process.env.KEY_ENCRYPTION_KEY?.trim();
+  if (process.env.NODE_ENV === 'production') {
+    if (!kek || kek.length < 32) {
       throw new Error(
-        '[SecretEncryption] FATAL: KEY_ENCRYPTION_KEY, KEY_HASH_PEPPER, or JWT_SECRET is required in production.'
+        'CRITICAL SECURITY ERROR: KEY_ENCRYPTION_KEY environment variable must be explicitly configured (min 32 characters) in production environments.'
       );
     }
+    return deriveKey(kek);
+  }
+
+  const secret =
+    kek ||
+    process.env.KEY_HASH_PEPPER?.trim() ||
+    process.env.JWT_SECRET?.trim();
+
+  if (!secret) {
     return deriveKey(DEV_SECRET_KEY_SALT);
   }
 
@@ -31,10 +36,10 @@ export function getDecryptionCandidateKeys(): Buffer[] {
   const keys: Buffer[] = [primary];
 
   const rawSecrets = [
-    process.env.KEY_ENCRYPTION_KEY,
-    process.env.KEY_HASH_PEPPER,
-    process.env.KEY_HASH_PEPPER_PREVIOUS,
-    process.env.JWT_SECRET,
+    process.env.KEY_ENCRYPTION_KEY?.trim(),
+    process.env.KEY_HASH_PEPPER?.trim(),
+    process.env.KEY_HASH_PEPPER_PREVIOUS?.trim(),
+    process.env.JWT_SECRET?.trim(),
     process.env.NODE_ENV !== 'production' ? DEV_SECRET_KEY_SALT : undefined,
   ];
 
@@ -106,6 +111,17 @@ export function decryptSecret(cipherText: string | undefined): string | undefine
   return decryptWithCandidateKeys(cipherText).plainText;
 }
 
+export function needsSecretReencryption(cipherText: string | undefined): boolean {
+  if (!cipherText) {
+    return false;
+  }
+  if (!cipherText.startsWith(ENCRYPTION_PREFIX)) {
+    return true;
+  }
+  const { keyIndex } = decryptWithCandidateKeys(cipherText);
+  return keyIndex > 0;
+}
+
 export function reencryptSecretIfNeeded(cipherText: string | undefined): {
   plainText: string | undefined;
   cipherText: string | undefined;
@@ -123,3 +139,4 @@ export function reencryptSecretIfNeeded(cipherText: string | undefined): {
   }
   return { plainText, cipherText: encryptSecret(plainText), reencrypted: true };
 }
+

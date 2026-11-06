@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -7,6 +8,9 @@ import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-li
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
+import { readObjectHeader } from '@/lib/storage/object-header';
+import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
+import { readMultipartForm } from '@/lib/api/multipart-body';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
@@ -45,6 +49,7 @@ interface JobRequest {
   storageKey?: string;
   inputBufferBase64?: string;
   fileSize: number;
+  uploadedInline?: boolean;
 }
 
 type ParsedJobRequest = { request: JobRequest } | { refusal: Response };
@@ -128,6 +133,39 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
     const oversize = fileSizeLimitProblem(user, inputBytes, instanceUri);
     if (oversize) return oversize;
 
+    try {
+      if (inputBufferBase64) {
+        assertNotSpoofedFile(Buffer.from(inputBufferBase64, 'base64'), sourceFormat, originalFilename);
+      } else if (storageKey && !parsed.request.uploadedInline) {
+        if (storageProvider.kind === 'remote') {
+          const info = await storageProvider.stat(storageKey);
+          if (!info) return fail(404, STORAGE_OBJECT_NOT_FOUND);
+          const header = await readObjectHeader(storageProvider, storageKey);
+          if (!header) return fail(400, 'Stored object is unavailable.');
+          await assertNotSpoofedObject(storageProvider, storageKey, info.size, header, sourceFormat, originalFilename);
+        } else {
+          const stored = await storageProvider.getObject(storageKey);
+          if (!stored) return fail(404, STORAGE_OBJECT_NOT_FOUND);
+          if (stored.filePath && fs.existsSync(stored.filePath)) {
+            assertNotSpoofedFilePath(stored.filePath, sourceFormat, originalFilename);
+          } else if (stored.buffer && stored.buffer.length > 0) {
+            assertNotSpoofedFile(stored.buffer, sourceFormat, originalFilename);
+          } else {
+            return fail(400, 'Stored object is unavailable.');
+          }
+        }
+      }
+    } catch (err) {
+      const refusal = spoofCheckRefusal(err);
+      if (refusal) {
+        return NextResponse.json(
+          { success: false, error: err instanceof Error ? err.message : String(err) },
+          { status: refusal.status }
+        );
+      }
+      throw err;
+    }
+
     const job = await handOffConversionJob(
       unit,
       conversionQueue,
@@ -177,7 +215,11 @@ function inlinePayloadProblem(instanceUri: string): Response {
 
 /** A job request from a multipart form: a file in it is stored first and held to the inline limit. */
 async function readFormJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
-  const formData = await req.formData();
+  const multipart = await readMultipartForm(req);
+  if (multipart.malformed) {
+    return { refusal: NextResponse.json({ success: false, error: 'Invalid or malformed multipart/form-data body.' }, { status: 400 }) };
+  }
+  const formData = multipart.form;
   const file = formData.get('file') as File | null;
   const optionsRaw = formData.get('options') as string | null;
   const request: JobRequest = {
@@ -197,20 +239,45 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string): Promis
   }
 
   if (file) {
-    if (!detectFormatFromFilename(file.name)) return { refusal: unknownSourceProblem(file.name, instanceUri) };
+    const detected = detectFormatFromFilename(file.name);
+    if (!detected) return { refusal: unknownSourceProblem(file.name, instanceUri) };
     if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) return { refusal: inlinePayloadProblem(instanceUri) };
+    const buffer = Buffer.from(await file.arrayBuffer());
+    try {
+      assertNotSpoofedFile(buffer, detected.extension, file.name);
+    } catch (err) {
+      const refusal = spoofCheckRefusal(err);
+      if (refusal) {
+        return {
+          refusal: NextResponse.json(
+            { success: false, error: err instanceof Error ? err.message : String(err) },
+            { status: refusal.status }
+          ),
+        };
+      }
+      throw err;
+    }
     request.originalFilename = file.name;
     request.fileSize = file.size;
     const init = await storageProvider.initiateMultipartUpload(file.name, file.type, file.size);
-    await storageProvider.uploadPart(init.uploadId, 1, Buffer.from(await file.arrayBuffer()));
+    await storageProvider.uploadPart(init.uploadId, 1, buffer);
     request.storageKey = (await storageProvider.completeMultipartUpload(init.uploadId)).key;
+    request.uploadedInline = true;
   }
   return { request };
 }
 
 /** A job request from a JSON body: inline bytes are held to the inline limit. */
 async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
-  const body = await req.json();
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return { refusal: NextResponse.json({ success: false, error: 'Invalid JSON body provided in request.' }, { status: 400 }) };
+  }
+  if (!body || typeof body !== 'object') {
+    return { refusal: NextResponse.json({ success: false, error: 'Invalid JSON body provided in request.' }, { status: 400 }) };
+  }
   if (body.options !== undefined && !isConversionOptionsObject(body.options)) {
     return { refusal: NextResponse.json({ success: false, error: 'The "options" field must be a JSON object.' }, { status: 400 }) };
   }
@@ -223,7 +290,7 @@ async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promis
   }
   return {
     request: {
-      originalFilename: body.filename || '',
+      originalFilename: body.filename || body.originalFilename || '',
       targetFormat: body.targetFormat || '',
       options,
       storageKey: body.storageKey,

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getFormatByExtension } from '@/lib/registry';
+import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { assertAllowedLibreOfficeFilter } from '@/lib/conversions/pdf-export-options';
 import { validatePdfProtectOptions } from '@/lib/conversions/pdf-postprocess/protect';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
@@ -603,6 +604,7 @@ export function validateJobGraph(
     switch (op) {
       case 'import.upload': {
         inferredFormats[nodeId] =
+          (node.storageKey && !isInlineInputKey(node.storageKey) ? extractExtension(node.storageKey) : undefined) ||
           extractExtension(options.sourceFilename) ||
           extractExtension(node.storageKey) ||
           options.sourceFormat?.toLowerCase() ||

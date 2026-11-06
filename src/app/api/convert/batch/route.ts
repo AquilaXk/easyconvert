@@ -30,6 +30,7 @@ import {
 } from '@/lib/api/problem-details';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
+import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,20 +59,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   let releaseSlot: (() => void) | undefined;
 
   try {
-    const formData = await req.formData();
-    const files = formData.getAll('files') as File[];
-    const targetFormatsRaw = formData.get('targetFormats') as string | null;
-    const optionsRaw = formData.get('options') as string | null;
-
-    if (!files || files.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'No files provided for batch conversion.' },
-        { status: 400 }
-      );
-    }
-
-    // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit. The units are reserved once
-    // the files to convert are known, one for each.
+    // 1. Guard check: Authenticate API key/session or enforce the anonymous IP rate limit BEFORE reading the multipart body.
     const auth = await validateApiAccess(req, {
       requiredUnits: 0,
       requiredScope: 'convert:write',
@@ -89,11 +77,31 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       );
     }
 
+    if (!isMultipartBody(req)) {
+      return createProblemDetailsResponse(415, 'Content-Type must be multipart/form-data.', instanceUri, 'Unsupported Media Type');
+    }
+
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
       return concurrencyLimitResponse(slot.limit, instanceUri);
     }
     releaseSlot = slot.release;
+
+    const body = await readMultipartForm(req);
+    if (body.malformed) {
+      return createProblemDetailsResponse(400, 'Invalid or malformed multipart/form-data body.', instanceUri, 'Bad Request');
+    }
+    const formData = body.form;
+    const files = formData.getAll('files').filter((entry): entry is File => entry instanceof Blob);
+    const targetFormatsRaw = formData.get('targetFormats') as string | null;
+    const optionsRaw = formData.get('options') as string | null;
+
+    if (!files || files.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No files provided for batch conversion.' },
+        { status: 400 }
+      );
+    }
 
     for (const f of files) {
       if (f.size === 0) {

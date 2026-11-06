@@ -15,17 +15,22 @@ on:
         required: true
         default: '2'
 
+permissions:
+  contents: read
+
 jobs:
   endurance-soak:
     runs-on: ubuntu-24.04
-    timeout-minutes: 1500 # 25 hours budget
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: 'npm'
@@ -53,16 +58,18 @@ jobs:
         run: npm run bench:zstd
 
       - name: Run Endurance Soak Test
+        env:
+          SOAK_DURATION: ${{ github.event.inputs.duration || '24h' }}
+          SOAK_TARGET_GB: ${{ github.event.inputs.target_gb || '2' }}
         run: |
-          SOAK_DURATION="${{ github.event.inputs.duration || '24h' }}"
-          SOAK_TARGET_GB="${{ github.event.inputs.target_gb || '2' }}"
           echo "Starting Endurance Soak: Duration=${SOAK_DURATION}, TargetGB=${SOAK_TARGET_GB}"
           npx tsx scripts/run-endurance-soak.ts --duration "${SOAK_DURATION}" --target-gb "${SOAK_TARGET_GB}"
 
       - name: Upload Soak Telemetry Report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: soak-telemetry
           path: tests/fixtures/soak-telemetry.json
           retention-days: 30
+

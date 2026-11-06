@@ -51,6 +51,7 @@ import {
   JobGraphSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { readMultipartForm } from '@/lib/api/multipart-body';
 import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
 
@@ -131,8 +132,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     message: string,
     title: string = 'Bad Request',
     invalidParams?: Array<{ name: string; reason: string }>,
-    headers?: Record<string, string>
-  ) => reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers, invalidParams));
+    headers?: Record<string, string>,
+    extensions?: Record<string, unknown>
+  ) => reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers, invalidParams, extensions));
 
   try {
     // At most five conversions in flight (queued plus running) for an anonymous or free caller. A refusal is not
@@ -159,7 +161,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     let fileMeta: { name: string; type: string; size: number } | null = null;
 
     if (contentType.includes('multipart/form-data')) {
-      const formData = await req.formData();
+      const parsedMultipart = await readMultipartForm(req);
+      if (parsedMultipart.malformed) {
+        return await fail(400, 'Invalid or malformed multipart/form-data body.');
+      }
+      const formData = parsedMultipart.form;
       const file = formData.get('file') as File | null;
       targetFormat = ((formData.get('targetFormat') as string) || '').trim();
       sourceFormatParam = ((formData.get('sourceFormat') as string) || '').trim() || undefined;
@@ -517,15 +523,41 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     try {
       if (uploadedBuffer) {
         assertNotSpoofedFile(uploadedBuffer, sourceDef.extension, originalFilename);
-      } else if (inputBufferBase64) {
+      }
+      if (inputBufferBase64) {
         const decodedBuf = Buffer.from(inputBufferBase64, 'base64');
         assertNotSpoofedFile(decodedBuf, sourceDef.extension, originalFilename);
-      } else if (storageKey) {
-        const info = await s3Storage.stat(storageKey);
+      }
+
+      const storedChecks: Array<{ key: string; ext: string; filename: string; primary: boolean }> = [];
+      const seenStoredChecks = new Set<string>();
+      const pushStoredCheck = (key: string, ext: string, filename: string, primary: boolean) => {
+        const dedupeKey = `${key}\0${ext}`;
+        if (seenStoredChecks.has(dedupeKey)) return;
+        seenStoredChecks.add(dedupeKey);
+        storedChecks.push({ key, ext, filename, primary });
+      };
+
+      if (storageKey && !isInlineInputKey(storageKey) && !uploadedBuffer && !inputBufferBase64) {
+        pushStoredCheck(storageKey, sourceDef.extension, originalFilename, true);
+      }
+      if (graph) {
+        for (const node of Object.values(normalizeGraphNodes(graph))) {
+          if (node.op !== 'import.upload') continue;
+          const nodeKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
+          if (!nodeKey || isInlineInputKey(nodeKey)) continue;
+          const nodeFilename = path.basename(nodeKey) || originalFilename;
+          const nodeDef = detectFormatFromFilename(nodeFilename) ?? sourceDef;
+          pushStoredCheck(nodeKey, nodeDef.extension, nodeFilename, false);
+        }
+      }
+
+      for (const check of storedChecks) {
+        const info = await s3Storage.stat(check.key);
         if (!info) {
           return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
         }
-        if (!fileSize) {
+        if (check.primary && !fileSize) {
           fileSize = info.size;
         }
         if (info.size > maxFileBytes(callerPlan)) {
@@ -533,13 +565,13 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         }
         if (s3Storage.kind === 'remote') {
           // The object lives in the object store: check its first bytes without downloading the rest.
-          const header = await readObjectHeader(s3Storage, storageKey);
+          const header = await readObjectHeader(s3Storage, check.key);
           if (!header) {
             return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
           }
-          await assertNotSpoofedObject(s3Storage, storageKey, info.size, header, sourceDef.extension, originalFilename);
+          await assertNotSpoofedObject(s3Storage, check.key, info.size, header, check.ext, check.filename);
         } else {
-          const stored = await s3Storage.getObject(storageKey);
+          const stored = await s3Storage.getObject(check.key);
           if (!stored) {
             return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
           }
@@ -548,7 +580,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
               console.error(`Storage file missing on disk: "${stored.filePath}"`);
               return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
             }
-            assertNotSpoofedFilePath(stored.filePath, sourceDef.extension, originalFilename);
+            assertNotSpoofedFilePath(stored.filePath, check.ext, check.filename);
           } else {
             if (stored.size > 512 * 1024 * 1024) {
               return await fail(
@@ -558,9 +590,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
               );
             }
             if (stored.buffer && stored.buffer.length > 0) {
-              assertNotSpoofedFile(stored.buffer, sourceDef.extension, originalFilename);
+              assertNotSpoofedFile(stored.buffer, check.ext, check.filename);
             } else {
-              return await fail(400, `Storage object for key "${storageKey}" contains empty or unreadable file data.`, 'Empty Storage Object');
+              return await fail(400, `Storage object for key "${check.key}" contains empty or unreadable file data.`, 'Empty Storage Object');
             }
           }
         }
