@@ -1,4 +1,4 @@
-import type JSZip from 'jszip';
+import JSZip from 'jszip';
 import { InflateBudget } from './bounded-inflate';
 import { openPackage } from './package-access';
 import { readZipEntryText } from './zip-entry-reader';
