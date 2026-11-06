@@ -26,7 +26,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -2168,7 +2168,7 @@ async function convertWithOfficeSuiteRoutes(
   // An interchange file and an .xls are written by the office suite or the table writers, which have not checked the declared source.
   if (interchange !== undefined || request.tgt === BIFF8_TARGET) assertNotSpoofedFileVfs(input, request.src, originalFilename);
   if (interchange !== undefined) return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
-  return convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename)).catch(async (refusal: unknown) => {
+  return convertHancomDocTarget(OFFICE_SUITE_DEPS, request, () => convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename))).catch(async (refusal: unknown) => {
     const retried = await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
     if (retried) return retried;
     throw refusal;

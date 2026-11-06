@@ -329,6 +329,44 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
   }
 }
 
+/** Hangul sources: no office suite reads them, and the in-process converter writes their DOCX. */
+const HANCOM_SOURCES: ReadonlySet<string> = new Set(['hwp', 'hwpx']);
+const WORD_97_TARGET = 'doc';
+const DOCX_FORMAT = 'docx';
+
+
+/**
+ * A Hangul document written as `.doc`: the in-process converter writes it as a DOCX (the document it reads, with its tables and
+ * pictures), and the office suite exports that DOCX with its `MS Word 97` filter, the way every Word document is written as `.doc`.
+ * The converter's own `.doc` is a Rich Text stream under the `.doc` name, which no Word 97-2003 reader and no signature check takes
+ * for a compound file. The DOCX never goes to the output path of the request, which only the export writes.
+ */
+export async function convertHancomDocTarget(
+  deps: OfficeSuiteRouteDeps,
+  request: OfficeSuiteRequest,
+  convertDirectly: () => Promise<WorkerConversionResult>
+): Promise<WorkerConversionResult> {
+  const { input, src, tgt, options, originalFilename } = request;
+  if (!HANCOM_SOURCES.has(src) || tgt !== WORD_97_TARGET) return convertDirectly();
+  const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
+  const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
+  const docx = await deps.convert(source, src, DOCX_FORMAT, { ...options, libreOfficeFilter: undefined, inProcessFallback: undefined }, originalFilename);
+  try {
+    const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? docx.buffer : { inputBuffer: docx.buffer, outputPath: requestedOutput };
+    let written: WorkerConversionResult | null;
+    try {
+      written = await deps.writeWithOfficeSuite(next, DOCX_FORMAT, tgt, { ...options, throwOnUnavailable: true }, originalFilename);
+    } catch (err) {
+      rethrowSandboxUnavailable(err);
+      throw err;
+    }
+    if (!written) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${tgt} file for the .${src} source`);
+    return written;
+  } finally {
+    deps.discardOutput(docx.filePath, input, options);
+  }
+}
+
 /** The one BIFF8 target and the OOXML workbook format its source is checked in before the office suite exports it. */
 export const BIFF8_TARGET = 'xls';
 const XLSX_FORMAT = 'xlsx';
