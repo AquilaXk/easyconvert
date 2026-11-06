@@ -162,6 +162,13 @@ export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = 
     'cad-circles-ellipses-arcs.dxf->pdf',
     'cad-blocks.dxf->png',
     ...['cad-entities.dxf', 'cad-floorplan.dxf', 'cad-text-alignments.dxf', 'cad-text-fonts.dxf', 'cad-columns-r2007.dxf'].flatMap((sample) => ['svg', 'pdf', 'png'].map((target) => `${sample}->${target}`)),
+    // DWG drawings of six releases and two sources, through the pinned reader (#770); their baseline rows are those of the nightly run of 2026-11-05.
+    'dwg-example-r13.dwg->svg',
+    'dwg-example-2000.dwg->pdf',
+    'dwg-example-2007.dwg->png',
+    'dwg-example-2018.dwg->svg',
+    'dwg-gdal-attribs-2013.dwg->pdf',
+    'dwg-gdal-circles-2000.dwg->png',
   ],
   raw: ['raw-canon-g1.crw->png'],
   vector: [

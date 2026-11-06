@@ -22,6 +22,7 @@ import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
 import { normalizeSvgBufferForRendering } from './svg-render-normalize';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
+import { decodeDxfBytes } from './cad-dxf-text';
 import { convertDwgToDxf } from './cad-dwg';
 import { vectorizeRaster } from './raster-vectorize';
 import { isVectorizePair } from './raster-vectorize-options';
@@ -555,11 +556,9 @@ async function convertDxfSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const dxfContent = inputBuffer.toString('utf-8');
-
   // DXF -> DWG
   if (tgt === 'dwg') {
-    const dwgBuffer = dxfToDwg(dxfContent);
+    const dwgBuffer = dxfToDwg(inputBuffer.toString('utf-8'));
     return {
       buffer: dwgBuffer,
       mimeType: 'image/vnd.dwg',
@@ -568,7 +567,7 @@ async function convertDxfSource(
     };
   }
 
-  const drawing = parseDxfDrawing(dxfContent);
+  const drawing = parseDxfDrawing(decodeDxfBytes(inputBuffer));
 
   // DXF -> SVG
   if (tgt === 'svg') {
