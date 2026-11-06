@@ -85,6 +85,82 @@ async function storedInputRefusal(
   return undefined;
 }
 
+interface StoredInputCheck {
+  key: string;
+  ext: string;
+  filename: string;
+  /** True for the request's own storage key, whose size fills in a missing file size. */
+  primary: boolean;
+}
+
+/** Every distinct stored object a job reads as an upload (its own key and the `import.upload` nodes of its graph), each with the format its own name declares. */
+function collectStoredInputChecks(input: {
+  storageKey: string | undefined;
+  graph: JobGraph | undefined;
+  sourceDef: { extension: string };
+  originalFilename: string;
+  hasInlineBytes: boolean;
+}): StoredInputCheck[] {
+  const checks: StoredInputCheck[] = [];
+  const seen = new Set<string>();
+  const push = (key: string, ext: string, filename: string, primary: boolean) => {
+    const dedupeKey = `${key}\0${ext}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    checks.push({ key, ext, filename, primary });
+  };
+
+  if (input.storageKey && !isInlineInputKey(input.storageKey) && !input.hasInlineBytes) {
+    push(input.storageKey, input.sourceDef.extension, input.originalFilename, true);
+  }
+  if (input.graph) {
+    for (const node of Object.values(normalizeGraphNodes(input.graph))) {
+      if (node.op !== 'import.upload') continue;
+      const nodeKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
+      if (!nodeKey || isInlineInputKey(nodeKey)) continue;
+      const nodeFilename = path.basename(nodeKey) || input.originalFilename;
+      const nodeDef = detectFormatFromFilename(nodeFilename) ?? input.sourceDef;
+      push(nodeKey, nodeDef.extension, nodeFilename, false);
+    }
+  }
+  return checks;
+}
+
+type StoredInputVerdict = { size: number } | { refusal: { status: number; message: string; title: string } };
+
+/** Checks that a stored upload exists, fits the plan, and starts with the bytes its extension declares. A spoofed file throws. */
+async function verifyStoredInput(check: StoredInputCheck, plan: ReturnType<typeof planOfCaller>): Promise<StoredInputVerdict> {
+  const refuse = (status: number, message: string, title: string): StoredInputVerdict => ({ refusal: { status, message, title } });
+  const info = await s3Storage.stat(check.key);
+  if (!info) return refuse(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+  if (info.size > maxFileBytes(plan)) return refuse(413, fileTooLargeMessage(plan, info.size), 'Payload Too Large');
+  if (s3Storage.kind === 'remote') {
+    // The object lives in the object store: check its first bytes without downloading the rest.
+    const header = await readObjectHeader(s3Storage, check.key);
+    if (!header) return refuse(400, 'Stored object is unavailable.', 'Storage File Missing');
+    await assertNotSpoofedObject(s3Storage, check.key, info.size, header, check.ext, check.filename);
+    return { size: info.size };
+  }
+  const stored = await s3Storage.getObject(check.key);
+  if (!stored) return refuse(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+  if (stored.filePath) {
+    if (!fs.existsSync(stored.filePath)) {
+      console.error(`Storage file missing on disk: "${stored.filePath}"`);
+      return refuse(400, 'Stored object is unavailable.', 'Storage File Missing');
+    }
+    assertNotSpoofedFilePath(stored.filePath, check.ext, check.filename);
+    return { size: info.size };
+  }
+  if (stored.size > 512 * 1024 * 1024) {
+    return refuse(413, `Storage object size (${stored.size} bytes) exceeds in-memory buffer limit without a backing file path.`, 'Payload Too Large');
+  }
+  if (!stored.buffer || stored.buffer.length === 0) {
+    return refuse(400, `Storage object for key "${check.key}" contains empty or unreadable file data.`, 'Empty Storage Object');
+  }
+  assertNotSpoofedFile(stored.buffer, check.ext, check.filename);
+  return { size: info.size };
+}
+
 export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
@@ -529,72 +605,21 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
         assertNotSpoofedFile(decodedBuf, sourceDef.extension, originalFilename);
       }
 
-      const storedChecks: Array<{ key: string; ext: string; filename: string; primary: boolean }> = [];
-      const seenStoredChecks = new Set<string>();
-      const pushStoredCheck = (key: string, ext: string, filename: string, primary: boolean) => {
-        const dedupeKey = `${key}\0${ext}`;
-        if (seenStoredChecks.has(dedupeKey)) return;
-        seenStoredChecks.add(dedupeKey);
-        storedChecks.push({ key, ext, filename, primary });
-      };
-
-      if (storageKey && !isInlineInputKey(storageKey) && !uploadedBuffer && !inputBufferBase64) {
-        pushStoredCheck(storageKey, sourceDef.extension, originalFilename, true);
-      }
-      if (graph) {
-        for (const node of Object.values(normalizeGraphNodes(graph))) {
-          if (node.op !== 'import.upload') continue;
-          const nodeKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
-          if (!nodeKey || isInlineInputKey(nodeKey)) continue;
-          const nodeFilename = path.basename(nodeKey) || originalFilename;
-          const nodeDef = detectFormatFromFilename(nodeFilename) ?? sourceDef;
-          pushStoredCheck(nodeKey, nodeDef.extension, nodeFilename, false);
-        }
-      }
+      const storedChecks = collectStoredInputChecks({
+        storageKey,
+        graph,
+        sourceDef,
+        originalFilename,
+        hasInlineBytes: Boolean(uploadedBuffer || inputBufferBase64),
+      });
 
       for (const check of storedChecks) {
-        const info = await s3Storage.stat(check.key);
-        if (!info) {
-          return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
+        const result = await verifyStoredInput(check, callerPlan);
+        if ('refusal' in result) {
+          return await fail(result.refusal.status, result.refusal.message, result.refusal.title);
         }
         if (check.primary && !fileSize) {
-          fileSize = info.size;
-        }
-        if (info.size > maxFileBytes(callerPlan)) {
-          return await fail(413, fileTooLargeMessage(callerPlan, info.size), 'Payload Too Large');
-        }
-        if (s3Storage.kind === 'remote') {
-          // The object lives in the object store: check its first bytes without downloading the rest.
-          const header = await readObjectHeader(s3Storage, check.key);
-          if (!header) {
-            return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
-          }
-          await assertNotSpoofedObject(s3Storage, check.key, info.size, header, check.ext, check.filename);
-        } else {
-          const stored = await s3Storage.getObject(check.key);
-          if (!stored) {
-            return await fail(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
-          }
-          if (stored.filePath) {
-            if (!fs.existsSync(stored.filePath)) {
-              console.error(`Storage file missing on disk: "${stored.filePath}"`);
-              return await fail(400, 'Stored object is unavailable.', 'Storage File Missing');
-            }
-            assertNotSpoofedFilePath(stored.filePath, check.ext, check.filename);
-          } else {
-            if (stored.size > 512 * 1024 * 1024) {
-              return await fail(
-                413,
-                `Storage object size (${stored.size} bytes) exceeds in-memory buffer limit without a backing file path.`,
-                'Payload Too Large'
-              );
-            }
-            if (stored.buffer && stored.buffer.length > 0) {
-              assertNotSpoofedFile(stored.buffer, check.ext, check.filename);
-            } else {
-              return await fail(400, `Storage object for key "${check.key}" contains empty or unreadable file data.`, 'Empty Storage Object');
-            }
-          }
+          fileSize = result.size;
         }
       }
     } catch (err: any) {

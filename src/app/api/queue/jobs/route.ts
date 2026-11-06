@@ -267,15 +267,20 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string): Promis
   return { request };
 }
 
+/** The parsed JSON object of a request, or null when the body is not valid JSON or not an object. */
+async function readJsonObject(req: NextRequest) {
+  try {
+    const parsed = await req.json();
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A job request from a JSON body: inline bytes are held to the inline limit. */
 async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
-  let body: any;
-  try {
-    body = await req.json();
-  } catch {
-    return { refusal: NextResponse.json({ success: false, error: 'Invalid JSON body provided in request.' }, { status: 400 }) };
-  }
-  if (!body || typeof body !== 'object') {
+  const body = await readJsonObject(req);
+  if (!body) {
     return { refusal: NextResponse.json({ success: false, error: 'Invalid JSON body provided in request.' }, { status: 400 }) };
   }
   if (body.options !== undefined && !isConversionOptionsObject(body.options)) {

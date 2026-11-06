@@ -143,6 +143,43 @@ export function signJwt(
 /**
  * Verifies an RFC 7519 JSON Web Token and returns its payload, or null if invalid or expired.
  */
+function parseJwtHeader(encodedHeader: string): JwtHeader | null {
+  try {
+    const parsed = JSON.parse(base64UrlDecode(encodedHeader));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.alg !== 'HS256') {
+      return null;
+    }
+    return parsed as JwtHeader;
+  } catch {
+    return null;
+  }
+}
+
+/** Checks the signature against the active secret and the previous one, trying the key named by `kid` first. */
+function signatureMatchesAnyKey(
+  dataToSign: string,
+  signature: string,
+  header: JwtHeader,
+  activeSecret: string,
+  previousSecret: string | null
+): boolean {
+  const candidates: string[] = [activeSecret];
+  if (previousSecret && previousSecret !== activeSecret) {
+    candidates.push(previousSecret);
+  }
+
+  const kid = typeof header.kid === 'string' && header.kid.length > 0 ? header.kid : undefined;
+  const ordered = kid
+    ? [...candidates.filter((s) => deriveJwtKeyId(s) === kid), ...candidates.filter((s) => deriveJwtKeyId(s) !== kid)]
+    : candidates;
+
+  const sigBuffer = Buffer.from(signature, 'utf-8');
+  return ordered.some((candidate) => {
+    const expected = Buffer.from(crypto.createHmac('sha256', candidate).update(dataToSign).digest('base64url'), 'utf-8');
+    return sigBuffer.length === expected.length && crypto.timingSafeEqual(sigBuffer, expected);
+  });
+}
+
 export function verifyJwt<T = SessionPayload>(
   token: string,
   secretOrOptions?: string | VerifyJwtOptions
@@ -167,14 +204,8 @@ export function verifyJwt<T = SessionPayload>(
 
   const [encodedHeader, encodedPayload, signature] = parts;
 
-  let header: JwtHeader;
-  try {
-    const parsedHeader = JSON.parse(base64UrlDecode(encodedHeader));
-    if (!parsedHeader || typeof parsedHeader !== 'object' || Array.isArray(parsedHeader) || parsedHeader.alg !== 'HS256') {
-      return null;
-    }
-    header = parsedHeader as JwtHeader;
-  } catch {
+  const header = parseJwtHeader(encodedHeader);
+  if (!header) {
     return null;
   }
 
@@ -184,36 +215,7 @@ export function verifyJwt<T = SessionPayload>(
       ? null
       : getPreviousJwtSecret(options?.previousSecret);
 
-  const candidates: string[] = [activeSecret];
-  if (previousSecret && previousSecret !== activeSecret) {
-    candidates.push(previousSecret);
-  }
-
-  const orderedCandidates =
-    typeof header.kid === 'string' && header.kid.length > 0
-      ? [
-          ...candidates.filter((s) => deriveJwtKeyId(s) === header.kid),
-          ...candidates.filter((s) => deriveJwtKeyId(s) !== header.kid),
-        ]
-      : candidates;
-
-  const dataToSign = `${encodedHeader}.${encodedPayload}`;
-  const sigBuffer = Buffer.from(signature, 'utf-8');
-
-  let signatureVerified = false;
-  for (const candidateSecret of orderedCandidates) {
-    const expectedSignature = crypto
-      .createHmac('sha256', candidateSecret)
-      .update(dataToSign)
-      .digest('base64url');
-    const expectedBuffer = Buffer.from(expectedSignature, 'utf-8');
-    if (sigBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
-      signatureVerified = true;
-      break;
-    }
-  }
-
-  if (!signatureVerified) {
+  if (!signatureMatchesAnyKey(`${encodedHeader}.${encodedPayload}`, signature, header, activeSecret, previousSecret)) {
     return null;
   }
 

@@ -124,6 +124,17 @@ function extractExtension(target: string | undefined): string | undefined {
   return ext || undefined;
 }
 
+/** The format of an upload node: its own stored key first, then the request's filename and declared format. */
+function uploadNodeFormat(storageKey: string | undefined, options: GraphValidationOptions): string {
+  return (
+    (storageKey && !isInlineInputKey(storageKey) ? extractExtension(storageKey) : undefined) ||
+    extractExtension(options.sourceFilename) ||
+    extractExtension(storageKey) ||
+    options.sourceFormat?.toLowerCase() ||
+    UNKNOWN_FORMAT
+  );
+}
+
 /**
  * Normalizes any variation of JobGraph (nodes record, tasks record, or tasks array)
  * into a canonical Record<string, TaskNode>.
@@ -603,12 +614,7 @@ export function validateJobGraph(
 
     switch (op) {
       case 'import.upload': {
-        inferredFormats[nodeId] =
-          (node.storageKey && !isInlineInputKey(node.storageKey) ? extractExtension(node.storageKey) : undefined) ||
-          extractExtension(options.sourceFilename) ||
-          extractExtension(node.storageKey) ||
-          options.sourceFormat?.toLowerCase() ||
-          UNKNOWN_FORMAT;
+        inferredFormats[nodeId] = uploadNodeFormat(node.storageKey, options);
         break;
       }
       case 'import.url': {

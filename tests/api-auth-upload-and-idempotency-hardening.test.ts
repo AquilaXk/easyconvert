@@ -47,7 +47,7 @@ describe('Row 35: spoof check at creation across streaming, queue/jobs, v1/jobs,
       tier: 'pro',
     });
     const key = await redisKeyStore.generateApiKey(user.id, 'Row35 Key', {
-      scopes: ['convert:write', 'convert:read', 'jobs:write', 'jobs:read'],
+      scopes: ['convert:write', 'convert:read'],
     });
     secretKey = key.secretKey;
   });
