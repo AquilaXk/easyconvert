@@ -396,6 +396,7 @@ export class EnduranceSoakController {
     let postWarmupRssMb = initialRssMb;
     let postWarmupExternalMb = initialExternalMb;
     let postWarmupArrayBuffersMb = initialArrayBuffersMb;
+    let postWarmupFds = initialFds;
 
     const history: SoakIterationStats[] = [];
     const sessionStartTime = Date.now();
@@ -457,6 +458,7 @@ export class EnduranceSoakController {
           postWarmupRssMb = warmupMem.rss / (1024 * 1024);
           postWarmupExternalMb = (warmupMem.external || 0) / (1024 * 1024);
           postWarmupArrayBuffersMb = (warmupMem.arrayBuffers || 0) / (1024 * 1024);
+          postWarmupFds = getOpenFileDescriptorCount();
         }
 
         const stats: SoakIterationStats = {
@@ -501,7 +503,8 @@ export class EnduranceSoakController {
     const rssDeltaMb = Math.max(0, finalRssMb - postWarmupRssMb);
     const externalDeltaMb = Math.max(0, finalExternalMb - postWarmupExternalMb);
     const arrayBuffersDeltaMb = Math.max(0, finalArrayBuffersMb - postWarmupArrayBuffersMb);
-    const fdDelta = Math.abs(finalFds - initialFds);
+    // Descriptors opened by startup and closed during warm-up are not a leak; only growth after warm-up counts.
+    const fdDelta = Math.max(0, finalFds - postWarmupFds);
     const isMemoryStable = heapGrowthPostWarmupMb < 35 && fdDelta <= 3;
 
     return {
