@@ -8876,7 +8876,7 @@ export async function convertXlsSource(
   // 2. Raw BIFF stream (without CFBF container)
   else if (
     inputBuffer.length >= 4 &&
-    (inputBuffer.readUInt16LE(0) === 0x0809 || inputBuffer.readUInt16LE(0) === 0x0409)
+    BIFF_BOF_RECORDS.has(inputBuffer.readUInt16LE(0))
   ) {
     worksheets = readBiff8Worksheets(inputBuffer);
     assertCellsOrCompleteWorkbook(inputBuffer, worksheets);

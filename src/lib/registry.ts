@@ -3219,7 +3219,11 @@ export function isFormatCompatibleWithMagicBytes(
     sniffed === 'application/vnd.ms-excel' ||
     sniffed === 'application/vnd.ms-powerpoint'
   ) {
-    return CFBF_EXTENSIONS.has(cleanExt);
+    if (startsWithBytes(buffer, CFBF_MAGIC)) return CFBF_EXTENSIONS.has(cleanExt);
+    if (sniffed === 'application/x-hwp') return cleanExt === 'hwp';
+    if (sniffed === 'application/msword') return cleanExt === 'doc' || cleanExt === 'dot';
+    if (sniffed === 'application/vnd.ms-excel') return cleanExt === 'xls' || cleanExt === 'xlt';
+    return false;
   }
 
   if (sniffed === 'audio/mpeg') return MP3_EXTENSIONS.has(cleanExt) || (ADTS_FILE_EXTENSIONS.has(cleanExt) && id3v2Payload(buffer) === 'beyond-window');

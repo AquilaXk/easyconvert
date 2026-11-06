@@ -218,6 +218,14 @@ const DJVU_FORM_TYPES: readonly string[] = ['DJVU', 'DJVM'];
 const DJVU_FORM_TYPE_OFFSET = 12;
 const DJVU_FORM_TYPE_BYTES = 4;
 
+export const PRE_OLE2_WORD_SIGNATURES: readonly (readonly number[])[] = [
+  [0xfe, 0x37, 0x00, 0x23],
+  [0xfe, 0x37, 0x00, 0x1c],
+  [0xdb, 0xa5, 0x2d, 0x00],
+  [0x9b, 0xa5, 0x21, 0x00],
+  [0x31, 0xbe, 0x00, 0x00],
+];
+
 /**
  * Formats that open with a fixed byte string no other kind shares, by the MIME type the registry sniffs for them (the
  * signatures of the format specifications, as listed by shared-mime-info and libmagic). The executable signatures (ELF, DOS
@@ -242,11 +250,7 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
   { mime: 'audio/ogg', prefix: [0x4f, 0x67, 0x67, 0x53] },
   { mime: 'application/vnd.apache.parquet', prefix: [0x50, 0x41, 0x52, 0x31] },
   { mime: 'application/postscript', prefix: [0x25, 0x21, 0x50, 0x53] },
-  { mime: 'application/msword', prefix: [0xfe, 0x37, 0x00, 0x23] },
-  { mime: 'application/msword', prefix: [0xfe, 0x37, 0x00, 0x1c] },
-  { mime: 'application/msword', prefix: [0xdb, 0xa5, 0x2d, 0x00] },
-  { mime: 'application/msword', prefix: [0x9b, 0xa5] },
-  { mime: 'application/msword', prefix: [0x31, 0xbe, 0x00, 0x00] },
+  ...PRE_OLE2_WORD_SIGNATURES.map((prefix) => ({ mime: 'application/msword', prefix })),
   {
     mime: 'application/x-hwp',
     prefix: [
@@ -263,8 +267,9 @@ const ZSTD_SKIPPABLE_FIRST_BYTE_MASK = 0xf0;
 const ZSTD_SKIPPABLE_FIRST_BYTE_PREFIX = 0x50;
 const ZSTD_SKIPPABLE_MAGIC_TAIL = [0x2a, 0x4d, 0x18];
 const BIFF_BOF_RECORD_IDS: ReadonlySet<number> = new Set([0x0009, 0x0209, 0x0409, 0x0809]);
+const BIFF_BOF_LENGTHS: ReadonlySet<number> = new Set([4, 6, 8, 16, 20]);
+const BIFF_BOF_SUBSTREAM_TYPES: ReadonlySet<number> = new Set([0x0005, 0x0006, 0x0010, 0x0020, 0x0040, 0x0100]);
 const BIFF_BOF_MIN_LENGTH = 4;
-const BIFF_BOF_MAX_LENGTH = 20;
 
 function isZstdSkippableFrame(buf: Uint8Array): boolean {
   return (
@@ -274,16 +279,16 @@ function isZstdSkippableFrame(buf: Uint8Array): boolean {
   );
 }
 
-function isBiffStream(buf: Uint8Array): boolean {
+export function isBiffStream(buf: Uint8Array): boolean {
   if (buf.length < 4 + BIFF_BOF_MIN_LENGTH) return false;
   const view = dataView(buf);
   const recordId = view.getUint16(0, true);
   const recordLength = view.getUint16(2, true);
   return (
     BIFF_BOF_RECORD_IDS.has(recordId) &&
-    recordLength >= BIFF_BOF_MIN_LENGTH &&
-    recordLength <= BIFF_BOF_MAX_LENGTH &&
-    buf.length >= 4 + recordLength
+    BIFF_BOF_LENGTHS.has(recordLength) &&
+    buf.length >= 4 + recordLength &&
+    BIFF_BOF_SUBSTREAM_TYPES.has(view.getUint16(6, true))
   );
 }
 

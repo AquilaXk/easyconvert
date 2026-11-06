@@ -198,18 +198,36 @@ describe('Launch-blocking spoof and parser bounds (#761)', () => {
       const zstdSkippable = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 0x04, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04]);
       expect(isFormatCompatibleWithMagicBytes(zstdSkippable, 'zst')).toBe(true);
       expect(isFormatCompatibleWithMagicBytes(zstdSkippable, 'txt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(zstdSkippable, 'zip')).toBe(false);
 
       const bareBiff = Buffer.from([0x09, 0x08, 0x10, 0x00, 0x00, 0x06, 0x05, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
       expect(isFormatCompatibleWithMagicBytes(bareBiff, 'xls')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'xlt')).toBe(true);
       expect(isFormatCompatibleWithMagicBytes(bareBiff, 'txt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'doc')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'ppt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'hwp')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(bareBiff, 'msg')).toBe(false);
 
       const macWord5 = Buffer.from([0xfe, 0x37, 0x00, 0x23, 0, 0, 0, 0, 0, 0]);
       expect(isFormatCompatibleWithMagicBytes(macWord5, 'doc')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'dot')).toBe(true);
       expect(isFormatCompatibleWithMagicBytes(macWord5, 'txt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'xls')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'ppt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'hwp')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(macWord5, 'msg')).toBe(false);
 
       const hwp3 = Buffer.from('HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05\x00\x00', 'latin1');
       expect(isFormatCompatibleWithMagicBytes(hwp3, 'hwp')).toBe(true);
       expect(isFormatCompatibleWithMagicBytes(hwp3, 'txt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(hwp3, 'doc')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(hwp3, 'xls')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(hwp3, 'ppt')).toBe(false);
+      expect(isFormatCompatibleWithMagicBytes(hwp3, 'msg')).toBe(false);
+
+      expect(isFormatCompatibleWithMagicBytes(Buffer.from([0x9b, 0xa5, 0x82, 0xa0]), 'txt')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(Buffer.from('\t\r\na\tb\r\nc\td\r\n', 'utf16le'), 'tsv')).toBe(true);
     });
 
     it('isolates .pdf from font headers and restricts font magic bytes to font extensions', () => {
