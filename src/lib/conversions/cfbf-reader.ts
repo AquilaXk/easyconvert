@@ -427,6 +427,13 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
       miniFat = sectorReader.readTable(firstMiniFatSector, Math.min(addressableMiniSectors, miniFatSectorCount * fatEntriesPerSector), 'structure');
     }
     miniStreamBuffer = sectorReader.read(rootEntry.startingSector, rootEntry.streamSize, 'structure');
+    // A chain that ends before the size the root entry declares is the damage of the table of contents, not of one small stream:
+    // olefile reads the mini stream once, whole, and fails there ('incomplete OLE stream', `OleStream.__init__`, olefile.py 0.47 line 662).
+    if (miniStreamBuffer.length < rootEntry.streamSize) {
+      throw new CompoundFileStructureError(
+        `Corrupt CFBF container: its root entry declares ${rootEntry.streamSize} bytes of mini stream and its sector chain holds ${miniStreamBuffer.length}.`
+      );
+    }
   }
   const miniReader = new ChainReader(miniStreamBuffer, 'mini sector', miniSectorSize, miniFat);
 
@@ -444,6 +451,10 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     const resolved = new Map<number, string>();
     const root = directoryEntries.find((d) => d.type === CFBF_ROOT_ENTRY);
     if (!root) return resolved;
+    // The root is reached once, before its children, so a link that leads back to it is a second reach (olefile loads entry 0 first and
+    // refuses a second load of any entry, `_load_direntry`, olefile.py 0.47 line 1828; POI's `PropertyTable.populatePropertyTree`
+    // stops a loop through the root at its depth limit).
+    resolved.set(root.id, '');
     const byId = new Map(directoryEntries.map((d) => [d.id, d]));
     const pending: { id: number; prefix: string; depth: number }[] = [{ id: root.childId, prefix: '', depth: 0 }];
     let pathChars = 0;
