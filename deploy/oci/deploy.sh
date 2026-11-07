@@ -9,14 +9,17 @@
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
 #   deploy.sh sweep                            delete scratch temp files and job staging entries older than two hours, from inside
 #                                              the worker image
-#   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health, one conversion and the canonical host of the
-#                                              pages, roll back on failure,
-#                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
+#   deploy.sh deploy <image-ref>               pull, pin by digest, read the smoke label, start, check health, the smoke (one conversion, and
+#                                              the convert route refusing a request it has parsed) and the canonical host of the pages,
+#                                              roll back on failure, prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
 #   deploy.sh reconcile                        start the current release again from its pinned images and check it (the repair after an
-#                                              interrupted deploy or a host restart); does nothing while the hold marker exists
+#                                              interrupted deploy or a host restart); does nothing while the hold marker exists, and
+#                                              does not smoke a release that declares no smoke label (see smoke_conversion)
 #   deploy.sh hold | release                   create or remove $EASYCONVERT_HOME/hold, which keeps the hourly reconcile from starting a
 #                                              stack that was stopped by hand
+#
+# Needs bash 4.4 or later: an empty array expands under `set -u` only from 4.4 (`"${profiles[@]}"`, `"${form[@]}"`), and the host runs 5.2.
 #
 # A job is cancelled by SIGINT, then SIGTERM, and killed seconds later. Bash runs a trap only between commands, so every command that
 # can take long runs through child(): in the background, in a process group of its own, waited for with `wait`, which a trapped signal
@@ -30,9 +33,12 @@ HOME_DIR="${EASYCONVERT_HOME:-/opt/easyconvert}"
 HOLD_MARKER="$HOME_DIR/hold"
 WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
-SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/health/conversion}"
-CONVERT_SMOKE_URL="${CONVERT_SMOKE_URL:-http://127.0.0.1:8090/api/convert}"
+HEALTH_PATH='/api/health'
+SMOKE_PROBE_PATH='/api/health/conversion'
+CONVERT_PATH='/api/convert'
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090$HEALTH_PATH}"
+SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090$SMOKE_PROBE_PATH}"
+CONVERT_SMOKE_URL="${CONVERT_SMOKE_URL:-http://127.0.0.1:8090$CONVERT_PATH}"
 PAGE_URL="${PAGE_URL:-http://127.0.0.1:8090/}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/easysubway-data}"
 MIN_FREE_GB="${MIN_FREE_GB:-15}"
@@ -53,7 +59,10 @@ APPARMOR_INSTALLED="${APPARMOR_INSTALLED:-/etc/apparmor.d/easyconvert}"
 BASE_IMAGE_LABEL='org.opencontainers.image.base.name'
 ALLOWANCE_LABEL='easyconvert.anonymous-daily-limit'
 SMOKE_PROBE_LABEL='easyconvert.smoke-probe'
-SMOKE_PROBE_PATH='/api/health/conversion'
+# The options the convert-route check sends: not JSON, so that /api/convert refuses the request with `invalid_options` after its
+# parser, guard, reservation and concurrency slot, and before it converts (see smoke_convert_route).
+SMOKE_ROUTE_OPTIONS='not-json'
+SMOKE_ROUTE_CODE='invalid_options'
 PNG_SIGNATURE='89504e470d0a1a0a'
 
 CHILD=""
@@ -63,6 +72,9 @@ PENDING_RELEASE=""
 
 log() { printf '[deploy] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
+# A value read from an image label or an answer, shell-quoted for the job log: the log is public, and a value may hold a line break
+# or a control sequence.
+quoted() { printf '%q' "$1"; }
 
 # Leaves nothing of an attempt behind however the script ends: the smoke test's directory, the home page the canonical check read,
 # and a release directory (with its .env) that never became the current release, also when the rollback after it failed too.
@@ -185,7 +197,7 @@ pin() { # pin <repo> <ref>: pull and print repo@digest
 check_pair() { # check_pair <web repo@digest> <worker repo@digest>
   local web="$1" worker="$2" base
   base="$(docker image inspect --format "{{ index .Config.Labels \"$BASE_IMAGE_LABEL\" }}" "$web" 2> /dev/null || true)"
-  [ "$base" = "$worker" ] || die "the web image $web was built on '${base:-no recorded image}', not on $worker"
+  [ "$base" = "$worker" ] || die "the web image $web was built on $([ -n "$base" ] && quoted "$base" || printf 'no recorded image'), not on $worker"
 }
 
 # The prerendered pages state the anonymous daily allowance the web image was built with (a build argument from the repository
@@ -195,7 +207,7 @@ check_allowance() { # check_allowance <web repo@digest> <allowance the release r
   local built
   built="$(docker image inspect --format "{{ index .Config.Labels \"$ALLOWANCE_LABEL\" }}" "$1" 2> /dev/null)" \
     || die "the anonymous allowance the web image $1 was built with could not be read"
-  [ "$built" = "$2" ] || die "the web image $1 was built with ANONYMOUS_DAILY_LIMIT '${built}', but the release runs with '$2': rebuild it, or set the repository variable back"
+  [ "$built" = "$2" ] || die "the web image $1 was built with ANONYMOUS_DAILY_LIMIT $(quoted "$built"), but the release runs with $(quoted "$2"): rebuild it, or set the repository variable back"
 }
 
 # The profile file installed on the host is the file of this checkout. This compares the installed file only: the policy that the
@@ -215,36 +227,82 @@ healthy() {
   return 1
 }
 
-# One conversion in the web service: a 1x1 PPM, which ImageMagick decodes in a sandboxed child (`unshare -r -n`), to PNG. /api/health
-# starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile). The web image of the
-# release names its smoke in the label SMOKE_PROBE_LABEL, read from the release being started, since a rollback or a reconcile starts
-# an older release with this script: the probe, which converts a PPM of its own, charges no allowance and is not forwarded by the
-# host proxy (docs/deploy-oci.md); or, for an image built before the label, the upload of the PPM to /api/convert, which spends one
-# unit of the anonymous allowance (policy entry 122). The job log is public: only the HTTP status is logged, never the body of the answer.
-smoke_conversion() { # smoke_conversion <release-dir>
-  local web probe url http ok=1 form=()
-  web="$(env_value "$1/images.env" EASYCONVERT_WEB_IMAGE)"
-  probe="$(docker image inspect --format "{{ index .Config.Labels \"$SMOKE_PROBE_LABEL\" }}" "$web" 2> /dev/null)" \
-    || { log "the smoke probe of the web image $web could not be read"; return 1; }
-  case "$probe" in
-    "$SMOKE_PROBE_PATH") url="$SMOKE_URL" ;;
-    "") url="$CONVERT_SMOKE_URL" ;;
-    *) log "the web image $web names the smoke probe '$probe', which this deploy.sh does not know"; return 1 ;;
+# http_status <directory for the status file> <curl arguments...>: curl through child() sets HTTP_STATUS to the status it got, or to
+# "none" when it printed no three-digit status. An answer is read only from a file the caller names with -o, and is never logged.
+HTTP_STATUS=""
+http_status() {
+  local dir="$1"
+  shift
+  child curl --silent -w '%{http_code}' "$@" > "$dir/status" || true
+  HTTP_STATUS="$(cat "$dir/status")"
+  [[ "$HTTP_STATUS" =~ ^[0-9]{3}$ ]] || HTTP_STATUS="none"
+}
+
+# How the web image of a release is smoked, from its label SMOKE_PROBE_LABEL (policy entry 122): "probe" for the label this script
+# knows, "legacy" for an image with no such label (built before #954). An empty label is not an absent one: it is refused, like a
+# label this script does not know or one it cannot read. The template prints "=<value>" when the label is there and nothing when it is
+# not. The label is read from the image of the release being started, since a rollback or a reconcile starts an older release.
+smoke_kind() { # smoke_kind <web repo@digest>
+  local label
+  label="$(docker image inspect --format '{{ range $key, $value := .Config.Labels }}{{ if eq $key "'"$SMOKE_PROBE_LABEL"'" }}={{ $value }}{{ end }}{{ end }}' "$1" 2> /dev/null)" \
+    || { log "the smoke probe of the web image $1 could not be read"; return 1; }
+  case "$label" in
+    "=$SMOKE_PROBE_PATH") printf 'probe' ;;
+    "") printf 'legacy' ;;
+    *) log "the web image $1 names the smoke probe $(quoted "${label#=}"), which this deploy.sh does not know"; return 1 ;;
   esac
-  SMOKE_DIR="$(mktemp -d)"
-  if [ -z "$probe" ]; then
-    printf 'P6\n1 1\n255\n\377\000\000' > "$SMOKE_DIR/smoke.ppm"
-    form=(-F "file=@$SMOKE_DIR/smoke.ppm;filename=smoke.ppm" -F targetFormat=png)
-  fi
-  child curl --fail --silent --max-time 60 -o "$SMOKE_DIR/smoke.png" -w '%{http_code}' "${form[@]}" "$url" > "$SMOKE_DIR/status" || true
-  http="$(cat "$SMOKE_DIR/status")"
-  [[ "$http" =~ ^[0-9]{3}$ ]] || http="none"
-  if [ "$http" != 200 ]; then
-    log "the smoke conversion (PPM to PNG at $url) failed: HTTP status $http"
+}
+
+# expect_png <url> [curl arguments...]: true when the answer is 200 with a PNG. The job log is public: only the HTTP status is logged.
+expect_png() {
+  local url="$1"
+  shift
+  http_status "$SMOKE_DIR" --fail --max-time 60 -o "$SMOKE_DIR/smoke.png" "$@" "$url"
+  if [ "$HTTP_STATUS" != 200 ]; then
+    log "the smoke conversion (PPM to PNG at $url) failed: HTTP status $HTTP_STATUS"
   elif [ "$(head -c 8 "$SMOKE_DIR/smoke.png" | od -An -tx1 | tr -d ' \n')" != "$PNG_SIGNATURE" ]; then
     log "the smoke conversion (PPM to PNG at $url) answered HTTP status 200 with something that is not a PNG"
   else
-    ok=0
+    return 0
+  fi
+  return 1
+}
+
+# The convert route, checked without a conversion and so without a charge. The upload is a valid multipart request whose options
+# are not JSON. /api/convert reads the caller, reserves a unit, takes a concurrency slot and parses the form before it reads the
+# options, and refuses them with 400 and the code SMOKE_ROUTE_CODE before it reads the file's bytes or starts an engine. The
+# route gives the unit back when it refuses, and only a conversion that succeeded is charged (policy entry 15), so the check spends
+# none of the anonymous allowance and the route has no exemption for it. A request that fails earlier (guard, quota store, slot,
+# parser) answers another status or code. The engine itself is checked by the probe.
+smoke_convert_route() {
+  http_status "$SMOKE_DIR" --max-time 60 -o "$SMOKE_DIR/route.json" -F "file=@$SMOKE_DIR/smoke.ppm;filename=smoke.ppm" -F targetFormat=png \
+    -F "options=$SMOKE_ROUTE_OPTIONS" "$CONVERT_SMOKE_URL"
+  if [ "$HTTP_STATUS" = 400 ] && grep -Fq "\"code\":\"$SMOKE_ROUTE_CODE\"" "$SMOKE_DIR/route.json" 2> /dev/null; then return 0; fi
+  log "the check of the convert route ($CONVERT_SMOKE_URL, an upload whose options are not JSON) answered HTTP status $HTTP_STATUS, not the refusal $SMOKE_ROUTE_CODE (400) that shows the route read the upload"
+  return 1
+}
+
+# The smoke of a release, in the web service: a 1x1 PPM, which ImageMagick decodes in a sandboxed child (`unshare -r -n`), to PNG.
+# /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile). A release
+# whose image declares the probe (smoke_kind) is asked for the probe, which converts a PPM of its own, charges no allowance and is
+# not forwarded by the host proxy (docs/deploy-oci.md), and then for the check of the convert route (smoke_convert_route).
+# For an image built before the label, the smoke is the upload of the PPM to /api/convert it was built for, which spends one unit of
+# the anonymous allowance (policy entry 122); a reconcile skips it, since the hourly reconcile would spend the allowance of the day.
+# The legacy arm goes once the current and the previous release both declare the probe.
+smoke_conversion() { # smoke_conversion <release-dir> [reconcile]
+  local web kind ok=0
+  web="$(env_value "$1/images.env" EASYCONVERT_WEB_IMAGE)"
+  kind="$(smoke_kind "$web")" || return 1
+  if [ "$kind" = legacy ] && [ "${2:-}" = reconcile ]; then
+    log "the web image $web declares no smoke probe: reconcile does not smoke it, since each upload to $CONVERT_PATH spends one unit of the anonymous allowance"
+    return 0
+  fi
+  SMOKE_DIR="$(mktemp -d)"
+  printf 'P6\n1 1\n255\n\377\000\000' > "$SMOKE_DIR/smoke.ppm"
+  if [ "$kind" = probe ]; then
+    expect_png "$SMOKE_URL" && smoke_convert_route || ok=1
+  else
+    expect_png "$CONVERT_SMOKE_URL" -F "file=@$SMOKE_DIR/smoke.ppm;filename=smoke.ppm" -F targetFormat=png || ok=1
   fi
   rm -rf -- "$SMOKE_DIR"
   SMOKE_DIR=""
@@ -303,21 +361,29 @@ canonical_host_matches() { # canonical_host_matches <origin the release runs wit
 }
 
 # The public site, asked through the nginx of this host as the CDN asks it, must not forward the smoke probe: a site file installed
-# before #954 lacks the block, and the deploy fails closed, whatever the answer is when it is not the 404 of the block. The origin
-# certificate is trusted by the CDN only, so its chain is not checked; the request goes to the loopback address and only the status
-# is read.
+# before #954 lacks the block, and the deploy fails closed, whatever the answer is when it is not the 404 of the block. A 404 says
+# nothing unless the same request, to the readiness path, is answered 200 (the positive control): a site that is down or answers
+# every path with 404 would otherwise pass. The origin certificate is trusted by the CDN only, so its chain is not checked; the
+# request goes to the loopback address and only the status is read.
 public_probe_refused() { # public_probe_refused <origin the release runs with>
-  local host http
+  local host site control
   host="$(host_of "$1")"
+  site="the public site (https://$host through the nginx of this host)"
   SMOKE_DIR="$(mktemp -d)"
-  child curl --silent --insecure --max-time 15 -o /dev/null -w '%{http_code}' \
-    --resolve "$host:443:127.0.0.1" "https://$host$SMOKE_PROBE_PATH" > "$SMOKE_DIR/status" || true
-  http="$(cat "$SMOKE_DIR/status")"
+  http_status "$SMOKE_DIR" --insecure --max-time 15 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host$HEALTH_PATH"
+  control="$HTTP_STATUS"
+  [ "$control" != 200 ] || http_status "$SMOKE_DIR" --insecure --max-time 15 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host$SMOKE_PROBE_PATH"
   rm -rf -- "$SMOKE_DIR"
   SMOKE_DIR=""
-  [[ "$http" =~ ^[0-9]{3}$ ]] || http="none"
-  [ "$http" = 404 ] && return 0
-  log "the public site (https://$host through the nginx of this host) answered the smoke probe with HTTP status $http, not 404: install deploy/oci/nginx-easyconvert.conf again (docs/deploy-oci.md, first-time setup, step 8)"
+  if [ "$control" != 200 ]; then
+    log "$site answered $HEALTH_PATH with HTTP status $control, not 200, so its answer for the smoke probe proves nothing: check the nginx site, the certificate and the origin of the release"
+  elif [ "$HTTP_STATUS" = 404 ]; then
+    return 0
+  elif [ "$HTTP_STATUS" = 200 ]; then
+    log "$site forwarded the smoke probe (HTTP status 200): install deploy/oci/nginx-easyconvert.conf again (docs/deploy-oci.md, first-time setup, step 8)"
+  else
+    log "$site answered the smoke probe with HTTP status $HTTP_STATUS, not the 404 of the block: read the nginx site (docs/deploy-oci.md, first-time setup, step 8)"
+  fi
   return 1
 }
 
@@ -335,11 +401,11 @@ profiles_applied() { # profiles_applied <release-dir>: every replica; the web ne
   done
 }
 
-start_release() { # start_release <release-dir>
+start_release() { # start_release <release-dir> [reconcile]
   child compose "$1" up -d --wait --wait-timeout 240 --remove-orphans || { log "docker compose up did not bring the stack up"; return 1; }
   profiles_applied "$1" || return 1
   healthy || { log "$HEALTH_URL did not answer"; return 1; }
-  smoke_conversion "$1" || return 1
+  smoke_conversion "$1" "${2:-}" || return 1
   [ -z "$(compose "$1" ps -q worker)" ] && return 0
   child compose "$1" exec -T worker unshare -r -n -- true || { log "the worker cannot create its sandbox namespaces (unshare -r -n)"; return 1; }
 }
@@ -408,6 +474,7 @@ deploy() {
   web="$(pin "$WEB_REPO" "$ref")"
   check_pair "$web" "$worker"
   check_allowance "$web" "${ANONYMOUS_DAILY_LIMIT:-}"
+  smoke_kind "$web" > /dev/null || die "the smoke of the web image $web is not one this deploy.sh runs: refused before anything starts"
   previous="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
   [ -d "$previous" ] || previous=""
   release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-$ref"
@@ -486,7 +553,7 @@ reconcile() {
   [ -n "$current" ] && [ -d "$current" ] || die "there is no current release"
   guard "$current/.env"
   trap 'cancelled_reconcile' INT TERM
-  start_release "$current" || die "the current release did not become healthy"
+  start_release "$current" reconcile || die "the current release did not become healthy"
   trap - INT TERM
   log "now running $(basename "$current")"
 }

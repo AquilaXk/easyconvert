@@ -7,12 +7,22 @@ vi.mock('@/lib/conversions/dispatch', async (importOriginal) => {
   return { ...actual, dispatchConversion: vi.fn(actual.dispatchConversion) };
 });
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+vi.mock('@/lib/queue/concurrency-limit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/queue/concurrency-limit')>();
+  return { ...actual, acquireSyncSlot: vi.fn(actual.acquireSyncSlot) };
+});
+
 import { GET as smokeProbe } from '../src/app/api/health/conversion/route';
 import { POST as convertRoute } from '../src/app/api/convert/route';
+import { resetSmokeVerdict } from '../src/lib/health/smoke-conversion';
+import { JobTimeoutError } from '../src/lib/types';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getAnonymousDailyLimit } from '../src/lib/plan-limits';
+import { acquireSyncSlot, syncSlotsInUse } from '../src/lib/queue/concurrency-limit';
 import { getUnshareCapability } from '../src/lib/security/process-sandbox';
 import { MAGICK_BINARY } from './helpers/imagemagick';
 import { skipUnless } from './helpers/strict-skip';
@@ -27,6 +37,9 @@ const PROD_TRUSTED_PROXIES = '127.0.0.1/32,172.16.0.0/12';
 const BRIDGE_GATEWAY = '172.18.0.1';
 const PUBLIC_CLIENT = '203.0.113.7';
 const HTTP_OK = 200;
+const HTTP_BAD_REQUEST = 400;
+/** The probe's own deadline, as the OpenAPI document states it. */
+const SMOKE_DEADLINE_MS = 30_000;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const IHDR_WIDTH_OFFSET = 16;
@@ -34,8 +47,6 @@ const IHDR_HEIGHT_OFFSET = 20;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 const HTTP_GATEWAY_TIMEOUT = 504;
 const HTTP_CLIENT_CLOSED_REQUEST = 499;
-/** The probe's own deadline, as the OpenAPI document states it. */
-const SMOKE_DEADLINE_MS = 30_000;
 /** Inside this window a verdict is reused; after the longer one it is not ("a few seconds"). */
 const VERDICT_REUSED_WITHIN_MS = 1_000;
 const VERDICT_GONE_AFTER_MS = 60_000;
@@ -87,23 +98,20 @@ async function expectOnePixelPng(res: Response): Promise<void> {
 }
 
 let keysClient: Redis | null;
-/** The faked clock where the last test left it; each test starts later than any verdict an earlier one left can live. */
-let clock = Date.now();
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
-  clock += VERDICT_GONE_AFTER_MS;
-  vi.setSystemTime(clock);
+  resetSmokeVerdict();
   keysClient = redisKeyStore.getRedisClient();
   redisKeyStore.setRedisClient(null);
   redisKeyStore.resetStore();
   vi.stubEnv('TRUSTED_PROXIES', PROD_TRUSTED_PROXIES);
   vi.stubEnv('ANONYMOUS_DAILY_LIMIT', '10');
   vi.mocked(dispatchConversion).mockClear();
+  vi.mocked(acquireSyncSlot).mockClear();
 });
 
 afterEach(() => {
-  clock = Date.now();
   vi.useRealTimers();
   vi.unstubAllEnvs();
   redisKeyStore.setRedisClient(keysClient);
@@ -117,10 +125,14 @@ describe('the deploy smoke through /api/convert', () => {
 });
 
 describe.skipIf(sandboxMissing)('the deploy smoke conversion', () => {
-  it('passes on every start after the allowance of its address is spent, and charges nothing', async () => {
+  it('passes on every start after the allowance of its address is spent, converts each time and charges nothing', async () => {
     await spendAllowance(BRIDGE_GATEWAY);
     const starts = getAnonymousDailyLimit() + 2;
-    for (let i = 0; i < starts; i++) await expectOnePixelPng(await smokeProbe(smokeRequest()));
+    for (let i = 0; i < starts; i++) {
+      await expectOnePixelPng(await smokeProbe(smokeRequest()));
+      vi.setSystemTime(Date.now() + VERDICT_GONE_AFTER_MS);
+    }
+    expect(dispatchConversion).toHaveBeenCalledTimes(starts);
     expect(await usedToday(BRIDGE_GATEWAY)).toBe(getAnonymousDailyLimit());
   }, 60_000);
 
@@ -183,6 +195,99 @@ describe.skipIf(sandboxMissing)('callers that come at once or one after another'
     open();
     await expectOnePixelPng(await second);
     expect(dispatchConversion).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe.skipIf(sandboxMissing)('a verdict that failed', () => {
+  it('expires, so the next start after it converts again', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new Error('the engine failed'));
+    expect((await smokeProbe(smokeRequest())).status).toBe(HTTP_INTERNAL_SERVER_ERROR);
+    vi.setSystemTime(Date.now() + VERDICT_REUSED_WITHIN_MS);
+    expect((await smokeProbe(smokeRequest())).status).toBe(HTTP_INTERNAL_SERVER_ERROR);
+    expect(dispatchConversion).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + VERDICT_GONE_AFTER_MS);
+    await expectOnePixelPng(await smokeProbe(smokeRequest()));
+    expect(dispatchConversion).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a smoke conversion that does not stop at its deadline', () => {
+  const canned = { buffer: Buffer.from('png'), mimeType: 'image/png', filename: 'smoke.png', size: 3, engineUsed: 'stub' } as Awaited<ReturnType<typeof dispatchConversion>>;
+
+  it('is aborted at the deadline, and keeps its place until it ends: no second conversion starts on top of it', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    let signal!: AbortSignal;
+    let end!: () => void;
+    vi.mocked(dispatchConversion).mockImplementationOnce((_input, _source, _target, options) => {
+      signal = (options as { signal: AbortSignal }).signal;
+      return new Promise((resolve) => (end = () => resolve(canned)));
+    });
+    const first = smokeProbe(smokeRequest());
+    await vi.advanceTimersByTimeAsync(SMOKE_DEADLINE_MS);
+    expect((await first).status).toBe(HTTP_GATEWAY_TIMEOUT);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBeInstanceOf(JobTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(VERDICT_GONE_AFTER_MS);
+    expect((await smokeProbe(smokeRequest())).status).toBe(HTTP_GATEWAY_TIMEOUT);
+    expect(dispatchConversion).toHaveBeenCalledTimes(1);
+
+    end();
+    await vi.advanceTimersByTimeAsync(VERDICT_GONE_AFTER_MS);
+    vi.mocked(dispatchConversion).mockResolvedValueOnce(canned);
+    expect((await smokeProbe(smokeRequest())).status).toBe(HTTP_OK);
+    expect(dispatchConversion).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the deploy check of the convert route', () => {
+  /** The form deploy.sh posts: the options field is the one the route refuses, after its parser, guard, reservation and slot. */
+  const deploySh = readFileSync(path.join(__dirname, '..', 'deploy', 'oci', 'deploy.sh'), 'utf-8');
+  const checkOptions = /^SMOKE_ROUTE_OPTIONS='([^']*)'$/m.exec(deploySh)?.[1];
+
+  function routeCheckRequest(headers: Record<string, string> = { 'x-forwarded-for': BRIDGE_GATEWAY }) {
+    expect(checkOptions).toBeTruthy();
+    const form = new FormData();
+    form.append('file', new File([Buffer.from('P6\n1 1\n255\n\xff\x00\x00', 'latin1')], 'smoke.ppm'));
+    form.append('targetFormat', 'png');
+    form.append('options', checkOptions as string);
+    return new NextRequest('http://127.0.0.1:8090/api/convert', { method: 'POST', headers, body: form });
+  }
+
+  it('is refused with invalid_options once the route has parsed the upload, reserved a unit and taken a slot, and converts nothing', async () => {
+    const reserve = vi.spyOn(redisKeyStore, 'reserveQuota');
+    const rollback = vi.spyOn(redisKeyStore, 'rollbackQuota');
+    const commit = vi.spyOn(redisKeyStore, 'commitQuota');
+    const res = await convertRoute(routeCheckRequest());
+    expect(res.status).toBe(HTTP_BAD_REQUEST);
+    // deploy.sh matches the compact JSON text of the code field with grep, so the raw body is what is checked.
+    const checkCode = /^SMOKE_ROUTE_CODE='([^']*)'$/m.exec(deploySh)?.[1];
+    expect(checkCode).toBe('invalid_options');
+    expect(await res.text()).toContain(`"code":"${checkCode}"`);
+    expect(reserve).toHaveBeenCalledTimes(1);
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(acquireSyncSlot).toHaveBeenCalledTimes(1);
+    expect(syncSlotsInUse()).toBe(0);
+    expect(dispatchConversion).not.toHaveBeenCalled();
+  });
+
+  it('charges nothing: the unit of the last conversion of the day is still there after twelve checks', async () => {
+    const limit = getAnonymousDailyLimit();
+    for (let i = 0; i < limit - 1; i++) {
+      const unit = await redisKeyStore.reserveQuota(anonymousUserId(BRIDGE_GATEWAY), 1);
+      await redisKeyStore.commitQuota(unit.reservationId as string);
+    }
+    for (let i = 0; i < limit + 2; i++) expect((await convertRoute(routeCheckRequest())).status).toBe(HTTP_BAD_REQUEST);
+    expect(await usedToday(BRIDGE_GATEWAY)).toBe(limit - 1);
+    expect((await convertRoute(convertRequest({ 'x-forwarded-for': BRIDGE_GATEWAY }))).status).not.toBe(HTTP_TOO_MANY_REQUESTS);
+  });
+
+  it('gives a public caller nothing the guard would not: it is metered and refused like any upload once its allowance is spent', async () => {
+    await spendAllowance(PUBLIC_CLIENT);
+    const res = await convertRoute(routeCheckRequest({ 'x-forwarded-for': PUBLIC_CLIENT, ...FORGED_HEADERS }));
+    expect(res.status).toBe(HTTP_TOO_MANY_REQUESTS);
   });
 });
 

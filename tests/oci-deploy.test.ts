@@ -850,7 +850,8 @@ case "$1" in
             [ -n "\${STUB_PROBE_INSPECT_FAIL:-}" ] && exit 1
             tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")"
             for f in $STUB_NO_PROBE; do [ "$tag" = "$f" ] && { echo; exit 0; }; done
-            echo "\${STUB_PROBE_LABEL:-/api/health/conversion}" ;;
+            [ -n "\${STUB_PROBE_EMPTY:-}" ] && { echo "="; exit 0; }
+            echo "=\${STUB_PROBE_LABEL:-/api/health/conversion}" ;;
           *Labels*)
             case "$ref" in *@sha256:*) tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")" ;; *) tag="\${ref##*:}" ;; esac
             echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:$tag")}" ;;
@@ -893,7 +894,10 @@ exit 0`
 last_up="$(grep ' up ' "$STUB_LOG" | tail -n 1)"
 case "$*" in
   *--resolve*)
-    printf '%s' "\${STUB_PUBLIC_STATUS:-404}"
+    case "$*" in
+      *api/health/conversion*) printf '%s' "\${STUB_PUBLIC_STATUS:-404}" ;;
+      *) printf '%s' "\${STUB_PUBLIC_HEALTH_STATUS:-200}" ;;
+    esac
     exit 0 ;;
   *api/health/conversion*)
     out=""; prev=""
@@ -907,6 +911,14 @@ case "$*" in
   *api/convert*)
     out=""; prev=""
     for arg in "$@"; do [ "$prev" = "-o" ] && out="$arg"; prev="$arg"; done
+    case "$*" in
+      *" -F options="*)
+        case "$last_up" in *"$STUB_FAIL_ROUTE"*) [ -n "$STUB_FAIL_ROUTE" ] && { echo 'body-of-the-error-page' > "$out"; printf 429; exit 0; } ;; esac
+        case "$last_up" in *"$STUB_WRONG_ROUTE_CODE"*) [ -n "$STUB_WRONG_ROUTE_CODE" ] && { echo '{"success":false,"code":"multipart_required","error":"x"}' > "$out"; printf 400; exit 0; } ;; esac
+        echo '{"success":false,"code":"invalid_options","error":"Invalid JSON format for options."}' > "$out"
+        printf 400
+        exit 0 ;;
+    esac
     case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && { echo 'body-of-the-error-page' > "$out"; printf 500; exit 22; } ;; esac
     printf '\\211PNG\\r\\n\\032\\n' > "$out"
     printf 200
@@ -1058,24 +1070,47 @@ exit 0`
     expect(releases()).toEqual([]);
   });
 
-  it('runs the smoke conversion through the probe of the web service, which takes no file and charges no allowance, before it moves the links', () => {
-    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
-    const smoke = calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/health/conversion'));
-    expect(smoke).toHaveLength(1);
-    expect(smoke[0]).not.toMatch(/ -F | --form /);
-    expect(calls().filter((call) => call.startsWith('curl') && call.includes('/api/convert'))).toEqual([]);
-  });
-
-  const convertSmokes = (): string[] => calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/convert'));
+  const curlCalls = (url: string): string[] => calls().filter((call) => call.startsWith('curl') && call.includes(url));
+  /** The upload of the PPM to /api/convert that a release built before the probe is smoked with, which is charged. */
+  const convertSmokes = (): string[] => curlCalls('http://127.0.0.1:8090/api/convert').filter((call) => !call.includes(' -F options='));
+  /** The upload with options that are not JSON, which the route refuses after it has read the upload and which is not charged. */
+  const routeChecks = (): string[] => curlCalls('http://127.0.0.1:8090/api/convert').filter((call) => call.includes(' -F options='));
   const expectConvertSmoke = (smoke: string | undefined): void => {
     expect(smoke).toMatch(/ -F file=@\S+\/smoke\.ppm;filename=smoke\.ppm -F targetFormat=png /);
   };
+
+  it('runs the smoke through the probe of the web service, which takes no file and charges no allowance, then checks the convert route, before it moves the links', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const smoke = curlCalls('http://127.0.0.1:8090/api/health/conversion');
+    expect(smoke).toHaveLength(1);
+    expect(smoke[0]).not.toMatch(/ -F | --form /);
+    expect(convertSmokes()).toEqual([]);
+    expect(routeChecks()).toHaveLength(1);
+    expect(routeChecks()[0]).toMatch(/ -F file=@\S+\/smoke\.ppm;filename=smoke\.ppm -F targetFormat=png -F options=not-json http:\/\/127\.0\.0\.1:8090\/api\/convert$/);
+    expect(calls().indexOf(smoke[0])).toBeLessThan(calls().indexOf(routeChecks()[0]));
+  });
+
+  it.each([
+    ['answers with another status', { STUB_FAIL_ROUTE: ref('d') }, 'HTTP status 429'],
+    ['answers 400 with another refusal', { STUB_WRONG_ROUTE_CODE: ref('d') }, 'HTTP status 400, not the refusal invalid_options'],
+  ])('rolls back a release whose convert route %s, and logs the status only', (_, knob, message) => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('d')], { env: hostEnv(knob) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('the check of the convert route');
+    expect(result.stderr).toContain(message);
+    expect(result.stderr).not.toContain('body-of-the-error-page');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
+  });
 
   it('deploys a ref whose web image declares no smoke probe with the conversion through /api/convert that it was built for', () => {
     const result = run(['deploy', ref('a')], { env: hostEnv({ STUB_NO_PROBE: ref('a') }) });
     expect(result.status, result.stderr).toBe(0);
     expect(convertSmokes()).toHaveLength(1);
     expectConvertSmoke(convertSmokes()[0]);
+    expect(routeChecks()).toEqual([]);
     expect(calls().filter((call) => call.startsWith('curl') && call.includes('8090/api/health/conversion'))).toEqual([]);
   });
 
@@ -1106,47 +1141,95 @@ exit 0`
     expectConvertSmoke(convertSmokes()[0]);
   });
 
-  it('reconciles a current release whose web image declares no smoke probe, smoking it through /api/convert', () => {
+  it('reconciles a current release whose web image declares no smoke probe without smoking it, so the hourly reconcile spends no allowance', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     writeFileSync(log, '');
     const result = run(['reconcile'], { env: hostEnv({ STUB_NO_PROBE: ref('a') }) });
     expect(result.status, result.stderr).toBe(0);
-    expect(convertSmokes()).toHaveLength(1);
-    expectConvertSmoke(convertSmokes()[0]);
+    expect(result.stderr).toContain('reconcile does not smoke it');
+    expect(convertSmokes()).toEqual([]);
+    expect(routeChecks()).toEqual([]);
+    expect(curlCalls('8090/api/health/conversion')).toEqual([]);
+    expect(calls().some((call) => / exec -T worker unshare -r -n -- true$/.test(call))).toBe(true);
+  });
+
+  it('reconciles a current release that declares the probe with the probe and the check of the convert route, which charge nothing', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    writeFileSync(log, '');
+    expect(run(['reconcile'], { env: hostEnv() }).status).toBe(0);
+    expect(curlCalls('8090/api/health/conversion')).toHaveLength(1);
+    expect(routeChecks()).toHaveLength(1);
+    expect(convertSmokes()).toEqual([]);
   });
 
   it.each([
     ['names a smoke probe this deploy.sh does not know', { STUB_PROBE_LABEL: '/api/health/other' }],
+    ['is empty, which is not the same as absent', { STUB_PROBE_EMPTY: '1' }],
     ['cannot be read', { STUB_PROBE_INSPECT_FAIL: '1' }],
-  ])('refuses a release whose smoke probe %s, and smokes it no other way', (_, knob) => {
+  ])('refuses a release whose smoke probe %s, before it replaces anything, and smokes it no other way', (_, knob) => {
     const result = run(['deploy', ref('a')], { env: hostEnv(knob) });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('smoke probe');
+    expect(calls().filter((call) => / up /.test(call))).toEqual([]);
     expect(calls().filter((call) => call.startsWith('curl') && /8090\/api\/(convert|health\/)/.test(call))).toEqual([]);
     expect(releases()).toEqual([]);
   });
 
-  it('asks the public site, through the nginx of this host, for the smoke probe and moves the links only on its 404', () => {
+  it('leaves the running stack alone when a new release declares a smoke probe this deploy.sh does not know', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
-    const publicChecks = calls().filter((call) => call.startsWith('curl') && call.includes('--resolve'));
-    expect(publicChecks).toHaveLength(1);
-    expect(publicChecks[0]).toContain('--resolve convert.example.test:443:127.0.0.1 ');
-    expect(publicChecks[0]).toMatch(/ https:\/\/convert\.example\.test\/api\/health\/conversion$/);
+    const good = currentRelease();
+    writeFileSync(log, '');
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_PROBE_LABEL: '/api/health/other' }) });
+    expect(result.status).toBe(1);
+    expect(calls().filter((call) => / up /.test(call))).toEqual([]);
+    expect(currentRelease()).toBe(good);
   });
 
   it.each([
-    ['forwards the smoke probe', '200'],
-    ['does not answer', '000'],
-    ['answers with another refusal', '403'],
-  ])('rolls back a release when the public site %s', (_, status) => {
+    ['a smoke probe label', { STUB_PROBE_LABEL: 'x\ny\u001b[31m' }, "names the smoke probe $'x\\ny\\E[31m'"],
+    ['the recorded base image', { STUB_WEB_BASE: 'x\ny' }, "was built on $'x\\ny'"],
+    ['the recorded allowance', { STUB_WEB_ALLOWANCE: 'x\ny' }, "was built with ANONYMOUS_DAILY_LIMIT $'x\\ny'"],
+  ])('writes %s to the job log shell-quoted, so that it cannot add a line to it', (_, knob, logged) => {
+    const result = run(['deploy', ref('a')], { env: hostEnv(knob) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(logged);
+    expect(result.stderr.split('\n').filter((line) => line === 'y' || line.startsWith('y\u001b'))).toEqual([]);
+  });
+
+  it('asks the public site, through the nginx of this host, for the readiness path and then for the smoke probe, and moves the links only on the 200 and the 404', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const publicChecks = calls().filter((call) => call.startsWith('curl') && call.includes('--resolve'));
+    expect(publicChecks).toHaveLength(2);
+    for (const check of publicChecks) expect(check).toContain('--resolve convert.example.test:443:127.0.0.1 ');
+    expect(publicChecks[0]).toMatch(/ https:\/\/convert\.example\.test\/api\/health$/);
+    expect(publicChecks[1]).toMatch(/ https:\/\/convert\.example\.test\/api\/health\/conversion$/);
+  });
+
+  it.each([
+    ['forwards the smoke probe', '200', 'forwarded the smoke probe (HTTP status 200): install'],
+    ['does not answer', '000', 'answered the smoke probe with HTTP status 000, not the 404 of the block'],
+    ['answers with another refusal', '403', 'answered the smoke probe with HTTP status 403, not the 404 of the block'],
+  ])('rolls back a release when the public site %s', (_, status, message) => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     const good = currentRelease();
     const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_PUBLIC_STATUS: status }) });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain(`HTTP status ${status}`);
+    expect(result.stderr).toContain(message);
     expect(result.stderr).toContain('rolling back');
     expect(currentRelease()).toBe(good);
     expect(releases()).toEqual([good]);
+  });
+
+  it.each(['404', '000', '502'])('does not take the 404 of the block for proof when the readiness path answers %s through the same resolve', (status) => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    writeFileSync(log, '');
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_PUBLIC_HEALTH_STATUS: status }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`answered /api/health with HTTP status ${status}, not 200`);
+    expect(result.stderr).not.toContain('install deploy/oci/nginx-easyconvert.conf again');
+    expect(calls().filter((call) => call.includes('--resolve') && call.endsWith('/api/health/conversion'))).toEqual([]);
+    expect(currentRelease()).toBe(good);
   });
 
   it('checks that the pages name the host of APP_URL as canonical before it moves the links', () => {
@@ -1363,7 +1446,7 @@ exit 0`
     const result = run(['deploy', ref('a')], { env: hostEnv({ ANONYMOUS_DAILY_LIMIT: '25', STUB_WEB_ALLOWANCE: '30' }) });
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("was built with ANONYMOUS_DAILY_LIMIT '30', but the release runs with '25'");
+    expect(result.stderr).toContain('was built with ANONYMOUS_DAILY_LIMIT 30, but the release runs with 25');
     expect(calls().some((call) => call.includes(' up '))).toBe(false);
   });
 

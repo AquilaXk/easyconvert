@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { resolveNativeBinary, type NativeBinaryName } from '../../worker/engines';
 import { resolveLocalStorageDir } from '../storage/storage-config';
+import { memoizeVerdict } from './verdict-memo';
 
 /**
  * Live dependency probes behind GET /api/health.
@@ -213,24 +214,10 @@ async function collectHealthReport(): Promise<HealthReport> {
   return { status: healthy ? 'healthy' : 'unhealthy', checkedAt: new Date().toISOString(), components };
 }
 
-let cached: { report: HealthReport; expiresAt: number } | undefined;
-let inFlight: Promise<HealthReport> | undefined;
+const healthVerdict = memoizeVerdict<HealthReport>(HEALTH_CACHE_TTL_MS, () => ({ verdict: collectHealthReport() }));
 
 /** The current health verdict: probed at most once per HEALTH_CACHE_TTL_MS, and once at a time. */
-export function getHealthReport(): Promise<HealthReport> {
-  if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached.report);
-  inFlight ??= collectHealthReport()
-    .then((report) => {
-      cached = { report, expiresAt: Date.now() + HEALTH_CACHE_TTL_MS };
-      return report;
-    })
-    .finally(() => {
-      inFlight = undefined;
-    });
-  return inFlight;
-}
+export const getHealthReport = healthVerdict.get;
 
 /** Drops the cached verdict; for tests. */
-export function resetHealthCache(): void {
-  cached = undefined;
-}
+export const resetHealthCache = healthVerdict.reset;

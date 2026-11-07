@@ -450,7 +450,7 @@ export const internalPaths = {
         '200': binaryResponse('The one-pixel PNG.', 'image/png'),
         '499': createProblemResponse('The client closed the connection first (problem type `https://api.easyconvert.io/problems/client-closed-request`). The shared conversion goes on for the other callers. No client is left to read this answer.'),
         '500': createErrorResponse('The conversion failed on the server (fixed `error`, no `code`).'),
-        '504': createProblemResponse('The conversion did not finish within 30 seconds.'),
+        '504': createProblemResponse('The conversion did not finish within 30 seconds. It is stopped, and callers get this answer until it has ended.'),
       },
     },
   },
