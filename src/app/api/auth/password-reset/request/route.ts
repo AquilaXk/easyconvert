@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { codedRefusal } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
+import { isPlainMailbox } from '@/lib/auth/mailbox';
 import { isEmailVerified, isPasswordAccount, queueAccountMail } from '@/lib/auth/account-mail';
 import { authRateLimitRefusal, consumeMailLinkRateLimit, resolveAuthClientIp } from '@/lib/auth/login-rate-limiter';
 import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
@@ -11,7 +12,6 @@ import type { AuthErrorCode } from '@/lib/refusal-codes';
 export const dynamic = 'force-dynamic';
 
 const refusal = codedRefusal<AuthErrorCode>;
-const MAX_EMAIL_LENGTH = 254;
 
 /**
  * Asks for a password reset mail. The answer is the same 202 and leaves after the same time whether or not the address has
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   const body = await readJsonObject(req);
   if (!body) return refusal(400, 'invalid_json', 'Invalid JSON request payload.');
   const email = typeof body.email === 'string' ? body.email.trim() : '';
-  if (!email.includes('@') || email.length > MAX_EMAIL_LENGTH) {
+  if (!isPlainMailbox(email)) {
     return refusal(400, 'invalid_email', 'A valid email address is required.');
   }
 

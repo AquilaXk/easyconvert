@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { queueAccountMail } from '@/lib/auth/account-mail';
 import { hashPassword } from '@/lib/auth/crypto';
+import { isPlainMailbox } from '@/lib/auth/mailbox';
 import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
     const password = typeof body.password === 'string' ? body.password : '';
     const name = typeof body.name === 'string' ? body.name.trim() : '';
 
-    if (!email?.includes('@')) {
+    if (!isPlainMailbox(email)) {
       return refusal(400, 'invalid_email', 'A valid email address is required.');
     }
 

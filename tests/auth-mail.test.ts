@@ -185,3 +185,22 @@ describe('a failed send in the background', () => {
     expect(warn).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('the recipient', () => {
+  it('sends only to one plain mailbox, so a stored string cannot name other or several recipients', async () => {
+    for (const to of ['a@y.com,victim@x.com', '"x" <victim@x.com>@y.com', 'a@y.com\r\nBcc: victim@x.com', 'not-an-address']) {
+      await expect(sendAuthMail(to, MAIL)).rejects.toMatchObject({ category: 'configuration' });
+    }
+    expect(transport.sendMail).not.toHaveBeenCalled();
+  });
+});
+
+describe('isPlainMailbox', () => {
+  it('takes a plain address and nothing that a mail server reads as more than one', async () => {
+    const { isPlainMailbox } = await import('../src/lib/auth/mailbox');
+    expect(isPlainMailbox('first.last+tag@sub.example.co.kr')).toBe(true);
+    for (const bad of ['', 'a@', '@a.com', 'a@@a.com', 'a@a', 'a,b@a.com', 'a@a.com,b@b.com', '<a@a.com>', '"a"@a.com', 'a b@a.com', 'a@a.com\n', 'a@-a.com', `${'a'.repeat(65)}@a.com`]) {
+      expect(isPlainMailbox(bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+});

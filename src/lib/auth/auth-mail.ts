@@ -1,5 +1,6 @@
 import { createTransport } from 'nodemailer';
 import { readMailConfig } from './mail-config';
+import { isPlainMailbox } from './mailbox';
 import type { AuthMail } from './auth-mail-templates';
 
 /**
@@ -88,6 +89,8 @@ function withinDeadline<T>(work: Promise<T>, onDeadline: () => void): Promise<T>
 export async function sendAuthMail(to: string, mail: AuthMail): Promise<void> {
   const config = readMailConfig();
   if (config === null) throw new MailFailure('configuration');
+  // The last guard before the server: a stored address that is not one plain mailbox would name other or several recipients.
+  if (!isPlainMailbox(to)) throw new MailFailure('configuration');
   const transport = createTransport({
     host: config.host,
     port: config.port,

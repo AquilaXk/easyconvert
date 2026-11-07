@@ -3,6 +3,7 @@ import { dispatchAuthMail } from './auth-mail';
 import { renderAuthMail, type AuthMailKind } from './auth-mail-templates';
 import { issueAuthToken } from './auth-email-token-store';
 import { mailLink } from './mail-config';
+import { isPlainMailbox } from './mailbox';
 import type { UserRecord } from './types';
 
 /** The page a mail of each kind links to (the token follows in the URL fragment, which no server or referrer sees). */
@@ -28,6 +29,8 @@ export function isPasswordAccount(record: Pick<UserRecord, 'provider' | 'passwor
  * store throws; a failure of the send is logged by its category and does not.
  */
 export async function queueAccountMail(kind: AuthMailKind, record: UserRecord, locale: AppLocale): Promise<void> {
+  // An address stored before registration checked its form gets no token and no mail.
+  if (!isPlainMailbox(record.email)) return;
   const token = await issueAuthToken(TOKEN_PURPOSE[kind], { userId: record.id, email: record.email });
   dispatchAuthMail(record.email, renderAuthMail(kind, locale, mailLink(locale, MAIL_PAGE[kind], token)));
 }

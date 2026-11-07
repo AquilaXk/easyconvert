@@ -71,6 +71,16 @@ describe('what counts as verified', () => {
 });
 
 describe('registration', () => {
+  it('refuses an address that would name other or several recipients, and sends nothing', async () => {
+    for (const email of ['a@y.com,victim@x.com', 'a@y.com;victim@x.com', '"x" <victim@x.com>@y.com', 'a@y.com\r\nBcc: victim@x.com', 'a b@y.com', 'a@localhost', `${'a'.repeat(250)}@y.com`]) {
+      const response = await register(registration(email));
+      expect(response.status, email).toBe(400);
+      expect((await response.json()).code, email).toBe('invalid_email');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mail.sendMail).not.toHaveBeenCalled();
+  });
+
   it('mails a link to the new address, and leaves the account unverified until it is used', async () => {
     const response = await register(registration('new.person@fixture.test', { locale: 'ko' }));
     expect(response.status).toBe(200);
