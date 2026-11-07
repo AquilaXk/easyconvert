@@ -516,7 +516,8 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
     if (header.compressedSize < 0 || header.uncompressedSize < 0 || header.numValues < 0) {
       throw new ParquetFormatError(`Corrupted Parquet file: negative page size in column '${leaf.name}'`);
     }
-    if (header.compressedSize === 0) {
+    // A column of nothing but nulls has a dictionary of no entries, which a writer may store as no bytes at all.
+    if (header.compressedSize === 0 && header.type !== PageType.DICTIONARY_PAGE) {
       throw new ParquetFormatError(`Corrupted Parquet file: empty page in column '${leaf.name}'`);
     }
     if (header.uncompressedSize > PARQUET_MAX_PAGE_BYTES) {
