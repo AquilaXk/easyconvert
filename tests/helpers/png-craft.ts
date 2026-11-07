@@ -55,7 +55,7 @@ export function craftPng(png: CraftedPng): Buffer {
   const rowBytes = Math.ceil((png.width * channels * png.bits) / 8);
   const step = Math.max(1, (channels * png.bits) >> 3);
   const filtered: Buffer[] = [];
-  let prior = Buffer.alloc(rowBytes);
+  let prior: Buffer = Buffer.alloc(rowBytes);
   for (let y = 0; y < png.height; y += 1) {
     const row = png.rows.subarray(y * rowBytes, (y + 1) * rowBytes);
     filtered.push(filterRow(y % 5, row, prior, step));
