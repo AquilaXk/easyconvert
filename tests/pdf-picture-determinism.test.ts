@@ -108,7 +108,9 @@ async function pdfWithPictures(count: number): Promise<Buffer> {
   return Buffer.from(await document.save());
 }
 
-describe('Markdown and HTML from a PDF carry the same pictures on every run', () => {
+// The first test of the file starts the pdf.js text thread and loads its fonts; on a shared CI runner that cold start alone has passed
+// the 5 s default (CI shard 2/6 of #996 and shard 6/6 of #1006 and #1009, 2026-11-07), so the timeout covers it.
+describe('Markdown and HTML from a PDF carry the same pictures on every run', { timeout: 20_000 }, () => {
   it('pdfjs-issue9972-3.pdf (two pictures, 1 page) gives two pictures in Markdown on each run', async (ctx) => {
     const sample = await requireRealworldSample(ctx, 'pdfjs-issue9972-3.pdf');
     expect(await pictureCounts(sample.bytes, 'md')).toEqual(Array(RUNS).fill(2));
