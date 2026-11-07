@@ -39,7 +39,7 @@ describe('Format Registry & Lookup Tests', () => {
     ]);
 
     const csvTargets = getAvailableTargetFormats('csv');
-    expect(csvTargets.map((t) => t.id)).toEqual(['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip']);
+    expect(csvTargets.map((t) => t.id)).toEqual(['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip', 'jpg', 'png']);
   });
 
   it('should return empty targets for unknown format', () => {

@@ -126,7 +126,7 @@ const SAMPLES: readonly SampleCase[] = [
     // presentation saved by the suite as PowerPoint 97 and named `.dps` is the file it opens for that name.
     id: 'govdocs1-764092.pps',
     extension: 'dps',
-    targets: ['pptx', 'odp', 'pdf', 'html', 'txt', 'ppt', 'jpg', 'png', 'zip'],
+    targets: ['pptx', 'odp', 'pdf', 'html', 'txt', 'ppt', 'jpg', 'png', 'zip', 'md', 'eps'],
     phrases: ['so you want an instrument approach', 'new york flight procedures office'],
     resaveAs: 'ppt:MS PowerPoint 97',
   },
@@ -404,14 +404,14 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
         const sample = resaveAs === undefined ? original : sofficeConvert(original, id, resaveAs, (output) => output.read());
         const reference = referenceWords(sample, extension);
         const calibre = calibreWords(sample, extension);
-        const printed = targets.some((target) => IMAGE_TARGETS.has(target)) ? printedPages(sample, extension) : undefined;
+        const printed = targets.some((target) => IMAGE_TARGETS.has(target) || target === 'eps') ? printedPages(sample, extension) : undefined;
         if (phrasesInSourceBytes) expectPhrases(phrases, sample.toString('latin1'), `${id} (pinned phrases in the bytes of the file)`);
         // The Palm, Kindle, Sony and Open eBook targets are written by calibre and read back by the e-book suite below.
         for (const target of targets.filter((candidate) => !EBOOK_CONTAINER_TARGETS.has(candidate))) {
           const label = `${id} -> ${target}`;
           const result = await dispatchConversion(sample, extension, target, {}, id);
           // A document of several pages becomes one image per page, in a ZIP.
-          const extensions = IMAGE_TARGETS.has(target) ? [`.${target}`, '.zip'] : [`.${target}`];
+          const extensions = IMAGE_TARGETS.has(target) || target === 'eps' ? [`.${target}`, '.zip'] : [`.${target}`];
           expect(extensions, label).toContain(path.extname(result.filename));
           expect(result.buffer.length, label).toBeGreaterThan(0);
           if (target === 'zip') {
@@ -420,6 +420,13 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
           }
           if (IMAGE_TARGETS.has(target)) {
             await expectPageImages(result.buffer, target, printed, label);
+            continue;
+          }
+          if (target === 'eps') {
+            // One encapsulated PostScript picture for every printed page, in a ZIP when there are several; the words of the pages are read back by tests/presentation-pairs.test.ts.
+            const pictures = await pageImages(result.buffer);
+            expect({ label, pages: pictures.length }).toEqual({ label, pages: printed?.count });
+            for (const picture of pictures) expect(picture.subarray(0, 23).toString('latin1'), `${label} is encapsulated PostScript`).toBe('%!PS-Adobe-3.0 EPSF-3.0');
             continue;
           }
           if (target in STREAM_OF_LEGACY_TARGET) expectLegacyOfficeContainer(result.buffer, target, label);
