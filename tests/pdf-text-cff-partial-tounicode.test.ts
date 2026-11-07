@@ -35,6 +35,10 @@ interface CffFontOptions {
   name?: string;
   /** The /W array as written, between its brackets. */
   widths?: string;
+  /** The /Encoding name of the Type0 font; Identity-H when left out. */
+  encoding?: string;
+  /** The /Ordering of the descendant's CIDSystemInfo; Identity when left out. */
+  ordering?: string;
 }
 
 /** A CID-keyed CFF program (Adobe-Identity) whose glyph n has the CID `charset[n - 1]`, each an empty outline. */
@@ -59,12 +63,12 @@ function toUnicodeCMap(pairs: ReadonlyArray<readonly [number, string]>): string 
 }
 
 /** One page showing `cids` in a Type0 font (Identity-H) whose descendant is a CIDFontType0 with the program `cff`. */
-function cffFontPdf({ cids, cff, toUnicode, name = 'DejaVuSans', widths = '' }: CffFontOptions): Buffer {
+function cffFontPdf({ cids, cff, toUnicode, name = 'DejaVuSans', widths = '', encoding = 'Identity-H', ordering = 'Identity' }: CffFontOptions): Buffer {
   const type0 = extraObjectNumber(1);
   const [descendant, descriptor, file, toUnicodeStream] = [type0 + 1, type0 + 2, type0 + 3, type0 + 4];
   const objects = [
-    `<< /Type /Font /Subtype /Type0 /BaseFont /${name} /Encoding /Identity-H /DescendantFonts [${descendant} 0 R]${toUnicode === undefined ? '' : ` /ToUnicode ${toUnicodeStream} 0 R`} >>`,
-    `<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /DW 556 /W [${widths}] >>`,
+    `<< /Type /Font /Subtype /Type0 /BaseFont /${name} /Encoding /${encoding} /DescendantFonts [${descendant} 0 R]${toUnicode === undefined ? '' : ` /ToUnicode ${toUnicodeStream} 0 R`} >>`,
+    `<< /Type /Font /Subtype /CIDFontType0 /BaseFont /${name} /CIDSystemInfo << /Registry (Adobe) /Ordering (${ordering}) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /DW 556 /W [${widths}] >>`,
     `<< /Type /FontDescriptor /FontName /${name} /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 /FontFile3 ${file} 0 R >>`,
     stream('/Subtype /CIDFontType0C', cff),
     ...(toUnicode === undefined ? [] : [stream('', Buffer.from(toUnicode, 'latin1'))]),
@@ -257,5 +261,36 @@ describe.skipIf(toolsMissing)('a real file with CFF composite fonts whose ToUnic
     const theirs = words(poppler);
     const missing = [...theirs].filter((word) => !ours.has(word));
     expect(missing.length / theirs.size).toBeLessThan(0.02);
+  });
+});
+
+/**
+ * The rows of issue #783 that stay open (entry 175 of the policy record): a CFF composite font whose map lists codes and whose codes
+ * the update cannot list, or lists only at a cost. Poppler prints nothing for such a code; pdf.js prints the code as the character,
+ * and so does the reader, as for a TrueType font (entry 104). Each case below states what `pdftotext` prints and what the
+ * reader prints now, so a change that closes one shows here and in the entry.
+ */
+describe.skipIf(toolsMissing)('a CFF composite font whose map lacks a code that the update does not list', () => {
+  const partial = toUnicodeCMap([
+    [0x41, 'Q'],
+    [0x42, 'R'],
+  ]);
+
+  it('a code past the glyphs of the program is printed as itself, where Poppler prints nothing', async () => {
+    const pdf = cffFontPdf({ cids: [0x41, 0x41, 0x41, 0x42, 0x43, 0x50], cff: nameKeyedCff(0x44), toUnicode: partial });
+    expect(pdftotext(pdf)).toBe('QQQR');
+    expect(await textOf(pdf)).toBe('QQQRP');
+  });
+
+  it('a map that names another CMap with usecmap is not completed, so the code of a glyph is printed as itself too', async () => {
+    const pdf = cffFontPdf({ cids: [0x41, 0x41, 0x41, 0x42, 0x43, 0x50], cff: nameKeyedCff(0x44), toUnicode: `/Identity-H usecmap\n${partial}` });
+    expect(pdftotext(pdf)).toBe('QQQR');
+    expect(await textOf(pdf)).toBe('QQQRCP');
+  });
+
+  it('an encoding other than Identity-H is not completed: a code is printed as itself', async () => {
+    const pdf = cffFontPdf({ cids: [0x41, 0x41, 0x42, 0x43], cff: nameKeyedCff(0x300), toUnicode: partial, encoding: '90ms-RKSJ-H', ordering: 'Japan1' });
+    expect(pdftotext(pdf)).toBe('Q Q R');
+    expect(await textOf(pdf)).toBe('QQRC');
   });
 });
