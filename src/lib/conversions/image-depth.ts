@@ -40,18 +40,6 @@ export function roundedToEightBits(pipeline: Sharp, channels: number): Sharp {
     .toColourspace('rgb16');
 }
 
-/** The 8-bit level nearest to a 16-bit sample, the level `roundedToEightBits` gives it. */
-function nearestLevelOf(sample: number): number {
-  return Math.floor((sample * EIGHT_BIT_MAX) / SIXTEEN_BIT_MAX + 0.5);
-}
-
-/** The nearest 8-bit level of each 16-bit value of a lookup table. */
-export function nearestLevelLut(lut: Uint16Array): Uint8Array {
-  const levels = new Uint8Array(lut.length);
-  for (let value = 0; value < lut.length; value += 1) levels[value] = nearestLevelOf(lut[value]);
-  return levels;
-}
-
 /**
  * Whether a picture is kept at 16 bits until the end of the pipeline and reduced there with rounding (see `roundedToEightBits`): it
  * has more than 8 bits per sample for an 8-bit target and no non-sRGB development curve that an ICC transform would turn into

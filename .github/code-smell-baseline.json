@@ -699,7 +699,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2724
+    "maxValue": 2692
   },
   {
     "file": "src/lib/conversions/image.ts",
