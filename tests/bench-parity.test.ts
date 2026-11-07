@@ -490,9 +490,9 @@ describe('the known gaps', () => {
     expect(issuesOf('raw/', false)).toEqual([686]);
     for (const family of ['vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
-    // Every compression row that is a known gap reached parity in the nightly run of 2026-10-24, but the xz decode of the most compressible Silesia file, a row of a public sample that the nightly run times (685).
-    expect(issuesOf('compression/', true)).toEqual([685]);
-    expect(Object.keys(byId).filter((id) => id.startsWith('compression/'))).toEqual(['compression/silesia-xml.xz->tar/throughput']);
+    // Every compression row reached parity: the last one, the xz decode of the most compressible Silesia file, in the nightly run of 2026-11-07 (685).
+    expect(issuesOf('compression/', true)).toEqual([]);
+    expect(Object.keys(byId).filter((id) => id.startsWith('compression/'))).toEqual([]);
     expect(byId['image/wm-deep-dart.png->avif/throughput']).toBeUndefined();
     expect(byId['video/clip.mp4->hevc/throughput']).toBeUndefined();
     // The PostScript to PDF, Illustrator to PNG, slide and sheet page rows reached parity on the CI runner (735).
