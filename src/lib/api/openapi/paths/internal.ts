@@ -225,7 +225,7 @@ export const internalPaths = {
       description: 'Mails the verification link again to the signed-in account. The answer is the same 202 whether or not a mail was sent (an account that is verified or has no password is not mailed).',
       operationId: 'resendEmailVerification',
       security: SESSION_ONLY,
-      requestBody: { required: false, ...jsonBody({ locale: localeProperty }, []) },
+      requestBody: { ...jsonBody({ locale: localeProperty }, []), required: false },
       responses: {
         '202': opaqueAccepted('Accepted.'),
         '400': createCodedErrorResponse('A client address the forwarding headers do not name.', ['client_address_unknown']),
