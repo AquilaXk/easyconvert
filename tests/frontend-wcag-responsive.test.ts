@@ -395,7 +395,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
   it('maintains WCAG 2.1 AA landmarks, single h1, non-skipping heading levels, and labeled 16px controls across routes', () => {
     const routes: ReadonlyArray<{ name: string; dom: DomElement }> = [
-      { name: '/', dom: render(HomePage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+      { name: '/', dom: render(HomePage, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }) },
       { name: '/pdf-to-docx', dom: render(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/accessibility', dom: render(ConverterPageView, { parsed: parsedSlug('accessibility'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
       { name: '/contact', dom: render(ConverterPageView, { parsed: parsedSlug('contact'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },

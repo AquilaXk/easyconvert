@@ -9,8 +9,8 @@ import Features from '@/components/Features';
 import Footer from '@/components/Footer';
 import { useClientQueue } from '@/hooks/useClientQueue';
 
-/** The home page; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
-export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: number }>) {
+/** The home page; `dailyLimit` is the anonymous daily allowance the server enforces and `apiOrigin` the public origin of the API, both read on the server. */
+export default function HomePageView({ dailyLimit, apiOrigin }: Readonly<{ dailyLimit: number; apiOrigin: string }>) {
   const {
     queue,
     isConverting,
@@ -66,7 +66,7 @@ export default function HomePageView({ dailyLimit }: Readonly<{ dailyLimit: numb
           />
         )}
 
-        {queue.length === 0 && <Features />}
+        {queue.length === 0 && <Features apiOrigin={apiOrigin} />}
       </main>
 
       <Footer />
