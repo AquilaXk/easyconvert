@@ -232,6 +232,12 @@ describe('a page range is validated for syntax, not for the plan', () => {
     expect((await response.json()).invalidParams).toEqual([{ name: 'pages', reason: `must NOT have more than ${LONGEST_SPEC_CHARS} characters` }]);
   });
 
+  it('/api/v1/convert refuses a specification past the longest one with a 422 that names the option and the limit', async () => {
+    const response = await v1ConvertPost(form(await pdfWithPages(2), 'two.pdf', { targetFormat: 'png', options: JSON.stringify({ pages: `${'1,'.repeat(LONGEST_SPEC_CHARS)}1` }) }, key));
+    expect(response.status).toBe(HTTP_UNPROCESSABLE);
+    expect(JSON.stringify(await response.json())).toMatch(new RegExp(`pages.*${LONGEST_SPEC_CHARS}|${LONGEST_SPEC_CHARS}.*pages`));
+  });
+
   it('/api/v1/jobs accepts a range past 50 pages for a free account', async () => {
     const pdf = await pdfWithPages(SIXTY_PAGES);
     const request = new NextRequest('http://localhost/api/v1/jobs', {

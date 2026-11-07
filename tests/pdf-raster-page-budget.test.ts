@@ -14,7 +14,8 @@ import {
   readPdfPageFrames,
   renderedSizePixels,
 } from '../src/lib/conversions/pdf-page-geometry';
-import { boundPageImages, pagesOfIntervals, resolvePageIntervals } from '../src/lib/conversions/page-range';
+import { boundPageImages, resolvePageIntervals } from '../src/lib/conversions/page-range';
+import { pagesOfIntervals } from '../src/lib/conversions/page-intervals';
 import { planPageRender } from '../src/lib/conversions/pdf-page-render';
 import { InvalidPageRangeError, PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
 import { convertWithNativePoppler, executeWorkerConversion } from '../src/worker/engines';

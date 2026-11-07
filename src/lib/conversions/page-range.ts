@@ -1,11 +1,7 @@
 import { InvalidPageRangeError, PayloadLimitError } from '../types';
+import { mergeIntervals, pageCountOfIntervals, pagesOfIntervals, type PageInterval } from './page-intervals';
 
 export { InvalidPageRangeError };
-
-export interface PageInterval {
-  start: number;
-  end: number;
-}
 
 /**
  * Most pages one request renders to page images or converts to separate images, the same for every caller (policy entry 44).
@@ -124,22 +120,6 @@ function assertSpecLength(spec: string, subject: string): void {
 }
 
 /**
- * Sorts the intervals and joins the ones that overlap or touch, the pass of Chromium's `printing::PageRange::Normalize`
- * (printing/page_range.cc): the cost is the sort of the tokens, whatever pages they name.
- */
-export function mergeIntervals(intervals: PageInterval[]): PageInterval[] {
-  intervals.sort((a, b) => a.start - b.start || a.end - b.end);
-  const merged: PageInterval[] = [intervals[0]];
-  for (let index = 1; index < intervals.length; index++) {
-    const last = merged[merged.length - 1];
-    const next = intervals[index];
-    if (last.end + 1 < next.start) merged.push(next);
-    else last.end = Math.max(last.end, next.end);
-  }
-  return merged;
-}
-
-/**
  * Parses and validates a page range specification string against the total page count, and returns the pages it selects as
  * sorted, non-overlapping intervals that do not touch.
  * Grammar: N | N-M | N- | -M, comma separated (e.g. "1, 3-5, 8-"). At most `MAX_PAGE_SPEC_CHARS` characters.
@@ -160,20 +140,6 @@ export function parsePageIntervals(spec: string, pageCount: number): PageInterva
     return parseTokenInterval(token, pageCount);
   });
   return mergeIntervals(intervals);
-}
-
-/** The pages of `intervals` as an ascending list. */
-export function pagesOfIntervals(intervals: readonly PageInterval[]): number[] {
-  const pages: number[] = [];
-  for (const { start, end } of intervals) {
-    for (let page = start; page <= end; page++) pages.push(page);
-  }
-  return pages;
-}
-
-/** How many pages `intervals` select. */
-export function pageCountOfIntervals(intervals: readonly PageInterval[]): number {
-  return intervals.reduce((total, { start, end }) => total + end - start + 1, 0);
 }
 
 /** The pages `parsePageIntervals` selects, as an ascending list. */

@@ -10,7 +10,7 @@
  */
 
 import { ConversionOptions } from '../types';
-import { mergeIntervals, pageCountOfIntervals, type PageInterval } from '../conversions/page-range';
+import { mergeIntervals, pageCountOfIntervals, type PageInterval } from '../conversions/page-intervals';
 import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isAudioStreamPair, isStreamableAudioPair, type RawPcmOptions } from './workers/opfs-audio';
 import { isPureAudioConvertible } from './pure/pure-audio';

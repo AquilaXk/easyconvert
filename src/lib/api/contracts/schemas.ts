@@ -23,8 +23,8 @@ import {
   PdfRotateOptionsSchema,
   PdfSplitOptionsSchema,
   PdfWatermarkOptionsSchema,
-  pageSpecSchema,
 } from './pdf-operation-schemas';
+import { pageSpecSchema } from './page-spec-schema';
 import { VECTORIZE_OPTIONS_SCHEMA } from '@/lib/conversions/raster-vectorize-options';
 
 export {

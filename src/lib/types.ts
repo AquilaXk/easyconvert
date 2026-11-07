@@ -796,6 +796,12 @@ export function typedFailureOf(error: unknown): TypedFailure | undefined {
   return { status: error instanceof EngineMissingError ? HTTP_SERVICE_UNAVAILABLE : HTTP_BAD_REQUEST, code };
 }
 
+/** A verdict on the request that another engine would repeat (a refusal code of its own), not a failure of one tool: it is answered, never swallowed into "nothing converted". */
+export function isTypedRefusal(error: unknown): boolean {
+  const code = refusalCodeOf(error);
+  return code !== undefined && code !== 'conversion_failed' && code !== 'engine_unavailable';
+}
+
 export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;

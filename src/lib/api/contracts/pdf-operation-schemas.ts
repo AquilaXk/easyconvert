@@ -1,15 +1,8 @@
-import { MAX_PAGE_SPEC_CHARS } from '@/lib/conversions/page-range';
+import { pageSpecSchema } from './page-spec-schema';
 
 /** Options of the PDF page operations of a job graph: split, rotate, reorder and optimize. */
 
-/** Pages as the `pages` option writes them: `3`, `2-5`, `4-`, `-3`, comma separated. */
-const PAGE_SPEC_PATTERN = String.raw`^[0-9,\-\s]+$`;
 const MAX_SPLIT_RANGES_PARTS = 1000;
-
-/** A page specification option: the grammar of the `pages` option, at most `MAX_PAGE_SPEC_CHARS` characters. */
-export function pageSpecSchema(description: string) {
-  return { type: 'string', pattern: PAGE_SPEC_PATTERN, maxLength: MAX_PAGE_SPEC_CHARS, description } as const;
-}
 
 export const PdfSplitOptionsSchema = {
   type: 'object',

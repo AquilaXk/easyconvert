@@ -23,7 +23,7 @@ import {
   type RenderedPdfPage,
 } from './pdf-page-geometry';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
-import { PAGE_IMAGE_MAX_PAGES } from './page-range';
+import { PAGE_IMAGE_MAX_PAGES, assertPageImageCount } from './page-range';
 
 /**
  * Renders PDF pages to images for OCR with Poppler's `pdftoppm`, an external executable run under the process
@@ -36,7 +36,7 @@ import { PAGE_IMAGE_MAX_PAGES } from './page-range';
  * file is decoded again as soon as the OCR reads it. The pixels are the ones pdftoppm draws.
  *
  * Every size is bounded before a page is drawn: the render's pixel count and the pixels of every image the PDF
- * holds against the image input limit (413), the number of pages against OCR_MAX_RENDERED_PAGES (413) and the
+ * holds against the image input limit (413), the number of pages against PAGE_IMAGE_MAX_PAGES (413, `assertPageImageCount`) and the
  * resolution against OCR_MAX_DPI (400).
  */
 
@@ -146,11 +146,7 @@ export interface RenderPlan {
 
 function selectOcrPageNumbers(pages: ReadonlySet<number> | undefined, pageCount: number): number[] {
   if (pages === undefined) {
-    if (pageCount > OCR_MAX_RENDERED_PAGES) {
-      throw new PayloadLimitError(
-        `OCR was asked to render ${pageCount} pages; at most ${OCR_MAX_RENDERED_PAGES} are rendered in one request. Select a page range.`
-      );
-    }
+    assertPageImageCount(pageCount);
     return Array.from({ length: pageCount }, (_, index) => index + 1);
   }
   const pageNumbers = [...pages].sort((a, b) => a - b);
@@ -159,11 +155,7 @@ function selectOcrPageNumbers(pages: ReadonlySet<number> | undefined, pageCount:
       throw new ConversionFailedError(`Page ${pageNumber} does not exist; the PDF has ${pageCount} page(s).`);
     }
   }
-  if (pageNumbers.length > OCR_MAX_RENDERED_PAGES) {
-    throw new PayloadLimitError(
-      `OCR was asked to render ${pageNumbers.length} pages; at most ${OCR_MAX_RENDERED_PAGES} are rendered in one request. Select a page range.`
-    );
-  }
+  assertPageImageCount(pageNumbers.length);
   return pageNumbers;
 }
 
