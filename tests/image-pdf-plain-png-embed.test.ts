@@ -14,8 +14,8 @@ import { skipWithoutTools } from './helpers/strict-skip';
  * PNG predictor), and PDFKit's PNG reader keeps every byte of that stream as a JavaScript number. A noisy 50 megapixel picture
  * (a camera file developed to PNG) is then hundreds of megabytes of heap on top of the pixels, and a worker with several jobs at once
  * is killed for memory (issue #783, the real-world file pix-google-pixel6pro.dng to PDF). A plain picture (opaque, not interlaced,
- * no palette, no colour key) is therefore embedded from its chunks without the reader; a picture that needs the reader (alpha,
- * palette, interlacing, colour key) still goes through it. The PDF is judged by Poppler (`pdfimages`).
+ * no palette, no colour key) is therefore embedded from its chunks without the reader, and so is an RGBA one (its planes are split row
+ * by row; tests/image-pdf-alpha-palette-png-embed.test.ts); only a colour key or an animation still goes through the reader. The PDF is judged by Poppler (`pdfimages`).
  */
 
 const noTools = skipWithoutTools('pdfimages');
@@ -59,15 +59,19 @@ async function extracted(pdf: string): Promise<{ data: Buffer; width: number; he
 }
 
 describe('a plain PNG on a PDF page', () => {
-  it.skipIf(noTools)('is placed from its chunks without holding its bytes as JavaScript values', () => {
+  it.skipIf(noTools).each([
+    { kind: 'plain', channels: '3', samplesPerPixel: 3 },
+    { kind: 'RGBA', channels: '4', samplesPerPixel: 4 },
+  ])('is placed from its chunks without holding its bytes as JavaScript values ($kind)', ({ channels, samplesPerPixel }) => {
     const child = path.join(__dirname, 'image-pdf-heap-child.ts');
-    const run = spawnSync(process.execPath, [`--max-old-space-size=${HEAP_LIMIT_MB}`, '--import', 'tsx', child, String(NOISE_WIDTH), String(NOISE_HEIGHT)], {
-      encoding: 'utf8',
-      timeout: 120_000,
-    });
+    const run = spawnSync(
+      process.execPath,
+      [`--max-old-space-size=${HEAP_LIMIT_MB}`, '--import', 'tsx', child, String(NOISE_WIDTH), String(NOISE_HEIGHT), channels],
+      { encoding: 'utf8', timeout: 120_000 }
+    );
     expect(run.stderr.slice(0, 300)).not.toMatch(/heap out of memory/);
     expect(run.status).toBe(0);
-    expect(Number(run.stdout)).toBeGreaterThan(NOISE_WIDTH * NOISE_HEIGHT * 3);
+    expect(Number(run.stdout)).toBeGreaterThan(NOISE_WIDTH * NOISE_HEIGHT * samplesPerPixel);
   });
 
   it.skipIf(noTools)('keeps every pixel of an RGB picture (listed as 8-bit RGB)', async () => {
