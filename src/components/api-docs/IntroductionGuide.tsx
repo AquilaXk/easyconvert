@@ -20,6 +20,10 @@ const ERROR_STATUSES = ['400', '401', '403', '404', '409', '413', '415', '422', 
 export default function IntroductionGuide({ origin }: Readonly<{ origin: string }>) {
   const t = useTranslations('apiDocs');
   const heading = (id: string) => t(`intro.headings.${id}` as 'intro.headings.base-url');
+  const errorFields = problemDetailsFields().map((field) => ({
+    ...field,
+    description: t(`intro.problemFields.${field.name}` as 'intro.problemFields.type'),
+  }));
   const copy = { copyLabel: t('operation.copy'), copiedLabel: t('operation.copied') };
   const values = {
     ...richText,
@@ -75,7 +79,7 @@ export default function IntroductionGuide({ origin }: Readonly<{ origin: string 
 
       <h2 id="errors" className={DOC.h2}>{heading('errors')}</h2>
       {p('intro.errors1')}
-      <FieldList fields={problemDetailsFields()} />
+      <FieldList fields={errorFields} />
       {p('intro.errors2')}
       <div className={DOC.tableWrap}>
         <table className="w-full border-collapse">

@@ -97,6 +97,20 @@ const binaryResponse = (description: string, mediaType = 'application/octet-stre
   content: { [mediaType]: { schema: { type: 'string', format: 'binary' } } },
 });
 
+const jsonBody = (properties: Record<string, unknown>, required: string[]) => ({
+  required: true,
+  content: { 'application/json': { schema: { type: 'object', required, properties } } },
+});
+
+const localeProperty = { type: 'string', enum: ['en', 'ko'], description: 'Language of the mail.' };
+const tokenProperty = { type: 'string', description: 'The token in the fragment of the mailed link.' };
+const opaqueAccepted = (description: string) => createJsonResponse(description, { success: { type: 'boolean' } });
+const mailUnavailable = createCodedErrorResponse('Mail is not configured on this server.', ['mail_unavailable']);
+const mailRateLimited = {
+  ...createProblemResponse('Too many requests for mail links (problem type `rate-limited`, `code` "mail_rate_limited", the wait in `retryAfterSeconds`); see `Retry-After`.'),
+  headers: { 'Retry-After': { schema: { type: 'integer' } } },
+};
+
 const credentialsBody = (extra: Record<string, unknown> = {}) => ({
   required: true,
   content: {
@@ -191,6 +205,55 @@ export const internalPaths = {
       },
     },
   },
+  '/api/auth/email-verification': {
+    get: {
+      ...INTERNAL,
+      summary: 'Get Email Verification State',
+      description: 'Tells whether email verification is on and whether the address of the signed-in account is verified.',
+      operationId: 'getEmailVerification',
+      security: SESSION_ONLY,
+      responses: {
+        '200': createJsonResponse('Verification state.', { success: { type: 'boolean' }, enabled: { type: 'boolean' }, verified: { type: 'boolean' } }),
+        '401': createErrorResponse('Authentication required.'),
+      },
+    },
+  },
+  '/api/auth/email-verification/resend': {
+    post: {
+      ...INTERNAL,
+      summary: 'Resend Verification Mail',
+      description: 'Mails the verification link again to the signed-in account. The answer is the same 202 whether or not a mail was sent (an account that is verified or has no password is not mailed).',
+      operationId: 'resendEmailVerification',
+      security: SESSION_ONLY,
+      requestBody: { required: false, ...jsonBody({ locale: localeProperty }, []) },
+      responses: {
+        '202': opaqueAccepted('Accepted.'),
+        '400': createCodedErrorResponse('A client address the forwarding headers do not name.', ['client_address_unknown']),
+        '401': createErrorResponse('Authentication required.'),
+        '404': mailUnavailable,
+        '429': mailRateLimited,
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
+      },
+    },
+  },
+  '/api/auth/email-verification/confirm': {
+    post: {
+      ...INTERNAL,
+      summary: 'Confirm Email Address',
+      description: 'Verifies the address with the token of the verification mail. The token works once and needs no session.',
+      operationId: 'confirmEmailVerification',
+      security: PUBLIC_ACCESS,
+      requestBody: jsonBody({ token: tokenProperty }, ['token']),
+      responses: {
+        '200': opaqueAccepted('Address verified.'),
+        '400': createCodedErrorResponse('Invalid JSON, a token that is not valid, expired or used, or a client address the forwarding headers do not name.', ['invalid_json', 'invalid_token', 'client_address_unknown']),
+        '404': mailUnavailable,
+        '429': mailRateLimited,
+        '500': createErrorResponse('Verification failed on the server (fixed `error`, no `code`).'),
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
+      },
+    },
+  },
   '/api/auth/google/url': {
     get: {
       ...INTERNAL,
@@ -278,8 +341,61 @@ export const internalPaths = {
       operationId: 'getCurrentUser',
       security: SESSION_ONLY,
       responses: {
-        '200': createJsonResponse('Signed-in user.', { success: { type: 'boolean' }, user: { type: 'object' } }),
-        '401': createErrorResponse('Not signed in.'),
+        '200': createJsonResponse('The signed-in user, or `authenticated` false and a null `user` for a visitor without a session.', {
+          success: { type: 'boolean' },
+          authenticated: { type: 'boolean' },
+          user: { type: 'object', nullable: true },
+        }),
+      },
+    },
+  },
+  '/api/auth/password-reset': {
+    get: {
+      ...INTERNAL,
+      summary: 'Get Password Reset State',
+      description: 'Tells whether password reset is on (mail is configured).',
+      operationId: 'getPasswordReset',
+      security: PUBLIC_ACCESS,
+      responses: {
+        '200': createJsonResponse('Whether password reset is on.', { success: { type: 'boolean' }, enabled: { type: 'boolean' } }),
+      },
+    },
+  },
+  '/api/auth/password-reset/request': {
+    post: {
+      ...INTERNAL,
+      summary: 'Request Password Reset Mail',
+      description: 'The answer is the same 202 and leaves after the same time whether or not the address has an account; only a verified password account is mailed a link.',
+      operationId: 'requestPasswordReset',
+      security: PUBLIC_ACCESS,
+      requestBody: jsonBody({ email: { type: 'string', format: 'email' }, locale: localeProperty }, ['email']),
+      responses: {
+        '202': opaqueAccepted('Accepted, whether or not a mail was sent.'),
+        '400': createCodedErrorResponse('Invalid JSON, an invalid email address, or a client address the forwarding headers do not name.', ['invalid_json', 'invalid_email', 'client_address_unknown']),
+        '404': mailUnavailable,
+        '429': mailRateLimited,
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
+      },
+    },
+  },
+  '/api/auth/password-reset/confirm': {
+    post: {
+      ...INTERNAL,
+      summary: 'Set a New Password',
+      description: 'Sets the password with the token of a reset mail, under the rules of registration. The token works once; every session of the account ends and the session cookie is cleared.',
+      operationId: 'confirmPasswordReset',
+      security: PUBLIC_ACCESS,
+      requestBody: jsonBody({ token: tokenProperty, password: { type: 'string', minLength: 8, maxLength: 1024 } }, ['token', 'password']),
+      responses: {
+        '200': {
+          ...opaqueAccepted('Password changed.'),
+          headers: sessionCookieHeader,
+        },
+        '400': createCodedErrorResponse('Invalid JSON, a password length out of range, a token that is not valid, expired or used, or a client address the forwarding headers do not name.', ['invalid_json', 'password_length', 'invalid_token', 'client_address_unknown']),
+        '404': mailUnavailable,
+        '429': mailRateLimited,
+        '500': createErrorResponse('Password reset failed on the server (fixed `error`, no `code`).'),
+        '503': createCodedErrorResponse('The client-IP trust configuration of the server is missing or invalid; see `Retry-After`.', ['client_ip_unconfigured']),
       },
     },
   },

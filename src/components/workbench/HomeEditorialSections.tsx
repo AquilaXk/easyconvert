@@ -5,13 +5,16 @@ import { useTranslations } from 'next-intl';
 import { ArrowRight, Check, Copy, Lock, Cpu, Clock } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 
-const API_CURL_EXAMPLE = [
-  'curl -X POST https://api.easyconvert.com/api/v1/convert \\',
-  '  -H "Authorization: Bearer $EASYCONVERT_API_KEY" \\',
-  '  -F "file=@report.pdf" \\',
-  '  -F "targetFormat=docx" \\',
-  '  -o report.docx',
-].join('\n');
+/** The home page's curl sample against `origin`, the public origin the API documents use as their base URL. */
+export function apiCurlExample(origin: string): string {
+  return [
+    `curl -X POST ${origin}/api/v1/convert \\`,
+    '  -H "Authorization: Bearer $EASYCONVERT_API_KEY" \\',
+    '  -F "file=@report.pdf" \\',
+    '  -F "targetFormat=docx" \\',
+    '  -o report.docx',
+  ].join('\n');
+}
 
 const CODE_TAG = {
   code: (chunks: React.ReactNode) => (
@@ -48,14 +51,15 @@ export function SecurityDataHandlingCard() {
   );
 }
 
-export function RestApiWorkflowCard() {
+export function RestApiWorkflowCard({ origin }: Readonly<{ origin: string }>) {
+  const example = apiCurlExample(origin);
   const t = useTranslations('home.api');
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       try {
-        await navigator.clipboard.writeText(API_CURL_EXAMPLE);
+        await navigator.clipboard.writeText(example);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       } catch {
@@ -94,7 +98,7 @@ export function RestApiWorkflowCard() {
             {copied ? <Check aria-hidden="true" className="size-3.5 text-success" /> : <Copy aria-hidden="true" className="size-3.5" />}
           </button>
           <pre className="overflow-x-auto px-4 py-3 pr-12 font-mono text-xs leading-[14px] text-ink">
-            <code>{API_CURL_EXAMPLE}</code>
+            <code>{example}</code>
           </pre>
         </div>
       </div>

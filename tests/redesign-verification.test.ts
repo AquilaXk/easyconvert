@@ -134,7 +134,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
 
     // The copyright is the only line besides the links; the claim of the upload card is not repeated
     const text = visibleText(footer);
-    expect(text).toMatch(/© 2026 EasyConvert\.com/);
+    expect(text).toMatch(/© 2026 EasyConvert(?!\.com)/);
     expect(text).not.toMatch(/Encrypted transfer/);
     expect(missingFrom(hrefs, ['/accessibility', '/api-docs', '/privacy', '/terms', '/contact'])).toEqual([]);
   });
@@ -250,7 +250,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies the home page holds the title, the upload card, the format directory, the security card and the API card, and no steps, questions or link to them', () => {
-    const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+    const home = renderDom(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }));
     const main = select(home, 'main')[0];
 
     const sections = allElements(main).filter((element) => element.tagName === 'h1' || element.tagName === 'h2');
