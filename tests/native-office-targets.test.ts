@@ -10,10 +10,10 @@ const HTTP_BAD_REQUEST = 400;
 const OFFICE_PAIRS_NEEDING_LIBREOFFICE: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
   ods: ['jpg', 'png'],
-  odp: ['jpg', 'png', 'ppt'],
+  odp: ['eps', 'jpg', 'md', 'png', 'ppt'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
-  ppt: ['jpg', 'odp', 'png'],
-  pptx: ['jpg', 'png', 'ppt'],
+  ppt: ['eps', 'jpg', 'md', 'odp', 'png'],
+  pptx: ['eps', 'jpg', 'md', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
   xls: ['jpg', 'png'],
   xlsx: ['jpg', 'png'],
@@ -32,7 +32,7 @@ describe('targets only LibreOffice writes', () => {
         expect(unconvertibleOfficeTarget(source, target), `${source} -> ${target}`).toBeInstanceOf(EngineUnavailableError);
       }
     }
-    expect(count).toBe(25);
+    expect(count).toBe(31);
   });
 
   it('answers every Office pair the dispatcher routes to a native engine with the same 503 in-process', () => {

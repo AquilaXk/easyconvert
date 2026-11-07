@@ -12,8 +12,10 @@ import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { OLEFILE_PSEUDO_TOOL, runTool } from '../tools';
 import { richStructureTruth } from '../../tests/helpers/document-fixtures';
 import { runDocumentOffice } from './document-office';
+import { runDocumentPairs } from './document-pairs';
 import { runDocumentPdf } from './document-pdf';
 import { runDocumentShaping } from './document-shaping';
+import { runDocumentSlidePairs } from './document-slide-pairs';
 
 /**
  * Document family. Three groups of cases:
@@ -324,4 +326,6 @@ export const runDocument: FamilyRunner = async (ctx) => [
   ...(await runDocumentPdf(ctx)),
   ...(await runDocumentShaping(ctx)),
   ...(await runDocumentOffice(ctx)),
+  ...(await runDocumentSlidePairs(ctx)),
+  ...(await runDocumentPairs(ctx)),
 ];

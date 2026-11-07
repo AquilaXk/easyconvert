@@ -72,9 +72,19 @@ export function officeSuiteWritesTarget(src: string, tgt: string): boolean {
  * renders images from a PDF, an archive packs the file as it is) or when the source has no interchange format.
  */
 export function interchangeNeeded(src: string, tgt: string, madeWithoutInterchange: boolean): string | undefined {
+  if (tgt === MARKDOWN_TARGET && PRESENTATION_MARKDOWN_SOURCES.has(src)) return PDF_INTERCHANGE;
   if (officeSuiteWritesTarget(src, tgt) || madeWithoutInterchange) return undefined;
   return officeSuiteInterchange(src, tgt);
 }
+
+const MARKDOWN_TARGET = 'md';
+const PDF_INTERCHANGE = 'pdf';
+/**
+ * Presentations written as Markdown. The office suite has no Markdown filter for Impress (only for Writer) and the in-process presentation
+ * readers write no Markdown, so the text is that of the PDF the suite prints of the deck: one page for each slide, read by the PDF text reader
+ * that writes the Markdown of any PDF.
+ */
+const PRESENTATION_MARKDOWN_SOURCES: ReadonlySet<string> = new Set(['dps', 'odp', 'pot', 'potx', 'pps', 'ppsx', 'ppt', 'pptm', 'pptx']);
 
 /** First page of the printed document, in the PDF export's page range syntax. */
 const FIRST_PAGE_RANGE = '1';
@@ -367,31 +377,52 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
 
 /** Hangul sources: no office suite reads them, and the in-process converter writes their DOCX. */
 const HANCOM_SOURCES: ReadonlySet<string> = new Set(['hwp', 'hwpx']);
+/** Text and markup sources: the in-process converter writes their DOCX and their PDF, and no office suite reads them as such. */
+const MARKUP_SOURCES: ReadonlySet<string> = new Set(['html', 'md', 'txt', 'rst']);
 const WORD_97_TARGET = 'doc';
+const RTF_TARGET = 'rtf';
 const DOCX_FORMAT = 'docx';
-
+const PDF_FORMAT = 'pdf';
+/** The page images of a document: one picture for each page of the PDF the converter writes of it. */
+const PAGE_IMAGE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'png']);
+/** The sources whose pages the native PDF tools draw: the text and markup sources, and a delimited table, whose PDF the in-process engine writes. */
+const PAGE_IMAGE_SOURCES: ReadonlySet<string> = new Set([...MARKUP_SOURCES, 'csv']);
 
 /**
- * A Hangul document written as `.doc`: the in-process converter writes it as a DOCX (the document it reads, with its tables and
- * pictures), and the office suite exports that DOCX with its `MS Word 97` filter, the way every Word document is written as `.doc`.
- * The converter's own `.doc` is a Rich Text stream under the `.doc` name, which no Word 97-2003 reader and no signature check takes
- * for a compound file. The DOCX never goes to the output path of the request, which only the export writes.
+ * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
+ * no such bridge: a Word 97-2003 file from a Hangul document, a text, markup or PDF source (through its DOCX), and RTF from a text or
+ * markup source.
  */
-export async function convertHancomDocTarget(
+function bridgeFormat(src: string, tgt: string): string | undefined {
+  if (tgt === WORD_97_TARGET && (HANCOM_SOURCES.has(src) || MARKUP_SOURCES.has(src) || src === PDF_FORMAT)) return DOCX_FORMAT;
+  if (tgt === RTF_TARGET && MARKUP_SOURCES.has(src)) return DOCX_FORMAT;
+  return undefined;
+}
+
+/**
+ * A Hangul, text, Markdown, reStructuredText, HTML or PDF document written as `.doc`, or a text or markup document written as `.rtf`: the
+ * in-process converter writes the source as a DOCX (the document it reads, with its tables and pictures), and the office suite exports that
+ * file with its `MS Word 97` or `Rich Text Format` filter, the way every Word document is written in a legacy format.
+ * The converter's own `.doc` is a Rich Text stream under the `.doc` name, which no Word 97-2003 reader and no signature check takes
+ * for a compound file. The DOCX never goes to the output path of the request, which only the export writes. An HTML page is read by the
+ * converter and not by the suite, so that the pictures it names are fetched through the converter's guarded session.
+ */
+export async function convertBridgedTarget(
   deps: OfficeSuiteRouteDeps,
   request: OfficeSuiteRequest,
   convertDirectly: () => Promise<WorkerConversionResult>
 ): Promise<WorkerConversionResult> {
   const { input, src, tgt, options, originalFilename } = request;
-  if (!HANCOM_SOURCES.has(src) || tgt !== WORD_97_TARGET) return convertDirectly();
+  const bridge = bridgeFormat(src, tgt);
+  if (bridge === undefined) return convertDirectly();
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
-  const docx = await deps.convert(source, src, DOCX_FORMAT, { ...options, libreOfficeFilter: undefined, inProcessFallback: undefined }, originalFilename);
+  const docx = await deps.convert(source, src, bridge, { ...options, libreOfficeFilter: undefined, inProcessFallback: undefined }, originalFilename);
   try {
     const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? docx.buffer : { inputBuffer: docx.buffer, outputPath: requestedOutput };
     let written: WorkerConversionResult | null;
     try {
-      written = await deps.writeWithOfficeSuite(next, DOCX_FORMAT, tgt, { ...options, throwOnUnavailable: true }, originalFilename);
+      written = await deps.writeWithOfficeSuite(next, bridge, tgt, { ...options, throwOnUnavailable: true }, originalFilename);
     } catch (err) {
       rethrowSandboxUnavailable(err);
       throw err;
@@ -400,6 +431,31 @@ export async function convertHancomDocTarget(
     return written;
   } finally {
     deps.discardOutput(docx.filePath, input, options);
+  }
+}
+
+/**
+ * A text, Markdown, reStructuredText, HTML or CSV document written as page images: the PDF of the source is written as that source converts to
+ * PDF, and the native PDF tools draw its pages, so that the pictures are the pages of the PDF the same source converts to, one for each
+ * page and a ZIP of them for a document of several. The PDF never goes to the output path of the request and carries no page selection,
+ * which belongs to the pictures. Without Poppler the answer is an unavailable engine.
+ */
+export async function convertMarkupPageImages(
+  deps: OfficeSuiteRouteDeps,
+  request: OfficeSuiteRequest,
+  convertDirectly: () => Promise<WorkerConversionResult>
+): Promise<WorkerConversionResult> {
+  const { input, src, tgt, options, originalFilename } = request;
+  if (!PAGE_IMAGE_SOURCES.has(src) || !PAGE_IMAGE_TARGETS.has(tgt)) return convertDirectly();
+  const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
+  const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
+  const pdfOptions = { ...options, libreOfficeFilter: undefined, outputPath: undefined, inProcessFallback: undefined, page: undefined, pages: undefined, multiPageOutput: undefined } as WorkerEngineOptions;
+  const pdf = await deps.convert(source, src, PDF_FORMAT, pdfOptions, originalFilename);
+  try {
+    const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? pdf.buffer : { inputBuffer: pdf.buffer, outputPath: requestedOutput };
+    return await deps.convert(next, PDF_FORMAT, tgt, { ...options, libreOfficeFilter: undefined, inProcessFallback: false }, originalFilename);
+  } finally {
+    deps.discardOutput(pdf.filePath, input, options);
   }
 }
 

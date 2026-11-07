@@ -636,11 +636,12 @@ describe('assertExtractionContained', () => {
   });
 
   it('rejects more entries than the cap', () => {
-    for (let i = 0; i < 50_001; i++) {
+    const smallCap = { ...LIMITS, MAX_FILES: 100 };
+    for (let i = 0; i < smallCap.MAX_FILES + 1; i++) {
       fs.writeFileSync(path.join(root, `f${i}.txt`), 'x');
     }
 
-    expect(unsafeReason(() => assertExtractionContained(root, 50_001, LIMITS))).toBe('entry-count');
+    expect(unsafeReason(() => assertExtractionContained(root, smallCap.MAX_FILES + 1, smallCap))).toBe('entry-count');
   });
 
   it('rejects output over the size cap even when the listing claimed less', () => {

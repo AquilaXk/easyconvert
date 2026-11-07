@@ -8,7 +8,7 @@
  *   document, an Excel template a workbook, a PowerPoint slideshow a presentation, an OpenDocument template an
  *   OpenDocument file with another mimetype). They are read by the reader of the plain format.
  * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, Lotus Word Pro, OpenOffice.org 1.x, StarOffice,
- *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony and Palm e-books, the Visio and CorelDRAW drawings, the Windows and Computer Graphics metafiles). Their bytes are never read as text;
+ *   AbiWord, Quattro Pro, Numbers, Pages, Publisher, the Sony and Palm e-books, the Visio and CorelDRAW drawings, the Windows and Computer Graphics metafiles). Their bytes are never read as text;
  *   the office suite imports them and either writes the target itself or writes an interchange file that the in-process
  *   converter of that format turns into the target.
  */
@@ -62,6 +62,10 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   cgm: { application: 'impress' },
   sdw: { application: 'writer', interchange: 'docx' },
   zabw: { application: 'writer', interchange: 'docx' },
+  // AbiWord's plain XML is read by the same importer as its gzip form; the in-process text extractor returned the XML markup as the text.
+  abw: { application: 'writer', interchange: 'docx' },
+  // iWork Pages: the suite's libetonyek importer opens a document as a word processor (it has no export to a spreadsheet or a presentation).
+  pages: { application: 'writer', interchange: 'docx' },
   sdc: { application: 'calc', interchange: 'xlsx' },
   qpw: { application: 'calc', interchange: 'xlsx' },
 };

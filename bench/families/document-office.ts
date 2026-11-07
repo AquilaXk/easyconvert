@@ -46,7 +46,7 @@ interface GoldenEntry {
 }
 
 /** The source file, verified against the SHA-256 of the golden corpus manifest. */
-function goldenFile(name: string): string {
+export function goldenFile(name: string): string {
   const entries = (JSON.parse(fs.readFileSync(GOLDEN_MANIFEST, 'utf8')) as { files: GoldenEntry[] }).files;
   const entry = entries.find((candidate) => path.basename(candidate.relativePath) === name);
   if (!entry) throw new OutputIntegrityError(`${name} is not in the golden corpus manifest`);
@@ -58,7 +58,7 @@ function goldenFile(name: string): string {
 }
 
 /** Names in reading order: slide2 before slide10, page-9 before page-10. */
-const byNumberedName = (a: string, b: string): number => a.localeCompare(b, 'en', { numeric: true });
+export const byNumberedName = (a: string, b: string): number => a.localeCompare(b, 'en', { numeric: true });
 
 const decodeEntities = (text: string): string => text.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) => XML_ENTITIES[name]);
 
@@ -67,19 +67,19 @@ function textOf(xml: string, element: RegExp): string[] {
 }
 
 /** The words of a deck, read from the text runs of its slides. */
-async function slideWords(file: string): Promise<string[]> {
+export async function slideWords(file: string): Promise<string[]> {
   const zip = await JSZip.loadAsync(fs.readFileSync(file));
   const slides = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort(byNumberedName);
   const texts = await Promise.all(slides.map(async (name) => textOf((await zip.file(name)?.async('string')) ?? '', /<a:t>([^<]*)<\/a:t>/g)));
   return wordsOf(texts.flat().join(' '));
 }
 
-function wordsOf(text: string): string[] {
+export function wordsOf(text: string): string[] {
   return normalizeOcrText(text).toLowerCase().match(WORD_PATTERN) ?? [];
 }
 
 /** Share of the words of `truth` found in `text`, each occurrence counted once. */
-function wordRecall(truth: readonly string[], text: string): number {
+export function wordRecall(truth: readonly string[], text: string): number {
   const available = new Map<string, number>();
   for (const word of wordsOf(text)) available.set(word, (available.get(word) ?? 0) + 1);
   let found = 0;
@@ -119,7 +119,7 @@ export function sofficePdf(soffice: string, profile: string, input: string, outD
   return path.join(outDir, `${path.parse(input).name}.pdf`);
 }
 
-function pages(pdftoppm: string, pdf: string, outDir: string): string[] {
+export function pages(pdftoppm: string, pdf: string, outDir: string): string[] {
   fs.mkdirSync(outDir, { recursive: true });
   runTool(pdftoppm, ['-r', PDFTOPPM_DPI, '-png', pdf, path.join(outDir, 'page')]);
   return fs.readdirSync(outDir).filter((name) => name.endsWith('.png')).sort(byNumberedName).map((name) => path.join(outDir, name));

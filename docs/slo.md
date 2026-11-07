@@ -93,4 +93,4 @@ For a graph, `histogram_quantile(0.95, sum by (le) (rate(easyconvert_http_reques
 
 ## What is not here yet
 
-Phase 2 of issue #899 adds the alert rules (burn of the error budget of the figures above, the age of the queue, the restart rate of the worker), the scraper that evaluates them, and the runbook entry each alert links to. Structured JSON logs with a request or job id are not part of phase 1: the outcome lines of the convert routes already carry a request id and redact file names and passwords, and the job logs are unchanged.
+Phase 2 of issue #899 adds the alert rules (burn of the error budget of the figures above, the age of the queue, the restart rate of the worker), the scraper that evaluates them, and the runbook entry each alert links to. The runbook entries are written already, one for each of the three alerts, in [operations/alerts.md](operations/alerts.md), so that the rules can link to them. Structured JSON logs with a request or job id are not part of phase 1: the outcome lines of the convert routes already carry a request id and redact file names and passwords, and the job logs are unchanged.
