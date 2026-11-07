@@ -246,7 +246,7 @@ task_vtracer() {
 
 # AVIF is written by avifenc (libavif and libaom, BSD-2-Clause, a separate program) built by scripts/install-avifenc.sh from archives pinned by
 # SHA-256, which checks every digest before anything in the archive runs. The program is linked into /usr/local/bin as avifenc-pinned, where the
-# product looks for it first; the apt package stays at /usr/bin/avifenc as the fallback and as the encoder the benchmark compares against. The build
+# product looks for it first and the quality benchmark's reference side runs (bench/tools.ts); the apt package stays at /usr/bin/avifenc as the fallback. The build
 # is cached by the hash of the script and its note, with the SHA-256 of the program beside it: a restored program is used only when it still has the
 # digest written at the build, and is built again otherwise.
 task_avifenc() {
