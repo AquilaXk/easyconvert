@@ -65,8 +65,7 @@ const HANDED_OFF_RENEWAL_ATTEMPTS = 2;
 /**
  * Gives the reservation `reservationId` the lease of handed-off work, once that work is known to be stored or a worker took
  * it, as a consumer extends its hold on the work it takes. The work runs either way, so a renewal that throws twice is only
- * logged, and so is one that finds no live lease, as a warning: work that committed fast, a graph that already settled, or a
- * reservation made before leases.
+ * logged, and so is one that finds no live lease, as a warning: work that committed fast, or a graph that already settled.
  */
 export async function leaseToHandedOffWork(reservationId: string): Promise<void> {
   for (let attempt = 1; attempt <= HANDED_OFF_RENEWAL_ATTEMPTS; attempt++) {

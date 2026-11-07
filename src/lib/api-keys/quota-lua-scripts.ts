@@ -6,9 +6,7 @@
 /**
  * The leases of an owner's day (reservation-ledger.ts), whose keys every script names once, in the order of
  * `ReservationKeys`: `usage` is the day's count, `leases` a sorted set of the live reservations scored by the time their lease
- * ends, `held` a hash of the units each one holds, `extensions` a hash of what each extension of one reservation holds, and
- * `beforeLeases` the key the release before leases kept a reservation under; a script on the day alone is given the first
- * three. Every script first gives back the units of each lease that ended (`reclaim`), so a reservation whose holder died stops
+ * ends, `held` a hash of the units each one holds, `extensions` a hash of what each extension of one reservation holds; a script on the day alone is given the first three. Every script first gives back the units of each lease that ended (`reclaim`), so a reservation whose holder died stops
  * counting once its lease ends, and no script acts on a lease that ended. `now` is the clock of the Redis server (`TIME`,
  * which a script may call since scripts are replicated by their effects), so every web and worker process ends a lease at the
  * same moment whatever its own clock says; callers pass durations, never times. `keep` makes a key live at least until a time,
@@ -16,7 +14,7 @@
  * still ends on its own day.
  */
 const LEASE_FUNCTIONS = `
-local usage, leases, held, extensions, beforeLeases = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
+local usage, leases, held, extensions = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local time = redis.call('TIME')
 local now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
 local function reclaim()
@@ -83,25 +81,18 @@ return 1
 /**
  * Ends a live reservation once, charging ARGV[2] units in place of those it held, or keeping them with ARGV[2] = 'held': a
  * commit keeps them, a rollback charges 0, and a settle charges what was used. A count that is gone is not made again. The
- * extensions of the reservation end with it. A reservation made before the deploy is ended from `beforeLeases`, its units as
- * a string, which lives until the end of its day, so the units of work still running then are charged or given back like any
- * other; after that day no such key is left (docs/policy-decisions.md, entry 15).
+ * extensions of the reservation end with it.
  */
 export const SETTLE_TO_QUOTA_LUA_SCRIPT = `
 -- ARGV[1]: reservation id  ARGV[2]: units charged in its place, or 'held'
 -- Returns {1 ended | 0 no live reservation, units charged more (fewer when negative)}
 ${LEASE_FUNCTIONS}
 local reserved = redis.call('HGET', held, ARGV[1])
-if reserved then
-  redis.call('HDEL', held, ARGV[1])
-  redis.call('ZREM', leases, ARGV[1])
-else
-  reserved = redis.call('GET', beforeLeases)
-  if not reserved then
-    return {0, 0}
-  end
-  redis.call('DEL', beforeLeases)
+if not reserved then
+  return {0, 0}
 end
+redis.call('HDEL', held, ARGV[1])
+redis.call('ZREM', leases, ARGV[1])
 redis.call('DEL', extensions)
 reserved = tonumber(reserved)
 local diff = 0
