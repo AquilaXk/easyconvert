@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import type { FormatCategory } from '@/lib/types';
+import { formatChipLabel } from '@/lib/format-full-names';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 
 const CHIP_CLASS =
@@ -48,14 +49,14 @@ export function FormatCrossLinks({ format, targets, sources }: Readonly<FormatCr
   if (targets.length === 0 && sources.length === 0) {
     return null;
   }
-  const upper = format.toUpperCase();
+  const upper = formatChipLabel(format.toLowerCase());
   const chipsOf = (others: string[], isFrom: boolean) =>
     others.map((other) => {
       const from = isFrom ? format : other;
       const to = isFrom ? other : format;
       return {
         href: `/${from.toLowerCase()}-to-${to.toLowerCase()}`,
-        label: t('pair', { src: from.toUpperCase(), tgt: to.toUpperCase() }),
+        label: t('pair', { src: formatChipLabel(from.toLowerCase()), tgt: formatChipLabel(to.toLowerCase()) }),
       };
     });
 
@@ -97,7 +98,7 @@ export function CategoryConverters({ category }: Readonly<{ category: FormatCate
         eyebrow={t('eyebrow')}
         heading={t('heading', { category: label })}
         intro={t('intro')}
-        chips={stat.formats.map((fmt) => ({ href: `/${fmt.id}-converter`, label: fmt.extension }))}
+        chips={stat.formats.map((fmt) => ({ href: `/${fmt.id}-converter`, label: formatChipLabel(fmt.id) }))}
       />
     </section>
   );

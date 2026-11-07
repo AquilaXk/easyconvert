@@ -278,8 +278,11 @@ export const internalPaths = {
       operationId: 'getCurrentUser',
       security: SESSION_ONLY,
       responses: {
-        '200': createJsonResponse('Signed-in user.', { success: { type: 'boolean' }, user: { type: 'object' } }),
-        '401': createErrorResponse('Not signed in.'),
+        '200': createJsonResponse('The signed-in user, or `authenticated` false and a null `user` for a visitor without a session.', {
+          success: { type: 'boolean' },
+          authenticated: { type: 'boolean' },
+          user: { type: 'object', nullable: true },
+        }),
       },
     },
   },

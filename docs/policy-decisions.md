@@ -6353,3 +6353,18 @@ Security
   - **A `Retry-After` computed from the queue backoff**: the 503 here does not come from a queue attempt, so the number would be invented.
 - **Verified by**: `tests/convert-error-contract.test.ts` (a plain `Error` with each of the words answers 500; the empty-payload and unsupported-pair sites are typed; the 503 of both convert routes and the batch route carries `Retry-After`; the batch route answers a fault class 500, a typed refusal with its code, logs one failure or refusal line free of the file name, and logs a refusal no error decided), `tests/raster-vectorize.test.ts` (the tracer's time-out is the base class), `tests/convert-error-boundaries.test.ts`.
 - **Revisit when**: a library error that reaches the route as a plain `Error` is a bad input in practice; give its throw site a class at that point.
+
+## 178. The session read answers 200 for a visitor without a session, a format list names each format by its id, and a page that does not convert words its upload card for what it does
+
+- **Status**: Implemented (site review, text and wiring only; no layout, size, colour or spacing changed).
+- **Decision**:
+  - **`GET /api/auth/me` answers 200 with `{ success: false, authenticated: false, user: null }` when there is no session**, and the signed-in answer gains `authenticated: true`. The callers (the header's plan read and the dashboard) already took an answer without a user as signed out, so none changed.
+  - **A list of formats labels each format by its id** (`formatChipLabel`), with a name for the three ids that run two words together (`ultrahdr` is Ultra HDR, `webpvideo` Animated WebP, `svgfont` SVG Font). The file extension is no label: an Ultra HDR image has the extension of a JPEG and an ALTO document that of XML.
+  - **The upload card and the file input of the merge, compress and OCR pages say combine, compress and read text**, not convert. The format tiles of those pages still show the one format twice; changing them would change the layout.
+  - **The home API sample posts to the origin the API documentation shows** (`APP_ORIGIN`), read on the server.
+- **Why**: A 401 for an expected state is logged by the browser as an error on every page. A list that shows two formats under one label cannot be told apart. A merge page that asks to "convert" misdescribes the action, and a sample on a host that is not ours fails when copied.
+- **Alternatives rejected**:
+  - **Keeping the 401 and hiding the log**: the browser logs a failed request whatever the script does.
+  - **Labelling by name in the registry**: the full names are long and the picker and the format cards already use the id.
+- **Verified by**: `tests/site-review-copy.test.ts`.
+- **Revisit when**: the tiles of the operation pages may change layout; then they name the operation and not the format twice.

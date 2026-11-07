@@ -92,6 +92,17 @@
         "storage:download": "이 키로 변환한 결과 다운로드"
       },
       "errors1": "거절되거나 실패한 요청에는 400 이상의 상태 코드와 <code>application/problem+json</code> 형식의 문제 상세 본문(RFC 9457)이 와요.",
+      "problemFields": {
+        "type": "문제의 종류를 가리키는 URI 참조예요.",
+        "title": "문제의 종류를 사람이 읽을 수 있게 짧게 요약한 문장이에요.",
+        "status": "이번 응답에 쓴 HTTP 상태 코드예요.",
+        "detail": "이번 문제를 사람이 읽을 수 있게 설명한 문장이에요.",
+        "instance": "이번 문제를 가리키는 URI 참조예요.",
+        "invalidParams": "검증에 실패한 매개변수의 목록이에요.",
+        "code": "변환을 거절한 원인이에요. 응답을 정한 오류가 원인을 알려 줄 때만 담기고, 릴리스가 바뀌어도 값이 그대로예요(예: `engine_unavailable`).",
+        "success": "예전 응답과 맞추기 위한 값이에요. 항상 false예요.",
+        "error": "예전 응답과 맞추기 위한 오류 문장이에요. detail과 같은 내용이에요."
+      },
       "errors2": "<code>type</code>이 원인을 알려 주고, 원인에 따라 필드가 더 붙어요. 하루 변환 횟수를 다 사용했을 때의 <code>dailyLimit</code>와 <code>remaining</code>이 그 예예요. <downloads>다운로드</downloads>와 <usage>사용량</usage>은 대신 <code>success</code>가 false이고 <code>error</code> 문장이 담긴 JSON으로 응답해요. 상태 코드의 의미는 다음과 같아요.",
       "statuses": {
         "400": "요청 형식이 잘못됐어요. 필드가 누락됐거나, 모르는 형식이거나, 제공하지 않는 변환이에요.",
@@ -247,6 +258,7 @@
   "auth": {
     "loginHeading": "로그인",
     "registerHeading": "회원가입",
+    "registerDocumentTitle": "회원가입 | EasyConvert",
     "switchToRegister": "계정이 없나요? <link>회원가입</link>",
     "switchToLogin": "이미 계정이 있나요? <link>로그인</link>",
     "emailDivider": "또는",
@@ -529,6 +541,20 @@
     "directoryIntro": "{categories}개 분류, {formats}개 형식, 변환 조합 {pairs}개를 살펴보세요.",
     "extensionsHeading": "{category} 형식",
     "pairsHeading": "자주 쓰는 {category} 변환",
+    "categoryNouns": {
+      "image": "이미지",
+      "document": "문서",
+      "archive": "압축 파일",
+      "video": "동영상",
+      "audio": "오디오",
+      "ebook": "전자책",
+      "spreadsheet": "스프레드시트",
+      "presentation": "프레젠테이션",
+      "data": "데이터·표",
+      "vector": "벡터",
+      "font": "글꼴",
+      "cad": "CAD·3D"
+    },
     "pairs": {
       "png-webp": "투명도를 유지하는 웹 이미지 압축",
       "heic-jpg": "어느 기기에서나 열리는 카메라 사진",
@@ -577,7 +603,7 @@
       "legal": "약관과 정책",
       "contact": "문의"
     },
-    "copyright": "© 2026 EasyConvert.com"
+    "copyright": "© 2026 EasyConvert"
   },
   "formatDetail": {
     "fallbackName": "{ext} 형식",
@@ -710,6 +736,23 @@
       "pair": "{src} 파일을 {tgt} 형식으로 온라인에서 변환해요.",
       "source": "{src} 파일을 원하는 형식으로 온라인에서 변환해요.",
       "default": "문서, 이미지, 오디오, 동영상, 압축 파일을 온라인에서 원하는 형식으로 변환해요."
+    },
+    "operations": {
+      "merge": {
+        "fileInputLabel": "합칠 파일 선택",
+        "heading": "합칠 파일을 선택하세요",
+        "selectFile": "파일 선택"
+      },
+      "compress": {
+        "fileInputLabel": "압축할 파일 선택",
+        "heading": "압축할 파일을 선택하세요",
+        "selectFile": "파일 선택"
+      },
+      "ocr": {
+        "fileInputLabel": "글자를 읽을 파일 선택",
+        "heading": "글자를 읽을 파일을 선택하세요",
+        "selectFile": "파일 선택"
+      }
     },
     "dropzone": {
       "heading": "변환할 파일을 선택하세요",
@@ -1117,7 +1160,7 @@
     "info": {
       "contact": {
         "title": "문의",
-        "description": "질문, 의견, 오픈 소스 관련 문제는 팀에 직접 문의해 주세요."
+        "description": "질문이나 의견은 팀에 직접 문의해 주세요."
       },
       "about": {
         "title": "서비스 소개",

@@ -1,6 +1,7 @@
 import HomePageView from '@/components/pages/HomePageView';
 import PageMessages from '@/i18n/PageMessages';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
+import { siteMetadataBase } from '@/i18n/metadata';
 import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 
 export function generateMetadata({ params }: { params: LocaleParams }) {
@@ -11,7 +12,7 @@ export default async function HomePage({ params }: Readonly<{ params: LocalePara
   await resolvePageLocale(params);
   return (
     <PageMessages page="home">
-      <HomePageView dailyLimit={getAnonymousDailyLimit()} />
+      <HomePageView dailyLimit={getAnonymousDailyLimit()} apiOrigin={siteMetadataBase()?.origin ?? ''} />
     </PageMessages>
   );
 }
