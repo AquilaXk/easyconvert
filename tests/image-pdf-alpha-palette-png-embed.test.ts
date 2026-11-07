@@ -11,6 +11,7 @@ import { DEFAULT_PRINT_DENSITY } from '../src/lib/conversions/image-print-densit
 import { requireOracleTool } from './helpers/differential-oracle';
 import { CHANNELS_OF, craftPng, type CraftedPng } from './helpers/png-craft';
 import { skipWithoutTools } from './helpers/strict-skip';
+import { expectNoHang } from './helpers/timing';
 
 /**
  * A picture with an alpha channel (grey+alpha, RGBA), a palette (with or without a tRNS chunk) or interlacing is placed on a PDF page
@@ -139,9 +140,9 @@ describe('an alpha, palette or interlaced PNG on a PDF page', () => {
   it.skipIf(noTools)('stops inflating after the last row of the image (a bomb behind it is not read)', async () => {
     const bomb = crafted(6, 8, 8, 8, { trailingBytes: 256 * 1024 * 1024 });
     expect(bomb.length).toBeLessThan(2 * 1024 * 1024);
-    const started = Date.now();
-    const pdf = await assemblePicturePdf([{ png: bomb, width: 8, height: 8, density: DEFAULT_PRINT_DENSITY }], undefined);
-    expect(Date.now() - started).toBeLessThan(5000);
+    const pdf = await expectNoHang('a PNG with a bomb behind its last row', () =>
+      assemblePicturePdf([{ png: bomb, width: 8, height: 8, density: DEFAULT_PRINT_DENSITY }], undefined)
+    );
     const fresh = await extract(pdf, 'bomb');
     expect(fresh.listing.map((row) => row[0])).toEqual(['image', 'smask']);
   });
