@@ -603,7 +603,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3459
+    "maxValue": 3348
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",

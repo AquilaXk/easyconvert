@@ -114,6 +114,22 @@ RUN /tmp/install-vtracer.sh /opt/vtracer
 RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 
 # ==============================================================================
+# Stage 3b'': Pinned google/woff2 (WOFF2 encoder and decoder)
+# ==============================================================================
+# TTF/OTF to WOFF2 and WOFF2 to TTF/OTF. google/woff2 and the Brotli library it takes are MIT. Both are built here from the sources
+# pinned by commit and SHA-256 in scripts/install-woff2.sh, with the make rules of the woff2 tree, into woff2_compress and
+# woff2_decompress; the worker runs them as separate sandboxed processes and nothing links them into the application. The in-process
+# codec stays as the fallback for what they decline. Debian ships the 1.0.2 release of 2017 as a package of its own; the pinned commit
+# carries the later bounds fixes.
+FROM ${NODE_IMAGE} AS woff2
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-woff2.sh /tmp/install-woff2.sh
+RUN /tmp/install-woff2.sh /opt/woff2
+
+# ==============================================================================
 # Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
 # ==============================================================================
 # Every audio and video conversion. FFmpeg is built here from its release archive and one patch (scripts/ffmpeg-patches), both
@@ -405,6 +421,22 @@ RUN dir="$(mktemp -d)" \
     && grep -q '<path d="M' "$dir/out.svg" \
     && rm -rf "$dir"
 
+# WOFF2 programs (pinned google/woff2 from the woff2 stage). Their licence texts go to /usr/share/doc/woff2/copyright, which the notices
+# step below collects into /licenses with the system packages, and the SOURCE file names the archives and their digests. The build fails
+# unless the programs turn a 612-byte TrueType font, written here as bytes, into a WOFF2 file and back into a font that starts as a
+# TrueType font does.
+COPY --from=woff2 /opt/woff2/bin/woff2_compress /usr/local/bin/woff2_compress
+COPY --from=woff2 /opt/woff2/bin/woff2_decompress /usr/local/bin/woff2_decompress
+COPY --from=woff2 /opt/woff2/share/doc/woff2 /usr/share/doc/woff2
+RUN dir="$(mktemp -d)" \
+    && printf '%s' 'AAEAAAAKAIAAAwAgT1MvMkE4QkEAAAEoAAAAYGNtYXAADACUAAABkAAAADRnbHlmsqCyngAAAcwAAAA0aGVhZC/6xBoAAACsAAAANmhoZWEF3gJaAAAA5AAAACRobXR4AyAAZAAAAYgAAAAGbG9jYQAaAA0AAAHEAAAABm1heHAABAAGAAABCAAAACBuYW1lAJlcyAAAAgAAAAA8cG9zdAAoAAAAAAI8AAAAJgABAAAAAQAASh5qi18PPPUAAwPoAAAAAOcUQD8AAAAA5xRAPwBkAAACWAK8AAAAAwACAAAAAAAAAAEAAAMg/zgAAAK8AGQAZAJYAAEAAAAAAAAAAAAAAAAAAAABAAEAAAACAAQAAQAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwK8AZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAPz8/PwAAAEEAQQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAACvABkAGQAAAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAAAQf//AAAAQf///8AAAQAAAAAAAAANABoAAAABAGQAAAJYArwAAwAAMxEhEWQB9AK8/UQAAAEAZAAAAlgCvAADAAAzESERZAH0Arz9RAAAAAAEADYAAQAAAAAAAQABAAAAAQAAAAAAAgABAAEAAwABBAkAAQACAAIAAwABBAkAAgACAARUUgBUAFIAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAJAAA' | base64 -d > "$dir/font.ttf" \
+    && woff2_compress "$dir/font.ttf" \
+    && test "$(head -c 4 "$dir/font.woff2")" = wOF2 \
+    && rm "$dir/font.ttf" \
+    && woff2_decompress "$dir/font.woff2" \
+    && test "$(head -c 4 "$dir/font.ttf" | od -An -tx1 | tr -d ' ')" = 00010000 \
+    && rm -rf "$dir"
+
 # DjVu renderer (the patched djvulibre built in the djvulibre stage, GPL-2.0-or-later, started as a separate program like the other GPL
 # tools above). The worker finds it as /usr/local/bin/ddjvu with djvused beside it; the distribution's package is not installed, so no
 # /usr/bin/ddjvu comes first. Its licence text goes to /usr/share/doc/djvulibre/copyright, which the notices step below collects into
@@ -530,6 +562,7 @@ RUN cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-
 RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
 RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
+RUN cp /usr/share/doc/woff2/SOURCE /licenses/woff2.SOURCE
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.

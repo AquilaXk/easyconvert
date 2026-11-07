@@ -351,10 +351,18 @@ describe('WOFF2 encoder: specific encodings', () => {
     expect(brotliDecompressSync(fast).equals(reading.stream)).toBe(true);
   });
 
-  it('writes the same file through convertFont as through the codec', async () => {
-    const result = await convertFont(fixture('dejavu-sans-latin.ttf'), 'ttf', 'woff2', {}, 'dejavu.ttf');
-    expect(result.mimeType).toBe('font/woff2');
-    expect(result.buffer.equals(encodeFixture('dejavu-sans-latin.ttf'))).toBe(true);
+  it('writes the same file through convertFont as through the codec when the worker has no WOFF2 program', async () => {
+    // With woff2_compress installed convertFont hands the font to it (tests/font-woff2-native.test.ts); an empty path means not installed.
+    const before = process.env.WOFF2_COMPRESS_PATH;
+    process.env.WOFF2_COMPRESS_PATH = '';
+    try {
+      const result = await convertFont(fixture('dejavu-sans-latin.ttf'), 'ttf', 'woff2', {}, 'dejavu.ttf');
+      expect(result.mimeType).toBe('font/woff2');
+      expect(result.buffer.equals(encodeFixture('dejavu-sans-latin.ttf'))).toBe(true);
+    } finally {
+      if (before === undefined) delete process.env.WOFF2_COMPRESS_PATH;
+      else process.env.WOFF2_COMPRESS_PATH = before;
+    }
   });
 
   it('converts WOFF2 to WOFF2 through the decoder and the encoder without changing the file', async () => {
