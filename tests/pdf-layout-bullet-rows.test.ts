@@ -22,6 +22,8 @@ import { skipWithoutTools } from './helpers/strict-skip';
  */
 
 const toolsMissing = skipWithoutTools('pdftotext');
+/** A real file of 100 pages reads in seconds on a loaded runner, past the default test timeout. */
+const REAL_FILE_TIMEOUT_MS = 120_000;
 
 /** WinAnsi 0x95, the bullet. */
 const BULLET = '\\225';
@@ -77,6 +79,11 @@ describe.skipIf(toolsMissing)('a list whose bullets sit apart from their text', 
     expect(text).toContain('• A concept of operations under which the data definitions are used.');
     expect(text).toContain('• Precise definitions of the sequences in which certain data are to be exchanged (dialogs) are being added. Examples of these dialogs include:');
     expect(text).toContain('• Standardized data elements pertaining to the definition of a phase.');
+    expect(text.split('\n').filter((line) => line.startsWith('•'))).toEqual([
+      '• A concept of operations under which the data definitions are used.',
+      '• Precise definitions of the sequences in which certain data are to be exchanged (dialogs) are being added. Examples of these dialogs include:',
+      '• Standardized data elements pertaining to the definition of a phase.',
+    ]);
   });
 
   it('keeps the header apart from the list and says the words pdftotext prints', async () => {
@@ -101,7 +108,7 @@ describe.skipIf(toolsMissing)('a list whose bullets sit apart from their text', 
     ];
     const pdf = pageOf(rows.flatMap(([first, second], index) => [{ x: 72, y: 700 - index * 18, text: first }, { x: 300, y: 700 - index * 18, text: second }]));
     const text = await textOf(pdf);
-    expect(text).toContain('Name\tBeta');
+    expect(text).toBe('-\tAlpha\nName\tBeta\nOther\tGamma\nMore\tDelta');
   });
 });
 
@@ -113,7 +120,7 @@ describe.skipIf(toolsMissing)('the real files whose Wingdings bullets print noth
     expect(text).not.toContain('Executive Summary\tWhy Do We Need NTCIP?');
     expect(text).toContain('• Precise definitions of the sequences in which certain data definitions are to be exchanged (dialogs) are being added. Examples of these dialogs include:');
     expect(text).toContain('• A traffic signal management system communicating with traffic signal controllers at intersections;');
-  });
+  }, REAL_FILE_TIMEOUT_MS);
 
   it('gd-326174.pdf: the section heading, its sentence and each item of the list that has no bullet to print are lines of their own', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'gd-326174.pdf');
@@ -124,7 +131,7 @@ describe.skipIf(toolsMissing)('the real files whose Wingdings bullets print noth
     const items = lines.slice(at + 1, at + 15).filter((line) => line !== '');
     expect(items.slice(0, 3)).toEqual(['Methane Sources – Overview', 'Markets for Methane – Overview', 'Methane Sources and Markets in Target Countries']);
     expect(lines.slice(at - 2, at + 15).some((line) => line.includes('\t'))).toBe(false);
-  });
+  }, REAL_FILE_TIMEOUT_MS);
 
   it('gd-070040.pdf: the names under a state are lines of their own, not cells next to the state names of another column', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'gd-070040.pdf');
@@ -133,5 +140,5 @@ describe.skipIf(toolsMissing)('the real files whose Wingdings bullets print noth
     expect(at).toBeGreaterThan(0);
     expect(lines[at - 2]).toBe('California');
     expect(lines.slice(at - 2, at + 12).some((line) => line.includes('\t'))).toBe(false);
-  });
+  }, REAL_FILE_TIMEOUT_MS);
 });
