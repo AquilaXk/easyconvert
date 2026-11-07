@@ -349,7 +349,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_vtracer task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_vtracer task_avifenc task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

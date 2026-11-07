@@ -178,6 +178,13 @@ run_tasks slow
 });
 
 describe('the task list and its limits', () => {
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('hands every task to the shell that runs it: each task function is exported', () => {
+    const tasks = [...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS];
+    const outcome = runSourced(`for task in ${tasks.join(' ')}; do bash -c "declare -F task_$task > /dev/null" || echo "missing $task"; done`);
+    expect(outcome.status, outcome.stderr).toBe(0);
+    expect(outcome.stdout.trim()).toBe('');
+  });
+
   it.skipIf(skipUnless(NEEDS, canRunSetup))('runs the dependent tasks by name and leaves the task list of the job as it was', () => {
     const outcome = runSourced('configure; select_tasks; run_tasks() { echo "ran $*"; }; run_dependent_tasks; echo "tasks ${tasks[*]}"', { S3_TEST_SERVER: 'false' });
     expect(outcome.status, outcome.stderr).toBe(0);
