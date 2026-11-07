@@ -1536,6 +1536,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Text and markup sources: their Word 97 and RTF files are the office suite's, and their page images are drawn by Poppler from their PDF. */
   const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'rst']);
+  /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
+  const TABLE_PICTURE_SOURCE = 'csv';
   /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */
   const BRIDGED_PDF_TARGETS = new Set(['doc', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
@@ -1566,7 +1568,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
   const pairs = allPartPairs.filter(([, target]) => !isCalibreEbookTarget(target));
   const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
-  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
+  const MARKDOWN_TARGET = 'md';
+  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && pair[1] !== MARKDOWN_TARGET && authorable(pair));
+  const officeToMarkdown = pairs.filter((pair) => pair[0] !== PDF_SOURCE && pair[1] === MARKDOWN_TARGET && authorable(pair));
   const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
   const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
   const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
@@ -1584,7 +1588,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
     if (DJVU_SOURCES.has(source)) return { envVar: 'DDJVU_PATH', engineName: 'ddjvu' };
     // The pictures of a text, Markdown, reStructuredText or HTML document are the pages of its PDF, drawn by Poppler; the office suite writes its Word 97 and RTF files.
-    if (DOCUMENT_TEXT_SOURCES.has(source)) return IMAGE_TARGETS.has(target) ? { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' } : { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
+    if (DOCUMENT_TEXT_SOURCES.has(source) || source === TABLE_PICTURE_SOURCE) return IMAGE_TARGETS.has(target) ? { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' } : { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     // A table read from a PDF is written as .xls, and a text or slide document as Word 97 or PowerPoint 97, by the office suite, like every other source of those formats.
     if (source !== PDF_SOURCE || BRIDGED_PDF_TARGETS.has(target)) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET || target === 'dxf') return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
@@ -1625,16 +1629,29 @@ describe('native-engine pairs route through the dispatcher', () => {
     docm: 'application/vnd.ms-word.document.macroEnabled.main+xml',
     dotx: `${OPENXML}.wordprocessingml.template.main+xml`,
   };
+  /** The same for the PowerPoint variants of the seed deck: a template, a slide show and a macro-enabled presentation. */
+  const PRESENTATION_VARIANT_MAIN: Readonly<Record<string, string>> = {
+    potx: `${OPENXML}.presentationml.template.main+xml`,
+    ppsx: `${OPENXML}.presentationml.slideshow.main+xml`,
+    pptm: 'application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml',
+  };
+  const PACKAGE_VARIANTS = new Set([...Object.keys(WORD_VARIANT_MAIN), ...Object.keys(PRESENTATION_VARIANT_MAIN)]);
   beforeAll(async () => {
-    for (const [variant, mainType] of Object.entries(WORD_VARIANT_MAIN)) {
-      const zip = await JSZip.loadAsync(fixture(SEEDS.docx));
-      const types = await zip.file('[Content_Types].xml')!.async('string');
-      zip.file('[Content_Types].xml', types.replace(WORD_MAIN, mainType));
-      realInputs.set(variant, await zip.generateAsync({ type: 'nodebuffer' }));
+    const variants: [Readonly<Record<string, string>>, string, string][] = [
+      [WORD_VARIANT_MAIN, SEEDS.docx, WORD_MAIN],
+      [PRESENTATION_VARIANT_MAIN, SEEDS.pptx, POWERPOINT_MAIN],
+    ];
+    for (const [mains, seed, plainMain] of variants) {
+      for (const [variant, mainType] of Object.entries(mains)) {
+        const zip = await JSZip.loadAsync(fixture(seed));
+        const types = await zip.file('[Content_Types].xml')!.async('string');
+        zip.file('[Content_Types].xml', types.replace(plainMain, mainType));
+        realInputs.set(variant, await zip.generateAsync({ type: 'nodebuffer' }));
+      }
     }
   });
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', dot: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', xlsm: 'xlsx', ppt: 'pptx', pps: 'pptx', odp: 'pptx', odd: 'odg' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', dot: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', xlsm: 'xlsx', ppt: 'pptx', pps: 'pptx', pot: 'pptx', odp: 'pptx', odd: 'odg' };
   /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
   const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
@@ -1683,7 +1700,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (SEEDS[source]) return fixture(SEEDS[source]);
     if (TABLE_TEXT_SEEDS[source] !== undefined) return Buffer.from(TABLE_TEXT_SEEDS[source]);
     if (DOCUMENT_TEXT_SEEDS[source] !== undefined) return Buffer.from(DOCUMENT_TEXT_SEEDS[source]);
-    if (WORD_VARIANT_MAIN[source] !== undefined) return realInput(source);
+    if (PACKAGE_VARIANTS.has(source)) return realInput(source);
     if (source === 'xlsm') return EXTRA_PROBES.xlsm();
     const ebook = await ebookSourceInput(source);
     if (ebook) return ebook;
@@ -1850,6 +1867,15 @@ describe('native-engine pairs route through the dispatcher', () => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
       expect(result.engineUsed).toMatch(/^native-soffice/);
       await expectOfficeDocument(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('soffice')).each(officeToMarkdown)(
+    '%s -> %s writes the text of the seed deck as LibreOffice prints it (needs soffice)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
+      expect(result.buffer.toString('utf-8').split('\n')[0]).toBe('# Enterprise Architecture & Golden VRT CI');
     },
     NATIVE_TIMEOUT_MS
   );
