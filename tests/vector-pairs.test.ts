@@ -12,6 +12,7 @@ import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { UnsupportedOptionError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import { runConvert, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-convert';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -42,7 +43,7 @@ const floorOf = (target: string, floor: number): number => Math.min(floor, FORMA
 const MIN_INK_SCORE = 0.9;
 const BENCH_CORPUS = path.join(__dirname, '..', 'bench', 'corpus');
 
-const toolsMissing = skipWithoutTools('soffice', 'pdftoppm', 'pdftocairo', 'gs', 'magick');
+const toolsMissing = skipWithoutTools('soffice', 'pdftoppm', 'pdftocairo', 'gs') || SKIP_WITHOUT_MAGICK;
 
 function withTempDirectory<T>(run: (directory: string) => T): T {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-pairs-'));
@@ -63,7 +64,7 @@ function decodedPng(picture: Buffer, extension: string): Buffer {
     fs.writeFileSync(file, picture);
     if (extension === 'webp') execFileSync(tool('dwebp'), ['-nodither', '-quiet', file, '-o', png]);
     else if (extension === 'avif') execFileSync(tool('avifdec'), ['--ignore-icc', file, png], { stdio: 'ignore' });
-    else execFileSync(tool('magick'), [`${extension}:${file}[0]`, '-background', 'white', '-alpha', 'remove', '-alpha', 'off', png]);
+    else runConvert([`${extension}:${file}[0]`, '-background', 'white', '-alpha', 'remove', '-alpha', 'off', png]);
     return fs.readFileSync(png);
   });
 }
@@ -166,7 +167,7 @@ function drawnByLibrsvg(svg: Buffer, width: number): Buffer {
   });
 }
 
-describe.skipIf(skipWithoutTools('magick', 'rsvg-convert', 'soffice'))('an SVG or SVGZ drawing written as an icon, a Photoshop file or a drawing package', () => {
+describe.skipIf(skipWithoutTools('rsvg-convert', 'soffice') || SKIP_WITHOUT_MAGICK)('an SVG or SVGZ drawing written as an icon, a Photoshop file or a drawing package', () => {
   for (const source of SVG_SOURCES) {
     it(
       `${source.name}: the icon, the Photoshop file and the drawing package show the drawing librsvg draws`,
@@ -239,7 +240,7 @@ const DXF_RASTERS = ['bmp', 'gif', 'tiff'] as const;
 const plateBytes = (plate: string): Buffer => fs.readFileSync(path.join(BENCH_CORPUS, 'cad', `${plate}.dxf`));
 const plateTruth = (plate: string): CadTruth => JSON.parse(fs.readFileSync(path.join(BENCH_CORPUS, 'cad', `${plate}.truth.json`), 'utf8')) as CadTruth;
 
-describe.skipIf(skipWithoutTools('magick', 'ffmpeg', 'gs'))('a DXF drawing written as BMP, GIF, TIFF or EPS', () => {
+describe.skipIf(skipWithoutTools('ffmpeg', 'gs') || SKIP_WITHOUT_MAGICK)('a DXF drawing written as BMP, GIF, TIFF or EPS', () => {
   for (const plate of PLATES) {
     it(
       `${plate}.dxf: every raster and the EPS put the strokes of the drawing where the file has them`,
@@ -277,7 +278,7 @@ describe.skipIf(skipWithoutTools('magick', 'ffmpeg', 'gs'))('a DXF drawing writt
   }, TIMEOUT_MS);
 });
 
-describe.skipIf(skipWithoutTools('gs', 'pdftocairo', 'soffice', 'rsvg-convert', 'magick'))('an Illustrator file written as SVG and DXF', () => {
+describe.skipIf(skipWithoutTools('gs', 'pdftocairo', 'soffice', 'rsvg-convert') || SKIP_WITHOUT_MAGICK)('an Illustrator file written as SVG and DXF', () => {
   /** An Illustrator file saved with PDF compatibility is a PDF with private data: the sample is the EPS of the vector family written as a PDF by Ghostscript. */
   function illustratorFile(): Buffer {
     return withTempDirectory((directory) => {
@@ -367,7 +368,7 @@ describe('the pairs left out of entry 187 stay out of the registry', () => {
 const OUTPUT_ARG = 'out=""; while [ $# -gt 0 ]; do if [ "$1" = "-o" ]; then out="$2"; fi; shift; done';
 const ANY_DWG = Buffer.concat([Buffer.from('AC1015'), Buffer.alloc(200, 1)]);
 
-describe.skipIf(skipWithoutTools('magick', 'gs'))('a DWG drawing is written through the DXF the reader writes', () => {
+describe.skipIf(skipWithoutTools('gs') || SKIP_WITHOUT_MAGICK)('a DWG drawing is written through the DXF the reader writes', () => {
   async function withStandInReader<T>(plate: string, body: () => Promise<T>): Promise<T> {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dwg-standin-'));
     const program = path.join(directory, 'dwg2dxf');
