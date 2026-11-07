@@ -461,9 +461,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 27 on a runner and 4 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(31);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(27);
+  it('reads every job of every workflow file: 28 on a runner and 4 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(32);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
   });
 
@@ -902,5 +902,31 @@ describe('nightly ab_base_ref validation (#761)', () => {
     expect(baseStep?.run).toContain('"$AB_BASE_REF" == *..*');
     expect(baseStep?.run).toContain('^[0-9A-Za-z._/-]{1,256}$');
     expect(baseStep?.run).toContain('git fetch --no-tags --depth=1 origin -- "$AB_BASE_REF"');
+  });
+});
+
+describe('the uptime workflow', () => {
+  const uptime = parse(read(path.join(WORKFLOWS, 'uptime.yml'))) as Workflow & { on: { schedule: { cron: string }[] } };
+  const job = uptime.jobs.probe;
+  const script = (job.steps ?? []).map((step) => String(step.run ?? '')).join('\n');
+
+  it('probes every 15 minutes off the hour and can be started by hand', () => {
+    expect(uptime.on.schedule.map((entry) => entry.cron)).toEqual(['7,22,37,52 * * * *']);
+    expect(uptime.on).toHaveProperty('workflow_dispatch');
+  });
+
+  it('reads the public readiness probe over HTTPS only, with no secret and read-only permissions', () => {
+    expect(uptime.permissions).toEqual({ contents: 'read' });
+    expect(job['timeout-minutes']).toBeLessThanOrEqual(5);
+    expect(JSON.stringify(job)).toContain('https://convert.aquilaxk.site/api/health');
+    expect(script).toContain("--proto '=https'");
+    expect(JSON.stringify(uptime)).not.toContain('secrets.');
+  });
+
+  it('passes only on 200 with a healthy status, and fails after three tries', () => {
+    expect(script).toContain('[ "$code" = "200" ]');
+    expect(script).toContain('"status":"healthy"');
+    expect(script).toContain('for attempt in 1 2 3');
+    expect(script.trimEnd().endsWith('exit 1')).toBe(true);
   });
 });
