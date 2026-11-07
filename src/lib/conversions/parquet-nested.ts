@@ -203,6 +203,12 @@ function columnEnded(leaf: LeafColumn): ParquetFormatError {
  * Reads one row group's records out of the leaf streams. Every leaf under a node carries one entry per instance of the
  * node (a present value, or the level at which it is absent), so a node is read from the first leaf under it and the
  * others are advanced in step.
+ *
+ * Each entry is also checked against where the walk is. The walk decides where an instance of a repeated node ends from the
+ * first leaf under it alone, so a sibling leaf whose levels split the entries differently would be read at the wrong
+ * places with no sign of it in the values. The repetition level an entry must carry is the `boundary` the walk hands down:
+ * 0 for the first entry of a record, the level of the repeated node for the second and later instances of it, and for the
+ * first instance whatever its parent was entered with.
  */
 class RecordAssembler {
   private readonly cursors: Cursor[];
@@ -211,31 +217,32 @@ class RecordAssembler {
     this.cursors = streams.map((stream) => ({ stream, entry: 0, valueIndex: 0 }));
   }
 
-  /** Every entry of every leaf must have been read once the row group's rows are. */
+  /** Every entry and every value of every leaf must have been read once the row group's rows are. */
   finish(): void {
-    for (const cursor of this.cursors) {
-      if (cursor.entry !== cursor.stream.entries) {
-        throw new ParquetFormatError(
-          `Corrupted Parquet file: column '${cursor.stream.leaf.name}' holds entries beyond the rows of its row group`
-        );
+    for (const { entry, valueIndex, stream } of this.cursors) {
+      if (entry !== stream.entries || valueIndex !== stream.values.length) {
+        throw new ParquetFormatError(`Corrupted Parquet file: column '${stream.leaf.name}' holds entries beyond the rows of its row group`);
       }
     }
   }
 
-  readField(node: SchemaNode): ParquetValue {
+  readField(node: SchemaNode, boundary: number): ParquetValue {
     if (node.repetition === FieldRepetitionType.REPEATED) {
       const items: ParquetValue[] = [];
-      if (this.repeatedStart(node)) {
-        do items.push(this.readBody(node));
-        while (this.repeatedContinues(node));
+      if (this.repeatedStart(node, boundary)) {
+        let level = boundary;
+        do {
+          items.push(this.readBody(node, level));
+          level = node.repLevel;
+        } while (this.repeatedContinues(node));
       }
       return items;
     }
     if (node.repetition === FieldRepetitionType.OPTIONAL && this.definitionAt(node) < node.defLevel) {
-      this.skip(node);
+      this.skip(node, boundary);
       return null;
     }
-    return this.readBody(node);
+    return this.readBody(node, boundary);
   }
 
   private definitionAt(node: SchemaNode): number {
@@ -245,19 +252,31 @@ class RecordAssembler {
     return levels === null ? 0 : levels[cursor.entry];
   }
 
+  /** The entry at the cursor must start an instance at the level the walk expects. */
+  private checkBoundary(cursor: Cursor, boundary: number): void {
+    const { repetitions, leaf } = cursor.stream;
+    const level = repetitions === null ? 0 : repetitions[cursor.entry];
+    if (level !== boundary) {
+      throw new ParquetFormatError(
+        `Corrupted Parquet file: repetition level ${level} where column '${leaf.name}' must have ${boundary}; its levels disagree with its siblings`
+      );
+    }
+  }
+
   /** Moves past the entries of a node that is null or empty: each of its leaves holds exactly one. */
-  private skip(node: SchemaNode): void {
+  private skip(node: SchemaNode, boundary: number): void {
     for (let i = node.firstLeaf; i < node.endLeaf; i++) {
       const cursor = this.cursors[i];
       if (cursor.entry >= cursor.stream.entries) throw columnEnded(cursor.stream.leaf);
+      this.checkBoundary(cursor, boundary);
       cursor.entry++;
     }
   }
 
   /** True when a repeated node has an instance here; an empty list is passed over. */
-  private repeatedStart(repeated: SchemaNode): boolean {
+  private repeatedStart(repeated: SchemaNode, boundary: number): boolean {
     if (this.definitionAt(repeated) >= repeated.defLevel) return true;
-    this.skip(repeated);
+    this.skip(repeated, boundary);
     return false;
   }
 
@@ -273,20 +292,20 @@ class RecordAssembler {
     return level === repeated.repLevel;
   }
 
-  private readBody(node: SchemaNode): ParquetValue {
+  private readBody(node: SchemaNode, boundary: number): ParquetValue {
     switch (node.kind) {
       case 'leaf':
-        return this.readLeaf(node);
+        return this.readLeaf(node, boundary);
       case 'list':
-        return this.readList(node);
+        return this.readList(node, boundary);
       case 'map':
-        return this.readMap(node);
+        return this.readMap(node, boundary);
       default:
-        return this.readStruct(node);
+        return this.readStruct(node, boundary);
     }
   }
 
-  private readLeaf(node: SchemaNode): ParquetValue {
+  private readLeaf(node: SchemaNode, boundary: number): ParquetValue {
     const cursor = this.cursors[node.firstLeaf];
     const { stream } = cursor;
     if (cursor.entry >= stream.entries) throw columnEnded(stream.leaf);
@@ -294,36 +313,42 @@ class RecordAssembler {
     if (level !== stream.leaf.maxDef) {
       throw new ParquetFormatError(`Corrupted Parquet file: the levels of column '${stream.leaf.name}' disagree with its siblings`);
     }
+    this.checkBoundary(cursor, boundary);
     cursor.entry++;
     return stream.values[cursor.valueIndex++];
   }
 
-  private readStruct(node: SchemaNode): ParquetValue {
+  private readStruct(node: SchemaNode, boundary: number): ParquetValue {
     const record: { [key: string]: ParquetValue } = {};
-    for (const child of node.children) setOwn(record as DataObject, child.name, this.readField(child) as DataValue);
+    for (const child of node.children) setOwn(record as DataObject, child.name, this.readField(child, boundary) as DataValue);
     return record;
   }
 
-  private readList(node: SchemaNode): ParquetValue {
+  private readList(node: SchemaNode, boundary: number): ParquetValue {
     const [repeated] = node.children;
     const element = node.element as SchemaNode;
     const items: ParquetValue[] = [];
-    if (this.repeatedStart(repeated)) {
-      do items.push(element === repeated ? this.readBody(repeated) : this.readField(element));
-      while (this.repeatedContinues(repeated));
+    if (this.repeatedStart(repeated, boundary)) {
+      let level = boundary;
+      do {
+        items.push(element === repeated ? this.readBody(repeated, level) : this.readField(element, level));
+        level = repeated.repLevel;
+      } while (this.repeatedContinues(repeated));
     }
     return items;
   }
 
-  private readMap(node: SchemaNode): ParquetValue {
+  private readMap(node: SchemaNode, boundary: number): ParquetValue {
     const [repeated] = node.children;
     const [keyNode, valueNode] = repeated.children;
     const keys: ParquetValue[] = [];
     const values: ParquetValue[] = [];
-    if (this.repeatedStart(repeated)) {
+    if (this.repeatedStart(repeated, boundary)) {
+      let level = boundary;
       do {
-        keys.push(this.readField(keyNode));
-        values.push(this.readField(valueNode));
+        keys.push(this.readField(keyNode, level));
+        values.push(this.readField(valueNode, level));
+        level = repeated.repLevel;
       } while (this.repeatedContinues(repeated));
     }
     return node.textKeys && keysAreDistinctText(keys) ? objectOf(keys as string[], values) : pairsOf(keys, values);
@@ -353,7 +378,7 @@ function pairsOf(keys: ParquetValue[], values: ParquetValue[]): ParquetValue {
 export function assembleRowGroup(root: SchemaNode, streams: LeafStream[], rows: number, columns: ParquetValue[][]): void {
   const assembler = new RecordAssembler(streams);
   for (let row = 0; row < rows; row++) {
-    for (let c = 0; c < root.children.length; c++) columns[c].push(assembler.readField(root.children[c]));
+    for (let c = 0; c < root.children.length; c++) columns[c].push(assembler.readField(root.children[c], 0));
   }
   assembler.finish();
 }

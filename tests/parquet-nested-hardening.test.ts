@@ -219,5 +219,79 @@ describe('levels that do not match the page or the row group', () => {
     it('refuses a column that holds entries its sibling never reads', () => {
       expectRefused(twoColumns([0, 1], [0, 1, 1]), /holds entries beyond the rows/);
     });
+
+    /** Two rows: items of row 0 are entries 0 and 1 of p, the item of row 1 is entry 2. */
+    function twoRows(pRepetition: number[], qRepetition: number[]): Buffer {
+      const page = (repetition: number[], values: number[]): Buffer =>
+        dataPage({ numValues: repetition.length, repetition, maxRepetition: 1, maxDefinition: 1, definition: repetition.map(() => 1), values: int32Plain(values) });
+      return buildNestedParquet({
+        fields,
+        rowGroups: [
+          {
+            numRows: 2,
+            chunks: [
+              { path: ['items', 'p'], physicalType: INT32, numValues: 3, pages: page(pRepetition, [10, 11, 12]) },
+              { path: ['items', 'q'], physicalType: INT32, numValues: 3, pages: page(qRepetition, [20, 21, 22]) },
+            ],
+          },
+        ],
+      });
+    }
+
+    it('reads columns whose records start at the same entries', () => {
+      expect(decodeParquet(twoRows([0, 1, 0], [0, 1, 0]))).toEqual([
+        { items: [{ p: 10, q: 20 }, { p: 11, q: 21 }] },
+        { items: [{ p: 12, q: 22 }] },
+      ]);
+    });
+
+    it('refuses columns that split the same entries into different records', () => {
+      expectRefused(twoRows([0, 1, 0], [0, 0, 1]), /repetition level 0 where column 'items.q' must have 1/);
+    });
+
+    it('refuses columns that split a repeated group inside a repeated group into different records', () => {
+      const nested: SchemaField[] = [
+        {
+          name: 'o',
+          repetition: REPEATED,
+          children: [
+            {
+              name: 'items',
+              repetition: REPEATED,
+              children: [
+                { name: 'p', repetition: REQUIRED, physicalType: INT32 },
+                { name: 'q', repetition: REQUIRED, physicalType: INT32 },
+              ],
+            },
+          ],
+        },
+      ];
+      const page = (repetition: number[], first: number): Buffer =>
+        dataPage({
+          numValues: repetition.length,
+          repetition,
+          definition: repetition.map(() => 2),
+          maxRepetition: 2,
+          maxDefinition: 2,
+          values: int32Plain(repetition.map((_, i) => first + i)),
+        });
+      const build = (pRepetition: number[], qRepetition: number[]): Buffer =>
+        buildNestedParquet({
+          fields: nested,
+          rowGroups: [
+            {
+              numRows: 1,
+              chunks: [
+                { path: ['o', 'items', 'p'], physicalType: INT32, numValues: 3, pages: page(pRepetition, 10) },
+                { path: ['o', 'items', 'q'], physicalType: INT32, numValues: 3, pages: page(qRepetition, 20) },
+              ],
+            },
+          ],
+        });
+      const item = (first: number): { p: number; q: number } => ({ p: first + 10, q: first + 20 });
+      expect(decodeParquet(build([0, 2, 1], [0, 2, 1]))).toEqual([{ o: [{ items: [item(0), item(1)] }, { items: [item(2)] }] }]);
+      // q puts the second item in the second `o` where p puts it in the first.
+      expectRefused(build([0, 2, 1], [0, 1, 2]), /repetition level 1 where column 'o.items.q' must have 2/);
+    });
   });
 });
