@@ -69,11 +69,17 @@ export function startMetricsServer(options: MetricsServerOptions): Promise<Metri
   server.requestTimeout = REQUEST_TIMEOUT_MS;
   server.headersTimeout = HEADERS_TIMEOUT_MS;
   return new Promise((resolve) => {
-    server.once('error', (error: NodeJS.ErrnoException) => {
+    const notListening = (error: NodeJS.ErrnoException) => {
       console.warn(`[metrics] not listening on ${options.host}:${options.port}: ${error.code ?? error.name}`);
       resolve(undefined);
-    });
+    };
+    server.once('error', notListening);
     server.listen(options.port, options.host, () => {
+      // Once listening, an error (an accept that fails when descriptors run out) is logged and the process keeps serving.
+      server.off('error', notListening);
+      server.on('error', (error: NodeJS.ErrnoException) => {
+        console.warn(`[metrics] listener error on ${options.host}:${options.port}: ${error.code ?? error.name}`);
+      });
       server.unref();
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : options.port;

@@ -128,7 +128,10 @@ export function observeJob(family: Family, outcome: Outcome, durationMs: number 
 
 /** Counts one program the sandbox did not start. */
 export function observeSandboxSpawnFailure(reason: SpawnFailureReason): void {
-  instruments().sandboxSpawnFailures.inc({ reason: onList(SPAWN_FAILURE_REASONS, reason, 'spawn_error') });
+  // Called on the way to settling a spawn: a counter that throws must not leave the run unsettled until its timeout.
+  try {
+    instruments().sandboxSpawnFailures.inc({ reason: onList(SPAWN_FAILURE_REASONS, reason, 'spawn_error') });
+  } catch {}
 }
 
 /** Sets the gauges of one queue from a reading. */

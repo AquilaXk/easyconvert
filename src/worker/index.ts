@@ -332,7 +332,9 @@ if (process.env.NODE_ENV !== 'test') {
   startRetentionSweep(ociStorage);
   startEndedRecordSweep();
   // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
-  void startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources()));
+  startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources())).catch((error: unknown) => {
+    console.error(`[metrics] worker metrics not started: ${error instanceof Error ? error.message : String(error)}`);
+  });
 
   process.on('SIGINT', () => {
     void drainWorker('SIGINT')
