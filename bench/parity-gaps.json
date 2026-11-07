@@ -91,24 +91,6 @@
           "commit": "4c4b1dc3a0ea97eb2d43d8c3dbe81873285032cd"
         }
       ]
-    },
-    {
-      "id": "vectorize/screenshot.png->svg/throughput",
-      "issue": 759,
-      "ratio": 0.84,
-      "note": "speed ratio 0.84 or below when recorded on the CI runner (previous record 0.88): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8818,
-          "at": "2026-11-03T03:22:23.003Z",
-          "commit": "8e732acccebf1c75f16f176207481efce2d781a3"
-        },
-        {
-          "ratio": 0.8472,
-          "at": "2026-11-03T03:47:58.818Z",
-          "commit": "d5c0b7990518832f1facd52f10705652bdaafbd5"
-        }
-      ]
     }
   ],
   "acceptedSlowdowns": []
