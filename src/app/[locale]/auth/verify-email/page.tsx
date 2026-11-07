@@ -3,7 +3,7 @@ import PageMessages from '@/i18n/PageMessages';
 import { localizedPageMetadata, resolvePageLocale, type LocaleParams } from '@/i18n/page';
 
 export async function generateMetadata({ params }: { params: LocaleParams }) {
-  const metadata = await localizedPageMetadata(params, 'passwordReset', '/auth/verify-email');
+  const metadata = await localizedPageMetadata(params, 'emailVerification', '/auth/verify-email');
   // A page that carries a token in its address is not for a search index, and sends no Referer when it is left.
   return { ...metadata, robots: { index: false, follow: false }, referrer: 'no-referrer' as const };
 }

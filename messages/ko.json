@@ -896,6 +896,10 @@
     "passwordReset": {
       "title": "비밀번호 재설정 | EasyConvert",
       "description": "EasyConvert 계정의 비밀번호를 다시 설정하거나 이메일 주소를 확인해요."
+    },
+    "emailVerification": {
+      "title": "이메일 주소 확인 | EasyConvert",
+      "description": "EasyConvert 계정의 이메일 주소를 확인해요."
     }
   },
   "options": {

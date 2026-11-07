@@ -896,6 +896,10 @@
     "passwordReset": {
       "title": "Reset Password | EasyConvert",
       "description": "Reset the password of your EasyConvert account or confirm its email address."
+    },
+    "emailVerification": {
+      "title": "Confirm Email Address | EasyConvert",
+      "description": "Confirm the email address of your EasyConvert account."
     }
   },
   "options": {
