@@ -117,11 +117,11 @@
     "file": "qpdf-issue-263.pdf",
     "source": "pdf",
     "target": [
-      "docx",
-      "html",
-      "md"
+      "eps",
+      "ps",
+      "dxf"
     ],
-    "detail": "^CorruptStreamError: Invalid PDF document: missing %PDF- header$",
+    "detail": "^(CorruptStreamError: Invalid PDF document: missing %PDF- header|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: a 277-byte fuzzer file whose header is `%PDFn` and whose trailer and cross-reference stream are cut into fragments. `qpdf --check` and a plain rewrite stop with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 1, pdfium answers \"Data format error\", MuPDF cannot open it and PDF.js stops on an illegal character (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
@@ -129,9 +129,9 @@
     "file": "qpdf-issue-101.pdf",
     "source": "pdf",
     "target": [
-      "pptx",
-      "azw3",
-      "svg"
+      "pdb",
+      "jpg",
+      "tiff"
     ],
     "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: the trailer is gone and the objects hold braces and stray tokens where dictionaries should be. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 99, pdfium answers \"Data format error\", MuPDF repairs the file to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
@@ -141,11 +141,11 @@
     "file": "pdfjs-bug1020226.pdf",
     "source": "pdf",
     "target": [
-      "pdf",
-      "rtf",
-      "txt"
+      "pptx",
+      "svg",
+      "azw3"
     ],
-    "detail": "^PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.$",
+    "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: 184 bytes: a catalog dictionary that is never closed and a content stream that declares 17,863 bytes and stops inside the dictionary of an inline image. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo exits 1, pdfium answers \"Data format error\", MuPDF repairs it to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
     "issue": 783
   },
@@ -153,9 +153,9 @@
     "file": "qpdf-issue-99.pdf",
     "source": "pdf",
     "target": [
-      "epub",
-      "xlsx",
-      "png"
+      "lrf",
+      "mobi",
+      "oeb"
     ],
     "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: qpdf recovers a trailer with no /Root (\"unable to find any pages while recovering damaged file\"), Poppler's pdfinfo cannot find a trailer dictionary, pdfium answers \"Data format error\", MuPDF repairs it to one page with no text and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
@@ -165,9 +165,9 @@
     "file": "qpdf-issue-120.pdf",
     "source": "pdf",
     "target": [
-      "lrf",
-      "mobi",
-      "oeb"
+      "xls",
+      "hocr",
+      "alto"
     ],
     "detail": "^PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference\\.$",
     "reason": "Damaged beyond repair: the only object stream lists itself (\"self-referential object stream 3\") and its dictionaries have lost their key names. `qpdf --check` stops with \"unable to find page tree\", Poppler's pdfinfo finds no catalog, pdfium answers \"Data format error\", MuPDF repairs it to zero pages and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
@@ -177,9 +177,9 @@
     "file": "qpdf-issue-141b.pdf",
     "source": "pdf",
     "target": [
-      "pdb",
-      "jpg",
-      "tiff"
+      "avif",
+      "bmp",
+      "gif"
     ],
     "detail": "^(PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference\\.|PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure\\.)$",
     "reason": "Damaged beyond repair: 92 bytes, a cross-reference stream of size 0 with no trailer keys. `qpdf --check` stops with \"unable to find trailer dictionary while recovering damaged file\", Poppler's pdfinfo finds no trailer, pdfium answers \"Data format error\", MuPDF cannot open it and PDF.js throws InvalidPDFException (tests/pdf-unrecoverable-real-files.test.ts).",
