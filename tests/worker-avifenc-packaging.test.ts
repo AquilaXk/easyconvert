@@ -28,7 +28,7 @@ const pin = (name: string): string => {
   return match?.[1] ?? '';
 };
 
-const PINNED_ARCHIVES = ['CMAKE_SHA256_AARCH64', 'CMAKE_SHA256_X86_64', 'NASM_SHA256', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIB_SHA256', 'JPEG_SHA256'];
+const PINNED_ARCHIVES = ['CMAKE_SHA256_AARCH64', 'CMAKE_SHA256_X86_64', 'NASM_SHA256', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIBNG_SHA256', 'JPEG_SHA256'];
 
 describe('the avifenc stage of the worker image', () => {
   it('exists, builds on the same base as the runner and runs the install script into /opt/avifenc', () => {
@@ -52,7 +52,7 @@ describe('the avifenc stage of the worker image', () => {
     expect(runs[0]).toContain('avifenc-pinned -q 70 -s 6 "$dir/in.png" -o "$dir/out.avif"');
     expect(runs[0]).toContain(`grep -q 'ftypavif'`);
     // Every licence text and the note the install script writes next to the program is copied into /licenses, libavif's own as <dir>.copyright.
-    for (const file of ['SOURCE', 'LICENSE.libaom', 'PATENTS.libaom', 'LICENSE.libyuv', 'PATENTS.libyuv', 'LICENSE.libpng', 'LICENSE.zlib', 'LICENSE.libjpeg-turbo', 'README.ijg']) {
+    for (const file of ['SOURCE', 'LICENSE.libaom', 'PATENTS.libaom', 'LICENSE.libyuv', 'PATENTS.libyuv', 'LICENSE.libpng', 'LICENSE.zlib-ng', 'LICENSE.libjpeg-turbo', 'README.ijg']) {
       expect(runs[1], file).toContain(file);
       expect(INSTALL, file).toContain(`"$doc/${file}"`);
     }
@@ -93,8 +93,8 @@ describe('the install script of the encoder', () => {
   });
 
   it('records the pinned sources in the note that ships with the program', () => {
-    for (const name of ['AVIF_COMMIT', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIB_SHA256', 'JPEG_SHA256']) expect(SOURCE, name).toContain(pin(name));
-    for (const version of ['AVIF_VERSION', 'AOM_VERSION', 'PNG_VERSION', 'ZLIB_VERSION', 'JPEG_VERSION', 'CMAKE_VERSION']) expect(SOURCE, version).toContain(pin(version));
+    for (const name of ['AVIF_COMMIT', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIBNG_SHA256', 'JPEG_SHA256']) expect(SOURCE, name).toContain(pin(name));
+    for (const version of ['AVIF_VERSION', 'AOM_VERSION', 'PNG_VERSION', 'ZLIBNG_VERSION', 'JPEG_VERSION', 'CMAKE_VERSION']) expect(SOURCE, version).toContain(pin(version));
   });
 
   it('installs nothing on a system other than Linux, before it downloads anything', () => {

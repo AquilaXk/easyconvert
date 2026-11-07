@@ -6,7 +6,7 @@
 # The sources are the ones the Debian package of the worker image is built from, at the same releases, so that the AVIF file is the one
 # the package writes for the same picture and arguments: libavif 1.2.1 and its AV1 encoder libaom 3.12.1 (libavif-bin 1.2.1-1.2 and
 # libaom3 3.12.1-1+deb13u1 on Debian 13), libyuv 1904 (the colour conversion libavif uses when it is built with it, as the package is),
-# libpng and zlib (the PNG reader) and libjpeg-turbo (libavif's applications will not build without a JPEG reader, which avifenc is never
+# libpng and zlib-ng (the PNG reader; zlib-ng in its zlib-compatible mode inflates the pictures faster than zlib, to the same bytes) and libjpeg-turbo (libavif's applications will not build without a JPEG reader, which avifenc is never
 # given). Every one of them is linked in statically, with libstdc++ and libgcc, so the program needs only the C library of the host.
 # libavif is built with the AV1 encoder and decoder of libaom and no other codec, libsharpyuv and libxml2 off, as the package is built. Link-time
 # optimisation is the one thing done to the build (docs/policy-decisions.md, entry 172); the sources are not changed.
@@ -38,8 +38,8 @@ YUV_VERSION="1904.20250204"
 YUV_SHA256="958aeeefcae957a7503202fd7f210678b81f68286e7cc915c8b97feaf1e2d3ab"
 PNG_VERSION="1.6.58"
 PNG_SHA256="a9d4df463d36a6e5f9c29bd6f4967312d17e996c1854f3511f833924eb1993cf"
-ZLIB_VERSION="1.3.1"
-ZLIB_SHA256="38ef96b8dfe510d42707d9c781877914792541133e1870841463bfa73f883e32"
+ZLIBNG_VERSION="2.3.3"
+ZLIBNG_SHA256="f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1"
 NASM_VERSION="2.16.03"
 NASM_SHA256="1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148"
 JPEG_VERSION="3.1.3"
@@ -110,7 +110,7 @@ unpack() {
 unpack cmake "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-${cmake_system}.tar.gz" "$cmake_digest"
 cmake="$work/cmake/bin/cmake"
 test "$("$cmake" --version | head -n 1)" = "cmake version ${CMAKE_VERSION}"
-unpack zlib "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.xz" "$ZLIB_SHA256"
+unpack zlib "https://github.com/zlib-ng/zlib-ng/archive/${ZLIBNG_VERSION}.tar.gz" "$ZLIBNG_SHA256"
 unpack png "https://github.com/pnggroup/libpng/archive/v${PNG_VERSION}.tar.gz" "$PNG_SHA256"
 unpack jpeg "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${JPEG_VERSION}/libjpeg-turbo-${JPEG_VERSION}.tar.gz" "$JPEG_SHA256"
 unpack aom "https://storage.googleapis.com/aom-releases/libaom-${AOM_VERSION}.tar.gz" "$AOM_SHA256"
@@ -148,8 +148,7 @@ build() {
   "$cmake" --install "$work/build-$name" >> "$work/$name.log" 2>&1
 }
 
-build zlib -DZLIB_BUILD_EXAMPLES=OFF -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_STATIC=ON
-rm -f "$prefix"/lib/libz.so* "$prefix/lib/libzlib.so"*
+build zlib -DZLIB_COMPAT=ON -DWITH_GTEST=OFF -DBUILD_TESTING=OFF -DWITH_FUZZERS=OFF
 build png -DPNG_SHARED=OFF -DPNG_STATIC=ON -DPNG_TESTS=OFF -DPNG_TOOLS=OFF -DPNG_EXECUTABLES=OFF -DZLIB_ROOT="$prefix"
 build jpeg -DENABLE_SHARED=0 -DENABLE_STATIC=1 -DWITH_TURBOJPEG=0 -DWITH_JAVA=0 -DREQUIRE_SIMD=0
 build aom -DENABLE_DOCS=0 -DENABLE_TESTS=0 -DENABLE_TESTDATA=0 -DENABLE_TOOLS=0 -DENABLE_EXAMPLES=0 -DENABLE_NASM="$nasm_flag" \
@@ -174,7 +173,7 @@ install -m 0644 "$work/aom/PATENTS" "$doc/PATENTS.libaom"
 install -m 0644 "$work/yuv/LICENSE" "$doc/LICENSE.libyuv"
 install -m 0644 "$work/yuv/PATENTS" "$doc/PATENTS.libyuv"
 install -m 0644 "$work/png/LICENSE" "$doc/LICENSE.libpng"
-install -m 0644 "$work/zlib/LICENSE" "$doc/LICENSE.zlib"
+install -m 0644 "$work/zlib/LICENSE.md" "$doc/LICENSE.zlib-ng"
 install -m 0644 "$work/jpeg/LICENSE.md" "$doc/LICENSE.libjpeg-turbo"
 install -m 0644 "$work/jpeg/README.ijg" "$doc/README.ijg"
 install -m 0644 "$source_note" "$doc/SOURCE"

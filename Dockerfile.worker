@@ -118,7 +118,7 @@ RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 # ==============================================================================
 # Every AVIF the worker writes from a picture file. avifenc is the command-line encoder of libavif (BSD-2-Clause) and drives libaom, the
 # AV1 encoder (BSD-2-Clause with the AOMedia patent licence). Both are built here from the releases that Debian 13 packages (libavif
-# 1.2.1, libaom 3.12.1), with libyuv, libpng, zlib and libjpeg-turbo, each pinned by SHA-256 in scripts/install-avifenc.sh, as one
+# 1.2.1, libaom 3.12.1), with libyuv, libpng, zlib-ng and libjpeg-turbo, each pinned by SHA-256 in scripts/install-avifenc.sh, as one
 # static program that the worker runs sandboxed; nothing links it into the application. It writes the files the package writes; the
 # package (libavif-bin, installed in the runner below) stays as the fallback. Every licence text goes with the program.
 FROM ${NODE_IMAGE} AS avifenc
@@ -558,7 +558,7 @@ RUN cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-
 RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
 RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
-RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
+RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib-ng LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
