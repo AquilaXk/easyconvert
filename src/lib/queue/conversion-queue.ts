@@ -11,6 +11,7 @@ import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
 import { endedJobRetentionMs, legacyJobTimeoutMs } from './enqueue';
 import { graphScheduler } from './graph/scheduler';
+import { recordJobCompleted, recordJobFailed } from '../metrics/recorders';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
@@ -65,6 +66,10 @@ async function reportGraphNodeEnded(job: Job<ConversionJobData, ConversionJobRes
 export function attachJobLifecycleListeners(
   worker: Worker<ConversionJobData, ConversionJobResult>
 ): void {
+  // The worker emits `completed` and `failed` once per job, at its end, so each counts one job (src/lib/metrics, docs/slo.md).
+  worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => recordJobCompleted(job));
+  worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>, err: unknown) => recordJobFailed(job, err));
+
   // A worker that takes a job renews its reservation to the lease of handed-off work, so a job whose request could not tell
   // that it was stored is still charged however long it runs, when a worker takes it within the provisional lease.
   worker.on('active', async (job: Job<ConversionJobData, ConversionJobResult>) => {
@@ -320,6 +325,8 @@ conversionQueue.cancelJob = async (id: string, reason?: string) => {
 };
 
 const origConversionQueueGetJobCounts = conversionQueue.getJobCounts.bind(conversionQueue);
+/** The counts of the default queue alone; `conversionQueue.getJobCounts` below adds those of the resource queues. */
+export const defaultQueueOwnJobCounts = origConversionQueueGetJobCounts;
 conversionQueue.getJobCounts = async () => {
   const [counts, ...queueCounts] = await Promise.all([
     origConversionQueueGetJobCounts(),

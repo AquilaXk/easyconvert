@@ -587,6 +587,28 @@ const SCHEMA_ENTRIES = [
     roles: WEB,
   },
   {
+    name: 'METRICS_PORT',
+    area: 'network',
+    description:
+      'Port of the metrics listener (GET /metrics), which every process opens beside its own service. `0` turns the listener off. It is not the web application\'s port and must not be published or proxied (docs/slo.md).',
+    kind: { type: 'integer', min: 0, max: TCP_PORT_MAX },
+    computedDefault: '9464 in the web process, 9465 in the worker',
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'METRICS_HOST',
+    area: 'network',
+    description:
+      'Address the metrics listener binds to. The default is the loopback address; the container stack sets `0.0.0.0` so that a scraper on the internal compose network can reach it.',
+    kind: { type: 'string', maxLength: 255 },
+    default: '127.0.0.1',
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'NEXT_PUBLIC_APP_URL',
     area: 'network',
     description: 'Public origin exposed to the browser; used when APP_ORIGIN is not set.',

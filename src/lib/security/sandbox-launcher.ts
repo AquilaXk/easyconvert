@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { SandboxUnavailableError } from '../types';
 import { HelperHost, HelperSlot } from './helper-process';
 import {
   executeSandboxedBinary,
@@ -9,6 +8,7 @@ import {
   SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
+  sandboxUnavailable,
   type SandboxedExecutionOptions,
   type SandboxedExecutionResult,
 } from './process-sandbox';
@@ -154,7 +154,7 @@ function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
     case 'memory':
       return new SandboxedMemoryLimitError(detail.limitMb ?? 0, detail.signal ?? undefined);
     case 'unavailable':
-      return new SandboxUnavailableError(detail.message);
+      return sandboxUnavailable(detail.message);
     default:
       return new Error(detail.message);
   }
