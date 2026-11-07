@@ -28,7 +28,8 @@ import { sheetLimitError } from './office/sheet-bounds';
 import { gridLimitError, gridOf, isSpreadsheetGrid, type Grid } from './table-grid';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
-import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
+import { encodeParquet, decodeParquet, decodeParquetTable, ParquetFormatError } from './parquet';
+import type { CellShape } from './parquet';
 import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
@@ -742,6 +743,34 @@ function parseNdjsonText(text: string, src: string): DataValue[] {
   return records;
 }
 
+/**
+ * One value of a Parquet record cut into the cells of a table, by the same rules as a JSON record (`flattenInto`): a struct stays an
+ * object, so it becomes a dotted column per field, and a list becomes JSON text. A map is JSON text here too, and not dotted columns:
+ * its keys are data, and columns made of them would change with the rows. A struct that is null in a row gets every one of its fields
+ * as null, from the schema, so a column exists for each field of each struct whether or not a row holds it.
+ */
+function tabularValue(value: DataValue, shape: CellShape): DataValue {
+  if (shape === 'plain') return value;
+  if (shape === 'map') return value === null ? null : stringifyJsonLossless(value);
+  const fields = value as DataObject | null;
+  const cells: DataObject = {};
+  for (const [name, inner] of shape) setOwn(cells, name, tabularValue(fields === null ? null : fields[name], inner));
+  return cells;
+}
+
+/** Records for the table targets from records that hold structs and maps; the structured targets keep the nesting and never see these copies. */
+function tabularRecords(records: DataValue[], shapes: ReadonlyMap<string, CellShape>): DataValue[] {
+  return records.map((record) => {
+    const row = record as DataObject;
+    const cells: DataObject = {};
+    for (const key of dataObjectKeys(row)) {
+      const shape = shapes.get(key);
+      setOwn(cells, key, shape === undefined ? row[key] : tabularValue(row[key], shape));
+    }
+    return cells;
+  });
+}
+
 function asRecords(value: DataValue): DataValue[] {
   return Array.isArray(value) ? value : [value];
 }
@@ -776,8 +805,13 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
     return { value: xmlToJsonMlDocument(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
   }
   if (src === 'parquet') {
-    const records = decodeParquet(inputBuffer) as DataValue[];
-    return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
+    const { records: decoded, shapes } = decodeParquetTable(inputBuffer);
+    const records = decoded as DataValue[];
+    return {
+      value: records,
+      records: () => (shapes.size === 0 ? records : tabularRecords(records, shapes)),
+      text: () => stringifyJsonLossless(records, JSON_INDENT),
+    };
   }
   throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
 }
@@ -987,7 +1021,9 @@ export async function convertData(
       }
       if (tgt === 'json') {
         const jsonBuffer = parquetToJson(inputBuffer);
-        return { buffer: jsonBuffer, mimeType: 'application/json', filename: `${baseName}.json`, size: jsonBuffer.length };
+        if (jsonBuffer !== null) {
+          return { buffer: jsonBuffer, mimeType: 'application/json', filename: `${baseName}.json`, size: jsonBuffer.length };
+        }
       }
       return convertStructured(inputBuffer, src, tgt, options, baseName);
     });

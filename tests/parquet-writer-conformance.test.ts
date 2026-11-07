@@ -577,9 +577,9 @@ describe('Parquet writer conformance (issue 526)', () => {
       expect(decompressZstd(frame).equals(payload)).toBe(true);
     });
 
-    it('rejects nested schemas instead of misreading them', () => {
+    it('reads a struct column as an object, as the reference reader does (tests/parquet-nested.test.ts holds the nested corpus)', () => {
       const file = fs.readFileSync(path.join(FIXTURE_DIR, 'nested-struct.parquet'));
-      expect(() => decodeParquet(file)).toThrow(/nested/);
+      expect(decodeParquet(file)).toEqual([{ point: { x: 1, y: 2 } }, { point: { x: 3, y: 4 } }]);
     });
 
     it('converts a reference-writer file to JSON through convertData', async () => {

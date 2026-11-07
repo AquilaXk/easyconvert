@@ -9,6 +9,9 @@ import { ConvertedType, ParquetFormatError, ParquetType, ParquetUnsupportedError
  */
 
 export type ColumnValue = string | number | boolean | null;
+
+/** A value of a table that may hold nested columns: a list is an array, a struct and a map with string keys an object. */
+export type ParquetValue = ColumnValue | ParquetValue[] | { [key: string]: ParquetValue };
 export type TimeUnit = 'millis' | 'micros' | 'nanos';
 
 export type Annotation =

@@ -1,0 +1,10322 @@
+{
+ "nested/datapage_v2.snappy": {
+  "columns": [
+   "a",
+   "b",
+   "c",
+   "d",
+   "e"
+  ],
+  "shapes": {
+   "a": "plain",
+   "b": "plain",
+   "c": "plain",
+   "d": "plain",
+   "e": "plain"
+  },
+  "rows": [
+   {
+    "a": "abc",
+    "b": 1,
+    "c": 2.0,
+    "d": true,
+    "e": [
+     1,
+     2,
+     3
+    ]
+   },
+   {
+    "a": "abc",
+    "b": 2,
+    "c": 3.0,
+    "d": true,
+    "e": null
+   },
+   {
+    "a": "abc",
+    "b": 3,
+    "c": 4.0,
+    "d": true,
+    "e": null
+   },
+   {
+    "a": null,
+    "b": 4,
+    "c": 5.0,
+    "d": false,
+    "e": [
+     1,
+     2,
+     3
+    ]
+   },
+   {
+    "a": "abc",
+    "b": 5,
+    "c": 2.0,
+    "d": true,
+    "e": [
+     1,
+     2
+    ]
+   }
+  ]
+ },
+ "nested/list_columns": {
+  "columns": [
+   "int64_list",
+   "utf8_list"
+  ],
+  "shapes": {
+   "int64_list": "plain",
+   "utf8_list": "plain"
+  },
+  "rows": [
+   {
+    "int64_list": [
+     1,
+     2,
+     3
+    ],
+    "utf8_list": [
+     "abc",
+     "efg",
+     "hij"
+    ]
+   },
+   {
+    "int64_list": [
+     null,
+     1
+    ],
+    "utf8_list": null
+   },
+   {
+    "int64_list": [
+     4
+    ],
+    "utf8_list": [
+     "efg",
+     null,
+     "hij",
+     "xyz"
+    ]
+   }
+  ]
+ },
+ "nested/map_no_value": {
+  "columns": [
+   "my_map",
+   "my_map_no_v",
+   "my_list"
+  ],
+  "shapes": {
+   "my_map": "map",
+   "my_map_no_v": "plain",
+   "my_list": "plain"
+  },
+  "rows": [
+   {
+    "my_map": [
+     {
+      "key": 1,
+      "value": null
+     },
+     {
+      "key": 2,
+      "value": null
+     },
+     {
+      "key": 3,
+      "value": null
+     }
+    ],
+    "my_map_no_v": [
+     1,
+     2,
+     3
+    ],
+    "my_list": [
+     1,
+     2,
+     3
+    ]
+   },
+   {
+    "my_map": [
+     {
+      "key": 4,
+      "value": null
+     },
+     {
+      "key": 5,
+      "value": null
+     },
+     {
+      "key": 6,
+      "value": null
+     }
+    ],
+    "my_map_no_v": [
+     4,
+     5,
+     6
+    ],
+    "my_list": [
+     4,
+     5,
+     6
+    ]
+   },
+   {
+    "my_map": [
+     {
+      "key": 7,
+      "value": null
+     },
+     {
+      "key": 8,
+      "value": null
+     },
+     {
+      "key": 9,
+      "value": null
+     }
+    ],
+    "my_map_no_v": [
+     7,
+     8,
+     9
+    ],
+    "my_list": [
+     7,
+     8,
+     9
+    ]
+   }
+  ]
+ },
+ "nested/nested_lists.snappy": {
+  "columns": [
+   "a",
+   "b"
+  ],
+  "shapes": {
+   "a": "plain",
+   "b": "plain"
+  },
+  "rows": [
+   {
+    "a": [
+     [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c"
+      ]
+     ],
+     [
+      null,
+      [
+       "d"
+      ]
+     ]
+    ],
+    "b": 1
+   },
+   {
+    "a": [
+     [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c",
+       "d"
+      ]
+     ],
+     [
+      null,
+      [
+       "e"
+      ]
+     ]
+    ],
+    "b": 1
+   },
+   {
+    "a": [
+     [
+      [
+       "a",
+       "b"
+      ],
+      [
+       "c",
+       "d"
+      ],
+      [
+       "e"
+      ]
+     ],
+     [
+      null,
+      [
+       "f"
+      ]
+     ]
+    ],
+    "b": 1
+   }
+  ]
+ },
+ "nested/nested_maps.snappy": {
+  "columns": [
+   "a",
+   "b",
+   "c"
+  ],
+  "shapes": {
+   "a": "map",
+   "b": "plain",
+   "c": "plain"
+  },
+  "rows": [
+   {
+    "a": {
+     "a": [
+      {
+       "key": 1,
+       "value": true
+      },
+      {
+       "key": 2,
+       "value": false
+      }
+     ]
+    },
+    "b": 1,
+    "c": 1.0
+   },
+   {
+    "a": {
+     "b": [
+      {
+       "key": 1,
+       "value": true
+      }
+     ]
+    },
+    "b": 1,
+    "c": 1.0
+   },
+   {
+    "a": {
+     "c": null
+    },
+    "b": 1,
+    "c": 1.0
+   },
+   {
+    "a": {
+     "d": []
+    },
+    "b": 1,
+    "c": 1.0
+   },
+   {
+    "a": {
+     "e": [
+      {
+       "key": 1,
+       "value": true
+      }
+     ]
+    },
+    "b": 1,
+    "c": 1.0
+   },
+   {
+    "a": {
+     "f": [
+      {
+       "key": 3,
+       "value": true
+      },
+      {
+       "key": 4,
+       "value": false
+      },
+      {
+       "key": 5,
+       "value": true
+      }
+     ]
+    },
+    "b": 1,
+    "c": 1.0
+   }
+  ]
+ },
+ "nested/nested_structs.rust": {
+  "columns": [
+   "roll_num",
+   "PC_CUR",
+   "CVA_2012",
+   "CVA_2016",
+   "BIA_3",
+   "BIA_4",
+   "ACTUAL_FRONTAGE",
+   "ACTUAL_DEPTH",
+   "ACTUAL_LOT_SIZE",
+   "GLA",
+   "SOURCE_GLA",
+   "IPS_GLA",
+   "GLA_ALL",
+   "bia",
+   "EFFECTIVE_LOT_SIZE",
+   "effective_lot_area",
+   "EFFECTIVE_FRONTAGE",
+   "EFFECTIVE_DEPTH",
+   "rw_area_tot",
+   "effective_lot_sqft",
+   "dup",
+   "nonCTXT",
+   "vacantland",
+   "parkingbillboard",
+   "cvalte10",
+   "condootherhotel",
+   "calculated_lot_size",
+   "calculated_efflot_size",
+   "missingsite",
+   "missinggla",
+   "missingsitegla",
+   "actual_lot_size_sqft",
+   "lotsize_sqft",
+   "count",
+   "ul_observation_date",
+   "ul_tz_offset_minutes_ul_observation_date"
+  ],
+  "shapes": {
+   "roll_num": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "PC_CUR": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "CVA_2012": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "CVA_2016": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "BIA_3": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "BIA_4": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ACTUAL_FRONTAGE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ACTUAL_DEPTH": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ACTUAL_LOT_SIZE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "GLA": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "SOURCE_GLA": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "IPS_GLA": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "GLA_ALL": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "bia": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "EFFECTIVE_LOT_SIZE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "effective_lot_area": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "EFFECTIVE_FRONTAGE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "EFFECTIVE_DEPTH": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "rw_area_tot": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "effective_lot_sqft": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "dup": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "nonCTXT": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "vacantland": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "parkingbillboard": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "cvalte10": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "condootherhotel": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "calculated_lot_size": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "calculated_efflot_size": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "missingsite": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "missinggla": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "missingsitegla": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "actual_lot_size_sqft": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "lotsize_sqft": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "count": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ul_observation_date": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ul_tz_offset_minutes_ul_observation_date": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   }
+  },
+  "rows": [
+   {
+    "roll_num": {
+     "min": 190406409000602,
+     "max": 190407175004000,
+     "mean": 190406671229999,
+     "count": 495,
+     "sum": "94251302258849568",
+     "variance": 0
+    },
+    "PC_CUR": {
+     "min": 115,
+     "max": 742,
+     "mean": 416,
+     "count": 495,
+     "sum": 206195,
+     "variance": 10374
+    },
+    "CVA_2012": {
+     "min": 737,
+     "max": 32150509,
+     "mean": 2401239,
+     "count": 495,
+     "sum": 1188613496,
+     "variance": 12977533288261
+    },
+    "CVA_2016": {
+     "min": 1000,
+     "max": 35195000,
+     "mean": 3519838,
+     "count": 495,
+     "sum": 1742320297,
+     "variance": 24581100553044
+    },
+    "BIA_3": {
+     "min": 0.0,
+     "max": 0.0,
+     "mean": 0.0,
+     "count": 0,
+     "sum": 0.0,
+     "variance": 0.0
+    },
+    "BIA_4": {
+     "min": 0.0,
+     "max": 0.0,
+     "mean": 0.0,
+     "count": 0,
+     "sum": 0.0,
+     "variance": 0.0
+    },
+    "ACTUAL_FRONTAGE": {
+     "min": 0.0,
+     "max": 658.63,
+     "mean": 57.76452991452993,
+     "count": 351,
+     "sum": 20275.350000000006,
+     "variance": 6310.500499135526
+    },
+    "ACTUAL_DEPTH": {
+     "min": 0.0,
+     "max": 312.16,
+     "mean": 49.40901785714286,
+     "count": 336,
+     "sum": 16601.43,
+     "variance": 3214.842695450431
+    },
+    "ACTUAL_LOT_SIZE": {
+     "min": 0.0,
+     "max": 74136.0,
+     "mean": 6162.133196721318,
+     "count": 366,
+     "sum": 2255340.7500000023,
+     "variance": 104255249.59826614
+    },
+    "GLA": {
+     "min": 0.0,
+     "max": 523800.0,
+     "mean": 19484.146706586827,
+     "count": 334,
+     "sum": 6507705.0,
+     "variance": 3563198650.906335
+    },
+    "SOURCE_GLA": {
+     "min": 2628.0,
+     "max": 16085.0,
+     "mean": 6698.8,
+     "count": 10,
+     "sum": 66988.0,
+     "variance": 28540252.400000002
+    },
+    "IPS_GLA": {
+     "min": 288.0,
+     "max": 1985.0,
+     "mean": 1285.0,
+     "count": 4,
+     "sum": 5140.0,
+     "variance": 509875.3333333333
+    },
+    "GLA_ALL": {
+     "min": 0.0,
+     "max": 523800.0,
+     "mean": 18907.566091954024,
+     "count": 348,
+     "sum": 6579833.0,
+     "variance": 3428378496.7881336
+    },
+    "bia": {
+     "min": 0,
+     "max": 1,
+     "mean": 0,
+     "count": 495,
+     "sum": 452,
+     "variance": 0
+    },
+    "EFFECTIVE_LOT_SIZE": {
+     "min": 0.0,
+     "max": 64749.63000000001,
+     "mean": 4951.024888352274,
+     "count": 352,
+     "sum": 1742760.7607000005,
+     "variance": 81195383.98823886
+    },
+    "effective_lot_area": {
+     "min": 0.0,
+     "max": 2.8000000000000003,
+     "mean": 0.14237550619122732,
+     "count": 352,
+     "sum": 50.11617817931202,
+     "variance": 0.07516922114035923
+    },
+    "EFFECTIVE_FRONTAGE": {
+     "min": 0.0,
+     "max": 658063.0,
+     "mean": 1991.3067846607655,
+     "count": 339,
+     "sum": 675052.9999999995,
+     "variance": 1277234044.0126908
+    },
+    "EFFECTIVE_DEPTH": {
+     "min": 0.0,
+     "max": 300.7,
+     "mean": 65.32364985163204,
+     "count": 337,
+     "sum": 22014.069999999996,
+     "variance": 3904.805190507992
+    },
+    "rw_area_tot": {
+     "min": 0.0,
+     "max": 18169.0,
+     "mean": 1528.077097505669,
+     "count": 441,
+     "sum": 673882.0,
+     "variance": 6122348.621315204
+    },
+    "effective_lot_sqft": {
+     "min": 0.0,
+     "max": 121968.0,
+     "mean": 6201.877049689864,
+     "count": 352,
+     "sum": 2183060.721490832,
+     "variance": 142631612.6463931
+    },
+    "dup": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "nonCTXT": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "vacantland": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "parkingbillboard": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "cvalte10": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "condootherhotel": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "calculated_lot_size": {
+     "min": 0.0,
+     "max": 100.0,
+     "mean": 1.2345679012345678,
+     "count": 81,
+     "sum": 100.0,
+     "variance": 123.45679012345684
+    },
+    "calculated_efflot_size": {
+     "min": 0.0,
+     "max": 4172.084000000002,
+     "mean": 42.29786138613863,
+     "count": 101,
+     "sum": 4272.084000000002,
+     "variance": 172355.84886194076
+    },
+    "missingsite": {
+     "min": 0,
+     "max": 1,
+     "mean": 0,
+     "count": 495,
+     "sum": 208,
+     "variance": 0
+    },
+    "missinggla": {
+     "min": 0,
+     "max": 1,
+     "mean": 0,
+     "count": 495,
+     "sum": 44,
+     "variance": 0
+    },
+    "missingsitegla": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    },
+    "actual_lot_size_sqft": {
+     "min": 0.0,
+     "max": 121968.0,
+     "mean": 8685.222814207653,
+     "count": 366,
+     "sum": 3178791.550000001,
+     "variance": 243347757.98270744
+    },
+    "lotsize_sqft": {
+     "min": 0.0,
+     "max": 121968.0,
+     "mean": 8841.174394454862,
+     "count": 364,
+     "sum": 3218187.4795815693,
+     "variance": 244563632.41811454
+    },
+    "count": {
+     "min": 1,
+     "max": 1,
+     "mean": 1,
+     "count": 495,
+     "sum": 495,
+     "variance": 0
+    },
+    "ul_observation_date": {
+     "min": {
+      "$ticks": "1608822900000000000",
+      "unit": "us"
+     },
+     "max": {
+      "$ticks": "1608822900000000000",
+      "unit": "us"
+     },
+     "mean": "1970-01-01T00:00:00Z",
+     "count": 495,
+     "sum": "1970-01-01T00:00:00Z",
+     "variance": "1970-01-01T00:00:00Z"
+    },
+    "ul_tz_offset_minutes_ul_observation_date": {
+     "min": 0,
+     "max": 0,
+     "mean": 0,
+     "count": 495,
+     "sum": 0,
+     "variance": 0
+    }
+   }
+  ]
+ },
+ "nested/nested-mixed-gzip": {
+  "columns": [
+   "id",
+   "items",
+   "attrs",
+   "point",
+   "grid",
+   "imap",
+   "maplist",
+   "req"
+  ],
+  "shapes": {
+   "id": "plain",
+   "items": "plain",
+   "attrs": "map",
+   "point": {
+    "x": "plain",
+    "inner": {
+     "a": "plain",
+     "b": "plain"
+    }
+   },
+   "grid": "plain",
+   "imap": "map",
+   "maplist": "plain",
+   "req": "plain"
+  },
+  "rows": [
+   {
+    "id": 0,
+    "items": null,
+    "attrs": null,
+    "point": null,
+    "grid": null,
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 1,
+    "items": [
+     {
+      "sku": "sku-1-0",
+      "qty": 10,
+      "tags": []
+     },
+     {
+      "sku": "sku-1-1",
+      "qty": null,
+      "tags": [
+       "t1_1_0",
+       "t1_1_1",
+       "t1_1_2"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 0.25,
+     "inner": {
+      "a": 1,
+      "b": [
+       1
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 100,
+      "value": "v1_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 1
+     }
+    ],
+    "req": [
+     1
+    ]
+   },
+   {
+    "id": 2,
+    "items": [
+     {
+      "sku": "sku-2-0",
+      "qty": null,
+      "tags": [
+       "t2_0_0",
+       null,
+       "t2_0_2"
+      ]
+     },
+     {
+      "sku": "sku-2-1",
+      "qty": 21,
+      "tags": [
+       "t2_1_0"
+      ]
+     },
+     {
+      "sku": "sku-2-2",
+      "qty": 22,
+      "tags": [
+       "t2_2_0",
+       "t2_2_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      2,
+      3
+     ],
+     "k1": [
+      3,
+      4,
+      5
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 0.5,
+     "inner": {
+      "a": 2,
+      "b": [
+       2,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      1.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 200,
+      "value": "v2_0"
+     },
+     {
+      "key": 201,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 2
+     },
+     {}
+    ],
+    "req": [
+     2,
+     3
+    ]
+   },
+   {
+    "id": 3,
+    "items": [
+     {
+      "sku": "sku-3-0",
+      "qty": 30,
+      "tags": [
+       "t3_0_0"
+      ]
+     },
+     {
+      "sku": null,
+      "qty": 31,
+      "tags": [
+       "t3_1_0",
+       "t3_1_1"
+      ]
+     },
+     {
+      "sku": "sku-3-2",
+      "qty": 32,
+      "tags": null
+     },
+     {
+      "sku": "sku-3-3",
+      "qty": 33,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      3,
+      4,
+      null
+     ]
+    },
+    "point": {
+     "x": 0.75,
+     "inner": {
+      "a": null,
+      "b": [
+       3,
+       null,
+       4
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 4,
+    "items": [
+     {
+      "sku": "sku-4-0",
+      "qty": 40,
+      "tags": [
+       "t4_0_0",
+       null
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 1.0,
+     "inner": {
+      "a": 4,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 400,
+      "value": "v4_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 4
+     }
+    ],
+    "req": [
+     4
+    ]
+   },
+   {
+    "id": 5,
+    "items": [
+     {
+      "sku": "sku-5-0",
+      "qty": 50,
+      "tags": null
+     },
+     {
+      "sku": "sku-5-1",
+      "qty": 51,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      null,
+      7
+     ],
+     "k2": [
+      null,
+      8,
+      9
+     ]
+    },
+    "point": {
+     "x": 1.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 500,
+      "value": "v5_0"
+     },
+     {
+      "key": 501,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 5
+     },
+     {}
+    ],
+    "req": [
+     5,
+     6
+    ]
+   },
+   {
+    "id": 6,
+    "items": [
+     {
+      "sku": "sku-6-0",
+      "qty": 60,
+      "tags": []
+     },
+     {
+      "sku": "sku-6-1",
+      "qty": 61,
+      "tags": [
+       "t6_1_0",
+       "t6_1_1"
+      ]
+     },
+     {
+      "sku": "sku-6-2",
+      "qty": null,
+      "tags": [
+       "t6_2_0",
+       "t6_2_1",
+       "t6_2_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      6,
+      7
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       6,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      3.0,
+      3.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 7,
+    "items": [],
+    "attrs": {
+     "k0": [
+      7,
+      8,
+      9
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 1.75,
+     "inner": {
+      "a": 7,
+      "b": [
+       7,
+       null,
+       8
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 700,
+      "value": "v7_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 7
+     }
+    ],
+    "req": [
+     7
+    ]
+   },
+   {
+    "id": 8,
+    "items": [
+     {
+      "sku": "sku-8-0",
+      "qty": null,
+      "tags": [
+       "t8_0_0",
+       null,
+       "t8_0_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      10,
+      11
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 800,
+      "value": "v8_0"
+     },
+     {
+      "key": 801,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 8
+     },
+     {}
+    ],
+    "req": [
+     8,
+     9
+    ]
+   },
+   {
+    "id": 9,
+    "items": [
+     null,
+     {
+      "sku": "sku-9-1",
+      "qty": 91,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 2.25,
+     "inner": {
+      "a": null,
+      "b": [
+       9
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 10,
+    "items": [
+     {
+      "sku": "sku-10-0",
+      "qty": 100,
+      "tags": null
+     },
+     {
+      "sku": "sku-10-1",
+      "qty": 101,
+      "tags": []
+     },
+     {
+      "sku": "sku-10-2",
+      "qty": 102,
+      "tags": [
+       "t10_2_0"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 2.5,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      5.0,
+      5.5,
+      6.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 1000,
+      "value": "v10_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 10
+     }
+    ],
+    "req": [
+     10
+    ]
+   },
+   {
+    "id": 11,
+    "items": null,
+    "attrs": {},
+    "point": {
+     "x": 2.75,
+     "inner": {
+      "a": 11,
+      "b": [
+       11,
+       null,
+       12
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 1100,
+      "value": "v11_0"
+     },
+     {
+      "key": 1101,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 11
+     },
+     {}
+    ],
+    "req": [
+     11,
+     12
+    ]
+   },
+   {
+    "id": 12,
+    "items": [
+     {
+      "sku": "sku-12-0",
+      "qty": 120,
+      "tags": [
+       "t12_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 13,
+    "items": [
+     {
+      "sku": "sku-13-0",
+      "qty": 130,
+      "tags": [
+       "t13_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-13-1",
+      "qty": null,
+      "tags": [
+       "t13_1_0",
+       "t13_1_1",
+       "t13_1_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      14,
+      15
+     ]
+    },
+    "point": {
+     "x": 3.25,
+     "inner": {
+      "a": 13,
+      "b": [
+       13
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 1300,
+      "value": "v13_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 13
+     }
+    ],
+    "req": [
+     13
+    ]
+   },
+   {
+    "id": 14,
+    "items": [],
+    "attrs": {
+     "k0": [
+      14,
+      null
+     ],
+     "k1": [
+      15,
+      null,
+      17
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 3.5,
+     "inner": {
+      "a": 14,
+      "b": [
+       14,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      7.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 1400,
+      "value": "v14_0"
+     },
+     {
+      "key": 1401,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 14
+     },
+     {}
+    ],
+    "req": [
+     14,
+     15
+    ]
+   },
+   {
+    "id": 15,
+    "items": [
+     {
+      "sku": "sku-15-0",
+      "qty": 150,
+      "tags": null
+     },
+     {
+      "sku": "sku-15-1",
+      "qty": 151,
+      "tags": []
+     },
+     {
+      "sku": "sku-15-2",
+      "qty": 152,
+      "tags": [
+       "t15_2_0",
+       "t15_2_1",
+       "t15_2_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [
+      null,
+      16,
+      17
+     ]
+    },
+    "point": {
+     "x": 3.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 16,
+    "items": [
+     {
+      "sku": "sku-16-0",
+      "qty": 160,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 1600,
+      "value": "v16_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 16
+     }
+    ],
+    "req": [
+     16
+    ]
+   },
+   {
+    "id": 17,
+    "items": [
+     {
+      "sku": "sku-17-0",
+      "qty": 170,
+      "tags": [
+       "t17_0_0",
+       null,
+       "t17_0_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      18,
+      19
+     ],
+     "k2": [
+      19,
+      20,
+      21
+     ]
+    },
+    "point": {
+     "x": 4.25,
+     "inner": {
+      "a": 17,
+      "b": [
+       17
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 1700,
+      "value": "v17_0"
+     },
+     {
+      "key": 1701,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 17
+     },
+     {}
+    ],
+    "req": [
+     17,
+     18
+    ]
+   },
+   {
+    "id": 18,
+    "items": [
+     null,
+     {
+      "sku": "sku-18-1",
+      "qty": 181,
+      "tags": [
+       "t18_1_0",
+       "t18_1_1"
+      ]
+     },
+     {
+      "sku": "sku-18-2",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      18,
+      19
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       18,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      9.0,
+      9.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 19,
+    "items": [
+     {
+      "sku": "sku-19-0",
+      "qty": 190,
+      "tags": [
+       "t19_0_0",
+       null
+      ]
+     },
+     {
+      "sku": null,
+      "qty": null,
+      "tags": null
+     },
+     {
+      "sku": "sku-19-2",
+      "qty": 192,
+      "tags": []
+     },
+     {
+      "sku": "sku-19-3",
+      "qty": 193,
+      "tags": [
+       "t19_3_0",
+       "t19_3_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      19,
+      null,
+      21
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 4.75,
+     "inner": {
+      "a": 19,
+      "b": [
+       19,
+       null,
+       20
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 1900,
+      "value": "v19_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 19
+     }
+    ],
+    "req": [
+     19
+    ]
+   },
+   {
+    "id": 20,
+    "items": [
+     {
+      "sku": "sku-20-0",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 5.0,
+     "inner": null
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 2000,
+      "value": "v20_0"
+     },
+     {
+      "key": 2001,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 20
+     },
+     {}
+    ],
+    "req": [
+     20,
+     21
+    ]
+   },
+   {
+    "id": 21,
+    "items": [],
+    "attrs": {},
+    "point": {
+     "x": 5.25,
+     "inner": {
+      "a": null,
+      "b": [
+       21
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 22,
+    "items": null,
+    "attrs": {
+     "k0": [
+      22,
+      23
+     ],
+     "k1": [
+      23,
+      24,
+      25
+     ]
+    },
+    "point": {
+     "x": 5.5,
+     "inner": {
+      "a": 22,
+      "b": [
+       22,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      11.0,
+      11.5,
+      12.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 2200,
+      "value": "v22_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 22
+     }
+    ],
+    "req": [
+     22
+    ]
+   },
+   {
+    "id": 23,
+    "items": [
+     {
+      "sku": "sku-23-0",
+      "qty": 230,
+      "tags": [
+       "t23_0_0",
+       null,
+       "t23_0_2"
+      ]
+     },
+     {
+      "sku": "sku-23-1",
+      "qty": 231,
+      "tags": [
+       "t23_1_0"
+      ]
+     },
+     {
+      "sku": "sku-23-2",
+      "qty": 232,
+      "tags": null
+     },
+     {
+      "sku": "sku-23-3",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      23,
+      24,
+      null
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 5.75,
+     "inner": {
+      "a": 23,
+      "b": [
+       23,
+       null,
+       24
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 2300,
+      "value": "v23_0"
+     },
+     {
+      "key": 2301,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 23
+     },
+     {}
+    ],
+    "req": [
+     23,
+     24
+    ]
+   },
+   {
+    "id": 24,
+    "items": [
+     {
+      "sku": "sku-24-0",
+      "qty": 240,
+      "tags": [
+       "t24_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": null,
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 25,
+    "items": [
+     {
+      "sku": "sku-25-0",
+      "qty": 250,
+      "tags": null
+     },
+     {
+      "sku": "sku-25-1",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      null,
+      27
+     ]
+    },
+    "point": {
+     "x": 6.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 2500,
+      "value": "v25_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 25
+     }
+    ],
+    "req": [
+     25
+    ]
+   },
+   {
+    "id": 26,
+    "items": [
+     {
+      "sku": "sku-26-0",
+      "qty": null,
+      "tags": []
+     },
+     null,
+     {
+      "sku": "sku-26-2",
+      "qty": 262,
+      "tags": [
+       "t26_2_0",
+       "t26_2_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      26,
+      27
+     ],
+     "k1": [
+      27,
+      28,
+      29
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 6.5,
+     "inner": {
+      "a": 26,
+      "b": [
+       26,
+       null
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 2600,
+      "value": "v26_0"
+     },
+     {
+      "key": 2601,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 26
+     },
+     {}
+    ],
+    "req": [
+     26,
+     27
+    ]
+   },
+   {
+    "id": 27,
+    "items": [
+     null,
+     {
+      "sku": null,
+      "qty": 271,
+      "tags": [
+       "t27_1_0",
+       "t27_1_1"
+      ]
+     },
+     {
+      "sku": "sku-27-2",
+      "qty": 272,
+      "tags": [
+       "t27_2_0",
+       "t27_2_1",
+       "t27_2_2"
+      ]
+     },
+     {
+      "sku": "sku-27-3",
+      "qty": 273,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      27,
+      28,
+      29
+     ]
+    },
+    "point": {
+     "x": 6.75,
+     "inner": {
+      "a": null,
+      "b": [
+       27,
+       null,
+       28
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 28,
+    "items": [],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 7.0,
+     "inner": {
+      "a": 28,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 2800,
+      "value": "v28_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 28
+     }
+    ],
+    "req": [
+     28
+    ]
+   },
+   {
+    "id": 29,
+    "items": [
+     {
+      "sku": "sku-29-0",
+      "qty": 290,
+      "tags": [
+       "t29_0_0",
+       null,
+       "t29_0_2"
+      ]
+     },
+     {
+      "sku": "sku-29-1",
+      "qty": 291,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      30,
+      null
+     ],
+     "k2": [
+      31,
+      null,
+      33
+     ]
+    },
+    "point": {
+     "x": 7.25,
+     "inner": {
+      "a": 29,
+      "b": [
+       29
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 2900,
+      "value": "v29_0"
+     },
+     {
+      "key": 2901,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 29
+     },
+     {}
+    ],
+    "req": [
+     29,
+     30
+    ]
+   },
+   {
+    "id": 30,
+    "items": [
+     {
+      "sku": "sku-30-0",
+      "qty": 300,
+      "tags": null
+     },
+     {
+      "sku": "sku-30-1",
+      "qty": 301,
+      "tags": []
+     },
+     {
+      "sku": "sku-30-2",
+      "qty": null,
+      "tags": [
+       "t30_2_0",
+       "t30_2_1",
+       "t30_2_2"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": null,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      15.0,
+      15.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 31,
+    "items": [
+     {
+      "sku": "sku-31-0",
+      "qty": 310,
+      "tags": []
+     },
+     {
+      "sku": "sku-31-1",
+      "qty": null,
+      "tags": [
+       "t31_1_0",
+       "t31_1_1",
+       "t31_1_2"
+      ]
+     },
+     {
+      "sku": "sku-31-2",
+      "qty": 312,
+      "tags": [
+       "t31_2_0"
+      ]
+     },
+     {
+      "sku": "sku-31-3",
+      "qty": 313,
+      "tags": [
+       "t31_3_0",
+       "t31_3_1"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 7.75,
+     "inner": {
+      "a": 31,
+      "b": [
+       31,
+       null,
+       32
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 3100,
+      "value": "v31_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 31
+     }
+    ],
+    "req": [
+     31
+    ]
+   },
+   {
+    "id": 32,
+    "items": [
+     {
+      "sku": "sku-32-0",
+      "qty": null,
+      "tags": [
+       "t32_0_0",
+       null,
+       "t32_0_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      34,
+      35
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 3200,
+      "value": "v32_0"
+     },
+     {
+      "key": 3201,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 32
+     },
+     {}
+    ],
+    "req": [
+     32,
+     33
+    ]
+   },
+   {
+    "id": 33,
+    "items": null,
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 8.25,
+     "inner": {
+      "a": null,
+      "b": [
+       33
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 34,
+    "items": [
+     {
+      "sku": "sku-34-0",
+      "qty": 340,
+      "tags": [
+       "t34_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-34-1",
+      "qty": 341,
+      "tags": null
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [
+      34,
+      null
+     ],
+     "k1": [
+      35,
+      null,
+      37
+     ]
+    },
+    "point": {
+     "x": 8.5,
+     "inner": {
+      "a": 34,
+      "b": [
+       34,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      17.0,
+      17.5,
+      18.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 3400,
+      "value": "v34_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 34
+     }
+    ],
+    "req": [
+     34
+    ]
+   },
+   {
+    "id": 35,
+    "items": [],
+    "attrs": {
+     "k0": [
+      null,
+      36,
+      37
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 8.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 3500,
+      "value": "v35_0"
+     },
+     {
+      "key": 3501,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 35
+     },
+     {}
+    ],
+    "req": [
+     35,
+     36
+    ]
+   },
+   {
+    "id": 36,
+    "items": [
+     null
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 37,
+    "items": [
+     {
+      "sku": "sku-37-0",
+      "qty": 370,
+      "tags": [
+       "t37_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-37-1",
+      "qty": null,
+      "tags": [
+       "t37_1_0",
+       "t37_1_1",
+       "t37_1_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      38,
+      39
+     ]
+    },
+    "point": {
+     "x": 9.25,
+     "inner": {
+      "a": 37,
+      "b": [
+       37
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 3700,
+      "value": "v37_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 37
+     }
+    ],
+    "req": [
+     37
+    ]
+   },
+   {
+    "id": 38,
+    "items": [
+     {
+      "sku": "sku-38-0",
+      "qty": null,
+      "tags": [
+       "t38_0_0",
+       null,
+       "t38_0_2"
+      ]
+     },
+     {
+      "sku": "sku-38-1",
+      "qty": 381,
+      "tags": [
+       "t38_1_0"
+      ]
+     },
+     {
+      "sku": "sku-38-2",
+      "qty": 382,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      38,
+      39
+     ],
+     "k1": [
+      39,
+      40,
+      null
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 9.5,
+     "inner": {
+      "a": 38,
+      "b": [
+       38,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      19.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 3800,
+      "value": "v38_0"
+     },
+     {
+      "key": 3801,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 38
+     },
+     {}
+    ],
+    "req": [
+     38,
+     39
+    ]
+   },
+   {
+    "id": 39,
+    "items": [
+     {
+      "sku": "sku-39-0",
+      "qty": 390,
+      "tags": [
+       "t39_0_0"
+      ]
+     },
+     {
+      "sku": "sku-39-1",
+      "qty": 391,
+      "tags": null
+     },
+     {
+      "sku": "sku-39-2",
+      "qty": 392,
+      "tags": []
+     },
+     {
+      "sku": "sku-39-3",
+      "qty": 393,
+      "tags": [
+       "t39_3_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      39,
+      null,
+      41
+     ]
+    },
+    "point": {
+     "x": 9.75,
+     "inner": {
+      "a": null,
+      "b": [
+       39,
+       null,
+       40
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 40,
+    "items": [
+     {
+      "sku": "sku-40-0",
+      "qty": 400,
+      "tags": null
+     }
+    ],
+    "attrs": null,
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 4000,
+      "value": "v40_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 40
+     }
+    ],
+    "req": [
+     40
+    ]
+   },
+   {
+    "id": 41,
+    "items": [
+     {
+      "sku": "sku-41-0",
+      "qty": 410,
+      "tags": []
+     },
+     {
+      "sku": "sku-41-1",
+      "qty": 411,
+      "tags": [
+       "t41_1_0"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 10.25,
+     "inner": {
+      "a": 41,
+      "b": [
+       41
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 4100,
+      "value": "v41_0"
+     },
+     {
+      "key": 4101,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 41
+     },
+     {}
+    ],
+    "req": [
+     41,
+     42
+    ]
+   },
+   {
+    "id": 42,
+    "items": [],
+    "attrs": {
+     "k0": [
+      42,
+      43
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       42,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      21.0,
+      21.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 43,
+    "items": [
+     {
+      "sku": "sku-43-0",
+      "qty": 430,
+      "tags": [
+       "t43_0_0",
+       null
+      ]
+     },
+     {
+      "sku": null,
+      "qty": null,
+      "tags": [
+       "t43_1_0",
+       "t43_1_1",
+       "t43_1_2"
+      ]
+     },
+     null,
+     {
+      "sku": "sku-43-3",
+      "qty": 433,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      43,
+      44,
+      null
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 10.75,
+     "inner": {
+      "a": 43,
+      "b": [
+       43,
+       null,
+       44
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 4300,
+      "value": "v43_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 43
+     }
+    ],
+    "req": [
+     43
+    ]
+   },
+   {
+    "id": 44,
+    "items": null,
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      46,
+      null
+     ]
+    },
+    "point": {
+     "x": 11.0,
+     "inner": {
+      "a": 44,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 4400,
+      "value": "v44_0"
+     },
+     {
+      "key": 4401,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 44
+     },
+     {}
+    ],
+    "req": [
+     44,
+     45
+    ]
+   },
+   {
+    "id": 45,
+    "items": [
+     null,
+     {
+      "sku": "sku-45-1",
+      "qty": 451,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 11.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 46,
+    "items": [
+     {
+      "sku": "sku-46-0",
+      "qty": 460,
+      "tags": []
+     },
+     {
+      "sku": "sku-46-1",
+      "qty": 461,
+      "tags": [
+       "t46_1_0",
+       "t46_1_1",
+       "t46_1_2"
+      ]
+     },
+     {
+      "sku": "sku-46-2",
+      "qty": 462,
+      "tags": [
+       "t46_2_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      46,
+      47
+     ],
+     "k1": [
+      47,
+      48,
+      49
+     ]
+    },
+    "point": {
+     "x": 11.5,
+     "inner": {
+      "a": 46,
+      "b": [
+       46,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      23.0,
+      23.5,
+      24.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 4600,
+      "value": "v46_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 46
+     }
+    ],
+    "req": [
+     46
+    ]
+   },
+   {
+    "id": 47,
+    "items": [
+     {
+      "sku": "sku-47-0",
+      "qty": 470,
+      "tags": [
+       "t47_0_0",
+       null,
+       "t47_0_2"
+      ]
+     },
+     {
+      "sku": "sku-47-1",
+      "qty": 471,
+      "tags": [
+       "t47_1_0"
+      ]
+     },
+     {
+      "sku": "sku-47-2",
+      "qty": 472,
+      "tags": [
+       "t47_2_0",
+       "t47_2_1"
+      ]
+     },
+     {
+      "sku": "sku-47-3",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      47,
+      48,
+      49
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 11.75,
+     "inner": {
+      "a": 47,
+      "b": [
+       47,
+       null,
+       48
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 4700,
+      "value": "v47_0"
+     },
+     {
+      "key": 4701,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 47
+     },
+     {}
+    ],
+    "req": [
+     47,
+     48
+    ]
+   },
+   {
+    "id": 48,
+    "items": [
+     {
+      "sku": "sku-48-0",
+      "qty": 480,
+      "tags": [
+       "t48_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": null,
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 49,
+    "items": [],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      50,
+      null
+     ]
+    },
+    "point": {
+     "x": 12.25,
+     "inner": {
+      "a": 49,
+      "b": [
+       49
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 4900,
+      "value": "v49_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 49
+     }
+    ],
+    "req": [
+     49
+    ]
+   },
+   {
+    "id": 50,
+    "items": [
+     {
+      "sku": "sku-50-0",
+      "qty": null,
+      "tags": null
+     },
+     {
+      "sku": "sku-50-1",
+      "qty": 501,
+      "tags": []
+     },
+     {
+      "sku": "sku-50-2",
+      "qty": 502,
+      "tags": [
+       "t50_2_0",
+       "t50_2_1"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 12.5,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      25.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 5000,
+      "value": "v50_0"
+     },
+     {
+      "key": 5001,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 50
+     },
+     {}
+    ],
+    "req": [
+     50,
+     51
+    ]
+   },
+   {
+    "id": 51,
+    "items": [
+     {
+      "sku": "sku-51-0",
+      "qty": 510,
+      "tags": []
+     },
+     {
+      "sku": null,
+      "qty": 511,
+      "tags": [
+       "t51_1_0",
+       "t51_1_1"
+      ]
+     },
+     {
+      "sku": "sku-51-2",
+      "qty": 512,
+      "tags": [
+       "t51_2_0",
+       "t51_2_1",
+       "t51_2_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {},
+    "point": {
+     "x": 12.75,
+     "inner": {
+      "a": null,
+      "b": [
+       51,
+       null,
+       52
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 52,
+    "items": [
+     {
+      "sku": "sku-52-0",
+      "qty": 520,
+      "tags": [
+       "t52_0_0",
+       null
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 13.0,
+     "inner": {
+      "a": 52,
+      "b": null
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 5200,
+      "value": "v52_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 52
+     }
+    ],
+    "req": [
+     52
+    ]
+   },
+   {
+    "id": 53,
+    "items": [
+     {
+      "sku": "sku-53-0",
+      "qty": 530,
+      "tags": [
+       "t53_0_0",
+       null,
+       "t53_0_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      54,
+      55
+     ],
+     "k2": [
+      55,
+      56,
+      null
+     ]
+    },
+    "point": {
+     "x": 13.25,
+     "inner": {
+      "a": 53,
+      "b": [
+       53
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 5300,
+      "value": "v53_0"
+     },
+     {
+      "key": 5301,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 53
+     },
+     {}
+    ],
+    "req": [
+     53,
+     54
+    ]
+   },
+   {
+    "id": 54,
+    "items": [
+     null,
+     {
+      "sku": "sku-54-1",
+      "qty": 541,
+      "tags": null
+     },
+     {
+      "sku": "sku-54-2",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      54,
+      null
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       54,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      27.0,
+      27.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 55,
+    "items": null,
+    "attrs": {
+     "k0": [
+      null,
+      56,
+      57
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 13.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 5500,
+      "value": "v55_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 55
+     }
+    ],
+    "req": [
+     55
+    ]
+   },
+   {
+    "id": 56,
+    "items": [],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      58,
+      59
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 5600,
+      "value": "v56_0"
+     },
+     {
+      "key": 5601,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 56
+     },
+     {}
+    ],
+    "req": [
+     56,
+     57
+    ]
+   },
+   {
+    "id": 57,
+    "items": [
+     {
+      "sku": "sku-57-0",
+      "qty": 570,
+      "tags": [
+       "t57_0_0"
+      ]
+     },
+     {
+      "sku": "sku-57-1",
+      "qty": 571,
+      "tags": [
+       "t57_1_0",
+       "t57_1_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 14.25,
+     "inner": {
+      "a": null,
+      "b": [
+       57
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 58,
+    "items": [
+     {
+      "sku": "sku-58-0",
+      "qty": 580,
+      "tags": [
+       "t58_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-58-1",
+      "qty": 581,
+      "tags": [
+       "t58_1_0",
+       "t58_1_1",
+       "t58_1_2"
+      ]
+     },
+     {
+      "sku": "sku-58-2",
+      "qty": 582,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      58,
+      59
+     ],
+     "k1": [
+      59,
+      60,
+      null
+     ]
+    },
+    "point": {
+     "x": 14.5,
+     "inner": {
+      "a": 58,
+      "b": [
+       58,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      29.0,
+      29.5,
+      30.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 5800,
+      "value": "v58_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 58
+     }
+    ],
+    "req": [
+     58
+    ]
+   },
+   {
+    "id": 59,
+    "items": [
+     {
+      "sku": "sku-59-0",
+      "qty": 590,
+      "tags": [
+       "t59_0_0",
+       null,
+       "t59_0_2"
+      ]
+     },
+     {
+      "sku": null,
+      "qty": 591,
+      "tags": null
+     },
+     {
+      "sku": "sku-59-2",
+      "qty": 592,
+      "tags": []
+     },
+     {
+      "sku": "sku-59-3",
+      "qty": null,
+      "tags": [
+       "t59_3_0",
+       "t59_3_1",
+       "t59_3_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      59,
+      null,
+      61
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 14.75,
+     "inner": {
+      "a": 59,
+      "b": [
+       59,
+       null,
+       60
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 5900,
+      "value": "v59_0"
+     },
+     {
+      "key": 5901,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 59
+     },
+     {}
+    ],
+    "req": [
+     59,
+     60
+    ]
+   }
+  ]
+ },
+ "nested/nested-mixed-v1": {
+  "columns": [
+   "id",
+   "items",
+   "attrs",
+   "point",
+   "grid",
+   "imap",
+   "maplist",
+   "req"
+  ],
+  "shapes": {
+   "id": "plain",
+   "items": "plain",
+   "attrs": "map",
+   "point": {
+    "x": "plain",
+    "inner": {
+     "a": "plain",
+     "b": "plain"
+    }
+   },
+   "grid": "plain",
+   "imap": "map",
+   "maplist": "plain",
+   "req": "plain"
+  },
+  "rows": [
+   {
+    "id": 0,
+    "items": null,
+    "attrs": null,
+    "point": null,
+    "grid": null,
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 1,
+    "items": [
+     {
+      "sku": "sku-1-0",
+      "qty": 10,
+      "tags": []
+     },
+     {
+      "sku": "sku-1-1",
+      "qty": null,
+      "tags": [
+       "t1_1_0",
+       "t1_1_1",
+       "t1_1_2"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 0.25,
+     "inner": {
+      "a": 1,
+      "b": [
+       1
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 100,
+      "value": "v1_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 1
+     }
+    ],
+    "req": [
+     1
+    ]
+   },
+   {
+    "id": 2,
+    "items": [
+     {
+      "sku": "sku-2-0",
+      "qty": null,
+      "tags": [
+       "t2_0_0",
+       null,
+       "t2_0_2"
+      ]
+     },
+     {
+      "sku": "sku-2-1",
+      "qty": 21,
+      "tags": [
+       "t2_1_0"
+      ]
+     },
+     {
+      "sku": "sku-2-2",
+      "qty": 22,
+      "tags": [
+       "t2_2_0",
+       "t2_2_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      2,
+      3
+     ],
+     "k1": [
+      3,
+      4,
+      5
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 0.5,
+     "inner": {
+      "a": 2,
+      "b": [
+       2,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      1.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 200,
+      "value": "v2_0"
+     },
+     {
+      "key": 201,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 2
+     },
+     {}
+    ],
+    "req": [
+     2,
+     3
+    ]
+   },
+   {
+    "id": 3,
+    "items": [
+     {
+      "sku": "sku-3-0",
+      "qty": 30,
+      "tags": [
+       "t3_0_0"
+      ]
+     },
+     {
+      "sku": null,
+      "qty": 31,
+      "tags": [
+       "t3_1_0",
+       "t3_1_1"
+      ]
+     },
+     {
+      "sku": "sku-3-2",
+      "qty": 32,
+      "tags": null
+     },
+     {
+      "sku": "sku-3-3",
+      "qty": 33,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      3,
+      4,
+      null
+     ]
+    },
+    "point": {
+     "x": 0.75,
+     "inner": {
+      "a": null,
+      "b": [
+       3,
+       null,
+       4
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 4,
+    "items": [
+     {
+      "sku": "sku-4-0",
+      "qty": 40,
+      "tags": [
+       "t4_0_0",
+       null
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 1.0,
+     "inner": {
+      "a": 4,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 400,
+      "value": "v4_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 4
+     }
+    ],
+    "req": [
+     4
+    ]
+   },
+   {
+    "id": 5,
+    "items": [
+     {
+      "sku": "sku-5-0",
+      "qty": 50,
+      "tags": null
+     },
+     {
+      "sku": "sku-5-1",
+      "qty": 51,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      null,
+      7
+     ],
+     "k2": [
+      null,
+      8,
+      9
+     ]
+    },
+    "point": {
+     "x": 1.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 500,
+      "value": "v5_0"
+     },
+     {
+      "key": 501,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 5
+     },
+     {}
+    ],
+    "req": [
+     5,
+     6
+    ]
+   },
+   {
+    "id": 6,
+    "items": [
+     {
+      "sku": "sku-6-0",
+      "qty": 60,
+      "tags": []
+     },
+     {
+      "sku": "sku-6-1",
+      "qty": 61,
+      "tags": [
+       "t6_1_0",
+       "t6_1_1"
+      ]
+     },
+     {
+      "sku": "sku-6-2",
+      "qty": null,
+      "tags": [
+       "t6_2_0",
+       "t6_2_1",
+       "t6_2_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      6,
+      7
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       6,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      3.0,
+      3.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 7,
+    "items": [],
+    "attrs": {
+     "k0": [
+      7,
+      8,
+      9
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 1.75,
+     "inner": {
+      "a": 7,
+      "b": [
+       7,
+       null,
+       8
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 700,
+      "value": "v7_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 7
+     }
+    ],
+    "req": [
+     7
+    ]
+   },
+   {
+    "id": 8,
+    "items": [
+     {
+      "sku": "sku-8-0",
+      "qty": null,
+      "tags": [
+       "t8_0_0",
+       null,
+       "t8_0_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      10,
+      11
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 800,
+      "value": "v8_0"
+     },
+     {
+      "key": 801,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 8
+     },
+     {}
+    ],
+    "req": [
+     8,
+     9
+    ]
+   },
+   {
+    "id": 9,
+    "items": [
+     null,
+     {
+      "sku": "sku-9-1",
+      "qty": 91,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 2.25,
+     "inner": {
+      "a": null,
+      "b": [
+       9
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 10,
+    "items": [
+     {
+      "sku": "sku-10-0",
+      "qty": 100,
+      "tags": null
+     },
+     {
+      "sku": "sku-10-1",
+      "qty": 101,
+      "tags": []
+     },
+     {
+      "sku": "sku-10-2",
+      "qty": 102,
+      "tags": [
+       "t10_2_0"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 2.5,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      5.0,
+      5.5,
+      6.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 1000,
+      "value": "v10_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 10
+     }
+    ],
+    "req": [
+     10
+    ]
+   },
+   {
+    "id": 11,
+    "items": null,
+    "attrs": {},
+    "point": {
+     "x": 2.75,
+     "inner": {
+      "a": 11,
+      "b": [
+       11,
+       null,
+       12
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 1100,
+      "value": "v11_0"
+     },
+     {
+      "key": 1101,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 11
+     },
+     {}
+    ],
+    "req": [
+     11,
+     12
+    ]
+   },
+   {
+    "id": 12,
+    "items": [
+     {
+      "sku": "sku-12-0",
+      "qty": 120,
+      "tags": [
+       "t12_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 13,
+    "items": [
+     {
+      "sku": "sku-13-0",
+      "qty": 130,
+      "tags": [
+       "t13_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-13-1",
+      "qty": null,
+      "tags": [
+       "t13_1_0",
+       "t13_1_1",
+       "t13_1_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      14,
+      15
+     ]
+    },
+    "point": {
+     "x": 3.25,
+     "inner": {
+      "a": 13,
+      "b": [
+       13
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 1300,
+      "value": "v13_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 13
+     }
+    ],
+    "req": [
+     13
+    ]
+   },
+   {
+    "id": 14,
+    "items": [],
+    "attrs": {
+     "k0": [
+      14,
+      null
+     ],
+     "k1": [
+      15,
+      null,
+      17
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 3.5,
+     "inner": {
+      "a": 14,
+      "b": [
+       14,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      7.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 1400,
+      "value": "v14_0"
+     },
+     {
+      "key": 1401,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 14
+     },
+     {}
+    ],
+    "req": [
+     14,
+     15
+    ]
+   },
+   {
+    "id": 15,
+    "items": [
+     {
+      "sku": "sku-15-0",
+      "qty": 150,
+      "tags": null
+     },
+     {
+      "sku": "sku-15-1",
+      "qty": 151,
+      "tags": []
+     },
+     {
+      "sku": "sku-15-2",
+      "qty": 152,
+      "tags": [
+       "t15_2_0",
+       "t15_2_1",
+       "t15_2_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [
+      null,
+      16,
+      17
+     ]
+    },
+    "point": {
+     "x": 3.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 16,
+    "items": [
+     {
+      "sku": "sku-16-0",
+      "qty": 160,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 1600,
+      "value": "v16_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 16
+     }
+    ],
+    "req": [
+     16
+    ]
+   },
+   {
+    "id": 17,
+    "items": [
+     {
+      "sku": "sku-17-0",
+      "qty": 170,
+      "tags": [
+       "t17_0_0",
+       null,
+       "t17_0_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      18,
+      19
+     ],
+     "k2": [
+      19,
+      20,
+      21
+     ]
+    },
+    "point": {
+     "x": 4.25,
+     "inner": {
+      "a": 17,
+      "b": [
+       17
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 1700,
+      "value": "v17_0"
+     },
+     {
+      "key": 1701,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 17
+     },
+     {}
+    ],
+    "req": [
+     17,
+     18
+    ]
+   },
+   {
+    "id": 18,
+    "items": [
+     null,
+     {
+      "sku": "sku-18-1",
+      "qty": 181,
+      "tags": [
+       "t18_1_0",
+       "t18_1_1"
+      ]
+     },
+     {
+      "sku": "sku-18-2",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      18,
+      19
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       18,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      9.0,
+      9.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 19,
+    "items": [
+     {
+      "sku": "sku-19-0",
+      "qty": 190,
+      "tags": [
+       "t19_0_0",
+       null
+      ]
+     },
+     {
+      "sku": null,
+      "qty": null,
+      "tags": null
+     },
+     {
+      "sku": "sku-19-2",
+      "qty": 192,
+      "tags": []
+     },
+     {
+      "sku": "sku-19-3",
+      "qty": 193,
+      "tags": [
+       "t19_3_0",
+       "t19_3_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      19,
+      null,
+      21
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 4.75,
+     "inner": {
+      "a": 19,
+      "b": [
+       19,
+       null,
+       20
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 1900,
+      "value": "v19_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 19
+     }
+    ],
+    "req": [
+     19
+    ]
+   },
+   {
+    "id": 20,
+    "items": [
+     {
+      "sku": "sku-20-0",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 5.0,
+     "inner": null
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 2000,
+      "value": "v20_0"
+     },
+     {
+      "key": 2001,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 20
+     },
+     {}
+    ],
+    "req": [
+     20,
+     21
+    ]
+   },
+   {
+    "id": 21,
+    "items": [],
+    "attrs": {},
+    "point": {
+     "x": 5.25,
+     "inner": {
+      "a": null,
+      "b": [
+       21
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 22,
+    "items": null,
+    "attrs": {
+     "k0": [
+      22,
+      23
+     ],
+     "k1": [
+      23,
+      24,
+      25
+     ]
+    },
+    "point": {
+     "x": 5.5,
+     "inner": {
+      "a": 22,
+      "b": [
+       22,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      11.0,
+      11.5,
+      12.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 2200,
+      "value": "v22_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 22
+     }
+    ],
+    "req": [
+     22
+    ]
+   },
+   {
+    "id": 23,
+    "items": [
+     {
+      "sku": "sku-23-0",
+      "qty": 230,
+      "tags": [
+       "t23_0_0",
+       null,
+       "t23_0_2"
+      ]
+     },
+     {
+      "sku": "sku-23-1",
+      "qty": 231,
+      "tags": [
+       "t23_1_0"
+      ]
+     },
+     {
+      "sku": "sku-23-2",
+      "qty": 232,
+      "tags": null
+     },
+     {
+      "sku": "sku-23-3",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      23,
+      24,
+      null
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 5.75,
+     "inner": {
+      "a": 23,
+      "b": [
+       23,
+       null,
+       24
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 2300,
+      "value": "v23_0"
+     },
+     {
+      "key": 2301,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 23
+     },
+     {}
+    ],
+    "req": [
+     23,
+     24
+    ]
+   },
+   {
+    "id": 24,
+    "items": [
+     {
+      "sku": "sku-24-0",
+      "qty": 240,
+      "tags": [
+       "t24_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": null,
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 25,
+    "items": [
+     {
+      "sku": "sku-25-0",
+      "qty": 250,
+      "tags": null
+     },
+     {
+      "sku": "sku-25-1",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      null,
+      27
+     ]
+    },
+    "point": {
+     "x": 6.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 2500,
+      "value": "v25_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 25
+     }
+    ],
+    "req": [
+     25
+    ]
+   },
+   {
+    "id": 26,
+    "items": [
+     {
+      "sku": "sku-26-0",
+      "qty": null,
+      "tags": []
+     },
+     null,
+     {
+      "sku": "sku-26-2",
+      "qty": 262,
+      "tags": [
+       "t26_2_0",
+       "t26_2_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      26,
+      27
+     ],
+     "k1": [
+      27,
+      28,
+      29
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 6.5,
+     "inner": {
+      "a": 26,
+      "b": [
+       26,
+       null
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 2600,
+      "value": "v26_0"
+     },
+     {
+      "key": 2601,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 26
+     },
+     {}
+    ],
+    "req": [
+     26,
+     27
+    ]
+   },
+   {
+    "id": 27,
+    "items": [
+     null,
+     {
+      "sku": null,
+      "qty": 271,
+      "tags": [
+       "t27_1_0",
+       "t27_1_1"
+      ]
+     },
+     {
+      "sku": "sku-27-2",
+      "qty": 272,
+      "tags": [
+       "t27_2_0",
+       "t27_2_1",
+       "t27_2_2"
+      ]
+     },
+     {
+      "sku": "sku-27-3",
+      "qty": 273,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      27,
+      28,
+      29
+     ]
+    },
+    "point": {
+     "x": 6.75,
+     "inner": {
+      "a": null,
+      "b": [
+       27,
+       null,
+       28
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 28,
+    "items": [],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 7.0,
+     "inner": {
+      "a": 28,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 2800,
+      "value": "v28_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 28
+     }
+    ],
+    "req": [
+     28
+    ]
+   },
+   {
+    "id": 29,
+    "items": [
+     {
+      "sku": "sku-29-0",
+      "qty": 290,
+      "tags": [
+       "t29_0_0",
+       null,
+       "t29_0_2"
+      ]
+     },
+     {
+      "sku": "sku-29-1",
+      "qty": 291,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      30,
+      null
+     ],
+     "k2": [
+      31,
+      null,
+      33
+     ]
+    },
+    "point": {
+     "x": 7.25,
+     "inner": {
+      "a": 29,
+      "b": [
+       29
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 2900,
+      "value": "v29_0"
+     },
+     {
+      "key": 2901,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 29
+     },
+     {}
+    ],
+    "req": [
+     29,
+     30
+    ]
+   },
+   {
+    "id": 30,
+    "items": [
+     {
+      "sku": "sku-30-0",
+      "qty": 300,
+      "tags": null
+     },
+     {
+      "sku": "sku-30-1",
+      "qty": 301,
+      "tags": []
+     },
+     {
+      "sku": "sku-30-2",
+      "qty": null,
+      "tags": [
+       "t30_2_0",
+       "t30_2_1",
+       "t30_2_2"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": null,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      15.0,
+      15.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 31,
+    "items": [
+     {
+      "sku": "sku-31-0",
+      "qty": 310,
+      "tags": []
+     },
+     {
+      "sku": "sku-31-1",
+      "qty": null,
+      "tags": [
+       "t31_1_0",
+       "t31_1_1",
+       "t31_1_2"
+      ]
+     },
+     {
+      "sku": "sku-31-2",
+      "qty": 312,
+      "tags": [
+       "t31_2_0"
+      ]
+     },
+     {
+      "sku": "sku-31-3",
+      "qty": 313,
+      "tags": [
+       "t31_3_0",
+       "t31_3_1"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 7.75,
+     "inner": {
+      "a": 31,
+      "b": [
+       31,
+       null,
+       32
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 3100,
+      "value": "v31_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 31
+     }
+    ],
+    "req": [
+     31
+    ]
+   },
+   {
+    "id": 32,
+    "items": [
+     {
+      "sku": "sku-32-0",
+      "qty": null,
+      "tags": [
+       "t32_0_0",
+       null,
+       "t32_0_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      34,
+      35
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 3200,
+      "value": "v32_0"
+     },
+     {
+      "key": 3201,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 32
+     },
+     {}
+    ],
+    "req": [
+     32,
+     33
+    ]
+   },
+   {
+    "id": 33,
+    "items": null,
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 8.25,
+     "inner": {
+      "a": null,
+      "b": [
+       33
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 34,
+    "items": [
+     {
+      "sku": "sku-34-0",
+      "qty": 340,
+      "tags": [
+       "t34_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-34-1",
+      "qty": 341,
+      "tags": null
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [
+      34,
+      null
+     ],
+     "k1": [
+      35,
+      null,
+      37
+     ]
+    },
+    "point": {
+     "x": 8.5,
+     "inner": {
+      "a": 34,
+      "b": [
+       34,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      17.0,
+      17.5,
+      18.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 3400,
+      "value": "v34_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 34
+     }
+    ],
+    "req": [
+     34
+    ]
+   },
+   {
+    "id": 35,
+    "items": [],
+    "attrs": {
+     "k0": [
+      null,
+      36,
+      37
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 8.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 3500,
+      "value": "v35_0"
+     },
+     {
+      "key": 3501,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 35
+     },
+     {}
+    ],
+    "req": [
+     35,
+     36
+    ]
+   },
+   {
+    "id": 36,
+    "items": [
+     null
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 37,
+    "items": [
+     {
+      "sku": "sku-37-0",
+      "qty": 370,
+      "tags": [
+       "t37_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-37-1",
+      "qty": null,
+      "tags": [
+       "t37_1_0",
+       "t37_1_1",
+       "t37_1_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      38,
+      39
+     ]
+    },
+    "point": {
+     "x": 9.25,
+     "inner": {
+      "a": 37,
+      "b": [
+       37
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 3700,
+      "value": "v37_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 37
+     }
+    ],
+    "req": [
+     37
+    ]
+   },
+   {
+    "id": 38,
+    "items": [
+     {
+      "sku": "sku-38-0",
+      "qty": null,
+      "tags": [
+       "t38_0_0",
+       null,
+       "t38_0_2"
+      ]
+     },
+     {
+      "sku": "sku-38-1",
+      "qty": 381,
+      "tags": [
+       "t38_1_0"
+      ]
+     },
+     {
+      "sku": "sku-38-2",
+      "qty": 382,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      38,
+      39
+     ],
+     "k1": [
+      39,
+      40,
+      null
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 9.5,
+     "inner": {
+      "a": 38,
+      "b": [
+       38,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      19.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 3800,
+      "value": "v38_0"
+     },
+     {
+      "key": 3801,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 38
+     },
+     {}
+    ],
+    "req": [
+     38,
+     39
+    ]
+   },
+   {
+    "id": 39,
+    "items": [
+     {
+      "sku": "sku-39-0",
+      "qty": 390,
+      "tags": [
+       "t39_0_0"
+      ]
+     },
+     {
+      "sku": "sku-39-1",
+      "qty": 391,
+      "tags": null
+     },
+     {
+      "sku": "sku-39-2",
+      "qty": 392,
+      "tags": []
+     },
+     {
+      "sku": "sku-39-3",
+      "qty": 393,
+      "tags": [
+       "t39_3_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      39,
+      null,
+      41
+     ]
+    },
+    "point": {
+     "x": 9.75,
+     "inner": {
+      "a": null,
+      "b": [
+       39,
+       null,
+       40
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 40,
+    "items": [
+     {
+      "sku": "sku-40-0",
+      "qty": 400,
+      "tags": null
+     }
+    ],
+    "attrs": null,
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 4000,
+      "value": "v40_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 40
+     }
+    ],
+    "req": [
+     40
+    ]
+   },
+   {
+    "id": 41,
+    "items": [
+     {
+      "sku": "sku-41-0",
+      "qty": 410,
+      "tags": []
+     },
+     {
+      "sku": "sku-41-1",
+      "qty": 411,
+      "tags": [
+       "t41_1_0"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 10.25,
+     "inner": {
+      "a": 41,
+      "b": [
+       41
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 4100,
+      "value": "v41_0"
+     },
+     {
+      "key": 4101,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 41
+     },
+     {}
+    ],
+    "req": [
+     41,
+     42
+    ]
+   },
+   {
+    "id": 42,
+    "items": [],
+    "attrs": {
+     "k0": [
+      42,
+      43
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       42,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      21.0,
+      21.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 43,
+    "items": [
+     {
+      "sku": "sku-43-0",
+      "qty": 430,
+      "tags": [
+       "t43_0_0",
+       null
+      ]
+     },
+     {
+      "sku": null,
+      "qty": null,
+      "tags": [
+       "t43_1_0",
+       "t43_1_1",
+       "t43_1_2"
+      ]
+     },
+     null,
+     {
+      "sku": "sku-43-3",
+      "qty": 433,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      43,
+      44,
+      null
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 10.75,
+     "inner": {
+      "a": 43,
+      "b": [
+       43,
+       null,
+       44
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 4300,
+      "value": "v43_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 43
+     }
+    ],
+    "req": [
+     43
+    ]
+   },
+   {
+    "id": 44,
+    "items": null,
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      46,
+      null
+     ]
+    },
+    "point": {
+     "x": 11.0,
+     "inner": {
+      "a": 44,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 4400,
+      "value": "v44_0"
+     },
+     {
+      "key": 4401,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 44
+     },
+     {}
+    ],
+    "req": [
+     44,
+     45
+    ]
+   },
+   {
+    "id": 45,
+    "items": [
+     null,
+     {
+      "sku": "sku-45-1",
+      "qty": 451,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 11.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 46,
+    "items": [
+     {
+      "sku": "sku-46-0",
+      "qty": 460,
+      "tags": []
+     },
+     {
+      "sku": "sku-46-1",
+      "qty": 461,
+      "tags": [
+       "t46_1_0",
+       "t46_1_1",
+       "t46_1_2"
+      ]
+     },
+     {
+      "sku": "sku-46-2",
+      "qty": 462,
+      "tags": [
+       "t46_2_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      46,
+      47
+     ],
+     "k1": [
+      47,
+      48,
+      49
+     ]
+    },
+    "point": {
+     "x": 11.5,
+     "inner": {
+      "a": 46,
+      "b": [
+       46,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      23.0,
+      23.5,
+      24.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 4600,
+      "value": "v46_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 46
+     }
+    ],
+    "req": [
+     46
+    ]
+   },
+   {
+    "id": 47,
+    "items": [
+     {
+      "sku": "sku-47-0",
+      "qty": 470,
+      "tags": [
+       "t47_0_0",
+       null,
+       "t47_0_2"
+      ]
+     },
+     {
+      "sku": "sku-47-1",
+      "qty": 471,
+      "tags": [
+       "t47_1_0"
+      ]
+     },
+     {
+      "sku": "sku-47-2",
+      "qty": 472,
+      "tags": [
+       "t47_2_0",
+       "t47_2_1"
+      ]
+     },
+     {
+      "sku": "sku-47-3",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      47,
+      48,
+      49
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 11.75,
+     "inner": {
+      "a": 47,
+      "b": [
+       47,
+       null,
+       48
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 4700,
+      "value": "v47_0"
+     },
+     {
+      "key": 4701,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 47
+     },
+     {}
+    ],
+    "req": [
+     47,
+     48
+    ]
+   },
+   {
+    "id": 48,
+    "items": [
+     {
+      "sku": "sku-48-0",
+      "qty": 480,
+      "tags": [
+       "t48_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": null,
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 49,
+    "items": [],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      50,
+      null
+     ]
+    },
+    "point": {
+     "x": 12.25,
+     "inner": {
+      "a": 49,
+      "b": [
+       49
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 4900,
+      "value": "v49_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 49
+     }
+    ],
+    "req": [
+     49
+    ]
+   },
+   {
+    "id": 50,
+    "items": [
+     {
+      "sku": "sku-50-0",
+      "qty": null,
+      "tags": null
+     },
+     {
+      "sku": "sku-50-1",
+      "qty": 501,
+      "tags": []
+     },
+     {
+      "sku": "sku-50-2",
+      "qty": 502,
+      "tags": [
+       "t50_2_0",
+       "t50_2_1"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 12.5,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      25.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 5000,
+      "value": "v50_0"
+     },
+     {
+      "key": 5001,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 50
+     },
+     {}
+    ],
+    "req": [
+     50,
+     51
+    ]
+   },
+   {
+    "id": 51,
+    "items": [
+     {
+      "sku": "sku-51-0",
+      "qty": 510,
+      "tags": []
+     },
+     {
+      "sku": null,
+      "qty": 511,
+      "tags": [
+       "t51_1_0",
+       "t51_1_1"
+      ]
+     },
+     {
+      "sku": "sku-51-2",
+      "qty": 512,
+      "tags": [
+       "t51_2_0",
+       "t51_2_1",
+       "t51_2_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {},
+    "point": {
+     "x": 12.75,
+     "inner": {
+      "a": null,
+      "b": [
+       51,
+       null,
+       52
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 52,
+    "items": [
+     {
+      "sku": "sku-52-0",
+      "qty": 520,
+      "tags": [
+       "t52_0_0",
+       null
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 13.0,
+     "inner": {
+      "a": 52,
+      "b": null
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 5200,
+      "value": "v52_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 52
+     }
+    ],
+    "req": [
+     52
+    ]
+   },
+   {
+    "id": 53,
+    "items": [
+     {
+      "sku": "sku-53-0",
+      "qty": 530,
+      "tags": [
+       "t53_0_0",
+       null,
+       "t53_0_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      54,
+      55
+     ],
+     "k2": [
+      55,
+      56,
+      null
+     ]
+    },
+    "point": {
+     "x": 13.25,
+     "inner": {
+      "a": 53,
+      "b": [
+       53
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 5300,
+      "value": "v53_0"
+     },
+     {
+      "key": 5301,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 53
+     },
+     {}
+    ],
+    "req": [
+     53,
+     54
+    ]
+   },
+   {
+    "id": 54,
+    "items": [
+     null,
+     {
+      "sku": "sku-54-1",
+      "qty": 541,
+      "tags": null
+     },
+     {
+      "sku": "sku-54-2",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      54,
+      null
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       54,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      27.0,
+      27.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 55,
+    "items": null,
+    "attrs": {
+     "k0": [
+      null,
+      56,
+      57
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 13.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 5500,
+      "value": "v55_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 55
+     }
+    ],
+    "req": [
+     55
+    ]
+   },
+   {
+    "id": 56,
+    "items": [],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      58,
+      59
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 5600,
+      "value": "v56_0"
+     },
+     {
+      "key": 5601,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 56
+     },
+     {}
+    ],
+    "req": [
+     56,
+     57
+    ]
+   },
+   {
+    "id": 57,
+    "items": [
+     {
+      "sku": "sku-57-0",
+      "qty": 570,
+      "tags": [
+       "t57_0_0"
+      ]
+     },
+     {
+      "sku": "sku-57-1",
+      "qty": 571,
+      "tags": [
+       "t57_1_0",
+       "t57_1_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 14.25,
+     "inner": {
+      "a": null,
+      "b": [
+       57
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 58,
+    "items": [
+     {
+      "sku": "sku-58-0",
+      "qty": 580,
+      "tags": [
+       "t58_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-58-1",
+      "qty": 581,
+      "tags": [
+       "t58_1_0",
+       "t58_1_1",
+       "t58_1_2"
+      ]
+     },
+     {
+      "sku": "sku-58-2",
+      "qty": 582,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      58,
+      59
+     ],
+     "k1": [
+      59,
+      60,
+      null
+     ]
+    },
+    "point": {
+     "x": 14.5,
+     "inner": {
+      "a": 58,
+      "b": [
+       58,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      29.0,
+      29.5,
+      30.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 5800,
+      "value": "v58_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 58
+     }
+    ],
+    "req": [
+     58
+    ]
+   },
+   {
+    "id": 59,
+    "items": [
+     {
+      "sku": "sku-59-0",
+      "qty": 590,
+      "tags": [
+       "t59_0_0",
+       null,
+       "t59_0_2"
+      ]
+     },
+     {
+      "sku": null,
+      "qty": 591,
+      "tags": null
+     },
+     {
+      "sku": "sku-59-2",
+      "qty": 592,
+      "tags": []
+     },
+     {
+      "sku": "sku-59-3",
+      "qty": null,
+      "tags": [
+       "t59_3_0",
+       "t59_3_1",
+       "t59_3_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      59,
+      null,
+      61
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 14.75,
+     "inner": {
+      "a": 59,
+      "b": [
+       59,
+       null,
+       60
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 5900,
+      "value": "v59_0"
+     },
+     {
+      "key": 5901,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 59
+     },
+     {}
+    ],
+    "req": [
+     59,
+     60
+    ]
+   }
+  ]
+ },
+ "nested/nested-mixed-v2": {
+  "columns": [
+   "id",
+   "items",
+   "attrs",
+   "point",
+   "grid",
+   "imap",
+   "maplist",
+   "req"
+  ],
+  "shapes": {
+   "id": "plain",
+   "items": "plain",
+   "attrs": "map",
+   "point": {
+    "x": "plain",
+    "inner": {
+     "a": "plain",
+     "b": "plain"
+    }
+   },
+   "grid": "plain",
+   "imap": "map",
+   "maplist": "plain",
+   "req": "plain"
+  },
+  "rows": [
+   {
+    "id": 0,
+    "items": null,
+    "attrs": null,
+    "point": null,
+    "grid": null,
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 1,
+    "items": [
+     {
+      "sku": "sku-1-0",
+      "qty": 10,
+      "tags": []
+     },
+     {
+      "sku": "sku-1-1",
+      "qty": null,
+      "tags": [
+       "t1_1_0",
+       "t1_1_1",
+       "t1_1_2"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 0.25,
+     "inner": {
+      "a": 1,
+      "b": [
+       1
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 100,
+      "value": "v1_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 1
+     }
+    ],
+    "req": [
+     1
+    ]
+   },
+   {
+    "id": 2,
+    "items": [
+     {
+      "sku": "sku-2-0",
+      "qty": null,
+      "tags": [
+       "t2_0_0",
+       null,
+       "t2_0_2"
+      ]
+     },
+     {
+      "sku": "sku-2-1",
+      "qty": 21,
+      "tags": [
+       "t2_1_0"
+      ]
+     },
+     {
+      "sku": "sku-2-2",
+      "qty": 22,
+      "tags": [
+       "t2_2_0",
+       "t2_2_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      2,
+      3
+     ],
+     "k1": [
+      3,
+      4,
+      5
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 0.5,
+     "inner": {
+      "a": 2,
+      "b": [
+       2,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      1.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 200,
+      "value": "v2_0"
+     },
+     {
+      "key": 201,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 2
+     },
+     {}
+    ],
+    "req": [
+     2,
+     3
+    ]
+   },
+   {
+    "id": 3,
+    "items": [
+     {
+      "sku": "sku-3-0",
+      "qty": 30,
+      "tags": [
+       "t3_0_0"
+      ]
+     },
+     {
+      "sku": null,
+      "qty": 31,
+      "tags": [
+       "t3_1_0",
+       "t3_1_1"
+      ]
+     },
+     {
+      "sku": "sku-3-2",
+      "qty": 32,
+      "tags": null
+     },
+     {
+      "sku": "sku-3-3",
+      "qty": 33,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      3,
+      4,
+      null
+     ]
+    },
+    "point": {
+     "x": 0.75,
+     "inner": {
+      "a": null,
+      "b": [
+       3,
+       null,
+       4
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 4,
+    "items": [
+     {
+      "sku": "sku-4-0",
+      "qty": 40,
+      "tags": [
+       "t4_0_0",
+       null
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 1.0,
+     "inner": {
+      "a": 4,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 400,
+      "value": "v4_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 4
+     }
+    ],
+    "req": [
+     4
+    ]
+   },
+   {
+    "id": 5,
+    "items": [
+     {
+      "sku": "sku-5-0",
+      "qty": 50,
+      "tags": null
+     },
+     {
+      "sku": "sku-5-1",
+      "qty": 51,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      null,
+      7
+     ],
+     "k2": [
+      null,
+      8,
+      9
+     ]
+    },
+    "point": {
+     "x": 1.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 500,
+      "value": "v5_0"
+     },
+     {
+      "key": 501,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 5
+     },
+     {}
+    ],
+    "req": [
+     5,
+     6
+    ]
+   },
+   {
+    "id": 6,
+    "items": [
+     {
+      "sku": "sku-6-0",
+      "qty": 60,
+      "tags": []
+     },
+     {
+      "sku": "sku-6-1",
+      "qty": 61,
+      "tags": [
+       "t6_1_0",
+       "t6_1_1"
+      ]
+     },
+     {
+      "sku": "sku-6-2",
+      "qty": null,
+      "tags": [
+       "t6_2_0",
+       "t6_2_1",
+       "t6_2_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      6,
+      7
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       6,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      3.0,
+      3.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 7,
+    "items": [],
+    "attrs": {
+     "k0": [
+      7,
+      8,
+      9
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 1.75,
+     "inner": {
+      "a": 7,
+      "b": [
+       7,
+       null,
+       8
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 700,
+      "value": "v7_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 7
+     }
+    ],
+    "req": [
+     7
+    ]
+   },
+   {
+    "id": 8,
+    "items": [
+     {
+      "sku": "sku-8-0",
+      "qty": null,
+      "tags": [
+       "t8_0_0",
+       null,
+       "t8_0_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      10,
+      11
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 800,
+      "value": "v8_0"
+     },
+     {
+      "key": 801,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 8
+     },
+     {}
+    ],
+    "req": [
+     8,
+     9
+    ]
+   },
+   {
+    "id": 9,
+    "items": [
+     null,
+     {
+      "sku": "sku-9-1",
+      "qty": 91,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 2.25,
+     "inner": {
+      "a": null,
+      "b": [
+       9
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 10,
+    "items": [
+     {
+      "sku": "sku-10-0",
+      "qty": 100,
+      "tags": null
+     },
+     {
+      "sku": "sku-10-1",
+      "qty": 101,
+      "tags": []
+     },
+     {
+      "sku": "sku-10-2",
+      "qty": 102,
+      "tags": [
+       "t10_2_0"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 2.5,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      5.0,
+      5.5,
+      6.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 1000,
+      "value": "v10_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 10
+     }
+    ],
+    "req": [
+     10
+    ]
+   },
+   {
+    "id": 11,
+    "items": null,
+    "attrs": {},
+    "point": {
+     "x": 2.75,
+     "inner": {
+      "a": 11,
+      "b": [
+       11,
+       null,
+       12
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 1100,
+      "value": "v11_0"
+     },
+     {
+      "key": 1101,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 11
+     },
+     {}
+    ],
+    "req": [
+     11,
+     12
+    ]
+   },
+   {
+    "id": 12,
+    "items": [
+     {
+      "sku": "sku-12-0",
+      "qty": 120,
+      "tags": [
+       "t12_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 13,
+    "items": [
+     {
+      "sku": "sku-13-0",
+      "qty": 130,
+      "tags": [
+       "t13_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-13-1",
+      "qty": null,
+      "tags": [
+       "t13_1_0",
+       "t13_1_1",
+       "t13_1_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      14,
+      15
+     ]
+    },
+    "point": {
+     "x": 3.25,
+     "inner": {
+      "a": 13,
+      "b": [
+       13
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 1300,
+      "value": "v13_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 13
+     }
+    ],
+    "req": [
+     13
+    ]
+   },
+   {
+    "id": 14,
+    "items": [],
+    "attrs": {
+     "k0": [
+      14,
+      null
+     ],
+     "k1": [
+      15,
+      null,
+      17
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 3.5,
+     "inner": {
+      "a": 14,
+      "b": [
+       14,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      7.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 1400,
+      "value": "v14_0"
+     },
+     {
+      "key": 1401,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 14
+     },
+     {}
+    ],
+    "req": [
+     14,
+     15
+    ]
+   },
+   {
+    "id": 15,
+    "items": [
+     {
+      "sku": "sku-15-0",
+      "qty": 150,
+      "tags": null
+     },
+     {
+      "sku": "sku-15-1",
+      "qty": 151,
+      "tags": []
+     },
+     {
+      "sku": "sku-15-2",
+      "qty": 152,
+      "tags": [
+       "t15_2_0",
+       "t15_2_1",
+       "t15_2_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [
+      null,
+      16,
+      17
+     ]
+    },
+    "point": {
+     "x": 3.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 16,
+    "items": [
+     {
+      "sku": "sku-16-0",
+      "qty": 160,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 1600,
+      "value": "v16_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 16
+     }
+    ],
+    "req": [
+     16
+    ]
+   },
+   {
+    "id": 17,
+    "items": [
+     {
+      "sku": "sku-17-0",
+      "qty": 170,
+      "tags": [
+       "t17_0_0",
+       null,
+       "t17_0_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      18,
+      19
+     ],
+     "k2": [
+      19,
+      20,
+      21
+     ]
+    },
+    "point": {
+     "x": 4.25,
+     "inner": {
+      "a": 17,
+      "b": [
+       17
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 1700,
+      "value": "v17_0"
+     },
+     {
+      "key": 1701,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 17
+     },
+     {}
+    ],
+    "req": [
+     17,
+     18
+    ]
+   },
+   {
+    "id": 18,
+    "items": [
+     null,
+     {
+      "sku": "sku-18-1",
+      "qty": 181,
+      "tags": [
+       "t18_1_0",
+       "t18_1_1"
+      ]
+     },
+     {
+      "sku": "sku-18-2",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      18,
+      19
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       18,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      9.0,
+      9.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 19,
+    "items": [
+     {
+      "sku": "sku-19-0",
+      "qty": 190,
+      "tags": [
+       "t19_0_0",
+       null
+      ]
+     },
+     {
+      "sku": null,
+      "qty": null,
+      "tags": null
+     },
+     {
+      "sku": "sku-19-2",
+      "qty": 192,
+      "tags": []
+     },
+     {
+      "sku": "sku-19-3",
+      "qty": 193,
+      "tags": [
+       "t19_3_0",
+       "t19_3_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      19,
+      null,
+      21
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 4.75,
+     "inner": {
+      "a": 19,
+      "b": [
+       19,
+       null,
+       20
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 1900,
+      "value": "v19_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 19
+     }
+    ],
+    "req": [
+     19
+    ]
+   },
+   {
+    "id": 20,
+    "items": [
+     {
+      "sku": "sku-20-0",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 5.0,
+     "inner": null
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 2000,
+      "value": "v20_0"
+     },
+     {
+      "key": 2001,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 20
+     },
+     {}
+    ],
+    "req": [
+     20,
+     21
+    ]
+   },
+   {
+    "id": 21,
+    "items": [],
+    "attrs": {},
+    "point": {
+     "x": 5.25,
+     "inner": {
+      "a": null,
+      "b": [
+       21
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 22,
+    "items": null,
+    "attrs": {
+     "k0": [
+      22,
+      23
+     ],
+     "k1": [
+      23,
+      24,
+      25
+     ]
+    },
+    "point": {
+     "x": 5.5,
+     "inner": {
+      "a": 22,
+      "b": [
+       22,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      11.0,
+      11.5,
+      12.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 2200,
+      "value": "v22_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 22
+     }
+    ],
+    "req": [
+     22
+    ]
+   },
+   {
+    "id": 23,
+    "items": [
+     {
+      "sku": "sku-23-0",
+      "qty": 230,
+      "tags": [
+       "t23_0_0",
+       null,
+       "t23_0_2"
+      ]
+     },
+     {
+      "sku": "sku-23-1",
+      "qty": 231,
+      "tags": [
+       "t23_1_0"
+      ]
+     },
+     {
+      "sku": "sku-23-2",
+      "qty": 232,
+      "tags": null
+     },
+     {
+      "sku": "sku-23-3",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      23,
+      24,
+      null
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 5.75,
+     "inner": {
+      "a": 23,
+      "b": [
+       23,
+       null,
+       24
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 2300,
+      "value": "v23_0"
+     },
+     {
+      "key": 2301,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 23
+     },
+     {}
+    ],
+    "req": [
+     23,
+     24
+    ]
+   },
+   {
+    "id": 24,
+    "items": [
+     {
+      "sku": "sku-24-0",
+      "qty": 240,
+      "tags": [
+       "t24_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": null,
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 25,
+    "items": [
+     {
+      "sku": "sku-25-0",
+      "qty": 250,
+      "tags": null
+     },
+     {
+      "sku": "sku-25-1",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      null,
+      27
+     ]
+    },
+    "point": {
+     "x": 6.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 2500,
+      "value": "v25_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 25
+     }
+    ],
+    "req": [
+     25
+    ]
+   },
+   {
+    "id": 26,
+    "items": [
+     {
+      "sku": "sku-26-0",
+      "qty": null,
+      "tags": []
+     },
+     null,
+     {
+      "sku": "sku-26-2",
+      "qty": 262,
+      "tags": [
+       "t26_2_0",
+       "t26_2_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      26,
+      27
+     ],
+     "k1": [
+      27,
+      28,
+      29
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 6.5,
+     "inner": {
+      "a": 26,
+      "b": [
+       26,
+       null
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 2600,
+      "value": "v26_0"
+     },
+     {
+      "key": 2601,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 26
+     },
+     {}
+    ],
+    "req": [
+     26,
+     27
+    ]
+   },
+   {
+    "id": 27,
+    "items": [
+     null,
+     {
+      "sku": null,
+      "qty": 271,
+      "tags": [
+       "t27_1_0",
+       "t27_1_1"
+      ]
+     },
+     {
+      "sku": "sku-27-2",
+      "qty": 272,
+      "tags": [
+       "t27_2_0",
+       "t27_2_1",
+       "t27_2_2"
+      ]
+     },
+     {
+      "sku": "sku-27-3",
+      "qty": 273,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      27,
+      28,
+      29
+     ]
+    },
+    "point": {
+     "x": 6.75,
+     "inner": {
+      "a": null,
+      "b": [
+       27,
+       null,
+       28
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 28,
+    "items": [],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 7.0,
+     "inner": {
+      "a": 28,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 2800,
+      "value": "v28_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 28
+     }
+    ],
+    "req": [
+     28
+    ]
+   },
+   {
+    "id": 29,
+    "items": [
+     {
+      "sku": "sku-29-0",
+      "qty": 290,
+      "tags": [
+       "t29_0_0",
+       null,
+       "t29_0_2"
+      ]
+     },
+     {
+      "sku": "sku-29-1",
+      "qty": 291,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      30,
+      null
+     ],
+     "k2": [
+      31,
+      null,
+      33
+     ]
+    },
+    "point": {
+     "x": 7.25,
+     "inner": {
+      "a": 29,
+      "b": [
+       29
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 2900,
+      "value": "v29_0"
+     },
+     {
+      "key": 2901,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 29
+     },
+     {}
+    ],
+    "req": [
+     29,
+     30
+    ]
+   },
+   {
+    "id": 30,
+    "items": [
+     {
+      "sku": "sku-30-0",
+      "qty": 300,
+      "tags": null
+     },
+     {
+      "sku": "sku-30-1",
+      "qty": 301,
+      "tags": []
+     },
+     {
+      "sku": "sku-30-2",
+      "qty": null,
+      "tags": [
+       "t30_2_0",
+       "t30_2_1",
+       "t30_2_2"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": null,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      15.0,
+      15.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 31,
+    "items": [
+     {
+      "sku": "sku-31-0",
+      "qty": 310,
+      "tags": []
+     },
+     {
+      "sku": "sku-31-1",
+      "qty": null,
+      "tags": [
+       "t31_1_0",
+       "t31_1_1",
+       "t31_1_2"
+      ]
+     },
+     {
+      "sku": "sku-31-2",
+      "qty": 312,
+      "tags": [
+       "t31_2_0"
+      ]
+     },
+     {
+      "sku": "sku-31-3",
+      "qty": 313,
+      "tags": [
+       "t31_3_0",
+       "t31_3_1"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 7.75,
+     "inner": {
+      "a": 31,
+      "b": [
+       31,
+       null,
+       32
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 3100,
+      "value": "v31_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 31
+     }
+    ],
+    "req": [
+     31
+    ]
+   },
+   {
+    "id": 32,
+    "items": [
+     {
+      "sku": "sku-32-0",
+      "qty": null,
+      "tags": [
+       "t32_0_0",
+       null,
+       "t32_0_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      34,
+      35
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 3200,
+      "value": "v32_0"
+     },
+     {
+      "key": 3201,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 32
+     },
+     {}
+    ],
+    "req": [
+     32,
+     33
+    ]
+   },
+   {
+    "id": 33,
+    "items": null,
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 8.25,
+     "inner": {
+      "a": null,
+      "b": [
+       33
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 34,
+    "items": [
+     {
+      "sku": "sku-34-0",
+      "qty": 340,
+      "tags": [
+       "t34_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-34-1",
+      "qty": 341,
+      "tags": null
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [
+      34,
+      null
+     ],
+     "k1": [
+      35,
+      null,
+      37
+     ]
+    },
+    "point": {
+     "x": 8.5,
+     "inner": {
+      "a": 34,
+      "b": [
+       34,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      17.0,
+      17.5,
+      18.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 3400,
+      "value": "v34_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 34
+     }
+    ],
+    "req": [
+     34
+    ]
+   },
+   {
+    "id": 35,
+    "items": [],
+    "attrs": {
+     "k0": [
+      null,
+      36,
+      37
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 8.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 3500,
+      "value": "v35_0"
+     },
+     {
+      "key": 3501,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 35
+     },
+     {}
+    ],
+    "req": [
+     35,
+     36
+    ]
+   },
+   {
+    "id": 36,
+    "items": [
+     null
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 37,
+    "items": [
+     {
+      "sku": "sku-37-0",
+      "qty": 370,
+      "tags": [
+       "t37_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-37-1",
+      "qty": null,
+      "tags": [
+       "t37_1_0",
+       "t37_1_1",
+       "t37_1_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      38,
+      39
+     ]
+    },
+    "point": {
+     "x": 9.25,
+     "inner": {
+      "a": 37,
+      "b": [
+       37
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 3700,
+      "value": "v37_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 37
+     }
+    ],
+    "req": [
+     37
+    ]
+   },
+   {
+    "id": 38,
+    "items": [
+     {
+      "sku": "sku-38-0",
+      "qty": null,
+      "tags": [
+       "t38_0_0",
+       null,
+       "t38_0_2"
+      ]
+     },
+     {
+      "sku": "sku-38-1",
+      "qty": 381,
+      "tags": [
+       "t38_1_0"
+      ]
+     },
+     {
+      "sku": "sku-38-2",
+      "qty": 382,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      38,
+      39
+     ],
+     "k1": [
+      39,
+      40,
+      null
+     ],
+     "k2": null
+    },
+    "point": {
+     "x": 9.5,
+     "inner": {
+      "a": 38,
+      "b": [
+       38,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      19.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 3800,
+      "value": "v38_0"
+     },
+     {
+      "key": 3801,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 38
+     },
+     {}
+    ],
+    "req": [
+     38,
+     39
+    ]
+   },
+   {
+    "id": 39,
+    "items": [
+     {
+      "sku": "sku-39-0",
+      "qty": 390,
+      "tags": [
+       "t39_0_0"
+      ]
+     },
+     {
+      "sku": "sku-39-1",
+      "qty": 391,
+      "tags": null
+     },
+     {
+      "sku": "sku-39-2",
+      "qty": 392,
+      "tags": []
+     },
+     {
+      "sku": "sku-39-3",
+      "qty": 393,
+      "tags": [
+       "t39_3_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      39,
+      null,
+      41
+     ]
+    },
+    "point": {
+     "x": 9.75,
+     "inner": {
+      "a": null,
+      "b": [
+       39,
+       null,
+       40
+      ]
+     }
+    },
+    "grid": null,
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 40,
+    "items": [
+     {
+      "sku": "sku-40-0",
+      "qty": 400,
+      "tags": null
+     }
+    ],
+    "attrs": null,
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 4000,
+      "value": "v40_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 40
+     }
+    ],
+    "req": [
+     40
+    ]
+   },
+   {
+    "id": 41,
+    "items": [
+     {
+      "sku": "sku-41-0",
+      "qty": 410,
+      "tags": []
+     },
+     {
+      "sku": "sku-41-1",
+      "qty": 411,
+      "tags": [
+       "t41_1_0"
+      ]
+     }
+    ],
+    "attrs": {},
+    "point": {
+     "x": 10.25,
+     "inner": {
+      "a": 41,
+      "b": [
+       41
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 4100,
+      "value": "v41_0"
+     },
+     {
+      "key": 4101,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 41
+     },
+     {}
+    ],
+    "req": [
+     41,
+     42
+    ]
+   },
+   {
+    "id": 42,
+    "items": [],
+    "attrs": {
+     "k0": [
+      42,
+      43
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       42,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      21.0,
+      21.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 43,
+    "items": [
+     {
+      "sku": "sku-43-0",
+      "qty": 430,
+      "tags": [
+       "t43_0_0",
+       null
+      ]
+     },
+     {
+      "sku": null,
+      "qty": null,
+      "tags": [
+       "t43_1_0",
+       "t43_1_1",
+       "t43_1_2"
+      ]
+     },
+     null,
+     {
+      "sku": "sku-43-3",
+      "qty": 433,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      43,
+      44,
+      null
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 10.75,
+     "inner": {
+      "a": 43,
+      "b": [
+       43,
+       null,
+       44
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 4300,
+      "value": "v43_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 43
+     }
+    ],
+    "req": [
+     43
+    ]
+   },
+   {
+    "id": 44,
+    "items": null,
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      46,
+      null
+     ]
+    },
+    "point": {
+     "x": 11.0,
+     "inner": {
+      "a": 44,
+      "b": null
+     }
+    },
+    "grid": [],
+    "imap": [
+     {
+      "key": 4400,
+      "value": "v44_0"
+     },
+     {
+      "key": 4401,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 44
+     },
+     {}
+    ],
+    "req": [
+     44,
+     45
+    ]
+   },
+   {
+    "id": 45,
+    "items": [
+     null,
+     {
+      "sku": "sku-45-1",
+      "qty": 451,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 11.25,
+     "inner": null
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 46,
+    "items": [
+     {
+      "sku": "sku-46-0",
+      "qty": 460,
+      "tags": []
+     },
+     {
+      "sku": "sku-46-1",
+      "qty": 461,
+      "tags": [
+       "t46_1_0",
+       "t46_1_1",
+       "t46_1_2"
+      ]
+     },
+     {
+      "sku": "sku-46-2",
+      "qty": 462,
+      "tags": [
+       "t46_2_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      46,
+      47
+     ],
+     "k1": [
+      47,
+      48,
+      49
+     ]
+    },
+    "point": {
+     "x": 11.5,
+     "inner": {
+      "a": 46,
+      "b": [
+       46,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      23.0,
+      23.5,
+      24.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 4600,
+      "value": "v46_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 46
+     }
+    ],
+    "req": [
+     46
+    ]
+   },
+   {
+    "id": 47,
+    "items": [
+     {
+      "sku": "sku-47-0",
+      "qty": 470,
+      "tags": [
+       "t47_0_0",
+       null,
+       "t47_0_2"
+      ]
+     },
+     {
+      "sku": "sku-47-1",
+      "qty": 471,
+      "tags": [
+       "t47_1_0"
+      ]
+     },
+     {
+      "sku": "sku-47-2",
+      "qty": 472,
+      "tags": [
+       "t47_2_0",
+       "t47_2_1"
+      ]
+     },
+     {
+      "sku": "sku-47-3",
+      "qty": null,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      47,
+      48,
+      49
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 11.75,
+     "inner": {
+      "a": 47,
+      "b": [
+       47,
+       null,
+       48
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 4700,
+      "value": "v47_0"
+     },
+     {
+      "key": 4701,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 47
+     },
+     {}
+    ],
+    "req": [
+     47,
+     48
+    ]
+   },
+   {
+    "id": 48,
+    "items": [
+     {
+      "sku": "sku-48-0",
+      "qty": 480,
+      "tags": [
+       "t48_0_0"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null
+    },
+    "point": null,
+    "grid": [],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 49,
+    "items": [],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      50,
+      null
+     ]
+    },
+    "point": {
+     "x": 12.25,
+     "inner": {
+      "a": 49,
+      "b": [
+       49
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 4900,
+      "value": "v49_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 49
+     }
+    ],
+    "req": [
+     49
+    ]
+   },
+   {
+    "id": 50,
+    "items": [
+     {
+      "sku": "sku-50-0",
+      "qty": null,
+      "tags": null
+     },
+     {
+      "sku": "sku-50-1",
+      "qty": 501,
+      "tags": []
+     },
+     {
+      "sku": "sku-50-2",
+      "qty": 502,
+      "tags": [
+       "t50_2_0",
+       "t50_2_1"
+      ]
+     }
+    ],
+    "attrs": null,
+    "point": {
+     "x": 12.5,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     [
+      25.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 5000,
+      "value": "v50_0"
+     },
+     {
+      "key": 5001,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 50
+     },
+     {}
+    ],
+    "req": [
+     50,
+     51
+    ]
+   },
+   {
+    "id": 51,
+    "items": [
+     {
+      "sku": "sku-51-0",
+      "qty": 510,
+      "tags": []
+     },
+     {
+      "sku": null,
+      "qty": 511,
+      "tags": [
+       "t51_1_0",
+       "t51_1_1"
+      ]
+     },
+     {
+      "sku": "sku-51-2",
+      "qty": 512,
+      "tags": [
+       "t51_2_0",
+       "t51_2_1",
+       "t51_2_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {},
+    "point": {
+     "x": 12.75,
+     "inner": {
+      "a": null,
+      "b": [
+       51,
+       null,
+       52
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     null,
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 52,
+    "items": [
+     {
+      "sku": "sku-52-0",
+      "qty": 520,
+      "tags": [
+       "t52_0_0",
+       null
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": null,
+     "k1": []
+    },
+    "point": {
+     "x": 13.0,
+     "inner": {
+      "a": 52,
+      "b": null
+     }
+    },
+    "grid": null,
+    "imap": [
+     {
+      "key": 5200,
+      "value": "v52_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 52
+     }
+    ],
+    "req": [
+     52
+    ]
+   },
+   {
+    "id": 53,
+    "items": [
+     {
+      "sku": "sku-53-0",
+      "qty": 530,
+      "tags": [
+       "t53_0_0",
+       null,
+       "t53_0_2"
+      ]
+     },
+     null
+    ],
+    "attrs": {
+     "k0": [],
+     "k1": [
+      54,
+      55
+     ],
+     "k2": [
+      55,
+      56,
+      null
+     ]
+    },
+    "point": {
+     "x": 13.25,
+     "inner": {
+      "a": 53,
+      "b": [
+       53
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [
+     {
+      "key": 5300,
+      "value": "v53_0"
+     },
+     {
+      "key": 5301,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 53
+     },
+     {}
+    ],
+    "req": [
+     53,
+     54
+    ]
+   },
+   {
+    "id": 54,
+    "items": [
+     null,
+     {
+      "sku": "sku-54-1",
+      "qty": 541,
+      "tags": null
+     },
+     {
+      "sku": "sku-54-2",
+      "qty": null,
+      "tags": []
+     }
+    ],
+    "attrs": {
+     "k0": [
+      54,
+      null
+     ]
+    },
+    "point": {
+     "x": null,
+     "inner": {
+      "a": null,
+      "b": [
+       54,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0
+     ],
+     [
+      27.0,
+      27.5
+     ]
+    ],
+    "imap": null,
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 55,
+    "items": null,
+    "attrs": {
+     "k0": [
+      null,
+      56,
+      57
+     ],
+     "k1": null
+    },
+    "point": {
+     "x": 13.75,
+     "inner": null
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 5500,
+      "value": "v55_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 55
+     }
+    ],
+    "req": [
+     55
+    ]
+   },
+   {
+    "id": 56,
+    "items": [],
+    "attrs": {
+     "k0": null,
+     "k1": [],
+     "k2": [
+      58,
+      59
+     ]
+    },
+    "point": null,
+    "grid": [],
+    "imap": [
+     {
+      "key": 5600,
+      "value": "v56_0"
+     },
+     {
+      "key": 5601,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 56
+     },
+     {}
+    ],
+    "req": [
+     56,
+     57
+    ]
+   },
+   {
+    "id": 57,
+    "items": [
+     {
+      "sku": "sku-57-0",
+      "qty": 570,
+      "tags": [
+       "t57_0_0"
+      ]
+     },
+     {
+      "sku": "sku-57-1",
+      "qty": 571,
+      "tags": [
+       "t57_1_0",
+       "t57_1_1"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": []
+    },
+    "point": {
+     "x": 14.25,
+     "inner": {
+      "a": null,
+      "b": [
+       57
+      ]
+     }
+    },
+    "grid": [
+     []
+    ],
+    "imap": [],
+    "maplist": [],
+    "req": []
+   },
+   {
+    "id": 58,
+    "items": [
+     {
+      "sku": "sku-58-0",
+      "qty": 580,
+      "tags": [
+       "t58_0_0",
+       null
+      ]
+     },
+     {
+      "sku": "sku-58-1",
+      "qty": 581,
+      "tags": [
+       "t58_1_0",
+       "t58_1_1",
+       "t58_1_2"
+      ]
+     },
+     {
+      "sku": "sku-58-2",
+      "qty": 582,
+      "tags": null
+     }
+    ],
+    "attrs": {
+     "k0": [
+      58,
+      59
+     ],
+     "k1": [
+      59,
+      60,
+      null
+     ]
+    },
+    "point": {
+     "x": 14.5,
+     "inner": {
+      "a": 58,
+      "b": [
+       58,
+       null
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5
+     ],
+     [
+      29.0,
+      29.5,
+      30.0
+     ]
+    ],
+    "imap": [
+     {
+      "key": 5800,
+      "value": "v58_0"
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 58
+     }
+    ],
+    "req": [
+     58
+    ]
+   },
+   {
+    "id": 59,
+    "items": [
+     {
+      "sku": "sku-59-0",
+      "qty": 590,
+      "tags": [
+       "t59_0_0",
+       null,
+       "t59_0_2"
+      ]
+     },
+     {
+      "sku": null,
+      "qty": 591,
+      "tags": null
+     },
+     {
+      "sku": "sku-59-2",
+      "qty": 592,
+      "tags": []
+     },
+     {
+      "sku": "sku-59-3",
+      "qty": null,
+      "tags": [
+       "t59_3_0",
+       "t59_3_1",
+       "t59_3_2"
+      ]
+     }
+    ],
+    "attrs": {
+     "k0": [
+      59,
+      null,
+      61
+     ],
+     "k1": null,
+     "k2": []
+    },
+    "point": {
+     "x": 14.75,
+     "inner": {
+      "a": 59,
+      "b": [
+       59,
+       null,
+       60
+      ]
+     }
+    },
+    "grid": [
+     [
+      0.0,
+      0.5,
+      1.0
+     ],
+     null,
+     []
+    ],
+    "imap": [
+     {
+      "key": 5900,
+      "value": "v59_0"
+     },
+     {
+      "key": 5901,
+      "value": null
+     }
+    ],
+    "maplist": [
+     {
+      "m0": 59
+     },
+     {}
+    ],
+    "req": [
+     59,
+     60
+    ]
+   }
+  ]
+ },
+ "nested/nonnullable.impala": {
+  "columns": [
+   "ID",
+   "Int_Array",
+   "int_array_array",
+   "Int_Map",
+   "int_map_array",
+   "nested_Struct"
+  ],
+  "shapes": {
+   "ID": "plain",
+   "Int_Array": "plain",
+   "int_array_array": "plain",
+   "Int_Map": "map",
+   "int_map_array": "plain",
+   "nested_Struct": {
+    "a": "plain",
+    "B": "plain",
+    "c": {
+     "D": "plain"
+    },
+    "G": "map"
+   }
+  },
+  "rows": [
+   {
+    "ID": 8,
+    "Int_Array": [
+     -1
+    ],
+    "int_array_array": [
+     [
+      -1,
+      -2
+     ],
+     []
+    ],
+    "Int_Map": {
+     "k1": -1
+    },
+    "int_map_array": [
+     {},
+     {
+      "k1": 1
+     },
+     {},
+     {}
+    ],
+    "nested_Struct": {
+     "a": -1,
+     "B": [
+      -1
+     ],
+     "c": {
+      "D": [
+       [
+        {
+         "e": -1,
+         "f": "nonnullable"
+        }
+       ]
+      ]
+     },
+     "G": {}
+    }
+   }
+  ]
+ },
+ "nested/null_list": {
+  "columns": [
+   "emptylist"
+  ],
+  "shapes": {
+   "emptylist": "plain"
+  },
+  "rows": [
+   {
+    "emptylist": []
+   }
+  ]
+ },
+ "nested/nullable.impala": {
+  "columns": [
+   "id",
+   "int_array",
+   "int_array_Array",
+   "int_map",
+   "int_Map_Array",
+   "nested_struct"
+  ],
+  "shapes": {
+   "id": "plain",
+   "int_array": "plain",
+   "int_array_Array": "plain",
+   "int_map": "map",
+   "int_Map_Array": "plain",
+   "nested_struct": {
+    "A": "plain",
+    "b": "plain",
+    "C": {
+     "d": "plain"
+    },
+    "g": "map"
+   }
+  },
+  "rows": [
+   {
+    "id": 1,
+    "int_array": [
+     1,
+     2,
+     3
+    ],
+    "int_array_Array": [
+     [
+      1,
+      2
+     ],
+     [
+      3,
+      4
+     ]
+    ],
+    "int_map": {
+     "k1": 1,
+     "k2": 100
+    },
+    "int_Map_Array": [
+     {
+      "k1": 1
+     }
+    ],
+    "nested_struct": {
+     "A": 1,
+     "b": [
+      1
+     ],
+     "C": {
+      "d": [
+       [
+        {
+         "E": 10,
+         "F": "aaa"
+        },
+        {
+         "E": -10,
+         "F": "bbb"
+        }
+       ],
+       [
+        {
+         "E": 11,
+         "F": "c"
+        }
+       ]
+      ]
+     },
+     "g": {
+      "foo": {
+       "H": {
+        "i": [
+         1.1
+        ]
+       }
+      }
+     }
+    }
+   },
+   {
+    "id": 2,
+    "int_array": [
+     null,
+     1,
+     2,
+     null,
+     3,
+     null
+    ],
+    "int_array_Array": [
+     [
+      null,
+      1,
+      2,
+      null
+     ],
+     [
+      3,
+      null,
+      4
+     ],
+     [],
+     null
+    ],
+    "int_map": {
+     "k1": 2,
+     "k2": null
+    },
+    "int_Map_Array": [
+     {
+      "k3": null,
+      "k1": 1
+     },
+     null,
+     {}
+    ],
+    "nested_struct": {
+     "A": null,
+     "b": [
+      null
+     ],
+     "C": {
+      "d": [
+       [
+        {
+         "E": null,
+         "F": null
+        },
+        {
+         "E": 10,
+         "F": "aaa"
+        },
+        {
+         "E": null,
+         "F": null
+        },
+        {
+         "E": -10,
+         "F": "bbb"
+        },
+        {
+         "E": null,
+         "F": null
+        }
+       ],
+       [
+        {
+         "E": 11,
+         "F": "c"
+        },
+        null
+       ],
+       [],
+       null
+      ]
+     },
+     "g": {
+      "g1": {
+       "H": {
+        "i": [
+         2.2,
+         null
+        ]
+       }
+      },
+      "g2": {
+       "H": {
+        "i": []
+       }
+      },
+      "g3": null,
+      "g4": {
+       "H": {
+        "i": null
+       }
+      },
+      "g5": {
+       "H": null
+      }
+     }
+    }
+   },
+   {
+    "id": 3,
+    "int_array": [],
+    "int_array_Array": [
+     null
+    ],
+    "int_map": {},
+    "int_Map_Array": [
+     null,
+     null
+    ],
+    "nested_struct": {
+     "A": null,
+     "b": null,
+     "C": {
+      "d": []
+     },
+     "g": {}
+    }
+   },
+   {
+    "id": 4,
+    "int_array": null,
+    "int_array_Array": [],
+    "int_map": {},
+    "int_Map_Array": [],
+    "nested_struct": {
+     "A": null,
+     "b": null,
+     "C": {
+      "d": null
+     },
+     "g": null
+    }
+   },
+   {
+    "id": 5,
+    "int_array": null,
+    "int_array_Array": null,
+    "int_map": {},
+    "int_Map_Array": null,
+    "nested_struct": {
+     "A": null,
+     "b": null,
+     "C": null,
+     "g": {
+      "foo": {
+       "H": {
+        "i": [
+         2.2,
+         3.3
+        ]
+       }
+      }
+     }
+    }
+   },
+   {
+    "id": 6,
+    "int_array": null,
+    "int_array_Array": null,
+    "int_map": null,
+    "int_Map_Array": null,
+    "nested_struct": null
+   },
+   {
+    "id": 7,
+    "int_array": null,
+    "int_array_Array": [
+     null,
+     [
+      5,
+      6
+     ]
+    ],
+    "int_map": {
+     "k1": null,
+     "k3": null
+    },
+    "int_Map_Array": null,
+    "nested_struct": {
+     "A": 7,
+     "b": [
+      2,
+      3,
+      null
+     ],
+     "C": {
+      "d": [
+       [],
+       [
+        null
+       ],
+       null
+      ]
+     },
+     "g": null
+    }
+   }
+  ]
+ },
+ "nested/nulls.snappy": {
+  "columns": [
+   "b_struct"
+  ],
+  "shapes": {
+   "b_struct": {
+    "b_c_int": "plain"
+   }
+  },
+  "rows": [
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   },
+   {
+    "b_struct": {
+     "b_c_int": null
+    }
+   }
+  ]
+ },
+ "nested/old_list_structure": {
+  "columns": [
+   "a"
+  ],
+  "shapes": {
+   "a": "plain"
+  },
+  "rows": [
+   {
+    "a": [
+     [
+      1,
+      2
+     ],
+     [
+      3,
+      4
+     ]
+    ]
+   }
+  ]
+ },
+ "nested/repeated_no_annotation": {
+  "columns": [
+   "id",
+   "phoneNumbers"
+  ],
+  "shapes": {
+   "id": "plain",
+   "phoneNumbers": {
+    "phone": "plain"
+   }
+  },
+  "rows": [
+   {
+    "id": 1,
+    "phoneNumbers": null
+   },
+   {
+    "id": 2,
+    "phoneNumbers": null
+   },
+   {
+    "id": 3,
+    "phoneNumbers": {
+     "phone": []
+    }
+   },
+   {
+    "id": 4,
+    "phoneNumbers": {
+     "phone": [
+      {
+       "number": 5555555555,
+       "kind": null
+      }
+     ]
+    }
+   },
+   {
+    "id": 5,
+    "phoneNumbers": {
+     "phone": [
+      {
+       "number": 1111111111,
+       "kind": "home"
+      }
+     ]
+    }
+   },
+   {
+    "id": 6,
+    "phoneNumbers": {
+     "phone": [
+      {
+       "number": 1111111111,
+       "kind": "home"
+      },
+      {
+       "number": 2222222222,
+       "kind": null
+      },
+      {
+       "number": 3333333333,
+       "kind": "mobile"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "nested/repeated_primitive_no_list": {
+  "columns": [
+   "Int32_list",
+   "String_list",
+   "group_of_lists"
+  ],
+  "shapes": {
+   "Int32_list": "plain",
+   "String_list": "plain",
+   "group_of_lists": {
+    "Int32_list_in_group": "plain",
+    "String_list_in_group": "plain"
+   }
+  },
+  "rows": [
+   {
+    "Int32_list": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "String_list": [
+     "foo",
+     "zero",
+     "one",
+     "two"
+    ],
+    "group_of_lists": {
+     "Int32_list_in_group": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "String_list_in_group": [
+      "foo",
+      "zero",
+      "one",
+      "two"
+     ]
+    }
+   },
+   {
+    "Int32_list": [],
+    "String_list": [
+     "three"
+    ],
+    "group_of_lists": {
+     "Int32_list_in_group": [],
+     "String_list_in_group": [
+      "three"
+     ]
+    }
+   },
+   {
+    "Int32_list": [
+     4
+    ],
+    "String_list": [
+     "four"
+    ],
+    "group_of_lists": {
+     "Int32_list_in_group": [
+      4
+     ],
+     "String_list_in_group": [
+      "four"
+     ]
+    }
+   },
+   {
+    "Int32_list": [
+     5,
+     6,
+     7,
+     8
+    ],
+    "String_list": [
+     "five",
+     "six",
+     "seven",
+     "eight"
+    ],
+    "group_of_lists": {
+     "Int32_list_in_group": [
+      5,
+      6,
+      7,
+      8
+     ],
+     "String_list_in_group": [
+      "five",
+      "six",
+      "seven",
+      "eight"
+     ]
+    }
+   }
+  ]
+ },
+ "nested-struct": {
+  "columns": [
+   "point"
+  ],
+  "shapes": {
+   "point": {
+    "x": "plain",
+    "y": "plain"
+   }
+  },
+  "rows": [
+   {
+    "point": {
+     "x": 1,
+     "y": 2
+    }
+   },
+   {
+    "point": {
+     "x": 3,
+     "y": 4
+    }
+   }
+  ]
+ }
+}

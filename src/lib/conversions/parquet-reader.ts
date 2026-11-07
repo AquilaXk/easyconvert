@@ -1,4 +1,3 @@
-import { setOwn } from './data-json';
 import { decompressPage, decompressPageSlice } from './parquet-codec';
 import {
   decodeBitPackedLevels,
@@ -18,6 +17,7 @@ import {
   PARQUET_MAX_CELLS,
   PARQUET_MAX_COLUMNS,
   PARQUET_MAX_DECODED_VALUE_BYTES,
+  PARQUET_MAX_NESTING_DEPTH,
   PARQUET_MAX_FOOTER_BYTES,
   PARQUET_MAX_PAGE_BYTES,
   PARQUET_MAX_ROW_GROUPS,
@@ -38,17 +38,20 @@ import {
   unsignedInteger,
 } from './parquet-logical';
 import { decodeRleHybrid } from './parquet-rle';
+import { buildSchema, PATH_SEPARATOR } from './parquet-schema';
+import type { ParsedSchema, SchemaElement, SchemaNode } from './parquet-schema';
 import { CompactProtocolReader, ThriftType } from './parquet-thrift';
 
 /**
- * Parquet reader for flat (non-nested) tables: PLAIN, dictionary, DELTA_BINARY_PACKED,
+ * Parquet reader: the schema, the page headers, and the pages of a flat table (nested columns are assembled by
+ * parquet-nested.ts from the pages this module decodes). PLAIN, dictionary, DELTA_BINARY_PACKED,
  * DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY, BYTE_STREAM_SPLIT, and RLE boolean encodings,
  * RLE/bit-packed definition levels, v1 and v2 data pages, UNCOMPRESSED/SNAPPY/GZIP/ZSTD/LZ4/LZ4_RAW
  * pages, any number of row groups.
  *
  * Governing spec: Apache Parquet format (parquet.thrift, Encodings.md, LogicalTypes.md). Values keep
- * their exact meaning (see parquet-logical.ts); anything outside the supported scope (nested schemas)
- * throws a typed error rather than guessing.
+ * their exact meaning (see parquet-logical.ts); anything outside the supported scope throws a typed error
+ * rather than guessing.
  *
  * Untrusted-input bounds: column chunks must lie inside the data section and not overlap, page
  * headers are scanned and charged against one decompression budget before any page is decompressed,
@@ -95,8 +98,15 @@ const TIME_UNIT_BY_FIELD: Record<number, TimeUnit> = { 1: 'millis', 2: 'micros',
 export const DICTIONARY_DATA_ENCODINGS: ReadonlySet<number> = new Set([Encoding.PLAIN_DICTIONARY, Encoding.RLE_DICTIONARY]);
 
 export interface LeafColumn {
+  /** The column's name; for a nested column its path, joined with dots. */
   name: string;
   colIndex: number;
+  /** Names from the root's child down to the leaf, and the same joined by PATH_SEPARATOR (a chunk's `path_in_schema`). */
+  path: string[];
+  pathKey: string;
+  /** Definition and repetition level of the leaf's values: 1 and 0 for an optional flat column. */
+  maxDef: number;
+  maxRep: number;
   type: ParquetType;
   repetition: FieldRepetitionType;
   typeLength: number;
@@ -122,6 +132,8 @@ interface RowGroupMeta {
 
 export interface FileMeta {
   leaves: LeafColumn[];
+  /** The schema tree of a file with nested or repeated columns; null for a flat table. */
+  root: SchemaNode | null;
   numRows: number;
   rowGroups: RowGroupMeta[];
 }
@@ -135,6 +147,7 @@ export interface PageHeader {
   numRows: number;
   encoding: number;
   definitionLevelEncoding: number;
+  repetitionLevelEncoding: number;
   definitionLevelsByteLength: number;
   repetitionLevelsByteLength: number;
   isCompressed: boolean;
@@ -152,6 +165,8 @@ export interface ChunkPlan {
   chunk: ChunkMeta;
   leaf: LeafColumn;
   rows: number;
+  /** Level entries the chunk's data pages hold: one per row, except in a column under a repeated field. */
+  values: number;
   start: number;
   end: number;
   pages: ScannedPage[];
@@ -260,63 +275,47 @@ function readIntegerType(reader: CompactProtocolReader): Annotation {
   return { tag: 'int', bitWidth, signed };
 }
 
-function readSchemaElements(reader: CompactProtocolReader): LeafColumn[] {
+function readSchemaElement(reader: CompactProtocolReader): SchemaElement {
+  reader.structBegin();
+  const element: SchemaElement = {
+    name: '',
+    type: undefined,
+    typeLength: 0,
+    repetition: FieldRepetitionType.REQUIRED,
+    numChildren: 0,
+    annotation: { tag: 'none' },
+  };
+  let converted: number | undefined;
+  let scale = 0;
+  let precision = 0;
+  let logical: Annotation | null = null;
+  for (;;) {
+    const f = reader.readFieldBegin();
+    if (f.isStop) break;
+    if (f.fieldId === SCHEMA_TYPE) element.type = reader.readZigzag32() as ParquetType;
+    else if (f.fieldId === SCHEMA_TYPE_LENGTH) element.typeLength = reader.readZigzag32();
+    else if (f.fieldId === SCHEMA_REPETITION) element.repetition = reader.readZigzag32() as FieldRepetitionType;
+    else if (f.fieldId === SCHEMA_NAME) element.name = reader.readString();
+    else if (f.fieldId === SCHEMA_NUM_CHILDREN) element.numChildren = reader.readZigzag32();
+    else if (f.fieldId === SCHEMA_CONVERTED_TYPE) converted = reader.readZigzag32();
+    else if (f.fieldId === SCHEMA_SCALE) scale = reader.readZigzag32();
+    else if (f.fieldId === SCHEMA_PRECISION) precision = reader.readZigzag32();
+    else if (f.fieldId === SCHEMA_LOGICAL_TYPE) logical = readLogicalType(reader);
+    else reader.skip(f.type);
+  }
+  reader.structEnd();
+  element.annotation = logical ?? annotationFromConverted(converted, scale, precision);
+  return element;
+}
+
+function readSchema(reader: CompactProtocolReader): ParsedSchema {
   const { size } = reader.readListBegin();
   if (size < 1 || size > PARQUET_MAX_COLUMNS + 1) {
     throw new ParquetFormatError(`Unsupported Parquet schema: ${size} schema elements (limit ${PARQUET_MAX_COLUMNS} columns)`);
   }
-  const leaves: LeafColumn[] = [];
-  for (let i = 0; i < size; i++) {
-    reader.structBegin();
-    let type: ParquetType | undefined;
-    let repetition = FieldRepetitionType.REQUIRED;
-    let name = '';
-    let numChildren = 0;
-    let typeLength = 0;
-    let converted: number | undefined;
-    let scale = 0;
-    let precision = 0;
-    let logical: Annotation | null = null;
-    for (;;) {
-      const f = reader.readFieldBegin();
-      if (f.isStop) break;
-      if (f.fieldId === SCHEMA_TYPE) type = reader.readZigzag32() as ParquetType;
-      else if (f.fieldId === SCHEMA_TYPE_LENGTH) typeLength = reader.readZigzag32();
-      else if (f.fieldId === SCHEMA_REPETITION) repetition = reader.readZigzag32() as FieldRepetitionType;
-      else if (f.fieldId === SCHEMA_NAME) name = reader.readString();
-      else if (f.fieldId === SCHEMA_NUM_CHILDREN) numChildren = reader.readZigzag32();
-      else if (f.fieldId === SCHEMA_CONVERTED_TYPE) converted = reader.readZigzag32();
-      else if (f.fieldId === SCHEMA_SCALE) scale = reader.readZigzag32();
-      else if (f.fieldId === SCHEMA_PRECISION) precision = reader.readZigzag32();
-      else if (f.fieldId === SCHEMA_LOGICAL_TYPE) logical = readLogicalType(reader);
-      else reader.skip(f.type);
-    }
-    reader.structEnd();
-    if (i === 0) {
-      if (numChildren !== size - 1) {
-        throw new ParquetUnsupportedError('Unsupported Parquet schema: nested columns are not supported');
-      }
-      continue;
-    }
-    if (numChildren > 0 || type === undefined) {
-      throw new ParquetUnsupportedError(`Unsupported Parquet schema: column '${name}' is a nested group`);
-    }
-    if (repetition === FieldRepetitionType.REPEATED) {
-      throw new ParquetUnsupportedError(`Unsupported Parquet schema: column '${name}' is repeated`);
-    }
-    const annotation = logical ?? annotationFromConverted(converted, scale, precision);
-    // The reader is resolved lazily (INT96 and unknown annotations only matter when rows are decoded).
-    leaves.push({
-      name,
-      colIndex: leaves.length,
-      type,
-      repetition,
-      typeLength,
-      annotation,
-      reader: { kind: 'bytes', width: 0, map: null },
-    });
-  }
-  return leaves;
+  const elements: SchemaElement[] = [];
+  for (let i = 0; i < size; i++) elements.push(readSchemaElement(reader));
+  return buildSchema(elements);
 }
 
 function readColumnMetaData(reader: CompactProtocolReader, chunk: ChunkMeta): void {
@@ -328,12 +327,12 @@ function readColumnMetaData(reader: CompactProtocolReader, chunk: ChunkMeta): vo
       chunk.type = reader.readZigzag32() as ParquetType;
     } else if (mf.fieldId === 3) {
       const { size } = reader.readListBegin();
+      if (size > PARQUET_MAX_NESTING_DEPTH) {
+        throw new ParquetFormatError(`Unsupported Parquet schema: a column path of ${size} names exceeds ${PARQUET_MAX_NESTING_DEPTH} levels`);
+      }
       const parts: string[] = [];
       for (let p = 0; p < size; p++) parts.push(reader.readString());
-      if (parts.length !== 1) {
-        throw new ParquetUnsupportedError('Unsupported Parquet schema: nested column paths are not supported');
-      }
-      chunk.path = parts[0];
+      chunk.path = parts.join(PATH_SEPARATOR);
     } else if (mf.fieldId === 4) {
       chunk.codec = reader.readZigzag32() as CompressionCodec;
     } else if (mf.fieldId === 5) {
@@ -397,12 +396,12 @@ function readRowGroup(reader: CompactProtocolReader, leafCount: number): RowGrou
 function readFooter(buffer: Buffer, metaOffset: number): FileMeta {
   const reader = new CompactProtocolReader(buffer, metaOffset);
   reader.structBegin();
-  const meta: FileMeta = { leaves: [], numRows: 0, rowGroups: [] };
+  const meta: FileMeta = { leaves: [], root: null, numRows: 0, rowGroups: [] };
   for (;;) {
     const f = reader.readFieldBegin();
     if (f.isStop) break;
     if (f.fieldId === 2) {
-      meta.leaves = readSchemaElements(reader);
+      ({ leaves: meta.leaves, root: meta.root } = readSchema(reader));
     } else if (f.fieldId === 3) {
       meta.numRows = toSafeInt(reader.readZigzag64(), 'num_rows');
     } else if (f.fieldId === 4) {
@@ -436,6 +435,7 @@ function readPageHeader(buffer: Buffer, offset: number, column: string): PageHea
     encoding: Encoding.PLAIN,
     // A data page that does not declare levels with RLE stores none (see decodeDataPage).
     definitionLevelEncoding: Encoding.PLAIN,
+    repetitionLevelEncoding: Encoding.PLAIN,
     definitionLevelsByteLength: 0,
     repetitionLevelsByteLength: 0,
     isCompressed: true,
@@ -465,6 +465,7 @@ function readPageHeader(buffer: Buffer, offset: number, column: string): PageHea
         if (sub.fieldId === 1) header.numValues = reader.readZigzag32();
         else if (sub.fieldId === 2) header.encoding = reader.readZigzag32();
         else if (sub.fieldId === 3 && pf.fieldId === 5) header.definitionLevelEncoding = reader.readZigzag32();
+        else if (sub.fieldId === 4 && pf.fieldId === 5) header.repetitionLevelEncoding = reader.readZigzag32();
         else reader.skip(sub.type);
       }
       reader.structEnd();
@@ -515,7 +516,8 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
     if (header.compressedSize < 0 || header.uncompressedSize < 0 || header.numValues < 0) {
       throw new ParquetFormatError(`Corrupted Parquet file: negative page size in column '${leaf.name}'`);
     }
-    if (header.compressedSize === 0) {
+    // A column of nothing but nulls has a dictionary of no entries, which a writer may store as no bytes at all.
+    if (header.compressedSize === 0 && header.type !== PageType.DICTIONARY_PAGE) {
       throw new ParquetFormatError(`Corrupted Parquet file: empty page in column '${leaf.name}'`);
     }
     if (header.uncompressedSize > PARQUET_MAX_PAGE_BYTES) {
@@ -556,7 +558,7 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
     plan.pages.push({ header, bodyStart: header.headerEnd, bodyEnd });
     offset = bodyEnd;
   }
-  if (dataValues !== plan.rows) {
+  if (dataValues !== plan.values) {
     throw new ParquetFormatError(
       `Corrupted Parquet file: column '${leaf.name}' holds ${dataValues} values for a row group of ${plan.rows} rows`
     );
@@ -738,7 +740,7 @@ function readPlainInt64s(page: Buffer, start: number, leaf: LeafColumn, count: n
   return { values, end: start + count * WIDE_VALUE_BYTES, stringBytes: 0 };
 }
 
-function readPlainValues(page: Buffer, start: number, leaf: LeafColumn, count: number, byteLengths?: Uint32Array): PlainRead {
+export function readPlainValues(page: Buffer, start: number, leaf: LeafColumn, count: number, byteLengths?: Uint32Array): PlainRead {
   assertPlainBytes(page, start, leaf, count);
   switch (leaf.reader.kind) {
     case 'bool':
@@ -1029,7 +1031,7 @@ function readV2DefinitionLevels(rawBody: Buffer, header: PageHeader, leaf: LeafC
 }
 
 /** The values section of a v2 page, decompressed when the header says it is compressed. */
-function readV2ValuesPage(rawBody: Buffer, codec: CompressionCodec, header: PageHeader, leaf: LeafColumn): Buffer {
+export function readV2ValuesPage(rawBody: Buffer, codec: CompressionCodec, header: PageHeader, leaf: LeafColumn): Buffer {
   const levelBytes = header.repetitionLevelsByteLength + header.definitionLevelsByteLength;
   const compressedValues = rawBody.subarray(levelBytes);
   const uncompressedValuesBytes = header.uncompressedSize - levelBytes;
@@ -1093,7 +1095,25 @@ export function readDictionaryPageBody(buffer: Buffer, plan: ChunkPlan, page: Sc
   return body;
 }
 
-function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): ColumnValue[] {
+/** The entries of a dictionary page, with the UTF-8 bytes each costs per row that references it. */
+export function readDictionaryPage(buffer: Buffer, plan: ChunkPlan, page: ScannedPage): Dictionary {
+  const { header } = page;
+  const { leaf } = plan;
+  const body = readDictionaryPageBody(buffer, plan, page);
+  // The page must hold the entries it names before anything is allocated for them.
+  assertPlainBytes(body, 0, leaf, header.numValues);
+  const bytes = new Uint32Array(header.numValues);
+  const plain = readPlainValues(body, 0, leaf, header.numValues, bytes);
+  if (leaf.reader.kind !== 'bytes' && (leaf.reader.map !== null || leaf.reader.kind === 'i64' || leaf.reader.kind === 'u64')) {
+    for (let i = 0; i < header.numValues; i++) {
+      const entry = plain.values[i];
+      bytes[i] = typeof entry === 'string' ? entry.length : 0;
+    }
+  }
+  return { values: plain.values, bytes };
+}
+
+export function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): ColumnValue[] {
   const { chunk, leaf, rows } = plan;
   let values: ColumnValue[] | null = null;
   let dictionary: Dictionary | null = null;
@@ -1102,16 +1122,7 @@ function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): Col
     if (header.type === PageType.INDEX_PAGE) continue;
 
     if (header.type === PageType.DICTIONARY_PAGE) {
-      const body = readDictionaryPageBody(buffer, plan, page);
-      const bytes = new Uint32Array(header.numValues);
-      const plain = readPlainValues(body, 0, leaf, header.numValues, bytes);
-      if (leaf.reader.kind !== 'bytes' && (leaf.reader.map !== null || leaf.reader.kind === 'i64' || leaf.reader.kind === 'u64')) {
-        for (let i = 0; i < header.numValues; i++) {
-          const entry = plain.values[i];
-          bytes[i] = typeof entry === 'string' ? entry.length : 0;
-        }
-      }
-      dictionary = { values: plain.values, bytes };
+      dictionary = readDictionaryPage(buffer, plan, page);
       continue;
     }
     if (header.type === PageType.DATA_PAGE) {
@@ -1147,27 +1158,45 @@ function chunkStart(chunk: ChunkMeta): number {
   return chunk.dataPageOffset > 0 ? chunk.dataPageOffset : chunk.fileOffset;
 }
 
+/**
+ * A column under a repeated field holds a level entry per element, not per row, and the levels are the only thing that
+ * says how many: entries of all such columns together are bounded by the cell limit, so a few bytes of run-length
+ * encoded levels cannot ask for an allocation of any size.
+ */
+function chargeRepeatedEntries(budget: { remaining: number }, entries: number, leaf: LeafColumn): void {
+  budget.remaining -= entries;
+  if (budget.remaining < 0) {
+    throw new ParquetFormatError(
+      `Unsupported Parquet file: repeated columns hold more than ${PARQUET_MAX_CELLS} values (column '${leaf.name}')`
+    );
+  }
+}
+
 /** Every row group must hold each schema column exactly once, with a chunk range inside the data section. */
 function planChunks(meta: FileMeta, footerStart: number): ChunkPlan[] {
-  const leafByName = new Map<string, LeafColumn>(meta.leaves.map((leaf) => [leaf.name, leaf]));
+  const leafByPath = new Map<string, LeafColumn>(meta.leaves.map((leaf) => [leaf.pathKey, leaf]));
   const plans: ChunkPlan[] = [];
+  const repeatedEntries = { remaining: PARQUET_MAX_CELLS };
   for (const group of meta.rowGroups) {
     if (group.numRows === 0) continue;
     const seen = new Set<string>();
     for (const chunk of group.chunks) {
-      const leaf = leafByName.get(chunk.path);
+      const leaf = leafByPath.get(chunk.path);
       if (!leaf) {
-        throw new ParquetFormatError(`Corrupted Parquet metadata: column chunk '${chunk.path}' has no schema element`);
+        throw new ParquetFormatError(
+          `Corrupted Parquet metadata: column chunk '${chunk.path.split(PATH_SEPARATOR).join('.')}' has no schema element`
+        );
       }
       seen.add(chunk.path);
       if (chunk.type !== leaf.type) {
         throw new ParquetFormatError(`Corrupted Parquet metadata: column '${leaf.name}' chunk type differs from its schema type`);
       }
-      if (chunk.numValues !== group.numRows) {
+      if (leaf.maxRep > 0 ? chunk.numValues < group.numRows : chunk.numValues !== group.numRows) {
         throw new ParquetFormatError(
           `Corrupted Parquet metadata: column '${leaf.name}' declares ${chunk.numValues} values for a row group of ${group.numRows} rows`
         );
       }
+      if (leaf.maxRep > 0) chargeRepeatedEntries(repeatedEntries, chunk.numValues, leaf);
       if (chunk.totalCompressedSize <= 0) {
         throw new ParquetFormatError(`Corrupted Parquet metadata: column '${leaf.name}' has no total_compressed_size`);
       }
@@ -1178,7 +1207,7 @@ function planChunks(meta: FileMeta, footerStart: number): ChunkPlan[] {
           `Corrupted Parquet metadata: column '${leaf.name}' range ${start}-${end} is outside the data section`
         );
       }
-      plans.push({ chunk, leaf, rows: group.numRows, start, end, pages: [] });
+      plans.push({ chunk, leaf, rows: group.numRows, values: leaf.maxRep > 0 ? chunk.numValues : group.numRows, start, end, pages: [] });
     }
     if (group.chunks.length !== meta.leaves.length || seen.size !== meta.leaves.length) {
       throw new ParquetFormatError('Corrupted Parquet metadata: every row group must hold each column exactly once');
@@ -1193,12 +1222,6 @@ function planChunks(meta: FileMeta, footerStart: number): ChunkPlan[] {
     }
   }
   return plans;
-}
-
-export interface DecodedParquetColumns {
-  names: string[];
-  columns: ColumnValue[][];
-  numRows: number;
 }
 
 export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: ChunkPlan[] } {
@@ -1229,6 +1252,9 @@ export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: Ch
   }
 
   const meta = readFooter(buffer.subarray(0, metaOffset + metaLength), metaOffset);
+  const rowsInGroups = meta.rowGroups.reduce((sum, group) => sum + group.numRows, 0);
+  // A writer may leave the file-level count at 0 and state the rows in its row groups (they are what a reader walks).
+  if (meta.numRows === 0) meta.numRows = rowsInGroups;
   if (meta.numRows === 0) {
     return { meta, plans: [] };
   }
@@ -1241,7 +1267,6 @@ export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: Ch
   if (meta.numRows * meta.leaves.length > PARQUET_MAX_CELLS) {
     throw new ParquetFormatError(`Unsupported Parquet file: table exceeds the limit of ${PARQUET_MAX_CELLS} cells.`);
   }
-  const rowsInGroups = meta.rowGroups.reduce((sum, group) => sum + group.numRows, 0);
   if (rowsInGroups !== meta.numRows) {
     throw new ParquetFormatError(`Corrupted Parquet metadata: row groups hold ${rowsInGroups} rows but the file declares ${meta.numRows}.`);
   }
@@ -1253,98 +1278,4 @@ export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: Ch
   const decompressBudget = { remaining: PARQUET_MAX_TOTAL_DECOMPRESSED_BYTES };
   for (const plan of plans) scanChunkPages(buffer, plan, decompressBudget);
   return { meta, plans };
-}
-
-function decodeParquetColumnsUnguarded(buffer: Buffer): DecodedParquetColumns {
-  const { meta, plans } = prepareParquetPlans(buffer);
-  if (meta.numRows === 0) {
-    return {
-      names: meta.leaves.map((leaf) => leaf.name),
-      columns: meta.leaves.map(() => []),
-      numRows: 0,
-    };
-  }
-
-  const budget: DecodeBudget = { valueBytes: PARQUET_MAX_DECODED_VALUE_BYTES };
-  const columns = new Map<string, ColumnValue[]>();
-  const writeOffsets = new Map<string, number>();
-  const singleRowGroup = plans.length === meta.leaves.length;
-  for (const plan of plans) {
-    const values = decodeChunk(buffer, plan, budget);
-    if (singleRowGroup) {
-      columns.set(plan.leaf.name, values);
-      continue;
-    }
-    const existing = columns.get(plan.leaf.name);
-    if (existing) {
-      const base = writeOffsets.get(plan.leaf.name) ?? 0;
-      for (let i = 0; i < values.length; i++) existing[base + i] = values[i];
-      writeOffsets.set(plan.leaf.name, base + values.length);
-    } else {
-      const col = new Array<ColumnValue>(meta.numRows);
-      for (let i = 0; i < values.length; i++) col[i] = values[i];
-      columns.set(plan.leaf.name, col);
-      writeOffsets.set(plan.leaf.name, values.length);
-    }
-  }
-
-  const names = meta.leaves.map((leaf) => leaf.name).filter((name) => columns.has(name));
-  const columnValues = names.map((name) => columns.get(name) as ColumnValue[]);
-  return { names, columns: columnValues, numRows: meta.numRows };
-}
-
-/**
- * Deserializes a flat Parquet file into column vectors in schema leaf order.
- */
-export function decodeParquetColumns(buffer: Buffer): DecodedParquetColumns {
-  try {
-    return decodeParquetColumnsUnguarded(buffer);
-  } catch (error) {
-    if (error instanceof RangeError) {
-      throw new ParquetFormatError(`Unsupported Parquet file: the decoded table exceeds engine limits (${error.message})`);
-    }
-    throw error;
-  }
-}
-
-const CHAR_ZERO = 0x30;
-const CHAR_NINE = 0x39;
-
-/** A column name that a plain record assignment would mangle: `__proto__`, or an array index, which reorders keys. */
-function isUnsafeRecordKey(name: string): boolean {
-  const first = name.codePointAt(0) ?? 0;
-  return name === '__proto__' || (first >= CHAR_ZERO && first <= CHAR_NINE);
-}
-
-/**
- * Deserializes a flat Parquet file into row records. Integers beyond 2^53, decimals, dates, times and
- * timestamps are returned as exact strings; binary that is not UTF-8 text is returned as base64.
- */
-export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
-  try {
-    const { names, columns: columnValues, numRows } = decodeParquetColumnsUnguarded(buffer);
-    if (numRows === 0) return [];
-    const needsSetOwn = names.some(isUnsafeRecordKey);
-    const records: Record<string, unknown>[] = new Array<Record<string, unknown>>(numRows);
-    for (let r = 0; r < numRows; r++) {
-      const row: Record<string, ColumnValue> = {};
-      if (needsSetOwn) {
-        for (let c = 0; c < names.length; c++) {
-          setOwn(row, names[c], columnValues[c][r] ?? null);
-        }
-      } else {
-        for (let c = 0; c < names.length; c++) {
-          row[names[c]] = columnValues[c][r] ?? null;
-        }
-      }
-      records[r] = row;
-    }
-    return records;
-  } catch (error) {
-    // Allocation limits of the JS engine (array or string length) mean the table is too large to hold.
-    if (error instanceof RangeError) {
-      throw new ParquetFormatError(`Unsupported Parquet file: the decoded table exceeds engine limits (${error.message})`);
-    }
-    throw error;
-  }
 }

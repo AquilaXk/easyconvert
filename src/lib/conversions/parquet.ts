@@ -7,7 +7,10 @@
  * - parquet-rle.ts    : RLE/bit-packed hybrid (definition levels, dictionary indices)
  * - parquet-codec.ts  : page compression (UNCOMPRESSED, SNAPPY, GZIP read, ZSTD)
  * - parquet-writer.ts : typed OPTIONAL columns, dictionary encoding, statistics, row groups
- * - parquet-reader.ts : flat-table decoder with fail-closed validation
+ * - parquet-reader.ts : schema, page headers and the pages of a column, with fail-closed validation
+ * - parquet-schema.ts : the schema tree, with the LIST and MAP rules
+ * - parquet-nested.ts : nested columns assembled into records from repetition and definition levels
+ * - parquet-table.ts  : the entry points that read a file into columns and records
  */
 
 export type { ColumnSchema } from './parquet-format';
@@ -31,5 +34,6 @@ export type { ParquetWriteOptions } from './parquet-writer';
 export { encodeParquet, inferColumnSchemas } from './parquet-writer';
 export type { ColumnCellFormatter, ColumnFormatterFactory, FormattedRowWindow } from './parquet-formatted';
 export { FormattedParquetTable } from './parquet-formatted';
-export type { DecodedParquetColumns } from './parquet-reader';
-export { decodeParquet, decodeParquetColumns } from './parquet-reader';
+export type { DecodedParquetColumns, ParquetRecords } from './parquet-table';
+export { decodeParquet, decodeParquetColumns, decodeParquetTable } from './parquet-table';
+export type { CellShape } from './parquet-schema';

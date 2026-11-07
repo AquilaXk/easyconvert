@@ -4,13 +4,13 @@
  * has its own minimal Thrift compact-protocol writer and shares no code with the module under test.
  */
 
-const TYPE_I32 = 5;
-const TYPE_I64 = 6;
-const TYPE_BINARY = 8;
-const TYPE_LIST = 9;
-const TYPE_STRUCT = 12;
+export const TYPE_I32 = 5;
+export const TYPE_I64 = 6;
+export const TYPE_BINARY = 8;
+export const TYPE_LIST = 9;
+export const TYPE_STRUCT = 12;
 
-class Thrift {
+export class Thrift {
   private out: number[] = [];
   private last: number[] = [0];
 
