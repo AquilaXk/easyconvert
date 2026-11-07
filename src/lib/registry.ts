@@ -861,7 +861,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/epub+zip',
     category: 'ebook',
     description: 'Official standard reflowable digital book format by IDPF.',
-    targetFormats: ['pdf', 'docx', 'txt', 'html', 'zip'],
+    targetFormats: ['pdf', 'docx', 'txt', 'html', 'zip', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
   },
   mobi: {
     id: 'mobi',
@@ -870,7 +870,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-mobipocket-ebook',
     category: 'ebook',
     description: 'Amazon Kindle Mobipocket reflowable electronic book format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'azw3', 'zip', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'txt', 'azw3', 'zip', 'lrf', 'oeb', 'pdb', 'rtf'],
   },
   azw: {
     id: 'azw',
@@ -879,7 +879,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.amazon.ebook',
     category: 'ebook',
     description: 'Amazon Kindle original proprietary ebook format.',
-    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'azw3', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'azw3', 'lrf', 'oeb', 'pdb', 'rtf'],
   },
   azw3: {
     id: 'azw3',
@@ -888,7 +888,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.amazon.mobi8-ebook',
     category: 'ebook',
     description: 'Kindle Format 8 supporting HTML5 and CSS3 styling.',
-    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'lrf', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'mobi', 'txt', 'zip', 'lrf', 'oeb', 'pdb', 'rtf'],
   },
   fb2: {
     id: 'fb2',
@@ -897,7 +897,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-fictionbook+xml',
     category: 'ebook',
     description: 'XML-based Russian open ebook format with structured semantic metadata.',
-    targetFormats: ['epub', 'pdf', 'txt', 'docx', 'zip', 'html', 'md'],
+    targetFormats: ['epub', 'pdf', 'txt', 'docx', 'zip', 'html', 'md', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
   },
   ibooks: {
     id: 'ibooks',
@@ -915,7 +915,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.comicbook-rar',
     category: 'ebook',
     description: 'Comic Book Archive packaged in RAR compression.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   cbz: {
     id: 'cbz',
@@ -924,7 +924,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.comicbook+zip',
     category: 'ebook',
     description: 'Comic Book Archive packaged in standard ZIP compression.',
-    targetFormats: ['pdf', 'zip'],
+    targetFormats: ['pdf', 'zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf', 'txt'],
   },
   cb7: {
     id: 'cb7',
@@ -969,7 +969,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-mobipocket-ebook',
     category: 'ebook',
     description: 'PalmOS Mobipocket compiled electronic book package.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   rb: {
     id: 'rb',

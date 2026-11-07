@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
+import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
@@ -72,8 +73,8 @@ const DRM_PATTERN = /\bDRMError\b|protected by DRM/i;
 const PDB_ENCODING_WINDOWS_1252 = 'cp1252';
 const PDB_ENCODING_UTF8 = 'utf-8';
 
-/** Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families. */
-const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf']);
+/** Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families (a PRC is a Mobipocket book under its Palm name). */
+const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'prc']);
 
 interface OutputSignature {
   offset: number;
@@ -209,9 +210,26 @@ function stageNativeBook(input: Buffer | WorkerVfsPayload, src: string, dir: str
   return staged;
 }
 
+/**
+ * Writes an EPUB source again from the structure of the project's own reader, and puts it in the job directory. Calibre's reader
+ * follows the paths a package's manifest names, which nothing here confines to the package (the worker has no mount namespace),
+ * so the uploaded package never reaches it: it gets the EPUB the project writes (docs/policy-decisions.md, "E-book pairs").
+ */
+async function stageRewrittenEpub(request: CalibreRequest, dir: string): Promise<string> {
+  const { input, src, originalFilename } = request;
+  assertBookSize(inputSize(input), `The .${src} file`);
+  const rewritten = await rewriteEpubFromModel(readRawInputBuffer(input), baseNameOf(originalFilename), request.options.language);
+  assertBookSize(rewritten.length, `The EPUB written from the .${src} file`);
+  await assertNoVectorImages(rewritten);
+  const staged = path.join(dir, `${BOOK_NAME}.${EPUB_FORMAT}`);
+  fs.writeFileSync(staged, rewritten);
+  return staged;
+}
+
 /** Writes the source as EPUB with the project's converters and puts it in the job directory, from the converter's file when it left one. */
 async function stageEpubOfSource(deps: CalibreDeps, request: CalibreRequest, dir: string): Promise<string> {
   const { input, src, options, originalFilename } = request;
+  if (src === EPUB_FORMAT) return stageRewrittenEpub(request, dir);
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   // The dispatcher fails the pair closed because the calibre target has no in-process writer; the EPUB of the first step has one, so the flag is cleared for it.
   const epubOptions = { ...options, outputPath: undefined, inProcessFallback: undefined, libreOfficeFilter: undefined } as WorkerEngineOptions;
@@ -221,6 +239,7 @@ async function stageEpubOfSource(deps: CalibreDeps, request: CalibreRequest, dir
     const staged = path.join(dir, `${BOOK_NAME}.${EPUB_FORMAT}`);
     if (written.filePath) fs.copyFileSync(written.filePath, staged);
     else fs.writeFileSync(staged, written.buffer);
+    await assertNoVectorImages(fs.readFileSync(staged));
     return staged;
   } finally {
     deps.discardOutput(written.filePath, input, options);
