@@ -62,6 +62,42 @@ describe('sRGB profile detection', () => {
     expect(Math.abs(out16[5] - 18661)).toBeLessThanOrEqual(5);
   });
 
+  it('takes a developed 16-bit picture with a development curve to the nearest 8-bit level in a JPEG', async () => {
+    const dcrawGamma = { type: 'gamma', gamma: 495 / 256 } as const;
+    const rawDevelopmentProfile = buildMatrixProfile({ version: 2, ...SRGB_COLORANTS, curves: [dcrawGamma, dcrawGamma, dcrawGamma] });
+    const luts = srgb16LutsFromProfile(rawDevelopmentProfile)!;
+    // 4096 grey patches of 8 x 8 pixels spread over the whole 16-bit range: a grey patch at quality 100 is coded exactly, so the decoded level is the one the pipeline reduced to.
+    const patches = 4096;
+    const columns = 64;
+    const patch = 8;
+    const width = columns * patch;
+    const height = (patches / columns) * patch;
+    const pixels = new Uint16Array(width * height * 3);
+    const sampleOf = (index: number): number => Math.min(65535, index * 16 + 8);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = Math.floor(y / patch) * columns + Math.floor(x / patch);
+        pixels.fill(sampleOf(index), (y * width + x) * 3, (y * width + x) * 3 + 3);
+      }
+    }
+    const tiff = encode16BitTiff(width, height, pixels, rawDevelopmentProfile);
+    // The nearest level of the exact 16-bit value, as the 16-bit route reduces it (a sample plus half a level, then the high byte).
+    const nearest = (sample: number): number => Math.min(255, Math.floor((luts[0][sample] * 255) / 65535 + 0.5));
+
+    const converted = await convertImage(tiff, 'jpg', { quality: 100 }, 'canon.tiff', 'tiff');
+    const { data } = await sharp(converted.buffer).toColourspace('srgb').raw().toBuffer({ resolveWithObject: true });
+    let off = 0;
+    let bias = 0;
+    for (let index = 0; index < patches; index += 1) {
+      const at = ((Math.floor(index / columns) * patch + 3) * width + (index % columns) * patch + 3) * 3 + 1;
+      const error = data[at] - nearest(sampleOf(index));
+      if (error !== 0) off += 1;
+      bias += error;
+    }
+    expect(off / patches, 'share of patches off the nearest level').toBeLessThan(0.02);
+    expect(Math.abs(bias / patches), 'mean level error').toBeLessThan(0.05);
+  });
+
   it('does not take a wider gamut for sRGB', async () => {
     const p3 = await bytesOf('p3');
     expect(isSrgbProfile(p3)).toBe(false);

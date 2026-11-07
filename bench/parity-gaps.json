@@ -1,38 +1,5 @@
 {
   "schemaVersion": 1,
-  "gaps": [
-    {
-      "id": "raw/raw-canon-r5-raw.cr3->jpg/bd_rate_psnr",
-      "issue": 686,
-      "ratio": null,
-      "note": "JPEG rate-distortion curve of the Canon R5 CR3: +1.93% bits at equal PSNR against the reference, allowance 1.5",
-      "recorded": 1.9267,
-      "reference": 0
-    },
-    {
-      "id": "raw/raw-canon-r5-raw.cr3->jpg/psnr",
-      "issue": 686,
-      "ratio": null,
-      "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
-      "recorded": 44.2972,
-      "reference": 44.7351
-    },
-    {
-      "id": "raw/class-canoncr3->jpg/bd_rate_psnr",
-      "issue": 686,
-      "ratio": null,
-      "note": "class of one file (Canon R5 CR3): the same curve as raw-canon-r5-raw.cr3->jpg",
-      "recorded": 1.9267,
-      "reference": 0
-    },
-    {
-      "id": "raw/class-canoncr3->jpg/psnr",
-      "issue": 686,
-      "ratio": null,
-      "note": "class of one file (Canon R5 CR3): the same point as raw-canon-r5-raw.cr3->jpg/psnr",
-      "recorded": 44.2972,
-      "reference": 44.7351
-    }
-  ],
+  "gaps": [],
   "acceptedSlowdowns": []
 }
