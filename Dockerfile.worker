@@ -95,18 +95,23 @@ RUN /tmp/install-ghostxps.sh /opt/ghostxps
 # ==============================================================================
 # Stage 3b': Pinned vtracer (raster to SVG tracer)
 # ==============================================================================
-# PNG, JPEG, WebP, GIF, BMP and TIFF to SVG. vtracer is MIT OR Apache-2.0; the project's own statically linked musl build for this
-# architecture is fetched from its release page, pinned by SHA-256 in scripts/install-vtracer.sh with its licence text and the
-# notices of the crates linked into it, and the worker runs it unmodified as a separate sandboxed process; nothing links it into the
-# application. Debian ships no package of it.
+# PNG, JPEG, WebP, GIF, BMP and TIFF to SVG. vtracer is MIT OR Apache-2.0. Two separate programs trace for the worker, which runs
+# them sandboxed and nothing links into the application. vtracer-pixels is the vtracer command-line front-end reading the raw pixels
+# the worker decoded (scripts/vtracer-pixels, copied from the pinned source), built here with the pinned Rust toolchain as one static
+# musl program by scripts/install-vtracer-pixels.sh; it is the program the worker uses. The project's own statically
+# linked musl release build for this architecture, pinned by SHA-256 in scripts/install-vtracer.sh, stays as the fallback. Debian ships
+# no package of either; both carry their licence text and the notices of the crates linked into them.
 FROM ${NODE_IMAGE} AS vtracer
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-vtracer.sh /tmp/install-vtracer.sh
+COPY scripts/install-vtracer-pixels.sh /tmp/install-vtracer-pixels.sh
 COPY scripts/vtracer-notices/THIRD-PARTY-NOTICES /tmp/vtracer-notices/THIRD-PARTY-NOTICES
+COPY scripts/vtracer-pixels/ /tmp/vtracer-pixels/
 RUN /tmp/install-vtracer.sh /opt/vtracer
+RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 
 # ==============================================================================
 # Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
@@ -380,15 +385,23 @@ COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
 COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
 RUN gxps -v
 
-# Raster to SVG tracer (pinned release program from the vtracer stage). Its licence text goes to /usr/share/doc/vtracer/copyright, which
-# the notices step below collects into /licenses with the system packages; THIRD-PARTY-NOTICES beside it holds the licences of the crates
-# linked into it, and the SOURCE file names the archive and its digest. The build
-# fails unless the program traces an 8 x 8 PNG with a black square, written here as bytes, into an SVG with a path.
+# Raster to SVG tracers (the vtracer stage): the front-end for raw pixels that the worker uses, and the pinned release program it falls back
+# to. Their licence texts go to /usr/share/doc/vtracer/copyright and /usr/share/doc/vtracer-pixels/copyright, which the notices step
+# below collects into /licenses with the system packages; THIRD-PARTY-NOTICES beside them holds the licences of the crates linked into
+# them, and the SOURCE files name the archive and the source and their digests. The build fails unless each program traces a black square
+# on white, written here as bytes (an 8 x 8 PNG, and the same 8 x 8 picture as raw RGBA), into an SVG with a path.
 COPY --from=vtracer /opt/vtracer/bin/vtracer /usr/local/bin/vtracer
 COPY --from=vtracer /opt/vtracer/share/doc/vtracer /usr/share/doc/vtracer
+COPY --from=vtracer /opt/vtracer-pixels/bin/vtracer-pixels /usr/local/bin/vtracer-pixels
+COPY --from=vtracer /opt/vtracer-pixels/share/doc/vtracer-pixels /usr/share/doc/vtracer-pixels
 RUN dir="$(mktemp -d)" \
     && printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\010\000\000\000\010\001\003\000\000\000\376\301,\310\000\000\000\006PLTE\377\377\377\000\000\000U\302\323~\000\000\000\021IDAT\010\327c\140\000\002\033(d\140\140\000\000\007\220\000\361\354\255\014\032\000\000\000\000IEND\256B\140\202' > "$dir/in.png" \
     && vtracer --input "$dir/in.png" --output "$dir/out.svg" \
+    && grep -q '<path d="M' "$dir/out.svg" \
+    && rm -rf "$dir"
+RUN dir="$(mktemp -d)" \
+    && { printf '\010\000\000\000\010\000\000\000'; y=0; while [ "$y" -lt 8 ]; do x=0; while [ "$x" -lt 8 ]; do if [ "$x" -ge 2 ] && [ "$x" -lt 6 ] && [ "$y" -ge 2 ] && [ "$y" -lt 6 ]; then printf '\000\000\000\377'; else printf '\377\377\377\377'; fi; x=$((x + 1)); done; y=$((y + 1)); done; } > "$dir/in.rgba" \
+    && vtracer-pixels --input "$dir/in.rgba" --output "$dir/out.svg" \
     && grep -q '<path d="M' "$dir/out.svg" \
     && rm -rf "$dir"
 
@@ -514,6 +527,9 @@ RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
 RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
 RUN cp /usr/share/doc/vtracer/SOURCE /licenses/vtracer.SOURCE
 RUN cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES
+RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
+RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
+RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.

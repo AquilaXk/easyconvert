@@ -9,7 +9,8 @@
 #   calibre   the ebook converter the ebook benchmark compares against and the writer of the MOBI, AZW3, PDB, LRF and OEB tests, from its release archive checked against a pinned SHA-256
 #   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
-#   vtracer  the raster to SVG tracer, the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh)
+#   vtracer  the raster to SVG tracers: the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh), and the
+#            front-end for raw pixels built from the pinned source with the pinned Rust toolchain (scripts/install-vtracer-pixels.sh)
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # One part needs what another installs and runs once they are all done:
@@ -62,7 +63,7 @@ declare -A task_limit_seconds=(
   [calibre]=240
   [libredwg]=300
   [ghostxps]=300
-  [vtracer]=120
+  [vtracer]=300
   [raw]=240
   [s3]=360
 )
@@ -230,11 +231,13 @@ task_ghostxps() {
   sha256sum "$ghostxps_dir/bin/gxps" | sudo tee "$digest_file" > /dev/null
 }
 
-# Raster to SVG pairs are traced by vtracer (MIT OR Apache-2.0, an unmodified separate program), the release program pinned with its
-# licence text in scripts/install-vtracer.sh, which checks both digests before the program runs. The download is about 1.3 MB, so it is
-# not cached.
+# Raster to SVG pairs are traced by vtracer (MIT OR Apache-2.0, a separate program): the front-end for raw pixels that the worker uses,
+# built by scripts/install-vtracer-pixels.sh from the source in scripts/vtracer-pixels with the pinned Rust toolchain (about 160 MB of
+# archives, each checked against a pinned SHA-256, and a build of about 20 s), and the release program pinned with its licence text in
+# scripts/install-vtracer.sh, which checks both digests before the program runs and is the fallback. Neither is cached.
 task_vtracer() {
-  sudo scripts/install-vtracer.sh /opt/vtracer
+  sudo scripts/install-vtracer.sh /opt/vtracer || return 1
+  sudo scripts/install-vtracer-pixels.sh /opt/vtracer-pixels
 }
 
 # Pulls the pinned image, trying a bounded number of times: anonymous registry pulls are rate limited.
