@@ -25,7 +25,8 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertTablePageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -1521,7 +1522,7 @@ export async function convertWithNativePoppler(
  * Raster targets written by the in-process image encoders: Poppler renders each page to PNG and the encoder
  * takes the picture from there, the way the camera RAW route hands its decoded image to the same encoders.
  */
-const ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'webp']);
+const ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'webp']);
 /** PostScript targets: Poppler's pdftops writes them from the PDF. */
 const POSTSCRIPT_TARGETS: ReadonlySet<string> = new Set(['eps', 'ps']);
 const EPS_TARGET = 'eps';
@@ -1616,7 +1617,7 @@ function intermediateOptions(options: WorkerEngineOptions): WorkerEngineOptions 
   return { ...options, outputPath: undefined } as WorkerEngineOptions;
 }
 
-/** PDF pages to avif, bmp, gif, ico, psd or webp: pdftoppm renders PNG pages, then the image encoder writes the target. */
+/** PDF pages to avif, bmp, gif, ico, odd, psd or webp: pdftoppm renders PNG pages, then the image encoder writes the target. */
 async function convertPdfToEncodedRaster(
   input: Buffer | WorkerVfsPayload,
   tgt: string,
@@ -1690,9 +1691,7 @@ async function convertPdfToPostScript(
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
     renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
-        for (const page of pagesOfIntervals(intervals)) {
-          await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, path.join(tempDir, `page-${page}.eps`)]);
-        }
+        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, run);
         return;
       }
       if (intervals.length !== 1) {
@@ -2164,7 +2163,7 @@ async function convertWithOfficeSuiteRoutes(
   // An interchange file and an .xls are written by the office suite or the table writers, which have not checked the declared source.
   if (interchange !== undefined || request.tgt === BIFF8_TARGET) assertNotSpoofedFileVfs(input, request.src, originalFilename);
   if (interchange !== undefined) return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
-  return convertHancomDocTarget(OFFICE_SUITE_DEPS, request, () => convertTablePageImages(OFFICE_SUITE_DEPS, request, () => convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename)))).catch(async (refusal: unknown) => {
+  return convertBridgedTarget(OFFICE_SUITE_DEPS, request, () => convertMarkupPageImages(OFFICE_SUITE_DEPS, request, () => convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename)))).catch(async (refusal: unknown) => {
     const retried = await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
     if (retried) return retried;
     throw refusal;
@@ -2440,9 +2439,9 @@ async function convertWithinImageSession(
   // 3. Native Poppler (PDF -> Image, SVG, or Text). OCR requests skip the text-layer route.
   const isPdfTextTarget = tgt === 'txt' || tgt === 'text';
   const skipPopplerForOcr = isPdfTextTarget && Boolean(options.ocrEnabled);
-  if (src === 'pdf' && !skipPopplerForOcr && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg' || isPdfTextTarget)) {
+  if (src === 'pdf' && !skipPopplerForOcr && (isPdfChainTarget(tgt) || isPdfTextTarget)) {
     try {
-      const popplerRes = await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename);
+      const popplerRes = isPdfTextTarget ? await convertWithNativePoppler(input, src, tgt, nativeOptions, originalFilename) : await convertPdfPagesWithNativeTools(input, tgt, nativeOptions, originalFilename);
       if (popplerRes && isPdfTextTarget && options.inProcessFallback !== false && !hasNonWhitespaceText(popplerRes.buffer)) {
         // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
         discardPersistedOutput(popplerRes.filePath, input, options);

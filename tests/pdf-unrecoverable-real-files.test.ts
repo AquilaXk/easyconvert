@@ -21,19 +21,18 @@ import { skipWithoutTools } from './helpers/strict-skip';
  */
 
 const SAMPLE_TIMEOUT_MS = 60_000;
-const NO_HEADER = 'CorruptStreamError: Invalid PDF document: missing %PDF- header';
 const INVALID_STRUCTURE = 'PdfTextGeometryError: PDF text geometry could not be read: Invalid PDF structure.';
 const INVALID_ROOT = 'PdfTextGeometryError: PDF text geometry could not be read: Invalid Root reference.';
 const NO_PAGE_COUNT = 'PdfStructureError: Unable to determine PDF page count: invalid or corrupted PDF structure.';
 
 /** Each file with the targets the nightly run asked for and the refusal each gets. */
 const REFUSALS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  'qpdf-issue-263.pdf': { docx: NO_HEADER, html: NO_HEADER, md: NO_HEADER },
-  'qpdf-issue-101.pdf': { pptx: INVALID_STRUCTURE, azw3: INVALID_STRUCTURE, svg: NO_PAGE_COUNT },
-  'pdfjs-bug1020226.pdf': { pdf: INVALID_STRUCTURE, rtf: INVALID_STRUCTURE, txt: INVALID_STRUCTURE },
-  'qpdf-issue-99.pdf': { epub: INVALID_STRUCTURE, xlsx: INVALID_STRUCTURE, png: NO_PAGE_COUNT },
-  'qpdf-issue-120.pdf': { lrf: INVALID_ROOT, mobi: INVALID_ROOT, oeb: INVALID_ROOT },
-  'qpdf-issue-141b.pdf': { pdb: INVALID_ROOT, jpg: NO_PAGE_COUNT, tiff: NO_PAGE_COUNT },
+  'qpdf-issue-263.pdf': { eps: NO_PAGE_COUNT, ps: NO_PAGE_COUNT, dxf: NO_PAGE_COUNT },
+  'qpdf-issue-101.pdf': { pdb: INVALID_STRUCTURE, jpg: NO_PAGE_COUNT, tiff: NO_PAGE_COUNT },
+  'pdfjs-bug1020226.pdf': { pptx: INVALID_STRUCTURE, svg: NO_PAGE_COUNT, azw3: INVALID_STRUCTURE },
+  'qpdf-issue-99.pdf': { lrf: INVALID_STRUCTURE, mobi: INVALID_STRUCTURE, oeb: INVALID_STRUCTURE },
+  'qpdf-issue-120.pdf': { xls: INVALID_ROOT, hocr: INVALID_ROOT, alto: INVALID_ROOT },
+  'qpdf-issue-141b.pdf': { avif: NO_PAGE_COUNT, bmp: NO_PAGE_COUNT, gif: NO_PAGE_COUNT },
 };
 
 /** The e-book writers run in calibre, which a machine without it answers before the text layer is read; the worker image and the nightly run have it. */

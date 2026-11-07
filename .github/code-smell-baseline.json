@@ -1268,7 +1268,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9525
+    "maxValue": 9350
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2332,7 +2332,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2536
+    "maxValue": 2535
   },
   {
     "file": "src/worker/engines.ts",

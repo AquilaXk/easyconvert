@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { isCalibreEbookTarget } from '../src/lib/conversions/calibre-ebook-targets';
 
 /**
  * EPUB output must carry a per-book identifier and honest language metadata, and the registry
@@ -40,7 +41,7 @@ describe('EPUB writer metadata', () => {
 
 describe('advertised EPUB and RAW targets', () => {
   it('advertises no EPUB target without a conversion path', () => {
-    expect(FORMAT_REGISTRY.epub.targetFormats).toEqual(['pdf', 'docx', 'txt', 'html', 'zip']);
+    expect(FORMAT_REGISTRY.epub.targetFormats).toEqual(['pdf', 'docx', 'txt', 'html', 'zip', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf']);
     expect(FORMAT_REGISTRY.raw.targetFormats).not.toContain('dng');
   });
 
@@ -52,8 +53,10 @@ describe('advertised EPUB and RAW targets', () => {
       zip: (b) => b.readUInt32LE(0) === 0x04034b50,
       html: (b) => /<html[\s>]/i.test(b.toString('utf-8')),
       txt: (b) => b.toString('utf-8').includes('Hello from the first chapter'),
+      rtf: (b) => b.subarray(0, 5).toString('latin1') === '{\\rtf' && b.toString('latin1').includes('Hello from the first chapter'),
     };
-    for (const target of FORMAT_REGISTRY.epub.targetFormats) {
+    // The Palm, Kindle, Sony and Open eBook targets are written by calibre through the worker (tests/ebook-calibre-writers.test.ts); the in-process engine answers them with an unavailable engine.
+    for (const target of FORMAT_REGISTRY.epub.targetFormats.filter((candidate) => !isCalibreEbookTarget(candidate))) {
       const out = await convertFile(epub, 'epub', target, {}, 'notes.epub');
       expect(magic[target](out.buffer), `epub -> ${target}`).toBe(true);
     }

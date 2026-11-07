@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
-import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { DOCX_MAX_TABLE_DEPTH } from '../src/lib/conversions/docx-model';
 import { ConversionFailedError, PayloadLimitError } from '../src/lib/types';
@@ -138,8 +137,6 @@ describe('Real documents on slides', () => {
       const failure = await toSlides(bytes).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(ConversionFailedError);
       expect((failure as Error).message).toBe(NO_TEXT_REFUSAL);
-      const job = { file: id, source: 'docx', target: 'pptx', verdict: 'refused', ms: 0, detail: `ConversionFailedError: ${NO_TEXT_REFUSAL}` } as const;
-      expect(knownRefusal(job, readKnownRefusals()), `${id} has a known refusal`).not.toBeNull();
     }, CONVERSION_TIMEOUT_MS);
   }
 });

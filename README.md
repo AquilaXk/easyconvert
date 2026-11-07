@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **302 file formats** and **2,603 conversion pairs** in **12 categories**.
+EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **302 file formats** and **2,709 conversion pairs** in **12 categories**.
 
 EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools, a Redis-backed queue with Lua scripts, and S3 or OCI multipart object storage. It fails closed on malformed or spoofed input and deletes stored files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
 
@@ -10,7 +10,7 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 
 ## Key Highlights
 
-- **302 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,603` source-to-target pairs).
+- **302 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,709` source-to-target pairs).
 - **Binary Conversion Engines**:
   - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and builder with paragraph and table extraction.
   - **Cox-de Boor Curves**: B-spline basis evaluator and Bézier flattening for CAD and vector paths.

@@ -60,7 +60,7 @@ interface SampleCase {
 }
 
 const SAMPLES: readonly SampleCase[] = [
-  { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt', 'xps'], phrases: ['blah blah blah'] },
+  { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt', 'xps', 'doc', 'rtf', 'jpg', 'png'], phrases: ['blah blah blah'] },
   {
     id: 'govdocs1-000003.doc',
     extension: 'dot',
@@ -151,7 +151,29 @@ const SAMPLES: readonly SampleCase[] = [
     targets: ['docx', 'pdf', 'txt', 'odt', 'zip'],
     phrases: ['this is an example staroffice 5 2 document'],
   },
-  { id: 'lo-hello.zabw', extension: 'zabw', targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'], phrases: ['hello world'] },
+  { id: 'lo-hello.zabw', extension: 'zabw', targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'], phrases: ['hello world'] },
+  // AbiWord's plain XML: the in-process text extractor used to return its markup as the text, so the phrase is also pinned in the bytes of the file.
+  {
+    id: 'lo-hello.abw',
+    extension: 'abw',
+    targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'],
+    phrases: ['hello world'],
+    phrasesInSourceBytes: true,
+  },
+  {
+    id: 'lo-abi11105.abw',
+    extension: 'abw',
+    targets: ['docx', 'pdf', 'txt', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'],
+    phrases: ['evan rinehart', 'baton rouge', 'researching and implementing advanced graphics techniques using shaders'],
+  },
+  // iWork Pages, read by the suite's libetonyek: the document of the Tika corpus holds a table.
+  {
+    id: 'tika-testpages2013.pages',
+    extension: 'pages',
+    targets: ['docx', 'pdf', 'txt', 'zip', 'doc', 'epub', 'jpg', 'png'],
+    phrases: ['sample pages document', 'some plain text to parse', 'column one', 'cell nine'],
+  },
+  { id: 'lo-pages_4.pages', extension: 'pages', targets: ['docx', 'pdf', 'txt', 'doc', 'epub', 'jpg', 'png'], phrases: ['document liberation link'] },
   {
     id: 'tika-teststaroffice-5.2-calc.sdc',
     extension: 'sdc',
@@ -179,7 +201,7 @@ const SAMPLES: readonly SampleCase[] = [
   {
     id: 'lo-plucker.pdb',
     extension: 'pdb',
-    targets: ['txt', 'pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb', 'zip'],
+    targets: ['txt', 'pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb', 'zip', 'rtf'],
     phrases: ['universal declaration of human rights', 'adopted and proclaimed by general assembly resolution'],
   },
 ];
