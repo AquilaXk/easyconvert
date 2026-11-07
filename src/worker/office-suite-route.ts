@@ -72,9 +72,19 @@ export function officeSuiteWritesTarget(src: string, tgt: string): boolean {
  * renders images from a PDF, an archive packs the file as it is) or when the source has no interchange format.
  */
 export function interchangeNeeded(src: string, tgt: string, madeWithoutInterchange: boolean): string | undefined {
+  if (tgt === MARKDOWN_TARGET && PRESENTATION_MARKDOWN_SOURCES.has(src)) return PDF_INTERCHANGE;
   if (officeSuiteWritesTarget(src, tgt) || madeWithoutInterchange) return undefined;
   return officeSuiteInterchange(src, tgt);
 }
+
+const MARKDOWN_TARGET = 'md';
+const PDF_INTERCHANGE = 'pdf';
+/**
+ * Presentations written as Markdown. The office suite has no Markdown filter for Impress (only for Writer) and the in-process presentation
+ * readers write no Markdown, so the text is that of the PDF the suite prints of the deck: one page for each slide, read by the PDF text reader
+ * that writes the Markdown of any PDF.
+ */
+const PRESENTATION_MARKDOWN_SOURCES: ReadonlySet<string> = new Set(['dps', 'odp', 'pot', 'potx', 'pps', 'ppsx', 'ppt', 'pptm', 'pptx']);
 
 /** First page of the printed document, in the PDF export's page range syntax. */
 const FIRST_PAGE_RANGE = '1';
@@ -375,6 +385,8 @@ const DOCX_FORMAT = 'docx';
 const PDF_FORMAT = 'pdf';
 /** The page images of a document: one picture for each page of the PDF the converter writes of it. */
 const PAGE_IMAGE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'png']);
+/** The sources whose pages the native PDF tools draw: the text and markup sources, and a delimited table, whose PDF the in-process engine writes. */
+const PAGE_IMAGE_SOURCES: ReadonlySet<string> = new Set([...MARKUP_SOURCES, 'csv']);
 
 /**
  * The format the in-process converter writes first for a target that only the office suite writes, or undefined when the pair has
@@ -423,7 +435,7 @@ export async function convertBridgedTarget(
 }
 
 /**
- * A text, Markdown, reStructuredText or HTML document written as page images: the PDF of the source is written as that source converts to
+ * A text, Markdown, reStructuredText, HTML or CSV document written as page images: the PDF of the source is written as that source converts to
  * PDF, and the native PDF tools draw its pages, so that the pictures are the pages of the PDF the same source converts to, one for each
  * page and a ZIP of them for a document of several. The PDF never goes to the output path of the request and carries no page selection,
  * which belongs to the pictures. Without Poppler the answer is an unavailable engine.
@@ -434,7 +446,7 @@ export async function convertMarkupPageImages(
   convertDirectly: () => Promise<WorkerConversionResult>
 ): Promise<WorkerConversionResult> {
   const { input, src, tgt, options, originalFilename } = request;
-  if (!MARKUP_SOURCES.has(src) || !PAGE_IMAGE_TARGETS.has(tgt)) return convertDirectly();
+  if (!PAGE_IMAGE_SOURCES.has(src) || !PAGE_IMAGE_TARGETS.has(tgt)) return convertDirectly();
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   const pdfOptions = { ...options, libreOfficeFilter: undefined, outputPath: undefined, inProcessFallback: undefined, page: undefined, pages: undefined, multiPageOutput: undefined } as WorkerEngineOptions;

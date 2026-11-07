@@ -109,8 +109,27 @@
   },
   {
     "file": "govdocs1-001630.ppt",
-    "detail": "^LegacyOfficeFormatError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.$",
+    "detail": "^(LegacyOfficeFormatError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.|ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.)$",
     "reason": "Damaged: the FAT chain of the directory returns to sector 0 (the chain from sector 213, the first directory sector, reaches sector 0 again), so the compound file has no readable stream. Apache POI 5.4.0 refuses to open it (POIFSFileSystem: \"Potential loop detected - Block 0 was already claimed but was just requested again\"), LibreOffice 24.2.7 does not load it (\"source file could not be loaded\") and LibreOffice 26.8 opens the bytes as a text document, so no reader reads it as a presentation. The refusal names the loop (tests/ppt-cfb-sector-loop.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "govdocs1-002538.ppt",
+    "source": "ppt",
+    "target": [
+      "eps",
+      "md"
+    ],
+    "detail": "^(PayloadLimitError: The pages written as EPS hold more than 268435456 bytes together\\. Select pages with \"pages\" \\(for example \"1-10\"\\), or set \"multiPageOutput\" to \"first\" for the first page\\.|DecompressionLimitError: PDF stream of object \\d+ would exceed the decoded-byte budget of 268435456 bytes for the whole document\\.)$",
+    "reason": "Too large for these two targets: the deck is 34 pages of full-page pictures, and the PDF LibreOffice prints of it is 42,190,675 bytes. As EPS each page is about 70 MB (a 34-page request wrote 2,401,264,524 bytes before the ZIP failed on the 2 GiB file limit), so the request is refused once the pages written pass 256 MiB; Markdown reads that PDF and one of its image streams passes the 256 MiB decoded-byte budget of the PDF reader. The limit is pinned by tests/postscript-page-limit.test.ts.",
+    "issue": 783
+  },
+  {
+    "file": "govdocs1-004332.ppt",
+    "source": "ppt",
+    "target": "md",
+    "detail": "^PayloadLimitError: The images of the PDF are more than 134217728 bytes\\.$",
+    "reason": "Too large for this target: the deck is 34 pages and the PDF LibreOffice prints of it holds 38 pictures of about 729,000,000 bytes decoded (1,483,922 bytes as stored, measured with pdfimages -list), past the 128 MiB image budget of the PDF text reader.",
     "issue": 783
   },
   {

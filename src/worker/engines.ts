@@ -26,6 +26,7 @@ import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
 import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertBridgedTarget, convertMarkupPageImages, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { writeEpsPages } from './postscript-page-limit';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -1690,9 +1691,7 @@ async function convertPdfToPostScript(
     missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
     renderPages: async (tempDir, inputPath, intervals) => {
       if (isEps) {
-        for (const page of pagesOfIntervals(intervals)) {
-          await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, path.join(tempDir, `page-${page}.eps`)]);
-        }
+        await writeEpsPages(pagesOfIntervals(intervals), tempDir, inputPath, run);
         return;
       }
       if (intervals.length !== 1) {

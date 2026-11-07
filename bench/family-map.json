@@ -226,6 +226,10 @@
       "match": "^src/worker/poppler-ppm\\.ts$"
     },
     {
+      "families": ["document", "pdf-ops"],
+      "match": "^src/worker/postscript-page-limit\\.ts$"
+    },
+    {
       "families": ["cad", "vectorize"],
       "match": "^src/lib/conversions/vector-cad\\.ts$"
     },

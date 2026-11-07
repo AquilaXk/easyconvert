@@ -359,6 +359,27 @@ describe('a PowerPoint slide show written as a PowerPoint 97-2003 file without t
   });
 });
 
+describe('a presentation written as Markdown or PostScript pictures without the office suite', () => {
+  it.each([
+    ['ppt', 'md'],
+    ['ppt', 'eps'],
+    ['pps', 'md'],
+  ])('.%s to .%s is an unavailable-engine answer (503): only the office suite prints the deck', async (source, target) => {
+    const deck = buildPptBinary({ slides: [{ shapes: [{ chars: 'Opening slide title' }] }] });
+    const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(deck, source, target, {}, `deck.${source}`));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  });
+});
+
+describe('a CSV table written as page pictures without Poppler', () => {
+  it.each(['jpg', 'png'])('.csv to .%s is an unavailable-engine answer (503): only Poppler draws the pages of the table PDF', async (target) => {
+    const run = withMissingBinary('PDFTOPPM_PATH', () => dispatchConversion(Buffer.from('city,count\nHarbourtown,3\n'), 'csv', target, {}, 'cities.csv'));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'pdftoppm' });
+  });
+});
+
 describe('the guard that keeps binary bytes from being read as text', () => {
   it.each([
     ['a ZIP package', [0x50, 0x4b, 0x03, 0x04]],
