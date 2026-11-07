@@ -184,6 +184,7 @@ Quality evidence
 114. [The launch pass line of a speed row is 0.90 of the reference](#114-the-launch-pass-line-of-a-speed-row-is-090-of-the-reference)
 143. [Corpus files are fetched from copies that do not change, a host with a published limit is spaced, a host that refuses is held for the time it asked, and a shard that fails keeps what it fetched](#143-corpus-files-are-fetched-from-copies-that-do-not-change-a-host-with-a-published-limit-is-spaced-a-host-that-refuses-is-held-for-the-time-it-asked-and-a-shard-that-fails-keeps-what-it-fetched)
 148. [The nightly regression corpus runs on eight shards, divides per-page OCR concurrency across worker processes, normalizes single-page leaf PDF catalogs, and records empty inputs in the regression manifest](#148-the-nightly-regression-corpus-runs-on-eight-shards-divides-per-page-ocr-concurrency-across-worker-processes-normalizes-single-page-leaf-pdf-catalogs-and-records-empty-inputs-in-the-regression-manifest)
+178. [The core pages are audited against WCAG 2.1 AA in the test suite with axe-core, with no baseline of tolerated violations](#178-the-core-pages-are-audited-against-wcag-21-aa-in-the-test-suite-with-axe-core-with-no-baseline-of-tolerated-violations)
 
 Tabular data
 
@@ -6353,3 +6354,24 @@ Security
   - **A `Retry-After` computed from the queue backoff**: the 503 here does not come from a queue attempt, so the number would be invented.
 - **Verified by**: `tests/convert-error-contract.test.ts` (a plain `Error` with each of the words answers 500; the empty-payload and unsupported-pair sites are typed; the 503 of both convert routes and the batch route carries `Retry-After`; the batch route answers a fault class 500, a typed refusal with its code, logs one failure or refusal line free of the file name, and logs a refusal no error decided), `tests/raster-vectorize.test.ts` (the tracer's time-out is the base class), `tests/convert-error-boundaries.test.ts`.
 - **Revisit when**: a library error that reaches the route as a plain `Error` is a bad input in practice; give its throw site a class at that point.
+
+## 178. The core pages are audited against WCAG 2.1 AA in the test suite with axe-core, with no baseline of tolerated violations
+
+- **Status**: Implemented (issue #903, phase 1: the automated check)
+- **Decision**:
+  - **The tool is axe-core** (MPL-2.0), a development dependency used only by the test suite and in no image or build output (`docs/licensing.md` section 6.4). It runs the rules tagged WCAG 2.0 and 2.1 level A and AA, and the best-practice rules for heading order, landmarks and regions.
+  - **The harness is the existing vitest and jsdom one**, not a browser. `tests/a11y-axe.test.ts` mounts each page as the browser does and audits the document: the home page in English and Korean, the converter pair page `/pdf-to-docx`, the format page `/pdf-converter`, the 404 page, the terms page, and the conversion queue with no target chosen, converting, done and failed. It runs in the `tests` shards of `.github/workflows/ci.yml`, so no job was added.
+  - **There is no baseline.** Any violation of the rules above fails the test; a finding is fixed in the pull request that brings it. A finding that cannot be fixed without changing colours, sizes, spacing or layout is not hidden in an ignore list: it is named as an audit row of #903 and decided with the screenshots the design review asks for.
+  - **Not covered by this check, and open in #903:** colour contrast in light and dark (WCAG 1.4.3, 1.4.11) and target size (the 2.5.5 of WCAG 2.1 level AAA and the 2.5.8 of WCAG 2.2 AA), because jsdom loads no stylesheet and lays nothing out; keyboard focus order and visible focus (2.4.3, 2.4.7); zoom to 200 % and reflow (1.4.4, 1.4.10); the VoiceOver pass.
+  - **Translation completeness** is held by `tests/i18n-messages.test.ts` (same keys, same arguments and no empty message in every offered language, and the Korean register); this entry adds no second test for it.
+- **Why**:
+  - **The page views already render in jsdom**, and the repo tests them there; a browser run would add a browser install and minutes to a job for the same structural rules, and the structural rules (names, roles, labels, `lang`, landmarks, heading order, ARIA validity, live regions) are what axe decides from the DOM alone.
+  - **A baseline lets the count grow unseen.** The pages pass today, so the honest gate is zero.
+- **Trade-offs**:
+  - The rules that need pixels are not enforced until a browser-driven pass is added (a later phase of #903); until then contrast and target size are checked by hand.
+  - The audited states are the ones the test mounts; a state it does not mount (an options dialog, a format picker open) is not audited.
+- **Alternatives rejected**:
+  - **Playwright against a built server in CI**: it would cover contrast and target size, but needs a browser download and a running build, and its cost belongs with the visual work that would act on the findings.
+  - **A recorded baseline of current violations**: there are none to record, so it would only be a place to hide later ones.
+- **Verified by**: `tests/a11y-axe.test.ts` (each page and queue state has no violation; a control page with an unnamed button and an image without alternative text is reported, so the audit is shown to see).
+- **Revisit when**: a browser-driven accessibility pass is added for contrast, target size and focus; or axe-core's rule set changes what the tags mean.
