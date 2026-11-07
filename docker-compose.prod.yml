@@ -113,6 +113,10 @@ x-app-environment: &app-environment
   WORKER_HEARTBEAT_FILE: /home/easyconvert/worker-heartbeat.json
   # Bounds the glibc heap of the image library's threads; see docker-compose.yml.
   MALLOC_ARENA_MAX: "2"
+  # The metrics listener of each process (docs/slo.md): port 9464 in the web container, 9465 in a worker. It listens on all addresses
+  # of the container, so that a scraper on the stack's own networks can reach it; neither port is published below and the nginx site
+  # does not route to them, so nothing outside the host can.
+  METRICS_HOST: "0.0.0.0"
 
 x-worker: &worker
   <<: *app

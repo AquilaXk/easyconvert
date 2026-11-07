@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream';
+import { observeSandboxSpawnFailure } from '../metrics/instruments';
 import { SandboxUnavailableError } from '../types';
 
 export interface SandboxEnvironment {
@@ -549,7 +550,7 @@ export function resolveSandboxedCommand(
   const isolationArgs = unshare?.available ? buildUnshareIsolationArgs(unshare, sandboxOptions) : undefined;
   const capPrlimit = getPrlimitCapability();
   if (effectiveRlimits.nproc !== undefined && !(isolationArgs?.includes('-r') && capPrlimit.available)) {
-    throw new SandboxUnavailableError('The task limit of a run is kept only by prlimit in a user namespace of its own (unshare -r), which this host cannot give the run; the program is not started.');
+    throw sandboxUnavailable('The task limit of a run is kept only by prlimit in a user namespace of its own (unshare -r), which this host cannot give the run; the program is not started.');
   }
 
   let finalBinary = binaryPath;
@@ -582,15 +583,21 @@ export function resolveSandboxedCommand(
       };
     } else if (strictIsolation) {
       // Typed for the API (503, retryable) and thrown before any spawn: no caller may run the tool unwrapped.
-      throw new SandboxUnavailableError('Strict network isolation failed: Linux unshare capability is unavailable');
+      throw sandboxUnavailable('Strict network isolation failed: Linux unshare capability is unavailable');
     }
   } else if (strictIsolation && networkIsolated && process.platform !== 'linux') {
-    throw new SandboxUnavailableError(
+    throw sandboxUnavailable(
       `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`
     );
   }
 
   return { binary: finalBinary, args: finalArgs, wrapped: isWrapped };
+}
+
+/** The refusal of a host that cannot confine a program, counted for the metrics. */
+export function sandboxUnavailable(reason: string): SandboxUnavailableError {
+  observeSandboxSpawnFailure('sandbox_unavailable');
+  return new SandboxUnavailableError(reason);
 }
 
 /**
@@ -973,6 +980,7 @@ export async function executeSandboxedBinary(
     }
 
     proc.on('error', (err) => {
+      observeSandboxSpawnFailure('spawn_error');
       settle(() => {
         killProcessGroup(proc.pid, 'SIGKILL');
         try {

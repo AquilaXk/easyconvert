@@ -18,10 +18,11 @@ const NODE_ONLY_IMPORTS = [
   "import('./lib/config/web-startup')",
   "import('./lib/storage/selected-storage')",
   "import('./lib/storage/retention-service')",
+  "import('./lib/metrics/server')",
 ];
 
 describe('src/instrumentation.ts', () => {
-  it('loads the configuration check, the storage selection and the retention sweep only inside a positive Node runtime check', () => {
+  it('loads the configuration check, the storage selection, the retention sweep and the metrics listener only inside a positive Node runtime check', () => {
     const guarded = GUARD.exec(code);
     expect(guarded?.[1].match(/import\('[^']+'\)/g)).toEqual(NODE_ONLY_IMPORTS);
     expect(code.replace(GUARD, '').match(/import\(/g)).toBeNull();

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { NextRequest } from 'next/server';
+import { recordConvertAnswer } from '../metrics/recorders';
 import { PROTECT_PASSWORD_KEYS } from '../queue/option-secrets';
 import { HTTP_TOO_MANY_REQUESTS, problemNameOfType } from '../refusal-codes';
 import { escapeRegExp } from '../security/redact';
@@ -172,7 +173,8 @@ function newTrace(): ConversionTrace {
 
 /**
  * Wraps a convert route so that each answer of 400 or more is logged once, with what the route put in its trace. An error the
- * route lets escape is logged as a 500 and thrown again for the framework to answer.
+ * route lets escape is logged as a 500 and thrown again for the framework to answer. Every answer, logged or not, is also
+ * counted and timed by route, family and outcome (src/lib/metrics, docs/slo.md).
  */
 export function loggingOutcomes<Result extends Response>(
   route: string,
@@ -186,9 +188,11 @@ export function loggingOutcomes<Result extends Response>(
       response = await handler(req, trace);
     } catch (escaped) {
       trace.cause = escaped;
+      recordConvertAnswer(route, trace.source, HTTP_INTERNAL_SERVER_ERROR, startedAt);
       await logOutcome(route, trace, HTTP_INTERNAL_SERVER_ERROR, undefined, startedAt);
       throw escaped;
     }
+    recordConvertAnswer(route, trace.source, response.status, startedAt);
     if (response.status >= HTTP_BAD_REQUEST) await logOutcome(route, trace, response.status, response, startedAt);
     return response;
   };
