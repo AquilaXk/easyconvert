@@ -14,7 +14,7 @@ import { isType1Format, type1FileToOpenType } from './font-fontforge';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
 import { compressWithNativeWoff2 } from './font-woff2-native';
-import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, woff2BrotliQuality, type Woff2DecodedFont } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, WOFF2_BROTLI_MAX_QUALITY_BYTES, woff2BrotliQuality, type Woff2DecodedFont } from './font-woff2';
 import { cubicToQuadraticBezier, type BezierPoint } from './font-bezier';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
@@ -33,6 +33,7 @@ const WOFF_LAYOUT_3BYTE_MATCH_TAGS: ReadonlySet<string> = new Set(['GPOS', 'GSUB
 const WOFF_LAYOUT_3BYTE_MIN_BYTES = 10 * 1024;
 const WOFF_3BYTE_FAST_THRESHOLD_BYTES = 128 * 1024;
 const WOFF_3BYTE_MAX_BYTES = 2 * 1024 * 1024;
+export const WOFF2_NATIVE_MIN_TABLE_BYTES = 2 * 1024 * 1024; // entry 173: below it the program's process and files cost more than they save
 
 function deflateWoffTable(tag: string, data: Buffer): Buffer {
   if (
@@ -561,15 +562,14 @@ export function encodeWoff2(font: ParsedFont): Buffer {
 }
 
 /**
- * `encodeWoff2` without holding the event loop: `woff2_compress` of google/woff2 (font-woff2-native.ts) writes the file when it is
- * installed, at the Brotli quality of entry 24 for the size of the font, and the in-process encoder (see `encodeWoff2ContainerAsync`)
- * otherwise and for a font the program declines.
+ * `encodeWoff2` without holding the event loop: the installed `woff2_compress` (font-woff2-native.ts) writes fonts from WOFF2_NATIVE_MIN_TABLE_BYTES
+ * up to where entry 24 lowers the Brotli quality; every other font, a worker without the program and a declined font go to the in-process encoder.
  */
 export async function encodeWoff2Async(font: ParsedFont, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'> = {}): Promise<Buffer> {
   const flavor = font.sfntVersion || 0x00010000;
+  const tableBytes = Object.values(font.tables).reduce((sum, table) => sum + table.data.length, 0);
+  const written = tableBytes >= WOFF2_NATIVE_MIN_TABLE_BYTES && tableBytes <= WOFF2_BROTLI_MAX_QUALITY_BYTES ? await compressWithNativeWoff2(encodeSfnt(font, flavor), woff2BrotliQuality(tableBytes), options) : null;
   const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
-  const tableBytes = tables.reduce((sum, table) => sum + table.data.length, 0);
-  const written = await compressWithNativeWoff2(encodeSfnt(font, flavor), woff2BrotliQuality(tableBytes), options);
   return written ?? encodeWoff2ContainerAsync(flavor, tables, { signal: options.signal });
 }
 
