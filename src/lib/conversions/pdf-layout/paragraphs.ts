@@ -14,6 +14,8 @@ const GAP_FACTOR = 1.35;
 const INDENT_EM = 0.9;
 /** A line ending this share of the flow's width before its right edge ends its paragraph (when the next line starts at the left). */
 const SHORT_LINE_SHARE = 0.2;
+/** Line starts this many em apart are one start (a ragged edge). */
+const SAME_START_EM = 0.5;
 /** Sizes differing by more than this share belong to different paragraphs (a heading above its text). */
 const SIZE_CHANGE_SHARE = 0.12;
 /** Steps within this share of the smallest step are one pitch. */
@@ -111,6 +113,19 @@ function continuesOpeningMarker(opening: LayoutLine, marker: ListMarker): boolea
   return continues(open, marker);
 }
 
+/**
+ * Whether `line` is another line of a list item whose bullet sat apart from its text (`LayoutLine.textX0`): it starts where
+ * the text of the item's first line starts, as the lines of an item with a hanging indent do, and so do the lines between
+ * it and the first. The flow's left edge is the body text, so such a line is indented against it like the first line of a
+ * paragraph, and the indent says nothing here.
+ */
+function hangsUnderMarker(previous: LayoutLine, line: LayoutLine, opening: LayoutLine): boolean {
+  const textStart = opening.textX0;
+  if (textStart === undefined) return false;
+  const aligned = (other: LayoutLine): boolean => Math.abs(other.box.x0 - textStart) <= SAME_START_EM * line.size;
+  return aligned(line) && (previous === opening || aligned(previous));
+}
+
 /** Whether `line` starts a new paragraph after `previous`; `opening` is the first line of the paragraph it would join. */
 function startsParagraph(previous: LayoutLine, line: LayoutLine, opening: LayoutLine, flow: FlowMetrics): boolean {
   const step = line.baseline - previous.baseline;
@@ -123,7 +138,7 @@ function startsParagraph(previous: LayoutLine, line: LayoutLine, opening: Layout
   if (marker !== null && continuesOpeningMarker(opening, marker)) return true;
   const width = flow.right - flow.left;
   const indent = line.box.x0 - flow.left;
-  if (indent > INDENT_EM * line.size && !previous.rtl) return true;
+  if (indent > INDENT_EM * line.size && !previous.rtl && !hangsUnderMarker(previous, line, opening)) return true;
   const previousShort = endedEarly(previous, line, flow.right - previous.box.x1, width);
   if (previousShort && !previous.rtl && indent <= INDENT_EM * line.size) return true;
   if (previous.rtl && line.rtl) {

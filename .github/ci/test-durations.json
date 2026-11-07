@@ -664,6 +664,7 @@
   "tests/pdf-ink.test.ts": 0.6,
   "tests/pdf-internal-links.test.ts": 26.7,
   "tests/pdf-jbig2-bomb.test.ts": 7.1,
+  "tests/pdf-layout-bullet-rows.test.ts": 3.5,
   "tests/pdf-layout-continuations.test.ts": 1.6,
   "tests/pdf-layout-paragraph-builder.test.ts": 0.6,
   "tests/pdf-layout-units.test.ts": 1.6,

@@ -363,6 +363,31 @@ interface Channel {
   x1: number;
 }
 
+/** Marker characters that also stand for a dash or a footnote sign in a table cell; a row that starts with one stays a row of cells. */
+const AMBIGUOUS_MARKERS = new Set(['-', '–', '—', '*']);
+
+/** The bullet and the text of a row that is a list item whose bullet sits apart from its text, or null. */
+function bulletItemParts(row: Row): { bullet: LayoutLine; text: LayoutLine } | null {
+  if (row.segments.length !== 2 || row.table) return null;
+  const [bullet, text] = [...row.segments].sort((a, b) => a.box.x0 - b.box.x0);
+  const marker = parseListMarker(`${bullet.text} x`);
+  const isBullet = marker !== null && marker.kind === 'bullet' && !AMBIGUOUS_MARKERS.has(marker.glyph) && bullet.text.trim() === marker.glyph && text.text.trim() !== '';
+  return isBullet ? { bullet, text } : null;
+}
+
+/**
+ * A list item whose bullet sits apart from its text: two segments, the first a lone bullet glyph. The item is a line,
+ * "• text", and not two cells. The line says where its text starts, for the lines the item goes on in.
+ */
+function isBulletItem(row: Row): boolean {
+  return bulletItemParts(row) !== null;
+}
+
+function bulletItemLine(row: Row): LayoutLine {
+  const parts = bulletItemParts(row);
+  return { ...mergeSegments(row.segments), textX0: parts === null ? undefined : parts.text.box.x0 };
+}
+
 function isTabular(row: Row): boolean {
   return row.segments.length >= 2 && row.segments.every((segment) => segment.text.length <= MAX_CELL_CHARS);
 }
@@ -441,6 +466,8 @@ function isMarkerColumn(grid: { text: string; start: number }[][]): boolean {
 function buildStreamTable(run: Row[], fonts: FontList, budget: LayoutBudget, pageNumber: number, tableNumber: number): DetectedTable | null {
   const tabular = run.filter(isTabular);
   if (tabular.length < MIN_STREAM_ROWS) return null;
+  // Most of the rows are list items with their bullets apart: a list (with the header above it, or the text of a column beside it), not a table.
+  if (run.filter(isBulletItem).length * 2 >= tabular.length) return null;
   const channels = tableChannels(tabular, budget);
   if (channels.length === 0) return null;
   const bands = channels.length + 1;
@@ -544,7 +571,7 @@ export function detectStreamTables(pageRows: Row[], fonts: FontList, budget: Lay
     if (table) {
       output.push({ segments: [tableSegment(table)], baseline: table.box.y1, top: table.box.y0, bottom: table.box.y1, table });
     } else {
-      output.push(...pageRows.slice(at, runEnd));
+      output.push(...pageRows.slice(at, runEnd).map((row) => (isBulletItem(row) ? { ...row, segments: [bulletItemLine(row)] } : row)));
     }
     at = runEnd;
   }

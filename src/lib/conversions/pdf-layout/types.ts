@@ -34,6 +34,8 @@ export interface LayoutLine {
   /** The line runs top to bottom (vertical writing). Its box is then in a transposed frame; `pageBox` is the page box. */
   vertical: boolean;
   pageBox?: Box;
+  /** For a list item whose bullet sat apart from its text: where the text starts, which the item's other lines start at. */
+  textX0?: number;
 }
 
 /** A cell of a detected table. `continuation` marks a slot covered by the cell above it (a merged row). */
