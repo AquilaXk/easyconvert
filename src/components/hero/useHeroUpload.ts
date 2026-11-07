@@ -4,6 +4,9 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
+/** The pages that do something other than convert a file, whose upload card says so. */
+export type HeroOperation = 'merge' | 'compress' | 'ocr';
+
 /** The id of the page's file input, which the file bar's "add files" opens. */
 export const MAIN_FILE_INPUT_ID = 'main-file-input';
 
@@ -14,9 +17,14 @@ function isTextField(target: EventTarget | null): boolean {
 
 /**
  * The ways files reach the page from a hero: the hidden file input, the drop zone, a link import and a paste outside a text
- * field. Each hands its files to `onFilesSelected` with `target`, the target the hero names at that moment.
+ * field. Each hands its files to `onFilesSelected` with `target`, the target the hero names at that moment. An
+ * `operation` page words the file input and the upload card for what it does with the files.
  */
-export function useHeroUpload(onFilesSelected: (files: File[], target?: string) => void, target: string | undefined) {
+export function useHeroUpload(
+  onFilesSelected: (files: File[], target?: string) => void,
+  target: string | undefined,
+  operation?: HeroOperation
+) {
   const t = useTranslations('hero');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -42,7 +50,7 @@ export function useHeroUpload(onFilesSelected: (files: File[], target?: string) 
     type: 'file',
     multiple: true,
     className: 'sr-only',
-    'aria-label': t('fileInputLabel'),
+    'aria-label': operation ? t(`operations.${operation}.fileInputLabel`) : t('fileInputLabel'),
     onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
       const { files } = event.target;
       if (!files || files.length === 0) return;
@@ -52,6 +60,7 @@ export function useHeroUpload(onFilesSelected: (files: File[], target?: string) 
   } as const;
 
   const dropzone = {
+    operation,
     isDragOver,
     onDragOver: (event: React.DragEvent) => {
       event.preventDefault();

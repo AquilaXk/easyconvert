@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense } from 'react';
+import React, { Suspense, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
@@ -33,6 +33,16 @@ function LoginFormContent() {
     handleSubmit,
   } = useAuthController();
   const otherTab = activeTab === 'login' ? 'register' : 'login';
+  const registerTitle = t('registerDocumentTitle');
+
+  useEffect(() => {
+    if (activeTab !== 'register') return;
+    const loginTitle = document.title;
+    document.title = registerTitle;
+    return () => {
+      document.title = loginTitle;
+    };
+  }, [activeTab, registerTitle]);
 
   return (
     <div className="bg-surface max-w-md w-full border border-rule p-6">

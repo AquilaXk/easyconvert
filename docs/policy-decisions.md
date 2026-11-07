@@ -151,6 +151,7 @@ Engines
 176. [A developed camera picture on its way to JPEG or WebP is taken through the exact 16-bit curve lookup and reduced to the nearest 8-bit level, not through the native 8-bit ICC transform](#176-a-developed-camera-picture-on-its-way-to-jpeg-or-webp-is-taken-through-the-exact-16-bit-curve-lookup-and-reduced-to-the-nearest-8-bit-level-not-through-the-native-8-bit-icc-transform)
 177. [The convert routes answer an error by its class and never by the words of its message, the batch route answers and logs as the other two do, and every 503 says when to try again](#177-the-convert-routes-answer-an-error-by-its-class-and-never-by-the-words-of-its-message-the-batch-route-answers-and-logs-as-the-other-two-do-and-every-503-says-when-to-try-again)
 179. [The service is measured by process metrics that each process serves on a port of its own, with closed labels and the registry's family, and its objectives are written down as starting values](#179-the-service-is-measured-by-process-metrics-that-each-process-serves-on-a-port-of-its-own-with-closed-labels-and-the-registrys-family-and-its-objectives-are-written-down-as-starting-values)
+180. [The session read answers 200 for a visitor without a session, a format list names each format by its id, and a page that does not convert words its upload card for what it does](#180-the-session-read-answers-200-for-a-visitor-without-a-session-a-format-list-names-each-format-by-its-id-and-a-page-that-does-not-convert-words-its-upload-card-for-what-it-does)
 
 Usage limits
 
@@ -6410,6 +6411,21 @@ Security
   - **A Prometheus server or Grafana in the compose file**: a long-running service the host does not have, out of scope for QA's request.
 - **Verified by**: `tests/metrics-labels.test.ts` (the families equal the registry categories, the status-to-outcome map, a hostile value falls back), `tests/metrics-requests.test.ts` (the real `/api/convert`, `/api/v1/convert` and `/api/convert/batch` handlers move the counters by outcome, and no file name, password or file byte is in the scrape), `tests/metrics-jobs.test.ts` (real jobs through the worker, node processor and listeners count as ok, refused, failed and timed out; the queue gauges, the unreadable queue), `tests/metrics-server.test.ts` (the listener), `tests/metrics-sandbox-failures.test.ts`, `tests/metrics-exposure.test.ts` (the nginx site, the compose file and the routes of the application), `tests/queue-oldest-waiting-redis.test.ts` (the age against Redis, with a better-ranked newer job at the head).
 - **Revisit when**: a scraper and the alerts are set up (the next phase), the host is no longer the only one (the queue gauges and the process figures then need a `max by` or a `sum by` per rule), traces are wanted, or the objectives of `docs/slo.md` have 28 days of production traffic to be set against.
+
+## 180. The session read answers 200 for a visitor without a session, a format list names each format by its id, and a page that does not convert words its upload card for what it does
+
+- **Status**: Implemented (site review, text and wiring only; no layout, size, colour or spacing changed).
+- **Decision**:
+  - **`GET /api/auth/me` answers 200 with `{ success: false, authenticated: false, user: null }` when there is no session**, and the signed-in answer gains `authenticated: true`. The callers (the header's plan read and the dashboard) already took an answer without a user as signed out, so none changed.
+  - **A list of formats labels each format by its id** (`formatChipLabel`), with a name for the three ids that run two words together (`ultrahdr` is Ultra HDR, `webpvideo` Animated WebP, `svgfont` SVG Font). The file extension is no label: an Ultra HDR image has the extension of a JPEG and an ALTO document that of XML.
+  - **The upload card and the file input of the merge, compress and OCR pages say combine, compress and read text**, not convert. The format tiles of those pages still show the one format twice; changing them would change the layout.
+  - **The home API sample posts to the origin the API documentation shows** (`APP_ORIGIN`), read on the server.
+- **Why**: A 401 for an expected state is logged by the browser as an error on every page. A list that shows two formats under one label cannot be told apart. A merge page that asks to "convert" misdescribes the action, and a sample on a host that is not ours fails when copied.
+- **Alternatives rejected**:
+  - **Keeping the 401 and hiding the log**: the browser logs a failed request whatever the script does.
+  - **Labelling by name in the registry**: the full names are long and the picker and the format cards already use the id.
+- **Verified by**: `tests/site-review-copy.test.ts`.
+- **Revisit when**: the tiles of the operation pages may change layout; then they name the operation and not the format twice.
 
 ## 182. E-book pairs added: RTF and the Palm, Kindle, Sony and Open eBook targets from EPUB, FB2, MOBI, AZW, AZW3, PRC, CBZ and CBR, with LIT, CHM, SNB and TCR left out
 

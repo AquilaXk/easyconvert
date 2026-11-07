@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
 import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
-import { useHeroUpload } from './hero/useHeroUpload';
+import { useHeroUpload, type HeroOperation } from './hero/useHeroUpload';
 import type { PairTiles } from './hero/usePairTiles';
 
 type FilesSelected = (files: File[], target?: string) => void;
@@ -44,16 +44,18 @@ interface PairHeroProps {
   /** The page's own title and intro, shown until the tiles name another pair. */
   title: string;
   description: string;
+  /** What the page does with the files when it does not convert them: merge, compress or recognise text. */
+  operation?: HeroOperation;
 }
 
 /**
  * A converter page's hero: its title and intro beside the source and target tiles, and the upload card under them. Files
  * take the target the target tile shows, and none while it shows any format.
  */
-export function PairHero({ onFilesSelected, dailyLimit, tiles, title, description }: Readonly<PairHeroProps>) {
+export function PairHero({ onFilesSelected, dailyLimit, tiles, title, description, operation }: Readonly<PairHeroProps>) {
   const t = useTranslations('hero');
   const { source, target, changed } = tiles;
-  const upload = useHeroUpload(onFilesSelected, tiles.chosenTarget);
+  const upload = useHeroUpload(onFilesSelected, tiles.chosenTarget, operation);
 
   return (
     <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">

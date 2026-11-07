@@ -5,6 +5,7 @@ import { useFormatter, useTranslations, type Messages } from 'next-intl';
 import { ArrowRight } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import type { FormatCategory } from '@/lib/types';
+import { formatChipLabel } from '@/lib/format-full-names';
 import { CategoryRegistryStat, REGISTRY_STATS } from '@/lib/registry-stats';
 import { categoryIcon } from './workbench/FormatIcon';
 import { RestApiWorkflowCard, SecurityDataHandlingCard } from './workbench/HomeEditorialSections';
@@ -91,7 +92,7 @@ function FormatDirectoryCard({
   const tCategory = useTranslations('formatCategories');
   const format = useFormatter();
   const popularPairs = POPULAR_PAIRS_BY_CATEGORY[activeCategory.id];
-  const activeLabel = tCategory(activeCategory.id);
+  const activeNoun = t(`categoryNouns.${activeCategory.id}`);
 
   return (
     <div id="format-catalog" className="lg:col-span-2 min-w-0">
@@ -134,7 +135,7 @@ function FormatDirectoryCard({
       <div className="mt-4 border-t border-rule pt-4 space-y-6">
         <div>
           <div className="mb-3 flex items-center justify-between font-mono text-[11px] uppercase tracking-wider [:lang(ko)_&]:tracking-[0.05em] text-ink-3">
-            <h3>{t('extensionsHeading', { category: activeLabel })}</h3>
+            <h3>{t('extensionsHeading', { category: activeNoun.charAt(0).toUpperCase() + activeNoun.slice(1) })}</h3>
             <span>{t('extensionsListed', { count: activeCategory.count })}</span>
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -144,7 +145,7 @@ function FormatDirectoryCard({
                 href={`/${fmt.id}-converter`}
                 className="bg-surface/60 px-2 py-1 font-mono text-[11px] uppercase tracking-wide text-ink transition-colors hover:text-accent-ink"
               >
-                {fmt.extension}
+                {formatChipLabel(fmt.id)}
               </Link>
             ))}
           </div>
@@ -152,7 +153,7 @@ function FormatDirectoryCard({
 
         <div className="pt-5 border-t border-rule">
           <h3 className="mb-3 font-mono text-[11px] [:lang(ko)_&]:tracking-[0.05em] text-ink-3">
-            {t('pairsHeading', { category: activeLabel })}
+            {t('pairsHeading', { category: activeNoun })}
           </h3>
           <ul className="space-y-2">
             {popularPairs.map((pair) => (
@@ -176,7 +177,7 @@ function FormatDirectoryCard({
   );
 }
 
-export default function Features() {
+export default function Features({ apiOrigin }: Readonly<{ apiOrigin: string }>) {
   const [selectedCategory, setSelectedCategory] = useState<FormatCategory>('document');
 
   const activeCategory =
@@ -191,7 +192,7 @@ export default function Features() {
       />
       <SecurityDataHandlingCard />
       <div className="lg:col-span-2 min-w-0">
-        <RestApiWorkflowCard />
+        <RestApiWorkflowCard origin={apiOrigin} />
       </div>
     </div>
   );
