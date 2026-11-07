@@ -159,7 +159,7 @@
     },
     {
       "families": ["image", "raw", "vectorize"],
-      "match": "^src/lib/conversions/(bitmap-pipeline|bmp|image[^/]*)\\.ts$"
+      "match": "^src/lib/conversions/(bitmap-pipeline|bmp|png-scanlines|image[^/]*)\\.ts$"
     },
     {
       "families": ["image", "raw"],
