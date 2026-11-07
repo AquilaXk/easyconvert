@@ -617,6 +617,10 @@ jobs:
       # Measured with the heap bound the service runs with (docker-compose.yml), so a photograph's AVIF is encoded on the threads
       # the worker leases (src/lib/conversions/image-threads.ts), as in the nightly speed job.
       MALLOC_ARENA_MAX: "2"
+      # The quality rows compare our AVIF with the runner's own libavif (the reference tool) and hold the baseline that was recorded with it, so
+      # the product encodes with the same program here. The worker's pinned build (docs/policy-decisions.md, entry 172) writes the files of the
+      # Debian 13 package, a newer libavif and libaom, which a different set of rows would have to be recorded for.
+      AVIFENC_PATH: /usr/bin/avifenc
 
     steps:
       - name: Checkout repository

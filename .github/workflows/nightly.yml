@@ -119,6 +119,8 @@ jobs:
         shell: bash
         env:
           BENCH_CORPUS_TIER: pr
+          # The runner's own libavif, as in the parity quality job of ci.yml (the baseline was recorded with it).
+          AVIFENC_PATH: /usr/bin/avifenc
         run: |
           if node -e "process.exit(require('./package.json').scripts?.['bench:quality'] ? 0 : 1)"; then
             npm run bench:quality
@@ -228,6 +230,8 @@ jobs:
           BENCH_FAMILIES: ${{ matrix.families }}
           # The heap bound the service runs with (docker-compose.yml); see the parity quality job in ci.yml.
           MALLOC_ARENA_MAX: "2"
+          # The runner's own libavif, as in the parity quality job of ci.yml.
+          AVIFENC_PATH: /usr/bin/avifenc
         run: npm run bench:quality -- --parity --quality-only --family "$BENCH_FAMILIES"
 
       # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise
