@@ -99,7 +99,7 @@ export class ParquetFormatError extends ConversionFailedError {
   }
 }
 
-/** The file is well formed but uses a feature this engine does not decode (v2 pages, nested columns, INT96, ...). */
+/** The file is well formed but uses a feature this engine does not decode (an unknown page type, VARIANT, ...). */
 export class ParquetUnsupportedError extends ParquetFormatError {
   constructor(message: string) {
     super(message);
@@ -133,6 +133,11 @@ const MIB = 1024 * 1024;
 export const PARQUET_MAX_ROWS = 10_000_000;
 /** Maximum leaf columns in a file. */
 export const PARQUET_MAX_COLUMNS = 4096;
+/**
+ * Maximum levels of nesting in a schema: the longest path from the root to a leaf. The default of the reference C++
+ * reader (`kDefaultSchemaDepthLimit` in parquet/properties.h, which guards the recursion that assembles records).
+ */
+export const PARQUET_MAX_NESTING_DEPTH = 100;
 /** Maximum rows x columns held in memory at once. */
 export const PARQUET_MAX_CELLS = 20_000_000;
 /** Maximum row groups the reader accepts in one file. */
