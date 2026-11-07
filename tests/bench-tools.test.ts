@@ -164,7 +164,7 @@ describe('runner against a toolchain with no reference tools', () => {
     ['document', 'ORACLE_STRICT_MODE=1 requires pdftotext, soffice for report.docx->pdf'],
     ['ocr', 'ORACLE_STRICT_MODE=1 requires pdftotext, tesseract, tessdata-eng for scan.png->pdf'],
     ['data', 'ORACLE_STRICT_MODE=1 requires python3, python3-pyarrow, python3-duckdb, python3-openpyxl, soffice for data'],
-    ['ebook', 'ORACLE_STRICT_MODE=1 requires ebook-convert, pdftotext, pdfimages, epubcheck for ebook'],
+    ['ebook', 'ORACLE_STRICT_MODE=1 requires ebook-convert, pdftotext, pdfimages, epubcheck, soffice for ebook'],
     ['font', 'ORACLE_STRICT_MODE=1 requires woff2_compress, woff2_decompress, sfnt2woff, woff2sfnt, python3, python3-fonttools for font'],
   ])('fails a %s parity run under ORACLE_STRICT_MODE=1 with exit code 2 and no verdict, so a missing reference tool is never a pass', (family, message) => {
     for (const mode of [['--quality-only', '--quick'], ['--speed-only']]) {

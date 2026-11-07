@@ -4,30 +4,17 @@ import * as path from 'node:path';
 import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 
 const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
-  'epub->azw3',
-  'epub->lrf',
-  'epub->mobi',
-  'epub->oeb',
-  'epub->pdb',
-  'epub->rtf',
-  // Entry 183 leaves out the calibre e-book targets of Word and OpenDocument text (they wait for the e-book pairs route, #1013) and the XPS of a Word document (the XPS writer holds text only).
-  'docx->azw3', 'docx->lrf', 'docx->mobi', 'docx->oeb', 'docx->pages', 'docx->pdb', 'docx->xps',
+  // Entry 183 leaves out the XPS of a Word document (the XPS writer holds text only).
+  'docx->pages', 'docx->xps',
   'htm->doc', 'htm->jpg', 'htm->png', 'htm->rtf',
   'html->tex',
   'md->rst', 'md->tex',
-  'odt->azw3', 'odt->lrf', 'odt->mobi', 'odt->oeb', 'odt->pdb',
   // Entry 183: a Pages document has no export to a presentation, and the metafile writers refuse the pictures that real PDF pages hold.
   'pages->ppt',
   'pdf->emf', 'pdf->ppt', 'pdf->wmf',
   'txt->tex',
-  'azw->rtf',
-  'azw3->rtf',
-  'cbr->azw3', 'cbr->epub', 'cbr->lrf', 'cbr->mobi', 'cbr->oeb', 'cbr->pdb', 'cbr->pdf', 'cbr->rtf', 'cbr->txt',
   'chm->azw3', 'chm->epub', 'chm->lrf', 'chm->mobi', 'chm->oeb', 'chm->pdb', 'chm->pdf', 'chm->rtf', 'chm->txt',
-  'fb2->azw3', 'fb2->lrf', 'fb2->mobi', 'fb2->oeb', 'fb2->pdb', 'fb2->rtf',
   'lit->azw3', 'lit->epub', 'lit->lrf', 'lit->mobi', 'lit->oeb', 'lit->pdb', 'lit->pdf', 'lit->rtf', 'lit->txt',
-  'mobi->rtf',
-  'prc->azw3', 'prc->epub', 'prc->lrf', 'prc->mobi', 'prc->oeb', 'prc->pdb', 'prc->pdf', 'prc->rtf', 'prc->txt',
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
   'tcr->azw3', 'tcr->epub', 'tcr->lrf', 'tcr->mobi', 'tcr->oeb', 'tcr->pdb', 'tcr->pdf', 'tcr->rtf', 'tcr->txt',
   'dps->eps', 'dps->md',
@@ -69,7 +56,6 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'pptm->swf',
   'pptx->swf',
   'webp->aac', 'webp->aiff', 'webp->flac', 'webp->m4a', 'webp->mp3', 'webp->wav', 'webp->wma',
-  'cbz->azw3', 'cbz->epub', 'cbz->lrf', 'cbz->mobi', 'cbz->oeb', 'cbz->pdb', 'cbz->rtf', 'cbz->txt',
   // A Pages document has no spreadsheet export in the office suite; the engine wrote the file's bytes as CSV rows (policy 113).
   'pages->xls',
 ]);

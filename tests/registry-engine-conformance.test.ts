@@ -368,9 +368,12 @@ const WORD_MAIN = `${OPENXML}.wordprocessingml.document.main+xml`;
 const EXCEL_MAIN = `${OPENXML}.spreadsheetml.sheet.main+xml`;
 const POWERPOINT_MAIN = `${OPENXML}.presentationml.presentation.main+xml`;
 
+/** A scanned line of English text: the comic to text routes read the lettering with OCR, and a page without any is refused with a typed error. */
+const LETTERED_PAGE = readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png'));
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
-  zip.file('page-001.png', PNG_SEED);
+  zip.file('page-001.png', LETTERED_PAGE);
   zip.file('page-002.png', PNG_SEED);
   return zip.generateAsync({ type: 'nodebuffer' });
 }
@@ -387,7 +390,7 @@ async function buildProbeZip(name: string, content: string): Promise<Buffer> {
 
 async function buildProbeCbc(): Promise<Buffer> {
   const volume = new JSZip();
-  volume.file('page-001.png', readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png')));
+  volume.file('page-001.png', LETTERED_PAGE);
   const collection = new JSZip();
   collection.file('comics.txt', 'volume.cbz:Probe volume\n');
   collection.file('volume.cbz', await volume.generateAsync({ type: 'nodebuffer' }));
@@ -448,6 +451,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
+  // A comic RAR archive and a Mobipocket book under its Palm name: the same pages and the same book as the CBZ and MOBI probes.
+  cbr: () => buildStoredRar4([{ name: 'page-001.png', data: LETTERED_PAGE }, { name: 'page-002.png', data: PNG_SEED }]),
+  prc: buildProbeMobi,
   // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
   // a MOBI (the probe of AZW and AZW3 too) whose text record holds HTML, an OEB package that carries its text, a Print Replica book around a pdf-lib PDF, a collection of one comic
   // volume whose page is a scanned line of English text (the OCR route needs lettering to recognise), FictionBook
@@ -637,11 +643,16 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   csv: ['xls'],
   azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
+  cbr: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  cbz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  epub: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  prc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw4: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   cbc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   doc: ['jpg', 'png', 'rtf'],
   docm: ['doc', 'jpg', 'png', 'rtf'],
-  docx: ['doc', 'jpg', 'png', 'rtf'],
+  docx: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   dot: ['doc'],
   dotx: ['doc', 'jpg', 'png', 'rtf'],
   eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
@@ -661,7 +672,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png', 'xls'],
-  odt: ['doc', 'jpg', 'png', 'rtf'],
+  odt: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   oeb: ['mobi'],
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   parquet: ['xls'],
@@ -1009,12 +1020,11 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // Pairs that the dispatcher routes to a native engine moved to NATIVE_ENGINE_PAIRS.
   const WITHDRAWN: Readonly<Record<string, readonly string[]>> = {
     ai: ['dxf', 'emf', 'svg', 'wmf'],
-    azw: ['rtf'],
-    azw3: ['docx', 'rtf'],
+    azw3: ['docx'],
     cb7: ['cbz'],
-    cbr: ['azw3', 'cbz', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+    cbr: ['cbz'],
     cbt: ['cbz'],
-    cbz: ['azw3', 'cbr', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf', 'txt'],
+    cbz: ['cbr'],
     cdr: ['dxf', 'emf', 'wmf'],
     cgm: ['dxf', 'emf', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
@@ -1024,14 +1034,13 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     dif: ['json', 'tsv'],
     djvu: ['docx'],
     dmg: ['iso'],
-    docx: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'xps'],
+    docx: ['hwp', 'hwpx', 'pages', 'xps'],
     dps: ['eps', 'md', 'swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     emf: ['avif', 'bmp', 'dxf', 'emf', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp', 'wmf'],
     eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
-    fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     htm: ['doc', 'jpg', 'png', 'rtf'],
@@ -1040,11 +1049,11 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     key: ['doc', 'jpg', 'png', 'ppt', 'xls'],
     lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     md: ['rst', 'tex'],
-    mobi: ['docx', 'rtf'],
+    mobi: ['docx'],
     msg: ['eml'],
     numbers: ['doc', 'ppt', 'tsv'],
     odp: ['eps', 'md', 'swf'],
-    odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
+    odt: ['hwp', 'hwpx', 'xps'],
     oxps: ['docx', 'odd'],
     pages: ['html', 'ppt', 'xls'],
     pdf: ['emf', 'ppt', 'wmf'],
@@ -1055,7 +1064,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     ppt: ['emf', 'eps', 'md', 'swf', 'xps'],
     pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'swf', 'txt', 'xps'],
     pptx: ['emf', 'eps', 'key', 'md', 'swf', 'xps'],
-    prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     prn: ['tsv'],
     ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     qpw: ['tsv'],
@@ -1704,7 +1712,16 @@ describe('native-engine pairs route through the dispatcher', () => {
       case 'mobi':
       case 'azw':
       case 'azw3':
+      case 'prc':
         return palm;
+      case 'epub':
+        return zipOf({ mimetype: 'application/epub+zip', 'META-INF/container.xml': '<container/>' });
+      case 'cbz':
+        return buildCbz();
+      case 'cbr':
+        return buildStoredRar4([{ name: 'page-001.png', data: PNG_SEED }]);
+      case 'fb2':
+        return Buffer.from(FB2_PROBE, 'utf-8');
       case 'pdb':
         return buildMobi({ textRecords: [Buffer.from('Probe paragraph.')], compression: 1, encoding: 1252, textLength: 16, plainPalmDoc: true });
       case 'lrf':

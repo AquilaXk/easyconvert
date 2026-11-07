@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -48,6 +48,12 @@ const SRC_ROOT = path.join(__dirname, '..', 'src');
 
 let workDir: string;
 let logPath: string;
+/** The EPUB a stand-in converter leaves: a real book, because the staging reads it before calibre starts. */
+let bookEpub: Buffer;
+
+beforeAll(async () => {
+  bookEpub = (await convertFile(PLAIN_TEXT, 'txt', 'epub', {}, 'book.txt')).buffer;
+});
 
 beforeEach(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-route-test-'));
@@ -106,7 +112,7 @@ function setScannedText(text: string): void {
 }
 
 function deps(
-  epub: Buffer = Buffer.from('epub bytes'),
+  epub: Buffer = bookEpub,
   written: Partial<WorkerConversionResult> = {}
 ): CalibreDeps & { converted: Array<{ src: string; tgt: string }>; discarded: Array<string | undefined> } {
   const converted: Array<{ src: string; tgt: string }> = [];
@@ -381,10 +387,10 @@ describe('the calibre route against a stand-in program', () => {
     const staged = path.join(workDir, 'staged-copy.epub');
     const program = fakeProgram(`${validOutput()}\nif (input.endsWith('.epub')) fs.copyFileSync(input, ${JSON.stringify(staged)});`);
     const epubPath = path.join(workDir, 'written.epub');
-    fs.writeFileSync(epubPath, 'epub in a file');
-    const converters = deps(Buffer.from('the buffer, not the file'), { filePath: epubPath, size: 14 });
+    fs.writeFileSync(epubPath, bookEpub);
+    const converters = deps(Buffer.from('the buffer, not the file'), { filePath: epubPath, size: bookEpub.length });
     const result = await convertWithCalibre(converters, request('txt', 'mobi'), program);
-    expect(fs.readFileSync(staged, 'utf-8')).toBe('epub in a file');
+    expect(fs.readFileSync(staged).equals(bookEpub)).toBe(true);
     expect(converters.discarded).toEqual([epubPath]);
     fs.rmSync(result.filePath as string, { force: true });
 

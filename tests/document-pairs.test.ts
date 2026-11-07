@@ -433,9 +433,11 @@ describe('the pairs of entry 183 in the registry', () => {
     abw: ['doc', 'jpg', 'png', 'rtf'],
     docm: ['doc', 'docx', 'jpg', 'odt', 'png', 'rtf'],
     dot: ['doc', 'jpg', 'png', 'rtf'],
+    docx: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
     dotx: ['doc', 'jpg', 'png', 'rtf'],
     html: ['doc', 'jpg', 'png', 'rtf'],
     md: ['doc', 'jpg', 'png', 'rtf'],
+    odt: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
     pages: ['doc', 'docx', 'epub', 'jpg', 'pdf', 'png', 'txt'],
     pdb: ['rtf'],
     pdf: ['avif', 'bmp', 'doc', 'dxf', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp'],
@@ -445,8 +447,7 @@ describe('the pairs of entry 183 in the registry', () => {
     zabw: ['doc', 'jpg', 'png', 'rtf'],
   };
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
-    docx: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
-    odt: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    docx: ['xps'],
     pages: ['ppt', 'xls'],
     pdf: ['emf', 'ppt', 'wmf'],
   };
