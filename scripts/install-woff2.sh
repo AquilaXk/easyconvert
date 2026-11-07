@@ -25,7 +25,7 @@ BROTLI_VERSION="1.2.1"
 BROTLI_COMMIT="db24a98aed38a16de78cc05ca15cdd8dc2a0d92d"
 BROTLI_SHA256="113b9685dfc14dd2f3360d077283266eec2fbdfb0fe3e5600f11be151da0d68e"
 # Added to the flags of the woff2 Makefile (empty: the Makefile's own flags).
-BUILD_FLAGS=""
+BUILD_FLAGS="-O2"
 # The archives are under a megabyte. curl refuses a download whose announced size is larger, and fetch stops reading at the bound plus
 # one byte whatever the server announces, so that nothing larger than the bound is written before its digest is checked.
 MAX_DOWNLOAD_BYTES=$((16 * 1024 * 1024))
