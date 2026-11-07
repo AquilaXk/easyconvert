@@ -1,4 +1,5 @@
 import { crc32, inflateSync } from 'node:zlib';
+import { isProfileDroppedByPngReader } from '../src/lib/conversions/icc-srgb';
 
 /**
  * The metadata blocks a PNG carries besides its pixels, for the image benchmark's reference encoders. A decoded copy of a
@@ -6,7 +7,7 @@ import { crc32, inflateSync } from 'node:zlib';
  * `gAMA` chunk and change the pixels (`cwebp` applies it), so the reference would encode another picture than the one it is
  * scored against. The reference is therefore given the decoded pixels with the EXIF block, the XMP packet and the ICC profile of
  * the original: the reference tools keep all three by default (`cwebp` when asked), and so does the product, which attaches the
- * profile without converting the pixels. The one profile the service's engine does not read is left out (see below).
+ * profile without converting the pixels. The sRGB profiles the service's engine does not read are left out (see below).
  */
 
 const PNG_SIGNATURE_BYTES = 8;
@@ -36,16 +37,14 @@ function chunksOf(png: Buffer): Chunk[] {
 }
 
 /**
- * The usual profile of cameras and editors, "sRGB IEC61966-2.1" (3 kB), is one the PNG reader of the reference service's engine
- * rejects ("known incorrect sRGB profile"), so that engine writes no profile for a picture that has it. The reference is
- * given none either.
+ * The sRGB profiles the PNG reader of the reference service's engine does not attach (`isProfileDroppedByPngReader`: matched by length
+ * and CRC-32 as that reader does), so that engine writes no profile for a PNG that holds one. The reference is given none either; any
+ * other profile, an sRGB one such as `sRGB2014` included, is kept.
  */
-const REJECTED_PROFILE_DESCRIPTION = 'sRGB IEC61966-2.1';
-
 function isRejectedProfile(chunk: Chunk): boolean {
   try {
     const keywordEnd = chunk.data.indexOf(0);
-    return inflateSync(chunk.data.subarray(keywordEnd + 2)).includes(REJECTED_PROFILE_DESCRIPTION);
+    return isProfileDroppedByPngReader(inflateSync(chunk.data.subarray(keywordEnd + 2)));
   } catch {
     return false;
   }

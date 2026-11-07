@@ -23,9 +23,21 @@ export const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
 /** Targets that write 8 bits per sample from a picture that may have 16: the reduction is rounded for these. */
 export const EIGHT_BIT_ONLY_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp']);
 
-/** The 16-bit pipeline with the samples of all `channels` bands prepared so that the library's high-byte reduction yields the nearest level. */
+/**
+ * The 16-bit pipeline with the samples of all `channels` bands prepared so that the library's high-byte reduction yields the nearest level.
+ *
+ * The output colour space is set to the 16-bit one the pipeline is already in, so that the pipeline does no conversion to sRGB of its own
+ * and the encoder (`vips_foreign_save` casts to 8 bits with the same shift, `libvips/foreign/foreign.c` 1639 to 1647) does the reduction. The
+ * conversion is what must not run for a picture that keeps its ICC profile: sharp copies the profile into memory owned by an intermediate
+ * image before the geometry steps (`GetProfile`, `src/common.cc` 633 to 643, called at `src/pipeline.cc` 371) and sets it again on the result
+ * of the conversion without a destructor (`SetProfile`, `src/common.cc` 648 to 654, called at `src/pipeline.cc` 889 to 891, sharp 0.35.5).
+ * After a rotation or flip of a 16-bit picture the profile read back from the file is the right length with other bytes. The same pipeline
+ * with the colour space set to 16 bits never reaches that call.
+ */
 export function roundedToEightBits(pipeline: Sharp, channels: number): Sharp {
-  return pipeline.linear(new Array<number>(channels).fill(NEAREST_LEVEL_SCALE), new Array<number>(channels).fill(ROUNDING_HALF));
+  return pipeline
+    .linear(new Array<number>(channels).fill(NEAREST_LEVEL_SCALE), new Array<number>(channels).fill(ROUNDING_HALF))
+    .toColourspace('rgb16');
 }
 
 /**

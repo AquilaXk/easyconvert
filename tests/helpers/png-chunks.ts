@@ -9,7 +9,8 @@ import { serializeChunks, type Chunk } from './apng-builder';
  * hand-written serializer of apng-builder.ts and the profile is the file that ships as data with the PDF library.
  */
 
-export const SRGB_PROFILE = readFileSync(path.join(__dirname, '..', '..', 'node_modules', 'pdfkit', 'js', 'data', 'sRGB_IEC61966_2_1.icc'));
+/** "sRGB IEC61966-2-1 black scaled" (ICC, 3,048 bytes): the profile the reference engine's PNG reader recognises as sRGB and does not attach. */
+export const SRGB_PROFILE = readFileSync(path.join(__dirname, '..', 'fixtures', 'images', 'srgb-iec61966-2-1-black-scaled.icc'));
 
 /** IHDR is the first chunk: 8 bytes of signature, then 4 of length, 4 of type, 13 of data and 4 of CRC. */
 const AFTER_IHDR = 8 + 25;
@@ -19,7 +20,7 @@ export function withChunksAfterHeader(png: Buffer, chunks: Chunk[]): Buffer {
   return Buffer.concat([png.subarray(0, AFTER_IHDR), serializeChunks(chunks, Buffer.alloc(0)), png.subarray(AFTER_IHDR)]);
 }
 
-/** An iCCP chunk holding the usual 3 kB sRGB profile. */
+/** An iCCP chunk holding that sRGB profile. */
 export function srgbProfileChunk(): Chunk {
   return { type: 'iCCP', data: Buffer.concat([Buffer.from('sRGB\0\0', 'latin1'), zlib.deflateSync(SRGB_PROFILE)]) };
 }

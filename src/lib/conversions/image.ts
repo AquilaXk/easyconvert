@@ -69,7 +69,7 @@ import { findJpegEnd, JPEG_SOI_MARKER } from './image-jpeg-stream';
 import { assemblePicturePdf, type PdfPageImage } from './image-pdf-pages';
 import { DEFAULT_PRINT_DENSITY, pictureDensity, selectionDensity, type PrintDensity } from './image-print-density';
 import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-source';
-import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
+import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
@@ -1476,7 +1476,7 @@ const DEFAULT_DENSITY_PPI = 72;
 /**
  * Targets that carry the source's own EXIF block, XMP packet and ICC profile exactly as they are, the way the reference
  * service's engine writes them with its default (metadata kept): the profile is attached and the pixels are not converted through
- * it, and no block is made up. A profile that describes sRGB is not written (`isSrgbProfile`). The library's "keep metadata" switch makes it write an EXIF block of its own for a source that has
+ * it, and no block is made up; the profiles of `keepSourceBlocks` are the exceptions. The library's "keep metadata" switch makes it write an EXIF block of its own for a source that has
  * none (about 190 bytes, from the density; 2% of a small file), so the blocks are kept one by one. WebP and AVIF viewers
  * ignore a print density, which only an EXIF block could hold there; a JPEG keeps it (see `keepSourceBlocks`).
  */
@@ -1484,7 +1484,7 @@ const SOURCE_BLOCK_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp'
 
 /**
  * Keeps the metadata of the input. The targets of `SOURCE_BLOCK_TARGETS` carry the source's EXIF, XMP and ICC profile unchanged
- * (see `keepSourceBlocks`; an sRGB profile is the exception: it is applied to the pixels and not written). For the others, EXIF, XMP and IPTC are kept and the pixels are converted to sRGB through the input's
+ * (see `keepSourceBlocks`; the two profiles named there are the exception: they are applied to the pixels and not written). For the others, EXIF, XMP and IPTC are kept and the pixels are converted to sRGB through the input's
  * ICC profile; the sRGB profile is attached only for the targets in `SRGB_TAGGED_TARGETS`. An input with no metadata block and
  * the default density keeps nothing: asking the encoder to keep metadata makes it write an EXIF block synthesised from the
  * density (186 bytes, 3.5% of a small AVIF). Samples deeper than 8 bit that carry no profile are another exception: with the
@@ -1552,17 +1552,18 @@ async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgno
   return pipeline.keepMetadata().withIccProfile('srgb', { attach: tagsSrgb });
 }
 
+const profileIsDropped = (meta: Metadata): boolean => meta.format === 'png' && meta.icc !== undefined && isProfileDroppedByPngReader(meta.icc);
+
 /**
- * The input opened again without its ICC profile when the profile describes sRGB, for the targets that write the source's blocks: such a
- * profile is not written and changes no pixel (`isSrgbProfile`), so converting through it only costs time. For an 8-bit picture the
+ * The input opened again without its ICC profile when it is a PNG whose profile the reference engine's PNG reader drops, for the targets
+ * that write the source's blocks: such a profile is not written and changes no pixel, so converting through it only costs time. For an 8-bit picture the
  * transform to sRGB is the identity and costs 3 to 6 ms per read of a 1 to 2 megapixel picture, and a thumbnail, the encode and the alpha
  * check each read it. For a 16-bit picture the transform goes through a wide-gamut working space and back, which moves about a third of the
- * samples by one step of 65535, enough to turn the nearest 8-bit level of 3.5% of them into the one below. Returns null when the
- * profile is none or not sRGB.
+ * samples by one step of 65535, enough to turn the nearest 8-bit level of 3.5% of them into the one below. Null: no such profile.
  */
 async function openWithoutSrgbProfile(pipeline: Sharp, selection: FrameSelection): Promise<Sharp | null> {
   const meta = await metadataOf(pipeline);
-  if (!meta.hasProfile || meta.icc === undefined || !isSrgbProfile(meta.icc)) return null;
+  if (!profileIsDropped(meta)) return null;
   return openLimitedSharp(selection.source, { ...selection.input, ignoreIcc: true });
 }
 
@@ -1578,12 +1579,11 @@ function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string, srgbP
   const keepsDensity = (target === 'jpg' || target === 'jpeg') && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
   if (meta.exif !== undefined || keepsDensity) kept = kept.keepExif();
   if (meta.xmp !== undefined) kept = kept.keepXmp();
-  // A profile in the sRGB gamut (either IEC 61966-2-1 sRGB, which says nothing a viewer does not assume and the reference service's
-  // PNG reader drops, or a development curve over sRGB primaries such as a RAW decoder's gamma 2.222 curve) is applied to the pixels
-  // and not written; a wider-gamut or grey profile is kept attached. An sRGB profile the input was opened without (`openWithoutSrgbProfile`)
-  // has nothing left to apply.
+  // The profile is attached as it is, the pixels not converted through it, except a profile the reference engine's PNG reader drops (opened
+  // without by `openWithoutSrgbProfile`) and a development curve over sRGB primaries, which are applied to the pixels and not written.
   if (!meta.hasProfile) return kept;
-  if (meta.icc !== undefined && !hasSrgbPrimaries(meta.icc)) return kept.keepIccProfile();
+  const appliedNotWritten = profileIsDropped(meta) || (meta.icc !== undefined && hasSrgbPrimaries(meta.icc) && !isSrgbProfile(meta.icc));
+  if (meta.icc !== undefined && !appliedNotWritten) return kept.keepIccProfile();
   return srgbProfileIgnored ? kept : kept.withIccProfile('srgb', { attach: false });
 }
 

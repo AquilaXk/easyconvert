@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import sharp, { type Sharp } from 'sharp';
 import { describe, expect, it } from 'vitest';
@@ -32,11 +34,14 @@ function withProfileChunk(png: Buffer, profile: Buffer): Buffer {
 }
 
 describe('metadata of a PNG for the reference encoders', () => {
-  it('leaves out the usual sRGB profile, which the reference service reads as incorrect, and keeps any other', async () => {
+  it('leaves out the sRGB profiles the reference service reads as sRGB (matched by length and CRC-32), and keeps any other, an sRGB one of another make included', async () => {
     const decoded = await base().png().toBuffer();
-    const rejected = withProfileChunk(decoded, Buffer.from('....desc....sRGB IEC61966-2.1....'));
+    const recognised = withProfileChunk(decoded, readFileSync(path.join(__dirname, 'fixtures', 'images', 'srgb-iec61966-2-1-black-scaled.icc')));
     const other = withProfileChunk(decoded, Buffer.from('....desc....Display P3....'));
-    expect(withMetadataOf(decoded, rejected).includes(Buffer.from('iCCP'))).toBe(false);
+    const builtinSrgb = (await sharp(await base().withIccProfile('srgb').png().toBuffer()).metadata()).icc as Buffer;
+    const srgbOfAnotherMake = withProfileChunk(decoded, builtinSrgb);
+    expect(withMetadataOf(decoded, recognised).includes(Buffer.from('iCCP'))).toBe(false);
+    expect(withMetadataOf(decoded, srgbOfAnotherMake).includes(Buffer.from('iCCP'))).toBe(true);
     const kept = withMetadataOf(decoded, other);
     expect(kept.includes(Buffer.from('iCCP'))).toBe(true);
     expect(hasValidChunkChecksums(kept)).toBe(true);

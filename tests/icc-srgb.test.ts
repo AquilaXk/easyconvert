@@ -3,11 +3,12 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { convertImage, encode16BitTiff } from '../src/lib/conversions/image';
-import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from '../src/lib/conversions/icc-srgb';
+import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16LutsFromProfile } from '../src/lib/conversions/icc-srgb';
 import { SRGB_COLORANTS, buildGrayProfile, buildMatrixProfile } from './helpers/icc-writer';
 
 /**
- * A profile that describes sRGB is not worth carrying into an output: it says what a viewer assumes anyway. Oracles: the profile
+ * Which profiles describe sRGB, and which of them the reference engine's PNG reader drops (the only ones left out of an output; any other
+ * profile is attached as it is). Oracles: the profile
  * files are produced outside the code under test (the usual 3 kB profile that ships as data with the PDF library, the profiles the
  * image library embeds for `srgb` and `p3`), and exiftool-style identification is replaced by their known identity.
  */
@@ -79,3 +80,15 @@ describe('sRGB profile detection', () => {
   });
 });
 
+describe('profiles the reference engine\'s PNG reader drops', () => {
+  it('matches the ICC consortium profile by length and CRC-32, and no other sRGB profile', async () => {
+    const blackScaled = readFileSync(path.join(__dirname, 'fixtures', 'images', 'srgb-iec61966-2-1-black-scaled.icc'));
+    expect(blackScaled.length).toBe(3048);
+    expect(isProfileDroppedByPngReader(blackScaled)).toBe(true);
+    expect(isProfileDroppedByPngReader(Buffer.concat([blackScaled.subarray(0, 100), Buffer.from([blackScaled[100] ^ 0xff]), blackScaled.subarray(101)]))).toBe(false);
+    expect(isProfileDroppedByPngReader(readFileSync(path.join(__dirname, '..', 'node_modules', 'pdfkit', 'js', 'data', 'sRGB_IEC61966_2_1.icc')))).toBe(false);
+    expect(isProfileDroppedByPngReader(await bytesOf('srgb'))).toBe(false);
+    expect(isProfileDroppedByPngReader(await bytesOf('p3'))).toBe(false);
+    expect(isProfileDroppedByPngReader(Buffer.alloc(0))).toBe(false);
+  });
+});

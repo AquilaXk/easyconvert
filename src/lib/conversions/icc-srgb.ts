@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib';
 import { type Matrix3 } from './colour-primaries';
 import { type IccMatrixTrcProfile, readIccProfile } from './icc-reader';
 
@@ -96,3 +97,28 @@ export function srgb16LutsFromProfile(icc: Buffer): readonly [Uint16Array, Uint1
   }
 }
 
+
+/**
+ * The sRGB profiles the reference engine's PNG reader recognises by length and CRC-32 and does not attach to the picture it reads
+ * (it keeps the rendering intent only), so its writers produce no profile for a PNG that holds one of them (ImageMagick 6.9.12-98,
+ * `coders/png.c`, the table `sRGB_info` at lines 140 to 171 and the check at lines 2725 to 2783; libpng 1.6.43 `png.c` lines 2236 to
+ * 2290 lists the same profiles and reports the two HP ones as incorrect). Every other profile of a PNG, an sRGB one included
+ * (`sRGB2014`, the compact profiles of editors), is attached, and so is every profile of a source that is not a PNG.
+ */
+const PNG_READER_SRGB_PROFILES: ReadonlyArray<{ length: number; crc: number }> = [
+  { length: 3048, crc: 0x3b8772b9 }, // sRGB_IEC61966-2-1_black_scaled, ICC v2 perceptual
+  { length: 3052, crc: 0x427ebb21 }, // sRGB_IEC61966-2-1_no_black_scaling, ICC v2 relative
+  { length: 60988, crc: 0x306fd8ae }, // sRGB_v4_ICC_preference_displayclass
+  { length: 60960, crc: 0xbbef7812 }, // sRGB_v4_ICC_preference
+  { length: 3024, crc: 0x5d5129ce }, // sRGB_IEC61966-2-1_noBPC
+  { length: 3144, crc: 0x182ea552 }, // HP-Microsoft sRGB v2 perceptual
+  { length: 3144, crc: 0xf29e526d }, // HP-Microsoft sRGB v2 media-relative
+  { length: 524, crc: 0xd4938c39 }, // TINYsRGB
+  { length: 3212, crc: 0x034af5a1 }, // Argyll_sRGB
+];
+
+/** True when `icc` is one of the profiles the reference engine's PNG reader drops (see `PNG_READER_SRGB_PROFILES`). */
+export function isProfileDroppedByPngReader(icc: Buffer): boolean {
+  const checksum = PNG_READER_SRGB_PROFILES.some((known) => known.length === icc.length) ? crc32(icc) : null;
+  return checksum !== null && PNG_READER_SRGB_PROFILES.some((known) => known.length === icc.length && known.crc === checksum);
+}
