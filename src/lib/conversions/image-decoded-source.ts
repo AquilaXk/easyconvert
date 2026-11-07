@@ -1,6 +1,6 @@
 import sharp, { type Metadata, type Sharp } from 'sharp';
 import { classifyRaster, type ContentClass, type Raster } from './image-content';
-import { isSrgbProfile } from './icc-srgb';
+import { isProfileDroppedByPngReader } from './icc-srgb';
 import { roundedToEightBits } from './image-depth';
 import { maxInputPixels } from './image-input-limits';
 import { metadataOf } from './image-metadata';
@@ -14,7 +14,7 @@ import { metadataOf } from './image-metadata';
  * Only a PNG with nothing the output keeps besides pixels qualifies, so the pipeline that continues from the decoded pixels
  * writes the very bytes the pipeline from the PNG would: a colour profile that does something, EXIF, IPTC, a pixel density
  * or an orientation would be lost on the way through raw pixels. Four things a PNG can hold do not disqualify it: text chunks
- * (the encoders write no text), a profile that describes sRGB (it is not written, and converting through it changes no pixel; see
+ * (the encoders write no text), a profile the reference engine's PNG reader drops (it is not written, and converting through it changes no pixel; see
  * `openWithoutSrgbProfile` in image.ts), a background colour (no encoder of the route uses it) and an XMP packet, which the decoded
  * pipeline writes again from its text (`withXmp`, byte for byte when the packet is UTF-8, which `carriesXmp` checks). A print density
  * qualifies the picture for an encoder that writes none (`ignoresDensity`: AVIF), and for one that writes it (JPEG) when the file states
@@ -83,7 +83,7 @@ const NO_BLOCKS_CARRIED: BlockHandling = { strips: false, ignoresDensity: false 
 /** True when the picture is a plain single-frame PNG small enough to hold decoded, given what the encoder does with its blocks. */
 export function isPlainPng(meta: Metadata, maxBytes: number = DECODED_SOURCE_MAX_BYTES, blocks: BlockHandling = NO_BLOCKS_CARRIED): boolean {
   if (meta.format !== 'png' || (meta.pages ?? 1) !== 1) return false;
-  if (meta.hasProfile && (meta.icc === undefined || !isSrgbProfile(meta.icc))) return false;
+  if (meta.hasProfile && (meta.icc === undefined || !isProfileDroppedByPngReader(meta.icc))) return false;
   if (meta.exif !== undefined || meta.iptc !== undefined || meta.tifftagPhotoshop !== undefined) return false;
   if (!blocks.strips && meta.xmp !== undefined && !carriesXmp(meta.xmp)) return false;
   const statesDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;

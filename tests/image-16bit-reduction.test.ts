@@ -90,7 +90,7 @@ async function noisyPng(side: number, deep: boolean): Promise<Buffer> {
 }
 
 /**
- * An sRGB profile is not written and changes no pixel: a picture that holds one is written as the same file as the picture that
+ * The sRGB profile the reference engine's PNG reader drops is not written and changes no pixel: a picture that holds one is written as the same file as the picture that
  * does not. With nothing else in the PNG the pixels are decoded once; with an XMP packet the image library reads the PNG (and
  * must not convert the samples through the profile, which for 16-bit samples goes through a wide-gamut space and moves them).
  */
