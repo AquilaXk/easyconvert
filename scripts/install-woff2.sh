@@ -24,8 +24,8 @@ WOFF2_SHA256="af25f87356507cd541fe02eb52145ce21d0a62b2ef028c058720ecf96ad4d7f8"
 BROTLI_VERSION="1.2.1"
 BROTLI_COMMIT="db24a98aed38a16de78cc05ca15cdd8dc2a0d92d"
 BROTLI_SHA256="113b9685dfc14dd2f3360d077283266eec2fbdfb0fe3e5600f11be151da0d68e"
-# Added to the flags of the woff2 Makefile (empty: the Makefile's own flags).
-BUILD_FLAGS="-O3"
+# Added to the compile and link flags of the woff2 Makefile (empty: the Makefile's own flags).
+BUILD_FLAGS="-O3 -flto"
 # The archives are under a megabyte. curl refuses a download whose announced size is larger, and fetch stops reading at the bound plus
 # one byte whatever the server announces, so that nothing larger than the bound is written before its digest is checked.
 MAX_DOWNLOAD_BYTES=$((16 * 1024 * 1024))
@@ -71,8 +71,8 @@ tar -xzf "$work/brotli.tar.gz" -C "$src/brotli" --strip-components=1
 test -f "$src/brotli/c/include/brotli/encode.h"
 
 jobs="$(nproc 2> /dev/null || echo 2)"
-# The Makefile appends its own flags to CFLAGS and CXXFLAGS taken from the environment.
-(cd "$src" && CFLAGS="$BUILD_FLAGS" CXXFLAGS="$BUILD_FLAGS" make -j"$jobs" woff2_compress woff2_decompress > "$work/make.log" 2>&1) \
+# The Makefile appends its own flags to CFLAGS and CXXFLAGS taken from the environment, and links with LFLAGS.
+(cd "$src" && CFLAGS="$BUILD_FLAGS" CXXFLAGS="$BUILD_FLAGS" LFLAGS="$BUILD_FLAGS" make -j"$jobs" woff2_compress woff2_decompress > "$work/make.log" 2>&1) \
   || { tail -n 40 "$work/make.log" >&2; exit 1; }
 
 install -d "$INSTALL_DIR/bin" "$INSTALL_DIR/share/doc/woff2"
