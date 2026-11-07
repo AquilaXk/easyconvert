@@ -36,3 +36,4 @@ export type { ColumnCellFormatter, ColumnFormatterFactory, FormattedRowWindow } 
 export { FormattedParquetTable } from './parquet-formatted';
 export type { DecodedParquetColumns, ParquetRecords } from './parquet-table';
 export { decodeParquet, decodeParquetColumns, decodeParquetTable } from './parquet-table';
+export type { CellShape } from './parquet-schema';

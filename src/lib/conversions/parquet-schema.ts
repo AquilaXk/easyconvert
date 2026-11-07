@@ -45,6 +45,13 @@ export interface SchemaNode {
   textKeys: boolean;
 }
 
+/**
+ * How a table target cuts a top-level column into cells: a map stays one cell (its keys are data, so columns made of them
+ * would change with the rows), a struct becomes one column per field (the fields are schema), and everything else, a list
+ * included, is a cell of its own.
+ */
+export type CellShape = 'plain' | 'map' | ReadonlyMap<string, CellShape>;
+
 export interface ParsedSchema {
   leaves: LeafColumn[];
   /** Null for a flat table, where every top-level field is a leaf that is not repeated. */
@@ -173,6 +180,14 @@ function listElement(list: SchemaNode, repeated: SchemaNode): SchemaNode {
   if (repeated.leaf !== null || repeated.children.length !== 1) return repeated;
   if (repeated.name === LIST_ELEMENT_NAME || repeated.name === `${list.name}${LIST_TUPLE_SUFFIX}`) return repeated;
   return repeated.children[0];
+}
+
+/** The cell shape of a node, taken from the schema, so it does not depend on which rows hold a null struct. */
+export function cellShapeOf(node: SchemaNode): CellShape {
+  if (node.repetition === FieldRepetitionType.REPEATED) return 'plain';
+  if (node.kind === 'map') return 'map';
+  if (node.kind !== 'struct') return 'plain';
+  return new Map(node.children.map((child) => [child.name, cellShapeOf(child)]));
 }
 
 function isFlat(children: SchemaNode[]): boolean {

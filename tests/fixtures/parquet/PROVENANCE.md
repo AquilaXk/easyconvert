@@ -65,6 +65,6 @@ Snappy and dictionaries, v2 with Zstandard and no dictionaries, and v1 with Gzip
 `nested-expected.json` holds the rows pyarrow 26.0.1 reads from each file (`python3 -I
 tests/helpers/parquet_nested_oracle.py expect tests/fixtures/parquet nested-expected.json <names>`), in the shape the
 converter writes: a list is an array, a struct an object, and a map an object when its keys are strings, otherwise an
-array of `{key, value}`. A timestamp whose year Python cannot hold is stored as its integer ticks. pyarrow refuses
+array of `{key, value}`, plus per column how a table target cuts it into cells (`shapes`: a struct is one column per field, a map one cell, the rest one cell each). A timestamp whose year Python cannot hold is stored as its integer ticks. pyarrow refuses
 `incorrect_map_schema` ("Map keys must be annotated as required"), so the test states its one row from DuckDB 2.0.
 No expected value comes from this repository's reader.

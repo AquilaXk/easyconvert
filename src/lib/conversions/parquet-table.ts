@@ -1,12 +1,13 @@
 import { setOwn } from './data-json';
 import type { DataObject, DataValue } from './data-json';
-import { FieldRepetitionType, PARQUET_MAX_DECODED_VALUE_BYTES, ParquetFormatError } from './parquet-format';
+import { PARQUET_MAX_DECODED_VALUE_BYTES, ParquetFormatError } from './parquet-format';
 import type { ParquetValue } from './parquet-logical';
 import { assembleRowGroup, decodeNestedChunk } from './parquet-nested';
 import type { LeafStream } from './parquet-nested';
 import { decodeChunk, prepareParquetPlans } from './parquet-reader';
 import type { ChunkPlan, DecodeBudget, FileMeta } from './parquet-reader';
-import type { SchemaNode } from './parquet-schema';
+import { cellShapeOf } from './parquet-schema';
+import type { CellShape, SchemaNode } from './parquet-schema';
 
 /**
  * A Parquet file read into the columns of its table: the entry points of the reader. A flat table is decoded column by
@@ -17,8 +18,8 @@ export interface DecodedParquetColumns {
   names: string[];
   columns: ParquetValue[][];
   numRows: number;
-  /** Per column: whether its values may be lists or structs, which the table targets write as JSON text. */
-  nested: boolean[];
+  /** Per column: how a table target cuts it into cells (see CellShape). */
+  shapes: CellShape[];
 }
 
 /** The chunk plans of each row group, each group ordered by schema leaf. */
@@ -32,11 +33,6 @@ function groupByRowGroup(plans: ChunkPlan[], leafCount: number): ChunkPlan[][] {
   return groups;
 }
 
-/** Whether a top-level field holds lists, structs or maps rather than one value per row. */
-function isNestedField(node: SchemaNode): boolean {
-  return node.leaf === null || node.repetition === FieldRepetitionType.REPEATED;
-}
-
 function decodeNestedColumns(buffer: Buffer, meta: FileMeta, root: SchemaNode, plans: ChunkPlan[], budget: DecodeBudget): DecodedParquetColumns {
   const columns: ParquetValue[][] = root.children.map(() => []);
   for (const group of groupByRowGroup(plans, meta.leaves.length)) {
@@ -47,7 +43,7 @@ function decodeNestedColumns(buffer: Buffer, meta: FileMeta, root: SchemaNode, p
     names: root.children.map((child) => child.name),
     columns,
     numRows: meta.numRows,
-    nested: root.children.map(isNestedField),
+    shapes: root.children.map(cellShapeOf),
   };
 }
 
@@ -76,7 +72,7 @@ function decodeFlatColumns(buffer: Buffer, meta: FileMeta, plans: ChunkPlan[], b
 
   const names = meta.leaves.map((leaf) => leaf.name).filter((name) => columns.has(name));
   const columnValues = names.map((name) => columns.get(name) as ParquetValue[]);
-  return { names, columns: columnValues, numRows: meta.numRows, nested: names.map(() => false) };
+  return { names, columns: columnValues, numRows: meta.numRows, shapes: names.map(() => 'plain') };
 }
 
 function decodeParquetColumnsUnguarded(buffer: Buffer): DecodedParquetColumns {
@@ -88,7 +84,7 @@ function decodeParquetColumnsUnguarded(buffer: Buffer): DecodedParquetColumns {
       names: fields.map((field) => field.name),
       columns: fields.map(() => []),
       numRows: 0,
-      nested: root === null ? fields.map(() => false) : root.children.map(isNestedField),
+      shapes: root === null ? fields.map(() => 'plain') : root.children.map(cellShapeOf),
     };
   }
   const budget: DecodeBudget = { valueBytes: PARQUET_MAX_DECODED_VALUE_BYTES };
@@ -126,8 +122,8 @@ function isUnsafeRecordKey(name: string): boolean {
 
 export interface ParquetRecords {
   records: Record<string, unknown>[];
-  /** The columns whose values may be lists, structs or maps. */
-  nestedColumns: string[];
+  /** The columns a table target cuts into more or other than one cell each (structs and maps), by name. */
+  shapes: ReadonlyMap<string, CellShape>;
 }
 
 /**
@@ -138,9 +134,12 @@ export interface ParquetRecords {
  */
 export function decodeParquetTable(buffer: Buffer): ParquetRecords {
   try {
-    const { names, columns: columnValues, numRows, nested } = decodeParquetColumnsUnguarded(buffer);
-    const nestedColumns = names.filter((_, c) => nested[c]);
-    if (numRows === 0) return { records: [], nestedColumns };
+    const { names, columns: columnValues, numRows, shapes: columnShapes } = decodeParquetColumnsUnguarded(buffer);
+    const shapes = new Map<string, CellShape>();
+    names.forEach((name, c) => {
+      if (columnShapes[c] !== 'plain') shapes.set(name, columnShapes[c]);
+    });
+    if (numRows === 0) return { records: [], shapes };
     const needsSetOwn = names.some(isUnsafeRecordKey);
     const records: Record<string, unknown>[] = new Array<Record<string, unknown>>(numRows);
     for (let r = 0; r < numRows; r++) {
@@ -156,7 +155,7 @@ export function decodeParquetTable(buffer: Buffer): ParquetRecords {
       }
       records[r] = row;
     }
-    return { records, nestedColumns };
+    return { records, shapes };
   } catch (error) {
     throw mapRangeError(error);
   }

@@ -5,8 +5,9 @@ Run as `python3 -I parquet_nested_oracle.py <command> ...` with pyarrow 26 insta
   make <dir>                      write the synthetic nested files (closed-form rows, no random data)
   expect <dir> <out.json> <name>  read every named file in <dir> with pyarrow and write its rows as JSON
 
-`expect` writes the shape the converter writes for json: a list is an array, a struct an object, and a map
-an object when its keys are strings, otherwise an array of {key, value}. Nothing is read from this repository.
+`expect` writes the rows in the shape the converter writes for json: a list is an array, a struct an object, and a map
+an object when its keys are strings, otherwise an array of {key, value}. It also writes, per column, how a table target
+cuts the column into cells ("shapes"). Nothing is read from this repository.
 """
 
 import datetime
@@ -160,6 +161,16 @@ def represent(value, kind):
     return value
 
 
+def table_shape(kind):
+    """What a table target does with a value: "map" stays one JSON cell, a struct is {field: shape} (one column per
+    field, dotted), anything else ("plain") is a cell of its own (a list as JSON text)."""
+    if pa.types.is_map(kind):
+        return "map"
+    if pa.types.is_struct(kind):
+        return {kind.field(i).name: table_shape(kind.field(i).type) for i in range(kind.num_fields)}
+    return "plain"
+
+
 def command_expect(directory, out, names):
     result = {}
     for name in names:
@@ -169,6 +180,7 @@ def command_expect(directory, out, names):
         rows = table.to_pylist()
         result[name] = {
             "columns": table.column_names,
+            "shapes": {field.name: table_shape(field.type) for field in original},
             "rows": [{field.name: represent(row[field.name], field.type) for field in original} for row in rows],
         }
     with open(out, "w", encoding="utf-8") as fh:

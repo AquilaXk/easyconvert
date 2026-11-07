@@ -7,6 +7,13 @@
    "d",
    "e"
   ],
+  "shapes": {
+   "a": "plain",
+   "b": "plain",
+   "c": "plain",
+   "d": "plain",
+   "e": "plain"
+  },
   "rows": [
    {
     "a": "abc",
@@ -61,6 +68,10 @@
    "int64_list",
    "utf8_list"
   ],
+  "shapes": {
+   "int64_list": "plain",
+   "utf8_list": "plain"
+  },
   "rows": [
    {
     "int64_list": [
@@ -100,6 +111,11 @@
    "my_map_no_v",
    "my_list"
   ],
+  "shapes": {
+   "my_map": "map",
+   "my_map_no_v": "plain",
+   "my_list": "plain"
+  },
   "rows": [
    {
     "my_map": [
@@ -186,6 +202,10 @@
    "a",
    "b"
   ],
+  "shapes": {
+   "a": "plain",
+   "b": "plain"
+  },
   "rows": [
    {
     "a": [
@@ -260,6 +280,11 @@
    "b",
    "c"
   ],
+  "shapes": {
+   "a": "map",
+   "b": "plain",
+   "c": "plain"
+  },
   "rows": [
    {
     "a": {
@@ -376,6 +401,296 @@
    "ul_observation_date",
    "ul_tz_offset_minutes_ul_observation_date"
   ],
+  "shapes": {
+   "roll_num": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "PC_CUR": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "CVA_2012": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "CVA_2016": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "BIA_3": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "BIA_4": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ACTUAL_FRONTAGE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ACTUAL_DEPTH": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ACTUAL_LOT_SIZE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "GLA": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "SOURCE_GLA": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "IPS_GLA": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "GLA_ALL": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "bia": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "EFFECTIVE_LOT_SIZE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "effective_lot_area": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "EFFECTIVE_FRONTAGE": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "EFFECTIVE_DEPTH": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "rw_area_tot": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "effective_lot_sqft": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "dup": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "nonCTXT": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "vacantland": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "parkingbillboard": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "cvalte10": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "condootherhotel": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "calculated_lot_size": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "calculated_efflot_size": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "missingsite": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "missinggla": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "missingsitegla": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "actual_lot_size_sqft": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "lotsize_sqft": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "count": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ul_observation_date": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   },
+   "ul_tz_offset_minutes_ul_observation_date": {
+    "min": "plain",
+    "max": "plain",
+    "mean": "plain",
+    "count": "plain",
+    "sum": "plain",
+    "variance": "plain"
+   }
+  },
   "rows": [
    {
     "roll_num": {
@@ -686,6 +1001,22 @@
    "maplist",
    "req"
   ],
+  "shapes": {
+   "id": "plain",
+   "items": "plain",
+   "attrs": "map",
+   "point": {
+    "x": "plain",
+    "inner": {
+     "a": "plain",
+     "b": "plain"
+    }
+   },
+   "grid": "plain",
+   "imap": "map",
+   "maplist": "plain",
+   "req": "plain"
+  },
   "rows": [
    {
     "id": 0,
@@ -3566,6 +3897,22 @@
    "maplist",
    "req"
   ],
+  "shapes": {
+   "id": "plain",
+   "items": "plain",
+   "attrs": "map",
+   "point": {
+    "x": "plain",
+    "inner": {
+     "a": "plain",
+     "b": "plain"
+    }
+   },
+   "grid": "plain",
+   "imap": "map",
+   "maplist": "plain",
+   "req": "plain"
+  },
   "rows": [
    {
     "id": 0,
@@ -6446,6 +6793,22 @@
    "maplist",
    "req"
   ],
+  "shapes": {
+   "id": "plain",
+   "items": "plain",
+   "attrs": "map",
+   "point": {
+    "x": "plain",
+    "inner": {
+     "a": "plain",
+     "b": "plain"
+    }
+   },
+   "grid": "plain",
+   "imap": "map",
+   "maplist": "plain",
+   "req": "plain"
+  },
   "rows": [
    {
     "id": 0,
@@ -9324,6 +9687,21 @@
    "int_map_array",
    "nested_Struct"
   ],
+  "shapes": {
+   "ID": "plain",
+   "Int_Array": "plain",
+   "int_array_array": "plain",
+   "Int_Map": "map",
+   "int_map_array": "plain",
+   "nested_Struct": {
+    "a": "plain",
+    "B": "plain",
+    "c": {
+     "D": "plain"
+    },
+    "G": "map"
+   }
+  },
   "rows": [
    {
     "ID": 8,
@@ -9372,6 +9750,9 @@
   "columns": [
    "emptylist"
   ],
+  "shapes": {
+   "emptylist": "plain"
+  },
   "rows": [
    {
     "emptylist": []
@@ -9387,6 +9768,21 @@
    "int_Map_Array",
    "nested_struct"
   ],
+  "shapes": {
+   "id": "plain",
+   "int_array": "plain",
+   "int_array_Array": "plain",
+   "int_map": "map",
+   "int_Map_Array": "plain",
+   "nested_struct": {
+    "A": "plain",
+    "b": "plain",
+    "C": {
+     "d": "plain"
+    },
+    "g": "map"
+   }
+  },
   "rows": [
    {
     "id": 1,
@@ -9658,6 +10054,11 @@
   "columns": [
    "b_struct"
   ],
+  "shapes": {
+   "b_struct": {
+    "b_c_int": "plain"
+   }
+  },
   "rows": [
    {
     "b_struct": {
@@ -9705,6 +10106,9 @@
   "columns": [
    "a"
   ],
+  "shapes": {
+   "a": "plain"
+  },
   "rows": [
    {
     "a": [
@@ -9725,6 +10129,12 @@
    "id",
    "phoneNumbers"
   ],
+  "shapes": {
+   "id": "plain",
+   "phoneNumbers": {
+    "phone": "plain"
+   }
+  },
   "rows": [
    {
     "id": 1,
@@ -9789,6 +10199,14 @@
    "String_list",
    "group_of_lists"
   ],
+  "shapes": {
+   "Int32_list": "plain",
+   "String_list": "plain",
+   "group_of_lists": {
+    "Int32_list_in_group": "plain",
+    "String_list_in_group": "plain"
+   }
+  },
   "rows": [
    {
     "Int32_list": [
@@ -9880,6 +10298,12 @@
   "columns": [
    "point"
   ],
+  "shapes": {
+   "point": {
+    "x": "plain",
+    "y": "plain"
+   }
+  },
   "rows": [
    {
     "point": {
