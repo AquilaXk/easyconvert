@@ -199,7 +199,7 @@
     },
     {
       "families": ["ebook"],
-      "match": "^src/lib/conversions/(office/(mobi-reader|pml-reader|rocketbook-reader)|fb2-model|mobi-model|rocketbook-(model|source)|calibre-ebook-targets)\\.ts$|^src/worker/ebook-calibre\\.ts$"
+      "match": "^src/lib/conversions/(office/(mobi-reader|pml-reader|rocketbook-reader)|fb2-model|mobi-model|rocketbook-(model|source)|calibre-ebook-targets|comic-book|epub-rewrite)\\.ts$|^src/worker/ebook-calibre\\.ts$"
     },
     {
       "families": ["document"],
