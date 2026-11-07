@@ -1,6 +1,8 @@
 import PDFDocument from 'pdfkit';
 import { CadExpansionLimitError, CadGeometryError, ConversionFailedError } from '../types';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
+import { plainMtextLines, plainText } from './cad-dxf-text';
+import { reportConversionWarning } from './conversion-warnings';
 
 /**
  * Two-dimensional DXF reading and drawing.
@@ -371,7 +373,15 @@ function sampleSpline(record: GroupRecord): Point[] {
 interface Block {
   base: Point;
   records: GroupRecord[];
+  /** The path of the external drawing (group 1) of a block that is an external reference, flagged 4 or 8 in group 70. */
+  xrefPath?: string;
 }
+
+const BLOCK_XREF_FLAG = 4;
+const BLOCK_XREF_OVERLAY_FLAG = 8;
+const MAX_XREF_NAME_CHARACTERS = 200;
+/** A name or path of the file as one line of a warning: no control character, not longer than a path can be. */
+const printable = (value: string): string => value.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, MAX_XREF_NAME_CHARACTERS);
 
 interface Layers {
   hidden: ReadonlySet<string>;
@@ -425,32 +435,6 @@ function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; ve
     }
   }
   return entities;
-}
-
-function decodeSpecialChars(raw: string): string {
-  return raw.replace(/%%(%|[dDpPcCuUoOkK]|\d{3})/g, (full, token: string) => {
-    const lower = token.toLowerCase();
-    if (lower === '%') return '%';
-    if (lower === 'd') return '°';
-    if (lower === 'p') return '±';
-    if (lower === 'c') return 'Ø';
-    if (lower === 'u' || lower === 'o' || lower === 'k') return '';
-    const code = Number.parseInt(token, 10);
-    return code >= 32 && code <= 255 ? String.fromCharCode(code) : full;
-  });
-}
-
-function stripMtext(raw: string): string[] {
-  const text = decodeSpecialChars(raw)
-    .replace(/\\P/g, '\n')
-    .replace(/\\N/g, ' ')
-    .replace(/\\~/g, ' ')
-    .replace(/\\S([^;^/#]*)[\^/#]([^;]*);/g, '$1/$2')
-    .replace(/\\[ACFHQTWfcwp][^;]*;/g, '')
-    .replace(/\\[LlOoKk]/g, '')
-    .replace(/[{}]/g, '')
-    .replace(/\\\\/g, '\\');
-  return text.split('\n').map((line) => line.trimEnd());
 }
 
 function mtextColumnWidth(record: GroupRecord): number | undefined {
@@ -647,6 +631,12 @@ class Builder {
     const name = first(record, 2);
     const block = name === undefined ? undefined : this.blocks.get(name);
     if (!block) return;
+    // An uploaded drawing has no companion files: an external reference holds no entities and draws nothing, and says so.
+    if (block.xrefPath !== undefined && block.records.length === 0) {
+      const path = printable(block.xrefPath);
+      const target = path === '' ? 'an external drawing' : `the external drawing "${path}"`;
+      reportConversionWarning(`The drawing refers to ${target} (reference "${printable(name ?? '')}"), which is not part of the uploaded file, so it was left out.`);
+    }
     if (depth >= MAX_BLOCK_DEPTH) throw new CadExpansionLimitError(`The DXF nests blocks deeper than ${MAX_BLOCK_DEPTH} levels (block ${name})`);
     const scaleX = num(record, 41, 1);
     const scaleY = num(record, 42, 1);
@@ -690,7 +680,7 @@ class Builder {
     const raw = first(record, 1);
     const height = num(record, 40, 0);
     if (raw === undefined || raw.trim() === '' || !(height > 0)) return;
-    const value = decodeSpecialChars(raw);
+    const value = plainText(raw);
     if (value.trim() === '') return;
     const horizontal = Math.trunc(num(record, 72, 0));
     const vertical = horizontal > 2 ? 0 : Math.trunc(num(record, 73, 0));
@@ -749,7 +739,7 @@ class Builder {
     const height = num(record, 40, 0);
     const raw = `${record.values.filter((_, i) => record.codes[i] === 3).join('')}${first(record, 1) ?? ''}`;
     if (!(height > 0) || raw.trim() === '') return;
-    const stripped = stripMtext(raw);
+    const stripped = plainMtextLines(raw).map((line) => line.trimEnd());
     if (stripped.every((line) => line.length === 0)) return;
     const direction = first(record, 11) === undefined ? turnDegrees(num(record, 50, 0)) * DEGREES : Math.atan2(num(record, 21, 0), num(record, 11, 1));
     const widthFactor = this.styleWidthFactor(record);
@@ -872,7 +862,8 @@ export function parseDxfDrawing(dxf: string): DxfDrawing {
       const type = record.values[0];
       if (type === 'BLOCK') {
         const name = first(record, 2);
-        current = name === undefined ? null : { name, block: { base: [num(record, 10, 0), num(record, 20, 0)], records: [] } };
+        const isXref = (Math.trunc(num(record, 70, 0)) & (BLOCK_XREF_FLAG | BLOCK_XREF_OVERLAY_FLAG)) !== 0;
+        current = name === undefined ? null : { name, block: { base: [num(record, 10, 0), num(record, 20, 0)], records: [], ...(isXref ? { xrefPath: first(record, 1) ?? '' } : {}) } };
       } else if (type === 'ENDBLK') {
         if (current) blocks.set(current.name, current.block);
         current = null;

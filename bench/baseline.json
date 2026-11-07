@@ -4751,6 +4751,266 @@
       "delta": 0.13888888888888884,
       "ratio": null
     },
+    "cad/dwg-example-2000.dwg->pdf/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-2000.dwg->pdf/extent_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.01,
+        "rel": 0
+      },
+      "ours": 0.00131784958939285,
+      "delta": -0.016111282071452737,
+      "ratio": null
+    },
+    "cad/dwg-example-2000.dwg->pdf/ink_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.833048433048433,
+      "ratio": null
+    },
+    "cad/dwg-example-2000.dwg->pdf/ink_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.183426845058265,
+      "ratio": null
+    },
+    "cad/dwg-example-2000.dwg->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.8048780487804879,
+      "ratio": null
+    },
+    "cad/dwg-example-2007.dwg->png/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-2007.dwg->png/extent_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.01,
+        "rel": 0
+      },
+      "ours": 0.000405916782542981,
+      "delta": -0.0010757565198771246,
+      "ratio": null
+    },
+    "cad/dwg-example-2007.dwg->png/ink_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.5243039169419538,
+      "ratio": null
+    },
+    "cad/dwg-example-2007.dwg->png/ink_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-2018.dwg->svg/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-2018.dwg->svg/extent_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.01,
+        "rel": 0
+      },
+      "ours": 0.0015952096207043631,
+      "delta": 0.000550060964259913,
+      "ratio": null
+    },
+    "cad/dwg-example-2018.dwg->svg/ink_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-2018.dwg->svg/ink_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-r13.dwg->svg/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-example-r13.dwg->svg/extent_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.01,
+        "rel": 0
+      },
+      "ours": 0.0015952096207043631,
+      "delta": -0.0013709761898196282,
+      "ratio": null
+    },
+    "cad/dwg-example-r13.dwg->svg/ink_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.1920638390905116,
+      "ratio": null
+    },
+    "cad/dwg-example-r13.dwg->svg/ink_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-gdal-attribs-2013.dwg->pdf/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-gdal-attribs-2013.dwg->pdf/extent_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.01,
+        "rel": 0
+      },
+      "ours": 0.000044014777720868814,
+      "delta": -0.0017650029593027083,
+      "ratio": null
+    },
+    "cad/dwg-gdal-attribs-2013.dwg->pdf/ink_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-gdal-attribs-2013.dwg->pdf/ink_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-gdal-attribs-2013.dwg->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.8888888888888888,
+      "ratio": null
+    },
+    "cad/dwg-gdal-circles-2000.dwg->png/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-gdal-circles-2000.dwg->png/extent_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.01,
+        "rel": 0
+      },
+      "ours": 0.0015930835077117012,
+      "delta": 0.0009016947165441103,
+      "ratio": null
+    },
+    "cad/dwg-gdal-circles-2000.dwg->png/ink_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "cad/dwg-gdal-circles-2000.dwg->png/ink_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "cad/plate-basic.dxf->pdf/extent_error": {
       "direction": "lower",
       "tolerance": {

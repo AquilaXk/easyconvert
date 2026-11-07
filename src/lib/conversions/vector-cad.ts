@@ -22,6 +22,7 @@ import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
 import { normalizeSvgBufferForRendering } from './svg-render-normalize';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
+import { decodeDxfBytes } from './cad-dxf-text';
 import { convertDwgToDxf } from './cad-dwg';
 import { vectorizeRaster } from './raster-vectorize';
 import { isVectorizePair } from './raster-vectorize-options';
@@ -409,14 +410,7 @@ async function convertSvgSource(
 
   // SVG -> DWG
   if (tgt === 'dwg') {
-    const dxfString = svgToDxf(inputBuffer.toString('utf-8'));
-    const dwgBuffer = dxfToDwg(dxfString);
-    return {
-      buffer: dwgBuffer,
-      mimeType: 'image/vnd.dwg',
-      filename: `${baseName}.dwg`,
-      size: dwgBuffer.length,
-    };
+    dxfToDwg(svgToDxf(inputBuffer.toString('utf-8')));
   }
 
   // Vector targets are written from the SVG geometry and never rasterize it.
@@ -555,20 +549,10 @@ async function convertDxfSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const dxfContent = inputBuffer.toString('utf-8');
-
   // DXF -> DWG
-  if (tgt === 'dwg') {
-    const dwgBuffer = dxfToDwg(dxfContent);
-    return {
-      buffer: dwgBuffer,
-      mimeType: 'image/vnd.dwg',
-      filename: `${baseName}.dwg`,
-      size: dwgBuffer.length,
-    };
-  }
+  if (tgt === 'dwg') dxfToDwg(inputBuffer.toString('utf-8'));
 
-  const drawing = parseDxfDrawing(dxfContent);
+  const drawing = parseDxfDrawing(decodeDxfBytes(inputBuffer));
 
   // DXF -> SVG
   if (tgt === 'svg') {
@@ -986,7 +970,7 @@ export function encode3dCadToDxf(mesh: CadMesh3D): string {
   return `  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n  0\nENDSEC\n  0\nSECTION\n  2\nTABLES\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n${entitiesDxf}  0\nENDSEC\n  0\nEOF\n`;
 }
 
-function dxfToDwg(_dxfString: string): Buffer {
+function dxfToDwg(_dxfString: string): never {
   throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
 }
 

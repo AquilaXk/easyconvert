@@ -190,7 +190,7 @@ describe('parseDxfDrawing', () => {
     it('reads TEXT with its height and rotation and MTEXT without its formatting codes, one line per \\P', () => {
       const body =
         pairs([0, 'TEXT'], [10, 1], [20, 2], [40, 5], [50, 90], [1, 'PLATE']) +
-        pairs([0, 'MTEXT'], [10, 3], [20, 4], [40, 2], [71, 1], [1, '{\\fArial|b0;NOTES\\P}\\C1;ALL \\Sone^two; IN MM']);
+        pairs([0, 'MTEXT'], [10, 3], [20, 4], [40, 2], [71, 1], [1, '{\\fArial|b0;NOTES\\P}\\C1;ALL \\Sone^ two; IN MM']);
       const { texts } = parseDxfDrawing(dxf(body + pairs([0, 'LINE'], [10, 0], [20, 0], [11, 1], [21, 1])));
       expect(texts[0]).toMatchObject({ at: [1, 2], height: 5, lines: ['PLATE'], hangsFromTop: false });
       near(texts[0].rotation, Math.PI / 2);
