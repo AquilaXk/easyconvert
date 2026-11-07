@@ -1,6 +1,6 @@
 # Service metrics and objectives
 
-This page says what the service measures about itself, how an operator reads it, and the objectives (availability and latency per family) that those measures are held against. The choices behind it are entry 178 of [policy-decisions.md](policy-decisions.md).
+This page says what the service measures about itself, how an operator reads it, and the objectives (availability and latency per family) that those measures are held against. The choices behind it are entry 179 of [policy-decisions.md](policy-decisions.md).
 
 **Phase 1 (this page) is the metrics and the objectives.** The alerts on them (burn of the error budget, the age of the queue, the restarts of the worker) and the runbook entry each one links to come in phase 2 (issue #899). Until then nothing pages anyone; the scheduled readiness probe (`.github/workflows/uptime.yml`, entry 173) is the only alarm.
 
@@ -44,7 +44,7 @@ Notes for reading them:
 
 ## The objectives
 
-The window is **28 days, rolling**. The objectives are **starting values**: no production traffic has been measured yet. They are a first reading against which the first 28 days of traffic are judged, and they are to be revised then (policy entry 178, "Revisit when").
+The window is **28 days, rolling**. The objectives are **starting values**: no production traffic has been measured yet. They are a first reading against which the first 28 days of traffic are judged, and they are to be revised then (policy entry 179, "Revisit when").
 
 **Availability** is the share of the requests that the service could be blamed for and answered. A refusal (4xx) is the client's to fix and is not counted against it; a 503, a 500 and a deadline overrun (504) are. For the synchronous routes:
 
