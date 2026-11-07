@@ -63,6 +63,12 @@ describe('the reference avifenc is the worker\'s encoder when it is installed', 
     expect(resolveIn('first', 'second')).toBe(pinned);
   });
 
+  it('is not overridden by the quality jobs, which would put the product and the reference on different releases', () => {
+    for (const workflow of ['ci.yml', 'nightly.yml']) {
+      expect(fs.readFileSync(path.join(ROOT, '.github', 'workflows', workflow), 'utf8')).not.toContain('AVIFENC_PATH');
+    }
+  });
+
   it('takes the avifenc on the path when no pinned build is installed', () => {
     const packaged = install('only-package', 'avifenc');
     expect(resolveIn('only-package')).toBe(packaged);
