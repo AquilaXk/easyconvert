@@ -8,6 +8,7 @@ import {
   parsePageRanges,
   validatePageRangeSyntax,
 } from '../src/lib/conversions/page-range';
+import { mergeIntervals } from '../src/lib/conversions/page-intervals';
 import { extractPdfPages } from '../src/lib/conversions/pdf-postprocess';
 import { ConversionOptionsSchema } from '../src/lib/api/contracts';
 import { InvalidPageRangeError, PayloadLimitError } from '../src/lib/types';
@@ -147,5 +148,17 @@ describe('the page-image bound', () => {
     expect(boundPageImages(pagesFrom(PAGE_IMAGE_MAX_PAGES), undefined)).toEqual(pagesFrom(PAGE_IMAGE_MAX_PAGES));
     expect(() => boundPageImages([{ start: 1, end: 300 }, { start: 600, end: 800 }], undefined)).toThrow(PayloadLimitError);
     expect(boundPageImages([{ start: 1, end: 300 }, { start: 600, end: 700 }], undefined)).toHaveLength(2);
+  });
+});
+
+describe('mergeIntervals', () => {
+  it('answers an empty list for an empty input', () => {
+    expect(mergeIntervals([])).toEqual([]);
+  });
+
+  it('leaves its input as it was', () => {
+    const input = [{ start: 5, end: 9 }, { start: 1, end: 6 }];
+    expect(mergeIntervals(input)).toEqual([{ start: 1, end: 9 }]);
+    expect(input).toEqual([{ start: 5, end: 9 }, { start: 1, end: 6 }]);
   });
 });

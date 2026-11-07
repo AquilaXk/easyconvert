@@ -1,7 +1,6 @@
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
@@ -13,7 +12,7 @@ import {
   ArchiveNotEncryptedError,
   UnsupportedOptionError,
   EngineUnavailableError,
-  InvalidPageRangeError, PayloadLimitError,
+  InvalidPageRangeError, isTypedRefusal,
   ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions,
   UnsupportedTargetError,
@@ -26,7 +25,7 @@ import {
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertDrawingPackage, assertOfficeEmbeddedImagesWithinLimit, officeInputWithoutMacros } from './office-input-checks';
-import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertHancomDocTarget, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withEmbeddedWorkbookRetry, withLegacyOfficeRecovery, withMetafileFrame, withMetafileInk, withOfficePageChainLimits, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { reportConversionWarning, withConversionWarnings } from '../lib/conversions/conversion-warnings';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -46,7 +45,8 @@ import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resourc
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { boundPageImages, pageEntryName, pagesOfIntervals, pagesToDraw, resolvePageIntervals, type PageInterval } from '../lib/conversions/page-range';
+import { boundPageImages, pageEntryName, pagesToDraw, resolvePageIntervals } from '../lib/conversions/page-range';
+import { pagesOfIntervals, type PageInterval } from '../lib/conversions/page-intervals';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -89,7 +89,7 @@ import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath
 import { DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { InputPixelLimitError } from '../lib/conversions/image-input-limits';
-import { PdfPageFrameError, checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
+import { checkPdfRasterPageBudget } from '../lib/conversions/pdf-page-geometry';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1372,7 +1372,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
       );
     });
   } catch (err) {
-    if (options.throwOnUnavailable || err instanceof InputPixelLimitError || err instanceof PayloadLimitError || err instanceof UnsupportedOptionError || err instanceof PdfPageFrameError || err instanceof InvalidPageRangeError) {
+    if (options.throwOnUnavailable || isTypedRefusal(err)) {
       throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
@@ -2291,14 +2291,14 @@ async function convertWithinImageSession(
   if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withOfficePageBounds(src, nativeOptions), originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withOfficePageChainLimits(src, nativeOptions), originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
         const popplerRes = isPresentationHtml
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
-          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageBounds(src, nativeOptions), originalFilename);
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageChainLimits(src, nativeOptions), originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,

@@ -3,7 +3,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { JOB_DEADLINE_AT, type JobDeadlined, stageTimeoutMs } from '../src/lib/conversions/job-time';
 import { PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { PayloadLimitError } from '../src/lib/types';
-import { OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS, withOfficePageBounds } from '../src/worker/office-suite-route';
+import { OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS, withOfficePageChainLimits } from '../src/worker/office-suite-route';
 import type { WorkerEngineOptions } from '../src/worker/worker-types';
 import { oracleTest } from './helpers/oracle-test';
 import { flatOdp, flatOdt, sofficeConvert } from './helpers/soffice-office';
@@ -48,8 +48,8 @@ async function refusalOf(input: Buffer, source: string, target: string, name: st
 
 describe('the page bounds of a request that becomes page images', () => {
   it('cut the PDF export to page 1 for a workbook only', () => {
-    expect(withOfficePageBounds('docx', { multiPageOutput: 'first' }).pdfExportPageRange).toBeUndefined();
-    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
+    expect(withOfficePageChainLimits('docx', { multiPageOutput: 'first' }).pdfExportPageRange).toBeUndefined();
+    expect(withOfficePageChainLimits('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
   });
 
   it('give each stage of the chain the time a long document needs, held to what the job has left and to a limit the server set', () => {
@@ -57,15 +57,15 @@ describe('the page bounds of a request that becomes page images', () => {
     const DEFAULT_STAGE_MS = 45_000;
     const STAGE_LIMIT_MS = 120_000;
     expect(OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS).toBe(STAGE_LIMIT_MS);
-    expect(stageTimeoutMs(withOfficePageBounds('rtf', {}), DEFAULT_STAGE_MS, now)).toBe(STAGE_LIMIT_MS);
+    expect(stageTimeoutMs(withOfficePageChainLimits('rtf', {}), DEFAULT_STAGE_MS, now)).toBe(STAGE_LIMIT_MS);
     const remaining = 50_000;
     const nearDeadline: WorkerEngineOptions & JobDeadlined = { [JOB_DEADLINE_AT]: now + remaining };
-    expect(stageTimeoutMs(withOfficePageBounds('rtf', nearDeadline), DEFAULT_STAGE_MS, now)).toBe(remaining);
-    expect(stageTimeoutMs(withOfficePageBounds('rtf', { timeoutMs: 30_000 }), DEFAULT_STAGE_MS, now)).toBe(30_000);
+    expect(stageTimeoutMs(withOfficePageChainLimits('rtf', nearDeadline), DEFAULT_STAGE_MS, now)).toBe(remaining);
+    expect(stageTimeoutMs(withOfficePageChainLimits('rtf', { timeoutMs: 30_000 }), DEFAULT_STAGE_MS, now)).toBe(30_000);
   });
 
   it('keep the other options of the request', () => {
-    expect(withOfficePageBounds('docx', { multiPageOutput: 'first', pages: '2-3' })).toMatchObject({
+    expect(withOfficePageChainLimits('docx', { multiPageOutput: 'first', pages: '2-3' })).toMatchObject({
       multiPageOutput: 'first',
       pages: '2-3',
     });

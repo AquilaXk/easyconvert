@@ -5,7 +5,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { PayloadLimitError } from '../src/lib/types';
 import { PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
-import { withOfficePageBounds } from '../src/worker/office-suite-route';
+import { withOfficePageChainLimits } from '../src/worker/office-suite-route';
 import { oracleTest } from './helpers/oracle-test';
 import { flatOds } from './helpers/office-pair-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -50,9 +50,9 @@ describe('the PDF export of a spreadsheet that becomes the first page image', ()
   });
 
   it('is asked for by the spreadsheet bounds only for the first page of a request without a page selection', () => {
-    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
-    expect(withOfficePageBounds('ods', { multiPageOutput: 'first', pages: '2-3' }).pdfExportPageRange).toBeUndefined();
-    expect(withOfficePageBounds('xls', {}).pdfExportPageRange).toBeUndefined();
+    expect(withOfficePageChainLimits('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
+    expect(withOfficePageChainLimits('ods', { multiPageOutput: 'first', pages: '2-3' }).pdfExportPageRange).toBeUndefined();
+    expect(withOfficePageChainLimits('xls', {}).pdfExportPageRange).toBeUndefined();
   });
 });
 

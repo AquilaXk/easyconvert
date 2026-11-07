@@ -96,7 +96,7 @@ export const OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS = 120_000;
  * PDF of every other page; a text document or a presentation is laid out whole before any page is written, so that cut gains
  * nothing there. The limits are set here, over whatever the request carried.
  */
-export function withOfficePageBounds(src: string, options: WorkerEngineOptions): WorkerEngineOptions {
+export function withOfficePageChainLimits(src: string, options: WorkerEngineOptions): WorkerEngineOptions {
   const bounded = {
     ...options,
     libreOfficeFilter: undefined,
