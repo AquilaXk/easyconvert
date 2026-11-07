@@ -93,6 +93,8 @@ export interface DataPageSpec {
   maxRepetition: number;
   maxDefinition: number;
   values: Buffer;
+  /** The value encoding the header names; PLAIN by default. */
+  encoding?: number;
 }
 
 function levelSection(levels: Buffer | readonly number[], max: number): Buffer {
@@ -106,8 +108,41 @@ export function dataPage(spec: DataPageSpec): Buffer {
   if (spec.maxDefinition > 0) parts.push(levelSection(spec.definition ?? [], spec.maxDefinition));
   parts.push(spec.values);
   const body = Buffer.concat(parts);
-  const header = pageHeader({ type: PAGE_DATA, uncompressed: body.length, compressed: body.length, numValues: spec.numValues, encoding: ENC_PLAIN });
+  const header = pageHeader({ type: PAGE_DATA, uncompressed: body.length, compressed: body.length, numValues: spec.numValues, encoding: spec.encoding ?? ENC_PLAIN });
   return Buffer.concat([header, body]);
+}
+
+export interface DataPageV2Spec {
+  numValues: number;
+  numNulls: number;
+  numRows: number;
+  /** Encoded level sections, stored outside the compressed part with no length prefix. */
+  repetition?: Buffer;
+  definition?: Buffer;
+  values: Buffer;
+}
+
+/** One uncompressed v2 data page (PLAIN values). */
+export function dataPageV2(spec: DataPageV2Spec): Buffer {
+  const repetition = spec.repetition ?? Buffer.alloc(0);
+  const definition = spec.definition ?? Buffer.alloc(0);
+  const body = Buffer.concat([repetition, definition, spec.values]);
+  const t = new Thrift();
+  t.begin();
+  t.i32(1, 3);
+  t.i32(2, body.length);
+  t.i32(3, body.length);
+  t.structField(8);
+  t.i32(1, spec.numValues);
+  t.i32(2, spec.numNulls);
+  t.i32(3, spec.numRows);
+  t.i32(4, ENC_PLAIN);
+  t.i32(5, definition.length);
+  t.i32(6, repetition.length);
+  t.field(7, 2);
+  t.end();
+  t.end();
+  return Buffer.concat([t.bytes(), body]);
 }
 
 function writeSchemaField(t: Thrift, field: SchemaField): void {

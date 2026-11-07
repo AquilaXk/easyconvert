@@ -161,9 +161,15 @@ class ChunkReader {
       this.records += records;
     }
     let present = header.numValues;
+    // A writer may leave out the definition levels of a page of nothing but nulls (the header says so); the levels are all 0.
+    const allNull = header.definitionLevelsByteLength === 0 && header.numNulls === header.numValues;
     if (slices.definitions !== null) {
-      decodeRleHybrid(raw, repBytes, levelBytes, bitWidthOf(leaf.maxDef), header.numValues, slices.definitions);
-      present = countLevels(slices.definitions, leaf.maxDef, leaf.maxDef, 'definition', leaf);
+      if (allNull) {
+        present = 0;
+      } else {
+        decodeRleHybrid(raw, repBytes, levelBytes, bitWidthOf(leaf.maxDef), header.numValues, slices.definitions);
+        present = countLevels(slices.definitions, leaf.maxDef, leaf.maxDef, 'definition', leaf);
+      }
     }
     if (header.numNulls !== header.numValues - present || header.numRows !== records) {
       throw new ParquetFormatError(`Corrupted Parquet file: v2 page header disagrees with its levels in column '${leaf.name}'`);

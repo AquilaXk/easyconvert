@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildNestedParquet,
   dataPage,
+  dataPageV2,
   int32Plain,
   INT32,
   OPTIONAL,
@@ -10,6 +11,7 @@ import {
   rleRun,
 } from './helpers/nested-parquet';
 import type { SchemaField } from './helpers/nested-parquet';
+import { ENC_RLE_DICTIONARY, pageHeader, PAGE_DICTIONARY } from './helpers/hostile-parquet';
 import { decodeParquet, ParquetFormatError } from '../src/lib/conversions/parquet';
 
 /**
@@ -293,5 +295,58 @@ describe('levels that do not match the page or the row group', () => {
       // q puts the second item in the second `o` where p puts it in the first.
       expectRefused(build([0, 2, 1], [0, 1, 2]), /repetition level 1 where column 'o.items.q' must have 2/);
     });
+  });
+});
+
+describe('pages a writer may shorten', () => {
+  const fields: SchemaField[] = [
+    { name: 'v', repetition: OPTIONAL, physicalType: INT32 },
+    { name: 'xs', repetition: REPEATED, physicalType: INT32 },
+  ];
+
+  it('reads a v2 page of nothing but nulls that leaves out its definition levels, as a flat column is read', () => {
+    const nulls = dataPageV2({ numValues: 3, numNulls: 3, numRows: 3, values: Buffer.from([0]) });
+    const empty = dataPage({ numValues: 3, repetition: [0, 0, 0], definition: [0, 0, 0], maxRepetition: 1, maxDefinition: 1, values: Buffer.alloc(0) });
+    const file = buildNestedParquet({
+      fields,
+      rowGroups: [
+        {
+          numRows: 3,
+          chunks: [
+            { path: ['v'], physicalType: INT32, numValues: 3, pages: nulls },
+            { path: ['xs'], physicalType: INT32, numValues: 3, pages: empty },
+          ],
+        },
+      ],
+    });
+    expect(decodeParquet(file)).toEqual([0, 1, 2].map(() => ({ v: null, xs: [] })));
+  });
+
+  it('refuses a v2 page that leaves out its definition levels but names values', () => {
+    const page = dataPageV2({ numValues: 3, numNulls: 1, numRows: 3, values: int32Plain([1, 2]) });
+    const empty = dataPage({ numValues: 3, repetition: [0, 0, 0], definition: [0, 0, 0], maxRepetition: 1, maxDefinition: 1, values: Buffer.alloc(0) });
+    const file = buildNestedParquet({
+      fields,
+      rowGroups: [
+        {
+          numRows: 3,
+          chunks: [
+            { path: ['v'], physicalType: INT32, numValues: 3, pages: page },
+            { path: ['xs'], physicalType: INT32, numValues: 3, pages: empty },
+          ],
+        },
+      ],
+    });
+    expectRefused(file, /RLE/);
+  });
+
+  it('refuses a dictionary page of no bytes that names millions of entries', () => {
+    const dictionary = pageHeader({ type: PAGE_DICTIONARY, uncompressed: 0, compressed: 0, numValues: 5_000_000 });
+    const indices = dataPage({ numValues: 1, repetition: [0], definition: [1], maxRepetition: 1, maxDefinition: 1, values: Buffer.from([0]), encoding: ENC_RLE_DICTIONARY });
+    const file = buildNestedParquet({
+      fields: REPEATED_INT,
+      rowGroups: [{ numRows: 1, chunks: [{ path: ['xs'], physicalType: INT32, numValues: 1, pages: Buffer.concat([dictionary, indices]) }] }],
+    });
+    expectRefused(file, /truncated int32 data/);
   });
 });
