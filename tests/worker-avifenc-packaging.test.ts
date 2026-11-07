@@ -28,7 +28,7 @@ const pin = (name: string): string => {
   return match?.[1] ?? '';
 };
 
-const PINNED_ARCHIVES = ['CMAKE_SHA256_AARCH64', 'CMAKE_SHA256_X86_64', 'NASM_SHA256', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIBNG_SHA256', 'JPEG_SHA256'];
+const PINNED_ARCHIVES = ['CMAKE_SHA256_AARCH64', 'CMAKE_SHA256_X86_64', 'NASM_SHA256', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIBNG_SHA256', 'JPEG_SHA256', 'ARGPARSE_SHA256'];
 
 describe('the avifenc stage of the worker image', () => {
   it('exists, builds on the same base as the runner and runs the install script into /opt/avifenc', () => {
@@ -87,13 +87,16 @@ describe('the install script of the encoder', () => {
     expect(unpack.indexOf('sha256sum --check --strict')).toBeGreaterThan(0);
     expect(unpack.indexOf('sha256sum --check --strict')).toBeLessThan(unpack.indexOf('tar -xf'));
     // Every download goes through unpack: no other command fetches or pipes anything.
-    expect(INSTALL.match(/^\s*unpack [a-z]+ "https:\/\//gm)).toHaveLength(8);
+    expect(INSTALL.match(/^\s*unpack [a-z/]+ "https:\/\//gm)).toHaveLength(9);
     expect(INSTALL.match(/\bcurl --/g)).toHaveLength(1);
     expect(INSTALL).not.toMatch(/\bgit (clone|fetch)\b|\bwget\b|\| *(ba)?sh\b/);
+    // libavif's CMake fetches libargparse with git unless its sources are in ext/libargparse; they are, from a pinned archive, and the programs that need it are not built.
+    expect(INSTALL).toContain('unpack avif/ext/libargparse ');
+    expect(INSTALL).toContain('TARGET=avifenc build avif');
   });
 
   it('records the pinned sources in the note that ships with the program', () => {
-    for (const name of ['AVIF_COMMIT', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIBNG_SHA256', 'JPEG_SHA256']) expect(SOURCE, name).toContain(pin(name));
+    for (const name of ['AVIF_COMMIT', 'ARGPARSE_COMMIT', 'ARGPARSE_SHA256', 'AVIF_SHA256', 'AOM_SHA256', 'YUV_SHA256', 'PNG_SHA256', 'ZLIBNG_SHA256', 'JPEG_SHA256']) expect(SOURCE, name).toContain(pin(name));
     for (const version of ['AVIF_VERSION', 'AOM_VERSION', 'PNG_VERSION', 'ZLIBNG_VERSION', 'JPEG_VERSION', 'CMAKE_VERSION']) expect(SOURCE, version).toContain(pin(version));
   });
 

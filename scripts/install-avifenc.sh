@@ -33,6 +33,11 @@ CMAKE_SHA256_X86_64="0dc2e9a6860f06bf10bd8fadc03e35d9eeb4df46e33763a7e480e987758
 AVIF_VERSION="1.2.1"
 AVIF_COMMIT="fcb084c9387e367750f5375e462005ce298f57cc"
 AVIF_SHA256="9c859c7c12ccb0f407511bfe303e6a7247f5f6738f54852662c6df8048daddf4"
+# The command-line parser that libavif's CMake fetches with git for its avifgainmaputil program (the commit its ext/libargparse.cmd names).
+# avifenc does not use it and it is not built, but the configuration of the applications asks for its sources, so they are supplied from the
+# pinned archive instead of the network.
+ARGPARSE_COMMIT="ee74d1b53bd680748af14e737378de57e2a0a954"
+ARGPARSE_SHA256="7727b0498851e5b6a6fcd734eb667a8a231897e2c86a357aec51cc0664813060"
 AOM_VERSION="3.12.1"
 AOM_SHA256="9e9775180dec7dfd61a79e00bda3809d43891aee6b2e331ff7f26986207ea22e"
 YUV_VERSION="1904.20250204"
@@ -96,14 +101,14 @@ fetch() {
 # An archive downloaded, checked against its pinned digest, and unpacked into <work>/<name> without its top directory. An archive that
 # GitHub made from a tag (git archive) records the commit it was made from, which is checked as well when the caller names one.
 unpack() {
-  local name="$1" url="$2" digest="$3" commit="${4:-}" archive="$work/$1.archive"
+  local name="$1" url="$2" digest="$3" commit="${4:-}" archive="$work/download"
   fetch "$archive" "$url"
   echo "${digest}  ${archive}" | sha256sum --check --strict -
   if [ -n "$commit" ] && ! grep -aq "comment=$commit" < <(gzip -dc "$archive" | head -c 2048); then
     echo "install-avifenc.sh: $url was not made from commit $commit" >&2
     exit 1
   fi
-  mkdir "$work/$name"
+  mkdir -p "$work/$name"
   tar -xf "$archive" -C "$work/$name" --strip-components=1
   rm -f "$archive"
 }
@@ -117,6 +122,7 @@ unpack jpeg "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${
 unpack aom "https://storage.googleapis.com/aom-releases/libaom-${AOM_VERSION}.tar.gz" "$AOM_SHA256"
 unpack yuv "https://deb.debian.org/debian/pool/main/liby/libyuv/libyuv_0.0.${YUV_VERSION}.orig.tar.xz" "$YUV_SHA256"
 unpack avif "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v${AVIF_VERSION}.tar.gz" "$AVIF_SHA256" "$AVIF_COMMIT"
+unpack avif/ext/libargparse "https://github.com/kmurray/libargparse/archive/${ARGPARSE_COMMIT}.tar.gz" "$ARGPARSE_SHA256" "$ARGPARSE_COMMIT"
 
 prefix="$work/prefix"
 # The assembler of the x86-64 assembly in libaom and libjpeg-turbo (a Debian 13 package of the same release exists; this one is the pinned
@@ -141,12 +147,13 @@ common=(-G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$
   -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG $lto" -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG $lto"
   -DCMAKE_AR="$(command -v gcc-ar)" -DCMAKE_RANLIB="$(command -v gcc-ranlib)")
 
+# Configures a library, builds it (all of it, or only the target named by TARGET) and installs it into the prefix (a library; not when a target is named).
 build() {
   local name="$1"
   shift
   "$cmake" -S "$work/$name" -B "$work/build-$name" "${common[@]}" "$@" > "$work/$name.log" 2>&1 || { cat "$work/$name.log" >&2; exit 1; }
-  "$cmake" --build "$work/build-$name" --parallel "$jobs" >> "$work/$name.log" 2>&1 || { tail -n 60 "$work/$name.log" >&2; exit 1; }
-  "$cmake" --install "$work/build-$name" >> "$work/$name.log" 2>&1
+  "$cmake" --build "$work/build-$name" --parallel "$jobs" ${TARGET:+--target "$TARGET"} >> "$work/$name.log" 2>&1 || { tail -n 60 "$work/$name.log" >&2; exit 1; }
+  if [ -z "${TARGET:-}" ]; then "$cmake" --install "$work/build-$name" >> "$work/$name.log" 2>&1; fi
 }
 
 build zlib -DZLIB_COMPAT=ON -DWITH_GTEST=OFF -DBUILD_TESTING=OFF -DWITH_FUZZERS=OFF
@@ -155,8 +162,9 @@ build jpeg -DENABLE_SHARED=0 -DENABLE_STATIC=1 -DWITH_TURBOJPEG=0 -DWITH_JAVA=0 
 build aom -DENABLE_DOCS=0 -DENABLE_TESTS=0 -DENABLE_TESTDATA=0 -DENABLE_TOOLS=0 -DENABLE_EXAMPLES=0 -DENABLE_NASM="$nasm_flag" \
   -DCONFIG_PIC=1 -DCONFIG_WEBM_IO=0
 build yuv -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POLICY_DEFAULT_CMP0069=NEW
-# libyuv installs a shared library beside the static one, and the search for -lyuv would take the shared one.
-build avif -DAVIF_CODEC_AOM=SYSTEM -DAVIF_LIBYUV=SYSTEM -DLIBYUV_LIBRARY="$prefix/lib/libyuv.a" -DAVIF_JPEG=SYSTEM -DAVIF_ZLIBPNG=SYSTEM -DAVIF_BUILD_APPS=ON -DAVIF_BUILD_TESTS=OFF \
+# libyuv installs a shared library beside the static one, and the search for -lyuv would take the shared one. Only avifenc is built: libavif's
+# other programs (avifdec, avifgainmaputil) are not needed and nothing of the project is installed from here but that program.
+TARGET=avifenc build avif -DAVIF_CODEC_AOM=SYSTEM -DAVIF_LIBYUV=SYSTEM -DLIBYUV_LIBRARY="$prefix/lib/libyuv.a" -DAVIF_JPEG=SYSTEM -DAVIF_ZLIBPNG=SYSTEM -DAVIF_BUILD_APPS=ON -DAVIF_BUILD_TESTS=OFF \
   -DAVIF_BUILD_EXAMPLES=OFF -DAVIF_BUILD_MAN_PAGES=OFF -DAVIF_LIBSHARPYUV=OFF -DAVIF_LIBXML2=OFF \
   -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc $lto"
 program="$work/build-avif/avifenc"
