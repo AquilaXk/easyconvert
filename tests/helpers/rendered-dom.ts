@@ -1,6 +1,7 @@
 import { createElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { NextIntlClientProvider } from 'next-intl';
+import { AppRouterContext, type AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import { testMessages, type TestLocale } from './intl-messages';
 import { parse } from 'parse5';
 import type { DefaultTreeAdapterMap } from 'parse5';
@@ -18,9 +19,14 @@ type TextNode = DefaultTreeAdapterMap['textNode'];
 const NON_VISIBLE_TAGS = new Set(['script', 'style', 'template', 'noscript']);
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 
+const noop = () => undefined;
+
+/** The router a page reads through `useRouter`, which a static render has no app to mount; nothing navigates in markup. */
+const STATIC_ROUTER: AppRouterInstance = { back: noop, forward: noop, refresh: noop, push: noop, replace: noop, prefetch: noop };
+
 /** Renders under the page's message provider, as the locale layout does; English unless a test names the locale. */
 export function renderDom(element: ReactElement, locale: TestLocale = 'en'): DomElement {
-  const provided = createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: element });
+  const provided = createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: createElement(AppRouterContext.Provider, { value: STATIC_ROUTER, children: element }) });
   const document = parse(`<!DOCTYPE html><html><body>${renderToStaticMarkup(provided)}</body></html>`);
   const html = document.childNodes.find((n): n is DomElement => 'tagName' in n && n.tagName === 'html');
   if (!html) throw new Error('rendered markup has no <html> element');

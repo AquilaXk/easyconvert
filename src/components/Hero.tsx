@@ -3,6 +3,7 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
+import HomeFormatPicker from './workbench/HomeFormatPicker';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
 import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload, type HeroOperation } from './hero/useHeroUpload';
@@ -21,12 +22,17 @@ export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps
   const t = useTranslations('hero');
   const upload = useHeroUpload(onFilesSelected, undefined);
   return (
-    <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
+    <section className="pt-10 pb-6 lg:pt-14">
       <input {...upload.fileInput} />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center lg:text-left lg:max-w-2xl">
-          <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{t('title.default')}</h1>
-          <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{t('subtitle.default')}</p>
+        <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
+          <div className="text-center lg:text-left lg:max-w-2xl">
+            <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{t('title.default')}</h1>
+            <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{t('subtitle.default')}</p>
+          </div>
+          <div className="mt-8 lg:mt-0 flex justify-center shrink-0">
+            <HomeFormatPicker />
+          </div>
         </div>
         <div className="mt-10 lg:mt-12 max-w-2xl mx-auto">
           <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit} />

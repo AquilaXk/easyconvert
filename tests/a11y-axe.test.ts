@@ -19,6 +19,7 @@ vi.mock('next/navigation', async (importOriginal) => ({
 
 const { default: HomePageView } = await import('../src/components/pages/HomePageView');
 const { default: ConverterPageView } = await import('../src/components/pages/ConverterPageView');
+const { default: PricingPageView } = await import('../src/components/pages/PricingPageView');
 const { default: NotFoundPageView } = await import('../src/components/pages/NotFoundPageView');
 const { default: Header } = await import('../src/components/Header');
 const { default: Footer } = await import('../src/components/Footer');
@@ -46,6 +47,8 @@ const PAGES: PageCase[] = [
   { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
   { name: 'converter pair /pdf-to-docx', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
   { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }) },
+  { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS }) },
+  { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CONVERSIONS }) },
   { name: 'not found', locale: 'en', page: () => createElement(NotFoundPageView) },
   {
     name: 'terms',

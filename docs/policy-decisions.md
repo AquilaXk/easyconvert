@@ -6425,3 +6425,19 @@ Security
   - **Labelling by name in the registry**: the full names are long and the picker and the format cards already use the id.
 - **Verified by**: `tests/site-review-copy.test.ts`.
 - **Revisit when**: the tiles of the operation pages may change layout; then they name the operation and not the format twice.
+
+## 184. The site has a pricing page that states the free plan's limits and no price, the home page picks a pair from the registry, and the mobile menu is a full-screen sheet
+
+- **Status**: Implemented (QA approved the visual changes on 2026-11-08; before and after screenshots go to QA before the merge).
+- **Decision**:
+  - **`/pricing` (and `/ko/pricing`) shows one plan, Free, at no cost.** Its limits are read from `src/lib/plan-limits.ts`: the daily conversions (`FREE_DAILY_CONVERSIONS`, and the anonymous allowance the server reads), the largest file (`PLAN_MAX_FILE_BYTES.free`), the simultaneous conversions (`DEFAULT_FREE_CONCURRENCY`), the processing time (`FREE_PROCESSING_MINUTES`) and the retention after a download (`DELIVERED_FILE_RETENTION_MINUTES`). The last two are new constants, and the defaults of `JOB_DEADLINE_MAX_MS_FREE` and `RESULT_DELIVERED_GRACE_SECONDS` in the configuration schema now read them, so the page and the server cannot drift. The page says that no paid plan is on sale and names no price; `PAID_PLANS_ON_SALE` stays false.
+  - **"Pricing" joins the header and the footer (Resources column).** The header's mobile menu lists the same links.
+  - **The mobile menu is a full-screen modal sheet.** Tools and API are collapsed groups, Log in and Sign up sit above the fold, focus stays inside the sheet, Escape closes it and focus goes back to the menu button.
+  - **The home hero has a pair of format tiles.** Choosing a source and a target that the registry converts it to opens the page of that pair; the list of targets is the registry's, not a list of the page. A "High-Quality Conversions" card states only what is measured or counted: the nightly comparison with reference converters, the options that follow the format, and the number of formats and categories of the registry.
+  - **The copy button of the home API sample sits in the sample's title bar,** so it no longer covers the first line on a narrow screen. The gap between the upload card and the catalog is narrower.
+- **Why**: The launch is free only (QA decision of 2026-10-30); a visitor who looks for prices needs the limits and the plain statement that nothing is for sale. The reference sites it follows have a pricing page, a sheet for the mobile menu and a format picker on the home page.
+- **Alternatives rejected**:
+  - **Writing the limits into the page copy**: the numbers would drift from the ones the server enforces.
+  - **A pricing page with placeholder paid plans**: it would state prices that do not exist.
+- **Verified by**: `tests/pricing-page.test.ts`, `tests/mobile-menu.test.ts`, `tests/home-format-picker.test.ts`, `tests/a11y-axe.test.ts` (the pricing page in both languages).
+- **Revisit when**: a paid plan goes on sale (the page then lists it and `PAID_PLANS_ON_SALE` turns on), or the format tiles of the home page change layout.
