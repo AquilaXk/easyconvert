@@ -49,3 +49,52 @@ describe('LZ4_RAW decoding of parquet pages', () => {
     expect(() => decompressLz4Raw(Buffer.from([0x40, 0x61, 0x62]), 4)).toThrow(/LZ4_RAW literal exceeds bounds/);
   });
 });
+
+describe('LZ4 (Hadoop-framed, then raw) decoding of parquet pages', () => {
+  const rawBlock = Buffer.from([0x42, 0x61, 0x62, 0x63, 0x64, 0x04, 0x00, 0x20, 0x5a, 0x21]);
+  const decoded = 'abcdabcdabZ!';
+
+  function framed(...blocks: { size: number; body: Buffer }[]): Buffer {
+    return Buffer.concat(
+      blocks.map(({ size, body }) => {
+        const prefix = Buffer.alloc(8);
+        prefix.writeUInt32BE(size, 0);
+        prefix.writeUInt32BE(body.length, 4);
+        return Buffer.concat([prefix, body]);
+      })
+    );
+  }
+
+  it('decodes consecutive Hadoop-framed blocks', () => {
+    const data = framed({ size: 12, body: rawBlock }, { size: 12, body: rawBlock });
+    expect(decompressPage(CompressionCodec.LZ4, data, 24).toString('utf-8')).toBe(decoded + decoded);
+  });
+
+  it('falls back to a bare raw block when the data is not framed', () => {
+    expect(decompressPage(CompressionCodec.LZ4, rawBlock, 12).toString('utf-8')).toBe(decoded);
+  });
+
+  it('refuses a framed block that claims more than the page size, without allocating it', () => {
+    const hostile = framed({ size: 0xffffffff, body: rawBlock });
+    expect(() => decompressPage(CompressionCodec.LZ4, hostile, 12)).toThrow(ParquetFormatError);
+  });
+
+  it('refuses framed blocks that decode to fewer or more bytes than the page declares', () => {
+    const data = framed({ size: 12, body: rawBlock });
+    expect(() => decompressPage(CompressionCodec.LZ4, data, 24)).toThrow(ParquetFormatError);
+    expect(() => decompressPage(CompressionCodec.LZ4, data, 6)).toThrow(ParquetFormatError);
+  });
+
+  it('refuses a raw block that expands beyond the page size', () => {
+    expect(() => decompressPage(CompressionCodec.LZ4, rawBlock, 8)).toThrow(/exceeds|bounds/);
+  });
+});
+
+describe('zstd frame of an empty page', () => {
+  const emptyFrame = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x00, 0x01, 0x00, 0x00]);
+
+  it('decodes to no bytes through both decoders', () => {
+    expect(decompressPage(CompressionCodec.ZSTD, emptyFrame, 0).length).toBe(0);
+    expect(decodeZstdFallback(emptyFrame, 0).length).toBe(0);
+  });
+});
