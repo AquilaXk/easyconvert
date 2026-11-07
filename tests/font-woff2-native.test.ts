@@ -11,6 +11,7 @@ import { WOFF2_BROTLI_LARGE_FONT_QUALITY, WOFF2_BROTLI_MAX_QUALITY, WOFF2_BROTLI
 const WOFF2_BROTLI_QUALITY_UP_TO_LIMIT = WOFF2_BROTLI_MAX_QUALITY;
 import { captureError } from './helpers/capture-error';
 import { readSfntTables } from './helpers/font-oracles';
+import { readWoff2Reference } from './helpers/woff2-reference';
 import { skipUnless } from './helpers/strict-skip';
 import { COLLECTION_FLAVOR, brotliFont, buildWoff2, collectionHeader, collectionTables, minimalTransformedFont } from './helpers/woff2-builder';
 
@@ -447,4 +448,41 @@ describe.skipIf(!haveBoth)('the encoder program takes the Brotli quality and che
     expect(written.equals(reference.woff2 ?? Buffer.alloc(0))).toBe(true);
     expect(decodeWoff2(written, 'big').tables['ZZZZ'].data.length).toBe(WOFF2_BROTLI_MAX_QUALITY_BYTES);
   }, 60_000);
+});
+
+describe.skipIf(!haveBoth)('the encoder program stores the hmtx table in its transformed form (section 5.4 of the Recommendation)', () => {
+  function compressFile(name: string): Buffer {
+    const dir = tmpDir('woff2-hmtx-');
+    const input = path.join(dir, 'input.ttf');
+    fs.writeFileSync(input, fixture(name));
+    const run = spawnSync(compressor!, [input], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    return fs.readFileSync(path.join(dir, 'input.woff2'));
+  }
+  const hmtxRow = (woff2: Buffer) => readWoff2Reference(woff2).directory.find((row) => row.tag === 'hmtx');
+
+  it.each(['dejavu-sans-latin.ttf', 'dejavu-serif-hinted-ascii.ttf', 'synthetic-triplets.ttf'])('transforms the hmtx table of %s, which the decoders read back to the source table', async (name) => {
+    const woff2 = compressFile(name);
+    expect(hmtxRow(woff2)?.version).toBe(1);
+    expect(hmtxRow(woff2)?.transformLength).toBeLessThan(hmtxRow(woff2)!.origLength);
+    const source = readSfntTables(fixture(name));
+    const fromProgram = readSfntTables((await decompressWithNativeWoff2(woff2))!);
+    expect(fromProgram.get('hmtx')!.equals(source.get('hmtx')!)).toBe(true);
+    expect(decodeWoff2(woff2, name).tables['hmtx'].data.equals(source.get('hmtx')!)).toBe(true);
+  });
+
+  it('writes a smaller file than the reference encoder does for the same font', () => {
+    expect(compressFile('dejavu-sans-latin.ttf').length).toBeLessThan(fixture('dejavu-sans-latin.reference.woff2').length);
+    expect(compressFile('dejavu-serif-hinted-ascii.ttf').length).toBeLessThan(fixture('dejavu-serif-hinted-ascii.reference.woff2').length);
+  });
+
+  it('leaves the hmtx table of a font without outlines in glyf as it is', () => {
+    expect(hmtxRow(compressFile('synthetic-cff.otf'))?.version).toBe(0);
+  });
+
+  it('leaves the tables of a collection as they are, where the transform of shared glyf and loca tables is not implemented', async () => {
+    const woff2 = compressFile('pair.ttc');
+    expect(readWoff2Reference(woff2).directory.every((row) => row.tag !== 'hmtx' || row.version === 0)).toBe(true);
+    expect(await decompressWithNativeWoff2(woff2)).not.toBeNull();
+  });
 });

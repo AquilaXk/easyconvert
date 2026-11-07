@@ -14,6 +14,8 @@ upstream file as it is, each later commit is one change of ours.
       is not the size of the file, no table or more than 4096 tables, a total size field above kDefaultMaxSize are declined with exit status 1),
       and the buffer starts at most 100 times the size of the input instead of at the size the header announces.
   src/woff2_enc.cc         -> src/woff2_enc.cc         SHA-256 of the upstream file c7fad4dcb577219d292296f471ba68818473ebd25f6f9127ad17b3bef71deb37
+      Change of ours, in its own commit: TransformFontCollection also calls TransformHmtxTable (transform.cc, which the library has and the decoder
+      reads back) for a font that is not part of a collection, so that the hmtx table is stored in the transformed form of section 5.4.
 
 The rest of the libraries is not copied: the woff2 library (the other files of src/ and include/) and the Brotli library come from the archives of the
 pinned commits (the Brotli commit is the one the woff2 tree names as its submodule). scripts/install-woff2.sh checks the digest of each archive,

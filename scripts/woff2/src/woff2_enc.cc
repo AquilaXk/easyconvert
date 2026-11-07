@@ -192,12 +192,23 @@ uint32_t CompressedBufferSize(uint32_t original_size) {
 }
 
 bool TransformFontCollection(FontCollection* font_collection) {
+  /* EasyConvert: the hmtx table is stored transformed (section 5.4 of the
+     Recommendation) for a font that is not part of a collection. The library
+     has the transform (TransformHmtxTable, transform.cc) and the decoder
+     rebuilds it, but the encoder never called it. A collection is left as it
+     was: its fonts may share glyf and loca tables, which the transform does
+     not handle (see the comment in woff2_dec.cc). */
+  const bool transform_hmtx = font_collection->flavor != kTtcFontFlavor;
   for (auto& font : font_collection->fonts) {
     if (!TransformGlyfAndLocaTables(&font)) {
 #ifdef FONT_COMPRESSION_BIN
       fprintf(stderr, "glyf/loca transformation failed.\n");
 #endif
       return FONT_COMPRESSION_FAILURE();
+    }
+    /* A font that the transform does not fit keeps its hmtx table as it is. */
+    if (transform_hmtx) {
+      TransformHmtxTable(&font);
     }
   }
 
