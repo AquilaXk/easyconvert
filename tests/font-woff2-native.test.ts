@@ -252,6 +252,30 @@ describe.skipIf(!haveProgram)('the encoder program stores the hmtx table in its 
     expect(compressFile('dejavu-serif-hinted-ascii.ttf').length).toBeLessThan(fixture('dejavu-serif-hinted-ascii.reference.woff2').length);
   });
 
+  it('stores the hmtx table as it is when a glyph without outlines has a left side bearing other than zero (section 5.4)', async () => {
+    const font = decodeSfnt(fixture('dejavu-sans-latin.ttf'), 'empty-lsb');
+    const loca = font.tables['loca'].data;
+    const longOffsets = font.tables['head'].data.readInt16BE(50) === 1;
+    const offsetAt = (glyph: number): number => (longOffsets ? loca.readUInt32BE(glyph * 4) : loca.readUInt16BE(glyph * 2) * 2);
+    const glyphCount = font.tables['maxp'].data.readUInt16BE(4);
+    const numHMetrics = font.tables['hhea'].data.readUInt16BE(34);
+    let empty = -1;
+    for (let glyph = 0; glyph < Math.min(glyphCount, numHMetrics) && empty < 0; glyph++) if (offsetAt(glyph) === offsetAt(glyph + 1)) empty = glyph;
+    expect(empty, 'the fixture has an empty glyph among the proportional ones').toBeGreaterThanOrEqual(0);
+    const hmtx = Buffer.from(font.tables['hmtx'].data);
+    hmtx.writeInt16BE(123, empty * 4 + 2);
+    font.tables['hmtx'] = { ...font.tables['hmtx'], data: hmtx };
+    const written = await encodeWoff2Async(font);
+    expect(decodeWoff2(written, 'empty-lsb').tables['hmtx'].data.equals(hmtx)).toBe(true);
+    const decoder = pinnedWoff2Program('woff2_decompress');
+    if (decoder !== null) {
+      const dir = tmpDir('woff2-empty-lsb-');
+      fs.writeFileSync(path.join(dir, 'input.woff2'), written);
+      expect(spawnSync(decoder, [path.join(dir, 'input.woff2')]).status).toBe(0);
+      expect(readSfntTables(fs.readFileSync(path.join(dir, 'input.ttf'))).get('hmtx')!.equals(hmtx)).toBe(true);
+    }
+  });
+
   it('leaves the hmtx table of a font without outlines in glyf as it is', () => {
     expect(hmtxRow(compressFile('synthetic-cff.otf'))?.version).toBe(0);
   });

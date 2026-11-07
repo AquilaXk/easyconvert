@@ -17,6 +17,8 @@ upstream file as it is, each later commit is one change of ours.
       Change of ours, in its own commit: TransformFontCollection also calls TransformHmtxTable (transform.cc, which the library has and the decoder
       reads back) for a font that is not part of a collection, so that the hmtx table is stored in the transformed form of section 5.4.
   src/transform.cc        -> src/transform.cc         SHA-256 of the upstream file 94dac0e7bc140d26483372964826429c6500a404432191541104fd78bd1cb87a
+      Change of ours, in its own commit: the transform of the hmtx table compares the left side bearing of an empty glyph with zero, as section 5.4 asks,
+      where it skipped the glyph and so stored a value that the decoder does not give back.
 
 The rest of the libraries is not copied: the woff2 library (the other files of src/ and include/) and the Brotli library come from the archives of the
 pinned commits (the Brotli commit is the one the woff2 tree names as its submodule). scripts/install-woff2.sh checks the digest of each archive,

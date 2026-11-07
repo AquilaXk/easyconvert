@@ -300,6 +300,20 @@ bool TransformGlyfAndLocaTables(Font* font) {
   return true;
 }
 
+namespace {
+
+/* EasyConvert: the left side bearing that the decoder rebuilds for a glyph.
+   It is the xMin of the glyph, and zero for an empty glyph, which has no
+   bounding box: "hmtx table transform can only be applied if leftSideBearing
+   of an empty glyph is set to zero" (WOFF2 spec, 5.4). The test was skipped
+   for empty glyphs, so a font whose empty glyph has another left side bearing
+   was stored with a value that the decoder does not give back. */
+int16_t HmtxLsbOf(const Glyph& glyph, size_t glyph_size) {
+  return glyph_size > 0 ? glyph.x_min : 0;
+}
+
+}  // namespace
+
 // See https://www.microsoft.com/typography/otspec/hmtx.htm
 // See WOFF2 spec, 5.4. Transformed hmtx table format
 bool TransformHmtxTable(Font* font) {
@@ -362,7 +376,7 @@ bool TransformHmtxTable(Font* font) {
         return FONT_COMPRESSION_FAILURE();
       }
 
-      if (glyph_size > 0 && glyph.x_min != lsb) {
+      if (HmtxLsbOf(glyph, glyph_size) != lsb) {
         remove_proportional_lsb = false;
       }
 
@@ -373,7 +387,7 @@ bool TransformHmtxTable(Font* font) {
       if (!hmtx_buf.ReadS16(&lsb)) {
         return FONT_COMPRESSION_FAILURE();
       }
-      if (glyph_size > 0 && glyph.x_min != lsb) {
+      if (HmtxLsbOf(glyph, glyph_size) != lsb) {
         remove_monospace_lsb = false;
       }
       monospace_lsbs.push_back(lsb);
