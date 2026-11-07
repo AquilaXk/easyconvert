@@ -211,7 +211,7 @@
     },
     {
       "families": ["pdf-ops"],
-      "match": "^src/lib/conversions/(pdf-[^/]*|pdfjs-node-compat|page-range)\\.ts$|^src/lib/conversions/pdf-postprocess/|^src/worker/pdf-decrypt\\.ts$"
+      "match": "^src/lib/conversions/(pdf-[^/]*|pdfjs-node-compat|page-range|page-intervals)\\.ts$|^src/lib/conversions/pdf-postprocess/|^src/worker/pdf-decrypt\\.ts$"
     },
     {
       "families": ["vector"],
