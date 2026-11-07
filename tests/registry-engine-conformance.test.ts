@@ -640,6 +640,7 @@ async function probeInputs(source: string): Promise<Buffer[]> {
  * `ebook-convert` for every source that offers them. Authored by hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
+  ai: ['dxf', 'svg'],
   csv: ['jpg', 'png', 'xls'],
   azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
@@ -655,7 +656,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   docx: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   dot: ['doc'],
   dotx: ['doc', 'jpg', 'png', 'rtf'],
-  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   htm: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
@@ -685,7 +686,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   ppsx: ['eps', 'jpg', 'md', 'png', 'ppt'],
   ppt: ['eps', 'jpg', 'md', 'odp', 'png'],
   pptm: ['eps', 'jpg', 'md', 'png', 'ppt'],
-  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   pptx: ['eps', 'jpg', 'md', 'png', 'ppt'],
   rb: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   rst: ['rtf'],
@@ -1023,14 +1024,14 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
   // Pairs that the dispatcher routes to a native engine moved to NATIVE_ENGINE_PAIRS.
   const WITHDRAWN: Readonly<Record<string, readonly string[]>> = {
-    ai: ['dxf', 'emf', 'svg', 'wmf'],
+    ai: ['emf', 'wmf'],
     azw3: ['docx'],
     cb7: ['cbz'],
     cbr: ['cbz'],
     cbt: ['cbz'],
     cbz: ['cbr'],
-    cdr: ['dxf', 'emf', 'wmf'],
-    cgm: ['dxf', 'emf', 'wmf'],
+    cdr: ['emf', 'wmf'],
+    cgm: ['emf', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     dbf: ['json', 'tsv'],
     dds: ['tga'],
@@ -1040,10 +1041,10 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     docx: ['hwp', 'hwpx', 'pages', 'xps'],
     dps: ['swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
-    dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
-    dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
-    emf: ['avif', 'bmp', 'dxf', 'emf', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp', 'wmf'],
-    eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    dwg: ['cgm', 'dwg', 'wmf'],
+    dxf: ['cgm', 'dwg', 'wmf'],
+    emf: ['dxf', 'emf', 'wmf'],
+    eps: ['emf', 'wmf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     htm: ['doc', 'jpg', 'png', 'rtf'],
@@ -1068,21 +1069,19 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     pptm: ['emf', 'swf', 'xps'],
     pptx: ['emf', 'key', 'swf', 'xps'],
     prn: ['tsv'],
-    ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    ps: ['emf', 'wmf'],
     qpw: ['tsv'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
     slk: ['tsv'],
     snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
-    svg: ['ico', 'odd', 'psd'],
-    svgz: ['ico', 'odd', 'psd'],
     sxd: ['odp', 'pptx'],
     tcr: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     txt: ['tex'],
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     wk1: ['tsv'],
     wks: ['tsv'],
-    wmf: ['dxf', 'emf', 'wmf'],
+    wmf: ['emf', 'wmf'],
     xls: ['xps'],
     xlsm: ['json'],
     xlsx: ['numbers', 'xps'],
@@ -1554,6 +1553,8 @@ describe('native-engine pairs route through the dispatcher', () => {
     avif: [],
   };
   const PDF_SOURCE = 'pdf';
+  /** An Illustrator file saved with PDF compatibility is a PDF with private data: it takes the PDF path, so its probe is the seed PDF. */
+  const PDF_SOURCES = new Set([PDF_SOURCE, 'ai']);
   const SVG_TARGET = 'svg';
   /** Resolution requested from the PDF rasterizer, and the PostScript points per inch of PDF page sizes. */
   const PDF_RASTER_DPI = 100;
@@ -1576,9 +1577,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
   const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
   const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
-  const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
+  const pdfToSvg = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && (IMAGE_TARGETS.has(target) || target === 'tiff'));
-  const pdfToPageFormat = pairs.filter(([source, target]) => source === PDF_SOURCE && (ENCODED_PAGE_TARGETS.has(target) || POSTSCRIPT_TARGETS.has(target) || target === 'dxf' || target === 'odd') && target !== 'tiff');
+  const pdfToPageFormat = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && (ENCODED_PAGE_TARGETS.has(target) || POSTSCRIPT_TARGETS.has(target) || target === 'dxf' || target === 'odd') && target !== 'tiff');
   const pdfToBridgedOffice = pairs.filter(([source, target]) => source === PDF_SOURCE && target === 'doc');
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
@@ -1590,7 +1591,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     // The pictures of a text, Markdown, reStructuredText or HTML document are the pages of its PDF, drawn by Poppler; the office suite writes its Word 97 and RTF files.
     if (DOCUMENT_TEXT_SOURCES.has(source) || source === TABLE_PICTURE_SOURCE) return IMAGE_TARGETS.has(target) ? { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' } : { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     // A table read from a PDF is written as .xls, and a text or slide document as Word 97 or PowerPoint 97, by the office suite, like every other source of those formats.
-    if (source !== PDF_SOURCE || BRIDGED_PDF_TARGETS.has(target)) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
+    if (!PDF_SOURCES.has(source) || BRIDGED_PDF_TARGETS.has(target)) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET || target === 'dxf') return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     if (POSTSCRIPT_TARGETS.has(target)) return { envVar: 'PDFTOPS_PATH', engineName: 'pdftops' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
@@ -1604,6 +1605,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     pptx: 'golden/office/drawingml-shapes-presentation.pptx',
     odg: 'office-sources/drawing-two-pages.odg',
     pdf: 'sample.pdf',
+    ai: 'sample.pdf',
     parquet: 'parquet/plain-uncompressed.parquet',
   };
   /** Table sources that are text: a small table with a quoted cell. */
