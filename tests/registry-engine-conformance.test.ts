@@ -368,9 +368,12 @@ const WORD_MAIN = `${OPENXML}.wordprocessingml.document.main+xml`;
 const EXCEL_MAIN = `${OPENXML}.spreadsheetml.sheet.main+xml`;
 const POWERPOINT_MAIN = `${OPENXML}.presentationml.presentation.main+xml`;
 
+/** A scanned line of English text: the comic to text routes read the lettering with OCR, and a page without any is refused with a typed error. */
+const LETTERED_PAGE = readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png'));
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
-  zip.file('page-001.png', PNG_SEED);
+  zip.file('page-001.png', LETTERED_PAGE);
   zip.file('page-002.png', PNG_SEED);
   return zip.generateAsync({ type: 'nodebuffer' });
 }
@@ -387,7 +390,7 @@ async function buildProbeZip(name: string, content: string): Promise<Buffer> {
 
 async function buildProbeCbc(): Promise<Buffer> {
   const volume = new JSZip();
-  volume.file('page-001.png', readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png')));
+  volume.file('page-001.png', LETTERED_PAGE);
   const collection = new JSZip();
   collection.file('comics.txt', 'volume.cbz:Probe volume\n');
   collection.file('volume.cbz', await volume.generateAsync({ type: 'nodebuffer' }));
@@ -449,7 +452,7 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
   // A comic RAR archive and a Mobipocket book under its Palm name: the same pages and the same book as the CBZ and MOBI probes.
-  cbr: () => buildStoredRar4([{ name: 'page-001.png', data: PNG_SEED }, { name: 'page-002.png', data: PNG_SEED }]),
+  cbr: () => buildStoredRar4([{ name: 'page-001.png', data: LETTERED_PAGE }, { name: 'page-002.png', data: PNG_SEED }]),
   prc: buildProbeMobi,
   // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
   // a MOBI (the probe of AZW and AZW3 too) whose text record holds HTML, an OEB package that carries its text, a Print Replica book around a pdf-lib PDF, a collection of one comic
