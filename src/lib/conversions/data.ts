@@ -813,7 +813,7 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
       text: () => stringifyJsonLossless(records, JSON_INDENT),
     };
   }
-  throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
+  throw new UnsupportedTargetError(`Unsupported data conversion from ${src} to ${tgt}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1087,7 @@ async function convertStructured(
   }
 
   if (!TABLE_TARGETS.has(tgt)) {
-    throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
+    throw new UnsupportedTargetError(`Unsupported data conversion from ${src} to ${tgt}`);
   }
   const table = tabulate(source.records(), tgt, source.fields);
   assertTableUnicode(table, tgt);

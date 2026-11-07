@@ -28,8 +28,8 @@ export interface ConversionTrace {
   cause?: unknown;
   /** The text of the request an error message might repeat; built from the file name and the options only when the line of a failure is written. */
   privateText?: () => string[];
-  /** Keeps the name of the uploaded file and the options as received for `privateText`. */
-  keepPrivate(fileName: string, options: ConversionOptions): void;
+  /** Keeps the names of the uploaded files and the options as received for `privateText`. */
+  keepPrivate(fileNames: string | readonly string[], options: ConversionOptions): void;
 }
 
 interface ConversionOutcome {
@@ -77,9 +77,12 @@ function passwordsOf(options: ConversionOptions): unknown[] {
  * forms. A message is composed before it is read, but a percent-encoded name is not, so an encoded name sent decomposed
  * is cut only by the encoding of the decomposed form.
  */
-function privateTextOf(fileName: string, options: ConversionOptions): string[] {
-  const leaf = fileName.split(PATH_SEPARATORS).pop() ?? fileName;
-  const received = [fileName, leaf, leaf.replace(EXTENSION, ''), ...passwordsOf(options)].filter(
+function privateTextOf(fileNames: readonly string[], options: ConversionOptions): string[] {
+  const names = fileNames.flatMap((fileName) => {
+    const leaf = fileName.split(PATH_SEPARATORS).pop() ?? fileName;
+    return [fileName, leaf, leaf.replace(EXTENSION, '')];
+  });
+  const received = [...names, ...passwordsOf(options)].filter(
     (text): text is string => typeof text === 'string' && text.length > 0
   );
   const forms = new Set(received.flatMap((text) => [text, text.normalize('NFC')]));
@@ -159,8 +162,9 @@ async function logOutcome(route: string, trace: ConversionTrace, status: number,
 function newTrace(): ConversionTrace {
   const trace: ConversionTrace = {
     requestId: randomUUID(),
-    keepPrivate(fileName, options) {
-      trace.privateText = () => privateTextOf(fileName, options);
+    keepPrivate(fileNames, options) {
+      const names = typeof fileNames === 'string' ? [fileNames] : fileNames;
+      trace.privateText = () => privateTextOf(names, options);
     },
   };
   return trace;

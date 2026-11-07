@@ -5,7 +5,7 @@ import {
   ConversionResult,
   CorruptStreamError,
   DecompressionLimitError,
-  UnsupportedOptionError,
+  UnsupportedOptionError, UnsupportedTargetError,
 } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
 import { eotFontData } from './font-eot';
@@ -140,7 +140,7 @@ export async function convertFont(
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
 
   if (!inputBuffer || inputBuffer.length === 0) {
-    throw new Error('Font conversion payload is empty (0 bytes).');
+    throw new ConversionFailedError('Font conversion payload is empty (0 bytes).');
   }
 
   // Every target holds one font; a collection would silently lose all but its first face
@@ -195,7 +195,7 @@ export async function convertFont(
       break;
 
     default:
-      throw new Error(`Unsupported target font format: "${tgt}". Supported targets: woff, woff2, ttf, otf, eot, svg`);
+      throw new UnsupportedTargetError(`Unsupported target font format: "${tgt}". Supported targets: woff, woff2, ttf, otf, eot, svg`);
   }
 
   return {
@@ -252,7 +252,7 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
   }
 
   // Fail-closed: invalid or non-SFNT container must throw error
-  throw new Error('Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font.');
+  throw new ConversionFailedError('Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font.');
 }
 
 const SFNT_HEADER_BYTES = 12;

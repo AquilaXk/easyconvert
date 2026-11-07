@@ -791,7 +791,7 @@ export function encodeOpusContainer(
     );
   }
   if (channels < 1 || channels > 2) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Unsupported channel configuration for Ogg Opus: ${channels} channels (mapping family 0 only supports mono and stereo)`
     );
   }
@@ -934,7 +934,7 @@ export function encodeOggContainer(
     );
   }
   if (channels < 1 || channels > 2) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Unsupported channel configuration for Ogg Vorbis: ${channels} channels (only mono and stereo supported)`
     );
   }

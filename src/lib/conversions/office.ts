@@ -360,7 +360,7 @@ export async function convertOffice(
 
   // 22. Target is Apple iWork (pages, numbers, key)
   if (['pages', 'numbers', 'key'].includes(tgt)) {
-    throw new Error(`Unsupported office conversion: target iWork format '${tgt}' is not supported`);
+    throw new UnsupportedTargetError(`Unsupported office conversion: target iWork format '${tgt}' is not supported`);
   }
 
   // 23.1 Target is FB2 (FictionBook 2.0 with semantic markup)
@@ -413,7 +413,7 @@ export async function convertOffice(
     return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
   }
 
-  throw new Error(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
+  throw new UnsupportedTargetError(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
 }
 
 /** An EPUB from any other source; a PDF is written from its blocks (`pdfToEpub`), the rest from the text extracted from them. */
@@ -520,7 +520,7 @@ export async function extractTextContentForOffice(
   ]);
 
   if (UNSUPPORTED_BINARY_OFFICE_FORMATS.has(src)) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Unsupported binary or compressed format '.${src}' for text extraction: fail-closed against mojibake corruption.`
     );
   }
@@ -4423,7 +4423,7 @@ export class SpreadsheetFormulaEvaluator {
         return '#N/A';
       }
       default:
-        throw new Error(`Unsupported spreadsheet function: ${name}`);
+        throw new ConversionFailedError(`Unsupported spreadsheet function: ${name}`);
     }
   }
 
@@ -7116,7 +7116,7 @@ async function convertEpubSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from EPUB to ${tgt}`);
+  throw new UnsupportedTargetError(`Unsupported conversion from EPUB to ${tgt}`);
 }
 
 /** FB2: the most paragraphs one book may hold, and how far into the file the FictionBook root element must start. */
@@ -7246,7 +7246,7 @@ async function convertFb2Source(
     };
   }
 
-  throw new Error(`Unsupported conversion from FB2 to ${tgt}`);
+  throw new UnsupportedTargetError(`Unsupported conversion from FB2 to ${tgt}`);
 }
 
 /**
@@ -7299,7 +7299,7 @@ async function convertMobiSource(
     return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
   }
 
-  throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
+  throw new UnsupportedTargetError(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
 }
 
 /** Most pages one comic archive may hold. */
@@ -7416,7 +7416,7 @@ async function convertCbzSource(
   baseName: string
 ): Promise<ConversionResult> {
   if (tgt !== 'pdf') {
-    throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
+    throw new UnsupportedTargetError(`Unsupported conversion from CBZ to ${tgt}`);
   }
   const zip = await openPackage(inputBuffer, 'CBZ', 'ZIP archive');
   const budget = new InflateBudget();

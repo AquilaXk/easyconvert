@@ -1,7 +1,7 @@
 import type { NextResponse } from 'next/server';
 import type { ConversionRefusal } from '../api-keys/guard';
 import { HTTP_SERVICE_UNAVAILABLE, HTTP_TOO_MANY_REQUESTS, QUOTA_EXCEEDED_PROBLEM_TYPE, SERVICE_UNAVAILABLE_PROBLEM_TYPE } from '../refusal-codes';
-import { createProblemDetailsResponse } from './problem-details';
+import { createProblemDetailsResponse, SERVICE_RETRY_AFTER_SECONDS } from './problem-details';
 import { buildRateLimitHeaders } from './rate-limit';
 
 /**
@@ -11,7 +11,9 @@ import { buildRateLimitHeaders } from './rate-limit';
  */
 export function conversionRefusalResponse(refusal: ConversionRefusal, instanceUri: string): NextResponse {
   if (refusal.reason === 'offline') {
-    return createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, refusal.error, instanceUri, 'Service Unavailable', SERVICE_UNAVAILABLE_PROBLEM_TYPE);
+    return createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, refusal.error, instanceUri, 'Service Unavailable', SERVICE_UNAVAILABLE_PROBLEM_TYPE, {
+      'Retry-After': String(SERVICE_RETRY_AFTER_SECONDS),
+    });
   }
   const { usage, requiredUnits } = refusal;
   return createProblemDetailsResponse(

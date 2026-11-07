@@ -244,13 +244,13 @@ function ocrFailureOf(err: any): Error {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
   if (err?.name === 'PasswordException' || lower.includes('password') || lower.includes('encrypt')) {
-    return new Error(`PDF OCR failed: Document is password-protected or encrypted: ${msg}`);
+    return new ConversionFailedError(`PDF OCR failed: Document is password-protected or encrypted: ${msg}`);
   }
   const damaged = ['filter', 'corrupt', 'invalid', 'stream', 'format', 'syntax'];
   if (damaged.some((word) => lower.includes(word))) {
-    return new Error(`PDF OCR failed: Unsupported compression filter or invalid PDF stream: ${msg}`);
+    return new ConversionFailedError(`PDF OCR failed: Unsupported compression filter or invalid PDF stream: ${msg}`);
   }
-  return new Error(`PDF OCR failed: Unable to decode PDF raster images: ${msg}`);
+  return new ConversionFailedError(`PDF OCR failed: Unable to decode PDF raster images: ${msg}`);
 }
 
 async function decodePdfImages(

@@ -28,7 +28,6 @@ import { storageProvider } from '@/lib/storage';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
 import {
   createProblemDetailsResponse,
-  createEngineUnavailableResponse,
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -37,12 +36,10 @@ import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-er
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
-import { HTTP_SERVICE_UNAVAILABLE } from '@/lib/refusal-codes';
+import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   ArchiveEntryCollisionError,
-  EngineMissingError,
   PdfPostprocessError,
-  typedFailureOf,
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
@@ -52,10 +49,8 @@ const ZIP_MIME_TYPE = 'application/zip';
 
 export const dynamic = 'force-dynamic';
 
-const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
-const HTTP_INTERNAL_SERVER_ERROR = 500;
 
 /** The fields of the form that are read as text and change the conversion or where its result goes; none of them may be sent as a file. */
 const TEXT_FIELDS = ['sourceFormat', 'options', 'webhookUrl', 'webhookSecret'] as const;
@@ -326,27 +321,11 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
         rateLimitHeaders
       );
     }
-    return typedOrServerFaultProblem(err, instanceUri, rateLimitHeaders);
+    return typedFailureProblem(err, instanceUri, rateLimitHeaders);
   } finally {
     releaseSlot?.();
   }
 })));
-
-/**
- * The answer of an error no named branch handles. A typed failure is answered with the status and code its class declares (the
- * file is intact but encrypted or coded with a method no engine here decodes: 422), and a missing tool with 503. A fault of the
- * server, a 5xx a class declares or an untyped error, gets a generic detail, since it can carry sandbox paths; the outcome line
- * carries the error.
- */
-function typedOrServerFaultProblem(err: unknown, instanceUri: string, headers: Record<string, string>): NextResponse {
-  const typed = typedFailureOf(err);
-  if (typed && err instanceof EngineMissingError && typed.status === HTTP_SERVICE_UNAVAILABLE) return createEngineUnavailableResponse(err, instanceUri, headers);
-  if (typed && typed.status < HTTP_INTERNAL_SERVER_ERROR) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return createProblemDetailsResponse(typed.status, detail, instanceUri, undefined, undefined, headers, undefined, { code: typed.code });
-  }
-  return createProblemDetailsResponse(typed?.status ?? HTTP_INTERNAL_SERVER_ERROR, INTERNAL_ERROR_DETAIL, instanceUri, undefined, undefined, headers);
-}
 
 /** Hands a large or `respond-async` conversion to the queue: its job owns the unit once queued, and commits it or gives it back. */
 async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise<NextResponse | Response> {

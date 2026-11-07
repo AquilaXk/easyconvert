@@ -11,10 +11,7 @@ import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import {
   ConversionOptions,
-  ConversionFailedError,
-  EngineUnavailableError,
   ArchiveEntryCollisionError,
-  isUnprocessableInputError,
   PdfPostprocessError,
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
@@ -23,11 +20,9 @@ import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReserve
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
-import {
-  createProblemDetailsResponse,
-  createEngineUnavailableResponse,
-  createPdfPostprocessResponse,
-} from '@/lib/api/problem-details';
+import { createProblemDetailsResponse, createPdfPostprocessResponse } from '@/lib/api/problem-details';
+import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
+import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
@@ -73,7 +68,7 @@ async function readBatchForm(
   };
 }
 
-export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('convert/batch', async function POST(req: NextRequest, trace: ConversionTrace) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
   let releaseSlot: (() => void) | undefined;
@@ -112,6 +107,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return form.refusal;
     }
     const { files, targetFormatsRaw, optionsRaw } = form;
+    trace.bytes = files.reduce((total, f) => total + f.size, 0);
 
     for (const f of files) {
       if (f.size === 0) {
@@ -139,6 +135,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       return parsedOptions.problem;
     }
     const defaultOptions = parsedOptions.options;
+    trace.keepPrivate(files.map((f) => f.name), defaultOptions);
 
     const planned: PlannedFile[] = [];
     for (const file of files) {
@@ -154,11 +151,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     const caller = auth.user;
     return await withReservedUnit(unit.reservationId, (reserved) => convertPlanned(req, caller, planned, defaultOptions, reserved));
   } catch (error: unknown) {
+    trace.cause = error;
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;
-    if (error instanceof EngineUnavailableError) {
-      return createEngineUnavailableResponse(error, instanceUri);
-    }
     if (error instanceof PdfPostprocessError) {
       return createPdfPostprocessResponse(error, instanceUri);
     }
@@ -170,27 +165,15 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
       return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
     }
-    if (isUnprocessableInputError(error)) {
-      // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
-      // decode (an archive's password and method errors included), a DWG release or drawing the DWG reader refuses, or a font FontForge
-      // cannot read in full: 422, not the 400 of a malformed input.
-      return createProblemDetailsResponse(error.status, error.message, instanceUri);
-    }
     if (error instanceof WorkerOutputMissingError) {
-      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
-      console.error('[convert/batch] Worker output vanished before it was read:', error);
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
       return createProblemDetailsResponse(error.status, WORKER_OUTPUT_MISSING_DETAIL, instanceUri, 'Internal Server Error');
     }
-    if (error instanceof ConversionFailedError) {
-      // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.
-      return createProblemDetailsResponse(400, error.message, instanceUri);
-    }
-    const message = error instanceof Error ? error.message : 'Batch conversion failed';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return typedFailureProblem(error, instanceUri);
   } finally {
     releaseSlot?.();
   }
-}));
+})));
 
 interface PlannedFile {
   file: File;

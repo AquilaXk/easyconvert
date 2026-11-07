@@ -53,27 +53,6 @@ const TEXT_FIELDS = ['sourceFormat', 'options'] as const;
 const TEXT_FIELD_CODES: Record<(typeof TEXT_FIELDS)[number], ConversionRefusalCode> = { sourceFormat: 'unknown_format', options: 'invalid_options' };
 const MULTIPART_REQUIRED = 'The request body must be multipart/form-data.';
 
-/**
- * The words of the plain `Error`s that engines and their libraries throw for an input they cannot convert, where no class of
- * src/lib/types.ts types the refusal; a typed error is read by its class, never by these.
- */
-const UNTYPED_INPUT_REFUSAL_WORDS = [
-  'payload is empty',
-  'Cannot convert',
-  'Unsupported',
-  'Failed to parse',
-  'OCR failed',
-  'PDF OCR',
-  'compression',
-  'Fail-Closed',
-] as const;
-
-/** Whether an untyped error the conversion threw is a refusal of its input (400) rather than a fault of the server (500); a TypeError is always a fault. */
-function isUntypedInputRefusal(error: unknown): error is Error {
-  if (!(error instanceof Error) || error instanceof TypeError) return false;
-  return UNTYPED_INPUT_REFUSAL_WORDS.some((words) => error.message.includes(words));
-}
-
 /** The answer for a fault of the server (500, or the 5xx its class declares): a fixed sentence, since the error can name a path or a program's output; the outcome line carries the error. */
 function serverFaultAnswer(status = HTTP_INTERNAL_SERVER_ERROR): NextResponse {
   return codedRefusal(status, undefined, UNCLASSIFIED_FAILURE);
@@ -98,7 +77,7 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
     return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
   }
   const typed = typedFailureOf(error);
-  if (typed === undefined) return isUntypedInputRefusal(error) ? refusal(400, 'conversion_failed', error.message) : serverFaultAnswer();
+  if (typed === undefined) return serverFaultAnswer();
   if (error instanceof EngineMissingError && typed.status === HTTP_SERVICE_UNAVAILABLE) return createEngineUnavailableResponse(error, instanceUri);
   if (typed.status >= HTTP_INTERNAL_SERVER_ERROR) return serverFaultAnswer(typed.status);
   const message = error instanceof Error ? error.message : String(error);

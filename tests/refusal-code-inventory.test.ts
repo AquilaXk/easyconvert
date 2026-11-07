@@ -144,7 +144,6 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   CpuTaskTimeoutError: 'timeout',
   DjvuDrawTimeoutError: 'timeout',
   JobTimeoutError: 'timeout',
-  TraceOutOfTimeError: 'timeout',
 
   UnsafeArchiveError: 'unsafe_archive',
 

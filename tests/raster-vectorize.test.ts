@@ -370,6 +370,7 @@ describe('inputs refused before the program starts', () => {
     const { program, ran } = started();
     const failure = await withTracer(program, () => captureError(() => convertFile(clean, 'png', 'svg', { [JOB_DEADLINE_AT]: Date.now() - 1 } as never, 'p.png')));
     expect(failure).toBeInstanceOf(CpuTaskTimeoutError);
+    expect(failure.constructor).toBe(CpuTaskTimeoutError);
     expect(failure.message).toBe('The conversion ran out of time before the SVG tracer could start.');
     expect(ran()).toBe(false);
   });

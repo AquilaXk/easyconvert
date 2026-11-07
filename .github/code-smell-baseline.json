@@ -1,12 +1,5 @@
 [
   {
-    "file": "src/app/api/convert/batch/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 31
-  },
-  {
     "file": "src/app/api/storage/file/[...key]/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "GET",
