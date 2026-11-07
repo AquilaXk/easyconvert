@@ -21,6 +21,9 @@ path = "src/main.rs"
 vtracer = "=1.0.0-alpha.4"
 visioncortex = "0.9.3"
 clap = { version = "4", features = ["derive"] }
+# Ours, not upstream's: the allocator. The tracer allocates all the time (one vector per cluster and per path), and the allocator of
+# the musl C library, which the static program carries, costs 15 % of a trace next to this one; the SVG is the same bytes.
+mimalloc = { version = "0.1", default-features = false }
 
 # Ours, not upstream's. A panic ends the program with an abort and no unwinding, which the worker already treats as a failed trace; the
 # unwinding tables and landing pads are gone from the tracer's hot loops. The SVG is the same bytes.

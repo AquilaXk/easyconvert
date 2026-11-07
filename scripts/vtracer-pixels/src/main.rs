@@ -11,6 +11,10 @@ use clap::Parser;
 use visioncortex::{Color, ColorImage};
 use vtracer::{Clustering, Config, FitMode, Hierarchical, Preset};
 
+// easyconvert: the allocator (see Cargo.toml).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Convert an image into vector graphics.
 #[derive(Parser, Debug)]
 #[command(name = "vtracer", version, about, rename_all = "kebab-case")]
