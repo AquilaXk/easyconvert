@@ -421,7 +421,7 @@ describe('the known gaps', () => {
     }
   });
 
-  describe('the AVIF curve of the CLIC photograph the nightly run measured just past the allowance', () => {
+  describe('the AVIF curve of the CLIC photograph the nightly run once measured just past the allowance', () => {
     // Values of nightly runs 39012667333, 39107567130, 39220124206 and 39316523318 (x86-64 CI runner): identical to the last digit in all four.
     const CASE = 'image/clic-sergey-zolkin-21232.png->avif';
     const CI_VALUES: Readonly<Record<string, number>> = { bd_rate_psnr: 1.5011455240068639, bd_rate_ssim: 1.6045206591174255 };
@@ -439,14 +439,11 @@ describe('the known gaps', () => {
       ]);
     });
 
-    it('is tracked at the value the CI runner measures, and fails once it gets worse than that by more than the allowance', () => {
+    it('is no longer tracked since it reached parity on 2026-11-07, so the values it once read past the allowance fail again', () => {
+      expect(shipped().gaps.filter((gap) => gap.id.startsWith(`${CASE}/`))).toEqual([]);
       expect(outcomes(curveRows(), shipped())).toEqual([
-        { outcome: 'pass', basis: 'tracked-quality-gap' },
-        { outcome: 'pass', basis: 'tracked-quality-gap' },
-      ]);
-      expect(outcomes(curveRows(2.1), shipped())).toEqual([
-        { outcome: 'fail', basis: 'tracked-worse-than-recorded' },
-        { outcome: 'fail', basis: 'tracked-worse-than-recorded' },
+        { outcome: 'fail', basis: 'below-reference' },
+        { outcome: 'fail', basis: 'below-reference' },
       ]);
     });
   });
@@ -467,8 +464,8 @@ describe('the known gaps', () => {
     const byIdOf = (id: string): number | undefined => shipped.gaps.find((g) => g.id === id)?.issue;
     const issuesOf = (prefix: string, speedRows: boolean): number[] =>
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
-    // The one image quality gap is the AVIF curve of a photograph whose bytes depend on the encoder thread count (641, entry 1 of the policy record).
-    expect(issuesOf('image/', false)).toEqual([641]);
+    // The AVIF curve of the CLIC photograph (641) reached parity in the nightly run of 2026-11-07, with both sides on the worker's encoder (#998).
+    expect(issuesOf('image/', false)).toEqual([]);
     // The AVIF speed rows of the screenshot, the line art and the deep dart reached parity in the nightly run of 2026-10-31, as the VP9 row of the clip and the scan to PDF row did.
     expect(issuesOf('image/', true)).toEqual([]);
     // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
