@@ -1249,6 +1249,9 @@ export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: Ch
   }
 
   const meta = readFooter(buffer.subarray(0, metaOffset + metaLength), metaOffset);
+  const rowsInGroups = meta.rowGroups.reduce((sum, group) => sum + group.numRows, 0);
+  // A writer may leave the file-level count at 0 and state the rows in its row groups (they are what a reader walks).
+  if (meta.numRows === 0) meta.numRows = rowsInGroups;
   if (meta.numRows === 0) {
     return { meta, plans: [] };
   }
@@ -1261,7 +1264,6 @@ export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: Ch
   if (meta.numRows * meta.leaves.length > PARQUET_MAX_CELLS) {
     throw new ParquetFormatError(`Unsupported Parquet file: table exceeds the limit of ${PARQUET_MAX_CELLS} cells.`);
   }
-  const rowsInGroups = meta.rowGroups.reduce((sum, group) => sum + group.numRows, 0);
   if (rowsInGroups !== meta.numRows) {
     throw new ParquetFormatError(`Corrupted Parquet metadata: row groups hold ${rowsInGroups} rows but the file declares ${meta.numRows}.`);
   }
