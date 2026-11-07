@@ -76,7 +76,7 @@ describe('the links the site renders lead to pages that exist', () => {
 
   it.each(LOCALES)('holds for the header, the footer and the home page in %s', (locale) => {
     expect(deadLinks([...render(createElement(Header), locale), ...render(createElement(Footer), locale)])).toEqual([]);
-    const home = render(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale);
+    const home = render(createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS, apiOrigin: 'https://convert.example.test' }), locale);
     expect(home.length).toBeGreaterThan(50);
     expect(deadLinks(home)).toEqual([]);
   });

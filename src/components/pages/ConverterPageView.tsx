@@ -12,11 +12,17 @@ import { FORMAT_REGISTRY } from '@/lib/registry';
 import { otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { offersConversion, type ParsedSlug } from '@/lib/slug-parser';
+import type { HeroOperation } from '@/components/hero/useHeroUpload';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
 import { FormatCards } from '@/components/converter/FormatCards';
 import { CategoryConverters, FormatCrossLinks } from '@/components/converter/FormatCrossLinks';
 import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
+
+/** The operation a page does instead of converting, whose upload card is worded for it. */
+function operationOf(kind: ParsedSlug['copy']['kind']): HeroOperation | undefined {
+  return kind === 'merge' || kind === 'compress' || kind === 'ocr' ? kind : undefined;
+}
 
 /** A converter or information page, as the server's page parsed its slug; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlug; dailyLimit: number }>) {
@@ -82,6 +88,7 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
             tiles={tiles}
             title={copy.title}
             description={copy.description}
+            operation={operationOf(parsed.copy.kind)}
           />
         )}
 

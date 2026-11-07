@@ -37,3 +37,19 @@ export const FORMAT_FULL_NAMES: Readonly<Record<string, string>> = {
   ttf: 'TrueType Font Specification',
   woff2: 'Web Open Font Format 2.0',
 };
+
+/** The formats whose id in capitals does not read as a name: an id that runs two words together. */
+const FORMAT_CHIP_LABELS: Readonly<Record<string, string>> = {
+  ultrahdr: 'Ultra HDR',
+  webpvideo: 'Animated WebP',
+  svgfont: 'SVG Font',
+};
+
+/**
+ * The name a list of formats gives a format: its id, not its file extension (an Ultra HDR image and an ALTO document
+ * have the extensions of a JPEG and of XML, which two other formats list under the same name), in capitals unless the id
+ * runs two words together.
+ */
+export function formatChipLabel(id: string): string {
+  return Object.hasOwn(FORMAT_CHIP_LABELS, id) ? FORMAT_CHIP_LABELS[id] : id.toUpperCase();
+}

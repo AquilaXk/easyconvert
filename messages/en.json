@@ -92,6 +92,17 @@
         "storage:download": "Download the results of conversions made with the key."
       },
       "errors1": "A refused or failed request is answered with a status of 400 or more and a problem details body (RFC 9457) of type <code>application/problem+json</code>:",
+      "problemFields": {
+        "type": "A URI reference identifying the problem type.",
+        "title": "A short, human-readable summary of the problem type.",
+        "status": "The HTTP status code generated for this occurrence.",
+        "detail": "A human-readable explanation specific to this occurrence.",
+        "instance": "A URI reference identifying the specific occurrence.",
+        "invalidParams": "List of invalid parameters for validation failures.",
+        "code": "The cause of a refusal of a conversion, stable across releases, when the error that decided the answer names one (for example `engine_unavailable`).",
+        "success": "Legacy compatibility flag (always false).",
+        "error": "Legacy compatibility error message mirroring detail."
+      },
       "errors2": "The <code>type</code> names the cause, and some causes add fields of their own, such as <code>dailyLimit</code> and <code>remaining</code> for a used-up allowance. A few routes, <downloads>Downloads</downloads> and <usage>Usage</usage>, answer JSON with <code>success</code> set to false and an <code>error</code> sentence instead. The statuses mean:",
       "statuses": {
         "400": "The request is malformed: a missing field, an unknown format or a conversion between two formats that is not offered.",
@@ -247,6 +258,7 @@
   "auth": {
     "loginHeading": "Sign In",
     "registerHeading": "Sign Up",
+    "registerDocumentTitle": "Sign Up | EasyConvert",
     "switchToRegister": "Don't have an account? <link>Sign up</link>.",
     "switchToLogin": "Already have an account? <link>Sign in</link>.",
     "emailDivider": "or",
@@ -528,7 +540,21 @@
     "directoryHeading": "Supported Format Directory",
     "directoryIntro": "Browse {formats} formats across {categories} categories covering {pairs} registered conversion pairs.",
     "extensionsHeading": "{category} formats",
-    "pairsHeading": "Common {category} Pairs",
+    "pairsHeading": "Common {category} pairs",
+    "categoryNouns": {
+      "image": "image",
+      "document": "document",
+      "archive": "archive",
+      "video": "video",
+      "audio": "audio",
+      "ebook": "ebook",
+      "spreadsheet": "spreadsheet",
+      "presentation": "presentation",
+      "data": "data",
+      "vector": "vector",
+      "font": "font",
+      "cad": "CAD & 3D"
+    },
     "pairs": {
       "png-webp": "Web image compression with alpha support",
       "heic-jpg": "Camera photo compatibility across devices",
@@ -577,7 +603,7 @@
       "legal": "Legal",
       "contact": "Contact"
     },
-    "copyright": "© 2026 EasyConvert.com"
+    "copyright": "© 2026 EasyConvert"
   },
   "formatDetail": {
     "fallbackName": "{ext} Format",
@@ -710,6 +736,23 @@
       "pair": "Convert {src} files to {tgt} online.",
       "source": "Convert {src} files to any format online.",
       "default": "Convert documents, images, audio, video, and archives to the format you need, online."
+    },
+    "operations": {
+      "merge": {
+        "fileInputLabel": "Select files to combine",
+        "heading": "Select the files to combine",
+        "selectFile": "Select Files"
+      },
+      "compress": {
+        "fileInputLabel": "Select files to compress",
+        "heading": "Select your file to compress",
+        "selectFile": "Select File"
+      },
+      "ocr": {
+        "fileInputLabel": "Select files to read text from",
+        "heading": "Select your file to read its text",
+        "selectFile": "Select File"
+      }
     },
     "dropzone": {
       "heading": "Select your file to convert",
@@ -1117,7 +1160,7 @@
     "info": {
       "contact": {
         "title": "Contact Us",
-        "description": "Get in touch with our team for questions, feedback, or open-source issues."
+        "description": "Get in touch with our team for questions or feedback."
       },
       "about": {
         "title": "About Us",
