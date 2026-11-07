@@ -19,6 +19,7 @@ export type Annotation =
   | { tag: 'bson' }
   | { tag: 'uuid' }
   | { tag: 'float16' }
+  | { tag: 'geospatial' }
   | { tag: 'decimal'; scale: number; precision: number }
   | { tag: 'date' }
   | { tag: 'time'; unit: TimeUnit }
@@ -456,6 +457,7 @@ function resolveByteArray(column: string, annotation: Annotation, width: number)
     case 'none':
       return bytesReader(width, textOrBinary(), textOrBinarySlice);
     case 'bson':
+    case 'geospatial':
       return bytesReader(width, (raw) => (raw as Buffer).toString('base64'), (page, start, end) => page.toString('base64', start, end));
     case 'decimal':
       validateDecimal(column, annotation);
@@ -529,6 +531,13 @@ function resolveInt64(column: string, annotation: Annotation): ColumnReader {
   }
 }
 
+const NO_ANNOTATION: Annotation = { tag: 'none' };
+
+/** UUID is defined over 16-byte values only; on a number type it is ignored and the number is read. */
+function isUuidOnNumber(type: ParquetType, annotation: Annotation): boolean {
+  return annotation.tag === 'uuid' && type !== ParquetType.BYTE_ARRAY && type !== ParquetType.FIXED_LEN_BYTE_ARRAY;
+}
+
 /**
  * Chooses how a leaf's values are read. Annotations this engine cannot represent throw
  * ParquetUnsupportedError; an annotation that contradicts the physical type is malformed.
@@ -537,8 +546,9 @@ export function resolveColumnReader(
   column: string,
   type: ParquetType,
   typeLength: number,
-  annotation: Annotation
+  declared: Annotation
 ): ColumnReader {
+  const annotation = isUuidOnNumber(type, declared) ? NO_ANNOTATION : declared;
   switch (type) {
     case ParquetType.BOOLEAN:
       if (annotation.tag !== 'none') return incompatibleOrUnsupported(column, type, annotation);

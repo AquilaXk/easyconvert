@@ -377,7 +377,8 @@ function isAsciiColumn(leaf: LeafColumn): boolean {
     leaf.type === ParquetType.INT96 ||
     leaf.annotation.tag === 'decimal' ||
     leaf.annotation.tag === 'uuid' ||
-    leaf.annotation.tag === 'bson'
+    leaf.annotation.tag === 'bson' ||
+    leaf.annotation.tag === 'geospatial'
   );
 }
 

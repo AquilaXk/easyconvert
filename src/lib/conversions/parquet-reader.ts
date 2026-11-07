@@ -43,7 +43,7 @@ import { CompactProtocolReader, ThriftType } from './parquet-thrift';
 /**
  * Parquet reader for flat (non-nested) tables: PLAIN, dictionary, DELTA_BINARY_PACKED,
  * DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY, BYTE_STREAM_SPLIT, and RLE boolean encodings,
- * RLE/bit-packed definition levels, v1 and v2 data pages, UNCOMPRESSED/SNAPPY/GZIP/ZSTD/LZ4_RAW
+ * RLE/bit-packed definition levels, v1 and v2 data pages, UNCOMPRESSED/SNAPPY/GZIP/ZSTD/LZ4/LZ4_RAW
  * pages, any number of row groups.
  *
  * Governing spec: Apache Parquet format (parquet.thrift, Encodings.md, LogicalTypes.md). Values keep
@@ -87,7 +87,9 @@ const LOGICAL_JSON = 12;
 const LOGICAL_BSON = 13;
 const LOGICAL_UUID = 14;
 const LOGICAL_FLOAT16 = 15;
-const LOGICAL_NAMES: Record<number, string> = { 2: 'MAP', 3: 'LIST', 11: 'UNKNOWN' };
+const LOGICAL_GEOMETRY = 17;
+const LOGICAL_GEOGRAPHY = 18;
+const LOGICAL_NAMES: Record<number, string> = { 2: 'MAP', 3: 'LIST', 16: 'VARIANT' };
 const TIME_UNIT_BY_FIELD: Record<number, TimeUnit> = { 1: 'millis', 2: 'micros', 3: 'nanos' };
 
 export const DICTIONARY_DATA_ENCODINGS: ReadonlySet<number> = new Set([Encoding.PLAIN_DICTIONARY, Encoding.RLE_DICTIONARY]);
@@ -201,7 +203,10 @@ function readLogicalType(reader: CompactProtocolReader): Annotation {
     else if (f.fieldId === LOGICAL_TIME || f.fieldId === LOGICAL_TIMESTAMP) {
       annotation = readTimeType(reader, f.fieldId === LOGICAL_TIMESTAMP);
     } else if (f.fieldId === LOGICAL_INTEGER) annotation = readIntegerType(reader);
-    else annotation = { tag: 'unsupported', name: LOGICAL_NAMES[f.fieldId] ?? `logical type ${f.fieldId}` };
+    else if (f.fieldId === LOGICAL_GEOMETRY || f.fieldId === LOGICAL_GEOGRAPHY) annotation = { tag: 'geospatial' };
+    else if (LOGICAL_NAMES[f.fieldId]) annotation = { tag: 'unsupported', name: LOGICAL_NAMES[f.fieldId] };
+    // UNKNOWN (the null type) and ids this reader has never heard of: the values are read by physical type.
+    else annotation = { tag: 'none' };
     if (f.fieldId !== LOGICAL_DECIMAL && f.fieldId !== LOGICAL_TIME && f.fieldId !== LOGICAL_TIMESTAMP && f.fieldId !== LOGICAL_INTEGER) {
       reader.skip(f.type);
     }

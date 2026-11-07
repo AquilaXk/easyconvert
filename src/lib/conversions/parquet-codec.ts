@@ -151,6 +151,44 @@ export function decompressLz4Raw(data: Buffer, expectedBytes: number): Buffer {
   return out;
 }
 
+const HADOOP_LZ4_PREFIX_BYTES = 8;
+
+/**
+ * Decodes the Hadoop framing of the Parquet LZ4 codec: repeated blocks of a big-endian uncompressed
+ * size, a big-endian compressed size and one raw LZ4 block. Returns null when the data is not framed
+ * that way or a block does not decode to its declared size, so the caller can try a bare raw block.
+ * A block that declares more than the bytes still allowed by the page size is never allocated.
+ */
+function decodeLz4Hadoop(data: Buffer, expectedBytes: number): Buffer | null {
+  const out = Buffer.alloc(expectedBytes);
+  let pos = 0;
+  let outPos = 0;
+  while (pos < data.length) {
+    if (data.length - pos < HADOOP_LZ4_PREFIX_BYTES) return null;
+    const blockBytes = data.readUInt32BE(pos);
+    const compressedBytes = data.readUInt32BE(pos + 4);
+    pos += HADOOP_LZ4_PREFIX_BYTES;
+    if (blockBytes > expectedBytes - outPos || compressedBytes > data.length - pos) return null;
+    try {
+      decompressLz4Raw(data.subarray(pos, pos + compressedBytes), blockBytes).copy(out, outPos);
+    } catch (blockError) {
+      if (blockError instanceof ParquetFormatError) return null;
+      throw blockError;
+    }
+    pos += compressedBytes;
+    outPos += blockBytes;
+  }
+  return outPos === expectedBytes ? out : null;
+}
+
+/**
+ * Decompresses a page of the deprecated Parquet LZ4 codec: Hadoop framing first, then a bare raw
+ * block, as parquet-mr and Arrow read it. The page's declared size bounds both attempts.
+ */
+export function decompressLz4(data: Buffer, expectedBytes: number): Buffer {
+  return decodeLz4Hadoop(data, expectedBytes) ?? decompressLz4Raw(data, expectedBytes);
+}
+
 /**
  * Pure TypeScript zstd decoding, used where node:zlib has no zstd (Node 20). The page's declared size
  * is the output bound (the generic archive ratio guard does not apply), and the result must match it.
@@ -174,7 +212,8 @@ function zstdDecode(data: Buffer, expectedBytes: number): Buffer {
   const native = nativeZstd();
   if (native) {
     try {
-      return native.zstdDecompressSync(data, { maxOutputLength: expectedBytes });
+      // node:zlib rejects a limit of 0; a frame of an empty page still has to decode, and the exact-size check follows.
+      return native.zstdDecompressSync(data, { maxOutputLength: Math.max(expectedBytes, 1) });
     } catch (zstdError) {
       const code = (zstdError as { code?: string }).code;
       const reason = code === 'ERR_BUFFER_TOO_LARGE' ? 'exceeds its declared size' : 'is not valid';
@@ -200,9 +239,11 @@ export function decompressPage(codec: CompressionCodec, data: Buffer, expectedBy
     out = zstdDecode(data, expectedBytes);
   } else if (codec === CompressionCodec.LZ4_RAW) {
     out = decompressLz4Raw(data, expectedBytes);
+  } else if (codec === CompressionCodec.LZ4) {
+    out = decompressLz4(data, expectedBytes);
   } else {
     throw new ParquetFormatError(
-      `Unsupported Parquet compression codec: ${codecName(codec)}. Supported codecs: UNCOMPRESSED, SNAPPY, GZIP, ZSTD, LZ4_RAW.`
+      `Unsupported Parquet compression codec: ${codecName(codec)}. Supported codecs: UNCOMPRESSED, SNAPPY, GZIP, ZSTD, LZ4, LZ4_RAW.`
     );
   }
   if (out.length !== expectedBytes) {
