@@ -21,3 +21,8 @@ path = "src/main.rs"
 vtracer = "=1.0.0-alpha.4"
 visioncortex = "0.9.3"
 clap = { version = "4", features = ["derive"] }
+
+# Ours, not upstream's. A panic ends the program with an abort and no unwinding, which the worker already treats as a failed trace; the
+# unwinding tables and landing pads are gone from the tracer's hot loops. The SVG is the same bytes.
+[profile.release]
+panic = "abort"
