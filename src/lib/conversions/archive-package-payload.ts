@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { decompressZstd } from './zstd';
+import { decompressZstdNative } from './zstd-native';
 import { SandboxedTimeoutError } from '../security/process-sandbox';
 import { DecompressionLimitError } from '../types';
 import {
@@ -151,10 +151,10 @@ export class PackageRun {
 }
 
 /** Decompresses a Zstandard payload into `outDir` and returns the file; the output is capped by the archive size and ratio caps. */
-export function decodeZstdPayload(run: PackageRun, compressed: string, outDir: string, layer: number): string {
+export async function decodeZstdPayload(run: PackageRun, compressed: string, outDir: string, layer: number): Promise<string> {
   let decoded: Buffer;
   try {
-    decoded = decompressZstd(fs.readFileSync(compressed), { maxOutputBytes: unpackedBytesCap(run.archiveBytes, run.limits) });
+    decoded = await decompressZstdNative(fs.readFileSync(compressed), { maxOutputBytes: unpackedBytesCap(run.archiveBytes, run.limits) });
   } catch (err) {
     // The decoder stops at the bound, before it has produced (or reserved) what a bomb claims.
     if (err instanceof DecompressionLimitError) throw unpackedBytesCapError(run.archiveBytes, run.limits);
@@ -253,7 +253,7 @@ async function openPayloadLayers(run: PackageRun, first: PayloadStage, workDir: 
     const layerDir = path.join(workDir, `layer-${decoded}`);
     const next =
       current.kind === 'zstd'
-        ? decodeZstdPayload(run, current.file, workDir, decoded)
+        ? await decodeZstdPayload(run, current.file, workDir, decoded) // NOSONAR S9382 sequential: each layer is the input of the next
         : await decompressLayer(run, { file: current.file, kind: current.kind }, layerDir); // NOSONAR S9382 sequential: each layer is the input of the next
     // An rpm's own extraction stays until the payload is known to be one: a package of a single file that merely looks
     // compressed is converted from it. A deb has no such fallback, so nothing keeps its extraction.

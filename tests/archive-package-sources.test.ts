@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,6 +10,8 @@ import { PackageRun, decodeZstdPayload, extractPackagePayload } from '../src/lib
 import { SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { oracleTest } from './helpers/oracle-test';
 import { ConversionFailedError } from '../src/lib/types';
+import { compressZstdNative, nativeZstdZlib } from '../src/lib/conversions/zstd-native';
+import { buildFrame, buildRleBombFrame, rawBlock } from './helpers/zstd-frames';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { fileDigests, listPermissionStrings, readArchiveTree, unpackWith } from './helpers/archive-output-tree';
 import { hostileTarEnd, hostileTarHeader, hostileTarMember, type HostileTarHeader } from './helpers/hostile-tar';
@@ -593,15 +595,77 @@ describe('the Zstandard bound of the in-process decoder', () => {
   // follows that a decoder could produce, so only a bound checked on the declared size refuses it before any output.
   const DECLARES_100_MIB = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0xa0, 0x00, 0x00, 0x40, 0x06, 0x01, 0x00, 0x00]);
 
-  it('refuses a frame that declares more than the upload may unpack to, before it decodes or charges anything', () => {
+  async function refusal(payload: Buffer, archiveBytes: number = payload.length): Promise<{ error: unknown; liveBytes: number; left: string[] }> {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-zstd-bound-'));
     try {
       const frame = path.join(dir, 'payload.zst');
-      fs.writeFileSync(frame, DECLARES_100_MIB);
-      const run = new PackageRun({ timeoutMs: 1000, limits: ARCHIVE_SECURITY_LIMITS } as never, DECLARES_100_MIB.length);
-      expect(() => decodeZstdPayload(run, frame, dir, 0)).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'compression-ratio' }));
-      expect(run.liveBytes).toBe(0);
-      expect(fs.readdirSync(dir)).toEqual(['payload.zst']);
+      fs.writeFileSync(frame, payload);
+      const run = new PackageRun({ timeoutMs: 1000, limits: ARCHIVE_SECURITY_LIMITS } as never, archiveBytes);
+      let error: unknown = null;
+      try {
+        await decodeZstdPayload(run, frame, dir, 0);
+      } catch (caught) {
+        error = caught;
+      }
+      return { error, liveBytes: run.liveBytes, left: fs.readdirSync(dir) };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('refuses a frame that declares more than the upload may unpack to, before it decodes or charges anything', async () => {
+    const outcome = await refusal(DECLARES_100_MIB);
+    expect(outcome.error).toEqual(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'compression-ratio' }));
+    expect(outcome.liveBytes).toBe(0);
+    expect(outcome.left).toEqual(['payload.zst']);
+  });
+
+  it('stops a frame that declares no size at the bound, as the ratio cap and not as a malformed frame', async () => {
+    const outcome = await refusal(buildRleBombFrame(257));
+    expect(outcome.error).toEqual(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'compression-ratio' }));
+    expect(outcome.liveBytes).toBe(0);
+    expect(outcome.left).toEqual(['payload.zst']);
+  });
+
+  it('refuses a frame that names a dictionary, a truncated frame and a stream that is not Zstandard, charging nothing', async () => {
+    const frame = await compressZstdNative(Buffer.from('package payload '.repeat(4000)));
+    const cases: Array<[string, Buffer]> = [
+      ['dictionary', buildFrame([rawBlock(Buffer.from('payload'))], { singleSegment: true, contentSize: 7, dictionaryId: 42 })],
+      ['truncated', frame.subarray(0, frame.length - 6)],
+      ['garbage after the frame', Buffer.concat([frame, Buffer.alloc(8, 7)])],
+    ];
+    for (const [name, payload] of cases) {
+      const outcome = await refusal(payload);
+      expect(outcome.error, name).toBeInstanceOf(ConversionFailedError);
+      expect(outcome.liveBytes, name).toBe(0);
+      expect(outcome.left, name).toEqual(['payload.zst']);
+    }
+  });
+
+  it('decodes a payload of several frames and a skippable frame into the layer file, charging the decoded size', async () => {
+    const first = Buffer.from('first payload frame\n'.repeat(5000));
+    const second = Buffer.from('second payload frame\n'.repeat(5000));
+    const skippable = Buffer.concat([Buffer.from([0x50, 0x2a, 0x4d, 0x18, 4, 0, 0, 0]), Buffer.from('meta')]);
+    const payload = Buffer.concat([skippable, await compressZstdNative(first), await compressZstdNative(second)]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-zstd-decode-'));
+    try {
+      const file = path.join(dir, 'payload.zst');
+      fs.writeFileSync(file, payload);
+      const run = new PackageRun({ timeoutMs: 1000, limits: ARCHIVE_SECURITY_LIMITS } as never, payload.length);
+      const asyncDecode = vi.spyOn(nativeZstdZlib(), 'zstdDecompress');
+      const syncDecode = vi.spyOn(nativeZstdZlib(), 'zstdDecompressSync');
+      let target: string;
+      try {
+        target = await decodeZstdPayload(run, file, dir, 2);
+        // The payload is decoded by libzstd, one frame at a time, not by the in-process decoder.
+        expect(asyncDecode.mock.calls.length + syncDecode.mock.calls.length).toBe(2);
+      } finally {
+        asyncDecode.mockRestore();
+        syncDecode.mockRestore();
+      }
+      expect(path.basename(target)).toBe('payload.zstd-decoded-2');
+      expect(fs.readFileSync(target).equals(Buffer.concat([first, second]))).toBe(true);
+      expect(run.liveBytes).toBe(first.length + second.length);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

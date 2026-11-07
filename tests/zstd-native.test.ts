@@ -294,3 +294,46 @@ describe('decompressZstdNative', () => {
     expect((error as CpuTaskAbortedError).message).toBe(ABORT_MESSAGE);
   });
 });
+
+describe('decompressZstdNative under a bound the caller names', () => {
+  const BOUND = 8 * MIB;
+
+  it('decodes up to the bound at any ratio, which the generic ratio cap would refuse', async () => {
+    const frame = buildRleBombFrame(FLOOR_BLOCKS_PLUS_ONE);
+    expect(await rejection(decompressZstdNative(frame))).toBeInstanceOf(DecompressionLimitError);
+    const decoded = await decompressZstdNative(frame, { maxOutputBytes: FLOOR_BLOCKS_PLUS_ONE * 128 * 1024 });
+    expect(decoded.length).toBe(FLOOR_BLOCKS_PLUS_ONE * 128 * 1024);
+    expect(decoded.every((byte) => byte === 0)).toBe(true);
+  });
+
+  it('refuses a declared size above the bound before it decodes, naming the bound', async () => {
+    const frame = buildFrame([rawBlock(Buffer.alloc(0))], { windowLog: 17, contentSize: BOUND + 1 });
+    const decode = vi.spyOn(nativeZstdZlib(), 'zstdDecompress');
+    try {
+      const error = await rejection(decompressZstdNative(frame, { maxOutputBytes: BOUND }));
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect((error as Error).message).toContain(`uncompressed size exceeds limit of ${BOUND} bytes`);
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it('stops a frame that declares no size at the bound, across the frames of a stream', async () => {
+    const half = buildRleBombFrame(BOUND / 2 / (128 * 1024) + 1);
+    const error = await rejection(decompressZstdNative(Buffer.concat([half, half]), { maxOutputBytes: BOUND }));
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as Error).message).toContain(`uncompressed size exceeds limit of ${BOUND} bytes`);
+  });
+
+  it('keeps the other guards: a dictionary frame, a window beyond the limit and a truncated frame', async () => {
+    const withDictionary = buildFrame([rawBlock(Buffer.from('payload'))], { singleSegment: true, contentSize: 7, dictionaryId: 42 });
+    expect((await rejection(decompressZstdNative(withDictionary, { maxOutputBytes: BOUND }))) as Error).toBeInstanceOf(ConversionFailedError);
+    const wide = buildFrame([rawBlock(Buffer.from('payload'))], { windowLog: 28 });
+    expect((await rejection(decompressZstdNative(wide, { maxOutputBytes: BOUND }))) as Error).toBeInstanceOf(ConversionFailedError);
+    const frame = await compressZstdNative(sample());
+    const error = await rejection(decompressZstdNative(frame.subarray(0, frame.length - 6), { maxOutputBytes: BOUND * 4 }));
+    expect(error).toBeInstanceOf(ConversionFailedError);
+    expect((error as Error).message).toMatch(/^Malformed Zstandard/);
+  });
+});
