@@ -305,6 +305,7 @@ async function runSevenZipFramed(p7zBin: string, args: string[], options: SevenZ
       signal: options.signal,
       stdoutHeadroomBytes: options.headroomBytes,
       stdoutTailroomBytes: options.tailroomBytes,
+      spoolStdout: true,
     });
     return { stdout: run.stdout, frame: run.stdoutFrame, headroomBytes: options.headroomBytes ?? 0 };
   } catch (err) {
