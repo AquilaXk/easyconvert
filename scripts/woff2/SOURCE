@@ -1,4 +1,4 @@
-The two command-line tools of google/woff2 (woff2_compress and woff2_decompress) and the file of its library that sets the transforms of the encoder (woff2_enc.cc): the files that the install script builds in place of the upstream files of the same names.
+The two command-line tools of google/woff2 (woff2_compress and woff2_decompress) and two files of its library that set and make the transforms of the encoder (woff2_enc.cc, transform.cc): the files that the install script builds in place of the upstream files of the same names.
 
 Upstream:   https://github.com/google/woff2 (MIT; the text is ./LICENSE, copied from the pinned commit, SHA-256 d42a3e363d99da22b860ab760faa37dfa9781d74c9f3ed634d05109081616513)
 Commit:     7b67e12355fe7da148db5c19d4261f0a498a9537 (2026-10-28), the commit scripts/install-woff2.sh fetches and checks by the SHA-256 of its archive
@@ -16,6 +16,7 @@ upstream file as it is, each later commit is one change of ours.
   src/woff2_enc.cc         -> src/woff2_enc.cc         SHA-256 of the upstream file c7fad4dcb577219d292296f471ba68818473ebd25f6f9127ad17b3bef71deb37
       Change of ours, in its own commit: TransformFontCollection also calls TransformHmtxTable (transform.cc, which the library has and the decoder
       reads back) for a font that is not part of a collection, so that the hmtx table is stored in the transformed form of section 5.4.
+  src/transform.cc        -> src/transform.cc         SHA-256 of the upstream file 94dac0e7bc140d26483372964826429c6500a404432191541104fd78bd1cb87a
 
 The rest of the libraries is not copied: the woff2 library (the other files of src/ and include/) and the Brotli library come from the archives of the
 pinned commits (the Brotli commit is the one the woff2 tree names as its submodule). scripts/install-woff2.sh checks the digest of each archive,

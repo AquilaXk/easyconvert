@@ -8,7 +8,7 @@
 # (the woff2 tree at that commit points at the Brotli commit below), each as the archive GitHub serves for the commit, checked against a
 # SHA-256 before anything in it is unpacked or run. The programs are built with the Makefile of the woff2 tree, which lists the sources
 # of both libraries and the flags upstream builds with; what this script adds is the optimisation flags (see BUILD_FLAGS) and the files of
-# scripts/woff2/src (the two command-line tools and one file of the library), which take the place of the files of the same names in the
+# scripts/woff2/src (the two command-line tools and two files of the library), which take the place of the files of the same names in the
 # tree (scripts/woff2/SOURCE names what differs from upstream's). The digest of the program is printed and written to the SOURCE note but not pinned: another compiler release writes other
 # machine code for it.
 #

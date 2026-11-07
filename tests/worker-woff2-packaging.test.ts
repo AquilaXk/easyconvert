@@ -100,7 +100,7 @@ describe('the install script of the WOFF2 programs', () => {
     const order = ['sha256sum --check --strict', 'tar -xzf', 'install -m 0644 "$copy"', 'make -j'].map((step) => INSTALL.indexOf(step));
     expect(order.every((at) => at > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(fs.readdirSync(path.join(ROOT, 'scripts', 'woff2', 'src')).sort()).toEqual(['woff2_compress.cc', 'woff2_decompress.cc', 'woff2_enc.cc']);
+    expect(fs.readdirSync(path.join(ROOT, 'scripts', 'woff2', 'src')).sort()).toEqual(['transform.cc', 'woff2_compress.cc', 'woff2_decompress.cc', 'woff2_enc.cc']);
   });
 
   it('names in the SOURCE note of the tools the pinned commit, the digest of the licence text and the digest of each upstream file', () => {
@@ -109,7 +109,7 @@ describe('the install script of the WOFF2 programs', () => {
     const license = createHash('sha256').update(fs.readFileSync(path.join(ROOT, 'scripts', 'woff2', 'LICENSE'))).digest('hex');
     expect(source).toContain(`SHA-256 ${license}`);
     expect(fs.readFileSync(path.join(ROOT, 'scripts', 'woff2', 'LICENSE'), 'utf-8')).toMatch(/^Copyright \(c\) 2013-2017 by the WOFF2 Authors\./);
-    for (const tool of ['woff2_compress', 'woff2_decompress', 'woff2_enc']) expect(source).toMatch(new RegExp(`src/${tool}\\.cc +-> src/${tool}\\.cc +SHA-256 of the upstream file [0-9a-f]{64}`));
+    for (const tool of ['transform', 'woff2_compress', 'woff2_decompress', 'woff2_enc']) expect(source).toMatch(new RegExp(`src/${tool}\\.cc +-> src/${tool}\\.cc +SHA-256 of the upstream file [0-9a-f]{64}`));
   });
 
   it('installs nothing on a system other than Linux, before it downloads anything', () => {
