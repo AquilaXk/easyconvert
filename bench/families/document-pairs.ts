@@ -129,7 +129,7 @@ function printedText(tools: Tools, profile: string, file: string, outDir: string
   return runTool(tools.pdftotext, ['-enc', 'UTF-8', pdf, '-']).stdout.toString('utf8');
 }
 
-async function pngPages(output: Buffer, directory: string): Promise<string[]> {
+export async function pngPages(output: Buffer, directory: string): Promise<string[]> {
   fs.mkdirSync(directory, { recursive: true });
   if (output.subarray(0, 2).toString('latin1') !== 'PK') {
     const file = path.join(directory, 'page-1.png');

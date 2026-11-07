@@ -6,6 +6,7 @@ import type { FamilyContext, FamilyRunner } from '../context';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, SPEC } from '../rows';
 import { runTool, TESSDATA_PSEUDO_TOOL } from '../tools';
+import { pngPages } from './document-pairs';
 import { byNumberedName, goldenFile, pages, pdfText, slideWords, sofficePdf, wordRecall, wordsOf } from './document-office';
 
 /**
@@ -91,24 +92,6 @@ function planFor(ctx: FamilyContext, caseName: string, needs: readonly string[])
 const ocrOf = (tools: Tools) => (picture: string): string =>
   runTool(tools.tesseract, [picture, 'stdout', '-l', 'eng', '--tessdata-dir', tools.tessdata, '--psm', '3'], { env: { ...process.env, OMP_THREAD_LIMIT: '1' } }).stdout.toString('utf8');
 
-/** The PNG pages of an output: the file itself, or the entries of the ZIP that several pages arrive in. */
-async function pngPages(output: Buffer, directory: string): Promise<string[]> {
-  fs.mkdirSync(directory, { recursive: true });
-  if (output.subarray(0, 2).toString('latin1') !== 'PK') {
-    const file = path.join(directory, 'page-1.png');
-    fs.writeFileSync(file, output);
-    return [file];
-  }
-  const archive = await JSZip.loadAsync(output);
-  const files: string[] = [];
-  for (const name of Object.keys(archive.files).filter((entry) => entry.endsWith('.png')).sort(byNumberedName)) {
-    const file = path.join(directory, path.basename(name));
-    fs.writeFileSync(file, await (archive.file(name) as JSZip.JSZipObject).async('nodebuffer'));
-    files.push(file);
-  }
-  return files;
-}
-
 async function runPictures(ctx: FamilyContext, caseName: string, source: { extension: string; bytes: Buffer; truth: readonly string[] }, rows: BenchRow[]): Promise<void> {
   const planned = planFor(ctx, caseName, []);
   if ('rows' in planned) return void rows.push(...planned.rows);
@@ -162,6 +145,15 @@ async function runPostScript(ctx: FamilyContext, extension: string, rows: BenchR
   rows.push(measuredRow('document', caseName, SPEC.wordRecall, wordRecall(truth, oursText), wordRecall(truth, referenceText), REFERENCE));
 }
 
+/** A deck saved as the format, with the words of the golden deck and the file the office suite reads it from. */
+async function deckSource(ctx: FamilyContext, tools: Tools, extension: string): Promise<{ profile: string; truth: string[]; bytes: Buffer; file: string }> {
+  const profile = `file://${path.join(ctx.work, 'soffice-profile-slide-pairs')}`;
+  const bytes = await deckAs(ctx, tools, profile, extension);
+  const file = ctx.scratch(`deck.${extension}`);
+  fs.writeFileSync(file, bytes);
+  return { profile, truth: await slideWords(goldenFile(DECK)), bytes, file };
+}
+
 async function runMarkdown(ctx: FamilyContext, extension: string, rows: BenchRow[]): Promise<void> {
   const caseName = `deck.${extension}->md`;
   if (!ctx.inScope('document', caseName)) return;
@@ -170,11 +162,7 @@ async function runMarkdown(ctx: FamilyContext, extension: string, rows: BenchRow
   ctx.log(`document ${caseName}`);
   if (!ctx.quality) return;
   const { tools } = planned;
-  const profile = `file://${path.join(ctx.work, 'soffice-profile-slide-pairs')}`;
-  const truth = await slideWords(goldenFile(DECK));
-  const bytes = await deckAs(ctx, tools, profile, extension);
-  const file = ctx.scratch(`deck.${extension}`);
-  fs.writeFileSync(file, bytes);
+  const { profile, truth, bytes, file } = await deckSource(ctx, tools, extension);
   const markdown = (await convertWithProject(bytes, extension, 'md', {}, `deck.${extension}`)).buffer.toString('utf8');
   const printed = pdfText(tools.pdftotext, sofficePdf(tools.soffice, profile, file, ctx.scratch(`ref-md-${extension}`)));
   rows.push(measuredRow('document', caseName, SPEC.wordRecall, wordRecall(truth, markdown), wordRecall(truth, printed), REFERENCE));
@@ -198,11 +186,7 @@ async function runOfficeFormat(ctx: FamilyContext, extension: string, target: st
   ctx.log(`document ${caseName}`);
   if (!ctx.quality) return;
   const { tools } = planned;
-  const profile = `file://${path.join(ctx.work, 'soffice-profile-slide-pairs')}`;
-  const truth = await slideWords(goldenFile(DECK));
-  const bytes = await deckAs(ctx, tools, profile, extension);
-  const file = ctx.scratch(`deck.${extension}`);
-  fs.writeFileSync(file, bytes);
+  const { profile, truth, bytes, file } = await deckSource(ctx, tools, extension);
   const ours = (await convertWithProject(bytes, extension, target, {}, `deck.${extension}`)).buffer;
   const oursRecall = wordRecall(truth, outputText(tools, profile, ours, target, ctx.scratch(`ours-${extension}-${target}`)));
   // The suite writes a presentation in another presentation format; for the PDF, HTML and text of a deck its own export is the PDF.
