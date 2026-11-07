@@ -3,28 +3,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { convertFont, decodeSfnt, decodeWoff2, decodeWoff2Async, encodeSfnt, encodeWoff2Async } from '../src/lib/conversions/font';
-import { compressWithNativeWoff2, decompressWithNativeWoff2, woff2CompressProgram, woff2DecompressProgram } from '../src/lib/conversions/font-woff2-native';
-import { Woff2FormatError, Woff2LimitError } from '../src/lib/conversions/font-woff2-primitives';
+import { convertFont, decodeSfnt, decodeWoff2, encodeSfnt, encodeWoff2Async } from '../src/lib/conversions/font';
+import { compressWithNativeWoff2, woff2CompressProgram } from '../src/lib/conversions/font-woff2-native';
 import { WOFF2_BROTLI_LARGE_FONT_QUALITY, WOFF2_BROTLI_MAX_QUALITY, WOFF2_BROTLI_MAX_QUALITY_BYTES } from '../src/lib/conversions/font-woff2';
-
-const WOFF2_BROTLI_QUALITY_UP_TO_LIMIT = WOFF2_BROTLI_MAX_QUALITY;
+import { Woff2FormatError, Woff2LimitError } from '../src/lib/conversions/font-woff2-primitives';
 import { captureError } from './helpers/capture-error';
 import { readSfntTables } from './helpers/font-oracles';
-import { readWoff2Reference } from './helpers/woff2-reference';
 import { skipUnless } from './helpers/strict-skip';
-import { COLLECTION_FLAVOR, brotliFont, buildWoff2, collectionHeader, collectionTables, minimalTransformedFont } from './helpers/woff2-builder';
+import { pinnedWoff2Program } from './helpers/woff2-programs';
+import { readWoff2Reference } from './helpers/woff2-reference';
 
 /**
- * The WOFF2 programs of google/woff2 write and read the file when the worker has them (font-woff2-native.ts). The wrapper is judged
- * with stand-in programs that record what they were given; the real programs, when installed, are judged against the in-process
- * codec (tables that must agree) and with hostile files.
+ * `woff2_compress` of google/woff2 writes the WOFF2 file when the worker has it (font-woff2-native.ts). The wrapper is judged with
+ * stand-in programs that record what they were given; the real program, when installed, is judged against the in-process codec (tables
+ * that must agree), on the Brotli quality, the transforms and the bounds of its input, and with damaged fonts. The reading of a WOFF2
+ * file stays in process: tests/font-woff2-decoder-program.test.ts judges the pinned decoder program as the second reader.
  */
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'woff2');
 const fixture = (name: string): Buffer => fs.readFileSync(path.join(FIXTURES, name));
-const HEAD_ADJUSTMENT_AT = 8;
-/** A run past this is a hang, not a slow program: the files below take milliseconds. */
+const WOFF2_BROTLI_QUALITY_UP_TO_LIMIT = WOFF2_BROTLI_MAX_QUALITY;
+/** A run past this is a hang, not a slow program: the fonts below take milliseconds. */
 const RUN_HANG_GUARD_MS = 20_000;
 
 const scratch: string[] = [];
@@ -37,39 +36,34 @@ function tmpDir(prefix: string): string {
   return dir;
 }
 
-async function withPrograms<T>(programs: { compress?: string; decompress?: string }, body: () => Promise<T>): Promise<T> {
-  const before = { compress: process.env.WOFF2_COMPRESS_PATH, decompress: process.env.WOFF2_DECOMPRESS_PATH };
-  const set = (name: string, value: string | undefined) => {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  };
+async function withProgram<T>(compress: string | undefined, body: () => Promise<T>): Promise<T> {
+  const before = process.env.WOFF2_COMPRESS_PATH;
   // An empty value names no file: the program counts as not installed.
-  set('WOFF2_COMPRESS_PATH', programs.compress ?? '');
-  set('WOFF2_DECOMPRESS_PATH', programs.decompress ?? '');
+  process.env.WOFF2_COMPRESS_PATH = compress ?? '';
   try {
     return await body();
   } finally {
-    set('WOFF2_COMPRESS_PATH', before.compress);
-    set('WOFF2_DECOMPRESS_PATH', before.decompress);
+    if (before === undefined) delete process.env.WOFF2_COMPRESS_PATH;
+    else process.env.WOFF2_COMPRESS_PATH = before;
   }
 }
 
-/** A shell program: it copies the file it is given to `<name>.given`, runs `script` with $in and $out set (out: input.woff2 -> .ttf and back). */
-function standIn(name: string, outExtension: string, script: string): { program: string; given: string } {
+/** A shell program: it copies the file it is given to `<name>.given` and runs `script` with $in and $out set (out: input.ttf -> input.woff2). */
+function standIn(name: string, script: string): { program: string; given: string } {
   const dir = tmpDir('woff2-standin-');
   const given = path.join(dir, `${name}.given`);
   const program = path.join(dir, name);
-  fs.writeFileSync(program, `#!/bin/sh\nin="$1"\nout="\${in%.*}.${outExtension}"\ncp "$in" '${given}'\n${script}\n`, { mode: 0o755 });
+  fs.writeFileSync(program, `#!/bin/sh\nin="$1"\nout="\${in%.*}.woff2"\ncp "$in" '${given}'\n${script}\n`, { mode: 0o755 });
   return { program, given };
 }
 
 const dejavu = () => fixture('dejavu-sans-latin.ttf');
 const FAKE_WOFF2 = Buffer.concat([Buffer.from('wOF2'), Buffer.alloc(40, 7)]);
 
-describe('the WOFF2 wrapper with stand-in programs', () => {
+describe('the WOFF2 encoder wrapper with stand-in programs', () => {
   it('writes the file the program writes, and hands the program the sfnt of the font', async () => {
-    const compressor = standIn('woff2_compress', 'woff2', `printf '%s' '${FAKE_WOFF2.toString('latin1')}' > "$out"`);
-    await withPrograms({ compress: compressor.program }, async () => {
+    const compressor = standIn('woff2_compress', `printf '%s' '${FAKE_WOFF2.toString('latin1')}' > "$out"`);
+    await withProgram(compressor.program, async () => {
       const result = await convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf');
       expect(result.buffer.equals(FAKE_WOFF2)).toBe(true);
       expect(result.mimeType).toBe('font/woff2');
@@ -81,8 +75,8 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
   });
 
   it('falls back to the in-process encoder when the program declines the font', async () => {
-    const compressor = standIn('woff2_compress', 'woff2', 'exit 1');
-    await withPrograms({ compress: compressor.program }, async () => {
+    const compressor = standIn('woff2_compress', 'exit 1');
+    await withProgram(compressor.program, async () => {
       const result = await convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf');
       expect(result.buffer.toString('latin1', 0, 4)).toBe('wOF2');
       expect(decodeWoff2(result.buffer, 'x').tables['glyf'].data.length).toBeGreaterThan(0);
@@ -90,19 +84,19 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
   });
 
   it('falls back to the in-process encoder when no program is installed or one writes nothing', async () => {
-    const silent = standIn('woff2_compress', 'woff2', 'exit 0');
-    await withPrograms({}, async () => {
+    const silent = standIn('woff2_compress', 'exit 0');
+    await withProgram(undefined, async () => {
       expect((await convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf')).buffer.toString('latin1', 0, 4)).toBe('wOF2');
       expect(await compressWithNativeWoff2(dejavu(), 11)).toBeNull();
     });
-    await withPrograms({ compress: silent.program }, async () => {
+    await withProgram(silent.program, async () => {
       expect((await convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf')).buffer.toString('latin1', 0, 4)).toBe('wOF2');
     });
   });
 
   it('refuses the font with a typed error when the program is stopped by a signal', async () => {
-    const aborting = standIn('woff2_compress', 'woff2', 'kill -ABRT $$');
-    await withPrograms({ compress: aborting.program }, async () => {
+    const aborting = standIn('woff2_compress', 'kill -ABRT $$');
+    await withProgram(aborting.program, async () => {
       const error = await captureError(() => convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf'));
       expect(error).toBeInstanceOf(Woff2FormatError);
       expect(error.message).toMatch(/stopped by SIGABRT/);
@@ -110,8 +104,8 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
   });
 
   it('reports a crash by SIGSEGV as the limit refusal the sandbox makes of it, since a C++ program faults on an allocation it could not make', async () => {
-    const crashing = standIn('woff2_compress', 'woff2', 'kill -SEGV $$');
-    await withPrograms({ compress: crashing.program }, async () => {
+    const crashing = standIn('woff2_compress', 'kill -SEGV $$');
+    await withProgram(crashing.program, async () => {
       const error = await captureError(() => convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf'));
       expect(error).toBeInstanceOf(Woff2LimitError);
       expect(error.message).toMatch(/run out of memory .* or crash/);
@@ -120,9 +114,9 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
 
   it('asks the program for the Brotli quality of entry 24: 11 up to 8 MiB of table data and 9 above', async () => {
     const font = decodeSfnt(dejavu(), 'big');
-    const compressor = standIn('woff2_compress', 'woff2', `printf '%s' "$2" > '${path.join(tmpDir('woff2-quality-'), 'quality')}'; printf '%s' '${FAKE_WOFF2.toString('latin1')}' > "$out"`);
+    const compressor = standIn('woff2_compress', `printf '%s' "$2" > '${path.join(tmpDir('woff2-quality-'), 'quality')}'; printf '%s' '${FAKE_WOFF2.toString('latin1')}' > "$out"`);
     const qualityFile = /> '([^']+)'/.exec(fs.readFileSync(compressor.program, 'utf8'))![1];
-    await withPrograms({ compress: compressor.program }, async () => {
+    await withProgram(compressor.program, async () => {
       await encodeWoff2Async(font);
       expect(fs.readFileSync(qualityFile, 'utf8')).toBe(String(WOFF2_BROTLI_QUALITY_UP_TO_LIMIT));
       font.tables['ZZZZ'] = { tag: 'ZZZZ', checkSum: 0, offset: 0, length: WOFF2_BROTLI_MAX_QUALITY_BYTES, data: Buffer.alloc(WOFF2_BROTLI_MAX_QUALITY_BYTES) };
@@ -131,63 +125,16 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
       expect(fs.readFileSync(qualityFile, 'utf8')).toBe(String(WOFF2_BROTLI_LARGE_FONT_QUALITY));
     });
   });
-
-  it('reads the font the decoder program writes, and reads a collection in process', async () => {
-    const decoder = standIn('woff2_decompress', 'ttf', `cp '${path.join(FIXTURES, 'dejavu-sans-latin.ttf')}' "$out"`);
-    await withPrograms({ decompress: decoder.program }, async () => {
-      const font = await decodeWoff2Async(fixture('synthetic-triplets.reference.woff2'), 'x');
-      // the stand-in returned the DejaVu font: it is what the wrapper read
-      expect(font.tables['glyf'].data.equals(decodeSfnt(dejavu(), 'x').tables['glyf'].data)).toBe(true);
-      expect(fs.readFileSync(decoder.given).equals(fixture('synthetic-triplets.reference.woff2'))).toBe(true);
-      fs.rmSync(decoder.given);
-      const first = await decodeWoff2Async(fixture('pair.reference.woff2'), 'x');
-      expect(first.tables['glyf'].data.equals(decodeWoff2(fixture('pair.reference.woff2'), 'x').tables['glyf'].data)).toBe(true);
-      expect(fs.existsSync(decoder.given)).toBe(false);
-    });
-  });
-
-  it('decodes in process what the decoder program declines', async () => {
-    const decoder = standIn('woff2_decompress', 'ttf', 'exit 1');
-    await withPrograms({ decompress: decoder.program }, async () => {
-      const woff2 = fixture('dejavu-sans-latin.reference.woff2');
-      const font = await decodeWoff2Async(woff2, 'x');
-      expect(font.tables['glyf'].data.equals(decodeWoff2(woff2, 'x').tables['glyf'].data)).toBe(true);
-      expect(await decompressWithNativeWoff2(woff2)).toBeNull();
-    });
-  });
-
-  it('answers a memory-limited run with a typed limit error', async () => {
-    const decoder = standIn('woff2_decompress', 'ttf', 'kill -KILL $$');
-    await withPrograms({ decompress: decoder.program }, async () => {
-      const error = await captureError(() => decompressWithNativeWoff2(fixture('dejavu-sans-latin.reference.woff2')));
-      expect(error).toBeInstanceOf(Woff2LimitError);
-      expect(error.message).toMatch(/WOFF2 decoder run out of memory/);
-    });
-  });
 });
 
 const compressor = woff2CompressProgram();
-const decompressor = woff2DecompressProgram();
-const haveBoth = !skipUnless('woff2_compress and woff2_decompress', compressor !== null && decompressor !== null);
-
-function withoutAdjustment(tables: Map<string, Buffer>): Map<string, Buffer> {
-  const head = Buffer.from(tables.get('head')!);
-  head.writeUInt32BE(0, HEAD_ADJUSTMENT_AT);
-  return new Map(tables).set('head', head);
-}
+const installed = pinnedWoff2Program('woff2_compress') !== null && compressor !== null;
+const haveProgram = !skipUnless('the pinned woff2_compress', installed);
 
 const SOURCES = ['dejavu-sans-latin.ttf', 'dejavu-serif-hinted-ascii.ttf', 'synthetic-triplets.ttf', 'synthetic-cff.otf'];
-const WOFF2_FILES = [
-  'dejavu-sans-latin.reference.woff2',
-  'dejavu-serif-hinted-ascii.reference.woff2',
-  'synthetic-triplets.reference.woff2',
-  'synthetic-cff.reference.woff2',
-  'dejavu-sans-latin.fonttools-hmtx.woff2',
-  'synthetic-triplets.fonttools-hmtx.woff2',
-];
 
-describe.skipIf(!haveBoth)('the WOFF2 programs of google/woff2', () => {
-  it.each(SOURCES)('write for %s the file woff2_compress writes for its sfnt, which the in-process reader decodes to the same tables', async (source) => {
+describe.skipIf(!haveProgram)('the encoder program of google/woff2', () => {
+  it.each(SOURCES)('writes for %s the file woff2_compress writes for its sfnt, which the in-process reader decodes to the same tables', async (source) => {
     const font = decodeSfnt(fixture(source), source);
     const written = await encodeWoff2Async(font);
     const dir = tmpDir('woff2-real-');
@@ -203,184 +150,15 @@ describe.skipIf(!haveBoth)('the WOFF2 programs of google/woff2', () => {
     expect(decoded.tables['glyf'] === undefined).toBe(font.tables['glyf'] === undefined);
   });
 
-  it.each(WOFF2_FILES)('decode %s to the tables the in-process reader reads, up to the checksum adjustment of the head table', async (name) => {
-    const woff2 = fixture(name);
-    const native = await decompressWithNativeWoff2(woff2);
-    expect(native).not.toBeNull();
-    const fromProgram = withoutAdjustment(readSfntTables(native!));
-    const inProcess = decodeWoff2(woff2, name);
-    expect([...fromProgram.keys()].sort()).toEqual(Object.keys(inProcess.tables).sort());
-    for (const [tag, table] of Object.entries(inProcess.tables)) {
-      const expected = tag === 'head' ? Buffer.from(table.data).fill(0, HEAD_ADJUSTMENT_AT, HEAD_ADJUSTMENT_AT + 4) : table.data;
-      expect(fromProgram.get(tag)!.equals(expected), `${name} ${tag}`).toBe(true);
-    }
-    const parsed = await decodeWoff2Async(woff2, name);
-    expect(Object.keys(parsed.tables).sort()).toEqual(Object.keys(inProcess.tables).sort());
-  });
-
-  it('declines a last block that is not padded to four bytes, which the Recommendation allows and the in-process reader accepts', async () => {
-    const woff2 = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.woff2'));
-    expect(woff2.length % 4).not.toBe(0);
-    expect(await decompressWithNativeWoff2(woff2)).toBeNull();
-    const parsed = await decodeWoff2Async(woff2, 'sample');
-    expect(Object.keys(parsed.tables).sort()).toEqual(Object.keys(decodeWoff2(woff2, 'sample').tables).sort());
-  });
-
-  it('converts a font from WOFF2 to TrueType and back through the programs', async () => {
-    const ttf = await convertFont(fixture('dejavu-serif-hinted-ascii.reference.woff2'), 'woff2', 'ttf', {}, 'serif.woff2');
-    const again = await convertFont(ttf.buffer, 'ttf', 'woff2', {}, 'serif.ttf');
+  it('converts a font from TrueType to WOFF2 and from WOFF2 back to TrueType', async () => {
+    const woff2 = await convertFont(fixture('dejavu-serif-hinted-ascii.ttf'), 'ttf', 'woff2', {}, 'serif.ttf');
+    expect(woff2.mimeType).toBe('font/woff2');
+    const ttf = await convertFont(woff2.buffer, 'woff2', 'ttf', {}, 'serif.woff2');
     const original = readSfntTables(fixture('dejavu-serif-hinted-ascii.ttf'));
-    const decoded = decodeWoff2(again.buffer, 'serif');
+    const back = readSfntTables(ttf.buffer);
     for (const tag of ['cmap', 'hmtx', 'fpgm', 'prep', 'cvt ', 'name']) {
-      if (original.has(tag)) expect(decoded.tables[tag].data.equals(original.get(tag)!), tag).toBe(true);
+      if (original.has(tag)) expect(back.get(tag)!.equals(original.get(tag)!), tag).toBe(true);
     }
-  });
-});
-
-/** A glyf transform header that claims `numGlyphs` glyphs and carries streams of the given sizes. */
-function glyfClaim(numGlyphs: number): Buffer {
-  const header = Buffer.alloc(36);
-  header.writeUInt16BE(numGlyphs, 4);
-  return header;
-}
-
-describe.skipIf(!haveBoth)('hostile files given to the programs', () => {
-  const real = fixture('dejavu-sans-latin.reference.woff2');
-  const expectOutcome = async (name: string, file: Buffer) => {
-    const started = Date.now();
-    const answer = await decompressWithNativeWoff2(file).then(
-      (written) => ({ written }),
-      (error: unknown) => ({ error })
-    );
-    expect(Date.now() - started, `${name} took too long`).toBeLessThan(RUN_HANG_GUARD_MS);
-    // Declined (null), or a typed refusal: never a crash that the sandbox reports as a signal of the program.
-    if ('error' in answer) expect(answer.error, name).toBeInstanceOf(Woff2LimitError);
-    else if (answer.written !== null && answer.written.toString('latin1', 0, 4) !== 'ttcf') expect(decodeSfnt(answer.written, name).numTables).toBeGreaterThan(0);
-    return answer;
-  };
-
-  const header = (patch: (view: Buffer) => void): Buffer => {
-    const copy = Buffer.from(real);
-    patch(copy);
-    return copy;
-  };
-
-  const files: Array<[string, Buffer]> = [
-    ['an empty file', Buffer.alloc(0)],
-    ['the signature alone', Buffer.from('wOF2')],
-    ['a header cut at 40 bytes', real.subarray(0, 40)],
-    ['a file cut inside the table directory', real.subarray(0, 60)],
-    ['a file cut inside the compressed data', real.subarray(0, real.length - 40)],
-    ['a length field that is not the file length', header((b) => b.writeUInt32BE(real.length + 4, 8))],
-    ['zero tables', header((b) => b.writeUInt16BE(0, 12))],
-    ['65535 tables', header((b) => b.writeUInt16BE(0xffff, 12))],
-    ['a total size of 4 GiB', header((b) => b.writeUInt32BE(0xffffffff, 16))],
-    ['a compressed size past the file', header((b) => b.writeUInt32BE(0x7fffffff, 20))],
-    ['a metadata block past the file', header((b) => { b.writeUInt32BE(real.length - 8, 28); b.writeUInt32BE(0xffffff, 32); })],
-    ['a private block past the file', header((b) => { b.writeUInt32BE(real.length - 8, 40); b.writeUInt32BE(0xffffff, 44); })],
-    ['a signature that is not WOFF2', header((b) => b.write('wOFF', 0, 'latin1'))],
-    [
-      'a table of 4 GiB announced by a file of a few hundred bytes',
-      buildWoff2({ tables: [{ tag: 'name', data: Buffer.alloc(8), origLength: 0xfffffff0 }], totalSfntSize: 0xffffffff }),
-    ],
-    [
-      'a Brotli stream of 64 MiB of zeros behind a directory of a few bytes',
-      buildWoff2({ tables: minimalTransformedFont(), compressed: brotliFont(Buffer.alloc(64 * 1024 * 1024)) }),
-    ],
-    [
-      'a glyf transform of 65535 glyphs with empty streams',
-      buildWoff2({ tables: [{ tag: 'glyf', data: glyfClaim(0xffff), version: 0, origLength: 1 << 20, transformLength: 36 }, { tag: 'loca', data: Buffer.alloc(0), version: 0, origLength: 4, transformLength: 0 }] }),
-    ],
-    [
-      'an end-of-stream base-128 number that never ends',
-      buildWoff2({ tables: [{ tag: 'name', data: Buffer.alloc(4), rawEntry: [5, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01] }] }),
-    ],
-    [
-      'a collection that lists a table that does not exist',
-      buildWoff2({ flavor: COLLECTION_FLAVOR, tables: collectionTables(), afterDirectory: collectionHeader([{ indices: [0, 1, 2, 3, 4, 99] }]) }),
-    ],
-    [
-      'a collection of 255 fonts that share one set of tables',
-      buildWoff2({ flavor: COLLECTION_FLAVOR, tables: collectionTables(), afterDirectory: collectionHeader(Array.from({ length: 255 }, () => ({ indices: [0, 1, 2, 3, 4, 5] }))) }),
-    ],
-  ];
-
-  it.each(files)('stay inside the limits for %s', async (name, file) => {
-    await expectOutcome(name, file);
-  });
-
-  it('refuse the same files through the conversion, with the typed error of the in-process reader or a font', async () => {
-    for (const [name, file] of files) {
-      const outcome = await convertFont(file, 'woff2', 'ttf', {}, 'hostile.woff2').then(
-        (result) => ({ result }),
-        (error: unknown) => ({ error })
-      );
-      if ('error' in outcome) expect(outcome.error, name).toBeInstanceOf(Error);
-      else expect(outcome.result.buffer.readUInt32BE(0), name).toBe(0x00010000);
-    }
-  }, 120_000);
-
-  it('survive 150 files with a damaged byte, each of which the sandbox runs to its end', async () => {
-    let seed = 12345;
-    const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
-    for (let i = 0; i < 150; i++) {
-      const copy = Buffer.from(real);
-      const at = next() % copy.length;
-      copy[at] = next() & 0xff;
-      await expectOutcome(`byte ${at} of the DejaVu file`, copy);
-    }
-  }, 180_000);
-
-  it('refuse a font with a damaged sfnt the program cannot encode, by declining it', async () => {
-    const damaged = Buffer.from(encodeSfnt(decodeSfnt(dejavu(), 'x')));
-    damaged.writeUInt16BE(0x7fff, 4);
-    expect(await compressWithNativeWoff2(damaged, 11)).toBeNull();
-  });
-});
-
-/** The decoder program under a 96 MiB address space: a buffer sized from the header alone cannot be allocated. */
-// skip-ok: prlimit is part of util-linux (Linux only); the sandbox of the worker needs the same program
-const prlimit = spawnSync('prlimit', ['--version']).status === 0;
-describe.skipIf(!haveBoth || !prlimit)('the decoder program checks the header before it allocates', () => {
-  const real = fixture('dejavu-sans-latin.reference.woff2');
-  const AS_BYTES = 96 * 1024 * 1024;
-  function run(file: Buffer): { status: number | null; stderr: string; ttf: Buffer | null } {
-    const dir = tmpDir('woff2-header-');
-    const input = path.join(dir, 'input.woff2');
-    fs.writeFileSync(input, file);
-    const result = spawnSync('prlimit', [`--as=${AS_BYTES}`, '--', decompressor!, input], { encoding: 'utf8' });
-    const output = path.join(dir, 'input.ttf');
-    return { status: result.status, stderr: result.stderr, ttf: fs.existsSync(output) ? fs.readFileSync(output) : null };
-  }
-  const withHeader = (patch: (copy: Buffer) => void): Buffer => {
-    const copy = Buffer.from(real);
-    patch(copy);
-    return copy;
-  };
-
-  it('declines a header that announces more than the decoder may write, without a 128 MiB buffer', () => {
-    const answer = run(withHeader((b) => b.writeUInt32BE(0xffffffff, 16)));
-    expect(answer.status).toBe(1);
-    expect(answer.stderr).toMatch(/not that of a font this decoder reads/);
-  });
-
-  it('declines more tables than the in-process reader allows', () => {
-    const answer = run(withHeader((b) => b.writeUInt16BE(4097, 12)));
-    expect(answer.status).toBe(1);
-    expect(answer.stderr).toMatch(/not that of a font this decoder reads/);
-  });
-
-  it('declines a length field that is not the size of the file', () => {
-    const answer = run(withHeader((b) => b.writeUInt32BE(real.length + 1, 8)));
-    expect(answer.status).toBe(1);
-    expect(answer.stderr).toMatch(/not that of a font this decoder reads/);
-  });
-
-  it('does not size the buffer from a total size that the file cannot back, and reads the font', () => {
-    // 112 MiB announced by a file of 20 KiB: the decoder does not believe the field, and neither does the buffer.
-    const answer = run(withHeader((b) => b.writeUInt32BE(112 * 1024 * 1024, 16)));
-    expect(answer.status).toBe(0);
-    expect(answer.ttf?.equals(run(real).ttf ?? Buffer.alloc(0))).toBe(true);
   });
 });
 
@@ -399,7 +177,7 @@ function sparseNoise(length: number): Buffer {
   return data;
 }
 
-describe.skipIf(!haveBoth)('the encoder program takes the Brotli quality and checks the font before it allocates', () => {
+describe.skipIf(!haveProgram)('the encoder program takes the Brotli quality and checks the font before it allocates', () => {
   const sfnt = (name: string) => fixture(name);
   function compress(file: Buffer, args: string[] = []): { status: number | null; stderr: string; woff2: Buffer | null } {
     const dir = tmpDir('woff2-compress-');
@@ -450,7 +228,7 @@ describe.skipIf(!haveBoth)('the encoder program takes the Brotli quality and che
   }, 60_000);
 });
 
-describe.skipIf(!haveBoth)('the encoder program stores the hmtx table in its transformed form (section 5.4 of the Recommendation)', () => {
+describe.skipIf(!haveProgram)('the encoder program stores the hmtx table in its transformed form (section 5.4 of the Recommendation)', () => {
   function compressFile(name: string): Buffer {
     const dir = tmpDir('woff2-hmtx-');
     const input = path.join(dir, 'input.ttf');
@@ -461,13 +239,11 @@ describe.skipIf(!haveBoth)('the encoder program stores the hmtx table in its tra
   }
   const hmtxRow = (woff2: Buffer) => readWoff2Reference(woff2).directory.find((row) => row.tag === 'hmtx');
 
-  it.each(['dejavu-sans-latin.ttf', 'dejavu-serif-hinted-ascii.ttf', 'synthetic-triplets.ttf'])('transforms the hmtx table of %s, which the decoders read back to the source table', async (name) => {
+  it.each(['dejavu-sans-latin.ttf', 'dejavu-serif-hinted-ascii.ttf', 'synthetic-triplets.ttf'])('transforms the hmtx table of %s, which the in-process reader reads back to the source table', (name) => {
     const woff2 = compressFile(name);
     expect(hmtxRow(woff2)?.version).toBe(1);
     expect(hmtxRow(woff2)?.transformLength).toBeLessThan(hmtxRow(woff2)!.origLength);
     const source = readSfntTables(fixture(name));
-    const fromProgram = readSfntTables((await decompressWithNativeWoff2(woff2))!);
-    expect(fromProgram.get('hmtx')!.equals(source.get('hmtx')!)).toBe(true);
     expect(decodeWoff2(woff2, name).tables['hmtx'].data.equals(source.get('hmtx')!)).toBe(true);
   });
 
@@ -480,9 +256,58 @@ describe.skipIf(!haveBoth)('the encoder program stores the hmtx table in its tra
     expect(hmtxRow(compressFile('synthetic-cff.otf'))?.version).toBe(0);
   });
 
-  it('leaves the tables of a collection as they are, where the transform of shared glyf and loca tables is not implemented', async () => {
+  it('leaves the tables of a collection as they are, where the transform of shared glyf and loca tables is not implemented', () => {
     const woff2 = compressFile('pair.ttc');
     expect(readWoff2Reference(woff2).directory.every((row) => row.tag !== 'hmtx' || row.version === 0)).toBe(true);
-    expect(await decompressWithNativeWoff2(woff2)).not.toBeNull();
+    expect(decodeWoff2(woff2, 'pair').tables['hmtx'].data.length).toBeGreaterThan(0);
   });
+});
+
+describe.skipIf(!haveProgram)('damaged fonts given to the encoder program', () => {
+  const sfnt = () => Buffer.from(encodeSfnt(decodeSfnt(dejavu(), 'x')));
+  const patched = (patch: (copy: Buffer) => void): Buffer => {
+    const copy = sfnt();
+    patch(copy);
+    return copy;
+  };
+  const fonts: Array<[string, Buffer]> = [
+    ['an empty file', Buffer.alloc(0)],
+    ['the sfnt version alone', Buffer.from([0, 1, 0, 0])],
+    ['a header with no tables', patched((b) => b.writeUInt16BE(0, 4))],
+    ['65535 tables', patched((b) => b.writeUInt16BE(0xffff, 4))],
+    ['4097 tables', patched((b) => b.writeUInt16BE(4097, 4))],
+    ['a table that starts past the end of the file', patched((b) => b.writeUInt32BE(0xfffffff0, 12 + 8))],
+    ['a table of 4 GiB', patched((b) => b.writeUInt32BE(0xffffffff, 12 + 12))],
+    ['a file cut in the middle of the glyf table', sfnt().subarray(0, 40_000)],
+    ['a file cut in the table directory', sfnt().subarray(0, 100)],
+    ['a version that is not a font', patched((b) => b.write('wOF2', 0, 'latin1'))],
+  ];
+
+  it.each(fonts)('stops inside the limits for %s', async (name, font) => {
+    const started = Date.now();
+    const answer = await compressWithNativeWoff2(font, 11).then(
+      (written) => ({ written }),
+      (error: unknown) => ({ error })
+    );
+    expect(Date.now() - started, `${name} took too long`).toBeLessThan(RUN_HANG_GUARD_MS);
+    // Declined (null) or written; a program stopped by a signal is a Woff2FormatError that names it.
+    if ('error' in answer) expect(String((answer.error as Error).message), name).not.toMatch(/stopped by/);
+    else if (answer.written !== null) expect(answer.written.toString('latin1', 0, 4), name).toBe('wOF2');
+  });
+
+  it('survives 100 fonts with a damaged byte in the directory or the head of the glyf table', async () => {
+    let seed = 987654;
+    const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
+    const base = sfnt();
+    for (let i = 0; i < 100; i++) {
+      const copy = Buffer.from(base);
+      const at = next() % 400;
+      copy[at] = next() & 0xff;
+      const answer = await compressWithNativeWoff2(copy, 11).then(
+        (written) => ({ written }),
+        (error: unknown) => ({ error })
+      );
+      if ('error' in answer) expect(String((answer.error as Error).message), `byte ${at}`).not.toMatch(/stopped by/);
+    }
+  }, 180_000);
 });

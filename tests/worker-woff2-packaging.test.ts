@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { woff2CompressProgram, woff2DecompressProgram } from '../src/lib/conversions/font-woff2-native';
+import { pinnedWoff2Program } from './helpers/woff2-programs';
 import { parseDockerfile } from './helpers/dockerfile';
 import { skipUnless } from './helpers/strict-skip';
 
@@ -41,18 +41,17 @@ describe('the woff2 stage of the worker image', () => {
     expect(copies).toEqual(['scripts/install-woff2.sh /tmp/install-woff2.sh', 'scripts/woff2/ /tmp/woff2/']);
   });
 
-  it('copies the programs and their licence texts into the runner, builds a WOFF2 file and reads it back, and keeps the note of the sources', () => {
+  it('copies the encoder and the licence texts into the runner, builds a WOFF2 file, and keeps the note of the sources', () => {
     const instructions = (keyword: string) => runner.instructions.filter((instruction) => instruction.keyword === keyword).map((instruction) => instruction.argument);
     expect(instructions('COPY').filter((argument) => argument.includes('woff2'))).toEqual([
       '--from=woff2 /opt/woff2/bin/woff2_compress /usr/local/bin/woff2_compress',
-      '--from=woff2 /opt/woff2/bin/woff2_decompress /usr/local/bin/woff2_decompress',
       '--from=woff2 /opt/woff2/share/doc/woff2 /usr/share/doc/woff2',
     ]);
     const runs = instructions('RUN').filter((argument) => argument.includes('woff2'));
     expect(runs).toHaveLength(2);
     expect(runs[0]).toMatch(/printf '%s' '[A-Za-z0-9+/=]+' \| base64 -d > "\$dir\/font\.ttf"/);
     expect(runs[0]).toContain('woff2_compress "$dir/font.ttf"');
-    expect(runs[0]).toContain('woff2_decompress "$dir/font.woff2"');
+    expect(runs[0]).toContain('test "$(head -c 4 "$dir/font.woff2")" = wOF2');
     expect(runs[1]).toBe('cp /usr/share/doc/woff2/SOURCE /licenses/woff2.SOURCE');
   });
 
@@ -62,14 +61,13 @@ describe('the woff2 stage of the worker image', () => {
     expect((copy?.index ?? Infinity) < (user?.index ?? -Infinity)).toBe(true);
   });
 
-  const programs = woff2CompressProgram() !== null && woff2DecompressProgram() !== null;
-  it.skipIf(skipUnless('woff2_compress and woff2_decompress', programs))('builds the check of the image with the programs it installs, under a POSIX shell', () => {
+  const program = pinnedWoff2Program('woff2_compress');
+  it.skipIf(skipUnless('the pinned woff2_compress', program !== null))('runs the check of the image with the program it installs, under a POSIX shell', () => {
     const check = runner.instructions.find((instruction) => instruction.keyword === 'RUN' && instruction.argument.startsWith('dir="$(mktemp -d)"') && instruction.argument.includes('woff2_compress'));
     expect(check).toBeDefined();
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'woff2-image-check-'));
     try {
-      fs.symlinkSync(woff2CompressProgram()!, path.join(bin, 'woff2_compress'));
-      fs.symlinkSync(woff2DecompressProgram()!, path.join(bin, 'woff2_decompress'));
+      fs.symlinkSync(program!, path.join(bin, 'woff2_compress'));
       const run = spawnSync('sh', ['-c', check!.argument], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: bin }, encoding: 'utf8' });
       expect(run.status, run.stderr).toBe(0);
     } finally {

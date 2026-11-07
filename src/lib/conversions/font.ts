@@ -13,7 +13,7 @@ import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } 
 import { isType1Format, type1FileToOpenType } from './font-fontforge';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { compressWithNativeWoff2, decompressWithNativeWoff2 } from './font-woff2-native';
+import { compressWithNativeWoff2 } from './font-woff2-native';
 import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, woff2BrotliQuality, type Woff2DecodedFont } from './font-woff2';
 import { cubicToQuadraticBezier, type BezierPoint } from './font-bezier';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
@@ -155,10 +155,7 @@ export async function convertFont(
   }
 
   // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation (a Type 1 font is first read by FontForge into an OpenType font with the same outlines)
-  let parsedFont: ParsedFont;
-  if (isType1Format(src)) parsedFont = decodeSfnt(await type1FileToOpenType(inputBuffer, options), baseName);
-  else if (looksLikeWoff2(inputBuffer, src)) parsedFont = await decodeWoff2Async(inputBuffer, baseName, options);
-  else parsedFont = parseFontToSfnt(inputBuffer, src, baseName);
+  const parsedFont = isType1Format(src) ? decodeSfnt(await type1FileToOpenType(inputBuffer, options), baseName) : parseFontToSfnt(inputBuffer, src, baseName);
 
   // 2. Synthesize requested target format
   let outputBuffer: Buffer;
@@ -599,16 +596,6 @@ function parsedFontFromWoff2(decoded: Woff2DecodedFont, defaultName: string): Pa
  */
 export function decodeWoff2(buffer: Buffer, defaultName: string): ParsedFont {
   return parsedFontFromWoff2(decodeWoff2Fonts(buffer, { firstFontOnly: true })[0], defaultName);
-}
-
-/**
- * `decodeWoff2` through `woff2_decompress` of google/woff2 (font-woff2-native.ts) when it is installed, for a file of one font that
- * the container check of the in-process reader accepts. A collection, a file the program declines (it is stricter than the
- * Recommendation about the padding of the last block and about the size it writes) and a machine without it are decoded in process.
- */
-export async function decodeWoff2Async(buffer: Buffer, defaultName: string, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'> = {}): Promise<ParsedFont> {
-  const sfnt = countWoff2Fonts(buffer) === 1 ? await decompressWithNativeWoff2(buffer, options) : null;
-  return sfnt === null ? decodeWoff2(buffer, defaultName) : decodeSfnt(sfnt, defaultName);
 }
 
 /** Decodes every font of a WOFF2 file (several for a collection, one otherwise). */

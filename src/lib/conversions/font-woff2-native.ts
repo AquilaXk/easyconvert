@@ -16,42 +16,38 @@ import { stageTimeoutMs } from './job-time';
 import { WOFF2_MAX_DECODED_BYTES, Woff2FormatError, Woff2LimitError } from './font-woff2-primitives';
 
 /**
- * The WOFF2 programs of google/woff2 (MIT), built from the pinned source by scripts/install-woff2.sh: `woff2_compress` writes the
- * WOFF2 file of an sfnt font and `woff2_decompress` the sfnt of a WOFF2 file. They run as separate processes in the worker sandbox
- * (no network, a time, memory, file-size and diagnostics limit) on a file only this run can read. Their absence is not an error: the
- * in-process codec (font-woff2.ts) answers on a machine without them, and for what they decline.
+ * `woff2_compress` of google/woff2 (MIT), built from the pinned source by scripts/install-woff2.sh, writes the WOFF2 file of an sfnt
+ * font. It runs as a separate process in the worker sandbox (no network, a time, memory, file-size and diagnostics limit) on a file
+ * only this run can read. Its absence is not an error: the in-process encoder (font-woff2.ts) answers on a machine without it, and for
+ * a font it declines. (The decoder program is not used: the in-process reader is faster than the program at every size, because
+ * the program pays for a process and two files, docs/policy-decisions.md entry 173.)
  *
- * A run that is declined (exit status 1, which is how both programs refuse a font or a file) returns null, and so does a program that
- * is not installed or cannot start: the caller then asks the in-process codec, which names the reason in a typed error. A run that
- * the sandbox stops, or that the program does not survive, is an answer: the file is refused with a typed error rather than handed to
- * a second parser.
+ * A run that is declined (exit status 1, which is how the program refuses a font) returns null, and so does a program that is not
+ * installed or cannot start: the caller then asks the in-process encoder, which names the reason in a typed error. A run that the
+ * sandbox stops, or that the program does not survive, is an answer: the font is refused with a typed error rather than handed to a
+ * second encoder.
  */
 
 const COMPRESS_NAME = 'woff2_compress';
 const COMPRESS_PATH_VARIABLE = 'WOFF2_COMPRESS_PATH';
-const DECOMPRESS_NAME = 'woff2_decompress';
-const DECOMPRESS_PATH_VARIABLE = 'WOFF2_DECOMPRESS_PATH';
-/** Where scripts/install-woff2.sh links the programs. */
+/** Where scripts/install-woff2.sh links the program. */
 const INSTALL_DIR = '/usr/local/bin';
 
-/** Both programs name their result after their input: `input.ttf` becomes `input.woff2` and back. */
+/** The program names its result after its input: `input.ttf` becomes `input.woff2`. */
 const SFNT_INPUT_NAME = 'input.ttf';
 const SFNT_OUTPUT_NAME = 'input.woff2';
-const WOFF2_INPUT_NAME = 'input.woff2';
-const WOFF2_OUTPUT_NAME = 'input.ttf';
 
 const PROGRAM_MEMORY_LIMIT_MB = 2048;
 const PROGRAM_MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 /** A WOFF2 file is never larger than the table data it carries plus a directory, so the same bound holds for the file written. */
 const PROGRAM_MAX_OUTPUT_BYTES = WOFF2_MAX_DECODED_BYTES + 1024 * 1024;
 const COMPRESS_TASK = 'WOFF2 encoder';
-const DECOMPRESS_TASK = 'WOFF2 decoder';
 
 /**
  * The program the variable names, or the one the install script linked into /usr/local/bin; null when there is none (a variable that
- * names no file counts as not installed). The directories of the system and of the package managers are not searched: the 1.0.2 release
- * that they carry is of 2017 and decodes the glyphs of an overlapping contour without the flag the Recommendation gives them (the
- * overlap bit, added to the source in 2022), so a font would change with the machine the worker ran on.
+ * names no file counts as not installed). The directories of the system and of the package managers are not searched: the 1.0.2
+ * release that they carry is of 2017 and drops the overlap bit of a glyph (the flag of overlapping contours that the overlapSimple
+ * bitmap carries, added to the source in 2022), so a font would change with the machine the worker ran on.
  */
 function installedProgram(variable: string, name: string): string | null {
   const custom = process.env[variable];
@@ -61,10 +57,6 @@ function installedProgram(variable: string, name: string): string | null {
 
 export function woff2CompressProgram(): string | null {
   return installedProgram(COMPRESS_PATH_VARIABLE, COMPRESS_NAME);
-}
-
-export function woff2DecompressProgram(): string | null {
-  return installedProgram(DECOMPRESS_PATH_VARIABLE, DECOMPRESS_NAME);
 }
 
 interface NativeRun {
@@ -138,11 +130,4 @@ export async function compressWithNativeWoff2(sfnt: Buffer, quality: number, opt
   const binary = woff2CompressProgram();
   if (binary === null) return null;
   return runProgram({ binary, task: COMPRESS_TASK, what: 'The font', inputName: SFNT_INPUT_NAME, outputName: SFNT_OUTPUT_NAME }, sfnt, [String(quality)], options);
-}
-
-/** The sfnt font of a WOFF2 file, or null when `woff2_decompress` is not installed or declined the file. */
-export async function decompressWithNativeWoff2(woff2: Buffer, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'> = {}): Promise<Buffer | null> {
-  const binary = woff2DecompressProgram();
-  if (binary === null) return null;
-  return runProgram({ binary, task: DECOMPRESS_TASK, what: 'The WOFF2 font', inputName: WOFF2_INPUT_NAME, outputName: WOFF2_OUTPUT_NAME }, woff2, [], options);
 }
