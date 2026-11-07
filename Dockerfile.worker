@@ -114,14 +114,31 @@ RUN /tmp/install-vtracer.sh /opt/vtracer
 RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 
 # ==============================================================================
-# Stage 3b'': Pinned google/woff2 (WOFF2 encoder and decoder)
+# Stage 3b'': Pinned avifenc (AVIF encoder)
 # ==============================================================================
-# TTF/OTF to WOFF2. google/woff2 and the Brotli library it takes are MIT. Both are built here from the sources
-# pinned by commit and SHA-256 in scripts/install-woff2.sh, with the make rules of the woff2 tree and the files of scripts/woff2/src
-# (copied from the pinned commit), into woff2_compress and woff2_decompress (the encoder is installed in the image; the decoder is the second reader of the format
-# in the tests); the worker runs the encoder as a separate sandboxed process and nothing links it into the application. The in-process
-# codec stays as the fallback for what it declines. Debian ships the 1.0.2
-# release of 2017 as a package of its own; the pinned commit carries the later bounds fixes.
+# Every AVIF the worker writes from a picture file. avifenc is the command-line encoder of libavif (BSD-2-Clause) and drives libaom, the
+# AV1 encoder (BSD-2-Clause with the AOMedia patent licence). Both are built here from the releases that Debian 13 packages (libavif
+# 1.2.1, libaom 3.12.1), with libyuv, libpng, zlib-ng and libjpeg-turbo, each pinned by SHA-256 in scripts/install-avifenc.sh, as one
+# static program that the worker runs sandboxed; nothing links it into the application. It writes the files the package writes; the
+# package (libavif-bin, installed in the runner below) stays as the fallback. Every licence text goes with the program.
+FROM ${NODE_IMAGE} AS avifenc
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gcc g++ make perl libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-avifenc.sh /tmp/install-avifenc.sh
+COPY scripts/avifenc/SOURCE /tmp/avifenc/SOURCE
+RUN /tmp/install-avifenc.sh /opt/avifenc
+
+# ==============================================================================
+# Stage 3b''': Pinned google/woff2 (WOFF2 encoder and decoder)
+# ==============================================================================
+# TTF/OTF to WOFF2. google/woff2 and the Brotli library it takes are MIT. Both are built here from the sources pinned by commit and
+# SHA-256 in scripts/install-woff2.sh, with the make rules of the woff2 tree and the files of scripts/woff2/src (copied from the pinned
+# commit), into woff2_compress and woff2_decompress. The image installs the encoder (the decoder is the second reader of the format in
+# the tests); the worker runs it as a separate sandboxed process and nothing links it into the application. The in-process codec stays
+# as the fallback for what it declines. Debian ships the 1.0.2 release of 2017 as a package of its own; the pinned commit carries the
+# later fixes.
 FROM ${NODE_IMAGE} AS woff2
 
 RUN apt-get update \
@@ -423,6 +440,17 @@ RUN dir="$(mktemp -d)" \
     && grep -q '<path d="M' "$dir/out.svg" \
     && rm -rf "$dir"
 
+# AVIF encoder (the avifenc stage): the pinned build the worker finds first, beside the distribution's /usr/bin/avifenc, which it falls back to.
+# Its licence texts go to /usr/share/doc/avifenc, which the notices step below collects into /licenses; the SOURCE file names the archives
+# and their digests. The build fails unless the program writes an AVIF file for an 8 x 8 PNG with a black square, written here as bytes.
+COPY --from=avifenc /opt/avifenc/bin/avifenc /usr/local/bin/avifenc-pinned
+COPY --from=avifenc /opt/avifenc/share/doc/avifenc /usr/share/doc/avifenc
+RUN dir="$(mktemp -d)" \
+    && printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\010\000\000\000\010\001\003\000\000\000\376\301,\310\000\000\000\006PLTE\377\377\377\000\000\000U\302\323~\000\000\000\021IDAT\010\327c\140\000\002\033(d\140\140\000\000\007\220\000\361\354\255\014\032\000\000\000\000IEND\256B\140\202' > "$dir/in.png" \
+    && avifenc-pinned -q 70 -s 6 "$dir/in.png" -o "$dir/out.avif" \
+    && head -c 12 "$dir/out.avif" | grep -q 'ftypavif' \
+    && rm -rf "$dir"
+
 # WOFF2 encoder (woff2_compress of the pinned google/woff2 from the woff2 stage; the decoder program stays in the stage, WOFF2 files are
 # read in process). Its licence text goes to /usr/share/doc/woff2/copyright, which the notices step below collects into /licenses with the
 # system packages, and the SOURCE file names the archives and their digests. The build fails unless the program turns a 612-byte TrueType
@@ -561,6 +589,7 @@ RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
 RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
 RUN cp /usr/share/doc/woff2/SOURCE /licenses/woff2.SOURCE
+RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib-ng LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
