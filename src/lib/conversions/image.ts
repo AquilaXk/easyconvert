@@ -70,7 +70,7 @@ import { assemblePicturePdf, type PdfPageImage } from './image-pdf-pages';
 import { DEFAULT_PRINT_DENSITY, pictureDensity, selectionDensity, type PrintDensity } from './image-print-density';
 import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-source';
 import { hasSrgbPrimaries, isProfileDroppedByPngReader, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
-import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
+import { EIGHT_BIT_ONLY_TARGETS, nearestLevelLut, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
@@ -1482,6 +1482,20 @@ const DEFAULT_DENSITY_PPI = 72;
  */
 const SOURCE_BLOCK_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
 
+type EightBitLevelLuts = readonly [Uint8Array, Uint8Array, Uint8Array];
+/** The tables of the last development curve: a camera RAW decoder writes the same profile for every picture, and building them costs 5 ms of a 12 ms conversion of a small one. */
+let lastEightBitCurve: { icc: Buffer; levels: EightBitLevelLuts } | undefined;
+
+/** The nearest 8-bit level of every 16-bit sample, per channel, for a development curve over sRGB primaries; null for any other profile. */
+function eightBitLevelLuts(icc: Buffer): EightBitLevelLuts | null {
+  if (lastEightBitCurve?.icc.equals(icc)) return lastEightBitCurve.levels;
+  const luts = srgb16LutsFromProfile(icc);
+  if (luts === null) return null;
+  const levels: EightBitLevelLuts = [nearestLevelLut(luts[0]), nearestLevelLut(luts[1]), nearestLevelLut(luts[2])];
+  lastEightBitCurve = { icc: Buffer.from(icc), levels };
+  return levels;
+}
+
 /**
  * Keeps the metadata of the input. The targets of `SOURCE_BLOCK_TARGETS` carry the source's EXIF, XMP and ICC profile unchanged
  * (see `keepSourceBlocks`; the two profiles named there are the exception: they are applied to the pixels and not written). For the others, EXIF, XMP and IPTC are kept and the pixels are converted to sRGB through the input's
@@ -1502,8 +1516,12 @@ async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata, tar
   if (meta.depth !== SHARP_SIXTEEN_BIT_DEPTH || meta.icc === undefined || (meta.channels ?? 0) < RGB_CHANNEL_COUNT) {
     return pipeline;
   }
-  const luts = srgb16LutsFromProfile(meta.icc);
-  if (luts === null) return pipeline;
+  const eightBit = EIGHT_BIT_CURVE_TARGETS.has(target);
+  // A picture with an alpha plane keeps the native transform for an 8-bit target: the camera decoder writes none.
+  if (eightBit && meta.channels !== RGB_CHANNEL_COUNT) return pipeline;
+  const levelLuts = eightBit ? eightBitLevelLuts(meta.icc) : null;
+  const luts = eightBit ? null : srgb16LutsFromProfile(meta.icc);
+  if (levelLuts === null && luts === null) return pipeline;
   const { data, info } = await pipeline
     .clone()
     .keepIccProfile()
@@ -1512,15 +1530,28 @@ async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata, tar
     .toBuffer({ resolveWithObject: true });
   const samples = new Uint16Array(data.buffer, data.byteOffset, data.byteLength >> 1);
   const channels = info.channels;
-  const [lutR, lutG, lutB] = luts;
-  for (let i = 0; i < samples.length; i += channels) {
-    samples[i] = lutR[samples[i]];
-    samples[i + 1] = lutG[samples[i + 1]];
-    samples[i + 2] = lutB[samples[i + 2]];
+  let out: Sharp;
+  if (levelLuts !== null) {
+    // The lookup gives the nearest 8-bit level of the exact value in the same pass, so an 8-bit target is neither reduced by the ICC transform nor read back at 16 bits.
+    const [levelR, levelG, levelB] = levelLuts;
+    const levels = new Uint8Array(samples.length);
+    for (let i = 0; i < samples.length; i += RGB_CHANNEL_COUNT) {
+      levels[i] = levelR[samples[i]];
+      levels[i + 1] = levelG[samples[i + 1]];
+      levels[i + 2] = levelB[samples[i + 2]];
+    }
+    out = sharp(levels, { raw: { width: info.width, height: info.height, channels } });
+  } else {
+    const [lutR, lutG, lutB] = luts as NonNullable<typeof luts>;
+    for (let i = 0; i < samples.length; i += channels) {
+      samples[i] = lutR[samples[i]];
+      samples[i + 1] = lutG[samples[i + 1]];
+      samples[i + 2] = lutB[samples[i + 2]];
+    }
+    out = sharp(samples, {
+      raw: { width: info.width, height: info.height, channels: info.channels },
+    }).toColourspace('rgb16');
   }
-  let out = sharp(samples, {
-    raw: { width: info.width, height: info.height, channels: info.channels },
-  }).toColourspace('rgb16');
   if (meta.xmp !== undefined) out = out.withXmp(meta.xmp.toString('utf8'));
   if (meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI) out = out.withDensity(meta.density);
   if (SRGB_TAGGED_TARGETS.has(target)) out = out.withIccProfile('srgb', { attach: true });
@@ -1528,6 +1559,12 @@ async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata, tar
 }
 
 const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', 'tif', 'avif', 'psd']);
+/**
+ * The 8-bit targets take the same exact 16-bit lookup, written as the nearest 8-bit level: the native ICC transform to 8-bit sRGB
+ * lands one level off the exact value on a third of the samples of a developed camera picture, on average 0.3 of a level below it
+ * in the shadows (policy decision 176).
+ */
+const EIGHT_BIT_CURVE_TARGETS: ReadonlySet<string> = EIGHT_BIT_ONLY_TARGETS;
 
 async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgnored: boolean): Promise<Sharp> {
   // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
@@ -1535,7 +1572,7 @@ async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgno
   const meta = await metadataOf(pipeline);
   if (
     meta.depth === SHARP_SIXTEEN_BIT_DEPTH &&
-    SIXTEEN_BIT_CURVE_TARGETS.has(target) &&
+    (SIXTEEN_BIT_CURVE_TARGETS.has(target) || EIGHT_BIT_CURVE_TARGETS.has(target)) &&
     meta.icc !== undefined &&
     hasSrgbPrimaries(meta.icc) &&
     !isSrgbProfile(meta.icc)
