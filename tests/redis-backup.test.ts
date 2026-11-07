@@ -308,7 +308,9 @@ esac`
   it.skipIf(!hasFlock)('is blocked by a live holder of the lock file and not by the file left after the holder ended', async () => {
     unlinkSync(path.join(bin, 'flock'));
     const lock = path.join(backups, '.lock');
-    const holder = spawn('flock', ['-n', lock, 'sleep', '30'], { stdio: 'ignore' });
+    // The holder is one process: bash takes the lock on descriptor 9 and becomes sleep, so killing it leaves nobody with the descriptor.
+    const holder = spawn('bash', ['-c', 'exec 9> "$0"; flock -w 5 9 || exit 3; exec sleep 30', lock], { stdio: 'ignore' });
+    const ended = new Promise((resolve) => holder.on('exit', resolve));
     try {
       const deadline = Date.now() + 5_000;
       while (spawnSync('flock', ['-n', lock, 'true']).status === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -318,7 +320,7 @@ esac`
       expect(backupNames()).toEqual([]);
     } finally {
       holder.kill('SIGKILL');
-      await new Promise((resolve) => holder.on('exit', resolve));
+      await ended;
     }
     expect(existsSync(lock)).toBe(true);
     const after = run();
@@ -413,7 +415,8 @@ describe('the backup schedule and the retention promise', () => {
   it('bounds both waits of the restore loader and prints its log when it fails', () => {
     const step5 = doc.slice(doc.indexOf('5. **Turn it into'), doc.indexOf('6. **Start the stack'));
     expect(step5.match(/\[ \$n -lt 600 \]/g)).toHaveLength(2);
-    expect(step5).toContain('kill -0 $pid');
+    expect(step5).toContain('/proc/$pid/stat');
+    expect(step5).toMatch(/case "\$state" in Z\|""\)/);
     expect(step5.match(/FAILED:/g)).toHaveLength(3);
     expect(step5).toContain('cat /tmp/loader.log');
   });

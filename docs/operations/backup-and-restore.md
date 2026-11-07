@@ -100,7 +100,8 @@ IMG=$(docker inspect --format '{{.Config.Image}}' easyconvert-redis)
    n=0
    until redis-cli ping 2>/dev/null | grep -q PONG; do
      n=$((n + 1))
-     kill -0 $pid 2>/dev/null || { echo "FAILED: the server exited; log follows"; cat /tmp/loader.log; exit 1; }
+     state=$(cut -d" " -f3 /proc/$pid/stat 2>/dev/null)
+     case "$state" in Z|"") echo "FAILED: the server exited; log follows"; cat /tmp/loader.log; exit 1 ;; esac
      [ $n -lt 600 ] || { echo "FAILED: the server did not answer in 5 minutes; log follows"; cat /tmp/loader.log; kill $pid; exit 1; }
      sleep 0.5
    done

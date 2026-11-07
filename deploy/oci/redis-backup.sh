@@ -48,7 +48,7 @@ sha256_of() { # sha256_of <file>: the hex digest
 compose() {
   local dir="$HOME_DIR/current"
   docker compose --project-name easyconvert --project-directory "$dir" --env-file "$dir/.env" \
-    -f "$dir/docker-compose.prod.yml" --profile redis "$@"
+    -f "$dir/docker-compose.prod.yml" --profile redis "$@" 9>&-
 }
 
 # redis-cli inside the Redis container, authenticated with the container's own password.
