@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,7 +38,7 @@ describe('the woff2 stage of the worker image', () => {
     expect(run).toContain('/tmp/install-woff2.sh /opt/woff2');
     expect(run.join('\n')).toContain('build-essential');
     const copies = stage?.instructions.filter((instruction) => instruction.keyword === 'COPY').map((instruction) => instruction.argument) ?? [];
-    expect(copies).toEqual(['scripts/install-woff2.sh /tmp/install-woff2.sh']);
+    expect(copies).toEqual(['scripts/install-woff2.sh /tmp/install-woff2.sh', 'scripts/woff2/ /tmp/woff2/']);
   });
 
   it('copies the programs and their licence texts into the runner, builds a WOFF2 file and reads it back, and keeps the note of the sources', () => {
@@ -95,6 +96,22 @@ describe('the install script of the WOFF2 programs', () => {
     expect(INSTALL.match(/sha256sum --check --strict/g)).toHaveLength(2);
     expect(INSTALL.lastIndexOf('sha256sum --check --strict')).toBeLessThan(INSTALL.indexOf('tar -xzf'));
     expect(INSTALL).not.toMatch(/\bpatch\b|\bgit apply\b|\bsed -i\b/);
+  });
+
+  it('puts the two command-line tools of the repository over the tools of the tree, after the digests are checked and before the build', () => {
+    const order = ['sha256sum --check --strict', 'tar -xzf', 'install -m 0644 "$tools_dir/$tool.cc"', 'make -j'].map((step) => INSTALL.indexOf(step));
+    expect(order.every((at) => at > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(fs.readdirSync(path.join(ROOT, 'scripts', 'woff2', 'src')).sort()).toEqual(['woff2_compress.cc', 'woff2_decompress.cc']);
+  });
+
+  it('names in the SOURCE note of the tools the pinned commit, the digest of the licence text and the digest of each upstream file', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'scripts', 'woff2', 'SOURCE'), 'utf-8');
+    expect(source).toContain(`Commit:     ${pin('WOFF2_COMMIT')}`);
+    const license = createHash('sha256').update(fs.readFileSync(path.join(ROOT, 'scripts', 'woff2', 'LICENSE'))).digest('hex');
+    expect(source).toContain(`SHA-256 ${license}`);
+    expect(fs.readFileSync(path.join(ROOT, 'scripts', 'woff2', 'LICENSE'), 'utf-8')).toMatch(/^Copyright \(c\) 2013-2017 by the WOFF2 Authors\./);
+    for (const tool of ['woff2_compress', 'woff2_decompress']) expect(source).toMatch(new RegExp(`src/${tool}\\.cc +-> src/${tool}\\.cc +SHA-256 of the upstream file [0-9a-f]{64}`));
   });
 
   it('installs nothing on a system other than Linux, before it downloads anything', () => {

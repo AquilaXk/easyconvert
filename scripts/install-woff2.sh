@@ -7,8 +7,9 @@
 # Everything that decides what the programs do is pinned: the woff2 commit and the commit of the Brotli library it takes as a submodule
 # (the woff2 tree at that commit points at the Brotli commit below), each as the archive GitHub serves for the commit, checked against a
 # SHA-256 before anything in it is unpacked or run. The programs are built with the Makefile of the woff2 tree, which lists the sources
-# of both libraries and the flags upstream builds with; what this script adds is the optimisation flags (see BUILD_FLAGS) and nothing
-# else. The digest of the program is printed and written to the SOURCE note but not pinned: another compiler release writes other
+# of both libraries and the flags upstream builds with; what this script adds is the optimisation flags (see BUILD_FLAGS) and the two
+# command-line tools of scripts/woff2, which take the place of the files of the same names in the tree (scripts/woff2/SOURCE names what
+# differs from upstream's). The digest of the program is printed and written to the SOURCE note but not pinned: another compiler release writes other
 # machine code for it.
 #
 # Bump the four values together (the woff2 tree at the new commit names the Brotli commit it needs; GitHub archives are verified by
@@ -30,6 +31,7 @@ BUILD_FLAGS="-O3 -flto"
 # one byte whatever the server announces, so that nothing larger than the bound is written before its digest is checked.
 MAX_DOWNLOAD_BYTES=$((16 * 1024 * 1024))
 INSTALL_DIR="${1:-/opt/woff2}"
+tools_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/woff2/src"
 
 if [ "$(uname -s)" != "Linux" ]; then
   echo "install-woff2.sh: the programs are built for Linux, not $(uname -s)" >&2
@@ -69,6 +71,11 @@ mkdir -p "$src/brotli"
 tar -xzf "$work/woff2.tar.gz" -C "$src" --strip-components=1
 tar -xzf "$work/brotli.tar.gz" -C "$src/brotli" --strip-components=1
 test -f "$src/brotli/c/include/brotli/encode.h"
+# The command-line tools of the repository replace the ones of the tree; the Makefile builds whatever is there.
+for tool in woff2_compress woff2_decompress; do
+  test -f "$src/src/$tool.cc"
+  install -m 0644 "$tools_dir/$tool.cc" "$src/src/$tool.cc"
+done
 
 jobs="$(nproc 2> /dev/null || echo 2)"
 # The Makefile appends its own flags to CFLAGS and CXXFLAGS taken from the environment, and links with LFLAGS.
@@ -88,7 +95,7 @@ install -m 0755 "$src/woff2_decompress" "$INSTALL_DIR/bin/woff2_decompress"
 chmod 0644 "$INSTALL_DIR/share/doc/woff2/copyright"
 compress_digest="$(sha256sum "$INSTALL_DIR/bin/woff2_compress" | cut -d' ' -f1)"
 decompress_digest="$(sha256sum "$INSTALL_DIR/bin/woff2_decompress" | cut -d' ' -f1)"
-printf 'woff2_compress and woff2_decompress (google/woff2 commit %s, with Brotli %s, commit %s), built here from the unmodified sources with the make rules of the woff2 tree and the added flags: %s\nSHA-256 woff2_compress %s\nSHA-256 woff2_decompress %s\nSource: %s (SHA-256 %s) and %s (SHA-256 %s)\n' \
+printf 'woff2_compress and woff2_decompress (google/woff2 commit %s, with Brotli %s, commit %s), built here from the sources with the make rules of the woff2 tree, the command-line tools of scripts/woff2 and the added flags: %s\nSHA-256 woff2_compress %s\nSHA-256 woff2_decompress %s\nSource: %s (SHA-256 %s) and %s (SHA-256 %s)\n' \
   "$WOFF2_COMMIT" "$BROTLI_VERSION" "$BROTLI_COMMIT" "${BUILD_FLAGS:-none}" "$compress_digest" "$decompress_digest" \
   "$WOFF2_URL" "$WOFF2_SHA256" "$BROTLI_URL" "$BROTLI_SHA256" > "$INSTALL_DIR/share/doc/woff2/SOURCE"
 
