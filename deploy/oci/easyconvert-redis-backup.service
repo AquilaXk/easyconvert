@@ -1,0 +1,16 @@
+# Takes one Redis backup and prunes the old ones (docs/operations/backup-and-restore.md). Started by easyconvert-redis-backup.timer.
+# Install: sudo install -m 0644 deploy/oci/easyconvert-redis-backup.service /etc/systemd/system/
+[Unit]
+Description=EasyConvert Redis backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=easyconvert-deploy
+Group=easyconvert-deploy
+UMask=0077
+ExecStart=/opt/easyconvert/bin/redis-backup.sh
+# A run is a BGSAVE of a few megabytes; it ends in seconds. The limit stops a hung docker from holding the lock for hours.
+TimeoutStartSec=15min
+Nice=10

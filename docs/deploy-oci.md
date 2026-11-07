@@ -1,6 +1,6 @@
 # Deploying EasyConvert on the shared OCI host
 
-This page is the operations guide for the launch deployment. It covers the first-time setup, the capacity budget, how files are deleted, how to deploy and roll back, and how to grow later. The reasons for each choice are in `docs/policy-decisions.md`, entry 122. It belongs to the operations runbook of issue #900 and uses the configuration check of issue #564 (`docs/configuration.md`). Backups, restore drills, the incident procedure and the status page stay with #900.
+This page is the operations guide for the launch deployment. It covers the first-time setup, the capacity budget, how files are deleted, how to deploy and roll back, and how to grow later. The reasons for each choice are in `docs/policy-decisions.md`, entry 122. It belongs to the operations runbook of issue #900 and uses the configuration check of issue #564 (`docs/configuration.md`). Backups, the restore, the incident procedure and the alert runbook are in [docs/operations/](operations/README.md).
 
 ## What runs
 
@@ -179,7 +179,10 @@ The privacy policy promises an answer to a deletion request within 10 days (sect
 1. Check that the request comes from the account's email address. Answer from the same mailbox.
 2. List what will be deleted. Nothing changes yet: `docker compose -p easyconvert exec worker node dist/erase-account.js --user <account email or id>`.
 3. Delete it by running the same command with `--apply` added. This deletes the account's conversion jobs, its stored files and their retention records, its API keys and their webhook signing secrets, its webhook dead letters, and its counts (the Redis keys tagged `{<account id>}`). The account record goes last. The command exits with 3 when a cancelled job was still running. Run it again a minute later. It finds the account again, because the account record is kept until no job is left.
-4. Tell the requester that the account is deleted, within 10 days of the request.
+4. Rewrite the append-only file of Redis, which still holds the commands that created the account: `docker compose -p easyconvert exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli BGREWRITEAOF'`.
+5. Tell the requester that the account is deleted, within 10 days of the request.
+
+Do steps 1 to 4 within 2 days of the request. Redis is backed up every 6 hours and a backup is kept 7 days, so a backup that still holds the account is gone 9 days after the request at the latest ([backup-and-restore.md](operations/backup-and-restore.md#account-deletion-and-backups)). After a restore from a backup, erase again every account whose request is newer than the backup.
 
 What the command does not touch expires on its own. The edge server log keeps the request lines for up to 15 days (`/etc/logrotate.d/nginx`). A multi-step job's state goes 25 hours after the job ends. The list of an account's files in the web process lasts no longer than the file.
 
@@ -223,7 +226,7 @@ Every resource below exists already or is free, so this deployment adds no cost.
 
 ## Related issues
 
-- #900 operations runbook (this page is its deploy and rollback part; backups, the restore drill and the incident procedure stay open there).
+- #900 operations runbook (this page is its deploy and rollback part; [docs/operations/](operations/README.md) has the backup, restore, incident and alert pages).
 - #564 configuration checked at start-up (the required secrets above).
 - #665 retention policy and delete on delivery (policy entry 125, and the retention keys of the env secret).
 - #691 atomic free-caller concurrency across instances (before a second web host).

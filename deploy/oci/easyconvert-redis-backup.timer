@@ -1,0 +1,14 @@
+# Every 6 hours, at 17 minutes past 00, 06, 12 and 18 UTC (docs/operations/backup-and-restore.md).
+# Install: sudo install -m 0644 deploy/oci/easyconvert-redis-backup.timer /etc/systemd/system/ && sudo systemctl daemon-reload
+#          && sudo systemctl enable --now easyconvert-redis-backup.timer
+[Unit]
+Description=EasyConvert Redis backup every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:17:00 UTC
+# A run missed while the host was off is made up at the next start.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
