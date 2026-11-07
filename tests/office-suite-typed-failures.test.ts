@@ -56,7 +56,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['abw', 'cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pages', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -313,8 +313,9 @@ describe('the targets the in-process engine writes from plain text only', () => 
     const fromText = getFormatByExtension('txt')?.targetFormats ?? [];
     const fromWordDocument = new Set(getFormatByExtension('docx')?.targetFormats);
     const notFromWordDocument = fromText.filter((target) => !fromWordDocument.has(target) && target !== 'docx');
-    // The Palm, Sony and Open eBook targets are offered for a text file too, and calibre writes them from any source.
-    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS, ...CALIBRE_EBOOK_TARGETS].sort());
+    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS].sort());
+    // The Palm, Sony and Open eBook targets are offered for a Word document as well: calibre writes them from any source.
+    expect([...CALIBRE_EBOOK_TARGETS].filter((target) => !fromWordDocument.has(target))).toEqual([]);
   });
 
   it.each([...TEXT_ONLY_TARGETS])('.%s is written from text, and the engine turns a Word document down for it', async (target) => {

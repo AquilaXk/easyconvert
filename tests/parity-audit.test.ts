@@ -4,22 +4,15 @@ import * as path from 'node:path';
 import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 
 const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
-  'abw->doc', 'abw->jpg', 'abw->png', 'abw->rtf',
-  'docm->doc', 'docm->docx', 'docm->jpg', 'docm->odt', 'docm->png', 'docm->rtf',
-  'docx->azw3', 'docx->lrf', 'docx->mobi', 'docx->oeb', 'docx->pages', 'docx->pdb', 'docx->xps',
-  'dot->doc', 'dot->jpg', 'dot->png', 'dot->rtf',
-  'dotx->doc', 'dotx->jpg', 'dotx->png', 'dotx->rtf',
+  // Entry 183 leaves out the XPS of a Word document (the XPS writer holds text only).
+  'docx->pages', 'docx->xps',
   'htm->doc', 'htm->jpg', 'htm->png', 'htm->rtf',
-  'html->doc', 'html->jpg', 'html->png', 'html->rtf', 'html->tex',
-  'md->doc', 'md->jpg', 'md->png', 'md->rst', 'md->rtf', 'md->tex',
-  'odt->azw3', 'odt->lrf', 'odt->mobi', 'odt->oeb', 'odt->pdb',
-  'pages->doc', 'pages->docx', 'pages->epub', 'pages->jpg', 'pages->pdf', 'pages->png', 'pages->ppt', 'pages->txt',
-  'pdb->rtf',
-  'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->emf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ppt', 'pdf->ps', 'pdf->psd', 'pdf->webp', 'pdf->wmf',
-  'rst->rtf',
-  'txt->doc', 'txt->jpg', 'txt->png', 'txt->rtf', 'txt->tex',
-  'xps->odd',
-  'zabw->doc', 'zabw->jpg', 'zabw->png', 'zabw->rtf',
+  'html->tex',
+  'md->rst', 'md->tex',
+  // Entry 183: a Pages document has no export to a presentation, and the metafile writers refuse the pictures that real PDF pages hold.
+  'pages->ppt',
+  'pdf->emf', 'pdf->ppt', 'pdf->wmf',
+  'txt->tex',
   'chm->azw3', 'chm->epub', 'chm->lrf', 'chm->mobi', 'chm->oeb', 'chm->pdb', 'chm->pdf', 'chm->rtf', 'chm->txt',
   'lit->azw3', 'lit->epub', 'lit->lrf', 'lit->mobi', 'lit->oeb', 'lit->pdb', 'lit->pdf', 'lit->rtf', 'lit->txt',
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
