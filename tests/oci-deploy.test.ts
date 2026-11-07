@@ -94,8 +94,17 @@ describe('docker-compose.prod.yml network exposure', () => {
   it('runs Redis with a password, a memory ceiling that refuses writes instead of evicting, and a small append-only file', () => {
     const redis = compose.services.redis;
     const command = (redis.command ?? []).join(' ');
-    expect(command).toContain('--requirepass "$$REDIS_PASSWORD"');
+    expect(command).not.toContain('--requirepass');
+    expect(command).toContain('umask 077;');
+    expect(command).toContain('printf \'requirepass "\'');
+    expect(command).toContain('> /tmp/redis.conf;');
+    expect(command).toContain('exec redis-server /tmp/redis.conf ');
+    expect(command.indexOf('umask 077')).toBeLessThan(command.indexOf('> /tmp/redis.conf'));
     expect(command).toContain('test -n "$$REDIS_PASSWORD"');
+    expect(command).toContain('exit 1;');
+    expect(command.indexOf('exit 1;')).toBeLessThan(command.indexOf('> /tmp/redis.conf'));
+    expect(String(redis.tmpfs)).toContain('/tmp:size=16m,noexec,nosuid,nodev,uid=999,gid=1000,mode=0700');
+    expect(redis.healthcheck.test.join(' ')).toContain('REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping');
     expect(command).toContain('--maxmemory 256mb');
     expect(command).toContain('--maxmemory-policy noeviction');
     expect(command).toContain('--appendonly yes');

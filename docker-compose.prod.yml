@@ -167,12 +167,17 @@ services:
     # Persistence is on because users, API keys, quota counters and the queue live here and a restart must not log everyone out or
     # forget keys. The append-only file is rewritten at 16 MB and the data is capped by maxmemory, so the footprint stays near
     # 2 x 256 MB at worst and a few MB in practice. noeviction: a full Redis refuses writes instead of dropping queued jobs.
+    # The password goes to a config file in the container's own tmpfs (/tmp, mode 0700 for the redis uid; the file is 0600 by the umask)
+    # and not to `--requirepass`, which would show in `ps`, `docker top` and `docker inspect`. printf is a shell builtin and sed reads
+    # the password from a pipe, so no argv holds it. The healthcheck and the backup script read it from the environment instead.
     command:
       - sh
       - -c
       - >-
+        umask 077;
         test -n "$$REDIS_PASSWORD" || { echo "REDIS_PASSWORD is empty: refusing to start Redis without a password" >&2; exit 1; };
-        exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction
+        { printf 'requirepass "'; printf '%s' "$$REDIS_PASSWORD" | sed 's/[\\"]/\\&/g'; printf '"\n'; } > /tmp/redis.conf;
+        exec redis-server /tmp/redis.conf --maxmemory 256mb --maxmemory-policy noeviction
         --appendonly yes --appendfsync everysec --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 16mb
         --save "" --protected-mode yes
     environment:
