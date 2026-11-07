@@ -136,6 +136,17 @@ const cases: Case[] = [
 ];
 
 describe('an alpha, palette or interlaced PNG on a PDF page', () => {
+  it.skipIf(noTools)('stops inflating after the last row of the image (a bomb behind it is not read)', async () => {
+    const bomb = crafted(6, 8, 8, 8, { trailingBytes: 256 * 1024 * 1024 });
+    expect(bomb.length).toBeLessThan(2 * 1024 * 1024);
+    const started = Date.now();
+    const pdf = await assemblePicturePdf([{ png: bomb, width: 8, height: 8, density: DEFAULT_PRINT_DENSITY }], undefined);
+    expect(Date.now() - started).toBeLessThan(5000);
+    const fresh = await extract(pdf, 'bomb');
+    expect(fresh.listing.map((row) => row[0])).toEqual(['image', 'smask']);
+  });
+
+
   it.each(cases)('$name: pixels equal PDFKit\'s page and the source', async ({ name, png, types, matchesPdfKit }) => {
     if (noTools) return;
     const source = await png();

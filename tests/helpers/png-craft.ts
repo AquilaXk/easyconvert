@@ -13,6 +13,8 @@ export interface CraftedPng {
   rows: Buffer;
   palette?: Buffer;
   transparency?: Buffer;
+  /** Zero bytes after the last row inside the zlib stream (a decompression bomb when large). */
+  trailingBytes?: number;
 }
 
 export const CHANNELS_OF: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
@@ -66,7 +68,7 @@ export function craftPng(png: CraftedPng): Buffer {
   header.writeUInt32BE(png.height, 4);
   header[8] = png.bits;
   header[9] = png.colorType;
-  const compressed = zlib.deflateSync(Buffer.concat(filtered));
+  const compressed = zlib.deflateSync(Buffer.concat([...filtered, Buffer.alloc(png.trailingBytes ?? 0)]));
   // Two IDAT chunks, as a decoder meets them in a file from a streaming encoder.
   const half = compressed.length >> 1;
   return Buffer.concat([

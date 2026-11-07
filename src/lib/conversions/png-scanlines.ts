@@ -68,6 +68,8 @@ export async function scanRows(
   let rows = 0;
   const inflated = Readable.from(idat, { objectMode: false }).pipe(zlib.createInflate());
   for await (const chunk of inflated as AsyncIterable<Buffer>) {
+    // The image is `height` rows; leaving the loop destroys the decoder, so data past them (a bomb) is never inflated.
+    if (rows >= height) break;
     let at = 0;
     while (at < chunk.length && rows < height) {
       const taken = Math.min(chunk.length - at, lineBytes - filled);
