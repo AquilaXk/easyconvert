@@ -10,6 +10,7 @@ import {
   allConversionQueues,
   attachJobLifecycleListeners,
   attachInputCleanupOnCompletion,
+  defaultQueueOwnJobCounts,
   startEndedRecordSweep,
 } from '../lib/queue/conversion-queue';
 import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullmq-engine';
@@ -25,6 +26,8 @@ import { getFfmpegPath } from '../lib/conversions/media';
 import { enforceFfmpegMinimumVersion } from '../lib/conversions/media-process';
 import { findFfprobeBinary } from '../lib/conversions/media-ffprobe';
 import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
+import { startMetricsFromConfig } from '../lib/metrics/server';
+import { sampleQueues, type QueueSource } from '../lib/metrics/queue-sampler';
 
 export interface WorkerLifecycleConfig {
   concurrency: number;
@@ -180,6 +183,18 @@ export function resolveSubscribedQueues(): IQueueEngine<ConversionJobData, Conve
     : (allConversionQueues as IQueueEngine<ConversionJobData, ConversionJobResult>[]);
 }
 
+/** The queues the metrics read, all of them whichever the worker subscribes to: a queue no worker serves is the one to see grow. */
+export function metricsQueueSources(): QueueSource[] {
+  return [
+    { name: 'default', jobCounts: defaultQueueOwnJobCounts, oldestWaitingSince: () => conversionQueue.oldestWaitingSince?.() ?? Promise.resolve(undefined) },
+    ...(Object.keys(resourceQueues) as ResourceClass[]).map((name) => ({
+      name,
+      jobCounts: () => resourceQueues[name].getJobCounts(),
+      oldestWaitingSince: () => resourceQueues[name].oldestWaitingSince?.() ?? Promise.resolve(undefined),
+    })),
+  ];
+}
+
 // Fail closed before any job is popped: without a sealing key the worker could not open the
 // secrets of the jobs it would take, so it refuses to start (SealingKeyConfigError).
 assertSealingKeyConfigured();
@@ -316,6 +331,8 @@ startHeartbeat();
 if (process.env.NODE_ENV !== 'test') {
   startRetentionSweep(ociStorage);
   startEndedRecordSweep();
+  // The metrics listener stays up while the worker drains, so a drain can be watched; it is closed with the process.
+  void startMetricsFromConfig('worker', () => sampleQueues(metricsQueueSources()));
 
   process.on('SIGINT', () => {
     void drainWorker('SIGINT')

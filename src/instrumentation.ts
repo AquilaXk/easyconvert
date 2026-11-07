@@ -4,7 +4,7 @@
  * and its rule, then exits non-zero) instead of failing the first request that needs it. Storage selection adds
  * its own checks: driver, endpoint, region, bucket and credentials. It also starts the sweep that deletes results
  * whose retention time has passed (src/lib/storage/retention-service.ts), which cleans what became due while the
- * server was down.
+ * server was down. It then opens the metrics listener on its own port (src/lib/metrics/server.ts).
  */
 export async function register(): Promise<void> {
   // The imports sit inside a positive NEXT_RUNTIME check so that the Edge compilation of this file
@@ -15,5 +15,7 @@ export async function register(): Promise<void> {
     const { storageProvider } = await import('./lib/storage/selected-storage');
     const { startRetentionSweep } = await import('./lib/storage/retention-service');
     startRetentionSweep(storageProvider);
+    const { startMetricsFromConfig } = await import('./lib/metrics/server');
+    await startMetricsFromConfig('web');
   }
 }
