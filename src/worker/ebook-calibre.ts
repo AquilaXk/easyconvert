@@ -4,7 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
-import { rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
+import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
@@ -220,6 +220,7 @@ async function stageRewrittenEpub(request: CalibreRequest, dir: string): Promise
   assertBookSize(inputSize(input), `The .${src} file`);
   const rewritten = await rewriteEpubFromModel(readRawInputBuffer(input), baseNameOf(originalFilename), request.options.language);
   assertBookSize(rewritten.length, `The EPUB written from the .${src} file`);
+  await assertNoVectorImages(rewritten);
   const staged = path.join(dir, `${BOOK_NAME}.${EPUB_FORMAT}`);
   fs.writeFileSync(staged, rewritten);
   return staged;
@@ -238,6 +239,7 @@ async function stageEpubOfSource(deps: CalibreDeps, request: CalibreRequest, dir
     const staged = path.join(dir, `${BOOK_NAME}.${EPUB_FORMAT}`);
     if (written.filePath) fs.copyFileSync(written.filePath, staged);
     else fs.writeFileSync(staged, written.buffer);
+    await assertNoVectorImages(fs.readFileSync(staged));
     return staged;
   } finally {
     deps.discardOutput(written.filePath, input, options);

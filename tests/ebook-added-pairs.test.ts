@@ -332,6 +332,35 @@ describe('what calibre is given for the added sources', () => {
     fs.rmSync(result.filePath as string, { force: true });
   });
 
+  const HOSTILE_SVG = (secret: string) =>
+    `<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY x SYSTEM "file://${secret}">]><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><style>@import url(file://${secret}.css);</style><image xlink:href="file://${secret}.png" width="10" height="10"/><text>&x;</text></svg>`;
+
+  it('leaves the SVG pictures of an uploaded EPUB out of the book calibre gets, keeping their text alternative', async () => {
+    const secret = path.join(workDir, 'secret.txt');
+    const zip = await JSZip.loadAsync(await craftedEpub(secret, false));
+    const opf = (await zip.file('OEBPS/content.opf')!.async('string')).replace('</manifest>', '<item id="v" href="v.svg" media-type="image/svg+xml"/></manifest>');
+    zip.file('OEBPS/content.opf', opf);
+    zip.file('OEBPS/v.svg', HOSTILE_SVG(secret));
+    zip.file('OEBPS/c.xhtml', (await zip.file('OEBPS/c.xhtml')!.async('string')).replace('</p>', ' <img src="v.svg" alt="VECTOR-ALT"/></p>'));
+    const { program, kept } = keepingProgram();
+    const result = await convertWithCalibre(deps, { input: await zip.generateAsync({ type: 'nodebuffer' }), src: 'epub', tgt: 'mobi', options: {}, originalFilename: 'svg.epub' }, program);
+    const packaged = await JSZip.loadAsync(keptFile(kept, 'epub'));
+    const names = Object.keys(packaged.files);
+    expect(names.some((name) => name.toLowerCase().endsWith('.svg'))).toBe(false);
+    const everything = (await Promise.all(Object.values(packaged.files).filter((entry) => !entry.dir).map((entry) => entry.async('string')))).join('\n');
+    for (const needle of ['file:', '<!ENTITY', '@import', 'xlink:href', 'image/svg+xml']) expect(everything).not.toContain(needle);
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+  it('refuses an EPUB written for calibre that still packages an SVG document', async () => {
+    const { assertNoVectorImages } = await import('../src/lib/conversions/epub-rewrite');
+    const zip = await JSZip.loadAsync(await craftedEpub(path.join(workDir, 'secret.txt'), false));
+    zip.file('OEBPS/content.opf', (await zip.file('OEBPS/content.opf')!.async('string')).replace('</manifest>', '<item id="v" href="v.svg" media-type="image/svg+xml"/></manifest>'));
+    zip.file('OEBPS/v.svg', HOSTILE_SVG('/etc/hosts'));
+    await expect(assertNoVectorImages(await zip.generateAsync({ type: 'nodebuffer' }))).rejects.toThrow(/SVG picture/);
+    await expect(assertNoVectorImages(await craftedEpub(path.join(workDir, 'secret.txt'), false))).resolves.toBeUndefined();
+  });
+
   it('refuses an EPUB whose manifest names a file outside the package before calibre starts', async () => {
     const secret = path.join(workDir, 'secret.txt');
     fs.writeFileSync(secret, 'CANARY-LOCAL-FILE-CONTENT');
