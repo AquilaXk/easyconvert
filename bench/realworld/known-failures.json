@@ -1,9 +1,1 @@
-[
-  {
-    "pair": "dng->pdf",
-    "verdict": "crash",
-    "detail": "^job server died \\(code null, signal SIGKILL\\)$",
-    "file": "pix-google-pixel6pro.dng",
-    "issue": 783
-  }
-]
+[]
