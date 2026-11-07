@@ -239,10 +239,11 @@ describe('native route: limits apply to the stream while it flows', () => {
       expect(outcome).toBeInstanceOf(UnsafeArchiveError);
       expect(outcome).toMatchObject({ reason: 'compression-ratio' });
       expect(spy.calls()).toHaveLength(1);
-      // The wrapper writes its exit status only if the real 7-Zip returned, and a killed group never gets there. Once
-      // the wrapper process is gone nothing more can be written, so that is the moment the count is final.
+      // The wrapper writes its exit status when the real 7-Zip returns. 7-Zip is cut off by the bound of its output (the
+      // kernel ends it, or the sandbox kills the group before it returns), so it never returns with a status of success.
+      // Once the wrapper process is gone nothing more can be written, so that is the moment the record is final.
       await waitUntilGone(spy.pids()[0]);
-      expect(spy.completedCalls()).toBe(0);
+      expect(spy.exitStatuses().filter((status) => status === 0)).toEqual([]);
     },
     TEST_TIMEOUT_MS
   );

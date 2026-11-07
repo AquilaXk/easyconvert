@@ -13,6 +13,8 @@ export interface SevenZipSpy {
   calls(): string[][];
   /** Calls whose real 7-Zip process ran to its end (exit status written). */
   completedCalls(): number;
+  /** The exit status of every call whose real 7-Zip process returned to the wrapper, in the order they ended. */
+  exitStatuses(): number[];
   /** The process id of the wrapper shell of every call so far, in call order. */
   pids(): number[];
   /**
@@ -73,6 +75,9 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
     },
     completedCalls() {
       return fs.existsSync(doneLog) ? fs.readFileSync(doneLog, 'utf8').split('\n').filter((line) => line !== '').length : 0;
+    },
+    exitStatuses() {
+      return fs.existsSync(doneLog) ? fs.readFileSync(doneLog, 'utf8').split('\n').filter((line) => line !== '').map(Number) : [];
     },
     beforeRealRun(shellCommands) {
       fs.writeFileSync(hookFile, `${shellCommands}\n`);
