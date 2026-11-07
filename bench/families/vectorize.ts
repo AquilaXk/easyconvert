@@ -12,8 +12,8 @@ import { runTool } from '../tools';
 /**
  * Raster pictures traced to SVG, against vtracer run the way the reference converter runs it: the same pinned release program,
  * given the uploaded file itself with the converter's defaults (no option set). The product decodes the picture first and hands
- * the program a PNG of its first frame, so the rows measure that staging (the decoders, the 16-bit and colour conversion, the GIF
- * frame) and the sanitizer, not the tracer against itself.
+ * the pixels of its first frame to vtracer-pixels (vtracer's own front-end for raw pixels, built from the same source), so the rows
+ * measure that staging (the decoders, the 16-bit and colour conversion, the GIF frame), the faster build and the sanitizer.
  *
  * Each SVG is drawn by librsvg at its own size, and the drawing and the source picture are flattened on the same grey, so SSIM
  * scores what a viewer sees over a fixed background. The path count and the byte size of the SVG are compared as they are.

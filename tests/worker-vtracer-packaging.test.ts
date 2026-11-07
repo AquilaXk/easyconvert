@@ -32,6 +32,7 @@ describe('the vtracer stage of the worker image', () => {
     expect(stage?.baseImage).toBe(runner.baseImage);
     const run = stage?.instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument) ?? [];
     expect(run).toContain('/tmp/install-vtracer.sh /opt/vtracer');
+    expect(run).toContain('/tmp/install-vtracer-pixels.sh /opt/vtracer-pixels');
     const copies = stage?.instructions.filter((instruction) => instruction.keyword === 'COPY').map((instruction) => instruction.argument) ?? [];
     expect(copies).toContain('scripts/install-vtracer.sh /tmp/install-vtracer.sh');
   });
@@ -41,13 +42,23 @@ describe('the vtracer stage of the worker image', () => {
     expect(instructions('COPY').filter((argument) => argument.includes('vtracer'))).toEqual([
       '--from=vtracer /opt/vtracer/bin/vtracer /usr/local/bin/vtracer',
       '--from=vtracer /opt/vtracer/share/doc/vtracer /usr/share/doc/vtracer',
+      '--from=vtracer /opt/vtracer-pixels/bin/vtracer-pixels /usr/local/bin/vtracer-pixels',
+      '--from=vtracer /opt/vtracer-pixels/share/doc/vtracer-pixels /usr/share/doc/vtracer-pixels',
     ]);
     const runs = instructions('RUN').filter((argument) => argument.includes('vtracer'));
-    expect(runs).toHaveLength(3);
+    expect(runs).toHaveLength(7);
     expect(runs[0]).toMatch(/printf '\\211PNG[^']*IEND[^']*' > "\$dir\/in\.png"/);
     expect(runs[0]).toContain('vtracer --input "$dir/in.png" --output "$dir/out.svg"');
     expect(runs[0]).toContain(`grep -q '<path d="M' "$dir/out.svg"`);
-    expect(runs.slice(1)).toEqual(['cp /usr/share/doc/vtracer/SOURCE /licenses/vtracer.SOURCE', 'cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES']);
+    expect(runs[1]).toContain('vtracer-pixels --input "$dir/in.rgba" --output "$dir/out.svg"');
+    expect(runs[1]).toContain(`grep -q '<path d="M' "$dir/out.svg"`);
+    expect(runs.slice(2)).toEqual([
+      'cp /usr/share/doc/vtracer/SOURCE /licenses/vtracer.SOURCE',
+      'cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES',
+      'cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE',
+      'cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES',
+      'cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc',
+    ]);
   });
 
   it('is installed before the privileges are dropped, so that the unprivileged account only runs it', () => {

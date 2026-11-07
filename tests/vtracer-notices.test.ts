@@ -166,10 +166,18 @@ describe('the third-party notices of the tracer program', () => {
     const stages = parseDockerfile(fs.readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8'));
     const stage = stages.find((candidate) => candidate.name === 'vtracer');
     const copies = stage?.instructions.filter((instruction) => instruction.keyword === 'COPY').map((instruction) => instruction.argument) ?? [];
-    expect(copies).toEqual(['scripts/install-vtracer.sh /tmp/install-vtracer.sh', 'scripts/vtracer-notices/THIRD-PARTY-NOTICES /tmp/vtracer-notices/THIRD-PARTY-NOTICES']);
+    expect(copies).toEqual([
+      'scripts/install-vtracer.sh /tmp/install-vtracer.sh',
+      'scripts/install-vtracer-pixels.sh /tmp/install-vtracer-pixels.sh',
+      'scripts/vtracer-notices/THIRD-PARTY-NOTICES /tmp/vtracer-notices/THIRD-PARTY-NOTICES',
+      'scripts/vtracer-pixels/ /tmp/vtracer-pixels/',
+    ]);
     const runner = stages[stages.length - 1];
     const runs = runner.instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument);
-    expect(runs.filter((run) => run.includes('THIRD-PARTY-NOTICES'))).toEqual(['cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES']);
+    expect(runs.filter((run) => run.includes('THIRD-PARTY-NOTICES'))).toEqual([
+      'cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-NOTICES',
+      'cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES',
+    ]);
   });
 });
 

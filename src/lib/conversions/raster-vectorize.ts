@@ -36,15 +36,20 @@ import { vectorizeArgs, vectorizeOptionsProblem, type VectorizeOptions } from '.
 
 /**
  * Raster pictures traced to SVG by vtracer (visioncortex, MIT OR Apache-2.0), the engine the reference converter runs for the
- * same pairs, as an unmodified release program pinned by SHA-256 in scripts/install-vtracer.sh. The picture is decoded here first,
- * under the input pixel limit and the budget below, and handed to the program as an 8-bit RGBA PNG of its first frame, so the
- * program only ever reads a PNG this process wrote. It runs in the process sandbox without a network, with a time, memory,
+ * same pairs. The picture is decoded here first, under the input pixel limit and the budget below, so the program never reads
+ * uploaded bytes. It is handed the pixels of the first frame, 8-bit RGBA, in one of two ways, and writes the same SVG for both:
+ * to the vtracer-pixels program (scripts/vtracer-pixels, built from the vtracer source by scripts/install-vtracer-pixels.sh) as
+ * the raw pixels behind a width and a height, or, on a worker without it, to the release program pinned by SHA-256 in
+ * scripts/install-vtracer.sh as a PNG this process wrote. It runs in the process sandbox without a network, with a time, memory,
  * file-size and diagnostics limit, and its SVG passes through the sanitizer of every SVG path before it is returned.
  */
 
 const ENGINE_NAME = 'vtracer';
 const ENGINE_PATH_VARIABLE = 'VTRACER_PATH';
 const ENGINE_CANDIDATES = ['/usr/local/bin/vtracer', '/usr/bin/vtracer', '/opt/homebrew/bin/vtracer'];
+const PIXELS_ENGINE_NAME = 'vtracer-pixels';
+const PIXELS_ENGINE_PATH_VARIABLE = 'VTRACER_PIXELS_PATH';
+const PIXELS_ENGINE_CANDIDATES = ['/usr/local/bin/vtracer-pixels', '/usr/bin/vtracer-pixels', '/opt/homebrew/bin/vtracer-pixels'];
 
 /**
  * The engine has no limit of its own. Measured with the pinned build on linux/arm64 (docs/policy-decisions.md, raster to SVG):
@@ -61,6 +66,9 @@ export const VECTORIZE_MAX_OUTPUT_BYTES = MAX_GENERATED_SVG_CHARS;
 const ENGINE_MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 const MAX_DETAIL_CHARS = 160;
 const INPUT_NAME = 'input.png';
+const PIXELS_INPUT_NAME = 'input.rgba';
+const RGBA_CHANNELS = 4;
+const PIXELS_HEADER_BYTES = 8;
 const OUTPUT_NAME = 'output.svg';
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
@@ -85,11 +93,23 @@ function parseOptions(raw: unknown): VectorizeOptions {
   return raw as VectorizeOptions;
 }
 
-function engineBinary(): string {
+/** The program that traces, and what it reads: the raw pixels (vtracer-pixels) or a PNG (the release program). */
+interface Engine {
+  binary: string;
+  readsPixels: boolean;
+}
+
+/** vtracer-pixels when the worker has it, otherwise the release program; neither is a 503 before any decoding. */
+function selectEngine(): Engine {
+  const pixels = resolveBinaryPath(PIXELS_ENGINE_PATH_VARIABLE, PIXELS_ENGINE_CANDIDATES, PIXELS_ENGINE_NAME);
+  if (pixels !== null) return { binary: pixels, readsPixels: true };
   const binary = resolveBinaryPath(ENGINE_PATH_VARIABLE, ENGINE_CANDIDATES, ENGINE_NAME);
   if (binary === null) throw new EngineUnavailableError(ENGINE_NAME, 'vtracer is not installed or not in PATH');
-  return binary;
+  return { binary, readsPixels: false };
 }
+
+/** What a program is given: a PNG file, or the little-endian width and height (two u32) and then the width x height RGBA bytes. */
+type StagedPicture = { png: Buffer } | { header: Buffer; pixels: Buffer };
 
 const BMP_SOURCE = 'bmp';
 
@@ -106,22 +126,45 @@ async function openPicture(input: Buffer, sourceFormat: string): Promise<Sharp> 
   return pipelineFromBitmap(decodeBmp(input, VECTORIZE_PIXEL_BUDGET));
 }
 
-/** The first frame or page, upright, as an 8-bit sRGB PNG with alpha: what the program reads. */
-async function stagePicture(input: Buffer, sourceFormat: string): Promise<Buffer> {
+/** The first frame or page, upright, as 8-bit sRGB with alpha: what the program reads. */
+async function stagePicture(input: Buffer, sourceFormat: string, readsPixels: boolean): Promise<StagedPicture> {
   const picture = await openPicture(input, sourceFormat);
   try {
-    return await picture
-      .rotate()
-      .toColourspace('srgb')
-      .ensureAlpha()
-      .png(STAGED_PNG)
-      .toBuffer();
+    const upright = picture.rotate().toColourspace('srgb').ensureAlpha();
+    if (!readsPixels) return { png: await upright.png(STAGED_PNG).toBuffer() };
+    const { data, info } = await upright.raw().toBuffer({ resolveWithObject: true });
+    if (info.channels !== RGBA_CHANNELS || data.length !== info.width * info.height * RGBA_CHANNELS) {
+      throw new ConversionFailedError('Invalid image: the picture could not be decoded to 8-bit RGBA.');
+    }
+    const header = Buffer.alloc(PIXELS_HEADER_BYTES);
+    header.writeUInt32LE(info.width, 0);
+    header.writeUInt32LE(info.height, 4);
+    return { header, pixels: data };
   } catch (error) {
+    if (error instanceof ConversionFailedError) throw error;
     const mapped = asInputPixelLimitError(error);
     if (mapped instanceof InputPixelLimitError) throw mapped;
     const reason = error instanceof Error ? error.message : String(error);
     throw new ConversionFailedError(`Invalid image: the picture could not be decoded (${reason}).`);
   }
+}
+
+/** The staged picture in a file only this run can read; the header and the pixels are written one after the other, never joined. */
+function writeStaged(staged: StagedPicture, sandboxDir: string): string {
+  if ('png' in staged) {
+    const inputPath = path.join(sandboxDir, INPUT_NAME);
+    fs.writeFileSync(inputPath, staged.png, { mode: 0o600 });
+    return inputPath;
+  }
+  const inputPath = path.join(sandboxDir, PIXELS_INPUT_NAME);
+  const file = fs.openSync(inputPath, 'w', 0o600);
+  try {
+    fs.writeSync(file, staged.header);
+    fs.writeSync(file, staged.pixels);
+  } finally {
+    fs.closeSync(file);
+  }
+  return inputPath;
 }
 
 function memoryRefusal(): PayloadLimitError {
@@ -169,13 +212,12 @@ function toEngineError(error: unknown, sandboxDir: string, timeoutMs: number): u
   return error;
 }
 
-async function trace(binary: string, picture: Buffer, args: string[], options: ConversionOptions): Promise<string> {
+async function trace(binary: string, picture: StagedPicture, args: string[], options: ConversionOptions): Promise<string> {
   const timeoutMs = stageTimeoutMs(options, ENGINE_DEFAULT_TIMEOUT_MS);
   const sandboxDir = createWorkerSandboxDir();
   try {
-    const inputPath = path.join(sandboxDir, INPUT_NAME);
+    const inputPath = writeStaged(picture, sandboxDir);
     const outputPath = path.join(sandboxDir, OUTPUT_NAME);
-    fs.writeFileSync(inputPath, picture, { mode: 0o600 });
     try {
       await executeSandboxedBinary(binary, [...args, '--input', inputPath, '--output', outputPath], {
         cwd: sandboxDir,
@@ -214,11 +256,11 @@ function assertTimeLeft(options: ConversionOptions): void {
 export async function vectorizeRaster(input: Buffer, sourceFormat: string, options: ConversionOptions, originalFilename: string): Promise<ConversionResult> {
   const baseName = (originalFilename || 'image').replace(/\.[^/.]+$/, '');
   const args = vectorizeArgs(parseOptions(options.vectorize));
-  const binary = engineBinary();
+  const engine = selectEngine();
   assertTimeLeft(options);
-  const picture = await stagePicture(input, sourceFormat);
+  const picture = await stagePicture(input, sourceFormat, engine.readsPixels);
   assertTimeLeft(options);
-  const svg = sanitizeGeneratedSvg(await trace(binary, picture, args, options));
+  const svg = sanitizeGeneratedSvg(await trace(engine.binary, picture, args, options));
   if (!isSvg(svg)) throw new ConversionFailedError('The SVG tracer wrote something that is not an SVG document.');
   const buffer = Buffer.from(svg, 'utf8');
   return { buffer, mimeType: SVG_MIME_TYPE, filename: `${baseName}.svg`, size: buffer.length };

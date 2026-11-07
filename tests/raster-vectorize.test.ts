@@ -91,15 +91,19 @@ afterAll(() => {
   for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true });
 });
 
+/** The wrapper judged here is the one that runs the release program, so the vtracer-pixels program is switched off (an empty path finds none). */
 async function withTracer<T>(program: string | undefined, body: () => Promise<T>): Promise<T> {
-  const before = process.env.VTRACER_PATH;
+  const before = { tracer: process.env.VTRACER_PATH, pixels: process.env.VTRACER_PIXELS_PATH };
   if (program === undefined) delete process.env.VTRACER_PATH;
   else process.env.VTRACER_PATH = program;
+  process.env.VTRACER_PIXELS_PATH = '';
   try {
     return await body();
   } finally {
-    if (before === undefined) delete process.env.VTRACER_PATH;
-    else process.env.VTRACER_PATH = before;
+    if (before.tracer === undefined) delete process.env.VTRACER_PATH;
+    else process.env.VTRACER_PATH = before.tracer;
+    if (before.pixels === undefined) delete process.env.VTRACER_PIXELS_PATH;
+    else process.env.VTRACER_PIXELS_PATH = before.pixels;
   }
 }
 
