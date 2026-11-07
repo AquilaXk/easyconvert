@@ -1,0 +1,23 @@
+# Manifest of the vtracer command-line program for raw pixels. Derived from crates/vtracer-cli/Cargo.toml of
+# https://github.com/visioncortex/vtracer at commit 2500df76b5aea0ac22d15296b22722442f825c5b (see SOURCE): the workspace fields are
+# written out, the library comes from crates.io at the same version instead of the path beside it, and the `image` decoder is dropped
+# because the program reads pixels the caller decoded.
+[package]
+name = "vtracer-pixels"
+description = "The vtracer command-line front-end reading raw RGBA pixels instead of an image file."
+version = "1.0.0-alpha.4"
+authors = ["Chris Tsang <chris.2y3@outlook.com>"]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+homepage = "http://www.visioncortex.org/vtracer"
+repository = "https://github.com/visioncortex/vtracer/"
+publish = false
+
+[[bin]]
+name = "vtracer-pixels"
+path = "src/main.rs"
+
+[dependencies]
+vtracer = "=1.0.0-alpha.4"
+visioncortex = "0.9.3"
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,20 @@
+vtracer-pixels: the command-line front-end of vtracer, reading raw pixels instead of an image file.
+
+Upstream:   https://github.com/visioncortex/vtracer (MIT OR Apache-2.0; the MIT text is ./LICENSE, copied from the tagged commit,
+            SHA-256 81ee739f355765c110fc89feff14ffffce829901f96ba811fd0b65a41a8636c7; the Apache-2.0 text is in the
+            vtracer notices, scripts/vtracer-notices/THIRD-PARTY-NOTICES)
+Tag:        1.0.0-alpha.4
+Commit:     2500df76b5aea0ac22d15296b22722442f825c5b
+
+Copied files (upstream path -> path here) and what differs. `git log -p` on src/main.rs is the diff from upstream: the first commit
+holds the upstream file with the input step only, each later commit is one change of ours.
+  crates/vtracer-cli/src/main.rs   -> src/main.rs    SHA-256 of the upstream file be43ae6b408d8fe01a0e091594f4f769d94eb3335bff6bb8661436edcaad8812
+      Args, build_config, run and main are upstream's, unchanged. Only read_image differs: it reads the width and the height (two
+      little-endian u32) and width * height * 4 bytes of RGBA from the file named by --input, or from standard input for `-`,
+      where upstream calls image::open(path)?.to_rgba8(). The ColorImage it returns is built as upstream builds it.
+  crates/vtracer-cli/Cargo.toml    -> Cargo.toml    the workspace fields written out, the library from crates.io (the vtracer
+      1.0.0-alpha.4 package is identical to crates/vtracer/src of the commit), the `image` decoder dropped.
+  Cargo.lock                       -> Cargo.lock    the upstream lockfile pruned by cargo to the packages this program builds; the
+      versions and checksums of the crates are upstream's.
+
+The library crates are not copied: vtracer, visioncortex and flo_curves come from crates.io at the versions and checksums of Cargo.lock.
