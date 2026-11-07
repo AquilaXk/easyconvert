@@ -6,6 +6,9 @@ Commit:     7b67e12355fe7da148db5c19d4261f0a498a9537 (2026-10-28), the commit sc
 Copied files (upstream path -> path here) and what differs. `git log -p` on each file is the diff from upstream: the first commit holds the
 upstream file as it is, each later commit is one change of ours.
   src/woff2_compress.cc    -> src/woff2_compress.cc    SHA-256 of the upstream file aa568299c90171eae75c639b00d9192e924ffe7b3e06b4c0a354c174e6b7945a
+      Changes of ours, one commit each: an optional second argument, the Brotli quality from 0 to 11 (WOFF2Params::brotli_quality, 11 as the tool
+      has it without), and a check of the input before the buffer of the output is allocated (a file that is shorter than the sfnt header or
+      longer than 256 MiB, or a font of more than 4096 tables, is declined with exit status 1).
   src/woff2_decompress.cc  -> src/woff2_decompress.cc  SHA-256 of the upstream file 17fae33a2f625e4ee3592ee64f54683dea2b488de456403cd84e11e329d6915c
       Changes of ours, one commit each: the 48 bytes of the header are checked before the buffer of the output is allocated (a length field that
       is not the size of the file, no table or more than 4096 tables, a total size field above kDefaultMaxSize are declined with exit status 1),

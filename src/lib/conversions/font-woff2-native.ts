@@ -99,7 +99,7 @@ function failureOf(error: unknown, run: NativeRun, timeoutMs: number): Error | n
 }
 
 /** Runs one program on `input` in a scratch directory and returns the file it wrote, or null when it declined or is not installed. */
-async function runProgram(run: NativeRun, input: Buffer, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'>): Promise<Buffer | null> {
+async function runProgram(run: NativeRun, input: Buffer, extraArgs: string[], options: Pick<ConversionOptions, 'signal' | 'timeoutMs'>): Promise<Buffer | null> {
   const timeoutMs = stageTimeoutMs(options, CPU_POOL_TASK_TIMEOUT_MS);
   const sandboxDir = createWorkerSandboxDir();
   try {
@@ -107,7 +107,7 @@ async function runProgram(run: NativeRun, input: Buffer, options: Pick<Conversio
     const outputPath = path.join(sandboxDir, run.outputName);
     fs.writeFileSync(inputPath, input, { mode: 0o600 });
     try {
-      await executeSandboxedBinary(run.binary, [inputPath], {
+      await executeSandboxedBinary(run.binary, [inputPath, ...extraArgs], {
         cwd: sandboxDir,
         env: { HOME: sandboxDir, TMPDIR: sandboxDir, TMP: sandboxDir, TEMP: sandboxDir },
         timeoutMs,
@@ -133,16 +133,16 @@ async function runProgram(run: NativeRun, input: Buffer, options: Pick<Conversio
   }
 }
 
-/** The WOFF2 file of an sfnt font, or null when `woff2_compress` is not installed or declined the font. */
-export async function compressWithNativeWoff2(sfnt: Buffer, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'> = {}): Promise<Buffer | null> {
+/** The WOFF2 file of an sfnt font at the given Brotli quality (0 to 11), or null when `woff2_compress` is not installed or declined the font. */
+export async function compressWithNativeWoff2(sfnt: Buffer, quality: number, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'> = {}): Promise<Buffer | null> {
   const binary = woff2CompressProgram();
   if (binary === null) return null;
-  return runProgram({ binary, task: COMPRESS_TASK, what: 'The font', inputName: SFNT_INPUT_NAME, outputName: SFNT_OUTPUT_NAME }, sfnt, options);
+  return runProgram({ binary, task: COMPRESS_TASK, what: 'The font', inputName: SFNT_INPUT_NAME, outputName: SFNT_OUTPUT_NAME }, sfnt, [String(quality)], options);
 }
 
 /** The sfnt font of a WOFF2 file, or null when `woff2_decompress` is not installed or declined the file. */
 export async function decompressWithNativeWoff2(woff2: Buffer, options: Pick<ConversionOptions, 'signal' | 'timeoutMs'> = {}): Promise<Buffer | null> {
   const binary = woff2DecompressProgram();
   if (binary === null) return null;
-  return runProgram({ binary, task: DECOMPRESS_TASK, what: 'The WOFF2 font', inputName: WOFF2_INPUT_NAME, outputName: WOFF2_OUTPUT_NAME }, woff2, options);
+  return runProgram({ binary, task: DECOMPRESS_TASK, what: 'The WOFF2 font', inputName: WOFF2_INPUT_NAME, outputName: WOFF2_OUTPUT_NAME }, woff2, [], options);
 }

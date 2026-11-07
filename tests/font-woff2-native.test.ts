@@ -6,7 +6,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { convertFont, decodeSfnt, decodeWoff2, decodeWoff2Async, encodeSfnt, encodeWoff2Async } from '../src/lib/conversions/font';
 import { compressWithNativeWoff2, decompressWithNativeWoff2, woff2CompressProgram, woff2DecompressProgram } from '../src/lib/conversions/font-woff2-native';
 import { Woff2FormatError, Woff2LimitError } from '../src/lib/conversions/font-woff2-primitives';
-import { WOFF2_BROTLI_MAX_QUALITY_BYTES } from '../src/lib/conversions/font-woff2';
+import { WOFF2_BROTLI_LARGE_FONT_QUALITY, WOFF2_BROTLI_MAX_QUALITY, WOFF2_BROTLI_MAX_QUALITY_BYTES } from '../src/lib/conversions/font-woff2';
+
+const WOFF2_BROTLI_QUALITY_UP_TO_LIMIT = WOFF2_BROTLI_MAX_QUALITY;
 import { captureError } from './helpers/capture-error';
 import { readSfntTables } from './helpers/font-oracles';
 import { skipUnless } from './helpers/strict-skip';
@@ -90,7 +92,7 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
     const silent = standIn('woff2_compress', 'woff2', 'exit 0');
     await withPrograms({}, async () => {
       expect((await convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf')).buffer.toString('latin1', 0, 4)).toBe('wOF2');
-      expect(await compressWithNativeWoff2(dejavu())).toBeNull();
+      expect(await compressWithNativeWoff2(dejavu(), 11)).toBeNull();
     });
     await withPrograms({ compress: silent.program }, async () => {
       expect((await convertFont(dejavu(), 'ttf', 'woff2', {}, 'dejavu.ttf')).buffer.toString('latin1', 0, 4)).toBe('wOF2');
@@ -115,14 +117,17 @@ describe('the WOFF2 wrapper with stand-in programs', () => {
     });
   });
 
-  it('keeps a font of more than 8 MiB of table data away from the program, which has no quality setting', async () => {
+  it('asks the program for the Brotli quality of entry 24: 11 up to 8 MiB of table data and 9 above', async () => {
     const font = decodeSfnt(dejavu(), 'big');
-    font.tables['ZZZZ'] = { tag: 'ZZZZ', checkSum: 0, offset: 0, length: WOFF2_BROTLI_MAX_QUALITY_BYTES, data: Buffer.alloc(WOFF2_BROTLI_MAX_QUALITY_BYTES) };
-    const compressor = standIn('woff2_compress', 'woff2', `printf '%s' '${FAKE_WOFF2.toString('latin1')}' > "$out"`);
+    const compressor = standIn('woff2_compress', 'woff2', `printf '%s' "$2" > '${path.join(tmpDir('woff2-quality-'), 'quality')}'; printf '%s' '${FAKE_WOFF2.toString('latin1')}' > "$out"`);
+    const qualityFile = /> '([^']+)'/.exec(fs.readFileSync(compressor.program, 'utf8'))![1];
     await withPrograms({ compress: compressor.program }, async () => {
+      await encodeWoff2Async(font);
+      expect(fs.readFileSync(qualityFile, 'utf8')).toBe(String(WOFF2_BROTLI_QUALITY_UP_TO_LIMIT));
+      font.tables['ZZZZ'] = { tag: 'ZZZZ', checkSum: 0, offset: 0, length: WOFF2_BROTLI_MAX_QUALITY_BYTES, data: Buffer.alloc(WOFF2_BROTLI_MAX_QUALITY_BYTES) };
       const encoded = await encodeWoff2Async(font);
-      expect(encoded.equals(FAKE_WOFF2)).toBe(false);
-      expect(fs.existsSync(compressor.given)).toBe(false);
+      expect(encoded.equals(FAKE_WOFF2)).toBe(true);
+      expect(fs.readFileSync(qualityFile, 'utf8')).toBe(String(WOFF2_BROTLI_LARGE_FONT_QUALITY));
     });
   });
 
@@ -328,11 +333,12 @@ describe.skipIf(!haveBoth)('hostile files given to the programs', () => {
   it('refuse a font with a damaged sfnt the program cannot encode, by declining it', async () => {
     const damaged = Buffer.from(encodeSfnt(decodeSfnt(dejavu(), 'x')));
     damaged.writeUInt16BE(0x7fff, 4);
-    expect(await compressWithNativeWoff2(damaged)).toBeNull();
+    expect(await compressWithNativeWoff2(damaged, 11)).toBeNull();
   });
 });
 
 /** The decoder program under a 96 MiB address space: a buffer sized from the header alone cannot be allocated. */
+// skip-ok: prlimit is part of util-linux (Linux only); the sandbox of the worker needs the same program
 const prlimit = spawnSync('prlimit', ['--version']).status === 0;
 describe.skipIf(!haveBoth || !prlimit)('the decoder program checks the header before it allocates', () => {
   const real = fixture('dejavu-sans-latin.reference.woff2');
@@ -375,4 +381,70 @@ describe.skipIf(!haveBoth || !prlimit)('the decoder program checks the header be
     expect(answer.status).toBe(0);
     expect(answer.ttf?.equals(run(real).ttf ?? Buffer.alloc(0))).toBe(true);
   });
+});
+
+/** Bytes that compress to about a fifth, so that the table passes the expansion limit of the in-process reader: 8 noise bytes in each 64. */
+function sparseNoise(length: number): Buffer {
+  const data = Buffer.alloc(length);
+  let state = 2463534242;
+  for (let at = 0; at < length; at += 64) {
+    for (let i = 0; i < 8 && at + i < length; i++) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      data[at + i] = state & 0xff;
+    }
+  }
+  return data;
+}
+
+describe.skipIf(!haveBoth)('the encoder program takes the Brotli quality and checks the font before it allocates', () => {
+  const sfnt = (name: string) => fixture(name);
+  function compress(file: Buffer, args: string[] = []): { status: number | null; stderr: string; woff2: Buffer | null } {
+    const dir = tmpDir('woff2-compress-');
+    const input = path.join(dir, 'input.ttf');
+    fs.writeFileSync(input, file);
+    const result = spawnSync(compressor!, [input, ...args], { encoding: 'utf8' });
+    const output = path.join(dir, 'input.woff2');
+    return { status: result.status, stderr: result.stderr, woff2: fs.existsSync(output) ? fs.readFileSync(output) : null };
+  }
+
+  it('writes a larger file at a lower quality and the same file at quality 11 as without the argument', () => {
+    const font = sfnt('dejavu-sans-latin.ttf');
+    const best = compress(font);
+    const same = compress(font, ['11']);
+    const fast = compress(font, ['0']);
+    expect(best.status).toBe(0);
+    expect(same.woff2?.equals(best.woff2 ?? Buffer.alloc(0))).toBe(true);
+    expect(fast.status).toBe(0);
+    expect(fast.woff2!.length).toBeGreaterThan(best.woff2!.length);
+  });
+
+  it.each(['12', '-1', 'x', '9x', ''])('declines the quality %j', (quality) => {
+    const answer = compress(sfnt('dejavu-sans-latin.ttf'), [quality]);
+    expect(answer.status).toBe(1);
+    expect(answer.stderr).toMatch(/quality must be a number from 0 to 11/);
+    expect(answer.woff2).toBeNull();
+  });
+
+  it('declines a font of more than 4096 tables and a file that is not a font, before it allocates the output', () => {
+    const tooMany = Buffer.from(sfnt('dejavu-sans-latin.ttf'));
+    tooMany.writeUInt16BE(4097, 4);
+    const many = compress(tooMany);
+    expect(many.status).toBe(1);
+    expect(many.stderr).toMatch(/not a font this encoder reads/);
+    const short = compress(Buffer.from('OTTO'));
+    expect(short.status).toBe(1);
+    expect(short.stderr).toMatch(/not a font this encoder reads/);
+  });
+
+  it('writes for a font of more than 8 MiB of table data the file the program writes at quality 9', async () => {
+    const font = decodeSfnt(dejavu(), 'big');
+    font.tables['ZZZZ'] = { tag: 'ZZZZ', checkSum: 0, offset: 0, length: WOFF2_BROTLI_MAX_QUALITY_BYTES, data: sparseNoise(WOFF2_BROTLI_MAX_QUALITY_BYTES) };
+    const written = await encodeWoff2Async(font);
+    const reference = compress(encodeSfnt(font), [String(WOFF2_BROTLI_LARGE_FONT_QUALITY)]);
+    expect(reference.status).toBe(0);
+    expect(written.equals(reference.woff2 ?? Buffer.alloc(0))).toBe(true);
+    expect(decodeWoff2(written, 'big').tables['ZZZZ'].data.length).toBe(WOFF2_BROTLI_MAX_QUALITY_BYTES);
+  }, 60_000);
 });
