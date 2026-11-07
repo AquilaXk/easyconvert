@@ -42,6 +42,8 @@ const floorOf = (target: string, floor: number): number => Math.min(floor, FORMA
 /** The lowest ink recall and precision of a DXF drawn into a raster (the PNG of the same plates scores 0.99 to 1 on both). */
 const MIN_INK_SCORE = 0.9;
 const BENCH_CORPUS = path.join(__dirname, '..', 'bench', 'corpus');
+/** The PostScript line of `shapes.eps` that paints the whole page white. */
+const PAGE_BACKDROP = '1 1 1 setrgbcolor 0 0 400 300 rectfill\n';
 
 const toolsMissing = skipWithoutTools('soffice', 'pdftoppm', 'pdftocairo', 'gs') || SKIP_WITHOUT_MAGICK;
 
@@ -279,11 +281,19 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'gs') || SKIP_WITHOUT_MAGICK)('a DXF 
 });
 
 describe.skipIf(skipWithoutTools('gs', 'pdftocairo', 'soffice', 'rsvg-convert') || SKIP_WITHOUT_MAGICK)('an Illustrator file written as SVG and DXF', () => {
-  /** An Illustrator file saved with PDF compatibility is a PDF with private data: the sample is the EPS of the vector family written as a PDF by Ghostscript. */
+  /**
+   * An Illustrator file saved with PDF compatibility is a PDF with private data: the sample is the EPS of the vector family written as a PDF by
+   * Ghostscript. The white rectangle that paints the page is left out: Poppler draws it as a shape 40 points wider than the page on every side, a
+   * DXF holds it as an outline (no fill), and the office suite's re-import then draws that frame, which the picture of the source does not show.
+   */
   function illustratorFile(): Buffer {
     return withTempDirectory((directory) => {
+      const eps = path.join(directory, 'shapes.eps');
+      const shapes = fs.readFileSync(path.join(BENCH_CORPUS, 'vector', 'shapes.eps'), 'latin1');
+      expect(shapes).toContain(PAGE_BACKDROP);
+      fs.writeFileSync(eps, shapes.replace(PAGE_BACKDROP, ''), 'latin1');
       const out = path.join(directory, 'shapes.ai');
-      execFileSync(tool('gs'), ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-dEPSCrop', '-sDEVICE=pdfwrite', `-sOutputFile=${out}`, path.join(BENCH_CORPUS, 'vector', 'shapes.eps')]);
+      execFileSync(tool('gs'), ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-dEPSCrop', '-sDEVICE=pdfwrite', `-sOutputFile=${out}`, eps]);
       return fs.readFileSync(out);
     });
   }
