@@ -411,6 +411,46 @@ describe('the running header and footer of the pages of a PDF', () => {
       expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.name)).toEqual(['Page 1 Table 1']);
       expect(result.metadata?.warnings).toBeUndefined();
     });
+
+    const onePageFile = async (footer: string): Promise<Awaited<ReturnType<typeof convertFile>>> => {
+      const document = await PDFDocument.create();
+      const sheet = document.addPage([600, 800]);
+      sheet.drawText('Body of the page', { x: 60, y: 700, size: 12 });
+      sheet.drawText(footer, { x: 280, y: 30, size: 10 });
+      return convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'one.pdf');
+    };
+
+    it('drops a Page 1 footer of a text page without a warning', async () => {
+      const result = await onePageFile('Page 1');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Body of the page']]]);
+      expect(result.metadata?.warnings).toBeUndefined();
+    });
+
+    it('keeps a lone 1 footer as text, without a warning', async () => {
+      const result = await onePageFile('1');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Body of the page'], ['1']]]);
+      expect(result.metadata?.warnings).toBeUndefined();
+    });
+
+    it('reports a lone 1 footer below a table as text left out, for it is not taken as a counter', async () => {
+      const table = (await convertFile(Buffer.from('| Name | Count |\n|---|---|\n| a | 1 |\n| b | 2 |\n'), 'md', 'pdf', {}, 'small.md')).buffer;
+      const document = await PDFDocument.load(table);
+      document.getPages()[0].drawText('1', { x: 280, y: 30, size: 10 });
+      const result = await convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'small.pdf');
+      expect(result.metadata?.warnings).toEqual(['Left out the text outside the tables of page 1: a workbook of a PDF that has tables holds the tables.']);
+    });
+
+    it('drops Page 1..Page 3 printed on the three pages after an unnumbered cover, without a warning', async () => {
+      const document = await PDFDocument.create();
+      ['Cover', 'Page 1', 'Page 2', 'Page 3'].forEach((footer, index) => {
+        const sheet = document.addPage([600, 800]);
+        sheet.drawText(`Body of page ${index + 1}`, { x: 60, y: 700, size: 12 });
+        if (index > 0) sheet.drawText(footer, { x: 280, y: 30, size: 10 });
+      });
+      const result = await convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'cover.pdf');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Body of page 1']], [['Body of page 2']], [['Body of page 3']], [['Body of page 4']]]);
+      expect(result.metadata?.warnings).toBeUndefined();
+    });
   });
 
   it('keep the first and last line of a one-page letter as rows', async () => {
