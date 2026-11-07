@@ -11,7 +11,7 @@ EasyConvert is released under the **MIT License**. Its core algorithms, web appl
 To support wide-ranging format conversion across media, vector, and document formats, EasyConvert orchestrates external open-source engines in worker container environments. These components are categorized into two architectural tiers:
 
 1. **In-Process Dependencies (npm Packages)**:
-   - Governed by permissive licenses (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Unicode-DFS-2016, CC0-1.0) and LGPL-3.0 for dynamically linked native bindings (`sharp` / `libvips`).
+   - Governed by permissive licenses (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, MIT-0, Unicode-DFS-2016, CC0-1.0) and LGPL-3.0 for dynamically linked native bindings (`sharp` / `libvips`).
    - Every production dependency is audited via [`licenses.allow.json`](../licenses.allow.json) and documented in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 2. **External CLI Tools & Native Executables**:

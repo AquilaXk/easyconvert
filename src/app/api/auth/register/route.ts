@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { queueAccountMail } from '@/lib/auth/account-mail';
 import { hashPassword } from '@/lib/auth/crypto';
+import { isAuthMailEnabled, mailLocale } from '@/lib/auth/mail-config';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { codedRefusal, serverFault } from '@/lib/api/problem-details';
@@ -67,6 +69,13 @@ export async function POST(req: NextRequest) {
       salt,
       acceptedTermsVersion: TERMS_VERSION,
     });
+
+    // The mail that confirms the address is sent in the background; a failure of it never fails the sign-up.
+    if (isAuthMailEnabled()) {
+      await queueAccountMail('verify', userRecord, mailLocale(body.locale)).catch(() => {
+        console.warn('auth_mail_failure category=store');
+      });
+    }
 
     const user = redisUserStore.sanitizeUser(userRecord);
     const token = createSessionToken(user);

@@ -18,7 +18,7 @@ export async function resolvePageLocale(params: LocaleParams): Promise<AppLocale
 /** A page's title and description from `meta.<page>`, with its canonical URL and hreflang alternates. */
 export async function localizedPageMetadata(
   params: LocaleParams,
-  page: 'home' | 'auth' | 'dashboard' | 'apiDocs',
+  page: 'home' | 'auth' | 'passwordReset' | 'dashboard' | 'apiDocs',
   pathname: string
 ): Promise<Metadata> {
   const locale = await resolvePageLocale(params);

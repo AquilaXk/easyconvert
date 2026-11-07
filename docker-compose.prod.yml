@@ -209,6 +209,12 @@ services:
       WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
       GOOGLE_CLIENT_ID:
       GOOGLE_CLIENT_SECRET:
+      # Mail for password reset and email verification; all empty means both features are off.
+      SMTP_HOST:
+      SMTP_PORT:
+      SMTP_USER:
+      SMTP_PASSWORD:
+      MAIL_FROM:
       # The host reverse proxy is the only hop that can reach the published port; it overwrites X-Forwarded-For with the client
       # address that the CDN in front of the origin reported (deploy/oci/nginx-easyconvert.conf), docs/client-ip-trust.md.
       TRUSTED_PROXIES: ${EASYCONVERT_TRUSTED_PROXIES:-127.0.0.1/32,172.16.0.0/12}

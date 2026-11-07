@@ -14,6 +14,7 @@ import { credentialsVault } from '../src/lib/storage/credentials-vault';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { deleteResult, registerCompletedUpload, saveRetainedResult } from '../src/lib/storage/retention-service';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
+import { consumeAuthToken, issueAuthToken } from '../src/lib/auth/auth-email-token-store';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
 
 const createdUsers: string[] = [];
@@ -196,6 +197,22 @@ describe('erasing one account', () => {
     await eraseAccount(plan!);
     const client = redisKeyStore.getRedisClient()!;
     expect(await Promise.all(plan!.taggedKeys.map((key) => client.exists(key)))).toEqual(plan!.taggedKeys.map(() => 0));
+  });
+
+  it('deletes the password reset and email verification tokens of the account and not those of another', async () => {
+    const { user } = await accountWithRecords('mailed');
+    const other = await accountWithRecords('other');
+    const subject = (record: { id: string; email: string }) => ({ userId: record.id, email: record.email });
+    const resetToken = await issueAuthToken('reset', subject(user));
+    const verifyToken = await issueAuthToken('verify', subject(user));
+    const keptToken = await issueAuthToken('reset', subject(other.user));
+
+    await eraseAccount((await planAccountErasure(user.id))!);
+
+    expect(await consumeAuthToken('reset', resetToken)).toBeNull();
+    expect(await consumeAuthToken('verify', verifyToken)).toBeNull();
+    expect(await consumeAuthToken('reset', keptToken)).toEqual(subject(other.user));
+    await eraseAccount((await planAccountErasure(other.user.id))!);
   });
 
   it('answers no plan for an account that does not exist', async () => {
