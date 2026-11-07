@@ -248,23 +248,32 @@ fn build_config(args: &Args) -> Result<Config, String> {
 /// easyconvert: the input is not an image file but the pixels the caller has already decoded: the width and the height as two
 /// little-endian u32, then width * height * 4 bytes of RGBA, from the file at `path` or from standard input when it is `-`.
 /// This replaces `image::open(path)?.to_rgba8()` and nothing else in this file; `ColorImage` is built as it was.
+///
+/// The header is read first and the buffer is allocated once, at the size it names, so that a file that names more than the worker
+/// ever sends (MAX_PIXELS, the 16 megapixels of the worker's budget in raster-vectorize.ts) is refused before anything is allocated,
+/// and the pixels are not copied after they are read.
+const MAX_PIXELS: usize = 16_000_000;
+
 fn read_image(path: &std::path::Path) -> Result<ColorImage, String> {
     use std::io::Read;
-    let mut bytes = Vec::new();
-    let read = if path.as_os_str() == "-" {
-        std::io::stdin().lock().read_to_end(&mut bytes)
+    let mut input: Box<dyn Read> = if path.as_os_str() == "-" {
+        Box::new(std::io::stdin().lock())
     } else {
-        std::fs::File::open(path).and_then(|mut file| file.read_to_end(&mut bytes))
+        Box::new(std::fs::File::open(path).map_err(|_| "no pixel data found at specified input path".to_string())?)
     };
-    read.map_err(|_| "no pixel data found at specified input path".to_string())?;
-    let (header, pixels) = bytes.split_at_checked(8).ok_or("the pixel data is shorter than its header")?;
+    let mut header = [0u8; 8];
+    input.read_exact(&mut header).map_err(|_| "the pixel data is shorter than its header".to_string())?;
     let width = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
     let height = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
-    if width == 0 || height == 0 || width.checked_mul(height).and_then(|n| n.checked_mul(4)) != Some(pixels.len()) {
-        return Err("the pixel data does not match its width and height".to_string());
+    let size_error = || "the pixel data does not match its width and height".to_string();
+    let pixel_count = width.checked_mul(height).filter(|&count| count > 0 && count <= MAX_PIXELS).ok_or_else(size_error)?;
+    let mut pixels = vec![0u8; pixel_count * 4];
+    input.read_exact(&mut pixels).map_err(|_| size_error())?;
+    if input.read(&mut [0u8; 1]).map_err(|_| size_error())? != 0 {
+        return Err(size_error());
     }
     Ok(ColorImage {
-        pixels: pixels.to_vec(),
+        pixels,
         width,
         height,
     })
