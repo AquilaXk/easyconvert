@@ -6,10 +6,11 @@
 # The sources are the ones the Debian package of the worker image is built from, at the same releases, so that the AVIF file is the one
 # the package writes for the same picture and arguments: libavif 1.2.1 and its AV1 encoder libaom 3.12.1 (libavif-bin 1.2.1-1.2 and
 # libaom3 3.12.1-1+deb13u1 on Debian 13), libyuv 1904 (the colour conversion libavif uses when it is built with it, as the package is),
-# libpng and zlib-ng (the PNG reader; zlib-ng in its zlib-compatible mode inflates the pictures faster than zlib, to the same bytes) and libjpeg-turbo (libavif's applications will not build without a JPEG reader, which avifenc is never
+# libpng and zlib-ng (the PNG reader) and libjpeg-turbo (libavif's applications will not build without a JPEG reader, which avifenc is never
 # given). Every one of them is linked in statically, with libstdc++ and libgcc, so the program needs only the C library of the host.
-# libavif is built with the AV1 encoder and decoder of libaom and no other codec, libsharpyuv and libxml2 off, as the package is built. Link-time
-# optimisation is the one thing done to the build (docs/policy-decisions.md, entry 172); the sources are not changed.
+# libavif is built with the AV1 encoder and decoder of libaom and no other codec, libsharpyuv and libxml2 off, as the package is built. Two things
+# are done to the build and none to the sources (docs/policy-decisions.md, entry 172): link-time optimisation, and zlib-ng in its zlib-compatible
+# mode instead of zlib, which inflates the PNG faster to the same bytes.
 #
 # Everything that decides the bytes of the program is pinned: every archive by SHA-256 (checked before anything in it runs), the build
 # tool (CMake) by version with the digest of its release archive for both architectures, and the C and C++ compilers by the image the
