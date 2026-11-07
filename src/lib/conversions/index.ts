@@ -385,12 +385,12 @@ async function convertFileInScope(
   assertConversionOptionsObject(options, tgt);
 
   if (!inputBuffer || inputBuffer.length === 0) {
-    throw new Error('Conversion payload is empty. File buffer has 0 bytes.');
+    throw new ConversionFailedError('Conversion payload is empty. File buffer has 0 bytes.');
   }
 
   const srcDef = FORMAT_REGISTRY[src];
   if (!srcDef) {
-    throw new Error(`Unsupported source format: "${sourceFormat}". Please check available formats.`);
+    throw new UnsupportedTargetError(`Unsupported source format: "${sourceFormat}". Please check available formats.`);
   }
 
   // Verify that the requested conversion is allowed in registry

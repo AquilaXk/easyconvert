@@ -171,13 +171,6 @@ function memoryRefusal(): PayloadLimitError {
   return new PayloadLimitError(`Tracing this picture needs more than the ${ENGINE_MEMORY_LIMIT_MB} MB the SVG tracer may use. Simplify the picture, or raise filterSpeckle or lower colorPrecision.`);
 }
 
-/** A trace the job had no time left to start: the typed time-limit refusal, with the stage limit the job ran past. */
-class TraceOutOfTimeError extends CpuTaskTimeoutError {
-  constructor(limitMs: number) {
-    super(TRACE_TASK, limitMs, OUT_OF_TIME);
-  }
-}
-
 function outputRefusal(): PayloadLimitError {
   return new PayloadLimitError(`The SVG traced from this picture is larger than ${VECTORIZE_MAX_OUTPUT_BYTES} bytes. Raise filterSpeckle or lower colorPrecision for fewer shapes.`);
 }
@@ -244,7 +237,7 @@ async function trace(binary: string, picture: StagedPicture, args: string[], opt
 function assertTimeLeft(options: ConversionOptions): void {
   options.signal?.throwIfAborted();
   const remaining = remainingJobMs(options);
-  if (remaining !== undefined && remaining <= 0) throw new TraceOutOfTimeError(stageTimeoutMs(options, ENGINE_DEFAULT_TIMEOUT_MS));
+  if (remaining !== undefined && remaining <= 0) throw new CpuTaskTimeoutError(TRACE_TASK, stageTimeoutMs(options, ENGINE_DEFAULT_TIMEOUT_MS), OUT_OF_TIME);
 }
 
 /**

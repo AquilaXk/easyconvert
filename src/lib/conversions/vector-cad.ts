@@ -1,7 +1,7 @@
 import sharp, { type ResizeOptions, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, EngineUnavailableError, PayloadLimitError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, EngineUnavailableError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
@@ -228,7 +228,7 @@ export async function convertVectorCad(
   if (tgt === 'pdf') await loadFontCoverageIndex();
 
   if (!inputBuffer || inputBuffer.length === 0) {
-    throw new Error('Vector/CAD conversion payload is empty (0 bytes).');
+    throw new ConversionFailedError('Vector/CAD conversion payload is empty (0 bytes).');
   }
 
   // 0. Raster pictures traced to SVG, ahead of the routes below, which draw every other SVG target.
@@ -293,7 +293,7 @@ export async function convertVectorCad(
     return convertSvgSource(Buffer.from(sanitizeSvgDocument(svgStr), 'utf-8'), tgt, options, baseName);
   }
 
-  throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
+  throw new UnsupportedTargetError(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
 }
 
 /** The answer for a format that no reader exists for, by source: refused, never drawn from a placeholder. */
@@ -529,7 +529,7 @@ async function convertSvgSource(
     }
 
     default:
-      throw new Error(`Unsupported SVG target conversion: ${tgt}`);
+      throw new UnsupportedTargetError(`Unsupported SVG target conversion: ${tgt}`);
   }
 
   return {
@@ -584,7 +584,7 @@ async function convertDxfSource(
     return convertSvgSource(svgBuf, tgt, options, baseName, { ...dxfSvgDeclaredSize(drawing), pngCompressionLevel: DXF_PNG_COMPRESSION_LEVEL });
   }
 
-  throw new Error(`Unsupported DXF target conversion: ${tgt}`);
+  throw new UnsupportedTargetError(`Unsupported DXF target conversion: ${tgt}`);
 }
 
 /**
@@ -685,7 +685,7 @@ async function convert3dCad(
       break;
 
     default:
-      throw new Error(`Unsupported 3D CAD target: ${tgt}`);
+      throw new UnsupportedTargetError(`Unsupported 3D CAD target: ${tgt}`);
   }
 
   return {

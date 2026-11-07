@@ -92,6 +92,12 @@ const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
 /** Problem type for a conversion whose native engine (for example LibreOffice) is not installed. */
 export const ENGINE_UNAVAILABLE_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}engine-unavailable`;
 const HTTP_SERVICE_UNAVAILABLE = 503;
+/**
+ * Seconds a client waits before it repeats a request answered 503 for a missing tool or an offline quota store. Neither has a
+ * known recovery time (another worker may hold the tool at once; the store may take longer), so this is the fixed short wait the
+ * queue and storage 503 answers use, and a client that still gets a 503 backs off.
+ */
+export const SERVICE_RETRY_AFTER_SECONDS = 5;
 const HTTP_UNPROCESSABLE_ENTITY = 422;
 
 /** Problem type for a PDF/A output that veraPDF rejected. */
@@ -154,7 +160,7 @@ export function createEngineUnavailableResponse(
     instance,
     'Engine Unavailable',
     ENGINE_UNAVAILABLE_PROBLEM_TYPE,
-    extraHeaders,
+    { 'Retry-After': String(SERVICE_RETRY_AFTER_SECONDS), ...extraHeaders },
     undefined,
     { code: error.refusalCode }
   );

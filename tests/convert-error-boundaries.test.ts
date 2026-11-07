@@ -134,13 +134,12 @@ describe('an error the conversion threw', () => {
     expect(await res.json()).toMatchObject({ code: 'unsupported_pair' });
   });
 
-  it('is a refusal of the input when it is an untyped Error that says the engine cannot convert it', async () => {
+  it('is a fault of the server when it is an untyped Error, even one that says the engine cannot convert it', async () => {
     vi.mocked(dispatchConversion).mockRejectedValueOnce(new Error('Unsupported data conversion from pdf to xyz'));
 
     const res = await post(visitor().headers, pdfForm());
 
-    expect(res.status).toBe(HTTP_BAD_REQUEST);
-    expect(await res.json()).toMatchObject({ code: 'conversion_failed' });
+    expect(res.status).toBe(HTTP_INTERNAL_SERVER_ERROR);
   });
 
   it('is a fault of the server when it is a TypeError, whatever its words', async () => {
