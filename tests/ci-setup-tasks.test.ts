@@ -492,6 +492,37 @@ chmod 755 "$1/bin/gxps"
   });
 });
 
+describe('the WOFF2 programs task', () => {
+  /** A repository stand-in whose install script records its argument and writes the two programs where it is told to. */
+  function standInRepo(): string {
+    const root = scratch();
+    mkdirSync(path.join(root, 'scripts'));
+    writeFileSync(path.join(root, 'scripts', 'install-woff2.sh'), '#!/bin/sh\nmkdir -p "$1/bin"\n: > "$1/bin/woff2_compress"\n: > "$1/bin/woff2_decompress"\n', { mode: 0o755 });
+    return root;
+  }
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('installs the programs into a directory of the job and tells the later steps where they are, without linking them into /usr/local/bin', () => {
+    const root = standInRepo();
+    const runner = scratch();
+    const githubEnv = path.join(runner, 'github-env');
+    const outcome = runSourced(`cd "${root}" && task_woff2`, { RUNNER_TEMP: runner, GITHUB_ENV: githubEnv });
+    expect(outcome.status, outcome.stderr).toBe(0);
+    expect(existsSync(path.join(runner, 'woff2', 'bin', 'woff2_compress'))).toBe(true);
+    expect(readFileSync(githubEnv, 'utf-8')).toBe(`WOFF2_COMPRESS_PATH=${runner}/woff2/bin/woff2_compress\nWOFF2_DECOMPRESS_PATH=${runner}/woff2/bin/woff2_decompress\n`);
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('fails the task, and exports nothing, when the install script fails', () => {
+    const root = scratch();
+    mkdirSync(path.join(root, 'scripts'));
+    writeFileSync(path.join(root, 'scripts', 'install-woff2.sh'), '#!/bin/sh\nexit 3\n', { mode: 0o755 });
+    const runner = scratch();
+    const githubEnv = path.join(runner, 'github-env');
+    const outcome = runSourced(`cd "${root}" && task_woff2`, { RUNNER_TEMP: runner, GITHUB_ENV: githubEnv });
+    expect(outcome.status).not.toBe(0);
+    expect(existsSync(githubEnv)).toBe(false);
+  });
+});
+
 describe('the benchmark Python module check', () => {
   /** A python3 that succeeds silently for every call, except `-I -c 'import pytz'` when `pytzImports` is false. */
   function stubPython(pytzImports: boolean): string {

@@ -11,7 +11,7 @@
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   vtracer  the raster to SVG tracers: the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh), and the
 #            front-end for raw pixels built from the pinned source with the pinned Rust toolchain (scripts/install-vtracer-pixels.sh)
-#   woff2    the WOFF2 programs (woff2_compress, woff2_decompress), built from the pinned google/woff2 and Brotli sources (scripts/install-woff2.sh)
+#   woff2    the WOFF2 programs (woff2_compress, woff2_decompress), built from the pinned google/woff2 and Brotli sources (scripts/install-woff2.sh); their paths go to GITHUB_ENV
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # One part needs what another installs and runs once they are all done:
@@ -242,12 +242,18 @@ task_vtracer() {
   sudo scripts/install-vtracer-pixels.sh /opt/vtracer-pixels
 }
 
-# WOFF2 files are written and read by the programs of google/woff2 (MIT): woff2_compress and woff2_decompress, built by
+# WOFF2 files are written by woff2_compress of google/woff2 (MIT), and read by woff2_decompress in the tests: both are built by
 # scripts/install-woff2.sh from the commit of the woff2 source and the commit of the Brotli source it takes, each archive checked
-# against a pinned SHA-256 (about 650 KB), and a build of about 20 s. Not cached. The distribution's woff2 package (apt) stays for
-# woff2_info, which the script does not build; the programs in /usr/local/bin come before its programs in /usr/bin.
+# against a pinned SHA-256 (about 650 KB), and a build of about 10 s. Not cached. They go into a directory of the job, not /usr/local/bin
+# (the script links into it only as root), and the later steps find them through WOFF2_COMPRESS_PATH and WOFF2_DECOMPRESS_PATH, which this
+# task adds to GITHUB_ENV: the programs of the distribution's woff2 package in /usr/bin stay the reference tools of the benchmark (and
+# woff2_info for the tests), and the benchmark does not time the product against a copy of itself.
 task_woff2() {
-  sudo scripts/install-woff2.sh /opt/woff2
+  local dir="${RUNNER_TEMP:-$HOME}/woff2"
+  scripts/install-woff2.sh "$dir" || return 1
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    printf 'WOFF2_COMPRESS_PATH=%s\nWOFF2_DECOMPRESS_PATH=%s\n' "$dir/bin/woff2_compress" "$dir/bin/woff2_decompress" >> "$GITHUB_ENV"
+  fi
 }
 
 # Pulls the pinned image, trying a bounded number of times: anonymous registry pulls are rate limited.
