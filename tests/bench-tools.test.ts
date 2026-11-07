@@ -7,7 +7,7 @@ import { MissingToolError } from '../bench/errors';
 import { buildBaseline } from '../bench/gate';
 import { SCHEMA_VERSION } from '../bench/config';
 import { type BenchReport, type BenchRow, validateReport } from '../bench/report';
-import { planTools, type Resolver } from '../bench/tools';
+import { defaultResolver, planTools, type Resolver } from '../bench/tools';
 
 const ROOT = path.join(__dirname, '..');
 const TSX_CLI = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -36,6 +36,36 @@ describe('missing reference tools: skip versus strict failure', () => {
   it('keeps an optional metric tool a skip even under strict mode', () => {
     const plan = planTools(['ssimulacra2'], 'image ssimulacra2 score', onlyFfmpeg, true, { optional: true });
     expect(plan).toEqual({ ok: false, missing: ['ssimulacra2'], optional: true, reason: 'optional tool not installed: ssimulacra2' });
+  });
+});
+
+describe('the reference avifenc is the worker\'s encoder when it is installed', () => {
+  let work: string;
+  const install = (dir: string, name: string): string => {
+    const file = path.join(work, dir, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '#!/bin/sh\n', { mode: 0o755 });
+    return file;
+  };
+  const resolveIn = (...dirs: string[]): string | null =>
+    defaultResolver({ BENCH_TOOL_DIRS: dirs.map((dir) => path.join(work, dir)).join(path.delimiter) })('avifenc');
+
+  beforeAll(() => {
+    work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-avifenc-pinned-'));
+  });
+  afterAll(() => {
+    fs.rmSync(work, { recursive: true, force: true });
+  });
+
+  it('takes avifenc-pinned from a later directory over a package avifenc found first', () => {
+    install('first', 'avifenc');
+    const pinned = install('second', 'avifenc-pinned');
+    expect(resolveIn('first', 'second')).toBe(pinned);
+  });
+
+  it('takes the avifenc on the path when no pinned build is installed', () => {
+    const packaged = install('only-package', 'avifenc');
+    expect(resolveIn('only-package')).toBe(packaged);
   });
 });
 

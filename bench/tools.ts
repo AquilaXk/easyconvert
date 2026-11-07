@@ -16,7 +16,7 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   ffprobe: ['ffprobe'],
   cwebp: ['cwebp'],
   dwebp: ['dwebp'],
-  avifenc: ['avifenc'],
+  avifenc: ['avifenc-pinned', 'avifenc'],
   avifdec: ['avifdec'],
   magick: ['magick', 'convert'],
   zstd: ['zstd'],
@@ -46,6 +46,14 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   dwg2dxf: ['dwg2dxf'],
   vtracer: ['vtracer'],
 };
+
+/**
+ * Tools whose names are searched in the order listed across every directory, not directory by directory: the worker's own build of the
+ * encoder (`avifenc-pinned`, docs/policy-decisions.md entry 172) wins over a package `avifenc` that sits earlier on the path, so the reference
+ * side of an AVIF row runs the libavif and libaom the product runs and the row compares our settings, not two releases. Without the pinned
+ * build the package's program is the reference, as the worker falls back to it (`AVIFENC_CANDIDATES`).
+ */
+const NAME_ORDER_FIRST: ReadonlySet<string> = new Set(['avifenc']);
 
 /** Arguments that make each tool print its version, and the first line of output is kept. */
 const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
@@ -159,11 +167,16 @@ export function defaultResolver(env: NodeJS.ProcessEnv = process.env): Resolver 
       found = ffmpeg && ffmpegHasFilter(ffmpeg, 'libvmaf') ? ffmpeg : null;
     } else {
       const names = CANDIDATES[tool] ?? [tool];
-      for (const dir of searchDirs(env)) {
-        const hit = names.map((name) => path.join(dir, name)).find(isExecutable);
-        if (hit) {
-          found = hit;
-          break;
+      const dirs = searchDirs(env);
+      if (NAME_ORDER_FIRST.has(tool)) {
+        found = names.flatMap((name) => dirs.map((dir) => path.join(dir, name))).find(isExecutable) ?? null;
+      } else {
+        for (const dir of dirs) {
+          const hit = names.map((name) => path.join(dir, name)).find(isExecutable);
+          if (hit) {
+            found = hit;
+            break;
+          }
         }
       }
     }
