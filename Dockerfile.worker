@@ -117,10 +117,10 @@ RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 # Stage 3b'': Pinned google/woff2 (WOFF2 encoder and decoder)
 # ==============================================================================
 # TTF/OTF to WOFF2 and WOFF2 to TTF/OTF. google/woff2 and the Brotli library it takes are MIT. Both are built here from the sources
-# pinned by commit and SHA-256 in scripts/install-woff2.sh, with the make rules of the woff2 tree and the command-line tools of
-# scripts/woff2 (copied from the pinned commit), into woff2_compress and woff2_decompress; the worker runs them as separate sandboxed processes and nothing links them into the application. The in-process
-# codec stays as the fallback for what they decline. Debian ships the 1.0.2 release of 2017 as a package of its own; the pinned commit
-# carries the later bounds fixes.
+# pinned by commit and SHA-256 in scripts/install-woff2.sh, with the make rules of the woff2 tree and the files of scripts/woff2/src
+# (copied from the pinned commit), into woff2_compress and woff2_decompress; the worker runs them as separate sandboxed processes and
+# nothing links them into the application. The in-process codec stays as the fallback for what they decline. Debian ships the 1.0.2
+# release of 2017 as a package of its own; the pinned commit carries the later bounds fixes.
 FROM ${NODE_IMAGE} AS woff2
 
 RUN apt-get update \
