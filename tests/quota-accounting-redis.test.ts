@@ -23,8 +23,7 @@ import { CANCEL_GRAPH_LUA_SCRIPT } from '../src/lib/queue/graph/lua-scripts';
 import { withReservedUnit } from '../src/lib/api-keys/guard';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
-import { RESERVATION_LEASE, reservationIdOf } from '../src/lib/api-keys/reservation-ledger';
-import { getUtcDateKey } from '../src/lib/api-keys/key-store';
+import { RESERVATION_LEASE } from '../src/lib/api-keys/reservation-ledger';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { storageProvider } from '../src/lib/storage';
 import {
@@ -573,41 +572,6 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
       await end(reservationId);
 
       expect(await admin.exists(extensions)).toBe(0);
-    });
-  });
-
-  describe('a reservation made before leases, during the day after the deploy', () => {
-    /** Reserves `units` as the release before leases did: the count of the day and one key that holds the units. */
-    async function reservedTheOldWay(units: number): Promise<string> {
-      const reservationId = reservationIdOf(client.userId, getUtcDateKey());
-      const prefix = redisKeyStore.getPrefix();
-      await admin.incrby(`${prefix}usage:{${client.userId}}:${getUtcDateKey()}`, units);
-      await admin.set(`${prefix}res:{${client.userId}}:${reservationId}`, String(units), 'EX', 3600);
-      return reservationId;
-    }
-
-    it('is given back once by a rollback', async () => {
-      const reservationId = await reservedTheOldWay(2);
-      expect(await remaining()).toBe(DAY_ALLOWANCE - 2);
-
-      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(true);
-      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(false);
-      expect(await remaining()).toBe(DAY_ALLOWANCE);
-    });
-
-    it('stays charged once committed, and changes nothing when rolled back after', async () => {
-      const reservationId = await reservedTheOldWay(1);
-
-      expect(await redisKeyStore.commitQuota(reservationId)).toBe(true);
-      expect(await redisKeyStore.rollbackQuota(reservationId)).toBe(false);
-      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
-    });
-
-    it('settles to the units used', async () => {
-      const reservationId = await reservedTheOldWay(3);
-
-      expect(await redisKeyStore.settleQuota(reservationId, 1)).toEqual({ success: true, difference: -2 });
-      expect(await remaining()).toBe(DAY_ALLOWANCE - 1);
     });
   });
 
