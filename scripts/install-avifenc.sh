@@ -8,7 +8,8 @@
 # libaom3 3.12.1-1+deb13u1 on Debian 13), libyuv 1904 (the colour conversion libavif uses when it is built with it, as the package is),
 # libpng and zlib (the PNG reader) and libjpeg-turbo (libavif's applications will not build without a JPEG reader, which avifenc is never
 # given). Every one of them is linked in statically, with libstdc++ and libgcc, so the program needs only the C library of the host.
-# libavif is built with the AV1 encoder and decoder of libaom and no other codec, libsharpyuv and libxml2 off, as the package is built.
+# libavif is built with the AV1 encoder and decoder of libaom and no other codec, libsharpyuv and libxml2 off, as the package is built. Link-time
+# optimisation is the one thing done to the build (docs/policy-decisions.md, entry 172); the sources are not changed.
 #
 # Everything that decides the bytes of the program is pinned: every archive by SHA-256 (checked before anything in it runs), the build
 # tool (CMake) by version with the digest of its release archive for both architectures, and the C and C++ compilers by the image the
@@ -18,8 +19,8 @@
 # Bump a version and its digest together, and run tests/image-avif-cli*.test.ts and the image quality benchmark with the new program
 # before moving the pin.
 #
-# Usage: install-avifenc.sh [install-dir]   (default /opt/avifenc; linux x86_64 or aarch64; needs gcc, g++, make, perl, curl, tar, xz
-# and sha256sum)
+# Usage: install-avifenc.sh [install-dir]   (default /opt/avifenc; linux x86_64 or aarch64; needs gcc and g++ with gcc-ar and gcc-ranlib, make,
+# perl, curl, tar, gzip, xz and sha256sum)
 # Installs <install-dir>/bin/avifenc with the licence texts at <install-dir>/share/doc/avifenc/ (copyright is libavif's, the others are
 # beside it) and a SOURCE note, and links the program into /usr/local/bin as avifenc-pinned when it is run as root and the directory
 # is not /usr/local.
@@ -70,7 +71,7 @@ case "$(uname -m)" in
     exit 1
     ;;
 esac
-for tool in gcc g++ make perl curl tar gzip xz sha256sum; do
+for tool in gcc g++ gcc-ar gcc-ranlib make perl curl tar gzip xz sha256sum; do
   command -v "$tool" > /dev/null || { echo "install-avifenc.sh: $tool is needed" >&2; exit 1; }
 done
 
@@ -129,9 +130,15 @@ fi
 export SOURCE_DATE_EPOCH=0
 export CFLAGS="-ffile-prefix-map=$work=/build"
 export CXXFLAGS="-ffile-prefix-map=$work=/build"
-common=(-G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_PREFIX_PATH="$prefix"
-  -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
 jobs="$(nproc)"
+# Link-time optimisation for every library and the program: the encoder's functions are in many files, and the linker inlines across them. The
+# objects hold only the compiler's intermediate form (-fno-fat-lto-objects), so the archives are made with the compiler's own ar and ranlib,
+# which load its plugin. The machine code is the same program: the AVIF files do not change.
+lto="-flto=$jobs -fno-fat-lto-objects"
+common=(-G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_PREFIX_PATH="$prefix"
+  -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+  -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG $lto" -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG $lto"
+  -DCMAKE_AR="$(command -v gcc-ar)" -DCMAKE_RANLIB="$(command -v gcc-ranlib)")
 
 build() {
   local name="$1"
@@ -151,7 +158,7 @@ build yuv -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POLICY_DEFAULT_CMP0069=NEW
 # libyuv installs a shared library beside the static one, and the search for -lyuv would take the shared one.
 build avif -DAVIF_CODEC_AOM=SYSTEM -DAVIF_LIBYUV=SYSTEM -DLIBYUV_LIBRARY="$prefix/lib/libyuv.a" -DAVIF_JPEG=SYSTEM -DAVIF_ZLIBPNG=SYSTEM -DAVIF_BUILD_APPS=ON -DAVIF_BUILD_TESTS=OFF \
   -DAVIF_BUILD_EXAMPLES=OFF -DAVIF_BUILD_MAN_PAGES=OFF -DAVIF_LIBSHARPYUV=OFF -DAVIF_LIBXML2=OFF \
-  -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+  -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc $lto"
 program="$work/build-avif/avifenc"
 test -x "$program"
 digest="$(sha256sum "$program" | cut -d' ' -f1)"
