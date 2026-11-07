@@ -1100,6 +1100,8 @@ export function readDictionaryPage(buffer: Buffer, plan: ChunkPlan, page: Scanne
   const { header } = page;
   const { leaf } = plan;
   const body = readDictionaryPageBody(buffer, plan, page);
+  // The page must hold the entries it names before anything is allocated for them.
+  assertPlainBytes(body, 0, leaf, header.numValues);
   const bytes = new Uint32Array(header.numValues);
   const plain = readPlainValues(body, 0, leaf, header.numValues, bytes);
   if (leaf.reader.kind !== 'bytes' && (leaf.reader.map !== null || leaf.reader.kind === 'i64' || leaf.reader.kind === 'u64')) {
