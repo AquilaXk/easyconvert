@@ -31,7 +31,7 @@ const FAST_FAIL_BUDGET_MS = 15_000;
 const SLEEP_PAST_LIMIT_SECONDS = 31;
 const CHILD_STOP_BOUND_MS = 10_000;
 const MAX_TASK_LIMIT_SECONDS = 600;
-const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'ghostxps', 'vtracer', 'raw'];
+const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'ghostxps', 'vtracer', 'avifenc', 'raw'];
 /** The tasks that need what the others install, run once those are done. */
 const DEPENDENT_TASKS = ['djvulibre'];
 
@@ -178,6 +178,13 @@ run_tasks slow
 });
 
 describe('the task list and its limits', () => {
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('hands every task to the shell that runs it: each task function is exported', () => {
+    const tasks = [...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS];
+    const outcome = runSourced(`for task in ${tasks.join(' ')}; do bash -c "declare -F task_$task > /dev/null" || echo "missing $task"; done`);
+    expect(outcome.status, outcome.stderr).toBe(0);
+    expect(outcome.stdout.trim()).toBe('');
+  });
+
   it.skipIf(skipUnless(NEEDS, canRunSetup))('runs the dependent tasks by name and leaves the task list of the job as it was', () => {
     const outcome = runSourced('configure; select_tasks; run_tasks() { echo "ran $*"; }; run_dependent_tasks; echo "tasks ${tasks[*]}"', { S3_TEST_SERVER: 'false' });
     expect(outcome.status, outcome.stderr).toBe(0);
@@ -489,6 +496,84 @@ chmod 755 "$1/bin/gxps"
     expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
     expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([`build ${stub.cacheDir}`]);
     expect(existsSync(path.join(stub.cacheDir, 'gxps.sha256'))).toBe(true);
+  });
+});
+
+describe('the AVIF encoder task', () => {
+  const STUB_SUDO = `#!/bin/sh
+echo "sudo $*" >> "$STUB_LOG"
+if [ "$1" = ln ]; then exit 0; fi
+exec "$@"
+`;
+  const STUB_AVIFENC = `#!/bin/sh
+echo "avifenc-pinned $*" >> "$STUB_LOG"
+echo "Version: 1.2.1"
+`;
+  /** The install script of the repository, replaced by one that records that it ran and writes a program in place of the build. */
+  const STUB_INSTALL = `#!/bin/sh
+echo "build $*" >> "$STUB_LOG"
+mkdir -p "$1/bin"
+printf 'built program' > "$1/bin/avifenc"
+chmod 755 "$1/bin/avifenc"
+`;
+
+  function setup(): { cacheDir: string; work: string; bin: string; log: string } {
+    const dir = scratch();
+    const work = path.join(dir, 'work');
+    const bin = path.join(dir, 'bin');
+    const cacheDir = path.join(dir, 'avifenc');
+    mkdirSync(path.join(work, 'scripts'), { recursive: true });
+    mkdirSync(bin);
+    mkdirSync(path.join(cacheDir, 'bin'), { recursive: true });
+    for (const [file, body] of [[path.join(bin, 'sudo'), STUB_SUDO], [path.join(bin, 'avifenc-pinned'), STUB_AVIFENC], [path.join(work, 'scripts', 'install-avifenc.sh'), STUB_INSTALL]] as const) {
+      writeFileSync(file, body);
+      chmodSync(file, 0o755);
+    }
+    return { cacheDir, work, bin, log: path.join(dir, 'calls.log') };
+  }
+
+  function runTask(stub: ReturnType<typeof setup>, cacheHit: boolean): Outcome & { calls: string[] } {
+    writeFileSync(stub.log, '', { flag: 'a' });
+    const outcome = runSourced(`configure; avifenc_dir="$AVIFENC_DIR"; cd "$WORK"; task_avifenc`, {
+      S3_TEST_SERVER: 'false',
+      AVIFENC_CACHE_HIT: String(cacheHit),
+      AVIFENC_DIR: stub.cacheDir,
+      WORK: stub.work,
+      STUB_LOG: stub.log,
+    }, stub.bin);
+    return { ...outcome, calls: readFileSync(stub.log, 'utf-8').split('\n').filter(Boolean) };
+  }
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('builds the program and writes its SHA-256 beside it when nothing is cached', () => {
+    const stub = setup();
+    const outcome = runTask(stub, false);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([`build ${stub.cacheDir}`]);
+    const program = path.join(stub.cacheDir, 'bin', 'avifenc');
+    expect(readFileSync(path.join(stub.cacheDir, 'avifenc.sha256'), 'utf-8')).toBe(`${createHash('sha256').update(readFileSync(program)).digest('hex')}  ${program}\n`);
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('links the cached program without building it when its digest is the one written at the build', () => {
+    const stub = setup();
+    expect(runTask(stub, false).status).toBe(0);
+    writeFileSync(stub.log, '');
+    const outcome = runTask(stub, true);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([]);
+    expect(outcome.calls).toContain(`sudo ln -sf ${path.join(stub.cacheDir, 'bin', 'avifenc')} /usr/local/bin/avifenc-pinned`);
+    expect(outcome.calls).toContain('avifenc-pinned --version');
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('builds the program again when the cached one is not the one that was built', () => {
+    const stub = setup();
+    expect(runTask(stub, false).status).toBe(0);
+    writeFileSync(path.join(stub.cacheDir, 'bin', 'avifenc'), 'replaced program', { mode: 0o755 });
+    writeFileSync(stub.log, '');
+    const outcome = runTask(stub, true);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain('does not match its recorded digest');
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([`build ${stub.cacheDir}`]);
+    expect(readFileSync(path.join(stub.cacheDir, 'bin', 'avifenc'), 'utf-8')).toBe('built program');
   });
 });
 

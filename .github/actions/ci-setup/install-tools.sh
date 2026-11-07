@@ -11,6 +11,7 @@
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   vtracer  the raster to SVG tracers: the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh), and the
 #            front-end for raw pixels built from the pinned source with the pinned Rust toolchain (scripts/install-vtracer-pixels.sh)
+#   avifenc  the AVIF encoder, built from the pinned libavif and libaom sources (scripts/install-avifenc.sh), or the cached build when its digest still matches
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # One part needs what another installs and runs once they are all done:
@@ -64,6 +65,7 @@ declare -A task_limit_seconds=(
   [libredwg]=300
   [ghostxps]=300
   [vtracer]=300
+  [avifenc]=360
   [raw]=240
   [s3]=360
 )
@@ -80,6 +82,8 @@ configure() {
   export libredwg_dir=/opt/libredwg
   export ghostxps_cache_hit="${GHOSTXPS_CACHE_HIT:-false}"
   export ghostxps_dir=/opt/ghostxps
+  export avifenc_cache_hit="${AVIFENC_CACHE_HIT:-false}"
+  export avifenc_dir=/opt/avifenc
   export djvulibre_cache_hit="${DJVULIBRE_CACHE_HIT:-false}"
   export djvulibre_dir=/opt/djvulibre
   export pip_wheels="${PIP_WHEELS:?PIP_WHEELS}"
@@ -109,7 +113,7 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps vtracer raw)
+  tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps vtracer avifenc raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -240,6 +244,23 @@ task_vtracer() {
   sudo scripts/install-vtracer-pixels.sh /opt/vtracer-pixels
 }
 
+# AVIF is written by avifenc (libavif and libaom, BSD-2-Clause, a separate program) built by scripts/install-avifenc.sh from archives pinned by
+# SHA-256, which checks every digest before anything in the archive runs. The program is linked into /usr/local/bin as avifenc-pinned, where the
+# product looks for it first; the apt package stays at /usr/bin/avifenc as the fallback and as the encoder the benchmark compares against. The build
+# is cached by the hash of the script and its note, with the SHA-256 of the program beside it: a restored program is used only when it still has the
+# digest written at the build, and is built again otherwise.
+task_avifenc() {
+  local digest_file="$avifenc_dir/avifenc.sha256"
+  if [ "$avifenc_cache_hit" = true ] && [ -x "$avifenc_dir/bin/avifenc" ] && sha256sum --check --strict --status "$digest_file" 2> /dev/null; then
+    sudo ln -sf "$avifenc_dir/bin/avifenc" /usr/local/bin/avifenc-pinned
+    avifenc-pinned --version
+    return
+  fi
+  if [ "$avifenc_cache_hit" = true ]; then echo "the cached avifenc does not match its recorded digest; building it again"; fi
+  sudo scripts/install-avifenc.sh "$avifenc_dir"
+  sha256sum "$avifenc_dir/bin/avifenc" | sudo tee "$digest_file" > /dev/null
+}
+
 # Pulls the pinned image, trying a bounded number of times: anonymous registry pulls are rate limited.
 s3_pull_image() {
   local attempt
@@ -328,7 +349,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_vtracer task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_vtracer task_avifenc task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

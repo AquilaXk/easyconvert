@@ -31,7 +31,12 @@ export const AVIF_ENCODER_IMAGE_LIBRARY: AvifEncoder = 'image-library';
 
 /** Environment variable that names the executable; a value is authoritative, so a path that is not an executable file means "not installed". */
 export const AVIFENC_PATH_ENV = 'AVIFENC_PATH';
-const AVIFENC_CANDIDATES = ['/usr/bin/avifenc', '/usr/local/bin/avifenc', '/opt/homebrew/bin/avifenc'];
+/**
+ * Where the executable is looked for when `AVIFENC_PATH` is not set, in this order. The first is the encoder the worker image and the
+ * CI setup build from the pinned libavif and libaom sources (`scripts/install-avifenc.sh`, entry 172), which writes the same files as
+ * the distribution's package of the same release, faster; the others are the distribution's `libavif-bin` and a package manager's.
+ */
+export const AVIFENC_CANDIDATES: readonly string[] = ['/usr/local/bin/avifenc-pinned', '/usr/bin/avifenc', '/usr/local/bin/avifenc', '/opt/homebrew/bin/avifenc'];
 
 /** Resident memory the sandbox allows one run before it kills the process group (polled by the sandbox, not an address-space cap). */
 export const AVIFENC_MEMORY_LIMIT_MB = 3072;

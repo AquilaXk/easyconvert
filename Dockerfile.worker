@@ -114,6 +114,23 @@ RUN /tmp/install-vtracer.sh /opt/vtracer
 RUN /tmp/install-vtracer-pixels.sh /opt/vtracer-pixels
 
 # ==============================================================================
+# Stage 3b'': Pinned avifenc (AVIF encoder)
+# ==============================================================================
+# Every AVIF the worker writes from a picture file. avifenc is the command-line encoder of libavif (BSD-2-Clause) and drives libaom, the
+# AV1 encoder (BSD-2-Clause with the AOMedia patent licence). Both are built here from the releases that Debian 13 packages (libavif
+# 1.2.1, libaom 3.12.1), with libyuv, libpng, zlib-ng and libjpeg-turbo, each pinned by SHA-256 in scripts/install-avifenc.sh, as one
+# static program that the worker runs sandboxed; nothing links it into the application. It writes the files the package writes; the
+# package (libavif-bin, installed in the runner below) stays as the fallback. Every licence text goes with the program.
+FROM ${NODE_IMAGE} AS avifenc
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils gcc g++ make perl libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-avifenc.sh /tmp/install-avifenc.sh
+COPY scripts/avifenc/SOURCE /tmp/avifenc/SOURCE
+RUN /tmp/install-avifenc.sh /opt/avifenc
+
+# ==============================================================================
 # Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
 # ==============================================================================
 # Every audio and video conversion. FFmpeg is built here from its release archive and one patch (scripts/ffmpeg-patches), both
@@ -405,6 +422,17 @@ RUN dir="$(mktemp -d)" \
     && grep -q '<path d="M' "$dir/out.svg" \
     && rm -rf "$dir"
 
+# AVIF encoder (the avifenc stage): the pinned build the worker finds first, beside the distribution's /usr/bin/avifenc, which it falls back to.
+# Its licence texts go to /usr/share/doc/avifenc, which the notices step below collects into /licenses; the SOURCE file names the archives
+# and their digests. The build fails unless the program writes an AVIF file for an 8 x 8 PNG with a black square, written here as bytes.
+COPY --from=avifenc /opt/avifenc/bin/avifenc /usr/local/bin/avifenc-pinned
+COPY --from=avifenc /opt/avifenc/share/doc/avifenc /usr/share/doc/avifenc
+RUN dir="$(mktemp -d)" \
+    && printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\010\000\000\000\010\001\003\000\000\000\376\301,\310\000\000\000\006PLTE\377\377\377\000\000\000U\302\323~\000\000\000\021IDAT\010\327c\140\000\002\033(d\140\140\000\000\007\220\000\361\354\255\014\032\000\000\000\000IEND\256B\140\202' > "$dir/in.png" \
+    && avifenc-pinned -q 70 -s 6 "$dir/in.png" -o "$dir/out.avif" \
+    && head -c 12 "$dir/out.avif" | grep -q 'ftypavif' \
+    && rm -rf "$dir"
+
 # DjVu renderer (the patched djvulibre built in the djvulibre stage, GPL-2.0-or-later, started as a separate program like the other GPL
 # tools above). The worker finds it as /usr/local/bin/ddjvu with djvused beside it; the distribution's package is not installed, so no
 # /usr/bin/ddjvu comes first. Its licence text goes to /usr/share/doc/djvulibre/copyright, which the notices step below collects into
@@ -530,6 +558,7 @@ RUN cp /usr/share/doc/vtracer/THIRD-PARTY-NOTICES /licenses/vtracer.THIRD-PARTY-
 RUN cp /usr/share/doc/vtracer-pixels/SOURCE /licenses/vtracer-pixels.SOURCE
 RUN cp /usr/share/doc/vtracer-pixels/THIRD-PARTY-NOTICES /licenses/vtracer-pixels.THIRD-PARTY-NOTICES
 RUN cp /usr/share/doc/vtracer-pixels/NOTICE-mimalloc /licenses/vtracer-pixels.NOTICE-mimalloc
+RUN cd /usr/share/doc/avifenc && for f in SOURCE LICENSE.libaom PATENTS.libaom LICENSE.libyuv PATENTS.libyuv LICENSE.libpng LICENSE.zlib-ng LICENSE.libjpeg-turbo README.ijg; do cp "$f" "/licenses/avifenc.$f" || exit 1; done
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
