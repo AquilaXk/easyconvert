@@ -416,9 +416,11 @@ export class FormattedParquetTable {
     this.numRows = numRows;
   }
 
-  static open(buffer: Buffer, makeFormatter: ColumnFormatterFactory): FormattedParquetTable {
+  /** The table of a flat file; null for a file with nested or repeated columns, which the records route reads. */
+  static open(buffer: Buffer, makeFormatter: ColumnFormatterFactory): FormattedParquetTable | null {
     try {
       const { meta, plans } = prepareParquetPlans(buffer);
+      if (meta.root !== null) return null;
       const names = meta.leaves.map((leaf) => leaf.name);
       const formatters = meta.leaves.map((leaf, c) => makeFormatter(names, c, isAsciiColumn(leaf)));
       return new FormattedParquetTable(buffer, groupByRowGroup(plans, meta.leaves.length), formatters, names, meta.numRows);

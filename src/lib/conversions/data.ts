@@ -28,7 +28,7 @@ import { sheetLimitError } from './office/sheet-bounds';
 import { gridLimitError, gridOf, isSpreadsheetGrid, type Grid } from './table-grid';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
-import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
+import { encodeParquet, decodeParquet, decodeParquetTable, ParquetFormatError } from './parquet';
 import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
@@ -742,6 +742,23 @@ function parseNdjsonText(text: string, src: string): DataValue[] {
   return records;
 }
 
+/**
+ * Records for the table targets from records that hold lists, structs and maps: a nested value fills one cell as compact JSON
+ * text, the way a JSON array already does in `flattenInto` (a struct stays one cell too, so a column keeps its meaning when
+ * the struct is null in a row). The structured targets keep the nesting and never see these copies.
+ */
+function nestedCellsAsJson(records: DataValue[], columns: ReadonlySet<string>): DataValue[] {
+  return records.map((record) => {
+    const row = record as DataObject;
+    const cells: DataObject = {};
+    for (const key of dataObjectKeys(row)) {
+      const value = row[key];
+      setOwn(cells, key, columns.has(key) && value !== null ? stringifyJsonLossless(value) : value);
+    }
+    return cells;
+  });
+}
+
 function asRecords(value: DataValue): DataValue[] {
   return Array.isArray(value) ? value : [value];
 }
@@ -776,8 +793,13 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
     return { value: xmlToJsonMlDocument(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
   }
   if (src === 'parquet') {
-    const records = decodeParquet(inputBuffer) as DataValue[];
-    return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
+    const { records: decoded, nestedColumns } = decodeParquetTable(inputBuffer);
+    const records = decoded as DataValue[];
+    return {
+      value: records,
+      records: () => (nestedColumns.length === 0 ? records : nestedCellsAsJson(records, new Set(nestedColumns))),
+      text: () => stringifyJsonLossless(records, JSON_INDENT),
+    };
   }
   throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
 }
@@ -987,7 +1009,9 @@ export async function convertData(
       }
       if (tgt === 'json') {
         const jsonBuffer = parquetToJson(inputBuffer);
-        return { buffer: jsonBuffer, mimeType: 'application/json', filename: `${baseName}.json`, size: jsonBuffer.length };
+        if (jsonBuffer !== null) {
+          return { buffer: jsonBuffer, mimeType: 'application/json', filename: `${baseName}.json`, size: jsonBuffer.length };
+        }
       }
       return convertStructured(inputBuffer, src, tgt, options, baseName);
     });

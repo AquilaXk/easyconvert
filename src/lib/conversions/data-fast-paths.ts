@@ -50,7 +50,7 @@ export function parquetToDelimited(input: Buffer, targetFormat: string, options:
     escapeFormulas: options.escapeFormulas ?? true,
   };
   const table = FormattedParquetTable.open(input, delimitedFormatters(style));
-  if (table.numRows === 0) return null;
+  if (table === null || table.numRows === 0) return null;
 
   const out = new ChunkedOutput({ expectedBytes: input.length });
   const header = delimitedHeaderLine(table.names, style);
@@ -62,9 +62,11 @@ export function parquetToDelimited(input: Buffer, targetFormat: string, options:
 /**
  * Parquet to JSON: serializes the cells of each row window straight into 2-space indented JSON text, preserving
  * column order (including integer-named and "__proto__" columns) and -0 without building row records.
+ * Null for a file with nested columns, which the general route writes.
  */
-export function parquetToJson(input: Buffer): Buffer {
+export function parquetToJson(input: Buffer): Buffer | null {
   const table = FormattedParquetTable.open(input, jsonFormatters());
+  if (table === null) return null;
   if (table.numRows === 0) return Buffer.from('[]', 'utf-8');
 
   // Every cell opens with a comma; the one before the first object becomes the bracket.
