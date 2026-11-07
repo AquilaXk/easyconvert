@@ -331,3 +331,48 @@ describe.skipIf(!haveBoth)('hostile files given to the programs', () => {
     expect(await compressWithNativeWoff2(damaged)).toBeNull();
   });
 });
+
+/** The decoder program under a 96 MiB address space: a buffer sized from the header alone cannot be allocated. */
+const prlimit = spawnSync('prlimit', ['--version']).status === 0;
+describe.skipIf(!haveBoth || !prlimit)('the decoder program checks the header before it allocates', () => {
+  const real = fixture('dejavu-sans-latin.reference.woff2');
+  const AS_BYTES = 96 * 1024 * 1024;
+  function run(file: Buffer): { status: number | null; stderr: string; ttf: Buffer | null } {
+    const dir = tmpDir('woff2-header-');
+    const input = path.join(dir, 'input.woff2');
+    fs.writeFileSync(input, file);
+    const result = spawnSync('prlimit', [`--as=${AS_BYTES}`, '--', decompressor!, input], { encoding: 'utf8' });
+    const output = path.join(dir, 'input.ttf');
+    return { status: result.status, stderr: result.stderr, ttf: fs.existsSync(output) ? fs.readFileSync(output) : null };
+  }
+  const withHeader = (patch: (copy: Buffer) => void): Buffer => {
+    const copy = Buffer.from(real);
+    patch(copy);
+    return copy;
+  };
+
+  it('declines a header that announces more than the decoder may write, without a 128 MiB buffer', () => {
+    const answer = run(withHeader((b) => b.writeUInt32BE(0xffffffff, 16)));
+    expect(answer.status).toBe(1);
+    expect(answer.stderr).toMatch(/not that of a font this decoder reads/);
+  });
+
+  it('declines more tables than the in-process reader allows', () => {
+    const answer = run(withHeader((b) => b.writeUInt16BE(4097, 12)));
+    expect(answer.status).toBe(1);
+    expect(answer.stderr).toMatch(/not that of a font this decoder reads/);
+  });
+
+  it('declines a length field that is not the size of the file', () => {
+    const answer = run(withHeader((b) => b.writeUInt32BE(real.length + 1, 8)));
+    expect(answer.status).toBe(1);
+    expect(answer.stderr).toMatch(/not that of a font this decoder reads/);
+  });
+
+  it('does not size the buffer from a total size that the file cannot back, and reads the font', () => {
+    // 112 MiB announced by a file of 20 KiB: the decoder does not believe the field, and neither does the buffer.
+    const answer = run(withHeader((b) => b.writeUInt32BE(112 * 1024 * 1024, 16)));
+    expect(answer.status).toBe(0);
+    expect(answer.ttf?.equals(run(real).ttf ?? Buffer.alloc(0))).toBe(true);
+  });
+});

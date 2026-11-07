@@ -7,6 +7,9 @@ Copied files (upstream path -> path here) and what differs. `git log -p` on each
 upstream file as it is, each later commit is one change of ours.
   src/woff2_compress.cc    -> src/woff2_compress.cc    SHA-256 of the upstream file aa568299c90171eae75c639b00d9192e924ffe7b3e06b4c0a354c174e6b7945a
   src/woff2_decompress.cc  -> src/woff2_decompress.cc  SHA-256 of the upstream file 17fae33a2f625e4ee3592ee64f54683dea2b488de456403cd84e11e329d6915c
+      Changes of ours, one commit each: the 48 bytes of the header are checked before the buffer of the output is allocated (a length field that
+      is not the size of the file, no table or more than 4096 tables, a total size field above kDefaultMaxSize are declined with exit status 1),
+      and the buffer starts at most 100 times the size of the input instead of at the size the header announces.
 
 The libraries are not copied: the woff2 library (the other files of src/ and include/) and the Brotli library come from the archives of the
 pinned commits (the Brotli commit is the one the woff2 tree names as its submodule). scripts/install-woff2.sh checks the digest of each archive,
