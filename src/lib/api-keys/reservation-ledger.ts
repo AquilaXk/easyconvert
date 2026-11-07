@@ -73,8 +73,8 @@ export function parseReservationId(reservationId: string): { userId: string; day
 
 const EXTENSION_STATUS: Readonly<Record<string, QuotaExtension['status']>> = { '1': 'extended', '0': 'does-not-fit', '-1': 'no-reservation' };
 
-/** The keys every step on one reservation is given: those of its day, its extensions, and its key from before leases. */
-type ReservationKeys = [usage: string, leases: string, held: string, extensions: string, beforeLeases: string];
+/** The keys every step on one reservation is given: those of its day and its extensions. */
+type ReservationKeys = [usage: string, leases: string, held: string, extensions: string];
 
 /** The ledger every web and worker instance shares: one Lua script per step (quota-lua-scripts.ts). */
 export class RedisReservationLedger implements ReservationLedger {
@@ -92,8 +92,7 @@ export class RedisReservationLedger implements ReservationLedger {
   private keysOf(reservationId: string): ReservationKeys | undefined {
     const named = parseReservationId(reservationId);
     if (!named) return undefined;
-    const beforeLeases = `${this.prefix}res:{${named.userId}}:${reservationId}`;
-    return [...this.dayKeys(named.userId, named.day), `${beforeLeases}:ext`, beforeLeases];
+    return [...this.dayKeys(named.userId, named.day), `${this.prefix}res:{${named.userId}}:${reservationId}:ext`];
   }
 
   /** Runs `script` on the keys of `reservationId`; undefined for an id of another form. */
