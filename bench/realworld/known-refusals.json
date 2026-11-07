@@ -188,41 +188,9 @@
   {
     "file": "office-document-59378.docx",
     "source": "docx",
-    "target": "pptx",
-    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
-    "reason": "The file holds no text: the body is six empty paragraphs and the three headers, three footers, footnotes and endnotes it carries are empty, so LibreOffice's plain-text export is white space only (tests/docx-to-slides-text.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "office-document-bug62859.docx",
-    "source": "docx",
-    "target": "pptx",
-    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
-    "reason": "The file holds no text: the body is a content control with no content (its placeholder text lives in the glossary part, which no export prints) and an empty paragraph, so LibreOffice's plain-text export is white space only (tests/docx-to-slides-text.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "office-document-headerpic.docx",
-    "source": "docx",
-    "target": "pptx",
-    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
-    "reason": "The file holds no text: its one header holds a picture and the body is empty, and LibreOffice's plain-text export writes nothing for a header or a picture (tests/docx-to-slides-text.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "office-document-issue_51265_3.docx",
-    "source": "docx",
-    "target": "pptx",
-    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
-    "reason": "The file holds no text: the body draws four pictures and the two headers hold no text, and LibreOffice's plain-text export writes nothing for a picture (tests/docx-to-slides-text.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "office-document-emptydocumentwithheaderfooter.docx",
-    "source": "docx",
-    "target": "pptx",
-    "detail": "^ConversionFailedError: There is no text to put on slides\\.$",
-    "reason": "The body is empty; the only words are the header line \"blabal\" and the footer line \"blabla\", which LibreOffice's plain-text export does not write, and slides hold the text of the body (tests/docx-to-slides-text.test.ts).",
+    "target": "lrf",
+    "detail": "^ConversionFailedError: calibre could not convert the \\.docx file to \\.lrf: .*LrfError: page id invalid in toc: office-document-59378$",
+    "reason": "The file holds no text (the body is six empty paragraphs; headers, footers, footnotes and endnotes hold no w:t element), so the EPUB the converter hands to calibre has no content page, and calibre's LRF writer stops with \"page id invalid in toc\" for the table-of-contents entry that names the file. `ebook-convert` 7.6.0 refuses that EPUB the same way when run on it alone (the MOBI and the OEB of the same file convert). The pair to PPTX, refused with \"There is no text to put on slides\" (tests/docx-to-slides-text.test.ts), is no longer one of the file's planned pairs.",
     "issue": 783
   },
   {
