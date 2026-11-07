@@ -186,3 +186,7 @@ The notices file must not change with the host that generates it, so text inclus
 ### 6.3 Why LGPL-3.0 is allowed
 
 `LGPL-3.0` (which also matches `LGPL-3.0-only` and `LGPL-3.0-or-later`) is on the allowlist only because of the prebuilt `libvips` binaries (`@img/sharp-libvips-*`). `sharp` loads them dynamically as shared libraries that the user can replace (see section 3). Do not use the entry to admit a package that is statically linked or bundled into application code; such a package needs a reviewed exception instead. Strong network copyleft (AGPL) and non-commercial licences are never allowed as npm dependencies or as code linked or bundled into the application; AGPL is accepted only for an unmodified, separate command-line executable run as its own process (section 2.5) or a test oracle.
+
+### 6.4 Development tools
+
+`axe-core` (MPL-2.0) is a development dependency of the test suite only: `tests/a11y-axe.test.ts` loads it in jsdom to audit the core pages against WCAG 2.1 AA. It is unmodified, is not imported by `src/`, and is in no image or build output, so it is outside the production set of section 6.1 and needs no notice entry.
