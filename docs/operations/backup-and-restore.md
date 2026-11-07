@@ -25,7 +25,9 @@ The script (`deploy/oci/redis-backup.sh`) takes the snapshot as the Redis docume
 
 ### Install (once, on the host)
 
-From a checkout of this repository. Nothing here is installed by a deploy, and it was not installed when this page was written.
+**Precondition: install the timer only after QA has settled the privacy wording question recorded as "Open for QA" in [entry 186](../policy-decisions.md#186-redis-is-backed-up-every-6-hours-to-the-hosts-data-volume-for-7-days-an-account-is-erased-within-2-days-and-the-status-of-the-service-is-the-uptime-workflows-public-run-history)** (a backup can hold the file of an API job that was running, for 7 days, while the privacy policy says files are gone within minutes). Until then take no backup, by timer or by hand.
+
+From a checkout of this repository. Nothing here is installed by a deploy, and it was not installed when this page was written. The unit runs with `NoNewPrivileges`, a private `/tmp`, and a read-only file system except the backup directory (`ProtectSystem=strict`, `ReadWritePaths`); the directory must exist before the service starts, which the first command creates. That `docker compose exec` works under these settings is reasoned (it only connects to the Docker socket, which a read-only mount allows, and writes nothing) and was not tested on the host: after installing, run `sudo systemctl start easyconvert-redis-backup.service` and read `journalctl -u easyconvert-redis-backup.service`; if it fails on a read-only path, name the path in `ReadWritePaths`.
 
 ```
 sudo install -d -o easyconvert-deploy -g easyconvert-deploy -m 0700 /var/lib/easysubway-data/easyconvert/redis-backups
@@ -52,10 +54,11 @@ The newest `.rdb` must be less than 7 hours old. No alert watches this yet (aler
 
 The privacy policy promises that an account is deleted within 10 days of the request. A backup taken before the deletion still holds the account, so:
 
-1. **Erase within 2 days of the request**, not 10: the steps in [Deleting an account](../deploy-oci.md#deleting-an-account). Then every backup that holds the account is at most 7 days old and has expired by day 9 after the request, inside the promise with a day to spare.
+1. **Erase within 2 days of the request**, not 10: the steps in [Deleting an account](../deploy-oci.md#deleting-an-account). Then every backup that holds the account is at most 7 days old and has been removed by about 9 days 6 hours after the request (7 days, plus the 6 hours until the next run, which prunes, plus its random delay of up to 2 minutes), inside the promise with 18 hours to spare.
 2. **Right after `--apply` succeeded, rewrite the append-only file**: `C exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli BGREWRITEAOF'` (shell function `C` in the [README](README.md#your-shell-on-the-host)). The file records the commands that created the account and then the ones that deleted it, and keeps both until the next rewrite, which at this size can be a long way off. The rewrite writes the data as it is now.
 3. **Nothing else holds the account.** Old backups expire by themselves; do not edit one. There is no other copy.
-4. **A restore brings deleted accounts back.** Step 8 of [Restore](#restore) applies every deletion since the backup again, before the service is trusted.
+4. **A restore brings deleted accounts back.** Step 8 of [Restore](#restore) erases again every account whose erasure finished after the backup's time, including a request that was still open when the backup was taken (a request made an hour before the backup and erased an hour after it is in the backup, and is caught by the time of the erasure, not of the request).
+5. **Record when each erasure finished, so the restore can find it.** The record is the notice you send the requester (step 5 of [Deleting an account](../deploy-oci.md#deleting-an-account)): send it at once after `--apply` succeeded and the rewrite ran, from `support@aquilaxk.site`, with "deleted" in the subject. Its date is the completion time. It adds nothing: the mailbox already holds the request, and no list of erased accounts is kept on the host.
 
 ## Restore
 
@@ -94,14 +97,25 @@ IMG=$(docker inspect --format '{{.Config.Image}}' easyconvert-redis)
    docker run --rm --user 999:1000 --network none -v "$VOL":/data "$IMG" sh -c '
    redis-server --dir /data --appendonly no --save "" --protected-mode no > /tmp/loader.log 2>&1 &
    pid=$!
-   until redis-cli ping 2>/dev/null | grep -q PONG; do sleep 0.5; done
+   n=0
+   until redis-cli ping 2>/dev/null | grep -q PONG; do
+     n=$((n + 1))
+     kill -0 $pid 2>/dev/null || { echo "FAILED: the server exited; log follows"; cat /tmp/loader.log; exit 1; }
+     [ $n -lt 600 ] || { echo "FAILED: the server did not answer in 5 minutes; log follows"; cat /tmp/loader.log; kill $pid; exit 1; }
+     sleep 0.5
+   done
    echo "keys loaded: $(redis-cli dbsize)"
    redis-cli config set appendonly yes > /dev/null
-   until redis-cli info persistence | tr -d "\r" | grep -q "^aof_rewrite_in_progress:0$"; do sleep 0.5; done
+   n=0
+   until redis-cli info persistence | tr -d "\r" | grep -q "^aof_rewrite_in_progress:0$"; do
+     n=$((n + 1))
+     [ $n -lt 600 ] || { echo "FAILED: the append-only file was not written in 5 minutes"; exit 1; }
+     sleep 0.5
+   done
    redis-cli info persistence | tr -d "\r" | grep -E "^aof_last_bgrewrite_status"
    redis-cli shutdown nosave; wait $pid; rm -f /data/dump.rdb; ls /data /data/appendonlydir'
    ```
-   `aof_last_bgrewrite_status:ok` and an `appendonlydir` with a base and an incr file must be printed. If not, stop here: `/tmp/loader.log` was in the container that is gone, so run step 5 again without `--rm` and read it, or start again from step 3.
+   `aof_last_bgrewrite_status:ok` and an `appendonlydir` with a base and an incr file must be printed. If the command prints `FAILED`, the loader's log is printed with it (a dump from a newer Redis, or a damaged file): stop, try an older backup from step 1, and start again from step 3.
 6. **Start the stack.** This runs the same checks as a deploy (health, the smoke conversion, the public site).
    ```
    /opt/easyconvert/bin/deploy.sh release
@@ -112,11 +126,12 @@ IMG=$(docker inspect --format '{{.Config.Image}}' easyconvert-redis)
    C exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli DBSIZE'
    ```
    Sign in with a known account and use one API key. `curl -s http://127.0.0.1:8090/api/health` must say `healthy`.
-8. **Erase again what was erased since the backup.** The backup's time is in its name (UTC). For every deletion request in `support@aquilaxk.site` dated after it, run the erase command of [Deleting an account](../deploy-oci.md#deleting-an-account) with `--apply`, then the rewrite of step 2 above. Until this is done, a deleted account can sign in again, so do it before anything else.
-9. **Remove the set-aside copy** the same day:
+8. **Erase again what was erased after the backup.** The backup's time is in its name (UTC). For every account whose erasure finished after that time, that is every "deleted" notice in `support@aquilaxk.site` sent after it, and every request still open now (erased or not yet), whatever the date of its request, run the erase command of [Deleting an account](../deploy-oci.md#deleting-an-account) with `--apply`, then the rewrite of step 2 above. Until this is done, a deleted account can sign in again, so do it before anything else.
+9. **Remove the set-aside copy** the same day. It is the old data, accounts deleted since the backup included, so it must not outlive the day:
    ```
    docker run --rm --user 999:1000 --network none -v "$VOL":/data "$IMG" rm -rf /data/pre-restore
    ```
+   Check that it is gone: `docker run --rm --user 999:1000 --network none -v "$VOL":/data "$IMG" ls -A /data` must not list `pre-restore`.
 10. Write the incident note ([incidents.md](incidents.md#after-it-is-over)) with the backup used and the time of data lost.
 
 If Redis is damaged but you are unsure whether a restore is needed, steps 1 and 2 cost nothing; the stack is down only from step 2.

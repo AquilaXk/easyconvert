@@ -1,6 +1,6 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -20,6 +20,7 @@ const PASSWORD = 'f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b';
 const RDB = Buffer.concat([Buffer.from('REDIS0012'), Buffer.from('fa09726564697332', 'hex'), Buffer.alloc(300, 7)]);
 const POLICY_DELETION_DAYS = 10;
 const DAY_MS = 86_400_000;
+const hasFlock = spawnSync('flock', ['--version']).status === 0;
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const stamp = (date: Date): string => date.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
@@ -88,6 +89,7 @@ describe('redis-backup.sh against a stand-in for docker', { timeout: 30_000 }, (
     mkdirSync(state);
     writeFileSync(path.join(home, 'current', '.env'), `APP_URL=https://convert.example.test\nREDIS_PASSWORD=${PASSWORD}\n`);
     writeFileSync(log, '');
+    stub('flock', 'echo "flock $*" >> "$STUB_LOG"; [ -z "$STUB_LOCK_BUSY" ]');
     writeFileSync(rdbFile, RDB);
     writeFileSync(path.join(state, 'saves'), '41');
     writeFileSync(path.join(state, 'pending'), '0');
@@ -151,7 +153,6 @@ esac`
     expect(statSync(backups).mode & 0o777).toBe(0o700);
     expect(result.stdout.trim()).toBe(file);
     expect(leftovers()).toEqual([]);
-    expect(existsSync(path.join(backups, '.lock'))).toBe(false);
   });
 
   it('asks the container to save, waits until the save has finished, checks the file and only then copies it', () => {
@@ -255,7 +256,7 @@ esac`
     const result = run(['prune']);
 
     expect(result.status, result.stderr).toBe(0);
-    expect(calls()).toEqual([]);
+    expect(calls().filter((line) => line.startsWith('docker'))).toEqual([]);
     expect(backupNames()).toEqual([]);
     expect(existsSync(orphan)).toBe(false);
     for (const name of ['notes.txt', 'redis-latest.rdb', 'redis-20260101T000000Z.rdb.bak', 'dump.rdb']) expect(existsSync(path.join(backups, name)), name).toBe(true);
@@ -278,7 +279,6 @@ esac`
     expect(result.stderr).toMatch(message);
     expect(backupNames()).toEqual([]);
     expect(leftovers()).toEqual([]);
-    expect(existsSync(path.join(backups, '.lock'))).toBe(false);
   });
 
   it('refuses a stack that uses another Redis, and a missing release, before it sends anything to a container', () => {
@@ -286,7 +286,7 @@ esac`
     const external = run();
     expect(external.status).toBe(1);
     expect(external.stderr).toContain('another Redis');
-    expect(calls()).toEqual([]);
+    expect(calls().filter((line) => line.startsWith('docker'))).toEqual([]);
 
     rmSync(path.join(home, 'current', '.env'));
     const missing = run();
@@ -294,19 +294,48 @@ esac`
     expect(missing.stderr).toContain('no running release');
   });
 
-  it('does not run twice at once, and takes over the lock of a run that is gone', () => {
-    mkdirSync(path.join(backups, '.lock'));
-    writeFileSync(path.join(backups, '.lock', 'pid'), `${process.pid}\n`);
-    const busy = run();
-    expect(busy.status).toBe(1);
-    expect(busy.stderr).toContain('another run');
-    expect(existsSync(path.join(backups, '.lock'))).toBe(true);
+  it('does not run a second backup while another run holds the lock, and asks for the lock on a file, not a directory', () => {
+    const busy = run([], { STUB_LOCK_BUSY: '1' });
 
-    writeFileSync(path.join(backups, '.lock', 'pid'), '2147483646\n');
-    const stale = run();
-    expect(stale.status, stale.stderr).toBe(0);
+    expect(busy.status).toBe(1);
+    expect(busy.stderr).toContain('another run holds');
+    expect(calls().filter((line) => line.startsWith('docker'))).toEqual([]);
+    expect(calls().filter((line) => line.startsWith('flock'))).toEqual(['flock -n 9']);
+    expect(statSync(path.join(backups, '.lock')).isFile()).toBe(true);
+  });
+
+  // skip-ok: platform capability: flock(1) belongs to util-linux and is missing on macOS, where the real lock cannot be tested.
+  it.skipIf(!hasFlock)('is blocked by a live holder of the lock file and not by the file left after the holder ended', async () => {
+    unlinkSync(path.join(bin, 'flock'));
+    const lock = path.join(backups, '.lock');
+    const holder = spawn('flock', ['-n', lock, 'sleep', '30'], { stdio: 'ignore' });
+    try {
+      const deadline = Date.now() + 5_000;
+      while (spawnSync('flock', ['-n', lock, 'true']).status === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+      const busy = run();
+      expect(busy.status).toBe(1);
+      expect(busy.stderr).toContain('another run holds');
+      expect(backupNames()).toEqual([]);
+    } finally {
+      holder.kill('SIGKILL');
+      await new Promise((resolve) => holder.on('exit', resolve));
+    }
+    expect(existsSync(lock)).toBe(true);
+    const after = run();
+    expect(after.status, after.stderr).toBe(0);
     expect(backupNames()).toHaveLength(1);
-    expect(existsSync(path.join(backups, '.lock'))).toBe(false);
+  });
+
+  it('prunes the expired copies on a run after a killed one, because the lock file it left holds nothing', () => {
+    writeFileSync(path.join(backups, '.lock'), '');
+    const old = `redis-${stamp(new Date(Date.now() - 9 * DAY_MS))}.rdb`;
+    seed(old, 9);
+
+    const result = run();
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(path.join(backups, old))).toBe(false);
+    expect(backupNames()).toHaveLength(1);
   });
 
   it.each([
@@ -346,6 +375,49 @@ describe('the backup schedule and the retention promise', () => {
     expect(read('docs/legal/privacy.en.md')).toContain('within 10 days');
   });
 
+  it('puts the worst case of a copy that holds an erased account at about 9 days 6 hours, inside 10, in every place that says it', () => {
+    const worstDays = ERASURE_TARGET_DAYS + defaultOf('BACKUP_MAX_AGE_DAYS') + 6 / 24 + 2 / 1440;
+    expect(worstDays).toBeLessThan(POLICY_DELETION_DAYS);
+    expect(timer).toContain('OnCalendar=*-*-* 00,06,12,18:17:00 UTC');
+    expect(timer).toContain('RandomizedDelaySec=120');
+    for (const [name, text] of [['backup-and-restore.md', doc], ['deploy-oci.md', read('docs/deploy-oci.md')], ['policy entry 186', policy.slice(policy.indexOf('## 186. '))]] as const) {
+      expect(text, name).toContain('9 days 6 hours');
+      expect(text, name).not.toMatch(/gone 9 days after|expired by day 9|day to spare/);
+    }
+  });
+
+  it('re-erases by the time the erasure finished, not by the time of the request, in the restore, the deletion steps and the policy entry', () => {
+    const deployDoc = read('docs/deploy-oci.md');
+    const entry = policy.slice(policy.indexOf('## 186. '));
+    const restoreStep = doc.split('\n').find((line) => line.startsWith('8. ')) ?? '';
+    expect(restoreStep).toContain('erasure finished after');
+    expect(restoreStep).toContain('every request still open now');
+    expect(doc).toContain('Record when each erasure finished');
+    expect(doc).toContain('with "deleted" in the subject');
+    expect(deployDoc).toContain('erasure finished after the backup was taken, including a request that was still open then');
+    expect(deployDoc).toContain('"deleted" in the subject');
+    expect(entry).toContain('the time of the erasure decides, not the time of the request');
+    for (const [name, text] of [['backup-and-restore.md', doc], ['deploy-oci.md', deployDoc], ['policy entry 186', entry]] as const) {
+      expect(text, name).not.toMatch(/whose request is newer|every deletion request dated after|deletion request in `support@aquilaxk.site` dated after/);
+    }
+  });
+
+  it('installs the timer only after QA settled the open privacy question, and checks the set-aside copy is deleted the same day', () => {
+    expect(doc).toContain('install the timer only after QA has settled the privacy wording question recorded as "Open for QA"');
+    expect(policy.slice(policy.indexOf('## 186. '))).toContain('the timer is installed only after QA settles it');
+    const lines = doc.split('\n');
+    const remove = lines.findIndex((line) => line.startsWith('9. '));
+    expect(lines.slice(remove, remove + 8).join('\n')).toMatch(/Check that it is gone:.*must not list `pre-restore`/);
+  });
+
+  it('bounds both waits of the restore loader and prints its log when it fails', () => {
+    const step5 = doc.slice(doc.indexOf('5. **Turn it into'), doc.indexOf('6. **Start the stack'));
+    expect(step5.match(/\[ \$n -lt 600 \]/g)).toHaveLength(2);
+    expect(step5).toContain('kill -0 $pid');
+    expect(step5.match(/FAILED:/g)).toHaveLength(3);
+    expect(step5).toContain('cat /tmp/loader.log');
+  });
+
   it('keeps enough copies for the schedule over the whole age: one every 6 hours for 7 days is 28', () => {
     const perDay = 4;
     expect(timer).toContain('OnCalendar=*-*-* 00,06,12,18:17:00 UTC');
@@ -367,6 +439,10 @@ describe('the backup schedule and the retention promise', () => {
       ExecStart: '/opt/easyconvert/bin/redis-backup.sh',
       TimeoutStartSec: '15min',
       Nice: '10',
+      NoNewPrivileges: 'yes',
+      PrivateTmp: 'yes',
+      ProtectSystem: 'strict',
+      ReadWritePaths: '/var/lib/easysubway-data/easyconvert/redis-backups',
     });
     const installSteps = doc
       .split('\n')

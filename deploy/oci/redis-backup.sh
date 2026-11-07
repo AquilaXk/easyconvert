@@ -29,7 +29,6 @@ BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
 REDIS_RDB_PATH="${REDIS_RDB_PATH:-/data/dump.rdb}"
 RDB_MAGIC='REDIS'
 
-LOCK_DIR=""
 PART_FILE=""
 
 log() { printf '[redis-backup] %s\n' "$*" >&2; }
@@ -37,7 +36,6 @@ die() { log "ERROR: $*"; exit 1; }
 
 cleanup() {
   [ -z "$PART_FILE" ] || rm -f -- "$PART_FILE"
-  [ -z "$LOCK_DIR" ] || rm -rf -- "$LOCK_DIR"
 }
 
 is_count() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
@@ -160,7 +158,7 @@ snapshot() {
 }
 
 main() {
-  local action="${1:-backup}" holder
+  local action="${1:-backup}"
   case "$action" in backup | prune) ;; *) die "usage: redis-backup.sh [backup|prune]" ;; esac
   if ! is_count "$BACKUP_KEEP" || [ "$BACKUP_KEEP" -lt 1 ]; then die "BACKUP_KEEP must be a number of 1 or more"; fi
   if ! is_count "$BACKUP_MAX_AGE_DAYS" || [ "$BACKUP_MAX_AGE_DAYS" -lt 1 ]; then die "BACKUP_MAX_AGE_DAYS must be a number of 1 or more"; fi
@@ -172,15 +170,11 @@ main() {
   mkdir -p -- "$BACKUP_DIR"
   chmod 700 "$BACKUP_DIR"
 
-  # One run at a time. A lock whose process is gone (a killed run) is taken over.
+  # One run at a time, by flock(1) on a lock file: the kernel drops the lock when the process ends, however it ends, so a killed run or
+  # a reboot cannot leave a lock that blocks the later runs (and their pruning). The file itself stays and is empty.
   trap cleanup EXIT
-  if ! mkdir -- "$BACKUP_DIR/.lock" 2> /dev/null; then
-    holder="$(cat -- "$BACKUP_DIR/.lock/pid" 2> /dev/null || true)"
-    if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then die "another run (pid $holder) holds $BACKUP_DIR/.lock"; fi
-    log "taking over the lock of a run that is gone"
-  fi
-  LOCK_DIR="$BACKUP_DIR/.lock"
-  printf '%s\n' "$$" > "$LOCK_DIR/pid"
+  exec 9> "$BACKUP_DIR/.lock" || die "cannot open $BACKUP_DIR/.lock"
+  flock -n 9 || die "another run holds $BACKUP_DIR/.lock"
 
   # The age comes first and does not depend on the backup succeeding: a backup that cannot be taken must still not keep old copies.
   prune_by_age

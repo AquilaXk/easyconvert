@@ -14,3 +14,8 @@ ExecStart=/opt/easyconvert/bin/redis-backup.sh
 # A run is a BGSAVE of a few megabytes; it ends in seconds. The limit stops a hung docker from holding the lock for hours.
 TimeoutStartSec=15min
 Nice=10
+# The script writes only to the backup directory and talks to the Docker socket (a read-only mount allows connecting to it).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/easysubway-data/easyconvert/redis-backups
