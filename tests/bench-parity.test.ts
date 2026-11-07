@@ -409,7 +409,7 @@ describe('the known gaps', () => {
   });
 
   // The families whose quality rows may be tracked as known gaps, with the issue that holds each: a new family or issue is a decision to take here.
-  const QUALITY_GAP_ISSUE_BY_FAMILY: Readonly<Record<string, number>> = { image: 641, 'pdf-ops': 783, raw: 686 };
+  const QUALITY_GAP_ISSUE_BY_FAMILY: Readonly<Record<string, number>> = { image: 641, 'pdf-ops': 783 };
 
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
@@ -486,8 +486,8 @@ describe('the known gaps', () => {
     // The SVG to PDF and EPS to PNG rows reached parity in the nightly run of 2026-10-24 (735).
     expect(issuesOf('vector/', true)).toEqual([]);
     expect(issuesOf('cad/', true)).toEqual([]);
-    // The quality rows below the reference are tracked at a recorded value: the RAW files the product refuses or develops past the allowance (686).
-    expect(issuesOf('raw/', false)).toEqual([686]);
+    // The RAW quality gaps are gone: the JPEG of the Canon R5 CR3 read behind the reference because the 8-bit reduction of the development curve was off the nearest level (686, entry 176).
+    expect(issuesOf('raw/', false)).toEqual([]);
     for (const family of ['vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     // Every compression row reached parity: the last one, the xz decode of the most compressible Silesia file, in the nightly run of 2026-11-07 (685).
