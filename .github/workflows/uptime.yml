@@ -1,0 +1,39 @@
+name: Uptime
+
+# Reads the public readiness probe of production every 15 minutes, from outside the host, through the same proxy a visitor goes
+# through. A run fails when the probe does not answer 200 with `"status":"healthy"` after three tries a minute apart, and GitHub
+# mails the failure of a scheduled run to whoever last changed this schedule. The host is the service's only one, and nothing on
+# it watches the service (docs/policy-decisions.md, entry 173).
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read the readiness probe of production
+        env:
+          URL: https://convert.aquilaxk.site/api/health
+        run: |
+          for attempt in 1 2 3; do
+            body="$(curl --silent --show-error --max-time 20 --proto '=https' --write-out '\n%{http_code}' "$URL" || true)"
+            code="${body##*$'\n'}"
+            if [ "$code" = "200" ] && printf '%s' "$body" | grep -q '"status":"healthy"'; then
+              echo "healthy (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP ${code:-none}"
+            [ "$attempt" = 3 ] || sleep 60
+          done
+          echo "::error::production readiness probe failed three times: $URL"
+          exit 1
