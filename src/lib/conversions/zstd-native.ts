@@ -90,6 +90,11 @@ interface FrameSpan {
 
 export interface ZstdNativeOptions {
   signal?: AbortSignal;
+  /**
+   * The exact output size the caller will accept, as the pure decoder's `maxOutputBytes`: output past it is refused as an
+   * archive bomb, and it replaces the byte and ratio caps (the caller's bound already limits the expansion).
+   */
+  maxOutputBytes?: number;
 }
 
 export interface ZstdNativeCompressOptions extends ZstdNativeOptions {
@@ -219,23 +224,32 @@ function scanFrames(src: Buffer): FrameSpan[] {
   return frames;
 }
 
-/** How much one stream may unpack to, and which cap that is: the byte cap, or the ratio cap when it is the smaller. */
+/**
+ * How much one stream may unpack to, and which cap that is: the byte cap, or the ratio cap when it is the smaller, or the
+ * one bound a caller names. `sizeLimit` is the byte cap that is reported when the size (not the ratio) is what ran out.
+ */
 interface OutputBound {
   bytes: number;
   limitedByRatio: boolean;
+  sizeLimit: number;
 }
 
-function outputBoundFor(compressedBytes: number): OutputBound {
+function outputBoundFor(compressedBytes: number, callerBound: number | undefined): OutputBound {
+  if (callerBound !== undefined) return { bytes: callerBound, limitedByRatio: false, sizeLimit: callerBound };
   const byRatio = Math.max(ARCHIVE_RATIO_FLOOR_BYTES, Math.floor(compressedBytes * ZSTD_SECURITY_LIMITS.MAX_RATIO));
   const limitedByRatio = byRatio < ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  return { bytes: limitedByRatio ? byRatio : ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, limitedByRatio };
+  return {
+    bytes: limitedByRatio ? byRatio : ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    limitedByRatio,
+    sizeLimit: ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+  };
 }
 
 function bombError(bound: OutputBound): DecompressionLimitError {
   if (bound.limitedByRatio) {
     return new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
   }
-  return new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`);
+  return new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${bound.sizeLimit} bytes`);
 }
 
 function decodeFailure(error: unknown, bound: OutputBound): Error {
@@ -270,18 +284,19 @@ function decodeFrame(frame: Buffer, span: FrameSpan, maxOutputLength: number, bo
 /** Refuses a declared size that the caps would refuse anyway, before libzstd reserves memory for it. */
 function assertDeclaredSizeWithinBound(produced: number, declared: number, bound: OutputBound): void {
   const total = produced + declared;
-  if (total > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) throw bombError({ bytes: bound.bytes, limitedByRatio: false });
+  if (total > bound.sizeLimit) throw bombError({ ...bound, limitedByRatio: false });
   if (total > bound.bytes) throw bombError(bound);
 }
 
 /**
  * Decompresses a Zstandard stream of any number of frames (skippable frames are skipped) with the archive bomb guards of
- * the pure decoder: 500 MB in all, and at most 100 times the compressed size once past the 32 MiB floor. Every failure is a
+ * the pure decoder: 500 MB in all, and at most 100 times the compressed size once past the 32 MiB floor, or the one bound a
+ * caller names with `maxOutputBytes`. Every failure is a
  * ConversionFailedError; there is no second decoder behind it.
  */
 export async function decompressZstdNative(input: Buffer, options: ZstdNativeOptions = {}): Promise<Buffer> {
   const frames = scanFrames(input);
-  const bound = outputBoundFor(input.length);
+  const bound = outputBoundFor(input.length, options.maxOutputBytes);
   const outputs: Buffer[] = [];
   let produced = 0;
   for (const span of frames) {
