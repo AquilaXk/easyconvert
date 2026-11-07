@@ -6242,7 +6242,7 @@ Security
 - **Verified by**: `tests/ci-workflows.test.ts` (the job count, a runner, a timeout, read-only permissions, actions pinned or none); the probe command was run against production on 2026-11-07 (`{"status":"healthy"}`).
 - **Revisit when**: a status page or paging is wanted, the domain changes, or the health route changes its body.
 
-## 174. A picture goes on a PDF page from its own PNG data, without the PDF library's byte-array reader
+## 174. A picture goes on a PDF page as its own PNG data stream, without the PDF library's byte-array reader
 
 - **Status**: Implemented (issue #783, the real-world file `pix-google-pixel6pro.dng` to PDF, which the corpus run listed as "job server killed (SIGKILL, memory) beside two other jobs"), decided 2026-11-07 (QA request: make the file convert, or refuse it with a typed limit, and drop the known-failure row).
 - **Decision**:
