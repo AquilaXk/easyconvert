@@ -97,7 +97,7 @@ function firstChannel(picture: Extracted['pictures'][number]): Buffer {
 /** The PNG decoded by the image library, as 8-bit colour channels and the alpha channel (null for none); a 16-bit sample keeps its top byte. */
 async function decoded(png: Buffer): Promise<{ color: Buffer; alpha: Buffer | null; colors: number }> {
   const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-  const bytes = info.depth === 'ushort' ? 2 : 1;
+  const bytes = (data.length / (info.width * info.height * info.channels)) as 1 | 2;
   const channels = info.channels;
   const hasAlpha = channels === 2 || channels === 4;
   const colors = hasAlpha ? channels - 1 : channels;
