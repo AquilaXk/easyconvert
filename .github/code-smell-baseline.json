@@ -2042,7 +2042,7 @@
     "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "<module>",
-    "count": 17
+    "count": 16
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",
@@ -2077,18 +2077,6 @@
   {
     "file": "src/lib/queue/bullmq-engine.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "onCompleted",
-    "count": 1
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "onFailed",
-    "count": 1
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "publishEvent",
     "count": 1
   },
@@ -2097,12 +2085,6 @@
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "setupConnectionTracking",
     "count": 3
-  },
-  {
-    "file": "src/lib/queue/bullmq-engine.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "subscribeToJobTelemetry",
-    "count": 2
   },
   {
     "file": "src/lib/queue/bullmq-engine.ts",
@@ -2130,7 +2112,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2366
+    "maxValue": 2355
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",

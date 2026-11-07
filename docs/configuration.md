@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 141 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 143 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -44,10 +44,14 @@ Generate a secret with `openssl rand -hex 32`.
 | --- | --- | --- | --- | --- |
 | `APP_URL` | URL with the scheme `http` or `https` | `http://localhost:3000` (development only) | when `STORAGE_DRIVER` is `local` | web |
 | `APP_ORIGIN` | URL with the scheme `http` or `https` | none | no | web |
+| `METRICS_PORT` | integer, 0 to 65535 | 9464 in the web process, 9465 in the worker | no | web, worker |
+| `METRICS_HOST` | text | `127.0.0.1` | no | web, worker |
 | `NEXT_PUBLIC_APP_URL` | URL with the scheme `http` or `https` | none | no | web |
 
 - `APP_URL`: Public origin of this application, used to build the URLs of local-driver uploads. Required in production when STORAGE_DRIVER is `local`.
 - `APP_ORIGIN`: Canonical origin used for OAuth redirects and the same-origin check of the API; takes precedence over NEXT_PUBLIC_APP_URL.
+- `METRICS_PORT`: Port of the metrics listener (GET /metrics), which every process opens beside its own service. `0` turns the listener off. It is not the web application's port and must not be published or proxied (docs/slo.md).
+- `METRICS_HOST`: Address the metrics listener binds to. The default is the loopback address; the container stack sets `0.0.0.0` so that a scraper on the internal compose network can reach it.
 - `NEXT_PUBLIC_APP_URL`: Public origin exposed to the browser; used when APP_ORIGIN is not set.
 
 ### Client address trust and sandbox

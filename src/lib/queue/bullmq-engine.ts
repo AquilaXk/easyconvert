@@ -248,6 +248,11 @@ export interface DlqEntry<T = any> {
 
 let lastPriorityTime = 0;
 
+/** A waiting score is `priorityRank * PRIORITY_SCORE_BAND + time in the band`: each priority rank owns one band of scores. */
+const PRIORITY_SCORE_BAND = 1e12;
+/** Most priority ranks `oldestWaitingSince` reads; the tiers use a handful. */
+const MAX_WAITING_BANDS = 16;
+
 export function getMonotonicPriorityTimestamp(): number {
   const now = Date.now();
   if (now > lastPriorityTime) {
@@ -267,7 +272,7 @@ export function getMonotonicPriorityTimestamp(): number {
 export function calculateJobPriorityScore(priority?: number, timestamp?: number): number {
   const ts = typeof timestamp === 'number' ? timestamp : getMonotonicPriorityTimestamp();
   const priorityRank = typeof priority === 'number' && priority > 0 ? priority : 1000;
-  return priorityRank * 1e12 + (ts % 1e12);
+  return priorityRank * PRIORITY_SCORE_BAND + (ts % PRIORITY_SCORE_BAND);
 }
 
 export interface IQueueEngine<T = any, R = any> extends EventEmitter {
@@ -278,6 +283,11 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   getJobs(types: JobState[]): Promise<Job<T, R>[]>;
   getJobsByUser(userId: string, states?: JobState[], limit?: number, offset?: number): Promise<Job<T, R>[]>;
   getJobCounts(): Promise<JobCounts>;
+  /**
+   * When the job that has waited longest in this queue (delayed jobs do not count) began to wait, in milliseconds since the
+   * epoch, or undefined when none waits. A job that was retried waits from its retry. It feeds the age of the queue metric.
+   */
+  oldestWaitingSince?(): Promise<number | undefined>;
   clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]>;
   /** Removes job `id` and its entry in its user's index, as BullMQ's Queue.remove. False when the job is active or unknown. */
   remove(id: string): Promise<boolean>;
@@ -481,6 +491,15 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
       counts[job.state]++;
     }
     return counts;
+  }
+
+  async oldestWaitingSince(): Promise<number | undefined> {
+    let oldest: number | undefined;
+    for (const id of this.waitingIds) {
+      const job = this.jobs.get(id);
+      if (job?.state === 'waiting' && (oldest === undefined || job.timestamp < oldest)) oldest = job.timestamp;
+    }
+    return oldest;
   }
 
   // Internal worker queue interface
@@ -1746,6 +1765,35 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     return this.memoryFallback.getJobCounts();
   }
 
+  async oldestWaitingSince(): Promise<number | undefined> {
+    const redis = this.redisClient;
+    if (!redis) return this.memoryFallback.oldestWaitingSince();
+    await this.assertRedisConnected();
+    try {
+      const now = Date.now();
+      // The head of the whole set is the best-ranked job, not the longest waiting, so the head of each priority band is read.
+      // The time of a score is its time of day modulo the band, from which the wait follows without reading the job.
+      let longestWait: number | undefined;
+      let from = '-inf';
+      for (let band = 0; band < MAX_WAITING_BANDS; band++) {
+        let head: string[] = [];
+        try {
+          head = await redis.zrangebyscore(this.waitingKey, from, '+inf', 'WITHSCORES', 'LIMIT', 0, 1);
+        } catch (err) {
+          rethrowUnlessWrongType(err);
+        }
+        if (head.length < 2) break;
+        const score = Number(head[1]);
+        const wait = (((now % PRIORITY_SCORE_BAND) - (score % PRIORITY_SCORE_BAND)) + PRIORITY_SCORE_BAND) % PRIORITY_SCORE_BAND;
+        longestWait = Math.max(longestWait ?? 0, wait);
+        from = String((Math.floor(score / PRIORITY_SCORE_BAND) + 1) * PRIORITY_SCORE_BAND);
+      }
+      return longestWait === undefined ? undefined : now - longestWait;
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
+    }
+  }
+
   async getJobsByUser(
     userId: string,
     states?: JobState[],
@@ -2304,63 +2352,4 @@ export function createQueueEngine<T = any, R = any>(
   return new Queue<T, R>(name);
 }
 
-export interface JobTelemetryEvent {
-  event: 'progress' | 'completed' | 'failed' | 'cancelled' | 'log';
-  data: any;
-}
-
-/** Telemetry events after which a job emits nothing more. */
-export const TERMINAL_TELEMETRY_EVENTS: ReadonlySet<JobTelemetryEvent['event']> = new Set<JobTelemetryEvent['event']>([
-  'completed',
-  'failed',
-  'cancelled',
-]);
-
-/**
- * Subscribes to real-time job events for Server-Sent Events (SSE) telemetry.
- * Returns an unsubscription function.
- */
-export function subscribeToJobTelemetry(
-  queue: IQueueEngine,
-  jobId: string,
-  onEvent: (event: JobTelemetryEvent) => void
-): () => void {
-  const onProgress = (job: Job, progress: number) => {
-    if (job.id === jobId) {
-      onEvent({ event: 'progress', data: { jobId, progress, state: job.state } });
-    }
-  };
-  const onCompleted = (job: Job, result: any) => {
-    if (job.id === jobId) {
-      onEvent({ event: 'completed', data: { jobId, progress: 100, state: 'completed', result } });
-    }
-  };
-  const onFailed = (job: Job, err: any) => {
-    if (job.id === jobId) {
-      onEvent({ event: 'failed', data: { jobId, state: 'failed', error: job.failedReason } });
-    }
-  };
-  const onCancelled = (job: Job) => {
-    if (job.id === jobId) {
-      onEvent({ event: 'cancelled', data: { jobId, state: 'cancelled', error: job.failedReason } });
-    }
-  };
-
-  const onTelemetry = (e: JobTelemetryEvent) => {
-    onEvent(e);
-  };
-
-  queue.on('progress', onProgress);
-  queue.on('completed', onCompleted);
-  queue.on('failed', onFailed);
-  queue.on('cancelled', onCancelled);
-  (queue as any).on?.(`telemetry:${jobId}`, onTelemetry);
-
-  return () => {
-    queue.off('progress', onProgress);
-    queue.off('completed', onCompleted);
-    queue.off('failed', onFailed);
-    queue.off('cancelled', onCancelled);
-    (queue as any).off?.(`telemetry:${jobId}`, onTelemetry);
-  };
-}
+export { subscribeToJobTelemetry, TERMINAL_TELEMETRY_EVENTS, type JobTelemetryEvent } from './job-telemetry';
