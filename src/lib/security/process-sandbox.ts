@@ -655,10 +655,15 @@ function collectFramed(chunks: Buffer[], headroom: number, tailroom: number): Bu
 function openStdoutSpool(): number {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-spool-'));
   const file = path.join(dir, 'stdout');
+  let fd: number | undefined;
   try {
-    return fs.openSync(file, 'wx+', 0o600);
-  } finally {
+    fd = fs.openSync(file, 'wx+', 0o600);
     fs.rmSync(dir, { recursive: true, force: true });
+    return fd;
+  } catch (error) {
+    if (fd !== undefined) fs.closeSync(fd);
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
 }
 
@@ -765,8 +770,9 @@ export async function executeSandboxedBinary(
   const sanitizedEnv = getSanitizedEnvironment(customEnv, networkIsolated);
   const startTime = Date.now();
   // The bound on a spooled output is RLIMIT_FSIZE, which prlimit sets; without it the output goes through a pipe, bounded as it flows.
-  const spooled = options.spoolStdout === true && process.platform === 'linux' && getPrlimitCapability().available;
   const spoolLimit = Math.min(rlimits?.fsizeBytes ?? maxFileSize ?? maxBuffer, maxBuffer);
+  // A spool without a finite bound would run with no RLIMIT_FSIZE at all, so such a run keeps the pipe.
+  const spooled = options.spoolStdout === true && Number.isFinite(spoolLimit) && process.platform === 'linux' && getPrlimitCapability().available;
 
   return new Promise((resolve, reject) => {
     let stdoutChunks: Buffer[] = [];
