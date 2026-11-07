@@ -23,6 +23,8 @@ export interface SandboxedRlimitsOptions {
    */
   nproc?: number;
   cpuSeconds?: number;
+  /** Largest core file the run may write; 0 writes none, which a run ended by a signal that dumps core (SIGXFSZ) would otherwise leave behind. */
+  coreBytes?: number;
 }
 
 export interface SandboxedExecutionOptions {
@@ -44,6 +46,17 @@ export interface SandboxedExecutionOptions {
    */
   stdoutHeadroomBytes?: number;
   stdoutTailroomBytes?: number;
+  /**
+   * Collect stdout through an anonymous file instead of a pipe. A program that writes megabytes in 8 KiB blocks to a pipe
+   * waits on the 64 KiB reads of this process and on every pause of its event loop, and the chunks are copied once more
+   * into the buffer that is returned; into a file it never waits, and the output is read once into a buffer of its exact
+   * size. The file is created in a private directory and unlinked before the program starts, so nothing stays on disk. Its
+   * size is bounded by RLIMIT_FSIZE at one byte above `maxBuffer`, and a file past `maxBuffer` is reported as
+   * SandboxedBufferLimitError, as a pipe past it is, whether the program died of SIGXFSZ, exited with a status of its own
+   * or ignored the failed write. Core dumps are switched off for the run, which SIGXFSZ would otherwise leave behind.
+   * Without prlimit on Linux that bound is missing, and the output goes through a pipe as before; the result is the same.
+   */
+  spoolStdout?: boolean;
 }
 
 export interface SandboxedExecutionResult {
@@ -331,6 +344,9 @@ export function buildPrlimitArgs(
   if (rlimits.cpuSeconds && Number.isFinite(rlimits.cpuSeconds) && rlimits.cpuSeconds > 0) {
     args.push(`--cpu=${Math.round(rlimits.cpuSeconds)}`);
   }
+  if (rlimits.coreBytes !== undefined && Number.isInteger(rlimits.coreBytes) && rlimits.coreBytes >= 0) {
+    args.push(`--core=${rlimits.coreBytes}`);
+  }
   return args;
 }
 
@@ -545,7 +561,8 @@ export function resolveSandboxedCommand(
     effectiveRlimits.asBytes !== undefined ||
     effectiveRlimits.fsizeBytes !== undefined ||
     effectiveRlimits.nproc !== undefined ||
-    effectiveRlimits.cpuSeconds !== undefined;
+    effectiveRlimits.cpuSeconds !== undefined ||
+    effectiveRlimits.coreBytes !== undefined;
 
   if (process.platform === 'linux' && capPrlimit.available && hasRlimits) {
     const prlimitArgs = buildPrlimitArgs(capPrlimit, effectiveRlimits);
@@ -631,6 +648,89 @@ function collectFramed(chunks: Buffer[], headroom: number, tailroom: number): Bu
 }
 
 /**
+ * An anonymous file for a run's stdout: created exclusively in a private directory, then unlinked at once, so that nothing is
+ * left on disk whatever happens to this process. The child gets the descriptor as its stdout; this process keeps its own to read
+ * the output back by offset (the two share one open file, so the position is not used).
+ */
+function openStdoutSpool(): number {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-spool-'));
+  const file = path.join(dir, 'stdout');
+  try {
+    return fs.openSync(file, 'wx+', 0o600);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The anonymous file of `openStdoutSpool`, or null when it cannot be made: the output then goes through a pipe, which gives the same result. */
+function tryOpenStdoutSpool(): number | null {
+  try {
+    return openStdoutSpool();
+  } catch {
+    return null;
+  }
+}
+
+/** What a finished run left in its spool: the output in one buffer of `headroom + size + tailroom` bytes, the file past its bound, or the failure to read it. */
+type SpoolRead = { frame: Buffer } | { boundHit: true } | { error: unknown };
+
+/**
+ * Reads the spool by offset, the output starting after the headroom. The file may hold one byte more than the output may, and that byte is
+ * how a program past its bound shows, whether it died of SIGXFSZ, caught the signal and exited with a status of its own, as 7-Zip does, or
+ * ignored the failed write and exited 0 with a cut file: such a file is not read.
+ */
+function readStdoutSpool(fd: number, limit: number, headroom: number, tailroom: number): SpoolRead {
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size > limit) return { boundHit: true };
+    const frame = Buffer.allocUnsafe(headroom + size + tailroom);
+    let read = 0;
+    while (read < size) {
+      const count = fs.readSync(fd, frame, headroom + read, size - read, read);
+      if (count === 0) throw new Error('The spooled output ended before its recorded size.');
+      read += count;
+    }
+    return { frame };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/** The output of a run: from its spool, or from the chunks of its pipe, with the rooms around it when they were asked for. */
+function outputOf(spooled: Buffer | undefined, chunks: Buffer[], headroom: number, tailroom: number): { stdout: Buffer; frame?: Buffer } {
+  const framed = headroom > 0 || tailroom > 0;
+  if (spooled !== undefined) return framed ? { stdout: spooled.subarray(headroom, spooled.length - tailroom), frame: spooled } : { stdout: spooled };
+  if (!framed) return { stdout: Buffer.concat(chunks) };
+  const frame = collectFramed(chunks, headroom, tailroom);
+  return { stdout: frame.subarray(headroom, frame.length - tailroom), frame };
+}
+
+/** Why a run that did not exit 0 failed: the memory limit its signal shows, the file size limit, or the process error with what it printed. */
+function failedRunError(run: { code: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: Buffer }, options: SandboxedExecutionOptions, maxBuffer: number): Error {
+  const { code, signal, stdout, stderr } = run;
+  const effectiveMemLimit =
+    options.memoryLimitMb ||
+    (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / (1024 * 1024)) : undefined);
+  if ((signal === 'SIGKILL' || signal === 'SIGSEGV') && effectiveMemLimit && effectiveMemLimit > 0) {
+    return new SandboxedMemoryLimitError(effectiveMemLimit, signal);
+  }
+  if (signal === 'SIGXFSZ') {
+    const limit = options.maxFileSize || options.rlimits?.fsizeBytes || maxBuffer;
+    return new SandboxedBufferLimitError(limit, 'file-size');
+  }
+  const stderrText = stderr.toString('utf-8').trim();
+  let errorSummary: string;
+  if (signal !== null) {
+    errorSummary = stderrText
+      ? `Process terminated by signal ${signal}: ${stderrText}`
+      : `Process terminated by signal ${signal}`;
+  } else {
+    errorSummary = stderrText || `Process exited with code ${code}`;
+  }
+  return new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal, stdout.toString('utf-8'));
+}
+
+/**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
  * - Strict stdio buffer threshold (default 50MB)
@@ -664,6 +764,9 @@ export async function executeSandboxedBinary(
   const sandboxEnv = detectSandboxEnvironment();
   const sanitizedEnv = getSanitizedEnvironment(customEnv, networkIsolated);
   const startTime = Date.now();
+  // The bound on a spooled output is RLIMIT_FSIZE, which prlimit sets; without it the output goes through a pipe, bounded as it flows.
+  const spooled = options.spoolStdout === true && process.platform === 'linux' && getPrlimitCapability().available;
+  const spoolLimit = Math.min(rlimits?.fsizeBytes ?? maxFileSize ?? maxBuffer, maxBuffer);
 
   return new Promise((resolve, reject) => {
     let stdoutChunks: Buffer[] = [];
@@ -674,6 +777,7 @@ export async function executeSandboxedBinary(
     let isSettled = false;
     let activeChild: ReturnType<typeof spawn> | null = null;
     let abortListener: (() => void) | null = null;
+    let spoolFd: number | null = null;
 
     if (options.signal?.aborted) {
       reject(options.signal.reason || new Error('The operation was aborted'));
@@ -703,6 +807,12 @@ export async function executeSandboxedBinary(
           activeChild.stdin.destroy();
         } catch {}
       }
+      if (spoolFd !== null) {
+        try {
+          fs.closeSync(spoolFd);
+        } catch {}
+        spoolFd = null;
+      }
     };
 
     const settle = (action: () => void) => {
@@ -719,18 +829,28 @@ export async function executeSandboxedBinary(
       strictIsolation: options.strictIsolation,
       memoryLimitMb,
       maxFileSize,
-      rlimits,
+      rlimits: spooled
+        ? { ...rlimits, fsizeBytes: spoolLimit + 1, coreBytes: 0 }
+        : rlimits,
     });
+
+    if (spooled) spoolFd = tryOpenStdoutSpool();
 
     // Spawn directly without shell to prevent shell injection vulnerabilities.
     // Use detached: true so child becomes process group leader, preventing orphan leaks.
-    const proc = spawn(resolvedCmd.binary, resolvedCmd.args, {
-      cwd,
-      env: sanitizedEnv,
-      stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-      shell: false,
-      detached: true,
-    });
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(resolvedCmd.binary, resolvedCmd.args, {
+        cwd,
+        env: sanitizedEnv,
+        stdio: [stdin ? 'pipe' : 'ignore', spoolFd ?? 'pipe', 'pipe'],
+        shell: false,
+        detached: true,
+      });
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
     activeChild = proc;
 
     if (options.signal) {
@@ -857,38 +977,26 @@ export async function executeSandboxedBinary(
     });
 
     proc.on('close', (code, signal) => {
+      // Read before settling: settling closes the descriptor.
+      const headroom = options.stdoutHeadroomBytes ?? 0;
+      const tailroom = options.stdoutTailroomBytes ?? 0;
+      const spool = spoolFd !== null && !isSettled ? readStdoutSpool(spoolFd, spoolLimit, headroom, tailroom) : undefined;
       settle(() => {
         const durationMs = Date.now() - startTime;
-        const headroom = options.stdoutHeadroomBytes ?? 0;
-        const tailroom = options.stdoutTailroomBytes ?? 0;
-        const framed = headroom > 0 || tailroom > 0;
-        const frame = framed ? collectFramed(stdoutChunks, headroom, tailroom) : undefined;
-        const stdout = frame ? frame.subarray(headroom, frame.length - tailroom) : Buffer.concat(stdoutChunks);
         const stderr = Buffer.concat(stderrChunks);
 
+        if (spool !== undefined && 'boundHit' in spool) {
+          reject(new SandboxedBufferLimitError(spoolLimit));
+          return;
+        }
+        if (spool !== undefined && 'error' in spool) {
+          reject(spool.error);
+          return;
+        }
+        const { stdout, frame } = outputOf(spool?.frame, stdoutChunks, headroom, tailroom);
+
         if (signal !== null || code === null || code !== 0) {
-          const effectiveMemLimit =
-            memoryLimitMb ||
-            (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / (1024 * 1024)) : undefined);
-          if ((signal === 'SIGKILL' || signal === 'SIGSEGV') && effectiveMemLimit && effectiveMemLimit > 0) {
-            reject(new SandboxedMemoryLimitError(effectiveMemLimit, signal));
-            return;
-          }
-          if (signal === 'SIGXFSZ') {
-            const limit = options.maxFileSize || options.rlimits?.fsizeBytes || maxBuffer;
-            reject(new SandboxedBufferLimitError(limit, 'file-size'));
-            return;
-          }
-          const stderrText = stderr.toString('utf-8').trim();
-          let errorSummary: string;
-          if (signal !== null) {
-            errorSummary = stderrText
-              ? `Process terminated by signal ${signal}: ${stderrText}`
-              : `Process terminated by signal ${signal}`;
-          } else {
-            errorSummary = stderrText || `Process exited with code ${code}`;
-          }
-          reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal, stdout.toString('utf-8')));
+          reject(failedRunError({ code, signal, stdout, stderr }, options, maxBuffer));
           return;
         }
 
