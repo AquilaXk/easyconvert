@@ -5,6 +5,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
 import { readPersistedOutput } from './persisted-output';
+import { stagedOutputPath } from '../lib/storage/temp-file';
 import { getMimeType } from './worker-output';
 import {
   executeSandboxedBinary,
@@ -662,16 +663,9 @@ export class LibreOfficePoolManager {
     input: any,
     options: WorkerEngineOptions
   ): WorkerConversionResult {
-    let persistedPath = input?.outputPath || (options as any)?.outputPath;
-    if (!persistedPath) {
-      const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
-      if (!fs.existsSync(vfsDir)) {
-        try {
-          fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
-        } catch {}
-      }
-      persistedPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
-    }
+    // Without a path from the caller the output goes where every other engine stages one: the staging folder, whose sweep
+    // removes what no consumer took. A folder of its own under the system temp directory was never swept.
+    const persistedPath = input?.outputPath || (options as any)?.outputPath || stagedOutputPath(targetFormat);
     fs.copyFileSync(tempOutputPath, persistedPath);
 
     const stat = fs.statSync(persistedPath);
