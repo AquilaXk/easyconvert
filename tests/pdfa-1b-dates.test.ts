@@ -265,6 +265,31 @@ describe('PDF/A-1b /Info and XMP date normalisation (rule 6.7.3-1)', () => {
     expect(inspectedMissingCreate.xmpModifyDate).toBe('2026-04-19T09:15:30Z');
   });
 
+  it.each([
+    ['XMP seconds with a fraction', { infoCreationDate: "D:20240102030405+09'00'", xmpCreateDate: '2024-01-02T03:04:05.678+09:00' }],
+    ['XMP date with no seconds', { infoCreationDate: 'D:20240102030405Z', xmpCreateDate: '2024-01-02T03:04Z' }],
+    ['XMP date with no time zone', { infoCreationDate: 'D:20240102030405Z', xmpCreateDate: '2024-01-02T03:04:05' }],
+    ['/Info date cut after the year', { infoCreationDate: 'D:2024', xmpCreateDate: '2024-01-02T03:04:05Z' }],
+    ['/Info time zone without apostrophes', { infoCreationDate: 'D:20240102030405+0900', xmpCreateDate: '2024-01-02T03:04:05+09:00' }],
+    ['/Info and XMP at the same instant in two zones', { infoCreationDate: "D:20240102030405+09'00'", xmpCreateDate: '2024-01-01T18:04:05Z' }],
+    ['/Info with a ModDate that differs from the XMP ModifyDate', { infoCreationDate: "D:20240102030405-05'00'", infoModDate: "D:20240103030405-05'00'", xmpCreateDate: '2020-01-01T00:00:00Z' }],
+    ['/Info with a ModDate and no CreationDate', { infoModDate: 'D:20240103030405Z', xmpCreateDate: '2020-01-01T00:00:00Z' }],
+  ])('makes /Info and XMP dates equal for %s', async (_name, spec) => {
+    const raw = await buildSyntheticLibreOfficePdfA1b({
+      ...spec,
+      xmpModifyDate: '2020-02-02T00:00:00Z',
+      xmpMetadataDate: '2020-02-02T00:00:00Z',
+    });
+    const inspected = await inspectPdfDatesAndMetadata(await normalisePdfADates(raw));
+    // veraPDF 6.7.3-1 and 6.7.3-8: a date present in /Info equals its XMP property, the instant and not the text.
+    if (spec.infoCreationDate !== undefined) {
+      expect(decodeTestXmpDate(inspected.xmpCreateDate!)).toEqual(decodeTestPdfDate(inspected.infoCreationDate!));
+    }
+    if (inspected.infoModDate !== undefined) {
+      expect(decodeTestXmpDate(inspected.xmpModifyDate!)).toEqual(decodeTestPdfDate(inspected.infoModDate));
+    }
+  });
+
   it('replaces malformed or hostile /Info /CreationDate with the fallback UTC timestamp without throwing', async () => {
     const fallbackNow = new Date('2026-11-05T06:07:08Z');
     for (const hostileDate of ['not-a-pdf-date', 'D:00000000000000Z', 'D:20260230120000Z', `D:${'9'.repeat(400)}`]) {

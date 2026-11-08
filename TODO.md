@@ -6,8 +6,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Make Samsung S23 DNG convert to JPG and PNG; it fails with `RawDecodeError: data corrupted`.
 - Check the CI build of the RAW library; Nikon Z f NEF and Sigma SD15 X3F are still refused.
 - Stop Pixel 6 Pro DNG to PDF running out of memory when two other jobs run.
-- Make empty or wrong-format output a typed error: html to txt/md, xlsx to csv/tsv, xlsm to csv, dotx to txt.
-- Fix PDF/A-1b veraPDF rule 6.7.3-1 by syncing XMP create and modify dates in `pdfa.ts`.
 - Review the PDF-to-text refusals (77 `PdfTextUnmappedError`, 25 `CorruptStreamError`) and convert the wrong ones.
 - Read composite fonts without a ToUnicode map through a `cmap` reader; 2.2% of glyphs are still missing.
 - Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).

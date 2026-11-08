@@ -744,13 +744,15 @@ describe('empty inputs in the manifest', () => {
     expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
   });
 
-  it('marks exactly the 50 corpus files that hold no content, each with the reason read from the file', () => {
+  it('marks exactly the 52 corpus files that hold no content, each with the reason read from the file', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
     const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
     expect(marked).toEqual([
       'govdocs1-000058.html',
       'govdocs1-001421.html',
+      'govdocs1-001422.html',
       'govdocs1-001721.html',
+      'govdocs1-001781.html',
       'govdocs1-001782.html',
       'govdocs1-002028.html',
       'office-document-51921-word-crash067.docx',
