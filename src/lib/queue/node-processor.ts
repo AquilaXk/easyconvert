@@ -16,7 +16,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/e
 import { secureShredBuffer } from '../security/memory-shredder';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { registerStoredResult, releaseResultHold, takeInputHold } from '../storage/retention-service';
-import { processGraphNodeJob } from './graph/node-executor';
+import { processGraphNodeJobIfAlive } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
 import { deadlineBoundEngine } from './job-deadline';
@@ -134,7 +134,7 @@ export async function processNodeJob(
 ): Promise<ConversionJobResult> {
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
-    return processGraphNodeJob(job, baseEngine, rootStorage);
+    return processGraphNodeJobIfAlive(job, baseEngine, rootStorage);
   }
   // Every conversion of the job runs under the job's deadline.
   const engine = deadlineBoundEngine(baseEngine, job);

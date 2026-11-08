@@ -29,8 +29,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
 - Pass the declared `--infilter` for the legacy binary Office formats (`doc`, `xls`, `ppt`, their templates, `wps`, `pdb`): the suite has one filter per generation behind each extension, so a fixed name fails on older files.
 - Make the remaining ffprobe runs asynchronous: the audio channel, sample rate and stream count probes of the argument builders (`probeScalar`), the HDR and empty-output probes, and the run that explains a failed probe; they run in the sandbox with limits but hold the event loop.
-- Make the PDF guard walk `/Parent` resources, count draws, and cover encrypted PDFs.
-- Fix graph start recovery so queued node jobs are cancelled even when the cancel fails.
 
 ## Tests and CI
 - Stabilise the `lzma-decoder` timing and `ocr-pdf-concurrency` guards; both fail every nightly.
