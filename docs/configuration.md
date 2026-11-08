@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 143 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 148 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -82,11 +82,21 @@ Generate a secret with `openssl rand -hex 32`.
 | `JWT_SECRET_PREVIOUS` | secret, at least 32 bytes of UTF-8 text in production (the text is measured, never decoded); secret, never logged | none | no | web |
 | `GOOGLE_CLIENT_ID` | text | none | no | web |
 | `GOOGLE_CLIENT_SECRET` | secret text; secret, never logged | none | no | web |
+| `SMTP_HOST` | text | none | no | web |
+| `SMTP_PORT` | integer, 1 to 65535 | `587` | no | web |
+| `SMTP_USER` | secret text; secret, never logged | none | no | web |
+| `SMTP_PASSWORD` | secret text; secret, never logged | none | no | web |
+| `MAIL_FROM` | text | none | no | web |
 
 - `JWT_SECRET`: Signs session tokens. At least 32 bytes of UTF-8 text in production; also a legacy decryption fallback key of the credential vault and of API key secret encryption.
 - `JWT_SECRET_PREVIOUS`: The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET. Used exactly as set, like JWT_SECRET, without trimming.
 - `GOOGLE_CLIENT_ID`: OAuth client id for Google sign-in. Without it, development uses a local mock sign-in and production refuses to sign in.
 - `GOOGLE_CLIENT_SECRET`: OAuth client secret for Google sign-in; required together with GOOGLE_CLIENT_ID.
+- `SMTP_HOST`: SMTP server that sends the password reset and email verification mails (STARTTLS is required, a mail is never sent in the clear). Without SMTP_HOST, SMTP_USER and SMTP_PASSWORD, and a public origin (APP_ORIGIN, NEXT_PUBLIC_APP_URL or APP_URL), both features are off: the sign-in page shows no forgot-password link and their routes answer 404.
+- `SMTP_PORT`: Port of SMTP_HOST. 587 (STARTTLS) is the default; 465 connects over TLS from the first byte.
+- `SMTP_USER`: Account that signs in to SMTP_HOST: the full account address (for a mailbox provider, not a short name).
+- `SMTP_PASSWORD`: Password of SMTP_USER: an application password, not the sign-in password of the account.
+- `MAIL_FROM`: Sender of the mails: an address, or `Name <address>`. Defaults to SMTP_USER. A mailbox provider accepts only the account or one of its aliases.
 
 ### Keys and secrets
 

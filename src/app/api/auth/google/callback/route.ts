@@ -64,6 +64,7 @@ export async function GET(req: NextRequest) {
         avatarUrl: googleProfile.picture,
         tier: 'free',
         provider: 'google',
+        emailVerified: true,
         acceptedTermsVersion: TERMS_VERSION,
       });
     } else if (userRecord.provider === 'google') {

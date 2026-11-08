@@ -22,7 +22,7 @@ export const URL_IMPORT_ERROR_CODES = [
 
 export type UrlImportErrorCode = (typeof URL_IMPORT_ERROR_CODES)[number];
 
-/** Why `/api/auth/login` or `/api/auth/register` refused. */
+/** Why `/api/auth/login`, `/api/auth/register`, or a route of password reset or email verification refused. */
 export const AUTH_ERROR_CODES = [
   'invalid_json',
   'missing_fields',
@@ -35,6 +35,9 @@ export const AUTH_ERROR_CODES = [
   'terms_not_accepted',
   'terms_outdated',
   'account_exists',
+  'mail_unavailable',
+  'mail_rate_limited',
+  'invalid_token',
 ] as const;
 
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
