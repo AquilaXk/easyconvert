@@ -10,7 +10,7 @@ One host, one Compose project named `easyconvert`, started only by the deploy wo
 | --- | --- | --- | --- |
 | `web` | `ghcr.io/aquilaxk/easyconvert-web@sha256:...` | `127.0.0.1:8090` | Next.js server, API, synchronous conversions up to 100 MiB |
 | `worker` | `ghcr.io/aquilaxk/easyconvert-worker@sha256:...` | none | Queue worker for every queue, 4 jobs at a time |
-| `redis` | `redis:7.4-alpine@sha256:...` | none | Queue, users, API keys, quotas. Password, internal network |
+| `redis` | `redis:7.4-alpine@sha256:...` | none | Queue, users, API keys, quotas. Password (in a 0600 file on the container's tmpfs, not in argv), internal network |
 
 The host nginx terminates TLS for `convert.aquilaxk.site` and proxies to `127.0.0.1:8090`. The CDN in front of the origin is the only client the firewall lets reach port 443.
 
@@ -71,6 +71,7 @@ Do these once per host, in this order. No step needs a secret value written in t
    | `REDIS_PASSWORD` | Hex password of the stack's Redis |
    | `STORAGE_SIGNING_SECRET`, `JOB_SECRET_KEK`, `JWT_SECRET`, `KEY_HASH_PEPPER`, `WEBHOOK_SECRET_KEK` | Required secrets, 32 bytes or more each (`docs/configuration.md`) |
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Only if sign-in with Google is enabled |
+| `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_PORT`, `MAIL_FROM` | Only if password reset and email verification are enabled: the host, the full account address, an application password, the port (587 by default) and the sender (the account by default) |
    | `EASYCONVERT_BUDGET_CPUS`, `EASYCONVERT_BUDGET_MEMORY_GB` | Optional budget, defaults 3.5 and 20 |
    | `STORAGE_DRIVER`, `S3_*`, `OCI_*`, `REDIS_URL` | Left out at launch. See "Scaling later" |
 

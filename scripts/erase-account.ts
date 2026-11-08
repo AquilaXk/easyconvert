@@ -1,3 +1,4 @@
+import { deleteAuthTokensOfUser } from '../src/lib/auth/auth-email-token-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
@@ -123,6 +124,7 @@ export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountEra
   redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
   if (client && plan.taggedKeys.length > 0) await client.del(...plan.taggedKeys);
+  await deleteAuthTokensOfUser(userId);
   if (runningJobIds.length === 0 && plan.jobs.length < MAX_JOBS_PER_RUN) await redisUserStore.deleteUser(userId);
   return { runningJobIds };
 }

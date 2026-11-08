@@ -10,6 +10,7 @@ import { ApiKeysPanel } from '@/components/dashboard/ApiKeysPanel';
 import { JobsHistoryPanel } from '@/components/dashboard/JobsHistoryPanel';
 import { WebhooksPanel } from '@/components/dashboard/WebhooksPanel';
 import { AccountQuotaPanel } from '@/components/dashboard/AccountQuotaPanel';
+import { EmailVerificationNotice } from '@/components/dashboard/EmailVerificationNotice';
 import { useDashboardController } from '@/components/dashboard/useDashboardController';
 
 export default function DashboardPageView() {
@@ -68,6 +69,8 @@ export default function DashboardPageView() {
                 void handleLogout();
               }}
             />
+
+            <EmailVerificationNotice />
 
             {actionError && (
               <div className="mb-6 pl-4 pr-2 py-2.5 rounded-md bg-danger-soft border border-danger-edge/30 text-danger text-sm flex items-center justify-between gap-3">

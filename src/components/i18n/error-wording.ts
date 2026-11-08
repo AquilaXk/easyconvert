@@ -165,7 +165,7 @@ export function useUrlImportErrorWording(): (payload: unknown, status: number) =
   );
 }
 
-/** A refusal of `/api/auth/login` or `/api/auth/register`, by its `code`; never by its status alone. */
+/** A refusal of a route of `/api/auth` (sign-in, sign-up, password reset, email verification), by its `code`; never by its status alone. */
 export function useAuthErrorWording(): (payload: unknown, status: number) => string {
   const t = useTranslations('errors.auth');
   const problemWording = useProblemWording({ byStatus: false, untypedRefusal: 'action' });
@@ -174,7 +174,7 @@ export function useAuthErrorWording(): (payload: unknown, status: number) => str
       const answer = answerOf(payload);
       const code = answer.code;
       if (!isCodeOf(AUTH_ERROR_CODES, code)) return problemWording(answer, status, t('failed'));
-      if (code === 'login_locked') return t(code, { seconds: numberField(answer, 'retryAfterSeconds') ?? 0 });
+      if (code === 'login_locked' || code === 'mail_rate_limited') return t(code, { seconds: numberField(answer, 'retryAfterSeconds') ?? 0 });
       return t(code);
     },
     [t, problemWording]

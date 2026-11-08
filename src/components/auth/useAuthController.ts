@@ -105,7 +105,7 @@ export function useAuthController() {
     try {
       const endpoint = activeTab === 'register' ? '/api/auth/register' : '/api/auth/login';
       const acceptance = acceptedTerms ? { acceptedTermsVersion: TERMS_VERSION } : {};
-      const payload = activeTab === 'register' ? { email, password, name, ...acceptance } : { email, password };
+      const payload = activeTab === 'register' ? { email, password, name, locale, ...acceptance } : { email, password };
 
       const res = await fetch(endpoint, {
         method: 'POST',

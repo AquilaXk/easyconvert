@@ -8,6 +8,7 @@ import {
   UNATTRIBUTED_CLIENT_KEY,
   rateLimitKey,
 } from '../security/client-ip';
+import { sha256 } from './crypto';
 import { redisUserStore } from './redis-user-store';
 
 const authRefusal = codedRefusal<AuthErrorCode>;
@@ -38,13 +39,17 @@ export function resolveAuthClientIp(
   }
 }
 
-export function authRateLimitRefusal(retryAfterSeconds: number, detail: string): NextResponse {
+export function authRateLimitRefusal(
+  retryAfterSeconds: number,
+  detail: string,
+  code: AuthErrorCode = 'login_locked'
+): NextResponse {
   return NextResponse.json(
     {
       type: RATE_LIMITED_PROBLEM_TYPE,
       title: 'Too Many Requests',
       status: 429,
-      code: 'login_locked' satisfies AuthErrorCode,
+      code,
       detail,
       retryAfterSeconds,
     },
@@ -291,7 +296,7 @@ async function consumeRedisFixedWindow(
   key: string,
   windowSeconds: number,
   maxAttempts: number,
-  reason: 'ip' | 'global'
+  reason: 'email' | 'ip' | 'global'
 ): Promise<LoginRateLimitCheckResult | null> {
   const pipeline = redis.pipeline();
   pipeline.set(key, 0, 'EX', windowSeconds, 'NX');
@@ -391,4 +396,84 @@ export async function consumeRegistrationRateLimit(
  */
 export function resetLoginRateLimiterStore(): void {
   inMemoryAttempts.clear();
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Mailed links: password reset and email verification
+// ---------------------------------------------------------------------------------------------------------
+
+export type MailLinkAction = 'reset-request' | 'verify-resend' | 'reset-confirm' | 'verify-confirm';
+
+export const MAIL_LINK_WINDOW_SECONDS = 600;
+/** Mails per address (reset) or account (verification) in one window; the same for known and unknown addresses. */
+export const MAIL_LINK_MAX_PER_SUBJECT = 3;
+export const MAIL_LINK_MAX_PER_IP = 10;
+/** Uses of a link per client in one window; a token is 256 random bits, so this only bounds the load. */
+export const MAIL_LINK_CONFIRM_MAX_PER_IP = 30;
+export const MAIL_LINK_GLOBAL_MAX = 300;
+
+interface MailLimit {
+  key: string;
+  max: number;
+  reason: 'email' | 'ip' | 'global';
+}
+
+function memoryWindow(key: string, max: number, windowSeconds: number, reason: MailLimit['reason']): LoginRateLimitCheckResult | null {
+  const now = Date.now();
+  const existing = inMemoryAttempts.get(key);
+  const entry: AttemptEntry =
+    existing && now < existing.expiresAt
+      ? { count: existing.count + 1, expiresAt: existing.expiresAt }
+      : { count: 1, expiresAt: now + windowSeconds * 1000 };
+  inMemoryAttempts.set(key, entry);
+  if (entry.count <= max) return null;
+  return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((entry.expiresAt - now) / 1000)), reason };
+}
+
+/**
+ * Counts one request for a mailed-link action against its limits and says whether it may go on. The subject (an email
+ * address or an account id) is counted whether or not an account exists, so the limit tells nothing about accounts; it is
+ * kept as a hash. A client that cannot be attributed (`ip` null) shares one coarse counter instead of a per-client one.
+ */
+export async function consumeMailLinkRateLimit(
+  action: MailLinkAction,
+  ip: string | null,
+  subject: string | null
+): Promise<LoginRateLimitCheckResult> {
+  const confirming = action === 'reset-confirm' || action === 'verify-confirm';
+  const normIp = normalizeLoginIp(ip);
+  const limits: MailLimit[] = [];
+  if (subject) {
+    limits.push({
+      key: `mail_link:${action}:subject:${sha256(subject.toLowerCase().trim())}`,
+      max: MAIL_LINK_MAX_PER_SUBJECT,
+      reason: 'email',
+    });
+  }
+  if (normIp) {
+    limits.push({
+      key: `mail_link:${action}:ip:${normIp}`,
+      max: confirming ? MAIL_LINK_CONFIRM_MAX_PER_IP : MAIL_LINK_MAX_PER_IP,
+      reason: 'ip',
+    });
+  }
+  if (usesGlobalCounter(ip)) {
+    limits.push({ key: `mail_link:${action}:global`, max: MAIL_LINK_GLOBAL_MAX, reason: 'global' });
+  }
+
+  const redis = redisUserStore.getRedisClient();
+  const prefix = redisUserStore.getKeyPrefix();
+  for (const limit of limits) {
+    let blocked: LoginRateLimitCheckResult | null | undefined;
+    if (redis) {
+      try {
+        blocked = await consumeRedisFixedWindow(redis, `${prefix}${limit.key}`, MAIL_LINK_WINDOW_SECONDS, limit.max, limit.reason);
+      } catch {
+        blocked = undefined;
+      }
+    }
+    if (blocked === undefined) blocked = memoryWindow(limit.key, limit.max, MAIL_LINK_WINDOW_SECONDS, limit.reason);
+    if (blocked) return blocked;
+  }
+  return { allowed: true, retryAfterSeconds: 0 };
 }

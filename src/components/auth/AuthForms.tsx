@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
@@ -9,7 +9,7 @@ import { LEGAL_DOCUMENTS } from '@/lib/legal/documents';
 export type AuthTab = 'login' | 'register';
 
 /** The 32 px height of the form controls; 44 px where the pointer is a finger, as the accessibility statement promises. */
-const CONTROL_HEIGHT = 'h-8 [@media(pointer:coarse)]:h-11';
+export const CONTROL_HEIGHT = 'h-8 [@media(pointer:coarse)]:h-11';
 
 /** The `error` codes the OAuth callback redirects with; each is worded as `auth.oauthErrors.<code>`. */
 const OAUTH_ERROR_CODES = [
@@ -37,6 +37,35 @@ export function validateRegistrationInput(password: string, confirmPassword: str
   if (password.length < 8) return 'passwordTooShort';
   if (password !== confirmPassword) return 'passwordMismatch';
   return null;
+}
+
+/**
+ * The link to the password reset page. It asks the server whether reset is on (mail is configured) and shows nothing until
+ * the answer says so, so a server without mail never offers a page that cannot work.
+ */
+function ForgotPasswordLink() {
+  const t = useTranslations('auth.form');
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auth/password-reset')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { enabled?: unknown } | null) => {
+        if (!cancelled) setEnabled(data?.enabled === true);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!enabled) return null;
+  return (
+    <div className="mt-2 text-right">
+      <Link href="/auth/forgot-password" className="text-sm font-medium text-accent-ink hover:underline rounded-xs">
+        {t('forgotPassword')}
+      </Link>
+    </div>
+  );
 }
 
 export function GoogleOAuthButton({
@@ -173,6 +202,7 @@ export function AuthCredentialsForm({
             {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
           </button>
         </div>
+        {activeTab === 'login' && <ForgotPasswordLink />}
       </div>
 
       {activeTab === 'register' && (
