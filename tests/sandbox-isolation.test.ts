@@ -6,6 +6,9 @@ import { promisify } from 'node:util';
 import { executeSandboxedBinary, getUnshareCapability, memoryWatchPid } from '../src/lib/security/process-sandbox';
 import { skipUnless } from './helpers/strict-skip';
 
+// The PID namespace is off by default (src/lib/security/process-sandbox.ts); these tests are about it, so they turn it on.
+process.env.SANDBOX_PID_NAMESPACE = 'true';
+
 /**
  * What the namespace sandbox guarantees a native child, observed from inside the child. The child is this Node binary
  * running a few lines of script, so the observations come from the kernel (a refused connect, the PID the child reads
