@@ -79,7 +79,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const header = render(Header, {});
     const hrefs = hrefsOf(header);
 
-    expect(missingFrom(hrefs, ['/#format-catalog', '/api-docs', '/dashboard'])).toEqual([]);
+    expect(missingFrom(hrefs, ['/#format-catalog', '/api-docs'])).toEqual([]);
+    // The dashboard is for a signed-in person; a visitor's header does not list it.
+    expect(presentIn(hrefs, ['/dashboard'])).toEqual([]);
     // Bare fragments only resolve on the home page.
     expect(presentIn(hrefs, ['#format-catalog'])).toEqual([]);
   });
@@ -92,7 +94,6 @@ describe('Redesign & Free Static Architecture Verification', () => {
       { text: 'Formats', href: '/#format-catalog' },
       { text: 'API Docs', href: '/api-docs' },
       { text: 'Pricing', href: '/pricing' },
-      { text: 'Dashboard', href: '/dashboard' },
       { text: 'English', href: '/' },
       { text: '한국어', href: '/ko' },
       { text: 'Log in', href: '/auth' },
@@ -208,8 +209,9 @@ describe('Redesign & Free Static Architecture Verification', () => {
     // The home page holds no row of trust claims and no format chips in the upload card, and no tiles that name a pair.
     expect(phrasesPresent(text, ['Encrypted transfers', 'No sign-up needed', 'What do you want to convert?'])).toEqual([]);
     expect(select(hero, 'button').filter((b) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false)).toHaveLength(0);
-    // The home page's tiles name no format yet: they choose the pair whose page opens.
-    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format ANY']);
+    // The home page's tiles start on DOCX to PDF: changing one chooses the pair whose page opens.
+    expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format DOCX']);
+    expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Target format PDF']);
 
     const pairPage = renderSlug('png-to-jpg');
     expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
