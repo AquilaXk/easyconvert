@@ -33,50 +33,50 @@ const SOURCE_1080P_30FPS: PackagingSource = {
 
 describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.package)', () => {
   describe('1. Packaging Options Validation & Fail-Closed Gate', () => {
-    it('fails closed when packaging options or format is missing', () => {
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', null as any);
-      }).toThrowError(InvalidMediaOptionError);
+    it('fails closed when packaging options or format is missing', async () => {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', null as any);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {} as any);
-      }).toThrowError(InvalidMediaOptionError);
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {} as any);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('fails closed when unsupported packaging format is specified', () => {
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+    it('fails closed when unsupported packaging format is specified', async () => {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'smoothstreaming' as any,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('rejects segmentSeconds outside the 2..10 range or non-integer values', () => {
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+    it('rejects segmentSeconds outside the 2..10 range or non-integer values', async () => {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           segmentSeconds: 1,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           segmentSeconds: 11,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           segmentSeconds: 3.5,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('accepts valid segmentSeconds within the 2..10 range', () => {
+    it('accepts valid segmentSeconds within the 2..10 range', async () => {
       for (const seg of [2, 4, 6, 8, 10]) {
-        const args = buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+        const args = await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           segmentSeconds: seg,
         }, null, SOURCE_1080P_30FPS);
@@ -86,77 +86,77 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       }
     });
 
-    it('rejects empty ladder array', () => {
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+    it('rejects empty ladder array', async () => {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           ladder: [],
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('rejects invalid ladder rung parameters', () => {
+    it('rejects invalid ladder rung parameters', async () => {
       // Invalid height (< 144)
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 100, bitrateK: 2000 }],
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
       // Invalid height (> 4320)
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 5000, bitrateK: 2000 }],
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
       // Invalid bitrateK (< 50)
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 720, bitrateK: 20 }],
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
       // Invalid fps (<= 0)
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 720, bitrateK: 2000, fps: -5 }],
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
       // Invalid audioBitrateK (< 16)
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 720, bitrateK: 2000, audioBitrateK: 8 }],
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('rejects unsupported video and audio codecs for ABR packaging', () => {
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+    it('rejects unsupported video and audio codecs for ABR packaging', async () => {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           videoCodec: 'flv' as any,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           audioCodec: 'mp3' as any,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
   });
 
   describe('2. HLS ABR Packaging Command Generation', () => {
-    it('generates standard 3-rung HLS command with master playlist and segment flags', () => {
-      const args = buildHlsDashArguments(openMediaInput('/tmp/nonexistent_test_in.mp4', 'mp4'), '/tmp/out_hls', {
+    it('generates standard 3-rung HLS command with master playlist and segment flags', async () => {
+      const args = await buildHlsDashArguments(openMediaInput('/tmp/nonexistent_test_in.mp4', 'mp4'), '/tmp/out_hls', {
         format: 'hls',
         segmentSeconds: 4,
       }, null, SOURCE_1080P_30FPS);
@@ -216,13 +216,13 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       expect(args[args.length - 1]).toBe(path.join('/tmp/out_hls', 'stream_%v.m3u8'));
     });
 
-    it('supports custom ladder rungs and custom master playlist name', () => {
+    it('supports custom ladder rungs and custom master playlist name', async () => {
       const customLadder = [
         { height: 720, bitrateK: 2200, fps: 24, audioBitrateK: 160 },
         { height: 360, bitrateK: 600, fps: 24, audioBitrateK: 64 },
       ];
 
-      const args = buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out_custom', {
+      const args = await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out_custom', {
         format: 'hls',
         segmentSeconds: 6,
         ladder: customLadder,
@@ -251,25 +251,25 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       expect(args[args.indexOf('-var_stream_map') + 1]).toBe('v:0,a:0,name:720p v:1,a:1,name:360p');
     });
 
-    it('treats h265 as an alias of hevc and still rejects prores', () => {
-      const args = buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out_h265', {
+    it('treats h265 as an alias of hevc and still rejects prores', async () => {
+      const args = await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out_h265', {
         format: 'hls',
         videoCodec: 'h265' as any,
       }, null, SOURCE_1080P_30FPS);
       expect(args[args.indexOf('-c:v:0') + 1]).toBe('libx265');
 
-      expect(() => {
-        buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
+      await expect(async () => {
+        await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', {
           format: 'hls',
           videoCodec: 'prores' as any,
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
   });
 
   describe('3. MPEG-DASH ABR Packaging Command Generation', () => {
-    it('generates compliant MPEG-DASH packaging command with adaptation sets', () => {
-      const args = buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out_dash', {
+    it('generates compliant MPEG-DASH packaging command with adaptation sets', async () => {
+      const args = await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out_dash', {
         format: 'dash',
         segmentSeconds: 4,
         videoCodec: 'h264',
@@ -292,8 +292,8 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       expect(args[args.length - 1]).toBe(path.join('/tmp/out_dash', 'manifest.mpd'));
     });
 
-    it('supports custom manifest name and VP9 codec for DASH', () => {
-      const args = buildHlsDashArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out_dash2', {
+    it('supports custom manifest name and VP9 codec for DASH', async () => {
+      const args = await buildHlsDashArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out_dash2', {
         format: 'dash',
         segmentSeconds: 5,
         masterPlaylistName: 'video_manifest.mpd',

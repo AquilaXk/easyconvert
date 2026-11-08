@@ -93,8 +93,8 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
   // 2. Dynamic FFmpeg Argument Builder
   // ==========================================================================
   describe('2. Dynamic FFmpeg Argument Generation', () => {
-    it('generates optimal H.264 video encoding arguments with faststart for MP4', () => {
-      const args = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.mp4', 'mp4', {
+    it('generates optimal H.264 video encoding arguments with faststart for MP4', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.mp4', 'mp4', {
         videoFps: 30,
         audioBitrate: '256k',
       });
@@ -113,8 +113,8 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(args).not.toContain('-fps_mode');
     });
 
-    it('generates VP9 and Opus arguments for WebM container', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {});
+    it('generates VP9 and Opus arguments for WebM container', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {});
       expect(args[0]).toBe('-y');
       expect(args[args.length - 1]).toBe('/tmp/out.webm');
       expect(args[args.indexOf('-c:v') + 1]).toBe('libvpx-vp9');
@@ -122,26 +122,26 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(args[args.indexOf('-b:a') + 1]).toBe('128k');
     });
 
-    it('maps audio codecs accurately: mp3, ogg, opus, flac, wav', () => {
-      const mp3Args = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.mp3', 'mp3', { audioBitrate: '320k' });
+    it('maps audio codecs accurately: mp3, ogg, opus, flac, wav', async () => {
+      const mp3Args = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.mp3', 'mp3', { audioBitrate: '320k' });
       expect(mp3Args[mp3Args.indexOf('-c:a') + 1]).toBe('libmp3lame');
       expect(mp3Args[mp3Args.indexOf('-b:a') + 1]).toBe('320k');
 
-      const oggArgs = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.ogg', 'ogg', {});
+      const oggArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.ogg', 'ogg', {});
       expect(oggArgs[oggArgs.indexOf('-c:a') + 1]).toBe('libvorbis');
 
-      const opusArgs = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.opus', 'opus', {});
+      const opusArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.opus', 'opus', {});
       expect(opusArgs[opusArgs.indexOf('-c:a') + 1]).toBe('libopus');
 
-      const flacArgs = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.flac', 'flac', {});
+      const flacArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.flac', 'flac', {});
       expect(flacArgs[flacArgs.indexOf('-c:a') + 1]).toBe('flac');
 
-      const wavArgs = buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.wav', 'wav', {});
+      const wavArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.wav', 'wav', {});
       expect(wavArgs[wavArgs.indexOf('-c:a') + 1]).toBe('pcm_s16le');
     });
 
-    it('applies audio channel mappings, volume filter, and resolution downscaling', () => {
-      const args = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.mp4', 'mp4', {
+    it('applies audio channel mappings, volume filter, and resolution downscaling', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.mp4', 'mp4', {
         audioChannels: 'mono',
         audioVolume: 80,
         audioSampleRate: 48000,

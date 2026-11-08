@@ -11,7 +11,7 @@ import {
   REFERENCE_INPUT_FORMATS,
   openMediaInput,
   runFfmpeg,
-  runFfprobe,
+  runFfprobeAsync,
 } from '../src/lib/conversions/media-process';
 import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
@@ -68,6 +68,19 @@ describe('the call sites of ffmpeg and ffprobe', () => {
     expect(rawSpawns).toEqual([]);
   });
 
+  it('run ffprobe only through the asynchronous runner, never a synchronous spawn', () => {
+    const spawnModule = readFileSync(path.join(SRC_ROOT, SPAWN_MODULE), 'utf-8');
+    expect(spawnModule).not.toMatch(/function runFfprobe\b/);
+    expect(spawnModule).not.toMatch(/runSandboxedSync\([^)]*ffprobe/i);
+    const syncRunners = [...spawnModule.matchAll(/runSandboxedSync\(/g)].length;
+    // The definition and the one ffmpeg caller; a further caller needs a look at what binary it runs.
+    expect(syncRunners).toBe(2);
+    const importers = sourceFiles(SRC_ROOT)
+      .filter((file) => /\brunFfprobe\b/.test(readFileSync(file, 'utf-8')))
+      .map((file) => path.relative(SRC_ROOT, file));
+    expect(importers).toEqual([]);
+  });
+
   it('control: the scan finds a spawn whose binary is on the line after the call', () => {
     const wrapped = ['const out = execFileSync(', '  ffprobeBin,', "  ['-v', 'error', input],", ');'].join('\n');
     expect(mediaToolSpawns(wrapped, 'x.ts')).toEqual(['x.ts:1']);
@@ -77,19 +90,19 @@ describe('the call sites of ffmpeg and ffprobe', () => {
     geometry: { fpsNum: 30, fpsDen: 1, width: 1280, height: 720, durationSec: 10 },
     hasAudio: true,
   };
-  const BUILT: ReadonlyArray<[string, () => string[]]> = [
-    ['a video transcode', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.webm', 'webm', {})],
-    ['a trimmed video transcode', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mov', 'mov'), '/nonexistent/out.mp4', 'mp4', { trim: { start: '00:00:01', end: '00:00:02' } })],
-    ['a thumbnail', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/nonexistent/out.jpg', 'jpg', { thumbnail: { at: ['00:00:01'] } })],
-    ['an accurate thumbnail', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.avi', 'avi'), '/nonexistent/out.png', 'png', { thumbnail: { at: ['00:00:01'], accurate: true } })],
-    ['a subtitle extraction', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.srt', 'srt', { subtitles: { mode: 'extract' } })],
-    ['a soft subtitle from a file', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.mkv', 'mkv', { subtitles: { mode: 'soft', input: '/nonexistent/subs.srt' } })],
-    ['an HLS package', () => buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/nonexistent/out', { format: 'hls' }, null, PACKAGING_SOURCE)],
-    ['a DASH package', () => buildHlsDashArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/nonexistent/out', { format: 'dash' }, null, PACKAGING_SOURCE)],
+  const BUILT: ReadonlyArray<[string, () => Promise<string[]>]> = [
+    ['a video transcode', async () => await buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.webm', 'webm', {})],
+    ['a trimmed video transcode', async () => await buildFfmpegArguments(openMediaInput('/nonexistent/in.mov', 'mov'), '/nonexistent/out.mp4', 'mp4', { trim: { start: '00:00:01', end: '00:00:02' } })],
+    ['a thumbnail', async () => await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/nonexistent/out.jpg', 'jpg', { thumbnail: { at: ['00:00:01'] } })],
+    ['an accurate thumbnail', async () => await buildFfmpegArguments(openMediaInput('/nonexistent/in.avi', 'avi'), '/nonexistent/out.png', 'png', { thumbnail: { at: ['00:00:01'], accurate: true } })],
+    ['a subtitle extraction', async () => await buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.srt', 'srt', { subtitles: { mode: 'extract' } })],
+    ['a soft subtitle from a file', async () => await buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.mkv', 'mkv', { subtitles: { mode: 'soft', input: '/nonexistent/subs.srt' } })],
+    ['an HLS package', async () => await buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/nonexistent/out', { format: 'hls' }, null, PACKAGING_SOURCE)],
+    ['a DASH package', async () => await buildHlsDashArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/nonexistent/out', { format: 'dash' }, null, PACKAGING_SOURCE)],
   ];
 
-  it.each(BUILT)('give every input of %s a protocol whitelist and a demuxer', (_, build) => {
-    const args = build();
+  it.each(BUILT)('give every input of %s a protocol whitelist and a demuxer', async (_, build) => {
+    const args = await build();
     expect(args.filter((arg) => arg === '-i').length).toBeGreaterThan(0);
     expect(unguardedInputs(args)).toEqual([]);
   });
@@ -140,13 +153,13 @@ describe('runFfmpeg and runFfprobe', () => {
     expect(started()).toBe(true);
   });
 
-  it('does not start ffprobe with -allowed_extensions ALL', () => {
-    expect(() => runFfprobe(spy, ['-allowed_extensions', 'ALL'], openMediaInput('/x/in.mp4', 'mp4'), PROBE_LIMITS)).toThrow();
+  it('does not start ffprobe with -allowed_extensions ALL', async () => {
+    await expect(runFfprobeAsync(spy, ['-allowed_extensions', 'ALL'], openMediaInput('/x/in.mp4', 'mp4'), PROBE_LIMITS)).rejects.toThrow();
     expect(started()).toBe(false);
   });
 
-  it('control: starts ffprobe over an opened input', () => {
-    expect(runFfprobe(spy, ['-v', 'error'], openMediaInput('/x/in.mp4', 'mp4'), PROBE_LIMITS).ok).toBe(true);
+  it('control: starts ffprobe over an opened input', async () => {
+    expect((await runFfprobeAsync(spy, ['-v', 'error'], openMediaInput('/x/in.mp4', 'mp4'), PROBE_LIMITS)).ok).toBe(true);
     expect(started()).toBe(true);
   });
 });

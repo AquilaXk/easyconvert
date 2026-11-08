@@ -117,9 +117,9 @@ describe('NVENC capability probe', () => {
     expect(attempts(log)).toHaveLength(probes);
   });
 
-  oracleTest('builds software H.264 arguments on a host that cannot open an NVENC session', ['ffmpeg'], () => {
+  oracleTest('builds software H.264 arguments on a host that cannot open an NVENC session', ['ffmpeg'], async () => {
     const { bin } = makeStub('args-sw', false);
-    const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {}, bin);
+    const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {}, bin);
     expect(args[args.indexOf('-c:v') + 1]).toBe('libx264');
   });
 });

@@ -75,7 +75,7 @@ describe.skipIf(skipUnless('ffmpeg with zscale and lutrgb', HAS_ZSCALE))('HDR10 
 
         // The lossless tone-mapped frames: the filter chain of the conversion written to FFV1, so that the score
         // below judges the encoder alone.
-        const args = buildFfmpegArguments(openMediaInput(sample.path, 'mp4'), path.join(dir, 'unused.webm'), 'webm', { disableHwaccel: true }, ffmpeg());
+        const args = await buildFfmpegArguments(openMediaInput(sample.path, 'mp4'), path.join(dir, 'unused.webm'), 'webm', { disableHwaccel: true }, ffmpeg());
         const filter = args[args.indexOf('-vf') + 1];
         const reference = path.join(dir, 'reference.mkv');
         execFileSync(ffmpeg(), ['-v', 'error', '-y', '-i', sample.path, '-vf', filter, '-pix_fmt', 'yuv420p', '-an', '-c:v', 'ffv1', reference], { stdio: ['ignore', 'ignore', 'pipe'] });

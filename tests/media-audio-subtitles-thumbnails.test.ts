@@ -37,8 +37,8 @@ const THUMBNAIL_MIN_SSIM = 0.98;
 
 describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Thumbnails', () => {
   describe('1. Audio Codec Validation & Container Compatibility Gate', () => {
-    it('accepts compliant codecs for MP4, WebM, and Ogg containers', () => {
-      const mp4Args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('accepts compliant codecs for MP4, WebM, and Ogg containers', async () => {
+      const mp4Args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         audio: { codec: 'aac', bitrateK: 256 },
       });
@@ -49,54 +49,54 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(bIdx).toBeGreaterThan(0);
       expect(mp4Args[bIdx + 1]).toBe('256k');
 
-      const webmArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
+      const webmArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
         disableHwaccel: true,
         audio: { codec: 'opus', bitrateK: 128 },
       });
       const webmCIdx = webmArgs.indexOf('-c:a');
       expect(webmArgs[webmCIdx + 1]).toBe('libopus');
 
-      const oggArgs = buildFfmpegArguments(openMediaInput('/tmp/in.ogg', 'ogg'), '/tmp/out.ogg', 'ogg', {
+      const oggArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.ogg', 'ogg'), '/tmp/out.ogg', 'ogg', {
         audio: { codec: 'vorbis' },
       });
       const oggCIdx = oggArgs.indexOf('-c:a');
       expect(oggArgs[oggCIdx + 1]).toBe('libvorbis');
     });
 
-    it('fails closed when an incompatible audio codec is requested in WebM container', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
+    it('fails closed when an incompatible audio codec is requested in WebM container', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
           audio: { codec: 'aac' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
           audio: { codec: 'mp3' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('fails closed when an incompatible audio codec is requested in Ogg container', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.ogg', 'ogg'), '/tmp/out.ogg', 'ogg', {
+    it('fails closed when an incompatible audio codec is requested in Ogg container', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.ogg', 'ogg'), '/tmp/out.ogg', 'ogg', {
           audio: { codec: 'mp3' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.ogg', 'ogg'), '/tmp/out.ogg', 'ogg', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.ogg', 'ogg'), '/tmp/out.ogg', 'ogg', {
           audio: { codec: 'aac' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('fails closed when vorbis audio is requested in MP4 container', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('fails closed when vorbis audio is requested in MP4 container', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           audio: { codec: 'vorbis' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
     it('maps all defined AudioCodec types to valid FFmpeg encoder names', () => {
@@ -110,8 +110,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
   });
 
   describe('2. Audio Track Selection Gate', () => {
-    it('maps all audio tracks when track is set to all', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('maps all audio tracks when track is set to all', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         audio: { track: 'all' },
       });
@@ -125,8 +125,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(args[mapIndices[1] + 1]).toBe('0:a');
     });
 
-    it('maps specific audio track index when a numeric index is provided', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('maps specific audio track index when a numeric index is provided', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         audio: { track: 2 },
       });
@@ -140,18 +140,18 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(args[mapIndices[1] + 1]).toBe('0:a:2');
     });
 
-    it('fails closed when a negative track index is provided', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('fails closed when a negative track index is provided', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           audio: { track: -1 },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
   });
 
   describe('3. ITU-R BS.775 Surround Downmixing Gate', () => {
-    it('generates normalized 5.1 downmixing pan filter and sets 2 output channels', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('generates normalized 5.1 downmixing pan filter and sets 2 output channels', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         audio: { downmix: 'itu-r-bs775' },
       });
@@ -166,8 +166,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(args[acIdx + 1]).toBe('2');
     });
 
-    it('generates normalized 7.1 downmixing pan filter when 8 channels are specified', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('generates normalized 7.1 downmixing pan filter when 8 channels are specified', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         audio: { downmix: 'itu-r-bs775', channels: 8 },
       });
@@ -182,8 +182,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(args[acIdx + 1]).toBe('2');
     });
 
-    it('combines downmix filter with volume normalization cleanly', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('combines downmix filter with volume normalization cleanly', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         audio: { downmix: 'itu-r-bs775', volume: 80 },
       });
@@ -199,64 +199,64 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
   });
 
   describe('4. Audio Parameters (Bitrate, Channels, Sample Rate, Volume) Gate', () => {
-    it('sets discrete channel configurations accurately (mono, stereo, 5.1, 7.1)', () => {
-      const monoArgs = buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+    it('sets discrete channel configurations accurately (mono, stereo, 5.1, 7.1)', async () => {
+      const monoArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
         audio: { channels: 1 },
       });
       expect(monoArgs[monoArgs.indexOf('-ac') + 1]).toBe('1');
 
-      const stereoArgs = buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+      const stereoArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
         audio: { channels: 2 },
       });
       expect(stereoArgs[stereoArgs.indexOf('-ac') + 1]).toBe('2');
 
-      const surround51Args = buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+      const surround51Args = await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
         audio: { channels: 6 },
       });
       expect(surround51Args[surround51Args.indexOf('-ac') + 1]).toBe('6');
 
-      const surround71Args = buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+      const surround71Args = await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
         audio: { channels: 8 },
       });
       expect(surround71Args[surround71Args.indexOf('-ac') + 1]).toBe('8');
     });
 
-    it('validates sample rate bounds and fails closed on invalid values', () => {
-      const validArgs = buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.wav', 'wav', {
+    it('validates sample rate bounds and fails closed on invalid values', async () => {
+      const validArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.wav', 'wav', {
         audio: { sampleRate: 48000 },
       });
       expect(validArgs[validArgs.indexOf('-ar') + 1]).toBe('48000');
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.wav', 'wav', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.wav', 'wav', {
           audio: { sampleRate: 4000 },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.wav', 'wav', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.wav', 'wav'), '/tmp/out.wav', 'wav', {
           audio: { sampleRate: 250000 },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('validates volume bounds and fails closed on out-of-range values', () => {
-      const validArgs = buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+    it('validates volume bounds and fails closed on out-of-range values', async () => {
+      const validArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
         audio: { volume: 150 },
       });
       expect(validArgs[validArgs.indexOf('-filter:a') + 1]).toBe('volume=1.5');
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
           audio: { volume: -10 },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
           audio: { volume: 250 },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
   });
 
@@ -267,8 +267,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(escaped).toBe(String.raw`/media/sub\\:title\\\'s\,special.srt`);
     });
 
-    it('burns subtitles by inserting subtitles filter prior to even dimension scale in videoFilters', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('burns subtitles by inserting subtitles filter prior to even dimension scale in videoFilters', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         subtitles: {
           mode: 'burn',
@@ -287,22 +287,22 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(subPos).toBeLessThan(scalePos);
     });
 
-    it('fails closed when subtitle burn mode lacks an input path or targets non-video', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('fails closed when subtitle burn mode lacks an input path or targets non-video', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           subtitles: { mode: 'burn' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/tmp/in.mp3', 'mp3'), '/tmp/out.mp3', 'mp3', {
           subtitles: { mode: 'burn', input: '/tmp/sub.srt' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('embeds soft subtitles with stream mapping and container-appropriate codec', () => {
-      const mp4Args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('embeds soft subtitles with stream mapping and container-appropriate codec', async () => {
+      const mp4Args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         subtitles: {
           mode: 'soft',
@@ -326,7 +326,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(mp4Args[csIdx + 1]).toBe('mov_text');
 
       // WebM soft subtitles use webvtt
-      const webmArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
+      const webmArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/tmp/out.webm', 'webm', {
         disableHwaccel: true,
         subtitles: {
           mode: 'soft',
@@ -337,7 +337,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(webmArgs[webmCsIdx + 1]).toBe('webvtt');
 
       // MKV soft subtitles use srt (or ass)
-      const mkvArgs = buildFfmpegArguments(openMediaInput('/tmp/in.mkv', 'mkv'), '/tmp/out.mkv', 'mkv', {
+      const mkvArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.mkv', 'mkv'), '/tmp/out.mkv', 'mkv', {
         disableHwaccel: true,
         subtitles: {
           mode: 'soft',
@@ -349,8 +349,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(mkvArgs[mkvCsIdx + 1]).toBe('ass');
     });
 
-    it('extracts subtitle streams directly into standalone files without video/audio transcoding', () => {
-      const extractSrtArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.srt', 'srt', {
+    it('extracts subtitle streams directly into standalone files without video/audio transcoding', async () => {
+      const extractSrtArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.srt', 'srt', {
         subtitles: {
           mode: 'extract',
           streamIndex: 0,
@@ -366,7 +366,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(csIdx).toBeGreaterThan(0);
       expect(extractSrtArgs[csIdx + 1]).toBe('srt');
 
-      const extractVttArgs = buildFfmpegArguments(openMediaInput('/tmp/in.mkv', 'mkv'), '/tmp/out.vtt', 'vtt', {
+      const extractVttArgs = await buildFfmpegArguments(openMediaInput('/tmp/in.mkv', 'mkv'), '/tmp/out.vtt', 'vtt', {
         subtitles: {
           mode: 'extract',
           streamIndex: 1,
@@ -379,8 +379,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
   });
 
   describe('6. Thumbnail Extraction Gate', () => {
-    it('generates fast seek thumbnail arguments with input-seeking before -i', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/thumb.jpg', 'jpg', {
+    it('generates fast seek thumbnail arguments with input-seeking before -i', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/thumb.jpg', 'jpg', {
         thumbnail: {
           at: ['00:00:03.500'],
           accurate: false,
@@ -405,8 +405,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(vf).toContain('scale=trunc(iw/2)*2:trunc(ih/2)*2');
     });
 
-    it('generates accurate seek thumbnail arguments with output-seeking after -i', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/thumb.png', 'png', {
+    it('generates accurate seek thumbnail arguments with output-seeking after -i', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/thumb.png', 'png', {
         thumbnail: {
           at: ['00:00:08.200'],
           accurate: true,
@@ -423,8 +423,8 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(args[args.indexOf('-c:v') + 1]).toBe('png');
     });
 
-    it('supports overrideTimestamp for multi-frame thumbnail extraction sequencing', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/thumb2.jpg', 'jpg', {
+    it('supports overrideTimestamp for multi-frame thumbnail extraction sequencing', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/thumb2.jpg', 'jpg', {
         thumbnail: {
           at: ['00:00:01.000', '00:00:05.000'],
           format: 'jpg',
@@ -457,7 +457,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         ], { stdio: 'ignore' });
 
         // Verify input is authentic 5.1 (6 channels)
-        expect(probeAudioChannels(openMediaInput(inputPath, 'wav'), ffprobe as FfprobePath)).toBe(6);
+        expect(await probeAudioChannels(openMediaInput(inputPath, 'wav'), ffprobe as FfprobePath)).toBe(6);
 
         // Transcode to MP4 with ITU-R BS.775 downmix
         const inputBuf = fs.readFileSync(inputPath);
@@ -586,7 +586,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         const srtContent = `1\n00:00:00,100 --> 00:00:00,900\nHello EasyConvert Subtitles!\n\n`;
         fs.writeFileSync(subPath, srtContent);
 
-        const args = buildFfmpegArguments(openMediaInput(videoPath, 'mp4'), outputPath, 'mp4', {
+        const args = await buildFfmpegArguments(openMediaInput(videoPath, 'mp4'), outputPath, 'mp4', {
           disableHwaccel: true,
           subtitles: {
             mode: 'soft',

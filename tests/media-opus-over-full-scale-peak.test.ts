@@ -98,7 +98,7 @@ describe('Opus from a source at full scale is coded from the samples the referen
     oracleTest(
       `${name}: the decoded true peak is within the allowance of the reference and the decoded samples are the same`,
       ['ffmpeg'],
-      () => {
+      async () => {
         if (!hasEncoder('libopus')) throw Object.assign(new Error('this ffmpeg has no libopus encoder'), { isOracleSkip: true });
         const input = path.join(workDir, `src-${boostDb}-${seed}.wav`);
         fs.writeFileSync(input, burstSource(boostDb, seed));
@@ -108,7 +108,7 @@ describe('Opus from a source at full scale is coded from the samples the referen
         else expect(sourcePeak).toBeLessThan(-1);
 
         const ours = path.join(workDir, `ours-${boostDb}-${seed}.opus`);
-        run(buildFfmpegArguments(openMediaInput(input, 'wav'), ours, 'opus', { audio: { bitrateK: kbps } }, tool('ffmpeg')));
+        run(await buildFfmpegArguments(openMediaInput(input, 'wav'), ours, 'opus', { audio: { bitrateK: kbps } }, tool('ffmpeg')));
         const reference = path.join(workDir, `ref-${boostDb}-${seed}.opus`);
         run(['-y', '-i', input, '-vn', '-map_metadata', '-1', '-c:a', 'libopus', '-b:a', `${kbps}k`, reference]);
 

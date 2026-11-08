@@ -45,25 +45,25 @@ const ENCODE_TIMEOUT_MS = 180_000;
 const SOURCE = '/nonexistent/in.mp4';
 const OUT = '/tmp/out.mp4';
 
-function args(options: object, tgt = 'mp4'): string[] {
-  return buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/out.${tgt}`, tgt, { disableHwaccel: true, ...options } as never);
+async function args(options: object, tgt = 'mp4'): Promise<string[]> {
+  return await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/out.${tgt}`, tgt, { disableHwaccel: true, ...options } as never);
 }
 function after(list: string[], flag: string): string {
   return list[list.indexOf(flag) + 1];
 }
 
 describe('x264, x265, VP9 and AV1 defaults (arguments)', () => {
-  it('encodes H.264 and HEVC at preset medium unless the caller names another from the allow-list', () => {
+  it('encodes H.264 and HEVC at preset medium unless the caller names another from the allow-list', async () => {
     expect(X26X_DEFAULT_PRESET).toBe('medium');
-    expect(after(args({ video: { codec: 'h264' } }), '-preset')).toBe('medium');
-    expect(after(args({ video: { codec: 'hevc' } }), '-preset')).toBe('medium');
-    expect(after(args({ video: { codec: 'h264', preset: 'slow' } }), '-preset')).toBe('slow');
+    expect(after(await args({ video: { codec: 'h264' } }), '-preset')).toBe('medium');
+    expect(after(await args({ video: { codec: 'hevc' } }), '-preset')).toBe('medium');
+    expect(after(await args({ video: { codec: 'h264', preset: 'slow' } }), '-preset')).toBe('slow');
     expect([...X26X_PRESETS]).not.toContain('placebo');
-    expect(() => args({ video: { codec: 'h264', preset: 'placebo' } })).toThrow(InvalidMediaOptionError);
-    expect(() => args({ video: { codec: 'h264', preset: 'fast; rm -rf /' } })).toThrow(/Invalid x264\/x265 preset/);
+    await expect(async () => await args({ video: { codec: 'h264', preset: 'placebo' } })).rejects.toThrow(InvalidMediaOptionError);
+    await expect(async () => await args({ video: { codec: 'h264', preset: 'fast; rm -rf /' } })).rejects.toThrow(/Invalid x264\/x265 preset/);
   });
 
-  it('gives VP9 row multithreading, the good deadline, cpu-used 2 and tile columns in every container', () => {
+  it('gives VP9 row multithreading, the good deadline, cpu-used 2 and tile columns in every container', async () => {
     expect(VP9_SPEED_ARGS).toEqual(['-row-mt', '1', '-deadline', 'good', '-cpu-used', '2', '-tile-columns', '2']);
     for (const [tgt, video] of [
       ['mp4', { codec: 'vp9' }],
@@ -71,7 +71,7 @@ describe('x264, x265, VP9 and AV1 defaults (arguments)', () => {
       ['webm', { codec: 'vp9' }],
       ['webm', {}],
     ] as const) {
-      const a = args({ video }, tgt);
+      const a = await args({ video }, tgt);
       expect(a[a.indexOf('-c:v') + 1], tgt).toBe('libvpx-vp9');
       expect(after(a, '-row-mt')).toBe('1');
       expect(after(a, '-deadline')).toBe('good');
@@ -80,60 +80,60 @@ describe('x264, x265, VP9 and AV1 defaults (arguments)', () => {
     }
   });
 
-  it('writes AV1 with SVT-AV1 at preset 8 in every container, never libaom', () => {
+  it('writes AV1 with SVT-AV1 at preset 8 in every container, never libaom', async () => {
     expect(SVT_AV1_DEFAULT_PRESET).toBe(8);
     for (const tgt of ['mp4', 'mkv', 'webm']) {
-      const a = args({ video: { codec: 'av1' } }, tgt);
+      const a = await args({ video: { codec: 'av1' } }, tgt);
       expect(a[a.indexOf('-c:v') + 1], tgt).toBe('libsvtav1');
       expect(after(a, '-preset'), tgt).toBe('8');
       expect(a).not.toContain('libaom-av1');
       expect(after(a, '-crf')).toBe('32');
     }
-    expect(after(args({ video: { codec: 'av1', preset: '5' } }), '-preset')).toBe('5');
-    expect(() => args({ video: { codec: 'av1', preset: '14' } })).toThrow(InvalidMediaOptionError);
-    expect(() => args({ video: { codec: 'av1', preset: 'slow' } })).toThrow(InvalidMediaOptionError);
+    expect(after(await args({ video: { codec: 'av1', preset: '5' } }), '-preset')).toBe('5');
+    await expect(async () => await args({ video: { codec: 'av1', preset: '14' } })).rejects.toThrow(InvalidMediaOptionError);
+    await expect(async () => await args({ video: { codec: 'av1', preset: 'slow' } })).rejects.toThrow(InvalidMediaOptionError);
   });
 
-  it('answers 503 when the ffmpeg build has no SVT-AV1 encoder', () => {
+  it('answers 503 when the ffmpeg build has no SVT-AV1 encoder', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-ffmpeg-'));
     try {
       const fake = path.join(dir, 'ffmpeg');
       fs.writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *-encoders*) echo " V....D libx264              libx264 H.264"; echo " V....D libaom-av1           libaom AV1";;\nesac\n');
       fs.chmodSync(fake, 0o755);
       resetHardwareAccelerationCache();
-      const build = () => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, video: { codec: 'av1' } }, fake);
-      expect(build).toThrow(EngineUnavailableError);
-      expect(build).toThrow(/libsvtav1/);
+      const build = async () => await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, video: { codec: 'av1' } }, fake);
+      await expect(build).rejects.toThrow(EngineUnavailableError);
+      await expect(build).rejects.toThrow(/libsvtav1/);
       // H.264 on the same build is untouched.
-      expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, video: { codec: 'h264' } }, fake)).not.toThrow();
+      await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, video: { codec: 'h264' } }, fake)).resolves.toBeDefined();
     } finally {
       resetHardwareAccelerationCache();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('caps a CRF encode only when the caller sets maxBitrateK, with a buffer of twice the cap', () => {
-    const capped = args({ video: { codec: 'h264', rateControl: { mode: 'crf', crf: 23, maxBitrateK: 3000 } } });
+  it('caps a CRF encode only when the caller sets maxBitrateK, with a buffer of twice the cap', async () => {
+    const capped = await args({ video: { codec: 'h264', rateControl: { mode: 'crf', crf: 23, maxBitrateK: 3000 } } });
     expect(after(capped, '-crf')).toBe('23');
     expect(after(capped, '-maxrate')).toBe('3000k');
     expect(after(capped, '-bufsize')).toBe('6000k');
     for (const video of [{ codec: 'h264' }, { codec: 'hevc' }, { codec: 'av1' }, { codec: 'h264', rateControl: { mode: 'crf', crf: 23 } }]) {
-      const a = args({ video });
+      const a = await args({ video });
       expect(a.indexOf('-maxrate'), JSON.stringify(video)).toBe(-1);
       expect(a.indexOf('-bufsize'), JSON.stringify(video)).toBe(-1);
     }
-    const av1 = args({ video: { codec: 'av1', rateControl: { mode: 'crf', crf: 30, maxBitrateK: 2000 } } });
+    const av1 = await args({ video: { codec: 'av1', rateControl: { mode: 'crf', crf: 30, maxBitrateK: 2000 } } });
     expect([after(av1, '-crf'), after(av1, '-maxrate'), after(av1, '-bufsize')]).toEqual(['30', '2000k', '4000k']);
     // VP9 states the cap as the ceiling of constrained quality.
-    const vp9 = args({ video: { codec: 'vp9', rateControl: { mode: 'crf', crf: 31, maxBitrateK: 1500 } } }, 'webm');
+    const vp9 = await args({ video: { codec: 'vp9', rateControl: { mode: 'crf', crf: 31, maxBitrateK: 1500 } } }, 'webm');
     expect([after(vp9, '-crf'), after(vp9, '-b:v')]).toEqual(['31', '1500k']);
     for (const maxBitrateK of [0, -5, Number.NaN]) {
-      expect(() => args({ video: { codec: 'h264', rateControl: { mode: 'crf', crf: 23, maxBitrateK } } })).toThrow(InvalidMediaOptionError);
+      await expect(async () => await args({ video: { codec: 'h264', rateControl: { mode: 'crf', crf: 23, maxBitrateK } } })).rejects.toThrow(InvalidMediaOptionError);
     }
   });
 
-  it('deinterlaces with bwdif, one frame per field, only for frames flagged interlaced', () => {
-    const a = args({ video: { codec: 'h264', deinterlace: true } });
+  it('deinterlaces with bwdif, one frame per field, only for frames flagged interlaced', async () => {
+    const a = await args({ video: { codec: 'h264', deinterlace: true } });
     expect(after(a, '-vf').startsWith('bwdif=mode=send_field:deint=interlaced,')).toBe(true);
     expect(after(a, '-vf')).not.toContain('yadif');
   });
@@ -180,19 +180,19 @@ describe('loudness normalisation (arguments and report parsing)', () => {
     expect(() => parseLoudnormMeasurement('{ "input_i" : "x", broken', 48000)).toThrow(LoudnessMeasurementError);
   });
 
-  it('refuses to encode a loudness request without a measurement and measures exactly one audio track', () => {
+  it('refuses to encode a loudness request without a measurement and measures exactly one audio track', async () => {
     const options = { audio: { loudness: {} } };
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', options as never)).toThrow(/measuring pass/);
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', options as never)).rejects.toThrow(/measuring pass/);
     // Without an input to inspect, a video target cannot say which track to measure.
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), OUT, 'mp4', options as never, null, undefined, apply)).toThrow(/needs an input file/);
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), OUT, 'mp4', options as never, null, undefined, apply)).rejects.toThrow(/needs an input file/);
   });
 
-  it('builds the audio-only measuring pass: same map and format arguments, loudnorm at the target, null sink', () => {
+  it('builds the audio-only measuring pass: same map and format arguments, loudnorm at the target, null sink', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loud-args-'));
     try {
       const wav = path.join(dir, 'in.wav');
       fs.writeFileSync(wav, wavFromSamples(sineSamples(48000, 1, 1), 48000, 1));
-      const measure = buildLoudnessMeasureArguments(openMediaInput(wav, 'wav'), 'flac', { audio: { loudness: { preset: 'streaming' }, volume: 50 } });
+      const measure = await buildLoudnessMeasureArguments(openMediaInput(wav, 'wav'), 'flac', { audio: { loudness: { preset: 'streaming' }, volume: 50 } });
       expect(measure.slice(-3)).toEqual(['-f', 'null', '-']);
       expect(after(measure, '-af')).toBe('volume=0.5,loudnorm=I=-14:TP=-1:LRA=11:print_format=json');
       expect(measure).toContain('-vn');
@@ -204,7 +204,7 @@ describe('loudness normalisation (arguments and report parsing)', () => {
 });
 
 describe('resampler and dither (arguments)', () => {
-  it('uses soxr at precision 28 for a rate change when the build has it, and reports the reason when it does not', () => {
+  it('uses soxr at precision 28 for a rate change when the build has it, and reports the reason when it does not', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-soxr-'));
     try {
       const withSoxr = path.join(dir, 'ffmpeg-soxr');
@@ -224,10 +224,10 @@ describe('resampler and dither (arguments)', () => {
       expect(() => chooseResampler('sinc' as never, withSoxr)).toThrow(InvalidMediaOptionError);
 
       // The AAC track of an MP4 is lossy: its coding noise is some 55 dB above the error of soxr at 16 bits.
-      const a = buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, withSoxr);
+      const a = await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, withSoxr);
       expect(after(a, '-filter:a')).toBe('aresample=async=1:first_pts=0,aresample=22050:resampler=soxr:precision=16');
       expect(after(a, '-ar')).toBe('22050');
-      const b = buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, without);
+      const b = await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, without);
       expect(after(b, '-filter:a')).toBe('aresample=async=1:first_pts=0');
       expect(describeAudioProcessing({}, without, undefined)).toEqual({
         resampler: 'swr',
@@ -238,36 +238,36 @@ describe('resampler and dither (arguments)', () => {
     }
   });
 
-  it('keeps soxr at 28 bits of precision wherever the output is lossless or the caller asks for soxr, trims it for a lossy encoder, and leaves libopus to the conversion ffmpeg inserts', () => {
+  it('keeps soxr at 28 bits of precision wherever the output is lossless or the caller asks for soxr, trims it for a lossy encoder, and leaves libopus to the conversion ffmpeg inserts', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-soxr-precision-'));
     try {
       const withSoxr = path.join(dir, 'ffmpeg-soxr');
       fs.writeFileSync(withSoxr, '#!/bin/sh\ncase "$*" in\n  *-version*) echo "configuration: --enable-gpl --enable-libsoxr";;\nesac\n');
       fs.chmodSync(withSoxr, 0o755);
-      const filterOf = (target: string, audio: object, source = 'wav'): string =>
-        after(buildFfmpegArguments(openMediaInput(SOURCE, source), `/tmp/out.${target}`, target, { disableHwaccel: true, audio } as never, withSoxr), '-filter:a');
+      const filterOf = async (target: string, audio: object, source = 'wav'): Promise<string> =>
+        after(await buildFfmpegArguments(openMediaInput(SOURCE, source), `/tmp/out.${target}`, target, { disableHwaccel: true, audio } as never, withSoxr), '-filter:a');
 
       // Lossy encoders other than libopus: the AAC and MP3 encoders, Vorbis.
       for (const target of ['aac', 'm4a', 'mp3', 'ogg']) {
-        expect(filterOf(target, { sampleRate: 48000 }), target).toBe('aresample=48000:resampler=soxr:precision=16');
+        expect(await filterOf(target, { sampleRate: 48000 }), target).toBe('aresample=48000:resampler=soxr:precision=16');
       }
       // libopus (a 44.1 kHz source is brought to 48 kHz) gets no filter of ours: ffmpeg's own conversion feeds it what the reference command feeds it.
       for (const target of ['opus', 'weba']) {
-        const args = buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), `/tmp/out.${target}`, target, { disableHwaccel: true, audio: { sampleRate: 48000 } } as never, withSoxr);
+        const args = await buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), `/tmp/out.${target}`, target, { disableHwaccel: true, audio: { sampleRate: 48000 } } as never, withSoxr);
         expect(args, target).not.toContain('-filter:a');
         expect(after(args, '-ar'), target).toBe('48000');
       }
-      expect(filterOf('webm', { sampleRate: 48000 }, 'mp4')).toBe('aresample=async=1:first_pts=0');
+      expect(await filterOf('webm', { sampleRate: 48000 }, 'mp4')).toBe('aresample=async=1:first_pts=0');
       // Lossless and PCM outputs keep the full precision, as does an explicit request for soxr.
       for (const target of ['flac', 'wav', 'aiff', 'alac']) {
-        expect(filterOf(target, { sampleRate: 48000 }), target).toContain('resampler=soxr:precision=28');
+        expect(await filterOf(target, { sampleRate: 48000 }), target).toContain('resampler=soxr:precision=28');
       }
-      expect(filterOf('opus', { sampleRate: 48000, resampler: 'soxr' })).toBe('aresample=48000:resampler=soxr:precision=28');
+      expect(await filterOf('opus', { sampleRate: 48000, resampler: 'soxr' })).toBe('aresample=48000:resampler=soxr:precision=28');
       expect(
-        buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.opus', 'opus', { audio: { sampleRate: 48000, resampler: 'swr' } } as never, withSoxr)
+        await buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.opus', 'opus', { audio: { sampleRate: 48000, resampler: 'swr' } } as never, withSoxr)
       ).not.toContain('-filter:a');
       // A normalised file is resampled back from loudnorm's 192 kHz with the full precision.
-      const normalised = buildFfmpegArguments(
+      const normalised = await buildFfmpegArguments(
         openMediaInput(SOURCE, 'wav'), '/tmp/out.opus', 'opus',
         { audio: { sampleRate: 48000, loudness: {} } } as never, withSoxr,
         undefined,
@@ -279,13 +279,13 @@ describe('resampler and dither (arguments)', () => {
     }
   });
 
-  it('dithers the reduction to 16-bit PCM with triangular_hp by default and rejects dither for other codecs', () => {
-    const wav = buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', {});
+  it('dithers the reduction to 16-bit PCM with triangular_hp by default and rejects dither for other codecs', async () => {
+    const wav = await buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', {});
     expect(after(wav, '-filter:a')).toBe('aresample=dither_method=triangular_hp,aformat=sample_fmts=s16');
-    const plain = buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', { audio: { dither: 'triangular' } });
+    const plain = await buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', { audio: { dither: 'triangular' } });
     expect(after(plain, '-filter:a')).toBe('aresample=dither_method=triangular,aformat=sample_fmts=s16');
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', { audio: { dither: 'gaussian' as never } })).toThrow(InvalidMediaOptionError);
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, audio: { codec: 'aac', dither: 'triangular_hp' } })).toThrow(
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', { audio: { dither: 'gaussian' as never } })).rejects.toThrow(InvalidMediaOptionError);
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, audio: { codec: 'aac', dither: 'triangular_hp' } })).rejects.toThrow(
       /16-bit PCM output only/
     );
   });

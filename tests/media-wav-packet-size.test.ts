@@ -103,28 +103,28 @@ describe('the arguments of a conversion from a WAVE file', () => {
   const ffmpeg = (): string => stubFfmpeg('6.1.1-3ubuntu5');
   const soxrFfmpeg = (): string => stubFfmpeg('6.1.1-3ubuntu5', true);
 
-  it.each(['flac', 'mp3', 'aac', 'm4a', 'ogg'])('read the %s conversion in packets, beside the minimal probe and ahead of the input', (target) => {
+  it.each(['flac', 'mp3', 'aac', 'm4a', 'ogg'])('read the %s conversion in packets, beside the minimal probe and ahead of the input', async (target) => {
     const input = writeWav(`args-${target}.wav`, RATE, TWELVE_SECONDS);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o.${target}`), target, {}, ffmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o.${target}`), target, {}, ffmpeg());
     const at = args.indexOf('-i');
     expect(args.slice(0, at + 2)).toEqual([
       '-y', '-probesize', '32', '-protocol_whitelist', 'file', '-f', 'wav', '-max_size', String(PACKET_BYTES_OF_TWELVE_SECONDS), '-i', input,
     ]);
   });
 
-  it('keep the default packets for a file too short to be cut into 32 packets of more than the default', () => {
+  it('keep the default packets for a file too short to be cut into 32 packets of more than the default', async () => {
     const input = writeWav('args-short.wav', RATE, 0.5);
-    expect(packetSizeOf(buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, ffmpeg()))).toBeUndefined();
+    expect(packetSizeOf(await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, ffmpeg()))).toBeUndefined();
   });
 
-  it.each(['9.0.2', '8.1', 'N-118123-gabcdef0123'])('keep the default packets with an ffmpeg that is %s', (release) => {
+  it.each(['9.0.2', '8.1', 'N-118123-gabcdef0123'])('keep the default packets with an ffmpeg that is %s', async (release) => {
     const input = writeWav('args-release.wav', RATE, TWELVE_SECONDS);
-    expect(packetSizeOf(buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, stubFfmpeg(release)))).toBeUndefined();
+    expect(packetSizeOf(await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, stubFfmpeg(release)))).toBeUndefined();
   });
 
-  it('keep the default packets when there is no ffmpeg to ask', () => {
+  it('keep the default packets when there is no ffmpeg to ask', async () => {
     const input = writeWav('args-nobinary.wav', RATE, TWELVE_SECONDS);
-    expect(packetSizeOf(buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, null))).toBeUndefined();
+    expect(packetSizeOf(await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, null))).toBeUndefined();
   });
 
   it.each<[string, string, ConversionOptions]>([
@@ -133,9 +133,9 @@ describe('the arguments of a conversion from a WAVE file', () => {
     ['a sample rate of a 16-bit file', 'flac', { audio: { sampleRate: 22_050 } }],
     ['a channel count', 'flac', { audio: { channels: 1 } }],
     ['a volume', 'mp3', { audio: { volume: 50 } }],
-  ])('keep the default packets when the request sets %s', (_what, target, options) => {
+  ])('keep the default packets when the request sets %s', async (_what, target, options) => {
     const input = writeWav('args-keep.wav', RATE, TWELVE_SECONDS);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o.${target}`), target, options, ffmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o.${target}`), target, options, ffmpeg());
     expect(packetSizeOf(args)).toBeUndefined();
   });
 
@@ -144,46 +144,46 @@ describe('the arguments of a conversion from a WAVE file', () => {
     ['a volume', 'mp3', { audio: { volume: 50 } }],
     ['a channel count with a rate', 'flac', { audio: { channels: 1, sampleRate: 22_050 } }],
     ['a loudness target', 'flac', { audio: { loudness: { preset: 'podcast' } } }],
-  ])('keep the default packets of a 24-bit file when the request sets %s', (_what, target, options) => {
+  ])('keep the default packets of a 24-bit file when the request sets %s', async (_what, target, options) => {
     const input = writeWav('args-keep-24.wav', RATE, TWELVE_SECONDS, BITS_24);
     const stage = options.audio?.loudness
       ? { kind: 'apply' as const, measurement: { inputI: -20, inputTp: -3, inputLra: 5, inputThresh: -30, targetOffset: 0, sampleRate: RATE } }
       : undefined;
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o24.${target}`), target, options, ffmpeg(), undefined, stage);
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o24.${target}`), target, options, ffmpeg(), undefined, stage);
     expect(packetSizeOf(args)).toBeUndefined();
   });
 
-  it('keep the default packets in the loudness measuring pass and the pass that applies it', () => {
+  it('keep the default packets in the loudness measuring pass and the pass that applies it', async () => {
     const input = writeWav('args-loudness.wav', RATE, TWELVE_SECONDS);
     const options: ConversionOptions = { audio: { loudness: { preset: 'podcast' } } };
-    const measure = buildLoudnessMeasureArguments(openMediaInput(input, 'wav'), 'flac', options, ffmpeg());
+    const measure = await buildLoudnessMeasureArguments(openMediaInput(input, 'wav'), 'flac', options, ffmpeg());
     expect(measure).toContain('-af');
     expect(packetSizeOf(measure)).toBeUndefined();
     const stage = { kind: 'apply' as const, measurement: { inputI: -20, inputTp: -3, inputLra: 5, inputThresh: -30, targetOffset: 0, sampleRate: RATE } };
-    const apply = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', options, ffmpeg(), undefined, stage);
+    const apply = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.flac'), 'flac', options, ffmpeg(), undefined, stage);
     expect(apply).toContain('-filter:a');
     expect(packetSizeOf(apply)).toBeUndefined();
   });
 
-  it('keep the default packets where the encoder is given 16 bits from a deeper source, which is dithered', () => {
+  it('keep the default packets where the encoder is given 16 bits from a deeper source, which is dithered', async () => {
     const input = writeWav('args-24bit.wav', RATE, TWELVE_SECONDS, BITS_24);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.wav'), 'wav', {}, ffmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.wav'), 'wav', {}, ffmpeg());
     expect(args).toContain('-filter:a');
     expect(packetSizeOf(args)).toBeUndefined();
-    const lossless = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o24.flac'), 'flac', {}, ffmpeg());
+    const lossless = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o24.flac'), 'flac', {}, ffmpeg());
     expect(packetSizeOf(lossless)).toBeDefined();
   });
 
-  it('keep the default packets for libopus from a 16-bit file at 44.1 kHz, which codes 48 kHz and ends in 16-bit samples', () => {
+  it('keep the default packets for libopus from a 16-bit file at 44.1 kHz, which codes 48 kHz and ends in 16-bit samples', async () => {
     const input = writeWav('args-opus.wav', RATE, TWELVE_SECONDS);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.opus'), 'opus', {}, ffmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.opus'), 'opus', {}, ffmpeg());
     expect(args).toContain('-ar');
     expect(packetSizeOf(args)).toBeUndefined();
   });
 
-  it('read libopus from a 24-bit file at 44.1 kHz in packets although it resamples to 48 kHz', () => {
+  it('read libopus from a 24-bit file at 44.1 kHz in packets although it resamples to 48 kHz', async () => {
     const input = writeWav('args-opus-24.wav', RATE, TWELVE_SECONDS, BITS_24);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o24.opus'), 'opus', {}, ffmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o24.opus'), 'opus', {}, ffmpeg());
     expect(args).toContain('-ar');
     expect(packetSizeOf(args)).toBe('99225');
   });
@@ -197,9 +197,9 @@ describe('the arguments of a conversion from a WAVE file', () => {
     ['AAC with a rate from 16 bits', 'aac', { audio: { sampleRate: 22_050 } }, BITS_16],
     ['M4A with a rate from 16 bits', 'm4a', { audio: { sampleRate: 22_050, resampler: 'soxr' } }, BITS_16],
     ['Ogg with a rate from 16 bits', 'ogg', { audio: { sampleRate: 22_050 } }, BITS_16],
-  ])('read %s in packets when the encoder is not given 16-bit samples of the resampler', (_what, target, options, bits) => {
+  ])('read %s in packets when the encoder is not given 16-bit samples of the resampler', async (_what, target, options, bits) => {
     const input = writeWav(`args-rate-${target}-${bits}.wav`, RATE, TWELVE_SECONDS, bits);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `rate.${target}`), target, options, soxrFfmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `rate.${target}`), target, options, soxrFfmpeg());
     expect(args).toContain('-ar');
     expect(args.some((arg) => arg.startsWith('aresample=22050'))).toBe(options.audio?.resampler !== 'swr');
     expect(packetSizeOf(args)).toBeDefined();
@@ -210,19 +210,19 @@ describe('the arguments of a conversion from a WAVE file', () => {
     ['MP3', 'mp3', { audio: { sampleRate: 22_050 } }],
     ['MP3 with soxr', 'mp3', { audio: { sampleRate: 22_050, resampler: 'soxr' } }],
     ['Opus', 'opus', {}],
-  ])('keep the default packets of %s from a 16-bit file whose rate change ends in 16-bit samples', (_what, target, options) => {
+  ])('keep the default packets of %s from a 16-bit file whose rate change ends in 16-bit samples', async (_what, target, options) => {
     const input = writeWav(`args-rate16-${target}.wav`, RATE, TWELVE_SECONDS);
-    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `rate16.${target}`), target, options, soxrFfmpeg());
+    const args = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `rate16.${target}`), target, options, soxrFfmpeg());
     expect(args).toContain('-ar');
     expect(packetSizeOf(args)).toBeUndefined();
   });
 
-  it('keep the default packets for a header that does not describe the samples, and for a video target', () => {
+  it('keep the default packets for a header that does not describe the samples, and for a video target', async () => {
     const adpcm = path.join(workDir, 'args-adpcm.wav');
     fs.writeFileSync(adpcm, craftWav({ sampleRate: 8000, channels: 1, bitsPerSample: 4, formatTag: 2, data: new Uint8Array(1_000_000) }));
-    expect(packetSizeOf(buildFfmpegArguments(openMediaInput(adpcm, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, ffmpeg()))).toBeUndefined();
+    expect(packetSizeOf(await buildFfmpegArguments(openMediaInput(adpcm, 'wav'), path.join(workDir, 'o.flac'), 'flac', {}, ffmpeg()))).toBeUndefined();
     const video = writeWav('args-video.wav', RATE, TWELVE_SECONDS);
-    expect(packetSizeOf(buildFfmpegArguments(openMediaInput(video, 'wav'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg()))).toBeUndefined();
+    expect(packetSizeOf(await buildFfmpegArguments(openMediaInput(video, 'wav'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg()))).toBeUndefined();
   });
 });
 
@@ -249,9 +249,9 @@ describe('the encoders write the same file in packets', () => {
   }
 
   /** The arguments with and without the packet size, built as if the installed ffmpeg were a release the option is used with. */
-  function pair(input: string, target: string, options: ConversionOptions = {}): { packets: string[]; defaults: string[] } {
+  async function pair(input: string, target: string, options: ConversionOptions = {}): Promise<{ packets: string[]; defaults: string[] }> {
     const stub = stubFfmpeg('6.1.1-3ubuntu5', probeFfmpegBuild(ffmpeg()).soxr);
-    const packets = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `packets.${target}`), target, options, stub);
+    const packets = await buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `packets.${target}`), target, options, stub);
     expect(packetSizeOf(packets)).toBeDefined();
     return { packets, defaults: withoutPacketSize(packets).map((arg) => (arg === packets[packets.length - 1] ? path.join(workDir, `default.${target}`) : arg)) };
   }
@@ -270,11 +270,11 @@ describe('the encoders write the same file in packets', () => {
     oracleTest(
       `${bits}-bit WAVE to ${target}: the file is the one the default packets give, byte for byte`,
       ['ffmpeg'],
-      (ctx) => {
+      async (ctx) => {
         // skip-ok: a build the production code does not use the option with (its FLAC block size follows the first frame) has nothing to compare; the version table above pins that rule.
         if (!installedBuildUsesTheOption()) ctx.skip();
         const input = writeWav(`same-${bits}-${target}.wav`, RATE, 6, bits);
-        const { packets, defaults } = pair(input, target);
+        const { packets, defaults } = await pair(input, target);
         run(packets);
         run(defaults);
         expect(fs.readFileSync(packets[packets.length - 1]).equals(fs.readFileSync(defaults[defaults.length - 1]))).toBe(true);
@@ -286,13 +286,13 @@ describe('the encoders write the same file in packets', () => {
   oracleTest(
     'WAVE to Vorbis in Ogg: the same packets and the same samples (the Ogg stream serial is random)',
     ['ffmpeg'],
-    (ctx) => {
+    async (ctx) => {
       // skip-ok: a build the production code does not use the option with has nothing to compare; the version table above pins that rule.
       if (!installedBuildUsesTheOption()) ctx.skip();
       // skip-ok: libvorbis is an optional encoder (the Ogg target is an engine-unavailable answer without it, policy 54).
       if (!execFileSync(ffmpeg(), ['-hide_banner', '-encoders'], { encoding: 'utf-8' }).includes(' libvorbis ')) ctx.skip();
       const input = writeWav('same-ogg.wav', RATE, 6);
-      const { packets, defaults } = pair(input, 'ogg');
+      const { packets, defaults } = await pair(input, 'ogg');
       run(packets);
       run(defaults);
       expect(decodedSha256(packets[packets.length - 1])).toBe(decodedSha256(defaults[defaults.length - 1]));
@@ -314,13 +314,13 @@ describe('the encoders write the same file in packets', () => {
     oracleTest(
       `${label}: the same ${compare === 'bytes' ? 'file' : 'samples'} in packets as in the default ones`,
       ['ffmpeg'],
-      (ctx) => {
+      async (ctx) => {
         // skip-ok: a build the production code does not use the option with has nothing to compare; the version table above pins that rule.
         if (!installedBuildUsesTheOption()) ctx.skip();
         // skip-ok: libopus, libvorbis and soxr are optional parts of a build (the targets answer engine-unavailable without them, policy 54).
         if (!wantedPartsExist(target, options)) ctx.skip();
         const input = writeWav(`rate-${bits}-${target}.wav`, RATE, 6, bits);
-        const { packets, defaults } = pair(input, target, options);
+        const { packets, defaults } = await pair(input, target, options);
         run(packets);
         run(defaults);
         const written = packets[packets.length - 1];

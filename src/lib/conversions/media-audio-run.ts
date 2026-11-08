@@ -31,10 +31,10 @@ export interface LoudnessPassInput {
  */
 export async function measureLoudnessStage(pass: LoudnessPassInput): Promise<LoudnessStage | undefined> {
   if (!pass.options.audio?.loudness) return undefined;
-  const args = buildLoudnessMeasureArguments(pass.input, pass.tgt, pass.options, pass.ffmpegBin);
+  const args = await buildLoudnessMeasureArguments(pass.input, pass.tgt, pass.options, pass.ffmpegBin);
   const { stderr } = await pass.run(args);
   const track = typeof pass.options.audio.track === 'number' ? pass.options.audio.track : 0;
-  const sampleRate = probeAudioSampleRate(pass.input, resolveFfprobeBinary(pass.ffmpegBin), track);
+  const sampleRate = await probeAudioSampleRate(pass.input, resolveFfprobeBinary(pass.ffmpegBin), track);
   return { kind: 'apply', measurement: parseLoudnormMeasurement(stderr.toString('utf-8'), sampleRate) };
 }
 

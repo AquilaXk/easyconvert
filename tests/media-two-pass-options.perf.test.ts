@@ -94,8 +94,8 @@ describe('two-pass arguments', () => {
     ...extra,
   });
 
-  it('builds an analysing pass with no audio and a null sink, and an encode pass that reads its log', () => {
-    const [pass1, pass2] = buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr() as never, null, TWO_PASS_LOG_PREFIX);
+  it('builds an analysing pass with no audio and a null sink, and an encode pass that reads its log', async () => {
+    const [pass1, pass2] = await buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr() as never, null, TWO_PASS_LOG_PREFIX);
     expect(pass1.slice(-3)).toEqual(['-f', 'null', os.devNull]);
     expect(after(pass1, '-pass')).toBe('1');
     expect(after(pass1, '-passlogfile')).toBe('ffpass');
@@ -116,41 +116,41 @@ describe('two-pass arguments', () => {
     expect(after(pass1, '-c:v')).toBe(after(pass2, '-c:v'));
   });
 
-  it('gives x265 its pass and stats file as parameters and VP9 the ffmpeg pass options', () => {
-    const [h1, h2] = buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr({}, 'hevc') as never, null, TWO_PASS_LOG_PREFIX);
+  it('gives x265 its pass and stats file as parameters and VP9 the ffmpeg pass options', async () => {
+    const [h1, h2] = await buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr({}, 'hevc') as never, null, TWO_PASS_LOG_PREFIX);
     expect(after(h1, '-x265-params')).toBe('pass=1:stats=ffpass');
     expect(after(h2, '-x265-params')).toBe('pass=2:stats=ffpass');
     expect(h1.indexOf('-pass')).toBe(-1);
-    const [v1, v2] = buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.webm', 'webm', vbr({}, 'vp9') as never, null, TWO_PASS_LOG_PREFIX);
+    const [v1, v2] = await buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.webm', 'webm', vbr({}, 'vp9') as never, null, TWO_PASS_LOG_PREFIX);
     expect([after(v1, '-pass'), after(v2, '-pass')]).toEqual(['1', '2']);
     expect(after(v1, '-c:v')).toBe('libvpx-vp9');
     expect(v1.indexOf('-crf')).toBe(-1);
   });
 
-  it('is an InvalidMediaOptionError for a mode, codec or target with no rate-control pass', () => {
-    const build = (options: object, tgt = 'mp4') => () =>
-      buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/out.${tgt}`, tgt, options as never, null, TWO_PASS_LOG_PREFIX);
+  it('is an InvalidMediaOptionError for a mode, codec or target with no rate-control pass', async () => {
+    const build = (options: object, tgt = 'mp4') => async () =>
+      await buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/out.${tgt}`, tgt, options as never, null, TWO_PASS_LOG_PREFIX);
     const crf = { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: 23, twoPass: true } } };
     const cbr = { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'cbr', bitrateK: 1000, twoPass: true } } };
-    expect(build(crf)).toThrow(InvalidMediaOptionError);
-    expect(build(crf)).toThrow(/needs rateControl.mode 'vbr'/);
-    expect(build(cbr)).toThrow(/needs rateControl.mode 'vbr'/);
-    expect(build(vbr({}, 'av1'))).toThrow(/h264, hevc and vp9/);
-    expect(build(vbr({}, 'prores'), 'mov')).toThrow(InvalidMediaOptionError);
-    expect(build(vbr(), 'avi')).toThrow(InvalidMediaOptionError);
-    expect(build(vbr(), 'mp3')).toThrow(/video targets/);
-    expect(() => buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { video: { rateControl: { mode: 'vbr', bitrateK: 1000 } } }, null, TWO_PASS_LOG_PREFIX)).toThrow(
+    await expect(build(crf)).rejects.toThrow(InvalidMediaOptionError);
+    await expect(build(crf)).rejects.toThrow(/needs rateControl.mode 'vbr'/);
+    await expect(build(cbr)).rejects.toThrow(/needs rateControl.mode 'vbr'/);
+    await expect(build(vbr({}, 'av1'))).rejects.toThrow(/h264, hevc and vp9/);
+    await expect(build(vbr({}, 'prores'), 'mov')).rejects.toThrow(InvalidMediaOptionError);
+    await expect(build(vbr(), 'avi')).rejects.toThrow(InvalidMediaOptionError);
+    await expect(build(vbr(), 'mp3')).rejects.toThrow(/video targets/);
+    await expect(buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { video: { rateControl: { mode: 'vbr', bitrateK: 1000 } } }, null, TWO_PASS_LOG_PREFIX)).rejects.toThrow(
       /without rateControl.twoPass/
     );
     expect(() => isTwoPassRequested({ video: { rateControl: { mode: 'vbr', bitrateK: 1000, twoPass: 'yes' as never } } })).toThrow(InvalidMediaOptionError);
-    expect(() => buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr() as never, null, '../escape')).toThrow(ConversionFailedError);
+    await expect(buildTwoPassArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr() as never, null, '../escape')).rejects.toThrow(ConversionFailedError);
   });
 
-  it('never runs a twoPass request as a single pass', () => {
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr() as never)).toThrow(/both passes/);
+  it('never runs a twoPass request as a single pass', async () => {
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', vbr() as never)).rejects.toThrow(/both passes/);
   });
 
-  it('selects a software encoder for two-pass even on a host that offers a hardware one', () => {
+  it('selects a software encoder for two-pass even on a host that offers a hardware one', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-nvenc-'));
     try {
       const fake = path.join(dir, 'ffmpeg');
@@ -158,9 +158,9 @@ describe('two-pass arguments', () => {
       fs.writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *-encoders*) echo " V....D libx264              libx264"; echo " V....D h264_nvenc           NVENC H.264";;\nesac\nexit 0\n');
       fs.chmodSync(fake, 0o755);
       resetHardwareAccelerationCache();
-      const singlePass = buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { video: { codec: 'h264', rateControl: { mode: 'vbr', bitrateK: 1000 } } }, fake);
+      const singlePass = await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { video: { codec: 'h264', rateControl: { mode: 'vbr', bitrateK: 1000 } } }, fake);
       expect(after(singlePass, '-c:v')).toBe('h264_nvenc');
-      const [pass1, pass2] = buildTwoPassArguments(
+      const [pass1, pass2] = await buildTwoPassArguments(
         openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { video: { codec: 'h264', rateControl: { mode: 'vbr', bitrateK: 1000, twoPass: true } } }, fake, TWO_PASS_LOG_PREFIX
       );
       expect([after(pass1, '-c:v'), after(pass2, '-c:v')]).toEqual(['libx264', 'libx264']);
@@ -336,47 +336,47 @@ describe('two-pass encoding (decoded output)', () => {
 });
 
 describe('duration, fast start and aspect ratio (arguments and schema)', () => {
-  it('limits the output with -t after validating the value', () => {
-    const a = buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, duration: 5 });
+  it('limits the output with -t after validating the value', async () => {
+    const a = await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, duration: 5 });
     expect(after(a, '-t')).toBe('5');
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 86401, '5' as never]) {
-      expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, duration: bad }), String(bad)).toThrow(InvalidMediaOptionError);
+      await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, duration: bad }), String(bad)).rejects.toThrow(InvalidMediaOptionError);
     }
   });
 
-  it('defaults to +faststart for mp4, mov and m4a, omits it for false, and rejects true elsewhere', () => {
-    expect(after(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true }), '-movflags')).toBe('+faststart');
-    expect(after(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/o.mov', 'mov', { disableHwaccel: true, fastStart: true }), '-movflags')).toBe('+faststart');
-    expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, fastStart: false }).indexOf('-movflags')).toBe(-1);
-    expect(after(buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/o.m4a', 'm4a', {}), '-movflags')).toBe('+faststart');
-    expect(buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/o.m4a', 'm4a', { fastStart: false }).indexOf('-movflags')).toBe(-1);
+  it('defaults to +faststart for mp4, mov and m4a, omits it for false, and rejects true elsewhere', async () => {
+    expect(after(await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true }), '-movflags')).toBe('+faststart');
+    expect(after(await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/o.mov', 'mov', { disableHwaccel: true, fastStart: true }), '-movflags')).toBe('+faststart');
+    expect((await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, fastStart: false })).indexOf('-movflags')).toBe(-1);
+    expect(after(await buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/o.m4a', 'm4a', {}), '-movflags')).toBe('+faststart');
+    expect((await buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/o.m4a', 'm4a', { fastStart: false })).indexOf('-movflags')).toBe(-1);
     for (const tgt of ['mkv', 'webm', 'avi', 'mp3']) {
-      expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/o.${tgt}`, tgt, { disableHwaccel: true, fastStart: true }), tgt).toThrow(/fastStart/);
-      expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/o.${tgt}`, tgt, { disableHwaccel: true, fastStart: false }), tgt).not.toThrow();
+      await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/o.${tgt}`, tgt, { disableHwaccel: true, fastStart: true }), tgt).rejects.toThrow(/fastStart/);
+      await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/o.${tgt}`, tgt, { disableHwaccel: true, fastStart: false }), tgt).resolves.toBeDefined();
     }
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { fastStart: 'yes' as never })).toThrow(InvalidMediaOptionError);
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { fastStart: 'yes' as never })).rejects.toThrow(InvalidMediaOptionError);
   });
 
-  it('sets the display ratio with setdar by default and reshapes with pad or crop on request', () => {
-    const filters = (aspectRatio: unknown) => after(buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, aspectRatio: aspectRatio as never }), '-vf');
-    expect(filters('4:3')).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2,setdar=4/3');
-    expect(filters({ ratio: '4:3', mode: 'dar' })).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2,setdar=4/3');
-    expect(filters({ ratio: '4:3', mode: 'pad' })).toBe(
+  it('sets the display ratio with setdar by default and reshapes with pad or crop on request', async () => {
+    const filters = async (aspectRatio: unknown) => after(await buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, aspectRatio: aspectRatio as never }), '-vf');
+    expect(await filters('4:3')).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2,setdar=4/3');
+    expect(await filters({ ratio: '4:3', mode: 'dar' })).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2,setdar=4/3');
+    expect(await filters({ ratio: '4:3', mode: 'pad' })).toBe(
       "pad=w='max(iw\\,ceil(ih*4/3/2)*2)':h='max(ih\\,ceil(iw*3/4/2)*2)':x='(ow-iw)/2':y='(oh-ih)/2':color=black,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
     );
-    expect(filters({ ratio: '1:1', mode: 'crop' })).toBe(
+    expect(await filters({ ratio: '1:1', mode: 'crop' })).toBe(
       "crop=w='min(iw\\,floor(ih*1/1/2)*2)':h='min(ih\\,floor(iw*1/1/2)*2)',setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
     );
   });
 
-  it('rejects ratios that are not W:H whole numbers, are zero, or are wider than 10:1', () => {
+  it('rejects ratios that are not W:H whole numbers, are zero, or are wider than 10:1', async () => {
     for (const bad of ['wide', '16-9', '0:1', '1:0', '1:11', '11:1', '100000:1', ':3', { ratio: '4:3', mode: 'stretch' }, { mode: 'pad' }, 4]) {
-      expect(
-        () => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, aspectRatio: bad as never }),
+      await expect(
+        buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, aspectRatio: bad as never }),
         JSON.stringify(bad)
-      ).toThrow(InvalidMediaOptionError);
+      ).rejects.toThrow(InvalidMediaOptionError);
     }
-    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/o.mp3', 'mp3', { aspectRatio: '4:3' })).toThrow(/video targets/);
+    await expect(buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/o.mp3', 'mp3', { aspectRatio: '4:3' })).rejects.toThrow(/video targets/);
   });
 
   it('is part of the request schema: duration, fastStart and aspectRatio are accepted with their ranges and reject bad values with 422', () => {

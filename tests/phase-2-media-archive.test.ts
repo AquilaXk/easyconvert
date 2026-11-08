@@ -14,8 +14,8 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
   // 1. Media Dimension Normalization & Fail-Closed Checks
   // ==========================================================================
   describe('1. Media Video Dimension Normalization & Fail-Closed', () => {
-    it('normalizes odd video dimensions with scale=trunc(iw/2)*2:trunc(ih/2)*2 and pix_fmt yuv420p', () => {
-      const args = buildFfmpegArguments(openMediaInput('/tmp/sample.avi', 'avi'), '/tmp/output.mp4', 'mp4', {
+    it('normalizes odd video dimensions with scale=trunc(iw/2)*2:trunc(ih/2)*2 and pix_fmt yuv420p', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/tmp/sample.avi', 'avi'), '/tmp/output.mp4', 'mp4', {
         videoCodec: 'h264',
       });
 
@@ -26,8 +26,8 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
       expect(args[args.indexOf('-pix_fmt') + 1]).toBe('yuv420p');
     });
 
-    it('preserves explicit resolution while adding video transcoding flags', () => {
-      const args = buildFfmpegArguments(openMediaInput('/tmp/sample.avi', 'avi'), '/tmp/output.mp4', 'mp4', {
+    it('preserves explicit resolution while adding video transcoding flags', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/tmp/sample.avi', 'avi'), '/tmp/output.mp4', 'mp4', {
         videoCodec: 'h264',
         videoResolution: '720p',
       });

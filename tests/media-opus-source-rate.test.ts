@@ -71,9 +71,9 @@ function argAfter(args: string[], flag: string): string | undefined {
 }
 
 describe('the Opus encoder is fed the source rate when it can code it', () => {
-  oracleTest('keeps a supported rate and resamples only to the lowest rate that covers the band', ['ffmpeg', 'ffprobe'], () => {
+  oracleTest('keeps a supported rate and resamples only to the lowest rate that covers the band', ['ffmpeg', 'ffprobe'], async () => {
     for (const [rate, expected] of EXPECTED_ENCODE_RATE) {
-      const args = buildFfmpegArguments(openMediaInput(toneAtRate(rate), 'wav'), path.join(workDir, 'o.opus'), 'opus', {}, getOracleToolPath('ffmpeg'));
+      const args = await buildFfmpegArguments(openMediaInput(toneAtRate(rate), 'wav'), path.join(workDir, 'o.opus'), 'opus', {}, getOracleToolPath('ffmpeg'));
       expect(argAfter(args, '-ar'), `-ar for a ${rate} Hz input`).toBe(expected === undefined ? undefined : String(expected));
       if (expected === undefined) {
         expect(argAfter(args, '-filter:a'), `no resample filter for a ${rate} Hz input`).toBeUndefined();
@@ -81,8 +81,8 @@ describe('the Opus encoder is fed the source rate when it can code it', () => {
     }
   });
 
-  oracleTest('keeps the 48 kHz fallback when the input cannot be probed', ['ffmpeg'], () => {
-    const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.wav', 'wav'), path.join(workDir, 'o.opus'), 'opus', {});
+  oracleTest('keeps the 48 kHz fallback when the input cannot be probed', ['ffmpeg'], async () => {
+    const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.wav', 'wav'), path.join(workDir, 'o.opus'), 'opus', {});
     expect(argAfter(args, '-ar')).toBe('48000');
   });
 });

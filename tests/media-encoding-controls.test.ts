@@ -31,8 +31,8 @@ const TRIM_FRAME_TOLERANCE = 1;
 
 describe('WP-44a: Media Video Encoding & Filter Controls', () => {
   describe('1. Profile and Level Validation Gate', () => {
-    it('accepts valid H.264 profile and level specifications', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('accepts valid H.264 profile and level specifications', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: {
           codec: 'h264',
@@ -51,30 +51,30 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(args[lvlIdx + 1]).toBe('4.1');
     });
 
-    it('fails closed when an unsupported H.264 profile is requested', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('fails closed when an unsupported H.264 profile is requested', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           video: {
             codec: 'h264',
             profile: 'cinematic_ultra',
           },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('fails closed when an invalid H.264 level is requested', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('fails closed when an invalid H.264 level is requested', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           video: {
             codec: 'h264',
             level: '9.9',
           },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('configures HEVC main10 and AV1 main profiles accurately', () => {
-      const hevcArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('configures HEVC main10 and AV1 main profiles accurately', async () => {
+      const hevcArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: {
           codec: 'hevc',
@@ -83,7 +83,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       });
       expect(hevcArgs[hevcArgs.indexOf('-profile:v') + 1]).toBe('main10');
 
-      const av1Args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+      const av1Args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         video: {
           codec: 'av1',
           profile: 'main',
@@ -92,8 +92,8 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(av1Args[av1Args.indexOf('-profile:v') + 1]).toBe('0');
     });
 
-    it('maps ProRes profiles to numeric profile tags on MOV containers', () => {
-      const proresHq = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mov', 'mov', {
+    it('maps ProRes profiles to numeric profile tags on MOV containers', async () => {
+      const proresHq = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mov', 'mov', {
         video: {
           codec: 'prores',
           profile: 'hq',
@@ -103,7 +103,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(proresHq[proresHq.indexOf('-profile:v') + 1]).toBe('3');
       expect(proresHq[proresHq.indexOf('-pix_fmt') + 1]).toBe('yuv422p10le');
 
-      const prores4444 = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mov', 'mov', {
+      const prores4444 = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mov', 'mov', {
         video: {
           codec: 'prores',
           profile: '4444',
@@ -115,38 +115,38 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
   });
 
   describe('2. Container and Codec Rules Gate', () => {
-    it('fails closed when H.264 or ProRes is requested inside a WebM container', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
+    it('fails closed when H.264 or ProRes is requested inside a WebM container', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
           video: { codec: 'h264' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
           video: { codec: 'prores' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('fails closed when ProRes is targeted to non-MOV containers', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('fails closed when ProRes is targeted to non-MOV containers', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           video: { codec: 'prores' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mkv', 'mkv', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mkv', 'mkv', {
           video: { codec: 'prores' },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
   });
 
   describe('3. Rate Control Gate (CRF, VBR, CBR, 2-Pass)', () => {
-    it('validates CRF bounds for H.264/HEVC (0-51) and VP9/AV1 (0-63)', () => {
-      const validH264 = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('validates CRF bounds for H.264/HEVC (0-51) and VP9/AV1 (0-63)', async () => {
+      const validH264 = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: {
           codec: 'h264',
@@ -155,25 +155,25 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       });
       expect(validH264[validH264.indexOf('-crf') + 1]).toBe('18');
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           video: {
             codec: 'h264',
             rateControl: { mode: 'crf', crf: 52 },
           },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
           video: {
             codec: 'h264',
             rateControl: { mode: 'crf', crf: -1 },
           },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
 
-      const validVp9 = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
+      const validVp9 = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
         video: {
           codec: 'vp9',
           rateControl: { mode: 'crf', crf: 63 },
@@ -181,29 +181,29 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       });
       expect(validVp9[validVp9.indexOf('-crf') + 1]).toBe('63');
 
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.webm', 'webm', {
           video: {
             codec: 'vp9',
             rateControl: { mode: 'crf', crf: 64 },
           },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('rejects CRF rate control on ProRes codec fail-closed', () => {
-      expect(() => {
-        buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mov', 'mov', {
+    it('rejects CRF rate control on ProRes codec fail-closed', async () => {
+      await expect(async () => {
+        await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mov', 'mov', {
           video: {
             codec: 'prores',
             rateControl: { mode: 'crf', crf: 20 },
           },
         });
-      }).toThrowError(InvalidMediaOptionError);
+      }).rejects.toThrowError(InvalidMediaOptionError);
     });
 
-    it('generates VBR and CBR bitrate parameters accurately', () => {
-      const vbrArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('generates VBR and CBR bitrate parameters accurately', async () => {
+      const vbrArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: {
           codec: 'h264',
@@ -219,7 +219,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(vbrArgs[vbrArgs.indexOf('-maxrate') + 1]).toBe('3500k');
       expect(vbrArgs[vbrArgs.indexOf('-bufsize') + 1]).toBe('5000k');
 
-      const cbrArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+      const cbrArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: {
           codec: 'h264',
@@ -237,8 +237,8 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
   });
 
   describe('4. Strict Filter Graph Sequencing', () => {
-    it('enforces fixed sequence: bwdif -> crop -> transpose -> scale -> fps -> even parity -> format', () => {
-      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('enforces fixed sequence: bwdif -> crop -> transpose -> scale -> fps -> even parity -> format', async () => {
+      const args = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: {
           codec: 'h264',
@@ -270,8 +270,8 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(args[args.indexOf('-pix_fmt') + 1]).toBe('yuv420p');
     });
 
-    it('always appends even parity correction scale filter regardless of options', () => {
-      const noFilterArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('always appends even parity correction scale filter regardless of options', async () => {
+      const noFilterArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: { codec: 'h264' },
       });
@@ -280,15 +280,15 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(noFilterArgs[vfIdx + 1]).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
     });
 
-    it('handles rotate 180 and 270 degrees accurately', () => {
-      const rot180 = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('handles rotate 180 and 270 degrees accurately', async () => {
+      const rot180 = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: { rotate: 180 },
       });
       const vf180 = rot180[rot180.indexOf('-vf') + 1];
       expect(vf180).toBe('transpose=2,transpose=2,scale=trunc(iw/2)*2:trunc(ih/2)*2');
 
-      const rot270 = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+      const rot270 = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: { rotate: 270 },
       });
@@ -296,15 +296,15 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(vf270).toBe('transpose=2,scale=trunc(iw/2)*2:trunc(ih/2)*2');
     });
 
-    it('supports cover and stretch scale fit modes', () => {
-      const coverArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('supports cover and stretch scale fit modes', async () => {
+      const coverArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: { scale: { width: 1920, height: 1080, fit: 'cover' } },
       });
       const vfCover = coverArgs[coverArgs.indexOf('-vf') + 1];
       expect(vfCover).toBe('scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,scale=trunc(iw/2)*2:trunc(ih/2)*2');
 
-      const stretchArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+      const stretchArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         video: { scale: { width: 1280, height: 720, fit: 'stretch' } },
       });
@@ -312,8 +312,8 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(vfStretch).toBe('scale=1280:720,scale=trunc(iw/2)*2:trunc(ih/2)*2');
     });
 
-    it('configures temporal trim seek before input and end timestamp', () => {
-      const trimArgs = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+    it('configures temporal trim seek before input and end timestamp', async () => {
+      const trimArgs = await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         trim: { start: '00:00:02.500', end: '00:00:15.000' },
       });
       const inputOptions = trimArgs.slice(0, trimArgs.indexOf('-i'));
@@ -336,9 +336,9 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       expect(computeMediaTimeoutMs(120, 600000)).toBe(420000);
     });
 
-    it('probes duration from options or defaults to 0 safely', () => {
-      expect(probeMediaDuration(openMediaInput('/nonexistent/path.mp4', 'mp4'), { duration: 42.5 })).toBe(42.5);
-      expect(probeMediaDuration(openMediaInput('/nonexistent/path.mp4', 'mp4'))).toBe(0);
+    it('probes duration from options or defaults to 0 safely', async () => {
+      expect(await probeMediaDuration(openMediaInput('/nonexistent/path.mp4', 'mp4'), { duration: 42.5 })).toBe(42.5);
+      expect(await probeMediaDuration(openMediaInput('/nonexistent/path.mp4', 'mp4'))).toBe(0);
     });
   });
 
@@ -364,7 +364,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
           inputPath,
         ], { stdio: 'ignore' });
 
-        const args = buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), outputPath, 'mp4', {
+        const args = await buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), outputPath, 'mp4', {
           disableHwaccel: true,
           video: {
             codec: 'h264',
@@ -429,7 +429,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
         ], { stdio: 'ignore' });
 
         // Crop to 300x200 (x=50, y=50), rotate 90 -> final dimensions must be 200 width, 300 height
-        const args = buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), outputPath, 'mp4', {
+        const args = await buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), outputPath, 'mp4', {
           disableHwaccel: true,
           video: {
             codec: 'h264',
@@ -487,7 +487,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
         ], { stdio: 'ignore' });
 
         // Trim 1.0 to 3.5 -> duration ~ 2.5s
-        const args = buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), outputPath, 'mp4', {
+        const args = await buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), outputPath, 'mp4', {
           disableHwaccel: true,
           trim: { start: '1.0', end: '3.5' },
           video: { codec: 'h264' },

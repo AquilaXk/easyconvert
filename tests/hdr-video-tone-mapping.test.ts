@@ -129,7 +129,7 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
     expect((failure as Error).message).toMatch(/toneMap "filmic" is not supported; use one of none, clip, bt2390/);
   }, 120_000);
 
-  it('a build without zscale answers EngineUnavailableError (503), not a wrong picture', () => {
+  it('a build without zscale answers EngineUnavailableError (503), not a wrong picture', async () => {
     const dir = path.join(work, 'no-zscale');
     mkdirSync(dir, { recursive: true });
     const fake = path.join(dir, 'ffmpeg');
@@ -137,16 +137,16 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
     symlinkSync(getOracleToolPath('ffprobe')!, path.join(dir, 'ffprobe'));
     resetHardwareAccelerationCache();
     resetZscaleCache();
-    const build = () => buildFfmpegArguments(openMediaInput(pq, 'mp4'), path.join(work, 'x.mp4'), 'mp4', { disableHwaccel: true }, fake);
-    expect(build).toThrow(EngineUnavailableError);
-    expect(build).toThrow(/zscale/);
+    const build = async () => await buildFfmpegArguments(openMediaInput(pq, 'mp4'), path.join(work, 'x.mp4'), 'mp4', { disableHwaccel: true }, fake);
+    await expect(build).rejects.toThrow(EngineUnavailableError);
+    await expect(build).rejects.toThrow(/zscale/);
     resetZscaleCache();
   });
 
-  it('SDR input gets no HDR chain and no forced tags', () => {
+  it('SDR input gets no HDR chain and no forced tags', async () => {
     const sdr = path.join(work, 'sdr.mp4');
     execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=64x48:rate=25:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', sdr]);
-    const args = buildFfmpegArguments(openMediaInput(sdr, 'mp4'), path.join(work, 'y.mp4'), 'mp4', { disableHwaccel: true }, getOracleToolPath('ffmpeg')!);
+    const args = await buildFfmpegArguments(openMediaInput(sdr, 'mp4'), path.join(work, 'y.mp4'), 'mp4', { disableHwaccel: true }, getOracleToolPath('ffmpeg')!);
     expect(args.join(' ')).not.toMatch(/zscale|lutrgb/);
     expect(args).not.toContain('-color_trc');
   });
