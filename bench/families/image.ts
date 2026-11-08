@@ -9,6 +9,7 @@ import { type RemoteSample, remoteSamples } from '../corpora';
 import { decodeImageToPng, fileSize, flattenOnGrey, measureSsimulacra2, pictureAlpha, pictureQuality, probeFile, type ImageKind } from '../measure';
 import { OutputIntegrityError } from '../errors';
 import { hasValidChunkChecksums, withMetadataOf } from '../png-metadata';
+import { runImageJxlPng } from './image-jxl';
 import { numberRecord, type RefSpec } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow, speedRowId, undeterminedBdRows } from '../rows';
@@ -18,12 +19,14 @@ import { runTool } from '../tools';
  * Image family: jpg and png sources to webp, avif and jpg, against cwebp, avifenc and ImageMagick at matched quality. The
  * generated corpus (bench/corpus/) is the core; the public sample sets (photographs, screenshots, line art, pictures with
  * transparency and 16-bit pictures, bench/corpus/remote-manifest.json) add a case per sample and target, and a row per
- * content class that averages the BD-rates of its samples (bench/class-rows.ts).
+ * content class that averages the BD-rates of its samples (bench/class-rows.ts). The JPEG XL samples are cases like the others: the
+ * reference decodes them with libjxl's `djxl` and its encoders take the decoded pixels, as they take those of a JPEG, and the PNG
+ * target of a JPEG XL picture has rows of its own (bench/families/image-jxl.ts).
  */
 
 interface ImageCase {
   file: string;
-  format: 'jpg' | 'png';
+  format: 'jpg' | 'png' | 'jxl';
   /** Bits per sample of the source (checked with ffprobe and identify). */
   bitDepth: 8 | 16;
   /** Some pixel of the source is not opaque; it is judged flattened onto grey, and JPEG (no alpha) is not a target. A picture whose alpha channel is fully opaque is an ordinary picture. */
@@ -43,12 +46,17 @@ const CORE_CASES: readonly ImageCase[] = [
 function publicCases(): ImageCase[] {
   return remoteSamples('image').map((sample) => ({
     file: sample.id,
-    format: /\.jpe?g$/.test(sample.id) ? 'jpg' : 'png',
+    format: sourceFormatOf(sample.id),
     bitDepth: sample.meta.bitDepth === 16 ? 16 : 8,
     alpha: sample.meta.transparent === true,
     contentClass: sample.class,
     remote: sample,
   }));
+}
+/** The source format of a public sample, by its name. */
+export function sourceFormatOf(id: string): ImageCase['format'] {
+  if (/\.jpe?g$/.test(id)) return 'jpg';
+  return id.endsWith('.jxl') ? 'jxl' : 'png';
 }
 const TARGETS = ['webp', 'avif', 'jpg'] as const;
 type Target = (typeof TARGETS)[number];
@@ -139,7 +147,7 @@ export const runImage: FamilyRunner = async (ctx) => {
       const caseName = `${sample.file}->${target}`;
       if (!ctx.inScope('image', caseName)) continue;
       const refTool = REFERENCE_TOOL[target];
-      const plan = ctx.plan(['ffmpeg', ...(sample.remote ? ['ffprobe'] : []), refTool, ...DECODER_TOOLS[target]], caseName);
+      const plan = ctx.plan(['ffmpeg', ...(sample.remote ? ['ffprobe'] : []), ...(sample.format === 'jxl' ? ['djxl'] : []), refTool, ...DECODER_TOOLS[target]], caseName);
       if (!plan.ok) {
         rows.push(...skippedGroup('image', caseName, GROUP_SPECS, REFERENCE_NAME[target], plan));
         continue;
@@ -155,6 +163,7 @@ export const runImage: FamilyRunner = async (ctx) => {
         ffmpeg: plan.paths.ffmpeg,
         dwebp: plan.paths.dwebp ?? null,
         avifdec: plan.paths.avifdec ?? null,
+        djxl: plan.paths.djxl ?? null,
       };
       const decodedSource = ctx.scratch(`${sample.file}.png`);
       decodeImageToPng(sample.format, sourcePath, decodedSource, decoders);
@@ -193,7 +202,7 @@ export const runImage: FamilyRunner = async (ctx) => {
       /** What the reference encode at one quality depends on: the encoder and its settings, the decoders and the source picture. */
       const referenceSpec = (kind: string, quality: number): RefSpec => ({
         kind,
-        tools: ['ffmpeg', refTool, ...DECODER_TOOLS[target]],
+        tools: ['ffmpeg', refTool, ...DECODER_TOOLS[target], ...(sample.format === 'jxl' ? ['djxl'] : [])],
         files: [sample.file],
         settings: { case: caseName, quality, referenceInput: REFERENCE_INPUT_SETTING, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED, avifencDepth: sample.bitDepth > 8 ? AVIFENC_DEEP_DEPTH : 'source', avifencChroma: grey ? 'monochrome' : '420', avifencLosslessQuality: AVIFENC_LOSSLESS_QUALITY, avifencAlpha: 'colour quality' },
       });
@@ -242,7 +251,7 @@ export const runImage: FamilyRunner = async (ctx) => {
             measure(await oursEncode(HEADLINE_QUALITY), oursFile);
             const referenceScore = await ctx.refCache.value(
               'image',
-              { ...referenceSpec('ssimulacra2', HEADLINE_QUALITY), tools: ['ffmpeg', refTool, ...DECODER_TOOLS[target], 'ssimulacra2'] },
+              { ...referenceSpec('ssimulacra2', HEADLINE_QUALITY), tools: [...referenceSpec('ssimulacra2', HEADLINE_QUALITY).tools, 'ssimulacra2'] },
               parseScore,
               () => {
                 const refFile = ctx.scratch(`ref-ss2.${target}`);
@@ -272,12 +281,19 @@ export const runImage: FamilyRunner = async (ctx) => {
         const timedInput = sample.format === 'png' ? referenceInput : sourcePath;
         const timedBytes = timedInput === sourcePath ? input : fs.readFileSync(timedInput);
         const timingOut = path.join(ctx.work, `timing-${path.basename(sourcePng)}.${target}`);
+        /** The reference reads a JPEG XL picture through its own decoder, so its time includes the decode that ours includes. */
+        const timingDecoded = path.join(ctx.work, `timing-decoded-${path.basename(sourcePng)}`);
+        const referenceTimed = (): void => {
+          if (sample.format !== 'jxl') return referenceEncode(target, plan.paths[refTool], timedInput, HEADLINE_QUALITY, timingOut, sample.bitDepth, grey);
+          runTool(plan.paths.djxl, [timedInput, timingDecoded, '--quiet']);
+          referenceEncode(target, plan.paths[refTool], timingDecoded, HEADLINE_QUALITY, timingOut, sample.bitDepth, grey);
+        };
         const timing = await ctx.time(
           speedRowId('image', caseName),
           async () => {
             await oursEncode(HEADLINE_QUALITY, timedBytes);
           },
-          () => referenceEncode(target, plan.paths[refTool], timedInput, HEADLINE_QUALITY, timingOut, sample.bitDepth, grey),
+          referenceTimed,
           'light'
         );
         rows.push(throughputRow('image', caseName, timedBytes.length, timing, tool));
@@ -285,6 +301,7 @@ export const runImage: FamilyRunner = async (ctx) => {
     }
   }
   rows.push(...classes.rows('image', (suffix) => REFERENCE_NAME[suffix.slice(2) as Target]).filter((row) => ctx.inScope('image', row.case)));
+  if (ctx.quality) rows.push(...(await runImageJxlPng(ctx)));
   return rows;
 };
 

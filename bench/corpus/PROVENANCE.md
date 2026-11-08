@@ -94,6 +94,7 @@ declared in the manifest and checked against the decoded file.
 | `wm-deep-xray.png` | deep | 16-bit grey radiograph (Natural History Museum, London) on Wikimedia Commons; `CC0-1.0` |
 | `wm-deep-moon.png` | deep | 16-bit RGB astrophotograph by Kevin M. Gill on Wikimedia Commons; `CC-BY-2.0` |
 | `wm-deep-dart.png` | deep | 16-bit RGB space telescope composite (NASA, ESA, CSA) on Wikimedia Commons; `Public-domain` |
+| `jxl-bicycles.jxl`, `jxl-noise.jxl`, `jxl-delta-palette.jxl` | jxl | Test bitstreams of the JPEG XL conformance repository of the libjxl project, at the pinned commit `b1d0f990b03e57bf6d137c365cd5dc8b470b9191` (terms: https://github.com/libjxl/conformance/blob/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/README.md): a lossy photograph, a photograph with noise synthesis and a graphic with a delta palette, 8 bits, sRGB, without alpha; `CC0-1.0` (`testcases/README.md` marks the source images CC0; the repository is BSD 3-clause). The reference decodes them with `djxl` of libjxl and its encoders take the decoded pixels |
 
 ### Video (`bench/families/video.ts`), first frames of the AV1 common test conditions sequences at https://media.xiph.org/video/aomctc/test_set/
 

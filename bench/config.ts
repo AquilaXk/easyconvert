@@ -189,7 +189,7 @@ export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = 
  * rest, which keeps the timing job inside its budget. A pull request measures none of them (BENCH_CORPUS_TIER=pr).
  */
 export const PUBLIC_SPEED_SAMPLES: Readonly<Record<string, readonly string[]>> = {
-  image: ['kodim23.png', 'clic-paul-itkin-46101.png', 'wm-screen-history.png', 'wm-lineart-family-tree.png', 'wm-alpha-graph.png', 'wm-deep-dart.png'],
+  image: ['kodim23.png', 'clic-paul-itkin-46101.png', 'wm-screen-history.png', 'wm-lineart-family-tree.png', 'wm-alpha-graph.png', 'wm-deep-dart.png', 'jxl-bicycles.jxl'],
   video: ['aom-fourpeople-270p.y4m', 'aom-touchdown-360p.y4m', 'aom-debugging-1080p.y4m'],
   audio: ['sqam-49-speech-en-f.flac', 'sqam-27-castanets.flac', 'sqam-65-orchestra-strauss.flac', 'pteraxys-part1.flac', 'edge-surround-5.1.wav'],
   compression: ['silesia-xml', 'silesia-ooffice'],

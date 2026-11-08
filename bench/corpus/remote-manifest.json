@@ -13,6 +13,10 @@
       "title": "Files of Wikimedia Commons under open licences (screenshots, diagrams, 16-bit pictures, a studio recording)",
       "terms": "https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia"
     },
+    "libjxl-conformance": {
+      "title": "JPEG XL conformance bitstreams of the libjxl project (test cases the README marks CC0); three are used",
+      "terms": "https://github.com/libjxl/conformance/blob/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/README.md"
+    },
     "aom-ctc": {
       "title": "AV1 common test conditions sequences (first frames of each, 8-bit 4:2:0)",
       "terms": "https://media.xiph.org/video/aomctc/test_set/"
@@ -1182,6 +1186,63 @@
         "transparent": false,
         "title": "File:Webb, Hubble Capture Detailed Views of DART Impact.png",
         "author": "Science: NASA, ESA, CSA, Jian-Yang Li (PSI), Cristina Thomas (Northern Arizona U"
+      }
+    },
+    {
+      "id": "jxl-bicycles.jxl",
+      "family": "image",
+      "class": "jxl",
+      "set": "libjxl-conformance",
+      "description": "Bicycles in a street, 1024x631, a lossy VarDCT file (XYB, squeeze)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/libjxl/conformance/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/bicycles/input.jxl"
+      },
+      "bytes": 73501,
+      "sha256": "8ef03ccccb45bdb5f3d37c9a4c392f745e3e4ad7f4ffc2cbc1e1ba68487a75a6",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "transparent": false
+      }
+    },
+    {
+      "id": "jxl-noise.jxl",
+      "family": "image",
+      "class": "jxl",
+      "set": "libjxl-conformance",
+      "description": "A photograph of 500x606 pixels with the noise synthesis of the codestream on",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/libjxl/conformance/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/noise/input.jxl"
+      },
+      "bytes": 118125,
+      "sha256": "20cddadc3fdbae331a912dba0d14e6326008094d7a16d006961ccdeac2bc9950",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "transparent": false
+      }
+    },
+    {
+      "id": "jxl-delta-palette.jxl",
+      "family": "image",
+      "class": "jxl",
+      "set": "libjxl-conformance",
+      "description": "A 555x751 graphic coded with a delta palette",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/libjxl/conformance/b1d0f990b03e57bf6d137c365cd5dc8b470b9191/testcases/delta_palette/input.jxl"
+      },
+      "bytes": 107899,
+      "sha256": "00e24cc453cdf84897d62b0aafc7a9f7024205bbce1922e99d7ad0003759ae7c",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "transparent": false
       }
     },
     {

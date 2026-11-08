@@ -20,12 +20,14 @@ const MAX_ALIGN_LAG_SAMPLES = 4_096;
 const ALIGN_WINDOW_SAMPLES = 16_384;
 const PCM16_BYTES = 2;
 
-export type ImageKind = 'webp' | 'avif' | 'jpg' | 'png';
+export type ImageKind = 'webp' | 'avif' | 'jpg' | 'png' | 'jxl';
 
 export interface ImageDecoders {
   ffmpeg: string;
   dwebp: string | null;
   avifdec: string | null;
+  /** libjxl's `djxl`, the reference decoder of JPEG XL; needed only when a JPEG XL picture is decoded. */
+  djxl?: string | null;
 }
 
 /** Decodes an image file to PNG with the reference decoder of its format. */
@@ -38,6 +40,10 @@ export function decodeImageToPng(kind: ImageKind, input: string, output: string,
     // The picture is compared by its pixels. avifdec would also copy an embedded ICC profile into the PNG, and libpng refuses a grey profile on the RGB picture avifdec writes.
     runTool(tools.avifdec, ['--ignore-icc', input, output]);
     dropExifChunk(output);
+  } else if (kind === 'jxl') {
+    if (!tools.djxl) throw new ToolRunError('djxl is required to decode JPEG XL');
+    // The reference decode of a JPEG XL picture: libjxl's own program, which turns the picture by its orientation and writes more than 8 bits as 16.
+    runTool(tools.djxl, [input, output, '--quiet']);
   } else {
     // ffmpeg's SIMD inverse transforms and colour conversions differ between CPU architectures, which moved the PSNR of a decoded
     // JPEG by 1 to 2 dB between the arm64 machine of a baseline and the x86-64 runner. `-cpuflags 0` runs the portable C code, the same everywhere.
