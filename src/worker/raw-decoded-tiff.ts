@@ -186,8 +186,9 @@ export function assertCompleteDecodedImage(filePath: string, layout: DecodedTiff
 
 /**
  * The TIFF the decoder wrote, as the conversion reads it: with no absolute resolution. The decoder writes 300 dpi into every file whatever the
- * camera says, a constant of the decoder and not the print size of the picture.
+ * camera says, a constant of the decoder and not the print size of the picture. The unit is changed in the buffer just read: a copy would hold
+ * the whole developed picture twice (75 MB for 12.5 megapixels) for the rest of the conversion.
  */
 export function readDecodedRawImage(decodedPath: string): Buffer {
-  return withoutAbsoluteResolution(fs.readFileSync(decodedPath));
+  return withoutAbsoluteResolution(fs.readFileSync(decodedPath), { inPlace: true });
 }
