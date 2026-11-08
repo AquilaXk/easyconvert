@@ -29,6 +29,12 @@ const LEFTOVER_HANG_GUARD_MS = 10_000;
 /** Hang guard of one run of a program that takes milliseconds: it only ends a run that would never end. */
 const RUN_HANG_GUARD_MS = 20_000;
 
+/** Whether the kernel's caches can be dropped by this test: it runs as root, or sudo asks for no password. */
+function canDropCaches(): boolean {
+  if (process.platform !== 'linux') return false;
+  return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore' }).status === 0;
+}
+
 let scratch = '';
 let pidInit = '';
 let denyBinary = '';
@@ -209,6 +215,72 @@ describe.skipIf(compilerMissing || namespacesMissing)('pid-init', () => {
         status: 0,
         lines: [`read /proc/${target()}/cmdline`, `read /proc/${target()}/status`, 'wrote oom_score_adj'],
       });
+      // It says so, on the first line of the standard error of the program, which the worker takes off and logs.
+      expect(refused.stderr.split('\n')[0]).toBe('pid-init: /proc not hidden: the kernel has no Landlock');
+    });
+
+    it('says nothing on the standard error when the ruleset is in force or --keep-proc leaves /proc alone', () => {
+      expect(inNamespace(['sh', '-c', 'echo "$0" >&2', 'program-stderr']).stderr).toBe('program-stderr\n');
+      expect(inNamespace(['sh', '-c', 'echo "$0" >&2', 'program-stderr'], undefined, ['--keep-proc']).stderr).toBe('program-stderr\n');
+    });
+
+    /** Moves a file and links one between two directories with the calls themselves (a shell's mv falls back to copying on EXDEV). */
+    const MOVE_SCRIPT = [
+      "const fs = require('node:fs'), path = require('node:path');",
+      'const [a, b] = [process.argv[1], process.argv[2]];',
+      "fs.mkdirSync(a); fs.mkdirSync(b); fs.writeFileSync(path.join(a, 'f'), 'x');",
+      "fs.linkSync(path.join(a, 'f'), path.join(b, 'link'));",
+      "fs.renameSync(path.join(a, 'f'), path.join(b, 'f'));",
+      "console.log(fs.readFileSync(path.join(b, 'f'), 'utf8') + fs.readFileSync(path.join(b, 'link'), 'utf8'));",
+    ].join('\n');
+
+    it.each([
+      ['in a PID namespace', []],
+      ['without one', ['--no-pid-namespace']],
+    ])('lets the program rename and link files between directories %s (a ruleset that did not handle moves would refuse them with EXDEV)', (_name, options) => {
+      const dir = fs.mkdtempSync(path.join(scratch, 'move-'));
+      const run = inNamespace([process.execPath, '-e', MOVE_SCRIPT, path.join(dir, 'from'), path.join(dir, 'to')], undefined, options);
+      expect({ status: run.status, out: run.stdout.trim(), err: run.stderr }).toEqual({ status: 0, out: 'xx', err: '' });
+    });
+
+    it('keeps the /proc entries of the ruleset open: in PID 1 of the namespace, and in the program itself when it has none', () => {
+      /** The descriptors a program lists for itself (`ls` is the program), as [number, target], without the directory `ls` is reading. */
+      const held = (options: string[]): Array<[number, string]> =>
+        [...inNamespace(['ls', '-l', '/proc/self/fd'], undefined, options).stdout.matchAll(/ (\d+) -> (\S+)$/gm)]
+          .map((match): [number, string] => [Number(match[1]), match[2]])
+          .filter(([, target]) => target.startsWith('/proc/') && !target.endsWith('/fd'));
+      const alone = held(['--no-pid-namespace']);
+      expect(alone.length).toBeGreaterThan(10);
+      expect(alone.every(([fd]) => fd >= 200)).toBe(true);
+      // In a PID namespace PID 1 holds them and the program carries none.
+      expect(held([])).toEqual([]);
+    });
+
+    // skip-ok: forcing the kernel to drop its cached /proc entries needs root (drop_caches); CI has passwordless sudo, and skipUnless fails the run under ORACLE_STRICT_MODE=1 without it.
+    describe.skipIf(skipUnless('root or passwordless sudo for drop_caches', canDropCaches()))('after the kernel dropped its cached /proc entries', () => {
+      it.each([
+        ['in a PID namespace', []],
+        ['without one', ['--no-pid-namespace']],
+      ])('the program still reads its own and the system-wide /proc entries %s', async (_name, options) => {
+        const script = [
+          'check() { if read -r line < "$1"; then echo "$1 ok"; else echo "$1 denied"; fi; }',
+          'echo ready',
+          'read go',
+          'for file in /proc/self/status /proc/thread-self/stat /proc/meminfo /proc/cpuinfo /proc/net/dev /proc/mounts /proc/uptime; do check "$file"; done',
+        ].join('\n');
+        const child = spawn('unshare', ['-r', '-n', '--', pidInit, ...options, '--', 'sh', '-c', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+        let out = '';
+        child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString()));
+        const ended = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+        const deadline = Date.now() + RUN_HANG_GUARD_MS;
+        while (!out.includes('ready') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        // Twice, as one pass leaves some entries behind.
+        for (let pass = 0; pass < 2; pass++) execFileSync('sudo', ['-n', 'sh', '-c', 'echo 3 > /proc/sys/vm/drop_caches']);
+        child.stdin.end('go\n');
+        expect(await ended).toBe(0);
+        const lines = out.trim().split('\n').slice(1);
+        expect(lines).toEqual(['/proc/self/status ok', '/proc/thread-self/stat ok', '/proc/meminfo ok', '/proc/cpuinfo ok', '/proc/net/dev ok', '/proc/mounts ok', '/proc/uptime ok']);
+      }, 40_000);
     });
   });
 });

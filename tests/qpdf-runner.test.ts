@@ -311,6 +311,8 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       expect(job.get('dumpable')).toBe('0');
       expect(job.get('pdeathsig')).toBe('9');
       expect(job.get('open-fds-above-2')).toBe('0');
+      // The only descriptors the job holds are the /proc entries its ruleset names, kept open so that a dropped entry does not lose the rule.
+      expect(Number(job.get('proc-fds-kept'))).toBeGreaterThan(10);
       const limits = result.stdout.toString('utf8');
       expect(limits).toMatch(/Max address space\s+536870912\s+536870912/);
       expect(limits).toMatch(/Max file size\s+123456789\s+123456789/);

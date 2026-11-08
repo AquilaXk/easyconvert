@@ -255,6 +255,19 @@ describe.skipIf(skipUnless('unprivileged user, network and PID namespaces (unsha
         TEST_TIMEOUT_MS
       );
 
+      it(
+        'control: a run that opts out of the hiding with hideProc: false reads the command line and the status of the sibling',
+        async () => {
+          const siblingPid = await startSibling();
+          const run = await executeSandboxedBinary(process.execPath, ['-e', PROC_SCRIPT, String(siblingPid)], {
+            timeoutMs: PROC_READ_HANG_GUARD_MS,
+            sandboxOptions: { hideProc: false },
+          });
+          expect(JSON.parse(run.stdout.toString('utf-8'))).toEqual(PROC_VISIBLE);
+        },
+        TEST_TIMEOUT_MS
+      );
+
       it.each([
         ['in a PID namespace of its own', {}],
         ['without a PID namespace (the programs that read /proc/self)', { pidNamespace: false }],

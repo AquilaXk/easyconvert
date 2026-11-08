@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 152 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 153 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -60,6 +60,7 @@ Generate a secret with `openssl rand -hex 32`.
 | --- | --- | --- | --- | --- |
 | `STRICT_SANDBOX` | `true` or `false` | `false` | no | web, worker |
 | `SANDBOX_PID_NAMESPACE` | `true` or `false` | `true` | no | web, worker |
+| `SANDBOX_HIDE_PROC` | `true` or `false` | `true` | no | web, worker |
 | `SANDBOX_LAUNCHER` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `HTML_IMAGE_FETCH` | one of `on`, `off` (any case) | `on` | no | web, worker |
 | `TRUSTED_PROXIES` | comma-separated IPv4/IPv6 addresses or CIDR ranges or `none`, at most 256 entries | none | no | web |
@@ -69,6 +70,7 @@ Generate a secret with `openssl rand -hex 32`.
 
 - `STRICT_SANDBOX`: Set to `true` to refuse running native tools without the strict process sandbox.
 - `SANDBOX_PID_NAMESPACE`: Set to `false` to start sandboxed programs without `pid-init` (on by default): without the PID namespace of their own, and without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs. calibre and veraPDF always run outside the PID namespace: calibre's launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount; they still get the ruleset.
+- `SANDBOX_HIDE_PROC`: Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs (on by default; `pid-init --keep-proc`). The PID namespace stays. A single call can opt out with `sandboxOptions.hideProc: false`.
 - `SANDBOX_LAUNCHER`: Whether sandboxed native tools are started by the persistent low-heap launcher process instead of forked directly from the worker. `auto` (the default) uses the launcher when available and falls back to a direct start; `off` always starts programs directly.
 - `HTML_IMAGE_FETCH`: Whether the public http and https images of an HTML page are fetched and embedded when it is converted to PDF. `on` (the default) fetches them in a separate, credential-free child process that needs outbound TCP 80 and 443 to public addresses (see docker/AIRGAP.md for the network policy). `off` for deployments without egress: no image is fetched, and each external image is left out of the PDF with a warning (a request with `requireResources` is refused).
 - `TRUSTED_PROXIES`: Comma-separated IPv4/IPv6 addresses or CIDR ranges of the reverse proxies in front of the server, or `none` for a directly exposed server. Production should declare one of TRUSTED_PROXIES or TRUSTED_CDN; the edge middleware answers API requests with 503 until it does (docs/client-ip-trust.md).

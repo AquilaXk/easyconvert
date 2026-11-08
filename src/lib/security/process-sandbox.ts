@@ -383,6 +383,10 @@ export interface UnshareCapability {
 export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
 /** Set to `false` to start sandboxed programs without `pid-init`, so without the PID namespace of their own and without the hiding of the /proc entries of the other runs; on by default. */
 export const SANDBOX_PID_NAMESPACE_ENV = 'SANDBOX_PID_NAMESPACE';
+/** Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries of the other runs (pid-init `--keep-proc`); the PID namespace stays. On by default. */
+export const SANDBOX_HIDE_PROC_ENV = 'SANDBOX_HIDE_PROC';
+/** What pid-init and qpdf-runner print at the start of the standard error of a program they could not hide /proc from. */
+export const PROC_NOT_HIDDEN_NOTICE = 'pid-init: /proc not hidden: ';
 const PID_INIT_CANDIDATES = ['/usr/local/bin/pid-init', '/usr/bin/pid-init'];
 
 /** The `pid-init` executable: the one `PID_INIT_PATH` names, or the first of the standard places. */
@@ -422,6 +426,25 @@ function sayProcHideDegraded(reason: string): void {
   console.warn(`[sandbox] Programs can read the command line and the status of the other runs of this worker in /proc: ${reason}. The Landlock ruleset that hides them needs Linux 5.13 or later with Landlock enabled (cat /sys/kernel/security/lsm) and a seccomp profile that allows the landlock_* calls.`);
 }
 
+/** Whether the hiding of the /proc entries of the other runs is switched off for every run (SANDBOX_HIDE_PROC=false, read as SANDBOX_PID_NAMESPACE is). */
+export function procHidingDisabled(): boolean {
+  return process.env[SANDBOX_HIDE_PROC_ENV]?.trim().toLowerCase() === 'false';
+}
+
+/**
+ * Takes the line off the start of a program's standard error with which pid-init or qpdf-runner say that they could not put the ruleset
+ * in force for this run, and says so (once, as the probe does). The line is printed before the program starts, so it is the first thing in
+ * the output; a program's own output never starts with it.
+ */
+export function withoutProcHideNotice(stderr: Buffer): Buffer {
+  if (stderr.length < PROC_NOT_HIDDEN_NOTICE.length || stderr.toString('utf-8', 0, PROC_NOT_HIDDEN_NOTICE.length) !== PROC_NOT_HIDDEN_NOTICE) return stderr;
+  let end = stderr.indexOf(0x0a);
+  const reason = stderr.toString('utf-8', PROC_NOT_HIDDEN_NOTICE.length, end === -1 ? stderr.length : end).trim().slice(0, 200);
+  end = end === -1 ? stderr.length : end + 1;
+  sayProcHideDegraded(`a run could not be started under the ruleset (${reason})`);
+  return stderr.subarray(end);
+}
+
 /** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does. */
 function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
   pidInitTriedAt = Date.now();
@@ -435,7 +458,7 @@ function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
   try {
     execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
     pidInitDegradeSaid = false;
-    probeProcHide(base, pidInit);
+    if (!procHidingDisabled()) probeProcHide(base, pidInit);
     return pidInit;
   } catch {
     sayPidInitDegraded(`${pidInit} could not start a program in a PID namespace (a seccomp profile or kernel setting that denies it, or a host too busy to answer in ${PID_INIT_PROBE_TIMEOUT_MS} ms)`);
@@ -510,6 +533,8 @@ export interface UnshareIsolationOptions {
   mountNamespace?: boolean;
   ipcNamespace?: boolean;
   pidNamespace?: boolean;
+  /** `false` starts the program with the /proc entries of the other runs readable (pid-init `--keep-proc`), for a program whose own children must read their /proc entries. On by default; SANDBOX_HIDE_PROC=false turns it off for every run. */
+  hideProc?: boolean;
 }
 
 /**
@@ -631,9 +656,10 @@ function pidIsolationOf(
     return { wrapper: [], levelsAboveProgram: 1 };
   }
   if (unshare?.pidInitPath) {
+    const keepProc = options.hideProc === false || procHidingDisabled() ? ['--keep-proc'] : [];
     // `pidNamespace: false` still hides the /proc entries of the other runs: pid-init applies the ruleset and becomes the program (no process in between).
-    if (options.pidNamespace === false) return { wrapper: [unshare.pidInitPath, '--no-pid-namespace', '--'], levelsAboveProgram: 0 };
-    if (options.pidNamespace === undefined) return { wrapper: [unshare.pidInitPath, '--'], levelsAboveProgram: 2 };
+    if (options.pidNamespace === false) return { wrapper: [unshare.pidInitPath, '--no-pid-namespace', ...keepProc, '--'], levelsAboveProgram: 0 };
+    if (options.pidNamespace === undefined) return { wrapper: [unshare.pidInitPath, ...keepProc, '--'], levelsAboveProgram: 2 };
   }
   return { wrapper: [], levelsAboveProgram: 0 };
 }
@@ -1130,7 +1156,7 @@ export async function executeSandboxedBinary(
       const spool = spoolFd !== null && !isSettled ? readStdoutSpool(spoolFd, spoolLimit, headroom, tailroom) : undefined;
       settle(() => {
         const durationMs = Date.now() - startTime;
-        const stderr = Buffer.concat(stderrChunks);
+        const stderr = withoutProcHideNotice(Buffer.concat(stderrChunks));
 
         if (spool !== undefined && 'boundHit' in spool) {
           reject(new SandboxedBufferLimitError(spoolLimit));

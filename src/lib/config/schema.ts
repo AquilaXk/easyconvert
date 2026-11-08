@@ -550,6 +550,16 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
+  {
+    name: 'SANDBOX_HIDE_PROC',
+    area: 'security',
+    description: 'Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs (on by default; `pid-init --keep-proc`). The PID namespace stays. A single call can opt out with `sandboxOptions.hideProc: false`.',
+    kind: { type: 'boolean' },
+    default: true,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
   autoOffSetting(
     'SANDBOX_LAUNCHER',
     'security',

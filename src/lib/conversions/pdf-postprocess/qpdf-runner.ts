@@ -4,10 +4,12 @@ import { HelperHost, HelperSlot, type PendingJob } from '../../security/helper-p
 import {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
+  procHidingDisabled,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
+  withoutProcHideNotice,
   type SandboxedExecutionResult,
 } from '../../security/process-sandbox';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../../security/sandbox-launcher';
@@ -223,7 +225,7 @@ function decodeResult(body: Buffer): JobResult {
     exitStatus: body.readInt32BE(4),
     signal: body.readInt32BE(8),
     stdout: body.subarray(20, 20 + stdoutBytes),
-    stderr: body.subarray(20 + stdoutBytes),
+    stderr: withoutProcHideNotice(body.subarray(20 + stdoutBytes)),
   };
 }
 
@@ -257,7 +259,7 @@ class RunnerHost extends HelperHost<RunnerJob> {
   constructor(binary: string) {
     const library = process.env[QPDF_RUNNER_LIB_ENV]?.trim();
     // A job the runner held died with it: the caller starts it the usual way.
-    super({ binary, args: library ? ['--lib', library] : [] }, 'the runner', (reason) => new RunnerDeclined(reason));
+    super({ binary, args: [...(library ? ['--lib', library] : []), ...(procHidingDisabled() ? ['--keep-proc'] : [])] }, 'the runner', (reason) => new RunnerDeclined(reason));
   }
 
   run(binary: string, args: string[], options: LaunchedExecutionOptions): Promise<SandboxedExecutionResult> {

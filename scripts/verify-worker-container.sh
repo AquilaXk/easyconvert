@@ -433,6 +433,14 @@ else
       fail "the control of the /proc check did not read the command line of the sibling: $(printf '%s' "$kept_output" | tr '\n' ' ' | head -c 300)"
     elif [ "$hidden_output" = "$(printf 'cmdline-hidden\nown-readable')" ]; then
       pass "pid-init hid the command line of the sibling in /proc from the program and left it its own entries"
+      # A ruleset that did not handle moves between directories would refuse every link and rename between two directories with EXDEV.
+      link_dir="$(mktemp -d)"
+      if unshare -r -n -- pid-init -- sh -c "mkdir \"$link_dir/a\" \"$link_dir/b\" && : > \"$link_dir/a/f\" && ln \"$link_dir/a/f\" \"$link_dir/b/f\"" >/dev/null 2>&1; then
+        pass "pid-init left the program the links between directories"
+      else
+        fail "the program could not link a file between directories under the pid-init ruleset (EXDEV)"
+      fi
+      rm -rf "$link_dir"
     else
       fail "pid-init did not hide /proc from the program (Landlock is off in the kernel, or the seccomp profile denies landlock_create_ruleset): $(printf '%s' "$hidden_output" | tr '\n' ' ' | head -c 300)"
     fi

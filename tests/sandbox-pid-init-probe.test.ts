@@ -20,7 +20,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
-import { getUnshareCapability, PID_INIT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand } from '../src/lib/security/process-sandbox';
+import { getUnshareCapability, PID_INIT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
 
 const PID_INIT = '/opt/test/pid-init-stand-in';
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -30,6 +30,7 @@ beforeEach(() => {
   vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr/bin/unshare' || candidate === PID_INIT);
   vi.stubEnv('PID_INIT_PATH', PID_INIT);
   vi.stubEnv('SANDBOX_PID_NAMESPACE', undefined);
+  vi.stubEnv('SANDBOX_HIDE_PROC', undefined);
   vi.useFakeTimers({ toFake: ['Date'] });
   probe.pidInitWorks = false;
   probe.procHideWorks = true;
@@ -129,5 +130,47 @@ describe('the PID namespace probe', () => {
     expect(optedOut).toMatchObject({ levelsAboveProgram: 0 });
     expect(optedOut.args.slice(optedOut.args.indexOf('--'), optedOut.args.indexOf('--') + 4)).toEqual(['--', PID_INIT, '--no-pid-namespace', '--']);
     expect(optedOut.args.slice(-2)).toEqual(['/usr/bin/tool', 'a']);
+  });
+  it('is on unless SANDBOX_HIDE_PROC is false (any case, trimmed): then it keeps the PID namespace, passes --keep-proc and does not ask pid-init about the ruleset', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    probe.pidInitWorks = true;
+    probe.procHideWorks = false;
+    for (const value of ['false', ' FALSE ']) {
+      resetUnshareCapabilityCache();
+      probe.calls = [];
+      vi.stubEnv('SANDBOX_HIDE_PROC', value);
+      expect(getUnshareCapability().pidInitPath).toBe(PID_INIT);
+      expect(probe.calls.filter((call) => call.includes('--check'))).toEqual([]);
+      for (const sandboxOptions of [undefined, { pidNamespace: false }]) {
+        const command = resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, sandboxOptions });
+        const wrapper = command.args.slice(command.args.indexOf('--') + 1, command.args.indexOf('/usr/bin/tool'));
+        expect(wrapper).toContain('--keep-proc');
+        expect(wrapper).toContain(PID_INIT);
+      }
+    }
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('lets a single call keep the /proc entries readable with hideProc: false, and no other call', () => {
+    probe.pidInitWorks = true;
+    const wrapperOf = (sandboxOptions?: { pidNamespace?: boolean; hideProc?: boolean }): string[] => {
+      const command = resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: true, sandboxOptions });
+      return command.args.slice(command.args.indexOf('--') + 1, command.args.indexOf('/usr/bin/tool'));
+    };
+    expect(wrapperOf({ hideProc: false })).toEqual([PID_INIT, '--keep-proc', '--']);
+    expect(wrapperOf({ pidNamespace: false, hideProc: false })).toEqual([PID_INIT, '--no-pid-namespace', '--keep-proc', '--']);
+    expect(wrapperOf()).toEqual([PID_INIT, '--']);
+  });
+
+  it('takes the notice of a run that could not be hidden off the start of its standard error, and says so once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const notice = 'pid-init: /proc not hidden: a rule could not be added\n';
+    expect(withoutProcHideNotice(Buffer.from(`${notice}the program said this\n`)).toString()).toBe('the program said this\n');
+    expect(withoutProcHideNotice(Buffer.from(notice)).toString()).toBe('');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('a rule could not be added');
+    const untouched = Buffer.from(`the program said this first\n${notice}`);
+    expect(withoutProcHideNotice(untouched)).toBe(untouched);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

@@ -119,9 +119,21 @@ int qpdfjob_run_from_argv(const char *const argv[]) {
     prctl(PR_GET_PDEATHSIG, &pdeathsig);
     printf("pdeathsig: %d\ndumpable: %d\nno_new_privs: %d\n", pdeathsig, prctl(PR_GET_DUMPABLE), prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0));
     for (char **e = environ; *e != NULL; e++) printf("env: %s\n", *e);
+    /* The /proc entries the job's ruleset names stay open in the job (see hide_other_processes); every other descriptor above 2 is counted as a leak. */
     int open_fds = 0;
-    for (int fd = 3; fd < 256; fd++) if (fcntl(fd, F_GETFD) >= 0) open_fds++;
-    printf("open-fds-above-2: %d\n", open_fds);
+    int proc_fds = 0;
+    for (int fd = 3; fd < 4096; fd++) {
+      if (fcntl(fd, F_GETFD) < 0) continue;
+      char link[64];
+      char target[256];
+      snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+      ssize_t n = readlink(link, target, sizeof target - 1);
+      if (n < 0) n = 0;
+      target[n] = '\0';
+      if (strncmp(target, "/proc/", 6) == 0) proc_fds++;
+      else open_fds++;
+    }
+    printf("open-fds-above-2: %d\nproc-fds-kept: %d\n", open_fds, proc_fds);
     return 0;
   }
   if (strcmp(probe, "procs") == 0) {
