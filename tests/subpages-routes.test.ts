@@ -82,6 +82,10 @@ describe('Subpages & Routes Verification', () => {
       expect(slugPageCopy('compress-pdf').title).toBe('Compress PDF');
       expect(slugPageCopy('compress-png').title).toBe('Compress PNG');
       expect(slugPageCopy('compress-jpg').title).toBe('Compress JPG');
+      expect(slugPageCopy('create-zip-archive').title).toBe('Create Archive');
+      expect(slugPageCopy('extract-zip-archive').title).toBe('Extract Archive');
+      expect(slugPageCopy('split-pdf').title).toBe('Split PDF');
+      expect(slugPageCopy('rotate-pdf').title).toBe('Rotate PDF');
     });
 
     it('correctly parses website capture tools', () => {

@@ -122,7 +122,7 @@ interface QueueFileBarProps {
 }
 
 /** Publishes the height of `ref`'s element as the root property `property` while it is mounted, as it changes. */
-function usePublishedHeight(ref: React.RefObject<HTMLElement | null>, property: string) {
+export function usePublishedHeight(ref: React.RefObject<HTMLElement | null>, property: string) {
   useEffect(() => {
     const element = ref.current;
     if (!element) return;

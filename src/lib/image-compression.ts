@@ -30,3 +30,11 @@ export function serverOptionsFor(sourceFormat: string, targetFormat: string, opt
   const { quality = FULL_PALETTE_QUALITY, ...rest } = options;
   return { ...rest, palette: true, colors: paletteColorsForQuality(quality) };
 }
+
+/** The options that leave the picture as it is: quality and the metadata choice. A size or a filter makes the result the person's, whatever its weight. */
+const PLAIN_COMPRESSION_OPTIONS: readonly string[] = ['quality', 'stripMetadata'];
+
+/** Whether a compression asked for nothing but a smaller file, so that an input it cannot make smaller is the right answer. */
+export function isPlainCompression(sourceFormat: string, targetFormat: string, options: ConversionOptions): boolean {
+  return isImageCompression(sourceFormat, targetFormat) && Object.entries(options).every(([key, value]) => value === undefined || PLAIN_COMPRESSION_OPTIONS.includes(key));
+}

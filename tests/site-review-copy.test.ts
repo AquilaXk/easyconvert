@@ -83,6 +83,10 @@ describe('the pages that do not convert say what they do', () => {
     ['compress-pdf', 'Select your file to compress', 'Select File'],
     ['compress-png', 'Select your file to compress', 'Select File'],
     ['compress-jpg', 'Select your file to compress', 'Select File'],
+    ['create-zip-archive', 'Select the files to pack', 'Select Files'],
+    ['extract-zip-archive', 'Select your archive', 'Select File'],
+    ['split-pdf', 'Select the PDF to split', 'Select File'],
+    ['rotate-pdf', 'Select the PDF to rotate', 'Select File'],
     ['pdf-ocr', 'Select your file to read its text', 'Select File'],
   ])('words the upload card of /%s', (slug, heading, button) => {
     const page = slugPage(slug);

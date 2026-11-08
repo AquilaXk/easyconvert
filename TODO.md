@@ -20,7 +20,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Product and API
 - Dashboard: render the first view on the server (2.3 s spinner today); the key form's terms checkbox stays (policy 146), drop it only with a policy change.
-- Tool pages for archive create/extract and PDF split/rotate: the operations run only as `/api/v1/jobs` nodes (session or API key), so decide anonymous access to the job graph first, then build the browser graph client (entry 198).
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security

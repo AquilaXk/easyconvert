@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { isImageCompression, paletteColorsForQuality, serverOptionsFor } from '../src/lib/image-compression';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
+import { executeItemConversion } from '../src/lib/client-converter';
 
 describe('the compression of a PNG or a JPG', () => {
   it('is a conversion of the format to itself, for PNG and JPG only', () => {
@@ -31,5 +32,45 @@ describe('the compression of a PNG or a JPG', () => {
       expect(resolveConversionTier(format, format, 200_000, { quality: 60 }, { hasCanvas: true })).toMatchObject({ tier: 'L4', isClientEdge: false });
     }
     expect(resolveConversionTier('png', 'jpg', 200_000, {}, { hasCanvas: true })).toMatchObject({ tier: 'L0' });
+  });
+});
+
+describe('a compression that does not make the file smaller', () => {
+  const item = (name: string, format: string, bytes: number) => ({
+    id: '1', file: new File([new Uint8Array(bytes)], name), name, size: bytes, sourceFormat: format, targetFormat: format, status: 'ready' as const, options: {},
+  });
+
+  async function answerFor(queued: ReturnType<typeof item>, resultBytes: number) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(resultBytes), { status: 200 })));
+    const onSuccess = vi.fn();
+    await executeItemConversion(queued, { onProgress: () => undefined, onSuccess, onError: (failure) => { throw new Error(JSON.stringify(failure)); } });
+    vi.unstubAllGlobals();
+    return onSuccess.mock.calls[0];
+  }
+
+  it('gives the input back as it is, marked unchanged', async () => {
+    const [, size, , , , unchanged] = await answerFor(item('photo.png', 'png', 1000), 1200);
+    expect(size).toBe(1000);
+    expect(unchanged).toBe(true);
+  });
+
+  it('gives the server result when it is smaller', async () => {
+    const [, size, , , , unchanged] = await answerFor(item('photo.jpg', 'jpg', 1000), 400);
+    expect(size).toBe(400);
+    expect(unchanged).toBeUndefined();
+  });
+
+  it('keeps what a resize or a filter made, whatever its weight', async () => {
+    const queued = { ...item('photo.png', 'png', 1000), options: { width: 2000 } };
+    const [, size, , , , unchanged] = await answerFor(queued, 5000);
+    expect(size).toBe(5000);
+    expect(unchanged).toBeUndefined();
+  });
+
+  it('leaves a conversion to another format alone, whatever its size', async () => {
+    const queued = { ...item('photo.png', 'png', 1000), targetFormat: 'webp' };
+    const [, size, , , , unchanged] = await answerFor(queued, 5000);
+    expect(size).toBe(5000);
+    expect(unchanged).toBeUndefined();
   });
 });

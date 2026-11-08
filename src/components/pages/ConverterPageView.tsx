@@ -12,6 +12,9 @@ import { FORMAT_REGISTRY } from '@/lib/registry';
 import { otherFormats } from '@/lib/format-aliases';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { offersConversion, type ParsedSlug } from '@/lib/slug-parser';
+import { PAGE_TOOL_SLUGS } from '@/lib/slug-info-pages';
+import type { WebTool } from '@/lib/tools/tool-names';
+import ToolPageView from '@/components/tools/ToolPageView';
 import type { HeroOperation } from '@/components/hero/useHeroUpload';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
@@ -21,11 +24,37 @@ import { ConverterInfoPage } from '@/components/converter/ConverterInfoPage';
 
 /** The operation a page does instead of converting, whose upload card is worded for it. */
 function operationOf(kind: ParsedSlug['copy']['kind']): HeroOperation | undefined {
-  return kind === 'merge' || kind === 'compress' || kind === 'ocr' ? kind : undefined;
+  return kind === 'merge' || kind === 'compress' || kind === 'ocr' || Object.hasOwn(PAGE_TOOL_SLUGS, kind) ? (kind as HeroOperation) : undefined;
 }
 
-/** A converter or information page, as the server's page parsed its slug; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
+/** The tool a page runs on the server in one request, with the files it takes; a page that converts file by file has none. */
+function toolOf(kind: ParsedSlug['copy']['kind']): WebTool | undefined {
+  switch (kind) {
+    case 'merge':
+      return 'merge';
+    case 'archiveCreate':
+      return 'archive-create';
+    case 'archiveExtract':
+      return 'archive-extract';
+    case 'splitPdf':
+      return 'split';
+    case 'rotatePdf':
+      return 'rotate';
+    default:
+      return undefined;
+  }
+}
+
+/** A converter, tool or information page, as the server's page parsed its slug; `dailyLimit` is the anonymous daily allowance the server enforces, read on the server. */
 export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlug; dailyLimit: number }>) {
+  const tool = toolOf(parsed.copy.kind);
+  const locale = useLocale();
+  const copy = localizeSlugCopy(useTranslations('slugPages'), parsed, locale);
+  if (tool) return <ToolPageView tool={tool} operation={operationOf(parsed.copy.kind) as HeroOperation} title={copy.title} description={copy.description} dailyLimit={dailyLimit} />;
+  return <ConversionPageView parsed={parsed} dailyLimit={dailyLimit} />;
+}
+
+function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlug; dailyLimit: number }>) {
   const locale = useLocale();
   const tSlug = useTranslations('slugPages');
   const copy = localizeSlugCopy(tSlug, parsed, locale);

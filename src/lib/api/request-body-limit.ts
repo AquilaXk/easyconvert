@@ -27,6 +27,7 @@ const FILE_ROUTES: ReadonlyArray<{ path: string; action?: string }> = [
   { path: '/api/convert' },
   { path: '/api/queue/jobs' },
   { path: '/api/storage/multipart', action: 'chunk' },
+  { path: '/api/tools' },
   { path: '/api/v1/archives/inspect' },
   { path: '/api/v1/convert' },
   { path: '/api/v1/jobs' },

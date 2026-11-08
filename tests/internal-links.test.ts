@@ -95,7 +95,7 @@ describe('the links the site renders lead to pages that exist', () => {
   }, 120_000);
 
   it.each(LOCALES)('holds for pair pages, utility pages and site pages in %s', (locale) => {
-    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'contact', 'about', 'accessibility'];
+    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'contact', 'about', 'accessibility'];
     const dead = slugs.flatMap((slug) =>
       deadLinks(render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }), locale)).map((href) => `/${slug} links ${href}`)
     );

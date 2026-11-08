@@ -93,9 +93,10 @@ function RowStatusDisplay({ item, isBusy }: Readonly<{ item: ConversionQueueItem
       <div className="flex items-center gap-2.5">
         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success"><span aria-hidden="true" className="size-1.5 rounded-full bg-success" />{t('done')}</span>
         {item.resultSize !== undefined && <span className="text-xs text-ink-3 tabular-nums">{formatBytes(item.resultSize)}</span>}
+        {item.unchanged && <span className="text-xs text-ink-3">{t('unchanged')}</span>}
         {item.resultUrl && (
           <a
-            href={item.resultUrl} download={`${baseName}.${item.targetFormat}`}
+            href={item.resultUrl} download={item.unchanged ? item.name : `${baseName}.${item.targetFormat}`}
             className="btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-9 px-4 rounded-xs text-sm font-medium"
           >
             <Download aria-hidden="true" className="size-4" /><span>{t('download')}</span>

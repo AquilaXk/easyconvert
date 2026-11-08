@@ -25,6 +25,23 @@ export function isSelfConvertible(format: string): boolean {
   return offersConversion(format, format);
 }
 
+/** The pages of the tools that work on several files or on the pages of one, each at its own path. */
+export const PAGE_TOOL_SLUGS = {
+  archiveCreate: 'create-zip-archive',
+  archiveExtract: 'extract-zip-archive',
+  splitPdf: 'split-pdf',
+  rotatePdf: 'rotate-pdf',
+} as const;
+export type PageToolKind = keyof typeof PAGE_TOOL_SLUGS;
+
+/** The format a tool page names as its source: the registry holds it, and the page's own tiles never show it. */
+const PAGE_TOOL_FORMATS: Readonly<Record<PageToolKind, string>> = {
+  archiveCreate: 'zip',
+  archiveExtract: 'zip',
+  splitPdf: 'pdf',
+  rotatePdf: 'pdf',
+};
+
 export type SlugInfoType =
   | 'contact'
   | 'about'
@@ -43,6 +60,7 @@ export type SlugCopy =
   | { kind: 'format'; name: SlugName }
   | { kind: 'merge'; format: string }
   | { kind: 'compress'; format: string }
+  | { kind: PageToolKind }
   | { kind: 'saveWebsiteAsPdf' }
   | { kind: 'websiteScreenshot'; format: string };
 
@@ -74,6 +92,11 @@ export function canonicalPathOf(copy: SlugCopy): string {
     case 'merge':
     case 'compress':
       return `/${copy.kind}-${copy.format}`;
+    case 'archiveCreate':
+    case 'archiveExtract':
+    case 'splitPdf':
+    case 'rotatePdf':
+      return `/${PAGE_TOOL_SLUGS[copy.kind]}`;
     case 'saveWebsiteAsPdf':
       return '/save-website-as-pdf';
     case 'websiteScreenshot':
@@ -104,6 +127,11 @@ export function parseUtilitySlug(cleanSlug: string): SlugPage | null {
     return UTILITY_FORMATS[utility].has(format)
       ? { isInfoPage: false, sourceFormat: format, targetFormat: format, copy: { kind: utility, format } }
       : null;
+  }
+
+  const tool = (Object.keys(PAGE_TOOL_SLUGS) as PageToolKind[]).find((kind) => PAGE_TOOL_SLUGS[kind] === cleanSlug);
+  if (tool) {
+    return { isInfoPage: false, sourceFormat: PAGE_TOOL_FORMATS[tool], targetFormat: PAGE_TOOL_FORMATS[tool], copy: { kind: tool } };
   }
 
   if (cleanSlug === 'save-website-as-pdf') {

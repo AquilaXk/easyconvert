@@ -895,7 +895,7 @@ async function resolveInputArtifacts(graphId: string, node: GraphNode, providedA
   return graphScheduler.getNodeOutputs(graphId, node.input);
 }
 
-async function extractGraphArchiveEntries(
+export async function extractGraphArchiveEntries(
   effectiveFilename: string,
   archiveBuffer: Buffer,
   entries?: string[]

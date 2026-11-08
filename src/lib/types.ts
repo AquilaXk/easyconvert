@@ -310,6 +310,7 @@ export interface ConversionQueueItem {
   options: ConversionOptions;
   edgeProcessed?: boolean;
   edgeTier?: string;
+  unchanged?: boolean; // the result is the input itself: compressing did not make it smaller
 }
 
 /** What a stream a conversion left out was. `chapters` is the chapter list, which has no stream index. */

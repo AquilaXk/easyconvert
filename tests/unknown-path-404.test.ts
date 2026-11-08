@@ -85,7 +85,7 @@ const PAGE: Record<string, readonly string[]> = {
   'a format converted to itself or to its other name': ['jpeg-to-jpg', 'jfif-to-jpg', 'mp4-to-mp4', 'pdf-to-pdf', 'png-to-png', 'tif-to-tiff'],
   'the converter of a format or a category': ['pdf-converter', 'jpeg-converter', 'tar.gz-converter', 'video-converter', 'image-converter', 'document-converter', 'data-converter', 'Video-Converter'],
   'the OCR page': ['pdf-ocr'],
-  'a utility page of a format its operation runs': ['merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'],
+  'a utility page of a format its operation runs': ['merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'],
   'a site page': ['security', 'about', 'contact', 'accessibility'],
 };
 
@@ -207,7 +207,7 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
       ...ids.map((id) => `${id}-converter`),
       ...Object.keys(CATEGORY_WORDS).map((word) => `${word}-converter`),
       ...listedPairs.map(([source, target]) => `${source}-to-${target}`),
-      'pdf-ocr', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot',
+      'pdf-ocr', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot',
     ];
     const wrong: string[] = [];
     for (const slug of slugs) {

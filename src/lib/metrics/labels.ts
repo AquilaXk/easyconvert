@@ -5,7 +5,7 @@
  */
 
 /** The convert routes that count their answers (the `route` names `loggingOutcomes` gets). */
-export const REQUEST_ROUTES = ['convert', 'convert/batch', 'v1/convert'] as const;
+export const REQUEST_ROUTES = ['convert', 'convert/batch', 'tools', 'v1/convert'] as const;
 export type RequestRoute = (typeof REQUEST_ROUTES)[number] | 'other';
 
 /** How a request or a job ended: it did the work, it was turned away (a 4xx), it failed (a 5xx) or it ran past its deadline. */

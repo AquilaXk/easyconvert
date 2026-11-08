@@ -16,7 +16,7 @@ import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline'
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import { executeResumableCloudConversion, type ResumableStage } from './edge/pipelines/resumable-cloud-pipeline';
 import { needsUploadInParts } from './plan-limits';
-import { serverOptionsFor } from './image-compression';
+import { isPlainCompression, serverOptionsFor } from './image-compression';
 import {
   executeWebGpuCompute,
   isWebGpuComputeSupported,
@@ -38,7 +38,9 @@ export interface ConvertItemCallbacks {
     resultSize: number,
     edgeProcessed?: boolean,
     edgeTier?: string,
-    fallback?: EdgeTierFallback
+    fallback?: EdgeTierFallback,
+    /** The result is the input itself: compressing it did not make it smaller. */
+    unchanged?: boolean
   ) => void;
   onError: (failure: ConversionFailure) => void;
 }
@@ -571,6 +573,13 @@ async function processL2Conversion(
   }
 }
 
+/** What a compression answers: the input itself when the server's result is not smaller, so that a compression never makes a file larger. */
+function answerOfCompression(item: ConversionQueueItem, cloudRes: { url: string; size: number }): { url: string; size: number; unchanged?: true } {
+  if (!isPlainCompression(item.sourceFormat, item.targetFormat, item.options) || cloudRes.size < item.file.size) return cloudRes;
+  if (cloudRes.url.startsWith('blob:')) URL.revokeObjectURL(cloudRes.url);
+  return { url: URL.createObjectURL(item.file), size: item.file.size, unchanged: true };
+}
+
 /**
  * Universal client conversion executor.
  * Handles client-side Edge fast-path (in the browser, with no upload) with automatic fallback
@@ -630,7 +639,8 @@ export async function executeItemConversion(
           signal,
         })
       : await executeServerlessCloudFallback(item.file, item.targetFormat, serverOptions, signal);
-    callbacks.onSuccess(cloudRes.url, cloudRes.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation);
+    const answer = answerOfCompression(item, cloudRes);
+    callbacks.onSuccess(answer.url, answer.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation, answer.unchanged);
   } catch (err: unknown) {
     if (signal?.aborted) return;
     callbacks.onError(conversionFailureOf(err));

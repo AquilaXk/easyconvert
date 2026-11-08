@@ -21,7 +21,11 @@ export const TOOL_ROUTES = [
   { key: 'compressPng', href: '/compress-png' },
   { key: 'compressJpg', href: '/compress-jpg' },
   { key: 'mergePdf', href: '/merge-pdf' },
+  { key: 'splitPdf', href: '/split-pdf' },
+  { key: 'rotatePdf', href: '/rotate-pdf' },
   { key: 'convertToPdfA', href: '/pdfa-converter' },
+  { key: 'archiveCreate', href: '/create-zip-archive' },
+  { key: 'archiveExtract', href: '/extract-zip-archive' },
 ] as const satisfies readonly SiteLink[];
 
 export const PRIMARY_LINKS = [

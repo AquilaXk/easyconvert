@@ -31,6 +31,7 @@ import {
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import { formatBytes } from '@/lib/format-bytes';
+import { MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-codes';
 
@@ -175,6 +176,94 @@ const linkImportBudgetResponse = (description: string) => {
   };
   return { description, content: { 'application/problem+json': { schema }, 'application/json': { schema } } };
 };
+
+const TOOL_RUN_NOTE = 'One run is one conversion of the daily allowance whatever the number of files, charged only when the run succeeds. Anonymous callers meet the same rate limit, concurrency limit and daily allowance as `POST /api/convert`.';
+
+const TOOL_FILES_PROPERTY = (description: string) => ({
+  type: 'array',
+  items: { type: 'string', format: 'binary' },
+  description: `${description} Up to ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total, the most one request carries.`,
+});
+
+/** What each web tool takes and answers, in the order of `WEB_TOOLS`. */
+const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; description: string; files: string; options: string; answer: [string, string] }> = {
+  merge: {
+    summary: 'Merge PDFs (Web Application)',
+    operationId: 'toolMergeInternal',
+    description: `Joins 2 to ${MAX_TOOL_FILES} PDF files, in the order sent, into one PDF. Runs the code of the \`merge\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The PDF files to merge, in order.',
+    options: 'Unused.',
+    answer: ['The merged PDF.', 'application/pdf'],
+  },
+  'archive-create': {
+    summary: 'Create an Archive (Web Application)',
+    operationId: 'toolArchiveCreateInternal',
+    description: `Packs 1 to ${MAX_TOOL_FILES} files into one archive. Files of one name are kept apart by renaming. Runs the code of the \`archive.create\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The files to pack.',
+    options: 'JSON `{"format": "zip" | "7z" | "tar" | "tar.gz"}`; ZIP by default.',
+    answer: ['The archive.', 'application/octet-stream'],
+  },
+  'archive-extract': {
+    summary: 'Extract an Archive (Web Application)',
+    operationId: 'toolArchiveExtractInternal',
+    description: `Unpacks one ZIP, 7Z, RAR, TAR or TAR.GZ archive and lists its files as JSON \`{ "entries": [{ "name", "size", "mimeType", "data" }] }\`, \`data\` being the base64 of the bytes. Each name is the leaf of the entry, never a path, and two of one name are kept apart. At most ${MAX_EXTRACTED_ENTRIES} files and ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total are listed; the limits of the job graph on the unpacked size and its ratio to the archive apply. Runs the code of the \`archive.extract\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one archive to unpack.',
+    options: 'Unused.',
+    answer: ['The files of the archive as JSON.', 'application/json'],
+  },
+  split: {
+    summary: 'Split a PDF (Web Application)',
+    operationId: 'toolSplitInternal',
+    description: `Cuts one PDF into parts and answers them as one ZIP. Runs the code of the \`pdf.split-pages\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to split.',
+    options: 'JSON `{"split": {"ranges": "1-3,5"}}` for one part per range, `{"split": {"everyNPages": 2}}` for one part per that many pages, or `{}` for one part per page.',
+    answer: ['A ZIP of the parts.', 'application/zip'],
+  },
+  rotate: {
+    summary: 'Rotate PDF Pages (Web Application)',
+    operationId: 'toolRotateInternal',
+    description: `Turns the pages of one PDF clockwise. Runs the code of the \`pdf.rotate-pages\` job graph node. ${TOOL_RUN_NOTE}`,
+    files: 'The one PDF to rotate.',
+    options: 'JSON `{"rotate": {"rotation": 90 | 180 | 270, "pages": "1-3,5"}}`; every page when `pages` is left out.',
+    answer: ['The rotated PDF.', 'application/pdf'],
+  },
+};
+
+const toolPath = (tool: WebTool) => {
+  const doc = TOOL_DOCS[tool];
+  return {
+    post: {
+      ...INTERNAL,
+      summary: doc.summary,
+      description: doc.description,
+      operationId: doc.operationId,
+      security: ANONYMOUS_OR_SCOPE('convert:write'),
+      requestBody: multipartBody(
+        { files: TOOL_FILES_PROPERTY(doc.files), options: { type: 'string', description: doc.options } },
+        ['files']
+      ),
+      responses: {
+        '200': binaryResponse(...doc.answer),
+        '400': createCodedErrorResponse(
+          'A body that cannot be parsed, no file, the wrong number of files, a file that is empty, of another format or not what its extension says, a page range the document does not have, or options the tool refuses (the `code` names which).',
+          ['multipart_required', 'file_required', 'empty_file', 'too_few_files', 'too_many_files', 'unsupported_input', 'spoofed_file', 'invalid_options', 'invalid_pages', 'unsafe_archive', 'malformed_input']
+        ),
+        '401': createProblemResponse('Authentication required.'),
+        '404': createProblemResponse('There is no such tool.'),
+        '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
+        '413': createProblemResponse(`${WEB_SINGLE_REQUEST_LIMIT_DESCRIPTION} Or a file over the plan limit (with \`plan\`, \`sizeBytes\` and \`limitBytes\`), or an unpacked archive larger than the answer carries (\`code\` "input_over_limit").`),
+        '415': createCodedErrorResponse('The body is not `multipart/form-data`.', ['multipart_required']),
+        '422': createCodedErrorResponse('A PDF or an archive that is intact but encrypted, or an archive whose entry names collide.', ['encrypted_input', 'password_required', 'archive_entry_collision', 'unsupported_method']),
+        '429': createTooManyRequestsResponse(''),
+        '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
+        '500': createErrorResponse('A fault of the server.'),
+        '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
+      },
+    },
+  };
+};
+
+const toolPaths = Object.fromEntries(WEB_TOOLS.map((tool) => [`/api/tools/${tool}`, toolPath(tool)]));
 
 export const internalPaths = {
   '/api/account/files': {
@@ -812,4 +901,5 @@ export const internalPaths = {
       responses: openApiDocumentResponse,
     },
   },
+  ...toolPaths,
 };
