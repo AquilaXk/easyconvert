@@ -55,7 +55,7 @@ describe('the fixed office profile', () => {
     writeKeepExcelObjectsSetting(root);
     const xcu = registry(root);
     expectFixedSettings(xcu);
-    expect(xcu).toContain('<prop oor:name="ExcelToCalc" oor:op="fuse"><value>false</value></prop>');
+    expect(xcu).toMatch(/<prop oor:name="ExcelToCalc" oor:op="fuse"><value>false<\/value><\/prop>/);
   });
 
   it('is written for the standalone run of every source, with the import filter of a declared format and none for a detected one', () => {

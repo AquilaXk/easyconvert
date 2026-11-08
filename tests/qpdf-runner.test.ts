@@ -412,6 +412,8 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       await expect(run(['facts'], { signal: AbortSignal.abort(new Error('already cancelled')) })).rejects.toThrow();
     });
 
+    /** Well under the 30 s the descendant sleeps, and the floor of a hang guard on a loaded runner. */
+    const DESCENDANT_HANG_GUARD_MS = 10_000;
     describe('a job whose first process returned and whose descendant is still running', () => {
       // The first process is PID 2 of the namespace of the job; when it has returned PID 1 leaves, and the namespace takes everything the
       // job started with it. So the job ends with the result of its first process at once, however long the descendant meant to hold the streams.
@@ -420,7 +422,8 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
         const started = Date.now();
         const result = await run(['fork-sleep', pidFile, '30', mode], { timeoutMs: 20_000 });
         expect(result.exitCode).toBe(0);
-        expect(Date.now() - started, 'the streams the descendant held did not delay the job').toBeLessThan(800);
+        // The descendant sleeps 30 s; a job that waited for it would take that long, so a bound well under it shows the namespace ended it.
+        expect(Date.now() - started, 'the streams the descendant held did not delay the job').toBeLessThan(DESCENDANT_HANG_GUARD_MS);
         // The pid the probe wrote is the one the namespace gave the descendant, which no process outside can use.
         expect(Number(fs.readFileSync(pidFile, 'utf8'))).toBe(3);
       }, 30_000);

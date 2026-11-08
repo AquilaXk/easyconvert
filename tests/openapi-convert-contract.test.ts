@@ -48,7 +48,8 @@ function documentedCodes(spec: Spec, route: string, status: number): string[] {
 const derived = (status: number): string[] => typedFailureCodesByStatus().get(status) ?? [];
 const sorted = (...lists: string[][]): string[] => [...new Set(lists.flat())].sort();
 
-describe('the code values of the convert routes follow the error classes', () => {
+// Reading every error class under src/ with the compiler takes 5 to 7 s on the CI runners, past the 5 s default of a test.
+describe('the code values of the convert routes follow the error classes', { timeout: 60_000 }, () => {
   it.each([V1_CONVERT, BATCH_CONVERT])('%s lists the code of every typed 400, 422 and 503', async (route) => {
     const spec = await loadSpec();
     expect(documentedCodes(spec, route, HTTP_BAD_REQUEST)).toEqual(derived(HTTP_BAD_REQUEST));
