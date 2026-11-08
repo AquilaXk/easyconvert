@@ -418,6 +418,8 @@ export interface ConversionJobData {
   options: ConversionOptions;
   webhookUrl?: string;
   webhookSecret?: string;
+  /** The API key whose webhook this job inherited: its rotated secrets sign the delivery. Absent for a webhook the request brought. */
+  webhookKeyId?: string;
   userId?: string;
   reservationId?: string;
   tasks?: PipelineTask[];

@@ -89,7 +89,7 @@ async function logUndelivered(state: GraphExecutionState, event: string, deliver
 async function notifyWebhook(state: GraphExecutionState, outcome: GraphOutcome): Promise<void> {
   const { graphId, nodes, webhookUrl, webhookSecret } = state;
   if (!webhookUrl || !webhookSecret) return;
-  const owner = { ownerUserId: state.ownerUserId };
+  const owner = { ownerUserId: state.ownerUserId, ownerKeyId: state.webhookKeyId };
   if (outcome.status === 'completed') {
     const payload = { jobId: graphId, status: 'completed', graphId, nodes };
     await logUndelivered(state, 'graph.completed', webhookDispatcher.dispatch(webhookUrl, 'graph.completed', payload, webhookSecret, owner));

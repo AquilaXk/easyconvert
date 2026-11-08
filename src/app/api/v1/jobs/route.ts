@@ -374,9 +374,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    const resolvedWebhook = resolveEffectiveWebhook(webhookUrl, webhookSecret, auth.apiKey?.webhookUrl, auth.apiKey?.webhookSecret);
+    const resolvedWebhook = resolveEffectiveWebhook(webhookUrl, webhookSecret, auth.apiKey?.webhookUrl, auth.apiKey?.webhookSecret, auth.apiKey?.id);
     if (resolvedWebhook.error) return await fail(400, resolvedWebhook.error);
-    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret } = resolvedWebhook;
+    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Normalize page / pages option and validate the page range syntax
     if (options) {
@@ -658,6 +658,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       input: { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 },
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
+      webhookKeyId,
     };
     return reply(await withReservedUnit(unit.reservationId, (reserved) => queueReserved(submission, reserved)));
   } catch (error: unknown) {
@@ -760,6 +761,7 @@ interface ReservedSubmission {
   input: SubmittedInput;
   webhookUrl?: string;
   webhookSecret?: string;
+  webhookKeyId?: string;
 }
 
 /**
@@ -795,6 +797,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
             reservationId,
             webhookUrl: submission.webhookUrl,
             webhookSecret: submission.webhookSecret,
+            webhookKeyId: submission.webhookKeyId,
             originalFilename,
             sourceStorageKey: storageKey,
             sourceFormat: sourceDef.id,
@@ -841,6 +844,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
       options: stripEngineControls(options),
       webhookUrl: submission.webhookUrl,
       webhookSecret: submission.webhookSecret,
+      webhookKeyId: submission.webhookKeyId,
       userId: user.id,
       resourceClass: resClass,
     },

@@ -68,6 +68,7 @@ interface ReservedConversion extends ValidatedConvertInput {
   user: User;
   webhookUrl?: string;
   webhookSecret?: string;
+  webhookKeyId?: string;
   rateLimitHeaders: Record<string, string>;
   instanceUri: string;
   startTime: number;
@@ -237,7 +238,8 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
       webhookUrlParam,
       webhookSecretParam,
       auth.apiKey?.webhookUrl,
-      auth.apiKey?.webhookSecret
+      auth.apiKey?.webhookSecret,
+      auth.apiKey?.id
     );
     if (resolvedWebhook.error) {
       return reply(createProblemDetailsResponse(
@@ -249,7 +251,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
         rateLimitHeaders
       ));
     }
-    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret } = resolvedWebhook;
+    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Phase 1: Atomically reserve quota unit BEFORE CPU-intensive conversion
     const unit = await reserveConversionUnit(auth.user);
@@ -264,6 +266,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
       options,
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
+      webhookKeyId,
       rateLimitHeaders,
       instanceUri,
       startTime,
@@ -366,6 +369,7 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
       options: stripEngineControls(options),
       webhookUrl: c.webhookUrl,
       webhookSecret: c.webhookSecret,
+      webhookKeyId: c.webhookKeyId,
       userId: user.id,
     },
     {

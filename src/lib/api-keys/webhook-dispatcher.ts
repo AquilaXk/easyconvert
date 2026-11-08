@@ -569,7 +569,9 @@ export class WebhookDispatcher {
       try {
         const record = await getWebhookSecretStore().getSecretRecord(options.ownerUserId, secretTargetId);
         if (record) {
-          if (!primarySecret || primarySecret === record.primary) {
+          // A caller's own secret stays the primary; the one the target rotated away from (a job queued before the rotation)
+          // is replaced by the current one, which is the secret the receiver now trusts first.
+          if (!primarySecret || primarySecret === record.primary || primarySecret === record.previous) {
             primarySecret = record.primary;
           }
           if (

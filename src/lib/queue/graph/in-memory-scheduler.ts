@@ -81,6 +81,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
       reservationId: meta.reservationId,
       webhookUrl: meta.webhookUrl,
       webhookSecret: meta.webhookSecret,
+      webhookKeyId: meta.webhookKeyId,
       originalFilename: meta.originalFilename,
       sourceFormat: meta.sourceFormat,
       targetFormat: meta.targetFormat,

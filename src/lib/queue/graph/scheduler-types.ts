@@ -27,6 +27,8 @@ export interface GraphMetadata {
   reservationId?: string;
   webhookUrl?: string;
   webhookSecret?: string;
+  /** The API key whose webhook this graph inherited (see `ConversionJobData.webhookKeyId`). */
+  webhookKeyId?: string;
   originalFilename?: string;
   sourceStorageKey?: string;
   /** Submission formats and legacy linear tasks, echoed by the job status API. */
@@ -47,6 +49,7 @@ export interface GraphExecutionState {
   reservationId?: string;
   webhookUrl?: string;
   webhookSecret?: string;
+  webhookKeyId?: string;
   originalFilename?: string;
   /** Storage key of the submitted source object, as persisted by the Redis scheduler. */
   sourceStorageKey?: string;

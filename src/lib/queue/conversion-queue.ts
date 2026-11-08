@@ -120,7 +120,7 @@ export function attachJobLifecycleListeners(
               'job.completed',
               result,
               job.data.webhookSecret,
-              { ownerUserId: job.data.userId }
+              { ownerUserId: job.data.userId, ownerKeyId: job.data.webhookKeyId }
             );
           } catch (err) {
             console.error(`[ConversionQueue] Failed to dispatch completed webhook for job ${job.id}:`, err);
@@ -186,7 +186,7 @@ export function attachJobLifecycleListeners(
                 originalFilename: job.data.originalFilename,
               },
               job.data.webhookSecret,
-              { ownerUserId: job.data.userId }
+              { ownerUserId: job.data.userId, ownerKeyId: job.data.webhookKeyId }
             );
           } catch (dispatchErr) {
             console.error(`[ConversionQueue] Failed to dispatch failed webhook for job ${job.id}:`, dispatchErr);

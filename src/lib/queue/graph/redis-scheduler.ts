@@ -112,6 +112,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       reservationId: meta.reservationId || '',
       webhookUrl: meta.webhookUrl || '',
       webhookSecret: meta.webhookSecret || '',
+      webhookKeyId: meta.webhookKeyId || '',
       originalFilename: meta.originalFilename || '',
       sourceStorageKey: meta.sourceStorageKey || '',
       sourceFormat: meta.sourceFormat || '',

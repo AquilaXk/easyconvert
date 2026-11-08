@@ -185,6 +185,7 @@ export function parseGraphMeta(graphId: string, raw: Record<string, string | und
     reservationId: optional.reservationId,
     webhookUrl: optional.webhookUrl,
     webhookSecret: optional.webhookSecret,
+    webhookKeyId: echoString(raw, 'webhookKeyId'),
     originalFilename: optional.originalFilename,
     sourceStorageKey: optional.sourceStorageKey,
     sourceFormat: echoString(raw, 'sourceFormat'),
