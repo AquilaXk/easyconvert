@@ -8,6 +8,7 @@ import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
 
 vi.mock('../src/i18n/navigation', () => ({
   Link: ({ href, children, ...rest }: { href: string; children: ReactNode }) => createElement('a', { href, ...rest }, children),
+  useRouter: () => ({ push: () => undefined }),
 }));
 
 const { HomeHero, PairHero, QueueHeader } = await import('../src/components/Hero');
