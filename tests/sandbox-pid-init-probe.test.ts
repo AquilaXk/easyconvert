@@ -28,6 +28,7 @@ beforeEach(() => {
   Object.defineProperty(process, 'platform', { value: 'linux' });
   vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr/bin/unshare' || candidate === PID_INIT);
   vi.stubEnv('PID_INIT_PATH', PID_INIT);
+  vi.stubEnv('SANDBOX_PID_NAMESPACE', 'true');
   vi.useFakeTimers({ toFake: ['Date'] });
   probe.pidInitWorks = false;
   probe.calls = [];

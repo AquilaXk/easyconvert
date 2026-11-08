@@ -540,6 +540,16 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
+  {
+    name: 'SANDBOX_PID_NAMESPACE',
+    area: 'security',
+    description: 'Set to `true` to start every sandboxed program in a PID namespace of its own through `pid-init`. Off by default until aborting a run and calibre work under it.',
+    kind: { type: 'boolean' },
+    default: false,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
   autoOffSetting(
     'SANDBOX_LAUNCHER',
     'security',
