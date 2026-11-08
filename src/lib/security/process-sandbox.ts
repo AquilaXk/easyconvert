@@ -416,7 +416,8 @@ function sayPidInitDegraded(reason: string): void {
 /** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does. */
 function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
   pidInitTriedAt = Date.now();
-  if (process.env[SANDBOX_PID_NAMESPACE_ENV] === 'false') return '';
+  // Read as the config schema reads a boolean (trimmed, any case), so `FALSE` turns it off as the startup check accepted.
+  if (process.env[SANDBOX_PID_NAMESPACE_ENV]?.trim().toLowerCase() === 'false') return '';
   const pidInit = findPidInit();
   if (pidInit === null) {
     sayPidInitDegraded(`no pid-init program was found (${PID_INIT_PATH_ENV}, ${PID_INIT_CANDIDATES.join(', ')})`);

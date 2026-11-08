@@ -93,5 +93,8 @@ describe('the PID namespace probe', () => {
     expect(getUnshareCapability()).toMatchObject({ available: true, pidInitPath: '' });
     expect(probe.calls.filter((call) => call.some((arg) => arg.endsWith('/pid-init-stand-in')))).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
+    resetUnshareCapabilityCache();
+    vi.stubEnv('SANDBOX_PID_NAMESPACE', ' FALSE ');
+    expect(getUnshareCapability().pidInitPath).toBe('');
   });
 });
