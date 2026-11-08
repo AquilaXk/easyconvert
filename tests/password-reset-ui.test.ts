@@ -66,7 +66,7 @@ describe('the forgot-password link on the sign-in form', () => {
   it('writes the link in Korean for a Korean page', async () => {
     answerStatus(true);
     render('ko', createElement(AuthCredentialsForm, { ...formProps, activeTab: 'login' }));
-    await vi.waitFor(() => expect(host.querySelector('a[href="/auth/forgot-password"]')?.textContent).toBe('비밀번호가 기억나지 않나요?'));
+    await vi.waitFor(() => expect(host.querySelector('a[href="/auth/forgot-password"]')?.textContent).toBe('비밀번호가 기억나지 않아요'));
   });
 
   it.each([

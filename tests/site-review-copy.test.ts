@@ -93,8 +93,8 @@ describe('the pages that do not convert say what they do', () => {
 
   it('words the merge page in Korean in the polite style', () => {
     const page = slugPage('merge-pdf', 'ko');
-    expect(headings(page).filter((heading) => heading.includes('선택'))).toEqual(['병합할 파일을 선택하세요']);
-    expect(visibleText(page)).not.toContain('변환할 파일을 선택하세요');
+    expect(headings(page).filter((heading) => heading.includes('선택'))).toEqual(['병합할 파일을 선택해 주세요']);
+    expect(visibleText(page)).not.toContain('변환할 파일을 선택해 주세요');
   });
 
   it('keeps the wording of a conversion page', () => {

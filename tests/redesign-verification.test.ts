@@ -339,7 +339,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
   // both lists) describes the one format the slug starts from, as the page of that format does.
   const ALIAS_PAIR_HEADINGS = {
     en: (name: string) => [`${name} Converter`, 'Select your file to convert', `Convert from ${name}`, `Convert to ${name}`],
-    ko: (name: string) => [`${name} 변환기`, '변환할 파일을 선택하세요', `${name} 파일 변환`, `${name} 형식으로 변환`],
+    ko: (name: string) => [`${name} 변환기`, '변환할 파일을 선택해 주세요', `${name} 파일 변환`, `${name} 형식으로 변환`],
   } as const;
   const aliasPairSlugs = Object.entries(FORMAT_REGISTRY).flatMap(([source, { targetFormats }]) =>
     targetFormats.filter((target) => target !== source && isSameFormat(source, target)).map((target) => `${source}-to-${target}`)
