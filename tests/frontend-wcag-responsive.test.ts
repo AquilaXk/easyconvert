@@ -100,8 +100,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     const allFormats = getAllFormats();
     expect(REGISTRY_STATS.formatCount).toBe(allFormats.length);
     expect(REGISTRY_STATS.formatCount).toBe(308);
-    expect(REGISTRY_STATS.categoryCount).toBe(12);
-    expect(CATEGORIES).toHaveLength(12);
+    expect(REGISTRY_STATS.categoryCount).toBe(13);
+    expect(CATEGORIES).toHaveLength(13);
     expect(CATEGORIES.map((c) => c.id)).toEqual([...CATEGORY_ORDER]);
 
     const summedCategoryFormats = CATEGORIES.reduce((sum, cat) => sum + cat.count, 0);

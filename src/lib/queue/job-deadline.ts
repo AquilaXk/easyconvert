@@ -184,7 +184,7 @@ export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSett
   return Math.min(deadline, max);
 }
 
-const DOCUMENT_CATEGORIES: ReadonlySet<string> = new Set(['document', 'presentation', 'spreadsheet', 'ebook']);
+const DOCUMENT_CATEGORIES: ReadonlySet<string> = new Set(['document', 'subtitle', 'presentation', 'spreadsheet', 'ebook']);
 const MEDIA_CATEGORIES: ReadonlySet<string> = new Set(['audio', 'video']);
 
 function normalizeFormat(format: string): string {

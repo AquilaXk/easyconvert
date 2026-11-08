@@ -581,6 +581,7 @@
       "archive": "archive",
       "video": "video",
       "audio": "audio",
+      "subtitle": "subtitle",
       "ebook": "ebook",
       "spreadsheet": "spreadsheet",
       "presentation": "presentation",
@@ -625,7 +626,10 @@
       "woff-ttf": "Installable TrueType font output",
       "dwg-pdf": "Technical drawing PDF sheet",
       "step-stl": "Triangle mesh for 3D printing",
-      "dxf-svg": "2D vector CAD plot export"
+      "dxf-svg": "2D vector CAD plot export",
+      "srt-vtt": "Subtitles for web video players",
+      "vtt-srt": "Subtitles that open in any player",
+      "ass-srt": "Plain dialogue without styling"
     },
     "extensionsListed": "{count} listed"
   },
@@ -1273,6 +1277,7 @@
       },
       "kind": {
         "audio": "{name} audio files",
+        "subtitle": "{name} subtitle",
         "video": "{name} videos",
         "image": "{name} images",
         "vector": "{name} vector images",

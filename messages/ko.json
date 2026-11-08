@@ -581,6 +581,7 @@
       "archive": "압축 파일",
       "video": "동영상",
       "audio": "오디오",
+      "subtitle": "자막",
       "ebook": "전자책",
       "spreadsheet": "스프레드시트",
       "presentation": "프레젠테이션",
@@ -625,7 +626,10 @@
       "woff-ttf": "설치할 수 있는 TrueType 글꼴로 출력",
       "dwg-pdf": "기술 도면을 PDF 시트로",
       "step-stl": "3D 프린팅용 삼각형 메시",
-      "dxf-svg": "2D 벡터 CAD 도면 내보내기"
+      "dxf-svg": "2D 벡터 CAD 도면 내보내기",
+      "srt-vtt": "웹 영상 플레이어용 자막으로 변환",
+      "vtt-srt": "어느 플레이어에서나 열리는 자막으로 변환",
+      "ass-srt": "스타일 없이 대사만 남긴 자막으로 변환"
     },
     "extensionsListed": "{count}개"
   },
@@ -1273,6 +1277,7 @@
       },
       "kind": {
         "audio": "{name} 오디오",
+        "subtitle": "{name} 자막",
         "video": "{name} 동영상",
         "image": "{name} 이미지",
         "vector": "{name} 벡터 이미지",
@@ -1368,6 +1373,7 @@
     "archive": "압축 파일",
     "video": "동영상",
     "audio": "오디오",
+    "subtitle": "자막",
     "ebook": "전자책",
     "spreadsheet": "스프레드시트",
     "presentation": "프레젠테이션",

@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Archive, BookOpen, Compass, Database, FileImage, FileText, FileType, Layers, Music, Presentation, Type, Video, type LucideIcon,
+  Archive, BookOpen, Captions, Compass, Database, FileImage, FileText, FileType, Layers, Music, Presentation, Type, Video, type LucideIcon,
 } from 'lucide-react';
 import type { FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
@@ -9,6 +9,7 @@ import { FORMAT_REGISTRY } from '@/lib/registry';
 const CATEGORY_ICONS: Readonly<Record<FormatCategory, LucideIcon>> = {
   audio: Music,
   video: Video,
+  subtitle: Captions,
   image: FileImage,
   vector: Compass,
   cad: Compass,

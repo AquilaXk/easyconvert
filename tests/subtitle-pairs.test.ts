@@ -47,8 +47,8 @@ async function convert(input: Buffer, source: string, target: string, name = `sa
 }
 
 describe('the registry offers the subtitle pairs', () => {
-  it('lists five formats in the document category, and the eleven pairs FFmpeg serves', () => {
-    expect(SUBTITLE_FORMATS.map((id) => FORMAT_REGISTRY[id]?.category)).toEqual(['document', 'document', 'document', 'document', 'document']);
+  it('lists five formats in the subtitle category, and the eleven pairs FFmpeg serves', () => {
+    expect(SUBTITLE_FORMATS.map((id) => FORMAT_REGISTRY[id]?.category)).toEqual(['subtitle', 'subtitle', 'subtitle', 'subtitle', 'subtitle']);
     expect(Object.fromEntries(SUBTITLE_FORMATS.map((id) => [id, FORMAT_REGISTRY[id].targetFormats]))).toEqual(
       Object.fromEntries(SUBTITLE_FORMATS.map((id) => [id, [...TARGETS[id]]]))
     );

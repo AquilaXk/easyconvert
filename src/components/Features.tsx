@@ -74,6 +74,11 @@ export const POPULAR_PAIRS_BY_CATEGORY: Record<FormatCategory, ReadonlyArray<Pop
     { from: 'otf', to: 'ttf' },
     { from: 'woff', to: 'ttf' },
   ],
+  subtitle: [
+    { from: 'srt', to: 'vtt' },
+    { from: 'vtt', to: 'srt' },
+    { from: 'ass', to: 'srt' },
+  ],
   cad: [
     { from: 'dwg', to: 'pdf' },
     { from: 'step', to: 'stl' },

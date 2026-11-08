@@ -19,6 +19,7 @@ export const FAMILIES = [
   'archive',
   'video',
   'audio',
+  'subtitle',
   'ebook',
   'spreadsheet',
   'presentation',

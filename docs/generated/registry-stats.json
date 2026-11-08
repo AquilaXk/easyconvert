@@ -1,6 +1,6 @@
 {
   "formatCount": 308,
-  "categoryCount": 12,
+  "categoryCount": 13,
   "pairCount": 2766,
   "categories": [
     {
@@ -114,11 +114,10 @@
     {
       "id": "document",
       "label": "Documents",
-      "count": 48,
+      "count": 43,
       "formats": [
         "abw",
         "alto",
-        "ass",
         "djvu",
         "doc",
         "docm",
@@ -151,14 +150,10 @@
         "rst",
         "rtf",
         "sdw",
-        "srt",
-        "ssa",
-        "sub",
         "sxw",
         "tex",
         "text",
         "txt",
-        "vtt",
         "wpd",
         "wps",
         "xhtml",
@@ -167,7 +162,6 @@
       ],
       "extensions": [
         "abw",
-        "ass",
         "djvu",
         "doc",
         "docm",
@@ -200,14 +194,10 @@
         "rst",
         "rtf",
         "sdw",
-        "srt",
-        "ssa",
-        "sub",
         "sxw",
         "tex",
         "text",
         "txt",
-        "vtt",
         "wpd",
         "wps",
         "xhtml",
@@ -461,6 +451,25 @@
         "wav",
         "weba",
         "wma"
+      ]
+    },
+    {
+      "id": "subtitle",
+      "label": "Subtitles",
+      "count": 5,
+      "formats": [
+        "ass",
+        "srt",
+        "ssa",
+        "sub",
+        "vtt"
+      ],
+      "extensions": [
+        "ass",
+        "srt",
+        "ssa",
+        "sub",
+        "vtt"
       ]
     },
     {

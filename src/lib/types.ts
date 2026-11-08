@@ -23,6 +23,7 @@ export type FormatCategory =
   | 'archive'
   | 'audio'
   | 'video'
+  | 'subtitle'
   | 'ebook'
   | 'font'
   | 'cad'
