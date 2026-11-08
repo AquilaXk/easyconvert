@@ -75,9 +75,10 @@ export function tiffDirectoryOffsets(tiff: Buffer): { little: boolean; offsets: 
 /**
  * `tiff` with the ResolutionUnit of every directory set to 1, no absolute unit (TIFF 6.0 section 8), so that the resolutions it holds are no print size; or `tiff`
  * itself when no directory has the tag as a SHORT or all say 1 already. Used on the TIFF a RAW decoder writes, whose 300 dpi is a constant of the decoder.
- * Bytes that are not a classic TIFF are not touched.
+ * Bytes that are not a classic TIFF are not touched. The change is made in a copy unless `inPlace` says the caller owns `tiff` and wants
+ * it written to, which spares a TIFF of tens of megabytes a second copy.
  */
-export function withoutAbsoluteResolution(tiff: Buffer): Buffer {
+export function withoutAbsoluteResolution(tiff: Buffer, { inPlace = false }: { inPlace?: boolean } = {}): Buffer {
   const layout = readClassicTiff(tiff);
   if (layout === null) return tiff;
   let changed: Buffer | null = null;
@@ -85,7 +86,7 @@ export function withoutAbsoluteResolution(tiff: Buffer): Buffer {
     for (let entry = entriesAt(directory); entry < nextAt(directory); entry += IFD_ENTRY_BYTES) {
       const isUnit = readUInt16(tiff, entry, layout.little) === TAG_RESOLUTION_UNIT && readUInt16(tiff, entry + 2, layout.little) === TYPE_SHORT;
       if (!isUnit || readUInt16(tiff, entry + IFD_ENTRY_VALUE_OFFSET, layout.little) === RESOLUTION_UNIT_NONE) continue;
-      changed ??= Buffer.from(tiff);
+      changed ??= inPlace ? tiff : Buffer.from(tiff);
       if (layout.little) changed.writeUInt16LE(RESOLUTION_UNIT_NONE, entry + IFD_ENTRY_VALUE_OFFSET);
       else changed.writeUInt16BE(RESOLUTION_UNIT_NONE, entry + IFD_ENTRY_VALUE_OFFSET);
     }

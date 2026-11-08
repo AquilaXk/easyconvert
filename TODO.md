@@ -3,9 +3,8 @@
 One maintainer, one list. Add a line when work is found, delete it when it lands.
 
 ## Conversions and quality
-- Make Samsung S23 DNG convert to JPG and PNG; it fails with `RawDecodeError: data corrupted`.
-- Check the CI build of the RAW library; Nikon Z f NEF and Sigma SD15 X3F are still refused.
-- Stop Pixel 6 Pro DNG to PDF running out of memory when two other jobs run.
+- Read Nikon HE/HE* NEF (Nikon Z f sample): only the LibRaw development branch (snapshot 202611) has a decoder; decide between waiting for a release and a pinned source build in the worker image and CI (entry 191).
+- Hand the developed RAW picture to the encoder from its file, not a 75 MB buffer, to cut the DNG to PDF peak further (entry 191).
 - Review the PDF-to-text refusals (77 `PdfTextUnmappedError`, 25 `CorruptStreamError`) and convert the wrong ones.
 - Read composite fonts without a ToUnicode map through a `cmap` reader; 2.2% of glyphs are still missing.
 - Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).

@@ -249,6 +249,15 @@ describe('a TIFF made to state no absolute resolution', () => {
     expect(differing).toHaveLength(2);
   });
 
+  it.each([true, false])('is rewritten in the bytes it was given when asked to, instead of in a copy of them (little endian: %s)', (little) => {
+    const document = tiff([resolution([300, 1], [300, 1], 2)], little);
+    const before = Buffer.from(document);
+    const rewritten = withoutAbsoluteResolution(document, { inPlace: true });
+    expect(rewritten).toBe(document);
+    expect(storedDensity(rewritten, 0)).toBeNull();
+    expect([...before.keys()].filter((at) => before[at] !== rewritten[at])).toHaveLength(1);
+  });
+
   it('is the same object when there is nothing to change, and for bytes that are not a TIFF', () => {
     const unitless = tiff([resolution([300, 1], [300, 1])]);
     const none = tiff([resolution([300, 1], [300, 1], 1)]);

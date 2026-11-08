@@ -6,5 +6,13 @@
     "url": "https://raw.pixls.us/download/data/Samsung/Galaxy%20S23/20230715_154550.dng",
     "sha256": "873184113210f9c4f684ad1eccea587a973b2c4d4ca88036b6962a1f6ca513bb",
     "bytes": 25412616
+  },
+  {
+    "format": "x3f",
+    "variant": "sd15",
+    "filename": "_SDI5651.X3F",
+    "url": "https://raw.pixls.us/data/Sigma/SIGMA%20SD15/_SDI5651.X3F",
+    "sha256": "e9bf8ca29bb9c533b764a4af7830bcf029ee6792323bad3e4179d0e5c29389c0",
+    "bytes": 16373048
   }
 ]

@@ -16,4 +16,4 @@ the named samples.
 
 `cases.json` lists real files that a single test reads for a case of its own, which the conformance suite does
 not probe: the Samsung Galaxy S23 DNG (`dng-s23`, CC0), whose decoder warns and still writes the whole image
-(`tests/raw-native-decoder-warning.test.ts`). They are cached as `<format>-<variant>.<format>` as well.
+(`tests/raw-native-decoder-warning.test.ts`), and the Sigma SD15 X3F (`x3f-sd15`, CC0), whose header names the "Daylight" white balance and whose calibration lists it as "Sunlight" (`tests/raw-x3f-sunlight-white-balance.test.ts`). They are cached as `<format>-<variant>.<format>` as well.
