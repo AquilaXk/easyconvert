@@ -44,7 +44,7 @@ We do not ask for sensitive data or unique identification numbers. We do not sel
 | Uploaded file | Deleted 10 minutes after the last conversion that reads it ends. An upload that no conversion uses is deleted after at most 1 day. |
 | Converted result | Deleted 10 minutes after its first complete download, or 1 hour after it was made if nobody downloads it. Conversions on the website that return the result in the same response keep no copy. |
 | Temporary files of a conversion | Deleted at the latest 2 hours after the conversion started. |
-| Conversion job, also one of several steps | Deleted 25 hours after the job ends: 1 hour while its result can be downloaded, then 1 day in which a download of the deleted result answers that it was deleted. The file content sent with the job and its webhook signing secret are deleted when the job ends. |
+| Conversion job, also one of several steps | Deleted 25 hours after the job ends: 1 hour while its result can be downloaded, then 1 day in which a download of the deleted result answers that it was deleted. The file content sent with the job and its webhook signing secret are deleted when the job ends. A backup can still hold them, see the backup row. |
 | Copy of a failed job, kept to find the cause | Deleted 25 hours after the failure. |
 | Failed webhook delivery | Deleted 30 days after the delivery failed, or earlier when you delete it in the dashboard. |
 | File list entry of an account | Expires with its file. |
@@ -54,15 +54,16 @@ We do not ask for sensitive data or unique identification numbers. We do not sel
 | Sign-in attempt limits | 5 minutes. |
 | Edge server log | Up to 15 days. The log is rotated daily and 14 earlier files are kept. |
 | Account, API keys and usage | Until you ask us to delete your account. |
+| Backup of the account and job records | A backup is made every 6 hours, kept on the same server and not copied elsewhere, and deleted at the latest 7 days after it was made. It holds the account, API key and job records as they were at that time. A job sent through the API with the file in the request body keeps that file in its record until the job ends, so a backup made while such a job runs keeps the file until the backup is deleted, at most 7 days. Uploaded files and converted results are not backed up. |
 | Contact messages | Kept in the operator's mailbox. We delete them on request. |
 
 These periods are the settings in force on the date at the top of this page. When the disk of the server runs full, results can be deleted before their time.
 
 ## 4. How we delete it
 
-When a retention period ends, the system deletes the file or the record automatically, and it cannot be restored. We keep no backups of files.
+When a retention period ends, the system deletes the file or the record automatically, and it cannot be restored from the system. The one exception is a copy in a backup of the records (section 3), which stays until that backup is deleted, at most 7 days after it was made. We make no backups of uploaded files or results, and we use a backup only to restore the service after a failure.
 
-When you ask us to delete your account, the operator checks that the request comes from the account's email address. The operator then deletes the account, its API keys and their signing secrets, its conversion jobs and their files, its failed webhook deliveries and its usage records with a tool that removes each of these records, and tells you when it is done. This happens within 10 days of your request.
+When you ask us to delete your account, the operator checks that the request comes from the account's email address. The operator then deletes the account, its API keys and their signing secrets, its conversion jobs and their files, its failed webhook deliveries and its usage records with a tool that removes each of these records, and tells you when it is done. The operator does this within 2 days of the verified request. Copies of the account in backups are deleted within the following 7 days and 6 hours, so everything is gone within 10 days of your request. When the service is restored from a backup, the operator deletes again every account that was deleted after that backup was made.
 
 ## 5. Provision to third parties
 
