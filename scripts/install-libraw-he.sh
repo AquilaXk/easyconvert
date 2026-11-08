@@ -51,8 +51,8 @@ install -m 0755 bin/dcraw_emu "$INSTALL_DIR/bin/dcraw_emu"
 # The Debian-style name, so the image collects it into /licenses with the system notices.
 cat COPYRIGHT LICENSE.CDDL LICENSE.LGPL > "$INSTALL_DIR/share/doc/libraw-he/copyright"
 chmod 0644 "$INSTALL_DIR/share/doc/libraw-he/copyright"
-chmod 0644 "$INSTALL_DIR/share/doc/libraw-he/SOURCE" 2> /dev/null || true
 printf 'LibRaw development snapshot 202611, unmodified, commit %s of %s\nLGPL-2.1 or CDDL-1.0; built with Makefile.dist as a separate program, used only for Nikon NEF files with High Efficiency compression\n' "$LIBRAW_HE_COMMIT" "$LIBRAW_HE_URL" > "$INSTALL_DIR/share/doc/libraw-he/SOURCE"
+chmod 0644 "$INSTALL_DIR/share/doc/libraw-he/SOURCE"
 
 if [ "$(id -u)" -eq 0 ] && [ "$INSTALL_DIR" != "/usr/local" ]; then
   ln -sf "$INSTALL_DIR/bin/dcraw_emu" /usr/local/bin/dcraw_emu_he
