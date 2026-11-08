@@ -22,8 +22,6 @@ const HTTP_UNPROCESSABLE = 422;
 const HTTP_UNAVAILABLE = 503;
 const HTTP_TOO_MANY = 429;
 
-/** A 422 the routes answer for a typed failure but without its `code` (the collision branch builds a plain problem). */
-const UNCODED_422 = ['archive_entry_collision'];
 /** The page range check of `/api/convert` answers its own `invalid_pages` refusal with 422 (the other routes leave it to the class's 400). */
 const WEB_ONLY_422 = ['invalid_pages'];
 const CONCURRENCY_LIMIT_PROBLEM_TYPE = `${PROBLEM_TYPE_BASE}concurrency-limit`;
@@ -54,7 +52,7 @@ describe('the code values of the convert routes follow the error classes', () =>
   it.each([V1_CONVERT, BATCH_CONVERT])('%s lists the code of every typed 400, 422 and 503', async (route) => {
     const spec = await loadSpec();
     expect(documentedCodes(spec, route, HTTP_BAD_REQUEST)).toEqual(derived(HTTP_BAD_REQUEST));
-    expect(sorted(documentedCodes(spec, route, HTTP_UNPROCESSABLE), UNCODED_422)).toEqual(derived(HTTP_UNPROCESSABLE));
+    expect(sorted(documentedCodes(spec, route, HTTP_UNPROCESSABLE))).toEqual(derived(HTTP_UNPROCESSABLE));
     expect(documentedCodes(spec, route, HTTP_UNAVAILABLE)).toEqual(derived(HTTP_UNAVAILABLE));
   });
 

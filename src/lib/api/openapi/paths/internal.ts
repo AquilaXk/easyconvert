@@ -495,7 +495,7 @@ export const internalPaths = {
         },
         '401': createProblemResponse('Authentication required.'),
         '422': createCodedPdfaProblemResponse(
-          `The file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit (these name the cause in \`code\`). An archive whose entry names collide when unpacked is also a 422, with no \`code\`. ${PDFA_PROBLEM_DESCRIPTION}`,
+          `The file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit (these name the cause in \`code\`). An archive whose entry names collide when unpacked is also a 422 ("archive_entry_collision"). ${PDFA_PROBLEM_DESCRIPTION}`,
           V1_CONVERT_CODES[422]
         ),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),

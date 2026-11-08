@@ -158,7 +158,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
       return createPdfPostprocessResponse(error, instanceUri);
     }
     if (error instanceof ArchiveEntryCollisionError) {
-      return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
+      return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision', undefined, undefined, undefined, { code: error.refusalCode });
     }
     const limitStatus = payloadLimitStatus(error);
     if (limitStatus !== null) {

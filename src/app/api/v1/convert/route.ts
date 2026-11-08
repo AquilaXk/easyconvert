@@ -302,7 +302,9 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
         instanceUri,
         'Archive Entry Collision',
         undefined,
-        rateLimitHeaders
+        rateLimitHeaders,
+        undefined,
+        { code: err.refusalCode }
       );
     }
     const limitStatus = payloadLimitStatus(err);

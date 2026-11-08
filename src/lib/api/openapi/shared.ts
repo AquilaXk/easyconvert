@@ -76,8 +76,7 @@ export const createProblemResponse = (description: string) => ({
  */
 export const V1_CONVERT_CODES = {
   400: ['conversion_failed', 'input_over_limit', 'invalid_pages', 'malformed_input', 'option_not_supported', 'spoofed_file', 'unsafe_archive', 'unsupported_input', 'unsupported_pair'],
-  // `archive_entry_collision` is also a 422 but its answer carries no `code` on this route, so it is not listed here.
-  422: ['conversion_failed', 'empty_file', 'encrypted_input', 'input_over_limit', 'invalid_password', 'malformed_input', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
+  422: ['archive_entry_collision', 'conversion_failed', 'empty_file', 'encrypted_input', 'input_over_limit', 'invalid_password', 'malformed_input', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
   503: ['engine_unavailable'],
 } as const satisfies Record<number, readonly ConversionRefusalCode[]>;
 

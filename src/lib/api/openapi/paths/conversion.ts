@@ -166,7 +166,7 @@ export const conversionPaths = {
           'The request is understood and refused. Problem type `https://api.easyconvert.io/problems/idempotency-key-reused`: an idempotency key was reused with a different request payload or parameters. ' +
             'Problem type `https://api.easyconvert.io/problems/unprocessable-entity`, or `.../option-not-supported` for an option that is planned and not yet supported: `options` fail the contract (the fields in `invalidParams`). ' +
             'Or the file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit; these name the cause in `code`. ' +
-            'An archive whose entry names collide when unpacked is also a 422, titled "Archive Entry Collision", with no `code`. ' +
+            'An archive whose entry names collide when unpacked is also a 422, titled "Archive Entry Collision", with the `code` "archive_entry_collision". ' +
             PDFA_PROBLEM_DESCRIPTION,
           V1_CONVERT_CODES[422]
         ),

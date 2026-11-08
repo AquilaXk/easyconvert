@@ -18,7 +18,7 @@ import { convertFont } from '../src/lib/conversions/font';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
-import { ConversionFailedError, CpuTaskAbortedError, EngineUnavailableError, typedFailureOf, UnsupportedTargetError } from '../src/lib/types';
+import { ArchiveEntryCollisionError, ConversionFailedError, CpuTaskAbortedError, EngineUnavailableError, typedFailureOf, UnsupportedTargetError } from '../src/lib/types';
 import { createEngineUnavailableResponse } from '../src/lib/api/problem-details';
 import { conversionRefusalResponse } from '../src/lib/api/conversion-refusal-response';
 
@@ -144,6 +144,19 @@ describe('Retry-After on a 503', () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get('Retry-After')).toBe(RETRY_AFTER_SECONDS);
+  });
+
+  it.each([
+    ['/api/v1/convert', v1ConvertRoute, () => pdfForm('docx')],
+    ['/api/convert/batch', batchRoute, () => batchForm()],
+  ] as const)('names an archive entry collision in code on %s', async (url, route, form) => {
+    const headers = url.startsWith('/api/v1') ? await keyHeader() : VISITOR;
+    vi.mocked(dispatchConversion).mockRejectedValueOnce(new ArchiveEntryCollisionError('a.txt'));
+
+    const res = await route(post(url, form(), headers));
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ title: 'Archive Entry Collision', code: 'archive_entry_collision' });
   });
 });
 
