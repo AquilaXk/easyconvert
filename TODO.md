@@ -38,7 +38,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Fix Dependabot alert #57 (moderate).
 
 ## Tests and CI
-- Cache the epubcheck and vtracer downloads in CI setup; a GitHub release outage (504, 2026-11-08) failed every test shard.
 - Stabilise the `lzma-decoder` timing and `ocr-pdf-concurrency` guards; both fail every nightly.
 - Fix the flakes `job-input-deletion` and `upload-completion-receipt`.
 - Split the parity quality job by family; RAW hits the 60-minute cap from a cold cache.

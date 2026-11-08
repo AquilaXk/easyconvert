@@ -151,7 +151,7 @@ describe('the third-party notices of the tracer program', () => {
     expect(INSTALL).toMatch(/install -m 0644 "\$notices" "\$INSTALL_DIR\/share\/doc\/vtracer\/THIRD-PARTY-NOTICES"/);
     const check = INSTALL.indexOf('VTRACER_NOTICES_SHA256}  $notices"');
     expect(check).toBeGreaterThan(-1);
-    expect(check).toBeLessThan(INSTALL.indexOf('\nfetch '));
+    expect(check).toBeLessThan(INSTALL.indexOf('\ncached_fetch '));
   });
 
   it('keep their CRLF lines, and the upstream files their digests cover, in any checkout, so the pinned digests hold', () => {

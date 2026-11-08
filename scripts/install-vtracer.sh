@@ -56,7 +56,7 @@ trap 'rm -rf "$work"' EXIT
 
 fetch() {
   local status=0
-  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-filesize "$MAX_DOWNLOAD_BYTES" --fail --silent --show-error --location --retry 3 -o - "$2" \
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-filesize "$MAX_DOWNLOAD_BYTES" --fail --silent --show-error --location --retry 6 --retry-delay 10 -o - "$2" \
     | head -c "$((MAX_DOWNLOAD_BYTES + 1))" > "$1" || status=$?
   if [ "$(wc -c < "$1")" -gt "$MAX_DOWNLOAD_BYTES" ]; then
     echo "install-vtracer.sh: $2 is larger than $MAX_DOWNLOAD_BYTES bytes" >&2
@@ -68,10 +68,23 @@ fetch() {
   fi
 }
 
-fetch "$work/vtracer.tar.gz" "$VTRACER_URL"
-echo "${digest}  $work/vtracer.tar.gz" | sha256sum --check --strict -
-fetch "$work/LICENSE" "$VTRACER_LICENSE_URL"
-echo "${VTRACER_LICENSE_SHA256}  $work/LICENSE" | sha256sum --check --strict -
+# With VTRACER_DOWNLOADS set (CI), a download kept there from an earlier run is used when its digest still matches, and a fresh
+# one is kept there for the next run. The digest is checked on every use either way.
+cached_fetch() {
+  local name="$1" url="$2" sum="$3"
+  if [ -n "${VTRACER_DOWNLOADS:-}" ] && echo "${sum}  ${VTRACER_DOWNLOADS}/${name}" | sha256sum --check --strict --status - 2>/dev/null; then
+    cp "${VTRACER_DOWNLOADS}/${name}" "$work/${name}"
+  else
+    fetch "$work/${name}" "$url"
+  fi
+  echo "${sum}  $work/${name}" | sha256sum --check --strict -
+  if [ -n "${VTRACER_DOWNLOADS:-}" ]; then cp "$work/${name}" "${VTRACER_DOWNLOADS}/${name}"; fi
+}
+
+cached_fetch "vtracer-${target}.tar.gz" "$VTRACER_URL" "$digest"
+mv "$work/vtracer-${target}.tar.gz" "$work/vtracer.tar.gz"
+cached_fetch "LICENSE-${VTRACER_COMMIT}" "$VTRACER_LICENSE_URL" "$VTRACER_LICENSE_SHA256"
+mv "$work/LICENSE-${VTRACER_COMMIT}" "$work/LICENSE"
 tar -xzf "$work/vtracer.tar.gz" -C "$work" vtracer
 
 install -d "$INSTALL_DIR/bin" "$INSTALL_DIR/share/doc/vtracer"

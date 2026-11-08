@@ -76,6 +76,7 @@ configure() {
   export action_path="${ACTION_PATH:?ACTION_PATH}"
   export apt_debs="${APT_DEBS:?APT_DEBS}"
   export apt_cache_hit="${APT_CACHE_HIT:-false}"
+  export RELEASE_DOWNLOADS="${RELEASE_DOWNLOADS:-$(mktemp -d)}"
   export verapdf_cache_hit="${VERAPDF_CACHE_HIT:-false}"
   export verapdf_dir=/opt/verapdf
   export libredwg_cache_hit="${LIBREDWG_CACHE_HIT:-false}"
@@ -179,10 +180,13 @@ task_verapdf() {
 # EPUB outputs are checked by the EPUB validator; the archive is checked before anything in it runs.
 task_epubcheck() {
   local archive dir
-  archive="$(mktemp --suffix=.zip)"
   dir=/opt/epubcheck
-  curl -fsSL --proto =https --proto-redir =https --retry 3 -o "$archive" "https://github.com/w3c/epubcheck/releases/download/v$EPUBCHECK_VERSION/epubcheck-$EPUBCHECK_VERSION.zip" || return 1
-  echo "$EPUBCHECK_SHA256  $archive" | sha256sum -c - || return 1
+  mkdir -p "$RELEASE_DOWNLOADS"
+  archive="$RELEASE_DOWNLOADS/epubcheck-$EPUBCHECK_VERSION.zip"
+  if ! echo "$EPUBCHECK_SHA256  $archive" | sha256sum -c --status - 2>/dev/null; then
+    curl -fsSL --proto =https --proto-redir =https --retry 6 --retry-delay 10 -o "$archive" "https://github.com/w3c/epubcheck/releases/download/v$EPUBCHECK_VERSION/epubcheck-$EPUBCHECK_VERSION.zip" || { rm -f "$archive"; return 1; }
+  fi
+  echo "$EPUBCHECK_SHA256  $archive" | sha256sum -c - || { rm -f "$archive"; return 1; }
   sudo rm -rf "$dir" && sudo mkdir -p "$dir" && sudo unzip -q "$archive" -d "$dir" || return 1
   printf '#!/bin/sh\nexec java -Djava.awt.headless=true -jar %s/epubcheck-%s/epubcheck.jar "$@"\n' "$dir" "$EPUBCHECK_VERSION" | sudo tee /usr/local/bin/epubcheck > /dev/null
   sudo chmod 755 /usr/local/bin/epubcheck
@@ -238,9 +242,11 @@ task_ghostxps() {
 # Raster to SVG pairs are traced by vtracer (MIT OR Apache-2.0, a separate program): the front-end for raw pixels that the worker uses,
 # built by scripts/install-vtracer-pixels.sh from the source in scripts/vtracer-pixels with the pinned Rust toolchain (about 160 MB of
 # archives, each checked against a pinned SHA-256, and a build of about 20 s), and the release program pinned with its licence text in
-# scripts/install-vtracer.sh, which checks both digests before the program runs and is the fallback. Neither is cached.
+# scripts/install-vtracer.sh, which checks both digests before the program runs and is the fallback. The release archive and licence text are kept in
+# $RELEASE_DOWNLOADS (cached by the action) and checked again on every use; the front-end build is not cached.
 task_vtracer() {
-  sudo scripts/install-vtracer.sh /opt/vtracer || return 1
+  mkdir -p "$RELEASE_DOWNLOADS"
+  sudo VTRACER_DOWNLOADS="$RELEASE_DOWNLOADS" scripts/install-vtracer.sh /opt/vtracer || return 1
   sudo scripts/install-vtracer-pixels.sh /opt/vtracer-pixels
 }
 
