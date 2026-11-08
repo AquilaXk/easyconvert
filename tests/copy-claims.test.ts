@@ -53,7 +53,7 @@ const FORMAT_FACTS: ReadonlySet<string> = new Set([
   'formatSpecs.flac.desc', 'formatSpecs.gif.desc', 'formatSpecs.m4a.desc', 'formatSpecs.png.desc', 'formatSpecs.svg.desc',
   'formatSpecs.webp.desc',
   'formatDescriptions.alac', 'formatDescriptions.ape', 'formatDescriptions.arc', 'formatDescriptions.flac', 'formatDescriptions.pdfa',
-  'formatDescriptions.png', 'formatDescriptions.webp', 'formatDescriptions.zip', 'formatDescriptions.zstd',
+  'formatDescriptions.jxl', 'formatDescriptions.png', 'formatDescriptions.webp', 'formatDescriptions.zip', 'formatDescriptions.zstd',
 ]);
 
 const HEADER_NAMES = /x-zero-(?:data-)?retention|x-storage-footprint/i;
