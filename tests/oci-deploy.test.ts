@@ -1336,6 +1336,14 @@ exit 0`
     }
   }
   const alive = isProcessRunning;
+  /** How long a killed stand-in command may take to be reaped before the test calls it a hang. */
+  const REAP_HANG_GUARD_MS = 10_000;
+  /** Whether `pid` stops running within REAP_HANG_GUARD_MS. */
+  async function goneWithin(pid: number): Promise<boolean> {
+    const deadline = Date.now() + REAP_HANG_GUARD_MS;
+    while (alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    return !alive(pid);
+  }
 
   it('ends the command that is running and starts the current release again at once when the job is cancelled while the new one starts', async () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
@@ -1624,7 +1632,8 @@ exit 0`
     expect(result.code).toBe(130);
     expect(result.stderr).toContain('cancelled during reconcile: run reconcile again');
     expect(result.stderr).not.toContain('starting the previous release');
-    expect(alive(result.hangPid ?? 0)).toBe(false);
+    // The killed command is reaped a moment after the script exits; a loaded runner can ask before that, so wait for it, up to a hang guard.
+    expect(await goneWithin(result.hangPid ?? 0)).toBe(true);
   });
 
   const hasFlock = spawnSync('flock', ['--version']).status === 0;

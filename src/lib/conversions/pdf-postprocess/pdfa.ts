@@ -82,6 +82,8 @@ export function parseVerapdfVerdict(json: string): VerapdfVerdict {
   try {
     parsed = JSON.parse(json);
   } catch {
+    // The start of what came instead of a report, for the server log only: the next time it happens the cause is in the log, not a guess.
+    console.error('[pdfa] veraPDF did not answer with a JSON report; it began with:', JSON.stringify(json.slice(0, 200)));
     throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
   }
   const jobs = (parsed as { report?: { jobs?: unknown[] } })?.report?.jobs;
@@ -197,6 +199,9 @@ async function runVerapdf(
       cwd: path.dirname(file),
       env: verapdfEnvironment(),
       networkIsolated: true,
+      // No PID namespace of its own, like calibre (entry 203): the JVM reads /proc/self for its container and thread setup, and /proc (which the
+      // sandbox cannot remount) shows the host's processes; on the CI runners veraPDF then answered with something other than its JSON report.
+      sandboxOptions: { pidNamespace: false },
     });
     return result.stdout.toString('utf-8');
   } catch (err) {
