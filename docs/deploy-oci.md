@@ -10,7 +10,7 @@ One host, one Compose project named `easyconvert`, started only by the deploy wo
 | --- | --- | --- | --- |
 | `web` | `ghcr.io/aquilaxk/easyconvert-web@sha256:...` | `127.0.0.1:8090` | Next.js server, API, synchronous conversions up to 100 MiB |
 | `worker` | `ghcr.io/aquilaxk/easyconvert-worker@sha256:...` | none | Queue worker for every queue, 4 jobs at a time |
-| `redis` | `redis:7.4-alpine@sha256:...` | none | Queue, users, API keys, quotas. Password, internal network |
+| `redis` | `redis:7.4-alpine@sha256:...` | none | Queue, users, API keys, quotas. Password (in a 0600 file on the container's tmpfs, not in argv), internal network |
 
 The host nginx terminates TLS for `convert.aquilaxk.site` and proxies to `127.0.0.1:8090`. The CDN in front of the origin is the only client the firewall lets reach port 443.
 
