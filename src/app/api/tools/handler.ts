@@ -16,7 +16,6 @@ import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-de
 import type { User } from '@/lib/auth/types';
 import {
   assertToolInput,
-  isWebTool,
   parseToolOptions,
   runWebTool,
   WebToolRefusal,
@@ -25,13 +24,8 @@ import {
   type WebToolOutput,
 } from '@/lib/tools/web-tools';
 
-export const dynamic = 'force-dynamic';
-
-const HTTP_NOT_FOUND = 404;
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const MULTIPART_REQUIRED = 'The request body must be multipart/form-data.';
-
-type RouteContext = { params: Promise<{ tool: string }> };
 
 function answerOf(output: WebToolOutput): NextResponse {
   if (output.kind === 'entries') {
@@ -68,6 +62,8 @@ function toolErrorResponse(error: unknown, instanceUri: string): NextResponse {
 /** Runs the tool of a request whose unit is reserved; the unit is charged once, and only when the run succeeded. */
 async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: ReservedUnit, instanceUri: string, trace: ConversionTrace): Promise<NextResponse> {
   let releaseSlot: (() => void) | undefined;
+  // The run that is still going when the answer is sent (a deadline, a disconnect): the slot stays held until it settles.
+  let running: Promise<unknown> = Promise.resolve();
   try {
     if (!isMultipartBody(req)) return codedRefusal(HTTP_UNSUPPORTED_MEDIA_TYPE, 'multipart_required', MULTIPART_REQUIRED);
     const slot = await acquireSyncSlot(caller.id, caller.tier);
@@ -94,9 +90,11 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
 
     const source = tool === 'archive-extract' || tool === 'archive-create' ? 'zip' : 'pdf';
     const deadlineMs = syncDeadlineMs(conversionDeadlineMs({ tier: caller.tier, sourceFormat: source, targetFormat: source, inputBytes: trace.bytes }));
-    const output = await runUnderDeadline(req, deadlineMs, async (limits) => {
+    const output = await runUnderDeadline(req, deadlineMs, (limits) => {
       limits.signal.throwIfAborted();
-      return runWebTool(tool, files, options);
+      const work = runWebTool(tool, files, options, limits.signal);
+      running = work.catch(() => undefined);
+      return work;
     });
     // The answer is built before the unit is committed, so an answer that cannot be built is not charged.
     const answer = answerOf(output);
@@ -106,25 +104,26 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
     trace.cause = error;
     return toolErrorResponse(error, instanceUri);
   } finally {
-    releaseSlot?.();
+    // A caller cannot stack work behind its slots: they come back when the work has ended, not when the answer has gone.
+    void running.then(releaseSlot);
   }
 }
 
-export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest, context: RouteContext) {
-  const { tool } = await context.params;
-  const instanceUri = req.nextUrl?.pathname || `/api/tools/${tool}`;
-  if (!isWebTool(tool)) return createProblemDetailsResponse(HTTP_NOT_FOUND, `There is no tool "${tool}".`, instanceUri, 'Not Found');
-
-  return loggingOutcomes('tools', async (request, trace) => {
-    // The caller is authenticated before the body is read: an anonymous one meets the rate limit, as on /api/convert.
-    const auth = await validateApiAccess(request, { requiredUnits: 0, requiredScope: 'convert:write', allowAnonymous: true });
-    if (!auth.authorized || !auth.user) {
-      return createProblemDetailsResponse(auth.status ?? 401, auth.error ?? 'Unauthorized', instanceUri, undefined, auth.problemType, authErrorHeaders(auth));
-    }
-    const caller = auth.user;
-    // One run is one conversion, whatever the number of files it takes.
-    const unit = await reserveConversionUnit(caller, 1);
-    if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
-    return withReservedUnit(unit.reservationId, (reserved) => runTool(request, caller, tool, reserved, instanceUri, trace));
-  })(req);
-}));
+/** The POST handler of the route of `tool` (`/api/tools/<tool>`), for the route file of that tool. */
+export function toolPost(tool: WebTool) {
+  return withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+    const instanceUri = req.nextUrl?.pathname || `/api/tools/${tool}`;
+    return loggingOutcomes('tools', async (request, trace) => {
+      // The caller is authenticated before the body is read: an anonymous one meets the rate limit, as on /api/convert.
+      const auth = await validateApiAccess(request, { requiredUnits: 0, requiredScope: 'convert:write', allowAnonymous: true });
+      if (!auth.authorized || !auth.user) {
+        return createProblemDetailsResponse(auth.status ?? 401, auth.error ?? 'Unauthorized', instanceUri, undefined, auth.problemType, authErrorHeaders(auth));
+      }
+      const caller = auth.user;
+      // One run is one conversion, whatever the number of files it takes.
+      const unit = await reserveConversionUnit(caller, 1);
+      if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
+      return withReservedUnit(unit.reservationId, (reserved) => runTool(request, caller, tool, reserved, instanceUri, trace));
+    })(req);
+  }));
+}

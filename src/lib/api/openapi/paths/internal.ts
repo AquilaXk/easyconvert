@@ -31,7 +31,7 @@ import {
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import { formatBytes } from '@/lib/format-bytes';
-import { MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
+import { MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, MAX_TOOL_OPTIONS_CHARS, MAX_TOOL_OUTPUT_BYTES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-codes';
 
@@ -177,7 +177,7 @@ const linkImportBudgetResponse = (description: string) => {
   return { description, content: { 'application/problem+json': { schema }, 'application/json': { schema } } };
 };
 
-const TOOL_RUN_NOTE = 'One run is one conversion of the daily allowance whatever the number of files, charged only when the run succeeds. Anonymous callers meet the same rate limit, concurrency limit and daily allowance as `POST /api/convert`.';
+const TOOL_RUN_NOTE = `One run is one conversion of the daily allowance whatever the number of files, charged only when the run succeeds. Anonymous callers meet the same rate limit, concurrency limit and daily allowance as \`POST /api/convert\`. The \`options\` field is at most ${MAX_TOOL_OPTIONS_CHARS} characters and only the keys named here are read; the file answered is at most ${formatBytes(MAX_TOOL_OUTPUT_BYTES)}. A run stopped by its deadline or a disconnect keeps its concurrency slot until the work has ended.`;
 
 const TOOL_FILES_PROPERTY = (description: string) => ({
   type: 'array',
@@ -185,15 +185,18 @@ const TOOL_FILES_PROPERTY = (description: string) => ({
   description: `${description} Up to ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total, the most one request carries.`,
 });
 
+/** What a tool answers with: the media types of the file, or the JSON listing of an unpacked archive. */
+type ToolAnswer = { description: string; mediaTypes: string[] } | { description: string; listing: true };
+
 /** What each web tool takes and answers, in the order of `WEB_TOOLS`. */
-const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; description: string; files: string; options: string; answer: [string, string] }> = {
+const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; description: string; files: string; options: string; answer: ToolAnswer }> = {
   merge: {
     summary: 'Merge PDFs (Web Application)',
     operationId: 'toolMergeInternal',
     description: `Joins 2 to ${MAX_TOOL_FILES} PDF files, in the order sent, into one PDF. Runs the code of the \`merge\` job graph node. ${TOOL_RUN_NOTE}`,
     files: 'The PDF files to merge, in order.',
     options: 'Unused.',
-    answer: ['The merged PDF.', 'application/pdf'],
+    answer: { description: 'The merged PDF.', mediaTypes: ['application/pdf'] },
   },
   'archive-create': {
     summary: 'Create an Archive (Web Application)',
@@ -201,15 +204,15 @@ const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; descrip
     description: `Packs 1 to ${MAX_TOOL_FILES} files into one archive. Files of one name are kept apart by renaming. Runs the code of the \`archive.create\` job graph node. ${TOOL_RUN_NOTE}`,
     files: 'The files to pack.',
     options: 'JSON `{"format": "zip" | "7z" | "tar" | "tar.gz"}`; ZIP by default.',
-    answer: ['The archive.', 'application/octet-stream'],
+    answer: { description: 'The archive, in the format asked for.', mediaTypes: ['application/zip', 'application/x-7z-compressed', 'application/gzip'] },
   },
   'archive-extract': {
     summary: 'Extract an Archive (Web Application)',
     operationId: 'toolArchiveExtractInternal',
-    description: `Unpacks one ZIP, 7Z, RAR, TAR or TAR.GZ archive and lists its files as JSON \`{ "entries": [{ "name", "size", "mimeType", "data" }] }\`, \`data\` being the base64 of the bytes. Each name is the leaf of the entry, never a path, and two of one name are kept apart. At most ${MAX_EXTRACTED_ENTRIES} files and ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total are listed; the limits of the job graph on the unpacked size and its ratio to the archive apply. Runs the code of the \`archive.extract\` job graph node. ${TOOL_RUN_NOTE}`,
+    description: `Unpacks one ZIP, 7Z, RAR, TAR or TAR.GZ archive and lists its files as JSON \`{ "entries": [{ "name", "size", "mimeType", "data" }] }\`, \`data\` being the base64 of the bytes. Each name is the leaf of the entry, never a path, and two of one name are kept apart. At most ${MAX_EXTRACTED_ENTRIES} files and ${formatBytes(MAX_EXTRACTED_BYTES)} in total are listed; the limits of the job graph on the unpacked size and its ratio to the archive apply. Runs the code of the \`archive.extract\` job graph node. ${TOOL_RUN_NOTE}`,
     files: 'The one archive to unpack.',
     options: 'Unused.',
-    answer: ['The files of the archive as JSON.', 'application/json'],
+    answer: { description: 'The files of the archive.', listing: true },
   },
   split: {
     summary: 'Split a PDF (Web Application)',
@@ -217,7 +220,7 @@ const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; descrip
     description: `Cuts one PDF into parts and answers them as one ZIP. Runs the code of the \`pdf.split-pages\` job graph node. ${TOOL_RUN_NOTE}`,
     files: 'The one PDF to split.',
     options: 'JSON `{"split": {"ranges": "1-3,5"}}` for one part per range, `{"split": {"everyNPages": 2}}` for one part per that many pages, or `{}` for one part per page.',
-    answer: ['A ZIP of the parts.', 'application/zip'],
+    answer: { description: 'A ZIP of the parts.', mediaTypes: ['application/zip'] },
   },
   rotate: {
     summary: 'Rotate PDF Pages (Web Application)',
@@ -225,9 +228,38 @@ const TOOL_DOCS: Record<WebTool, { summary: string; operationId: string; descrip
     description: `Turns the pages of one PDF clockwise. Runs the code of the \`pdf.rotate-pages\` job graph node. ${TOOL_RUN_NOTE}`,
     files: 'The one PDF to rotate.',
     options: 'JSON `{"rotate": {"rotation": 90 | 180 | 270, "pages": "1-3,5"}}`; every page when `pages` is left out.',
-    answer: ['The rotated PDF.', 'application/pdf'],
+    answer: { description: 'The rotated PDF.', mediaTypes: ['application/pdf'] },
   },
 };
+
+const TOOL_LISTING_SCHEMA = {
+  type: 'object',
+  required: ['success', 'entries'],
+  properties: {
+    success: { type: 'boolean', enum: [true] },
+    entries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'size', 'mimeType', 'data'],
+        properties: {
+          name: { type: 'string', description: 'The leaf of the entry name, never a path.' },
+          size: { type: 'integer' },
+          mimeType: { type: 'string' },
+          data: { type: 'string', format: 'byte', description: 'The bytes of the file, base64.' },
+        },
+      },
+    },
+  },
+};
+
+const toolAnswer = (answer: ToolAnswer) =>
+  'listing' in answer
+    ? { description: answer.description, content: { 'application/json': { schema: TOOL_LISTING_SCHEMA } } }
+    : {
+        description: answer.description,
+        content: Object.fromEntries(answer.mediaTypes.map((type) => [type, { schema: { type: 'string', format: 'binary' } }])),
+      };
 
 const toolPath = (tool: WebTool) => {
   const doc = TOOL_DOCS[tool];
@@ -243,13 +275,12 @@ const toolPath = (tool: WebTool) => {
         ['files']
       ),
       responses: {
-        '200': binaryResponse(...doc.answer),
+        '200': toolAnswer(doc.answer),
         '400': createCodedErrorResponse(
           'A body that cannot be parsed, no file, the wrong number of files, a file that is empty, of another format or not what its extension says, a page range the document does not have, or options the tool refuses (the `code` names which).',
           ['multipart_required', 'file_required', 'empty_file', 'too_few_files', 'too_many_files', 'unsupported_input', 'spoofed_file', 'invalid_options', 'invalid_pages', 'unsafe_archive', 'malformed_input']
         ),
         '401': createProblemResponse('Authentication required.'),
-        '404': createProblemResponse('There is no such tool.'),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${WEB_SINGLE_REQUEST_LIMIT_DESCRIPTION} Or a file over the plan limit (with \`plan\`, \`sizeBytes\` and \`limitBytes\`), or an unpacked archive larger than the answer carries (\`code\` "input_over_limit").`),
         '415': createCodedErrorResponse('The body is not `multipart/form-data`.', ['multipart_required']),
@@ -257,6 +288,7 @@ const toolPath = (tool: WebTool) => {
         '429': createTooManyRequestsResponse(''),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '500': createErrorResponse('A fault of the server.'),
+        '503': createProblemResponse('The quota store is offline (problem type `https://api.easyconvert.io/problems/service-unavailable`, no `code`, `Retry-After` 5). The run is not charged.'),
         '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },

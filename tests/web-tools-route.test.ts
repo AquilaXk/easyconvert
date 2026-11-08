@@ -3,21 +3,33 @@ import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { POST as toolRoute } from '../src/app/api/tools/[tool]/route';
+import { POST as mergeRoute } from '../src/app/api/tools/merge/route';
+import { POST as archiveCreateRoute } from '../src/app/api/tools/archive-create/route';
+import { POST as archiveExtractRoute } from '../src/app/api/tools/archive-extract/route';
+import { POST as splitRoute } from '../src/app/api/tools/split/route';
+import { POST as rotateRoute } from '../src/app/api/tools/rotate/route';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { acquireSyncSlot, type ConversionSlot } from '../src/lib/queue/concurrency-limit';
 import { ANONYMOUS_DAILY_CONVERSIONS } from '../src/lib/plan-limits';
-import { MAX_TOOL_FILES } from '../src/lib/tools/tool-names';
-import { assertToolInput, WebToolRefusal } from '../src/lib/tools/web-tools';
+import { MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, MAX_TOOL_OPTIONS_CHARS, MAX_TOOL_OUTPUT_BYTES } from '../src/lib/tools/tool-names';
+import { assertToolInput, fileOutput, parseToolOptions, WebToolRefusal } from '../src/lib/tools/web-tools';
+import { rotatePdfPages } from '../src/lib/conversions';
 
 /**
  * The tool routes of the web application: one run is one conversion (a merge of five files costs one, a failed run costs
  * none), the limits of the job graph hold, and an anonymous caller meets the allowance and the rate limit of /api/convert.
  */
 
+const ROUTES: Record<string, (request: NextRequest) => Promise<Response>> = {
+  merge: mergeRoute,
+  'archive-create': archiveCreateRoute,
+  'archive-extract': archiveExtractRoute,
+  split: splitRoute,
+  rotate: rotateRoute,
+};
 const MIB = 1024 * 1024;
 const FREE_CONCURRENCY = 5;
 let nextClient = 1;
@@ -45,7 +57,16 @@ function run(client: Visitor, tool: string, uploads: Upload[], options?: object)
   for (const upload of uploads) form.append('files', new File([upload.content], upload.name));
   if (options) form.append('options', JSON.stringify(options));
   const request = new NextRequest(`http://localhost/api/tools/${tool}`, { method: 'POST', headers: client.headers, body: form });
-  return toolRoute(request, { params: Promise.resolve({ tool }) });
+  return ROUTES[tool](request);
+}
+
+/** A run whose `options` field is sent as written, to hold the route to what it reads of it. */
+function runRaw(client: Visitor, tool: string, uploads: Upload[], options: string) {
+  const form = new FormData();
+  for (const upload of uploads) form.append('files', new File([upload.content], upload.name));
+  form.append('options', options);
+  const request = new NextRequest(`http://localhost/api/tools/${tool}`, { method: 'POST', headers: client.headers, body: form });
+  return ROUTES[tool](request);
 }
 
 async function zipNames(res: Response): Promise<string[]> {
@@ -192,6 +213,25 @@ describe('extract archive', () => {
     expect(await client.remaining()).toBe(before);
   }, 60_000);
 
+  it(`refuses an archive of more than ${MAX_EXTRACTED_ENTRIES} files before unpacking it, and gives the conversion back`, async () => {
+    const client = visitor();
+    const before = await client.remaining();
+    const entries = Object.fromEntries(Array.from({ length: MAX_EXTRACTED_ENTRIES + 1 }, (_, i) => [`f${i}.txt`, 'x']));
+    const res = await run(client, 'archive-extract', [{ name: 'many.zip', content: await zipOf(entries) }]);
+    expect(res.status).toBe(413);
+    expect((await res.json()).code).toBe('input_over_limit');
+    expect(await client.remaining()).toBe(before);
+  });
+
+  it('refuses an archive that declares more than the listing carries before unpacking it', async () => {
+    const client = visitor();
+    const before = await client.remaining();
+    const res = await run(client, 'archive-extract', [{ name: 'big.zip', content: await zipOf({ 'zeros.bin': Buffer.alloc(MAX_EXTRACTED_BYTES + 1) }) }]);
+    expect(res.status).toBe(413);
+    expect((await res.json()).code).toBe('input_over_limit');
+    expect(await client.remaining()).toBe(before);
+  });
+
   it('refuses a file that is not an archive', async () => {
     const res = await run(visitor(), 'archive-extract', [{ name: 'a.txt', content: 'x' }]);
     expect(res.status).toBe(400);
@@ -261,6 +301,62 @@ describe('rotate', () => {
   });
 });
 
+describe('the options of a run', () => {
+  const ROTATE_OPTIONS_HANG_GUARD_MS = 10_000;
+
+  it('refuses a field longer than the limit before anything reads it, however many rotations it lists', async () => {
+    const client = visitor();
+    const before = await client.remaining();
+    const groups = Array.from({ length: 20_000 }, () => ({ rotation: 90, pages: '1' }));
+    const options = JSON.stringify({ rotate: { rotations: groups } });
+    expect(options.length).toBeGreaterThan(MAX_TOOL_OPTIONS_CHARS);
+    const started = performance.now();
+    const res = await runRaw(client, 'rotate', [{ name: 'book.pdf', content: await pdfWith(2) }], options);
+    expect(performance.now() - started).toBeLessThan(ROTATE_OPTIONS_HANG_GUARD_MS);
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('invalid_options');
+    expect(await client.remaining()).toBe(before);
+  });
+
+  it('refuses a list of rotations of any length, as the web tool takes one rotation and its pages', async () => {
+    const res = await runRaw(visitor(), 'rotate', [{ name: 'book.pdf', content: await pdfWith(2) }], JSON.stringify({ rotate: { rotations: [{ rotation: 90 }] } }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('invalid_options');
+  });
+
+  it('copies only the keys of the tool: an engine control or a key of another tool never reaches an engine', () => {
+    expect(parseToolOptions('rotate', JSON.stringify({ rotate: { rotation: 90, pages: '1', password: 'x', timeoutMs: 1 }, split: { ranges: '1' }, format: '7z', signal: 1 }))).toEqual({ rotate: { rotation: 90, pages: '1' } });
+    expect(parseToolOptions('split', JSON.stringify({ split: { ranges: '1-2', password: 'x' }, rotate: { rotation: 90 } }))).toEqual({ split: { ranges: '1-2', everyNPages: undefined } });
+    expect(parseToolOptions('archive-create', JSON.stringify({ format: '7z', password: 'x', collisionPolicy: 'overwrite' }))).toEqual({ format: '7z' });
+    expect(parseToolOptions('merge', JSON.stringify({ passwords: ['x'], confirmEditRights: true }))).toEqual({});
+  });
+
+  it.each([
+    ['rotate', { rotate: { rotation: '90' } }],
+    ['rotate', { rotate: { rotation: 90, pages: 5 } }],
+    ['split', { split: { everyNPages: 1.5 } }],
+    ['split', { split: 'all' }],
+    ['archive-create', { format: ['zip'] }],
+  ])('refuses the wrong kind of value in the options of %s: %j', (tool, options) => {
+    expect(() => parseToolOptions(tool as 'rotate', JSON.stringify(options))).toThrowError(WebToolRefusal);
+  });
+
+  it('turns a page 20,001 times in the engine without the work growing with the square of the groups', async () => {
+    const groups = Array.from({ length: 20_001 }, () => ({ rotation: 90 as const, pages: '1' }));
+    const started = performance.now();
+    const rotated = await PDFDocument.load(await rotatePdfPages(await pdfWith(2), { rotations: groups }));
+    expect(performance.now() - started).toBeLessThan(ROTATE_OPTIONS_HANG_GUARD_MS);
+    expect(rotated.getPages().map((page) => page.getRotation().angle)).toEqual([90, 0]);
+  });
+});
+
+describe('the answer of a run', () => {
+  it('is refused as too large past the size one answer carries', () => {
+    expect(() => fileOutput('big.zip', 'application/zip', Buffer.alloc(MAX_TOOL_OUTPUT_BYTES + 1))).toThrowError(WebToolRefusal);
+    expect(fileOutput('ok.zip', 'application/zip', Buffer.alloc(10))).toMatchObject({ kind: 'file', filename: 'ok.zip' });
+  });
+});
+
 describe('the size of a run', () => {
   const pdf = (bytes: number) => ({ name: 'a.pdf', buffer: Buffer.alloc(bytes) });
 
@@ -312,11 +408,9 @@ describe('who may run a tool, and how often', () => {
     expect(await client.remaining()).toBe(before);
   });
 
-  it('answers 404 for a tool that does not exist, and 415 for a body that is not a form', async () => {
+  it('answers 415 for a body that is not a form', async () => {
     const client = visitor();
-    const unknown = await toolRoute(new NextRequest('http://localhost/api/tools/shred', { method: 'POST', headers: client.headers }), { params: Promise.resolve({ tool: 'shred' }) });
-    expect(unknown.status).toBe(404);
-    const plain = await toolRoute(new NextRequest('http://localhost/api/tools/merge', { method: 'POST', headers: { ...client.headers, 'content-type': 'application/json' }, body: '{}' }), { params: Promise.resolve({ tool: 'merge' }) });
+    const plain = await mergeRoute(new NextRequest('http://localhost/api/tools/merge', { method: 'POST', headers: { ...client.headers, 'content-type': 'application/json' }, body: '{}' }));
     expect(plain.status).toBe(415);
   });
 });

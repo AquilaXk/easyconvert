@@ -279,17 +279,20 @@ function intervalsOf(group: PdfRotation): RotationInterval[] {
  * whole turn are left out.
  */
 function rotationArgsOf(groups: readonly PdfRotation[]): string[] {
-  const intervals = groups.flatMap(intervalsOf);
-  const starts = new Set<number>(intervals.map((interval) => interval.start));
-  for (const interval of intervals) {
-    if (Number.isFinite(interval.end)) starts.add(interval.end + 1);
+  // A sweep over the starts and ends of the groups: the angle in force changes only where a group starts or ends.
+  const changes = new Map<number, number>();
+  const change = (page: number, degrees: number) => changes.set(page, (changes.get(page) ?? 0) + degrees);
+  for (const interval of groups.flatMap(intervalsOf)) {
+    change(interval.start, interval.degrees);
+    if (Number.isFinite(interval.end)) change(interval.end + 1, -interval.degrees);
   }
-  const bounds = [...starts].sort((a, b) => a - b);
+  const bounds = [...changes.keys()].sort((a, b) => a - b);
   const runs: RotationInterval[] = [];
+  let sum = 0;
   for (const [index, start] of bounds.entries()) {
+    sum += changes.get(start) ?? 0;
     const end = index + 1 < bounds.length ? bounds[index + 1] - 1 : Number.POSITIVE_INFINITY;
-    const turned = intervals.filter((interval) => interval.start <= start && end <= interval.end);
-    const degrees = turned.reduce((sum, interval) => sum + interval.degrees, 0) % FULL_TURN_DEGREES;
+    const degrees = sum % FULL_TURN_DEGREES;
     if (degrees === 0) continue;
     const last = runs.at(-1);
     if (last && last.degrees === degrees && last.end + 1 === start) last.end = end;
@@ -304,12 +307,12 @@ function rotationArgsOf(groups: readonly PdfRotation[]): string[] {
  * @throws UnsupportedOptionError for a rotation other than 90, 180 and 270.
  * @throws InvalidPageRangeError for an invalid specification or a page the document does not have.
  */
-export async function rotatePdfPages(pdf: Buffer, options: PdfRotateOptions, access: PdfAccess = {}): Promise<Buffer> {
+export async function rotatePdfPages(pdf: Buffer, options: PdfRotateOptions, access: PdfAccess = {}, signal?: AbortSignal): Promise<Buffer> {
   const args = rotationArgsOf(rotationGroups(options));
   const plain = await editablePdf(pdf, 'rotate', access);
   return withMendedPageTree(plain, (pdf) =>
     withQpdfInputFile(pdf, (workspace) =>
-      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, ...args, workspace.inputPath, '-'], action: 'Rotating the pages' })
+      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, ...args, workspace.inputPath, '-'], action: 'Rotating the pages', signal })
     )
   );
 }
@@ -353,7 +356,7 @@ function partsIn(dir: string): { count: number; bytes: number } {
 }
 
 /** Runs `run` and aborts it when the parts it writes into `dir` pass `budget` bytes together or MAX_SPLIT_PARTS in number. */
-async function withDirectoryBudget(dir: string, budget: number, run: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
+async function withDirectoryBudget(dir: string, budget: number, run: (signal: AbortSignal) => Promise<unknown>, outer?: AbortSignal): Promise<void> {
   const controller = new AbortController();
   const watch = setInterval(() => {
     try {
@@ -365,13 +368,13 @@ async function withDirectoryBudget(dir: string, budget: number, run: (signal: Ab
     }
   }, SPLIT_WATCH_INTERVAL_MS);
   try {
-    await run(controller.signal);
+    await run(outer ? AbortSignal.any([controller.signal, outer]) : controller.signal);
   } finally {
     clearInterval(watch);
   }
 }
 
-async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, budget: number, inputBytes: number): Promise<Buffer[]> {
+async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, budget: number, inputBytes: number, signal?: AbortSignal): Promise<Buffer[]> {
   const action = 'Splitting the PDF';
   if (options.ranges !== undefined) {
     if (options.everyNPages !== undefined) {
@@ -385,7 +388,7 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
       const batch = await Promise.all( // NOSONAR S9382 sequential
         ranges
           .slice(from, from + SPLIT_CONCURRENCY)
-          .map((range) => runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action }))
+          .map((range) => runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action, signal }))
       );
       for (const part of batch) total += part.length;
       if (total > budget) throw new PdfPostprocessError(`${action} failed: the parts exceed the allowed size; split into fewer pages.`);
@@ -395,12 +398,15 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
   }
   const every = options.everyNPages === undefined ? 1 : splitEvery(options);
   if (inputBytes >= PAGE_COUNT_CHECK_MIN_BYTES) {
-    const pages = await pageCountOf(workspace, action);
+    const pages = await pageCountOf(workspace, action, signal);
     const parts = Math.ceil(pages / every);
     if (parts > MAX_SPLIT_PARTS) throw tooManyParts(`${pages} pages in parts of ${every} would write ${parts} parts`);
   }
-  await withDirectoryBudget(workspace.dir, budget, (signal) =>
-    runQpdf(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, `--split-pages=${every}`, workspace.inputPath, SPLIT_OUTPUT_TEMPLATE], action, signal })
+  await withDirectoryBudget(
+    workspace.dir,
+    budget,
+    (watched) => runQpdf(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, `--split-pages=${every}`, workspace.inputPath, SPLIT_OUTPUT_TEMPLATE], action, signal: watched }),
+    signal
   );
   const names = fs
     .readdirSync(workspace.dir)
@@ -420,7 +426,8 @@ export async function splitPdfPages(
   pdf: Buffer,
   options: PdfSplitOptions = {},
   access: PdfAccess = {},
-  baseName = 'document'
+  baseName = 'document',
+  signal?: AbortSignal
 ): Promise<Buffer> {
   const split = options ?? {};
   // Validated before the document is opened, so a wrong request costs no decryption.
@@ -428,7 +435,7 @@ export async function splitPdfPages(
   if (split.everyNPages !== undefined) splitEvery(split);
   const plain = await editablePdf(pdf, 'split', access);
   const budget = Math.max(SPLIT_MIN_OUTPUT_BYTES, plain.length * SPLIT_OUTPUT_SIZE_FACTOR);
-  const parts = await withMendedPageTree(plain, (pdf) => withQpdfWorkspace(pdf, (workspace) => splitFiles(workspace, split, budget, pdf.length)));
+  const parts = await withMendedPageTree(plain, (pdf) => withQpdfWorkspace(pdf, (workspace) => splitFiles(workspace, split, budget, pdf.length, signal)));
   if (parts.length === 0) {
     throw new PdfPostprocessError('Splitting the PDF failed: qpdf wrote no part.');
   }

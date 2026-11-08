@@ -31,8 +31,11 @@ export function serverOptionsFor(sourceFormat: string, targetFormat: string, opt
   return { ...rest, palette: true, colors: paletteColorsForQuality(quality) };
 }
 
-/** The options that leave the picture as it is: quality and the metadata choice. A size or a filter makes the result the person's, whatever its weight. */
-const PLAIN_COMPRESSION_OPTIONS: readonly string[] = ['quality', 'stripMetadata'];
+/**
+ * The options that change nothing in the file but its weight: the quality. A size, a filter or stripping the metadata asks for a
+ * change in the content, so the result is the person's, whatever its weight (the input would keep the metadata asked to go).
+ */
+const PLAIN_COMPRESSION_OPTIONS: readonly string[] = ['quality'];
 
 /** Whether a compression asked for nothing but a smaller file, so that an input it cannot make smaller is the right answer. */
 export function isPlainCompression(sourceFormat: string, targetFormat: string, options: ConversionOptions): boolean {

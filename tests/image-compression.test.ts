@@ -60,6 +60,13 @@ describe('a compression that does not make the file smaller', () => {
     expect(unchanged).toBeUndefined();
   });
 
+  it('keeps the result when the metadata was asked to go, as the input still holds it', async () => {
+    const queued = { ...item('photo.jpg', 'jpg', 1000), options: { stripMetadata: true } };
+    const [, size, , , , unchanged] = await answerFor(queued, 1200);
+    expect(size).toBe(1200);
+    expect(unchanged).toBeUndefined();
+  });
+
   it('keeps what a resize or a filter made, whatever its weight', async () => {
     const queued = { ...item('photo.png', 'png', 1000), options: { width: 2000 } };
     const [, size, , , , unchanged] = await answerFor(queued, 5000);

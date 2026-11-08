@@ -3,6 +3,7 @@ import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 import {
   create7zArchiveAsync,
+  inspectArchive,
   createTarArchive,
   createZipArchive,
   rotatePdfPages,
@@ -15,7 +16,16 @@ import { sanitizeNodeOutputFilename } from '../queue/graph/node-jobs';
 import { SINGLE_REQUEST_FILE_MAX_BYTES } from '../plan-limits';
 import { getFormatByExtension } from '../registry';
 import { assertNotSpoofedFile } from '../security/file-guard';
-import { MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, MIN_MERGE_FILES, type WebTool, type WebToolOptions } from './tool-names';
+import {
+  MAX_EXTRACTED_BYTES,
+  MAX_EXTRACTED_ENTRIES,
+  MAX_TOOL_FILES,
+  MAX_TOOL_OPTIONS_CHARS,
+  MAX_TOOL_OUTPUT_BYTES,
+  MIN_MERGE_FILES,
+  type WebTool,
+  type WebToolOptions,
+} from './tool-names';
 import type { ConversionRefusalCode } from '../refusal-codes';
 import type { PdfRotateOptions } from '../types';
 
@@ -121,46 +131,106 @@ export function assertToolInput(tool: WebTool, files: readonly WebToolFile[]): v
   for (const file of files) refuseUnreadableInput(tool, file);
 }
 
-/** The options of a request: a JSON object, with the formats of an archive checked. */
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function refuseOptions(message: string): never {
+  throw new WebToolRefusal(HTTP_BAD_REQUEST, 'invalid_options', message);
+}
+
+/** A page specification the engines read: text, of a length the options field already bounds. */
+function pageSpecOf(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') refuseOptions(`"${name}" must be text.`);
+  return value;
+}
+
+function splitOptionsOf(value: unknown): WebToolOptions {
+  if (value === undefined) return {};
+  if (!isPlainObject(value)) refuseOptions('"split" must be an object.');
+  const { everyNPages } = value;
+  if (everyNPages !== undefined && (typeof everyNPages !== 'number' || !Number.isInteger(everyNPages))) refuseOptions('"split.everyNPages" must be a whole number.');
+  return { split: { ranges: pageSpecOf(value.ranges, 'split.ranges'), everyNPages: everyNPages as number | undefined } };
+}
+
+function rotateOptionsOf(value: unknown): WebToolOptions {
+  if (!isPlainObject(value)) refuseOptions('"rotate" must be an object with a "rotation".');
+  if (value.rotations !== undefined) refuseOptions('"rotate.rotations" is not taken here; give one "rotation" and its "pages".');
+  const { rotation } = value;
+  if (rotation !== 90 && rotation !== 180 && rotation !== 270) refuseOptions('"rotate.rotation" must be 90, 180 or 270.');
+  return { rotate: { rotation, pages: pageSpecOf(value.pages, 'rotate.pages') } };
+}
+
+/**
+ * The options of a request, as much of them as the tool reads: the field is bounded, and only the keys of the tool are
+ * copied, so nothing else the body names (a list of rotations, an engine control) reaches an engine.
+ */
 export function parseToolOptions(tool: WebTool, raw: string | undefined): WebToolOptions {
-  if (!raw) return {};
+  if (!raw) return tool === 'rotate' ? rotateOptionsOf(undefined) : {};
+  if (raw.length > MAX_TOOL_OPTIONS_CHARS) refuseOptions(`The "options" field may be at most ${MAX_TOOL_OPTIONS_CHARS} characters.`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new WebToolRefusal(HTTP_BAD_REQUEST, 'invalid_options', 'Invalid JSON format for "options" parameter.');
+    refuseOptions('Invalid JSON format for "options" parameter.');
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new WebToolRefusal(HTTP_BAD_REQUEST, 'invalid_options', 'The "options" field must be a JSON object.');
+  if (!isPlainObject(parsed)) refuseOptions('The "options" field must be a JSON object.');
+  switch (tool) {
+    case 'archive-create': {
+      const format = parsed.format ?? DEFAULT_ARCHIVE_FORMAT;
+      if (typeof format !== 'string' || !ARCHIVE_CREATE_FORMATS.has(format)) refuseOptions(`"format" must be one of ${[...ARCHIVE_CREATE_FORMATS].join(', ')}.`);
+      return { format };
+    }
+    case 'split':
+      return splitOptionsOf(parsed.split);
+    case 'rotate':
+      return rotateOptionsOf(parsed.rotate);
+    default:
+      return {};
   }
-  const options = parsed as WebToolOptions;
-  if (tool === 'archive-create' && options.format !== undefined && !ARCHIVE_CREATE_FORMATS.has(options.format)) {
-    throw new WebToolRefusal(HTTP_BAD_REQUEST, 'invalid_options', `"format" must be one of ${[...ARCHIVE_CREATE_FORMATS].join(', ')}.`);
-  }
-  return options;
 }
 
 const mimeTypeOfName = (name: string): string => getFormatByExtension(extensionOfName(name))?.mimeType ?? OPAQUE_MIME_TYPE;
 
-async function createArchive(files: readonly WebToolFile[], format: string): Promise<WebToolOutput> {
+async function createArchive(files: readonly WebToolFile[], format: string, signal?: AbortSignal): Promise<WebToolOutput> {
   const entries = files.map((file) => ({ filename: file.name, buffer: file.buffer }));
   const filename = `archive.${format}`;
   const mimeType = getFormatByExtension(format)?.mimeType ?? OPAQUE_MIME_TYPE;
-  if (format === 'zip') return { kind: 'file', filename, mimeType, buffer: (await createZipArchive(entries, {}, filename)).buffer };
-  if (format === '7z') return { kind: 'file', filename, mimeType, buffer: (await create7zArchiveAsync(entries, {}, filename)).buffer };
+  if (format === 'zip') return fileOutput(filename, mimeType, (await createZipArchive(entries, {}, filename)).buffer);
+  if (format === '7z') return fileOutput(filename, mimeType, (await create7zArchiveAsync(entries, {}, filename, { signal })).buffer);
   const tar = createTarArchive(entries, {}, 'archive.tar').buffer;
-  return { kind: 'file', filename, mimeType, buffer: format === 'tar.gz' ? await gzip(tar) : tar };
+  return fileOutput(filename, mimeType, format === 'tar.gz' ? await gzip(tar) : tar);
 }
 
 /** The names an unpacked archive lists: the leaf of each entry, kept clear of the others, as the job graph names its outputs. */
+function tooLargeToList(): WebToolRefusal {
+  return new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', `The files in the archive are larger than the ${MAX_EXTRACTED_BYTES / (1024 * 1024)} MiB one answer lists.`);
+}
+
+/**
+ * Refuses an archive that declares more than the answer lists before it is unpacked, so that a listing too large for the
+ * answer is not first unpacked whole: the readers' own limits (500 MiB) still bound an archive whose headers understate.
+ */
+async function assertListable(name: string, buffer: Buffer): Promise<void> {
+  const inspected = await inspectArchive(buffer, { filename: name });
+  if (inspected.totalEntries > MAX_EXTRACTED_ENTRIES) {
+    throw new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', `The archive holds ${inspected.totalEntries} files; at most ${MAX_EXTRACTED_ENTRIES} are listed.`);
+  }
+  if (inspected.totalUncompressedBytes > MAX_EXTRACTED_BYTES) throw tooLargeToList();
+}
+
+export function fileOutput(filename: string, mimeType: string, buffer: Buffer): WebToolOutput {
+  if (buffer.length > MAX_TOOL_OUTPUT_BYTES) {
+    throw new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', `The result is larger than the ${MAX_TOOL_OUTPUT_BYTES / (1024 * 1024)} MiB one answer carries.`);
+  }
+  return { kind: 'file', filename, mimeType, buffer };
+}
+
 function listedEntries(extracted: readonly { filename: string; buffer: Buffer }[]): ExtractedEntry[] {
   if (extracted.length > MAX_EXTRACTED_ENTRIES) {
     throw new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', `The archive holds ${extracted.length} files; at most ${MAX_EXTRACTED_ENTRIES} are listed.`);
   }
   const total = extracted.reduce((sum, entry) => sum + entry.buffer.length, 0);
-  if (total > SINGLE_REQUEST_FILE_MAX_BYTES) {
-    throw new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', 'The files in the archive are larger than one answer carries.');
-  }
+  if (total > MAX_EXTRACTED_BYTES) throw tooLargeToList();
   const used = new Set<string>();
   return extracted.map((entry, index) => {
     const leaf = sanitizeNodeOutputFilename(entry.filename, `file_${index + 1}`);
@@ -173,24 +243,28 @@ function listedEntries(extracted: readonly { filename: string; buffer: Buffer }[
 }
 
 /**
- * Runs `tool` on `files`, already checked by `assertToolInput`, with the code of the job graph node of the same name.
- * Engine errors (a page range the document does not have, an unsafe archive, a PDF that needs a password) pass through to the route.
+ * Runs `tool` on `files`, already checked by `assertToolInput`, with the code of the job graph node of the same name. `signal`
+ * stops the engines that take one (the qpdf and 7-Zip programs, and a merge between two inputs); the others finish what they
+ * started, which is why the route holds its slot until this settles. Engine errors (a page range the document does not have, an
+ * unsafe archive, a PDF that needs a password) pass through to the route.
  */
-export async function runWebTool(tool: WebTool, files: readonly WebToolFile[], options: WebToolOptions): Promise<WebToolOutput> {
+export async function runWebTool(tool: WebTool, files: readonly WebToolFile[], options: WebToolOptions, signal?: AbortSignal): Promise<WebToolOutput> {
   const [first] = files;
   const base = path.parse(first.name).name;
   switch (tool) {
     case 'merge':
-      return { kind: 'file', filename: 'merged.pdf', mimeType: 'application/pdf', buffer: await mergePdfBuffers(files.map((file) => file.buffer)) };
+      return fileOutput('merged.pdf', 'application/pdf', await mergePdfBuffers(files.map((file) => file.buffer), { signal }));
     case 'archive-create':
-      return createArchive(files, options.format ?? DEFAULT_ARCHIVE_FORMAT);
+      return createArchive(files, options.format ?? DEFAULT_ARCHIVE_FORMAT, signal);
     case 'archive-extract':
+      await assertListable(first.name, first.buffer);
+      signal?.throwIfAborted();
       return { kind: 'entries', entries: listedEntries(await extractGraphArchiveEntries(first.name, first.buffer)) };
     case 'split':
-      return { kind: 'file', filename: `${base}-split.zip`, mimeType: 'application/zip', buffer: await splitPdfPages(first.buffer, options.split, {}, base) };
+      return fileOutput(`${base}-split.zip`, 'application/zip', await splitPdfPages(first.buffer, options.split, {}, base, signal));
     case 'rotate':
-      return { kind: 'file', filename: `${base}-rotated.pdf`, mimeType: 'application/pdf', buffer: await rotatePdfPages(first.buffer, options.rotate as PdfRotateOptions) };
+      return fileOutput(`${base}-rotated.pdf`, 'application/pdf', await rotatePdfPages(first.buffer, options.rotate as PdfRotateOptions, {}, signal));
   }
 }
 
-export { isWebTool, WEB_TOOLS, type WebTool, type WebToolOptions } from './tool-names';
+export { WEB_TOOLS, type WebTool, type WebToolOptions } from './tool-names';

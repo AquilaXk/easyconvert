@@ -8,10 +8,6 @@
 export const WEB_TOOLS = ['merge', 'archive-create', 'archive-extract', 'split', 'rotate'] as const;
 export type WebTool = (typeof WEB_TOOLS)[number];
 
-export function isWebTool(value: string): value is WebTool {
-  return (WEB_TOOLS as readonly string[]).includes(value);
-}
-
 /** The fewest files a merge takes: with one there is nothing to join. */
 export const MIN_MERGE_FILES = 2;
 
@@ -19,6 +15,12 @@ export const MIN_MERGE_FILES = 2;
 export const MAX_TOOL_FILES = 50;
 /** The most entries an unpacked archive lists. */
 export const MAX_EXTRACTED_ENTRIES = 1000;
+/** The most bytes an unpacked archive lists: the listing travels as base64 in JSON, about four times this in memory. */
+export const MAX_EXTRACTED_BYTES = 32 * 1024 * 1024;
+/** The most bytes the file a tool answers may hold. */
+export const MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024;
+/** The longest `options` field a tool run takes. */
+export const MAX_TOOL_OPTIONS_CHARS = 8 * 1024;
 
 
 /** The tool's own options, as the `options` field of a request carries them. */
