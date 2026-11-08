@@ -68,6 +68,15 @@ redis.call('SET', KEYS[1], updatedRaw)
 return updatedRaw
 `;
 
+export const RAISE_SESSION_VERSION_LUA = `
+-- KEYS[1]: session version key; ARGV[1]: the version every issued token already carries at least
+local current = tonumber(redis.call('GET', KEYS[1])) or 1
+local base = math.max(current, tonumber(ARGV[1]))
+local nextVersion = base + 1
+redis.call('SET', KEYS[1], nextVersion)
+return nextVersion
+`;
+
 /**
  * Enterprise Distributed User Store.
  * Supports Redis distributed cluster storage with atomic Lua operations
@@ -217,6 +226,8 @@ export class RedisUserStore {
     passwordHash?: string;
     salt?: string;
     acceptedTermsVersion?: string;
+    /** True when the provider vouches for the address (Google sign-in); an email sign-up proves it by the mailed link. */
+    emailVerified?: boolean;
   }): Promise<UserRecord> {
     const normalizedEmail = this.normalizeEmail(data.email);
     if (!data.name || typeof data.name !== 'string' || data.name.trim().length === 0) {
@@ -234,6 +245,7 @@ export class RedisUserStore {
       passwordHash: data.passwordHash,
       salt: data.salt,
       acceptedTermsVersion: data.acceptedTermsVersion,
+      ...(data.emailVerified === undefined ? {} : { emailVerified: data.emailVerified }),
       createdAt: now,
       updatedAt: now,
     };
@@ -372,20 +384,25 @@ export class RedisUserStore {
     return true;
   }
 
+  /**
+   * Revokes every session of the account by raising its session version above the one any issued token carries (a token
+   * names the version of the record when it was made, 1 for an account that never revoked). The counter starts from the
+   * record's own version, so the first revocation also raises it: a plain INCR of an absent counter returns 1, which the
+   * tokens of a new account already carry.
+   */
   public async incrementSessionVersion(userId: string): Promise<number> {
     if (!userId) return 1;
 
-    let nextVersion = 1;
+    const record = await this.findById(userId);
+    const floor = Math.max(record?.sessionVersion ?? 1, this.userSessionVersions.get(userId) ?? 1);
+    let nextVersion = floor + 1;
     if (this.redisClient) {
       try {
         const key = `${this.keyPrefix}session_version:${userId}`;
-        nextVersion = await this.redisClient.incr(key);
+        nextVersion = Number(await this.redisClient.eval(RAISE_SESSION_VERSION_LUA, 1, key, String(floor)));
       } catch {
-        // Fallback
-        nextVersion = (this.userSessionVersions.get(userId) || 1) + 1;
+        // Fallback to the in-memory counter
       }
-    } else {
-      nextVersion = (this.userSessionVersions.get(userId) || 1) + 1;
     }
 
     this.userSessionVersions.set(userId, nextVersion);

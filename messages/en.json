@@ -275,7 +275,8 @@
       "confirmPassword": "Confirm Password",
       "acceptTerms": "I accept the <link>terms of service</link>.",
       "signIn": "Sign In",
-      "createAccount": "Create Account"
+      "createAccount": "Create Account",
+      "forgotPassword": "Forgot password?"
     },
     "oauthErrors": {
       "oauth_code_missing": "Authentication request cancelled or authorization code missing.",
@@ -297,6 +298,33 @@
       "created": "Account created. Redirecting...",
       "signedIn": "Signed in. Redirecting...",
       "connection": "The connection dropped. Try again."
+    },
+    "forgot": {
+      "heading": "Reset your password",
+      "intro": "Enter the email address of your account. If it can be reset, we send a link that works for 10 minutes.",
+      "submit": "Send reset link",
+      "sent": "If an account with this email address can be reset, a link is on its way. It works for 10 minutes and once. Check your spam folder if it does not arrive.",
+      "backToSignIn": "Back to sign in",
+      "connection": "The connection dropped. Try again."
+    },
+    "reset": {
+      "heading": "Choose a new password",
+      "intro": "Use at least 8 characters. Signing in elsewhere ends once you save it.",
+      "newPassword": "New Password",
+      "submit": "Save new password",
+      "done": "Your password was changed. Sign in with the new password.",
+      "toSignIn": "Go to sign in",
+      "noToken": "This link is incomplete. Open the link in your mail again, or ask for a new one.",
+      "requestNew": "Ask for a new link"
+    },
+    "verify": {
+      "heading": "Confirm your email address",
+      "intro": "Confirm that this address is yours.",
+      "submit": "Confirm email address",
+      "done": "Your email address is confirmed.",
+      "noToken": "This link is incomplete. Open the link in your mail again.",
+      "toSignIn": "Go to sign in",
+      "toDashboard": "Go to the dashboard"
     }
   },
   "converterPage": {
@@ -534,6 +562,12 @@
       "revokeKeyGone": "That API key no longer exists.",
       "revokeKeyNetwork": "The connection dropped and the API key was not revoked. Try again.",
       "signOutNetwork": "The connection dropped and you were not signed out. Try again."
+    },
+    "emailNotice": {
+      "text": "Your email address is not confirmed yet. Until it is, password reset mails are not sent to it.",
+      "resend": "Send the link again",
+      "sent": "The link is on its way. It works for 24 hours.",
+      "connection": "The connection dropped. Try again."
     }
   },
   "features": {
@@ -901,6 +935,14 @@
     "notFound": {
       "title": "Page not found | EasyConvert",
       "description": "Sorry, the page you are looking for could not be found."
+    },
+    "passwordReset": {
+      "title": "Reset Password | EasyConvert",
+      "description": "Reset the password of your EasyConvert account or confirm its email address."
+    },
+    "emailVerification": {
+      "title": "Confirm Email Address | EasyConvert",
+      "description": "Confirm the email address of your EasyConvert account."
     }
   },
   "options": {
@@ -1411,7 +1453,10 @@
       "password_length": "The password must be 8 to 1024 characters long.",
       "terms_not_accepted": "Accept the terms of service to create an account.",
       "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
-      "account_exists": "An account with this email address already exists. Sign in instead."
+      "account_exists": "An account with this email address already exists. Sign in instead.",
+      "mail_unavailable": "This is not available on this server.",
+      "mail_rate_limited": "Too many requests. Try again in {seconds, plural, one {# second} other {# seconds}}.",
+      "invalid_token": "This link is not valid or has expired. Ask for a new one."
     },
     "dashboard": {
       "admin_scope_required": "This needs an API key with the full (*) scope.",
