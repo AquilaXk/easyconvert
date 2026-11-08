@@ -54,6 +54,20 @@ async function assertPublicHttpUrl(url: URL): Promise<void> {
 }
 
 /**
+ * Refuses `input` (`OutboundRequestBlockedError`) unless it is a public HTTP(S) address now. For a caller that must hold
+ * something open for the request and wants the refusal first; `safeFetch` checks the address again at every hop.
+ */
+export async function assertPublicOutboundUrl(input: string): Promise<void> {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new OutboundRequestBlockedError(UNPARSEABLE_TARGET, 'not a valid URL');
+  }
+  await assertPublicHttpUrl(url);
+}
+
+/**
  * Fetches a user-supplied URL without reaching internal networks. Every hop is validated before
  * it is requested and pinned again at connect time. GET and HEAD follow at most
  * `maxRedirects` redirects; any other method fails on a redirect instead of resending its body.

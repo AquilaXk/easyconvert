@@ -41,6 +41,7 @@ import { validatePageRangeSyntax } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
+import { listVisibleJobs } from '@/lib/queue/user-jobs';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
 import {
@@ -50,7 +51,7 @@ import {
   PipelineTaskSchema,
   JobGraphSchema,
 } from '@/lib/api/contracts';
-import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { readMultipartForm } from '@/lib/api/multipart-body';
 import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
@@ -189,16 +190,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     idempotencyCtx = precheck.context;
   }
 
-  const reply = async (res: NextResponse | Response) => {
-    if (idempotencyCtx) {
-      if (res.status >= 500) {
-        await idempotencyCtx.abort();
-      } else {
-        await idempotencyCtx.complete(res);
-      }
-    }
-    return res;
-  };
+  // Only a success is kept under the key, and the answer stands whatever the idempotency store does: a store failure after
+  // a conversion was charged must not turn its success into an error the client would retry, and pay for again.
+  const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
 
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
@@ -217,7 +211,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     // stored as the answer of the idempotency key: the same request may succeed once a job has finished.
     const room = await mayEnqueue(auth.user.id, auth.user.tier);
     if (!room.allowed) {
-      if (idempotencyCtx) await idempotencyCtx.abort();
+      await releaseKey(idempotencyCtx, instanceUri);
       return concurrencyLimitResponse(room.limit, instanceUri);
     }
     const contentType = req.headers.get('content-type') || '';
@@ -381,9 +375,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
     }
 
-    const resolvedWebhook = resolveEffectiveWebhook(webhookUrl, webhookSecret, auth.apiKey?.webhookUrl, auth.apiKey?.webhookSecret);
+    const resolvedWebhook = resolveEffectiveWebhook(webhookUrl, webhookSecret, auth.apiKey?.webhookUrl, auth.apiKey?.webhookSecret, auth.apiKey?.id);
     if (resolvedWebhook.error) return await fail(400, resolvedWebhook.error);
-    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret } = resolvedWebhook;
+    const { webhookUrl: effectiveWebhookUrl, webhookSecret: effectiveWebhookSecret, webhookKeyId } = resolvedWebhook;
 
     // Normalize page / pages option and validate the page range syntax
     if (options) {
@@ -665,12 +659,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       input: { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 },
       webhookUrl: effectiveWebhookUrl,
       webhookSecret: effectiveWebhookSecret,
+      webhookKeyId,
     };
     return reply(await withReservedUnit(unit.reservationId, (reserved) => queueReserved(submission, reserved)));
   } catch (error: unknown) {
-    if (idempotencyCtx) {
-      await idempotencyCtx.abort();
-    }
+    await releaseKey(idempotencyCtx, instanceUri);
     if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
       return fail(400, 'A URL or header is too large to store securely.');
     }
@@ -769,6 +762,7 @@ interface ReservedSubmission {
   input: SubmittedInput;
   webhookUrl?: string;
   webhookSecret?: string;
+  webhookKeyId?: string;
 }
 
 /**
@@ -804,6 +798,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
             reservationId,
             webhookUrl: submission.webhookUrl,
             webhookSecret: submission.webhookSecret,
+            webhookKeyId: submission.webhookKeyId,
             originalFilename,
             sourceStorageKey: storageKey,
             sourceFormat: sourceDef.id,
@@ -850,6 +845,7 @@ async function queueReserved(submission: ReservedSubmission, unit: ReservedUnit)
       options: stripEngineControls(options),
       webhookUrl: submission.webhookUrl,
       webhookSecret: submission.webhookSecret,
+      webhookKeyId: submission.webhookKeyId,
       userId: user.id,
       resourceClass: resClass,
     },
@@ -905,12 +901,7 @@ async function listJobs(req: NextRequest) {
     : validStates;
 
   // Query indexed jobs strictly belonging to the authenticated user (Tenant Boundary Isolation)
-  const userJobs = await conversionQueue.getJobsByUser(
-    auth.user.id,
-    requestedStates.length > 0 ? requestedStates : validStates,
-    limit,
-    0
-  );
+  const userJobs = await listVisibleJobs(auth.user.id, requestedStates.length > 0 ? requestedStates : validStates, limit);
 
   return NextResponse.json({
     success: true,

@@ -683,6 +683,13 @@ export class KeyStore {
     return result.sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /** The record of the file `fileId` when it is `userId`'s own, else undefined. */
+  public async findUserFile(userId: string, fileId: string): Promise<UserConversionFile | undefined> {
+    this.ensureInitialized();
+    const file = this.userFiles.get(fileId);
+    return file?.userId === userId ? file : undefined;
+  }
+
   public async deleteUserFile(userId: string, fileId: string): Promise<boolean> {
     this.ensureInitialized();
     const file = this.userFiles.get(fileId);

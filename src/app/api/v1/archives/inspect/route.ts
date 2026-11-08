@@ -3,6 +3,8 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { readJsonObject } from '@/lib/api/json-body';
+import { readMultipartForm } from '@/lib/api/multipart-body';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -21,9 +23,13 @@ type MultipartArchive =
   | { problem: NextResponse; archiveBuffer?: undefined }
   | { problem?: undefined; archiveBuffer: Buffer; filename: string; password: string | undefined };
 
-/** The archive, its file name and its password from a multipart form, or the 400 for a form without a file. */
+/** The archive, its file name and its password from a multipart form, or the 400 for a form that is malformed or has no file. */
 async function readMultipartArchive(req: NextRequest, instanceUri: string): Promise<MultipartArchive> {
-  const formData = await req.formData();
+  const multipart = await readMultipartForm(req);
+  if (multipart.malformed) {
+    return { problem: createProblemDetailsResponse(400, 'Invalid or malformed multipart/form-data body.', instanceUri, 'Bad Request') };
+  }
+  const formData = multipart.form;
   const fileEntry = formData.get('file');
   if (!fileEntry || typeof fileEntry === 'string' || !(fileEntry instanceof Blob)) {
     return {
@@ -71,8 +77,8 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
       if (upload.problem) return upload.problem;
       ({ archiveBuffer, filename, password } = upload);
     } else if (contentType.includes('application/json')) {
-      const body = await req.json();
-      if (!body || typeof body !== 'object') {
+      const body = await readJsonObject(req);
+      if (!body) {
         return createProblemDetailsResponse(
           400,
           'Invalid JSON request payload.',
@@ -83,18 +89,18 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
       password = typeof body.password === 'string' ? body.password : undefined;
       filename = typeof body.filename === 'string' ? body.filename : undefined;
 
-      if (body.storageKey) {
+      const storageKey = body.storageKey;
+      if (storageKey) {
         // Only the owner of a stored object may read it; every other caller is answered as if it did not exist.
-        const ownership =
-          typeof body.storageKey === 'string' ? await resolveObjectOwnership(body.storageKey) : ({ resolved: false } as const);
-        if (!ownership.resolved || ownership.ownerUserId !== auth.user.id) {
+        const ownership = typeof storageKey === 'string' ? await resolveObjectOwnership(storageKey) : ({ resolved: false } as const);
+        if (typeof storageKey !== 'string' || !ownership.resolved || ownership.ownerUserId !== auth.user.id) {
           return createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found');
         }
-        const stored = await storageProvider.getObject(body.storageKey);
+        const stored = await storageProvider.getObject(storageKey);
         if (!stored) {
           return createProblemDetailsResponse(
             404,
-            `Storage file not found for key: "${body.storageKey}".`,
+            `Storage file not found for key: "${storageKey}".`,
             instanceUri,
             'Not Found'
           );
@@ -181,11 +187,7 @@ export const POST = withinSingleRequest(async function POST(req: NextRequest) {
       );
     }
 
-    return createProblemDetailsResponse(
-      500,
-      err?.message || 'Failed to inspect archive.',
-      instanceUri,
-      'Internal Server Error'
-    );
+    console.error('[archives/inspect] Unexpected failure:', err);
+    return createProblemDetailsResponse(500, 'Failed to inspect archive.', instanceUri, 'Internal Server Error');
   }
 });

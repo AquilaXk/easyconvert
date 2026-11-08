@@ -372,6 +372,32 @@ export async function respondOnce(
   return res;
 }
 
+/**
+ * The refusals a request gets from what it carries and nothing else, so that sending it again gets the same one: a body
+ * that is malformed or not valid (400, 422), too large (413), or of a type the route does not take (415). Every other
+ * refusal depends on the state of the account or the store (a quota that is spent for now, 429; a file that is not stored
+ * yet, 404; a rate limit, a slot, a service), so the same request may succeed later and must not be answered from a record.
+ */
+const REPLAYED_REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 413, 415, 422]);
+
+/**
+ * The answer of a route that took its key with `acquireIdempotency` and settles it itself. A success and a refusal that
+ * only the request causes (`REPLAYED_REFUSAL_STATUSES`) are kept and replayed; any other answer releases the key, so the
+ * same request may be sent again. An answer the store cannot record keeps the lock (`keep-lock`) when it is a success, since
+ * a repeat would create and charge again. The answer is returned whatever the store does. Without a key it just returns `res`.
+ */
+export async function replyUnderKey(context: IdempotencyContext | undefined, res: Response, instanceUri: string): Promise<Response> {
+  if (!context) return res;
+  if (!res.ok && !REPLAYED_REFUSAL_STATUSES.has(res.status)) await settleLock(context, 'release', instanceUri);
+  else if (!(await recordAnswer(context, res, instanceUri))) await settleLock(context, res.ok ? 'keep-lock' : 'release', instanceUri);
+  return res;
+}
+
+/** Releases the key of `context` for a request that ends without an answer to keep; a store that fails is logged and changes nothing. */
+export async function releaseKey(context: IdempotencyContext | undefined, instanceUri: string): Promise<void> {
+  if (context) await settleLock(context, 'release', instanceUri);
+}
+
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Asks the store to record `res` up to RECORD_ATTEMPTS times; false, with the last error logged, when none took it. */

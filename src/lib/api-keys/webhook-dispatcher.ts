@@ -200,6 +200,15 @@ function isDlqEntryOwnedBy(entry: WebhookDlqEntry, ownerUserId: string): boolean
  * Zero-Trust SSRF Protection against cloud metadata/private ranges, Exponential Retries,
  * and Redis/In-Memory Dead Letter Queue (DLQ) with Manual Replay.
  */
+/**
+ * The secret that signs first for a target whose rotation record is `record`: a caller's own secret stays, except the one the
+ * target rotated away from (a job queued before the rotation), which the current secret replaces, since that is the one the
+ * receiver now trusts first.
+ */
+function leadingSecret(callerSecret: string, record: { primary: string; previous?: string }): string {
+  return !callerSecret || callerSecret === record.primary || callerSecret === record.previous ? record.primary : callerSecret;
+}
+
 export class WebhookDispatcher {
   private readonly deliveryHistory: WebhookDispatchResult[] = [];
   private readonly maxHistorySize = 100;
@@ -569,9 +578,7 @@ export class WebhookDispatcher {
       try {
         const record = await getWebhookSecretStore().getSecretRecord(options.ownerUserId, secretTargetId);
         if (record) {
-          if (!primarySecret || primarySecret === record.primary) {
-            primarySecret = record.primary;
-          }
+          primarySecret = leadingSecret(primarySecret, record);
           if (
             !previousSecret &&
             record.previous &&

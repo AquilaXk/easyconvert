@@ -138,3 +138,33 @@ describe('POST /api/fetch-url of a file the remote names in Korean', () => {
     expect(utf8FilenameOf(res.headers.get('content-disposition'))).toBe('점수표.csv');
   });
 });
+
+describe('POST /api/fetch-url of a file whose name the remote gives with a percent sign', () => {
+  async function importNamed(contentDisposition: string) {
+    const client = visitor();
+    vi.mocked(undiciFetch).mockResolvedValue(
+      new Response('name,score\n', { status: 200, headers: { 'content-type': 'text/csv', 'content-disposition': contentDisposition } }) as never
+    );
+    return fetchUrlRoute(
+      new NextRequest('http://localhost/api/fetch-url', {
+        method: 'POST',
+        headers: { ...client.headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://files.example.com/scores' }),
+      })
+    );
+  }
+
+  it('keeps a name that is not valid percent-encoding as the remote wrote it, instead of failing after the import was charged', async () => {
+    const res = await importNamed('attachment; filename="100%.csv"');
+
+    expect(res.status, await res.clone().text().then((t) => t.slice(0, 300))).toBe(HTTP_OK);
+    expect(utf8FilenameOf(res.headers.get('content-disposition'))).toBe('100%.csv');
+  });
+
+  it('still decodes a name in the encoded form', async () => {
+    const res = await importNamed(`attachment; filename*=UTF-8''100%25.csv`);
+
+    expect(res.status).toBe(HTTP_OK);
+    expect(utf8FilenameOf(res.headers.get('content-disposition'))).toBe('100%.csv');
+  });
+});

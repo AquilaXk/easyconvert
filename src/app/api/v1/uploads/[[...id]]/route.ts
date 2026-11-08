@@ -22,7 +22,11 @@ import {
   TusNotFoundError,
   TusInvalidMetadataError,
 } from '@/lib/storage/tus-engine';
-import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
+import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
+import type { UploadSessionInfo } from '@/lib/storage/oci-storage';
+import { readObjectHeader } from '@/lib/storage/object-header';
+import { assertNotSpoofedFile } from '@/lib/security/file-guard';
+import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, partBodyProblem } from '@/lib/api/file-size-limit';
 import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
@@ -274,6 +278,26 @@ async function handleInitiateUpload(
 }
 
 /**
+ * The refusal of an assembled object-store upload whose first bytes do not match the format its name and type declare (the
+ * check the local store and the direct upload route make), which is deleted; undefined when it matches.
+ */
+async function refuseSpoofedRemoteUpload(key: string, session: Pick<UploadSessionInfo, 'filename' | 'mimeType'>, instanceUri: string): Promise<Response | undefined> {
+  const header = await readObjectHeader(storageProvider, key);
+  if (!header) {
+    await storageProvider.deleteObject(key);
+    return createProblemDetailsResponse(500, 'Assembled file not found in storage. Operation failed closed.', instanceUri);
+  }
+  try {
+    assertNotSpoofedFile(header, resolveDeclaredFormat(session.filename, session.mimeType), session.filename);
+    return undefined;
+  } catch (error: unknown) {
+    await storageProvider.deleteObject(key);
+    if (error instanceof UnknownDeclaredFormatError) throw error;
+    return createProblemDetailsResponse(422, error instanceof Error ? error.message : 'File content magic bytes mismatch.', instanceUri);
+  }
+}
+
+/**
  * Completes an object-store upload against the size declared at initiation. The client's own
  * `expectedSize` never relaxes it, and an assembled object of any other size is deleted.
  */
@@ -307,6 +331,10 @@ async function completeRemoteUpload(
       instanceUri
     );
   }
+  const spoofed = await refuseSpoofedRemoteUpload(completed.key, session, instanceUri);
+  if (spoofed) return spoofed;
+  const unrecorded = await recordCompletedUpload(storageProvider, completed.key, instanceUri);
+  if (unrecorded) return unrecorded;
   return NextResponse.json({
     success: true,
     location: `/api/storage/file/${encodeURIComponent(completed.key)}`,
@@ -340,6 +368,8 @@ async function completeLocalUpload(
   const completedObject = await objectStorage.completeMultipart(session.key, session.uploadId, parts);
   forgetUploadParts(session.uploadId);
 
+  const unrecorded = await recordCompletedUpload(storageProvider, completedObject.key, instanceUri);
+  if (unrecorded) return unrecorded;
   return NextResponse.json({
     success: true,
     location: `/api/storage/file/${encodeURIComponent(completedObject.key)}`,

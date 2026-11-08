@@ -266,12 +266,17 @@ export class InvalidWebhookConfigError extends Error {
   }
 }
 
+/**
+ * The webhook of a job: the request's own, else the API key's. `webhookKeyId` names `keyId` only when the url and the secret
+ * both are the key's, since only then do the key's rotated secrets sign the delivery (`WebhookDispatchOptions.ownerKeyId`).
+ */
 export function resolveEffectiveWebhook(
   paramUrl: string | undefined,
   paramSecret: string | undefined,
   keyUrl: string | undefined,
-  keySecret: string | undefined
-): { webhookUrl?: string; webhookSecret?: string; error?: string } {
+  keySecret: string | undefined,
+  keyId?: string
+): { webhookUrl?: string; webhookSecret?: string; webhookKeyId?: string; error?: string } {
   const webhookUrl = paramUrl || keyUrl;
   const webhookSecret = paramSecret || keySecret;
   if (webhookUrl) {
@@ -283,7 +288,8 @@ export function resolveEffectiveWebhook(
       return { error: 'webhookSecret is required when webhookUrl is provided.' };
     }
   }
-  return { webhookUrl, webhookSecret };
+  const fromKey = webhookUrl !== undefined && !paramUrl && !paramSecret;
+  return { webhookUrl, webhookSecret, webhookKeyId: fromKey ? keyId : undefined };
 }
 
 export async function validateUrlForSsrf(targetUrl: URL): Promise<boolean> {

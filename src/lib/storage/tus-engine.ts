@@ -11,7 +11,9 @@ import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
+import { StorageServiceError } from './adapters/adapter-interface';
 import { multipartUploadKey } from './key-namespace';
+import { registerCompletedUpload } from './retention-service';
 import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
 
 export class TusOffsetMismatchError extends Error {
@@ -46,6 +48,17 @@ export class TusUploadExceededLengthError extends Error {
   constructor(exceededBytes: number, uploadLength: number) {
     super(`Uploaded bytes (${exceededBytes}) exceed declared Upload-Length (${uploadLength})`);
     this.name = 'TusUploadExceededLengthError';
+  }
+}
+
+/**
+ * The completed upload was stored but its record could not be written, so it was removed again. A store the upload needs is
+ * unavailable for now: the routes answer it as a storage error (503 with `Retry-After`), and the last chunk may be sent again.
+ */
+export class TusUploadNotRecordedError extends StorageServiceError {
+  constructor(cause: unknown) {
+    super('The upload could not be recorded.', 'retention', { retryable: true }, cause);
+    this.name = 'TusUploadNotRecordedError';
   }
 }
 
@@ -338,17 +351,40 @@ function objectTtlSeconds(session: TusSession): number {
   return Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000));
 }
 
+/** The staged file of a finished upload is not as long as the upload declared, so what it holds is not the upload. */
+export class TusStagedSizeMismatchError extends Error {
+  constructor(readonly stagedBytes: number, uploadLength: number) {
+    super(`The staged upload holds ${stagedBytes} bytes, but the upload declared ${uploadLength} bytes. Continue from the offset of the upload.`);
+    this.name = 'TusStagedSizeMismatchError';
+  }
+}
+
+/** Refuses a staged file whose size is not the declared length of the upload; nothing is stored from it. */
+async function assertStagedSize(binPath: string, uploadLength: number): Promise<void> {
+  const staged = await fs.promises.stat(binPath).then((stat) => stat.size, () => 0);
+  if (staged !== uploadLength) throw new TusStagedSizeMismatchError(staged, uploadLength);
+}
+
+/** Records the completed upload under `key` (`registerCompletedUpload`); a record that cannot be written removes the object again. */
+async function recordTusUpload(key: string): Promise<void> {
+  try {
+    await registerCompletedUpload(storageProvider, key);
+  } catch (error) {
+    console.error('[tus] Could not record a completed upload, which was removed:', error);
+    throw new TusUploadNotRecordedError(error);
+  }
+}
+
 async function finalizeTusSession(session: TusSession, binPath: string): Promise<void> {
   if (storageProvider.kind === 'remote') {
-    // The staged file is the only copy until the object store has it; a failed store fails the upload.
+    // The staged file is the only copy until the object store has it and the upload is recorded (`appendChunk` removes it
+    // then); a failed store or record fails the upload, and a resend of the last chunk appends to the whole file.
     await objectStorage.putStream(session.key, fs.createReadStream(binPath), {
       contentType: session.mimeType,
       filename: session.filename,
       ttlSeconds: objectTtlSeconds(session),
       size: session.uploadLength,
     });
-    // The object store holds the upload now; the staged copy would only occupy local disk.
-    await fs.promises.rm(binPath, { force: true });
     return;
   }
 
@@ -620,6 +656,18 @@ export class TusEngine {
         isComplete = true;
         session.completed = true;
 
+        // What was staged must be the whole upload before anything is read from it or stored: a file of another size (lost or
+        // appended to out of order) is refused, and the client continues from what the staged file really holds.
+        try {
+          await assertStagedSize(binPath, session.uploadLength);
+        } catch (err) {
+          session.completed = false;
+          session.uploadOffset = err instanceof TusStagedSizeMismatchError ? Math.min(err.stagedBytes, clientOffset) : clientOffset;
+          await this.sessionStore.saveSession(session);
+          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+          throw err;
+        }
+
         // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath) against the declared format
         try {
           const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
@@ -635,8 +683,11 @@ export class TusEngine {
 
         try {
           await finalizeTusSession(session, binPath);
+          await recordTusUpload(session.key);
+          // The object store holds the upload and its record now; the staged copy would only occupy local disk.
+          if (storageProvider.kind === 'remote') await fs.promises.rm(binPath, { force: true });
         } catch (err) {
-          // The object store did not take the upload: rewind the last chunk so the client can resend it.
+          // The upload was not taken: rewind the last chunk so the client can resend it.
           session.completed = false;
           rollbackChunk(binPath, clientOffset);
           session.uploadOffset = clientOffset;
