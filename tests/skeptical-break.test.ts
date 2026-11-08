@@ -214,9 +214,10 @@ endsolid TestModel`;
       UnsupportedTargetError
     );
 
-    // PDF -> DXF has no engine path, so the registry no longer advertises it
+    // PDF -> DXF is a registry pair whose page drawing is the native pdftocairo route (policy entry 183); the in-process path has no
+    // vector geometry to write and refuses with a typed answer, as for SVG
     await expect(convertFile(pdfBuf, 'pdf', 'dxf', {}, 'sample.pdf')).rejects.toThrow(
-      /^Cannot convert from PDF Document \(\.pdf\) to target format \.dxf\./
+      UnsupportedTargetError
     );
 
     // PDF -> RTF succeeds with authentic text escaping

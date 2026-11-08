@@ -211,12 +211,20 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     const copy = fs.promises.copyFile;
     let running = 0;
     let mostAtOnce = 0;
+    let held = 0;
     const releases: Array<() => void> = [];
+    const startWaiters: Array<{ count: number; resolve: () => void }> = [];
+    /** Resolves once the given number of copies have finished copying and wait to be released, signalled by the copy itself rather than polled for. */
+    const copiesHeld = (count: number) => new Promise<void>((resolve) => (held >= count ? resolve() : startWaiters.push({ count, resolve })));
     vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (from, to, mode) => {
       running++;
       mostAtOnce = Math.max(mostAtOnce, running);
       await copy(from, to, mode);
-      await new Promise<void>((resolve) => releases.push(resolve));
+      await new Promise<void>((resolve) => {
+        releases.push(resolve);
+        held++;
+        for (const waiter of startWaiters.filter((entry) => held >= entry.count)) waiter.resolve();
+      });
       running--;
     });
     const { storageProvider } = await loadStorage();
@@ -227,14 +235,13 @@ describe('S3ObjectStorageService.saveObjectFromFile on the local driver', () => 
     });
 
     const saves = sources.map((source, n) => storageProvider.saveObjectFromFile!(`results/job-${n}/result.bin`, source, 'application/octet-stream', 'result.bin'));
-    for (let turn = 0; turn < 50 && releases.length < 2; turn++) await new Promise((resolve) => setTimeout(resolve, 5));
-
+    await copiesHeld(2);
     expect(releases, 'two copies run').toHaveLength(2);
     expect(running).toBe(2);
-    while (releases.length > 0 || running > 0) {
-      releases.shift()?.();
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    releases.shift()!();
+    await copiesHeld(3);
+    expect(running, 'the third copy starts only when one has finished').toBe(2);
+    releases.splice(0).forEach((release) => release());
     await Promise.all(saves);
     expect(mostAtOnce).toBe(2);
   });

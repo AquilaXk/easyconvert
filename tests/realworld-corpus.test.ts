@@ -353,11 +353,11 @@ describe('verdicts and gate', () => {
       }
     });
 
-    it('is set on the six PDF and five Word rows of the refusal tail, whose messages differ by target', () => {
+    it('is set on the six PDF rows and the Word row of the refusal tail, whose messages differ by target', () => {
       const tail = [
         ...['qpdf-issue-263', 'qpdf-issue-101', 'qpdf-issue-99', 'qpdf-issue-120', 'qpdf-issue-141b'].map((id) => `${id}.pdf`),
         'pdfjs-bug1020226.pdf',
-        ...['59378', 'bug62859', 'headerpic', 'issue_51265_3', 'emptydocumentwithheaderfooter'].map((id) => `office-document-${id}.docx`),
+        'office-document-59378.docx',
       ];
       const byFile = new Map(readKnownRefusals().map((entry) => [entry.file, entry]));
       for (const file of tail) {
@@ -744,7 +744,7 @@ describe('empty inputs in the manifest', () => {
     expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
   });
 
-  it('marks exactly the 44 corpus files that hold no content, each with the reason read from the file', () => {
+  it('marks exactly the 50 corpus files that hold no content, each with the reason read from the file', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
     const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
     expect(marked).toEqual([
@@ -754,7 +754,13 @@ describe('empty inputs in the manifest', () => {
       'govdocs1-001782.html',
       'govdocs1-002028.html',
       'office-document-51921-word-crash067.docx',
+      'office-document-59378.docx',
+      'office-document-emptydocumentwithheaderfooter.docx',
       'office-document-issue_51265_1.docx',
+      'office-document-issue_51265_3.docx',
+      'office-slideshow-bug55732.ppt',
+      'office-slideshow-empty.ppt',
+      'office-slideshow-missing-blip-fill.pptx',
       'office-spreadsheet-24207.xls',
       'office-spreadsheet-29675.xls',
       'office-spreadsheet-37376.xls',

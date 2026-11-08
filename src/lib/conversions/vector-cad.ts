@@ -3,7 +3,7 @@ import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, EngineUnavailableError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
-import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, convertImage, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
 import { assertInputPixels, openInputImage, openLimitedSharp, resizedDimensions } from './image-input-limits';
 import { loadFontCoverageIndex } from './pdf-fonts';
@@ -340,6 +340,11 @@ function svgToVectorTarget(inputBuffer: Buffer, tgt: string, baseName: string): 
   return { buffer, mimeType, filename: `${baseName}.${tgt}`, size: buffer.length };
 }
 
+/** Raster targets the shared image writer encodes from the PNG a drawing renders to. */
+const SVG_ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['ico', 'odd', 'psd']);
+/** The targets a DXF drawing is written to through the SVG it draws: the raster pictures and PostScript. */
+const DXF_SVG_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'tiff', 'eps']);
+
 /** Targets the SVG converter writes without rendering pixels, so the output size options do not apply. */
 const SVG_NON_RASTER_TARGETS = new Set(['svg', 'emf', 'wmf', 'cgm']);
 
@@ -416,6 +421,12 @@ async function convertSvgSource(
   // Vector targets are written from the SVG geometry and never rasterize it.
   const vectorOutput = svgToVectorTarget(inputBuffer, tgt, baseName);
   if (vectorOutput) return vectorOutput;
+
+  // The encoded rasters (icon, Photoshop, drawing package) are written by the shared image writer from the PNG this drawing renders to.
+  if (SVG_ENCODED_RASTER_TARGETS.has(tgt)) {
+    const picture = await convertSvgSource(inputBuffer, 'png', options, baseName, written);
+    return convertImage(picture.buffer, tgt, options, `${baseName}.png`, 'png');
+  }
 
   const density = options.dpi || DEFAULT_SVG_RENDER_DPI;
   const renderBuffer = written ? inputBuffer : normalizeSvgBufferForRendering(inputBuffer);
@@ -541,7 +552,7 @@ async function convertSvgSource(
 }
 
 /**
- * Converts DXF to SVG, PDF, PNG, JPG, WEBP, or DWG
+ * Converts DXF to SVG, PDF, the raster pictures, PostScript, or DWG
  */
 async function convertDxfSource(
   inputBuffer: Buffer,
@@ -577,8 +588,8 @@ async function convertDxfSource(
     };
   }
 
-  // DXF -> Raster (PNG, JPG, WEBP)
-  if (['png', 'jpg', 'jpeg', 'webp'].includes(tgt)) {
+  // DXF -> Raster pictures and PostScript
+  if (DXF_SVG_TARGETS.has(tgt)) {
     const svgStr = dxfDrawingToSvg(drawing, baseName);
     const svgBuf = Buffer.from(svgStr, 'utf-8');
     return convertSvgSource(svgBuf, tgt, options, baseName, { ...dxfSvgDeclaredSize(drawing), pngCompressionLevel: DXF_PNG_COMPRESSION_LEVEL });

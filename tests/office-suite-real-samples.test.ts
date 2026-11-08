@@ -60,7 +60,7 @@ interface SampleCase {
 }
 
 const SAMPLES: readonly SampleCase[] = [
-  { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt', 'xps'], phrases: ['blah blah blah'] },
+  { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt', 'xps', 'doc', 'rtf', 'jpg', 'png'], phrases: ['blah blah blah'] },
   {
     id: 'govdocs1-000003.doc',
     extension: 'dot',
@@ -126,7 +126,7 @@ const SAMPLES: readonly SampleCase[] = [
     // presentation saved by the suite as PowerPoint 97 and named `.dps` is the file it opens for that name.
     id: 'govdocs1-764092.pps',
     extension: 'dps',
-    targets: ['pptx', 'odp', 'pdf', 'html', 'txt', 'ppt', 'jpg', 'png', 'zip'],
+    targets: ['pptx', 'odp', 'pdf', 'html', 'txt', 'ppt', 'jpg', 'png', 'zip', 'md', 'eps'],
     phrases: ['so you want an instrument approach', 'new york flight procedures office'],
     resaveAs: 'ppt:MS PowerPoint 97',
   },
@@ -151,7 +151,29 @@ const SAMPLES: readonly SampleCase[] = [
     targets: ['docx', 'pdf', 'txt', 'odt', 'zip'],
     phrases: ['this is an example staroffice 5 2 document'],
   },
-  { id: 'lo-hello.zabw', extension: 'zabw', targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'], phrases: ['hello world'] },
+  { id: 'lo-hello.zabw', extension: 'zabw', targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'], phrases: ['hello world'] },
+  // AbiWord's plain XML: the in-process text extractor used to return its markup as the text, so the phrase is also pinned in the bytes of the file.
+  {
+    id: 'lo-hello.abw',
+    extension: 'abw',
+    targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'],
+    phrases: ['hello world'],
+    phrasesInSourceBytes: true,
+  },
+  {
+    id: 'lo-abi11105.abw',
+    extension: 'abw',
+    targets: ['docx', 'pdf', 'txt', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'],
+    phrases: ['evan rinehart', 'baton rouge', 'researching and implementing advanced graphics techniques using shaders'],
+  },
+  // iWork Pages, read by the suite's libetonyek: the document of the Tika corpus holds a table.
+  {
+    id: 'tika-testpages2013.pages',
+    extension: 'pages',
+    targets: ['docx', 'pdf', 'txt', 'zip', 'doc', 'epub', 'jpg', 'png'],
+    phrases: ['sample pages document', 'some plain text to parse', 'column one', 'cell nine'],
+  },
+  { id: 'lo-pages_4.pages', extension: 'pages', targets: ['docx', 'pdf', 'txt', 'doc', 'epub', 'jpg', 'png'], phrases: ['document liberation link'] },
   {
     id: 'tika-teststaroffice-5.2-calc.sdc',
     extension: 'sdc',
@@ -179,7 +201,7 @@ const SAMPLES: readonly SampleCase[] = [
   {
     id: 'lo-plucker.pdb',
     extension: 'pdb',
-    targets: ['txt', 'pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb', 'zip'],
+    targets: ['txt', 'pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb', 'zip', 'rtf'],
     phrases: ['universal declaration of human rights', 'adopted and proclaimed by general assembly resolution'],
   },
 ];
@@ -404,14 +426,14 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
         const sample = resaveAs === undefined ? original : sofficeConvert(original, id, resaveAs, (output) => output.read());
         const reference = referenceWords(sample, extension);
         const calibre = calibreWords(sample, extension);
-        const printed = targets.some((target) => IMAGE_TARGETS.has(target)) ? printedPages(sample, extension) : undefined;
+        const printed = targets.some((target) => IMAGE_TARGETS.has(target) || target === 'eps') ? printedPages(sample, extension) : undefined;
         if (phrasesInSourceBytes) expectPhrases(phrases, sample.toString('latin1'), `${id} (pinned phrases in the bytes of the file)`);
         // The Palm, Kindle, Sony and Open eBook targets are written by calibre and read back by the e-book suite below.
         for (const target of targets.filter((candidate) => !EBOOK_CONTAINER_TARGETS.has(candidate))) {
           const label = `${id} -> ${target}`;
           const result = await dispatchConversion(sample, extension, target, {}, id);
           // A document of several pages becomes one image per page, in a ZIP.
-          const extensions = IMAGE_TARGETS.has(target) ? [`.${target}`, '.zip'] : [`.${target}`];
+          const extensions = IMAGE_TARGETS.has(target) || target === 'eps' ? [`.${target}`, '.zip'] : [`.${target}`];
           expect(extensions, label).toContain(path.extname(result.filename));
           expect(result.buffer.length, label).toBeGreaterThan(0);
           if (target === 'zip') {
@@ -420,6 +442,13 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
           }
           if (IMAGE_TARGETS.has(target)) {
             await expectPageImages(result.buffer, target, printed, label);
+            continue;
+          }
+          if (target === 'eps') {
+            // One encapsulated PostScript picture for every printed page, in a ZIP when there are several; the words of the pages are read back by tests/presentation-pairs.test.ts.
+            const pictures = await pageImages(result.buffer);
+            expect({ label, pages: pictures.length }).toEqual({ label, pages: printed?.count });
+            for (const picture of pictures) expect(picture.subarray(0, 23).toString('latin1'), `${label} is encapsulated PostScript`).toBe('%!PS-Adobe-3.0 EPSF-3.0');
             continue;
           }
           if (target in STREAM_OF_LEGACY_TARGET) expectLegacyOfficeContainer(result.buffer, target, label);

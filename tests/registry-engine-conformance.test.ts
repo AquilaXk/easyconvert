@@ -368,9 +368,12 @@ const WORD_MAIN = `${OPENXML}.wordprocessingml.document.main+xml`;
 const EXCEL_MAIN = `${OPENXML}.spreadsheetml.sheet.main+xml`;
 const POWERPOINT_MAIN = `${OPENXML}.presentationml.presentation.main+xml`;
 
+/** A scanned line of English text: the comic to text routes read the lettering with OCR, and a page without any is refused with a typed error. */
+const LETTERED_PAGE = readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png'));
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
-  zip.file('page-001.png', PNG_SEED);
+  zip.file('page-001.png', LETTERED_PAGE);
   zip.file('page-002.png', PNG_SEED);
   return zip.generateAsync({ type: 'nodebuffer' });
 }
@@ -387,7 +390,7 @@ async function buildProbeZip(name: string, content: string): Promise<Buffer> {
 
 async function buildProbeCbc(): Promise<Buffer> {
   const volume = new JSZip();
-  volume.file('page-001.png', readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png')));
+  volume.file('page-001.png', LETTERED_PAGE);
   const collection = new JSZip();
   collection.file('comics.txt', 'volume.cbz:Probe volume\n');
   collection.file('volume.cbz', await volume.generateAsync({ type: 'nodebuffer' }));
@@ -448,6 +451,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
+  // A comic RAR archive and a Mobipocket book under its Palm name: the same pages and the same book as the CBZ and MOBI probes.
+  cbr: () => buildStoredRar4([{ name: 'page-001.png', data: LETTERED_PAGE }, { name: 'page-002.png', data: PNG_SEED }]),
+  prc: buildProbeMobi,
   // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
   // a MOBI (the probe of AZW and AZW3 too) whose text record holds HTML, an OEB package that carries its text, a Print Replica book around a pdf-lib PDF, a collection of one comic
   // volume whose page is a scanned line of English text (the OCR route needs lettering to recognise), FictionBook
@@ -634,50 +640,65 @@ async function probeInputs(source: string): Promise<Buffer[]> {
  * `ebook-convert` for every source that offers them. Authored by hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
-  csv: ['xls'],
+  ai: ['dxf', 'svg'],
+  csv: ['jpg', 'png', 'xls'],
   azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
+  cbr: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  cbz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  epub: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  prc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw4: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   cbc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   doc: ['jpg', 'png', 'rtf'],
-  docx: ['doc', 'jpg', 'png', 'rtf'],
-  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  docm: ['doc', 'jpg', 'png', 'rtf'],
+  docx: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
+  dot: ['doc'],
+  dotx: ['doc', 'jpg', 'png', 'rtf'],
+  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   htm: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
-  html: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   json: ['xls'],
   jsonl: ['xls'],
-  key: ['html', 'pdf', 'pptx'],
+  key: ['html', 'jpg', 'pdf', 'png', 'ppt', 'pptx'],
   lrf: ['azw3', 'mobi', 'oeb', 'pdb'],
+  md: ['doc', 'jpg', 'png', 'rtf'],
   mobi: ['azw3', 'lrf', 'oeb', 'pdb'],
   ndjson: ['xls'],
   djv: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   djvu: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
   odg: ['bmp', 'jpg', 'pdf', 'png'],
-  odp: ['jpg', 'png', 'ppt'],
+  odp: ['eps', 'jpg', 'md', 'png', 'ppt'],
   ods: ['jpg', 'png', 'xls'],
-  odt: ['doc', 'jpg', 'png', 'rtf'],
+  odt: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   oeb: ['mobi'],
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   parquet: ['xls'],
   pdb: ['azw3', 'lrf', 'mobi', 'oeb'],
-  pdf: ['azw3', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'svg', 'tiff', 'xls'],
+  pdf: ['avif', 'azw3', 'bmp', 'doc', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'lrf', 'mobi', 'odd', 'oeb', 'pdb', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'xls'],
   pml: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
-  pps: ['ppt'],
-  ppt: ['jpg', 'odp', 'png'],
-  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
-  pptx: ['jpg', 'png', 'ppt'],
+  pot: ['ppt'],
+  potx: ['jpg', 'odp', 'png', 'ppt'],
+  pps: ['eps', 'md', 'ppt'],
+  ppsx: ['eps', 'jpg', 'md', 'png', 'ppt'],
+  ppt: ['eps', 'jpg', 'md', 'odp', 'png'],
+  pptm: ['eps', 'jpg', 'md', 'png', 'ppt'],
+  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+  pptx: ['eps', 'jpg', 'md', 'png', 'ppt'],
   rb: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  rst: ['rtf'],
   rtf: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png'],
   tsv: ['xls'],
-  txt: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  txt: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   txtz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   xls: ['jpg', 'png'],
-  xlsm: ['xls'],
+  xlsm: ['jpg', 'png', 'xls'],
   xlsx: ['jpg', 'png', 'xls'],
   xml: ['xls'],
-  xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+  xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   yaml: ['xls'],
   yml: ['xls'],
 };
@@ -1003,83 +1024,70 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
   // Pairs that the dispatcher routes to a native engine moved to NATIVE_ENGINE_PAIRS.
   const WITHDRAWN: Readonly<Record<string, readonly string[]>> = {
-    abw: ['doc', 'jpg', 'png', 'rtf'],
-    ai: ['dxf', 'emf', 'svg', 'wmf'],
-    azw: ['rtf'],
-    azw3: ['docx', 'rtf'],
+    ai: ['emf', 'wmf'],
+    azw3: ['docx'],
     cb7: ['cbz'],
-    cbr: ['azw3', 'cbz', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+    cbr: ['cbz'],
     cbt: ['cbz'],
-    cbz: ['azw3', 'cbr', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf', 'txt'],
-    cdr: ['dxf', 'emf', 'wmf'],
-    cgm: ['dxf', 'emf', 'wmf'],
+    cbz: ['cbr'],
+    cdr: ['emf', 'wmf'],
+    cgm: ['emf', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
-    csv: ['jpg', 'png'],
     dbf: ['json', 'tsv'],
     dds: ['tga'],
     dif: ['json', 'tsv'],
     djvu: ['docx'],
     dmg: ['iso'],
-    docm: ['doc', 'docx', 'jpg', 'odt', 'png', 'rtf'],
-    docx: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pages', 'pdb', 'xps'],
-    dot: ['doc', 'jpg', 'png', 'rtf'],
-    dotx: ['doc', 'jpg', 'png', 'rtf'],
-    dps: ['eps', 'md', 'swf'],
+    docx: ['hwp', 'hwpx', 'pages', 'xps'],
+    dps: ['swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
-    dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
-    dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
-    emf: ['avif', 'bmp', 'dxf', 'emf', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp', 'wmf'],
-    eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
-    fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
+    dwg: ['cgm', 'dwg', 'wmf'],
+    dxf: ['cgm', 'dwg', 'wmf'],
+    emf: ['dxf', 'emf', 'wmf'],
+    eps: ['emf', 'wmf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     htm: ['doc', 'jpg', 'png', 'rtf'],
-    html: ['doc', 'jpg', 'png', 'rtf', 'tex'],
+    html: ['tex'],
     ibooks: ['epub', 'pdf', 'txt'],
-    key: ['doc', 'jpg', 'png', 'ppt', 'xls'],
+    key: ['doc', 'xls'],
     lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
-    md: ['doc', 'jpg', 'png', 'rst', 'rtf', 'tex'],
-    mobi: ['docx', 'rtf'],
+    md: ['rst', 'tex'],
+    mobi: ['docx'],
     msg: ['eml'],
     numbers: ['doc', 'ppt', 'tsv'],
-    odp: ['eps', 'md', 'swf'],
-    odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
+    odp: ['swf'],
+    odt: ['hwp', 'hwpx', 'xps'],
     oxps: ['docx', 'odd'],
-    pages: ['doc', 'docx', 'epub', 'html', 'jpg', 'pdf', 'png', 'ppt', 'txt'],
-    pdb: ['rtf'],
-    pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'webp', 'wmf'],
-    pot: ['emf', 'jpg', 'png', 'ppt', 'xps'],
-    potx: ['emf', 'jpg', 'odp', 'png', 'ppt', 'xps'],
-    pps: ['eps', 'md', 'swf'],
-    ppsx: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
-    ppt: ['emf', 'eps', 'md', 'swf', 'xps'],
-    pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'swf', 'txt', 'xps'],
-    pptx: ['emf', 'eps', 'key', 'md', 'swf', 'xps'],
-    prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+    pages: ['html', 'ppt', 'xls'],
+    pdf: ['emf', 'ppt', 'wmf'],
+    pot: ['emf', 'xps'],
+    potx: ['emf', 'xps'],
+    pps: ['swf'],
+    ppsx: ['swf'],
+    ppt: ['emf', 'swf', 'xps'],
+    pptm: ['emf', 'swf', 'xps'],
+    pptx: ['emf', 'key', 'swf', 'xps'],
     prn: ['tsv'],
-    ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    ps: ['emf', 'wmf'],
     qpw: ['tsv'],
-    rst: ['rtf'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
     slk: ['tsv'],
     snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
-    svg: ['ico', 'odd', 'psd'],
-    svgz: ['ico', 'odd', 'psd'],
     sxd: ['odp', 'pptx'],
     tcr: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
-    txt: ['doc', 'jpg', 'png', 'rtf', 'tex'],
+    txt: ['tex'],
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     wk1: ['tsv'],
     wks: ['tsv'],
-    wmf: ['dxf', 'emf', 'wmf'],
+    wmf: ['emf', 'wmf'],
     xls: ['xps'],
-    xlsm: ['jpg', 'json', 'png'],
+    xlsm: ['json'],
     xlsx: ['numbers', 'xps'],
-    xps: ['docx', 'odd'],
+    xps: ['docx'],
     yaml: ['xml'],
     yml: ['xml'],
-    zabw: ['doc', 'jpg', 'png', 'rtf'],
   };
 
   it.each(Object.entries(WITHDRAWN))('%s advertises none of its withdrawn targets', (source, targets) => {
@@ -1525,6 +1533,12 @@ describe('native-engine pairs route through the dispatcher', () => {
   const DJVU_SOURCES = new Set(['djvu', 'djv']);
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
+  /** Text and markup sources: their Word 97 and RTF files are the office suite's, and their page images are drawn by Poppler from their PDF. */
+  const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'rst']);
+  /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
+  const TABLE_PICTURE_SOURCE = 'csv';
+  /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */
+  const BRIDGED_PDF_TARGETS = new Set(['doc', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
   const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
   const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
@@ -1539,6 +1553,8 @@ describe('native-engine pairs route through the dispatcher', () => {
     avif: [],
   };
   const PDF_SOURCE = 'pdf';
+  /** An Illustrator file saved with PDF compatibility is a PDF with private data: it takes the PDF path, so its probe is the seed PDF. */
+  const PDF_SOURCES = new Set([PDF_SOURCE, 'ai']);
   const SVG_TARGET = 'svg';
   /** Resolution requested from the PDF rasterizer, and the PostScript points per inch of PDF page sizes. */
   const PDF_RASTER_DPI = 100;
@@ -1553,14 +1569,18 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
   const pairs = allPartPairs.filter(([, target]) => !isCalibreEbookTarget(target));
   const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
-  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
+  const MARKDOWN_TARGET = 'md';
+  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && pair[1] !== MARKDOWN_TARGET && authorable(pair));
+  const officeToMarkdown = pairs.filter((pair) => pair[0] !== PDF_SOURCE && pair[1] === MARKDOWN_TARGET && authorable(pair));
   const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
   const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
   const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
   const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
   const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
-  const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
-  const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET && target !== 'xls');
+  const pdfToSvg = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && target === SVG_TARGET);
+  const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && (IMAGE_TARGETS.has(target) || target === 'tiff'));
+  const pdfToPageFormat = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && (ENCODED_PAGE_TARGETS.has(target) || POSTSCRIPT_TARGETS.has(target) || target === 'dxf' || target === 'odd') && target !== 'tiff');
+  const pdfToBridgedOffice = pairs.filter(([source, target]) => source === PDF_SOURCE && target === 'doc');
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
@@ -1568,9 +1588,12 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
     if (DJVU_SOURCES.has(source)) return { envVar: 'DDJVU_PATH', engineName: 'ddjvu' };
-    // A table read from a PDF is written as .xls by the office suite, like every other source of .xls.
-    if (source !== PDF_SOURCE || target === 'xls') return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
-    if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
+    // The pictures of a text, Markdown, reStructuredText or HTML document are the pages of its PDF, drawn by Poppler; the office suite writes its Word 97 and RTF files.
+    if (DOCUMENT_TEXT_SOURCES.has(source) || source === TABLE_PICTURE_SOURCE) return IMAGE_TARGETS.has(target) ? { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' } : { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
+    // A table read from a PDF is written as .xls, and a text or slide document as Word 97 or PowerPoint 97, by the office suite, like every other source of those formats.
+    if (!PDF_SOURCES.has(source) || BRIDGED_PDF_TARGETS.has(target)) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
+    if (target === SVG_TARGET || target === 'dxf') return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
+    if (POSTSCRIPT_TARGETS.has(target)) return { envVar: 'PDFTOPS_PATH', engineName: 'pdftops' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
   }
 
@@ -1582,6 +1605,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     pptx: 'golden/office/drawingml-shapes-presentation.pptx',
     odg: 'office-sources/drawing-two-pages.odg',
     pdf: 'sample.pdf',
+    ai: 'sample.pdf',
     parquet: 'parquet/plain-uncompressed.parquet',
   };
   /** Table sources that are text: a small table with a quoted cell. */
@@ -1595,8 +1619,41 @@ describe('native-engine pairs route through the dispatcher', () => {
     yml: '- {name: widget, amount: 1.5, note: "a,b"}\n- {name: gadget, amount: -153.375, note: plain}\n',
     xml: '<rows><row><name>widget</name><amount>1.5</amount><note>a,b</note></row><row><name>gadget</name><amount>-153.375</amount><note>plain</note></row></rows>',
   };
+  /** Text and markup documents that hold the sentence of the Word seed, so that every output can be read back for it. */
+  const DOCUMENT_TEXT_SEEDS: Readonly<Record<string, string>> = {
+    txt: `${OFFICE_DOC_TEXT}\n`,
+    md: `# Probe heading\n\n${OFFICE_DOC_TEXT}\n`,
+    html: `<!DOCTYPE html><html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>${OFFICE_DOC_TEXT}</p></body></html>`,
+    rst: `Probe heading\n=============\n\n${OFFICE_DOC_TEXT}\n`,
+  };
+  /** The Word variants that are the seed package with the content type of the variant's main part. */
+  const WORD_VARIANT_MAIN: Readonly<Record<string, string>> = {
+    docm: 'application/vnd.ms-word.document.macroEnabled.main+xml',
+    dotx: `${OPENXML}.wordprocessingml.template.main+xml`,
+  };
+  /** The same for the PowerPoint variants of the seed deck: a template, a slide show and a macro-enabled presentation. */
+  const PRESENTATION_VARIANT_MAIN: Readonly<Record<string, string>> = {
+    potx: `${OPENXML}.presentationml.template.main+xml`,
+    ppsx: `${OPENXML}.presentationml.slideshow.main+xml`,
+    pptm: 'application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml',
+  };
+  const PACKAGE_VARIANTS = new Set([...Object.keys(WORD_VARIANT_MAIN), ...Object.keys(PRESENTATION_VARIANT_MAIN)]);
+  beforeAll(async () => {
+    const variants: [Readonly<Record<string, string>>, string, string][] = [
+      [WORD_VARIANT_MAIN, SEEDS.docx, WORD_MAIN],
+      [PRESENTATION_VARIANT_MAIN, SEEDS.pptx, POWERPOINT_MAIN],
+    ];
+    for (const [mains, seed, plainMain] of variants) {
+      for (const [variant, mainType] of Object.entries(mains)) {
+        const zip = await JSZip.loadAsync(fixture(seed));
+        const types = await zip.file('[Content_Types].xml')!.async('string');
+        zip.file('[Content_Types].xml', types.replace(plainMain, mainType));
+        realInputs.set(variant, await zip.generateAsync({ type: 'nodebuffer' }));
+      }
+    }
+  });
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', xlsm: 'xlsx', ppt: 'pptx', pps: 'pptx', odp: 'pptx', odd: 'odg' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', dot: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', xlsm: 'xlsx', ppt: 'pptx', pps: 'pptx', pot: 'pptx', odp: 'pptx', odd: 'odg' };
   /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
   const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
@@ -1619,6 +1676,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   const realInputs = new Map<string, Buffer>();
   function buildRealInput(source: string): Buffer {
     if (TABLE_TEXT_SEEDS[source] !== undefined) return Buffer.from(TABLE_TEXT_SEEDS[source]);
+    if (DOCUMENT_TEXT_SEEDS[source] !== undefined) return Buffer.from(DOCUMENT_TEXT_SEEDS[source]);
     const from = DERIVED_FROM[source];
     if (from === undefined) return fixture(SEEDS[source]);
     return sofficeConvert(fixture(SEEDS[from]), from, LIBREOFFICE_EXTENSION[source] ?? source);
@@ -1643,6 +1701,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   async function missingEngineInput(source: string): Promise<Buffer> {
     if (SEEDS[source]) return fixture(SEEDS[source]);
     if (TABLE_TEXT_SEEDS[source] !== undefined) return Buffer.from(TABLE_TEXT_SEEDS[source]);
+    if (DOCUMENT_TEXT_SEEDS[source] !== undefined) return Buffer.from(DOCUMENT_TEXT_SEEDS[source]);
+    if (PACKAGE_VARIANTS.has(source)) return realInput(source);
     if (source === 'xlsm') return EXTRA_PROBES.xlsm();
     const ebook = await ebookSourceInput(source);
     if (ebook) return ebook;
@@ -1674,7 +1734,16 @@ describe('native-engine pairs route through the dispatcher', () => {
       case 'mobi':
       case 'azw':
       case 'azw3':
+      case 'prc':
         return palm;
+      case 'epub':
+        return zipOf({ mimetype: 'application/epub+zip', 'META-INF/container.xml': '<container/>' });
+      case 'cbz':
+        return buildCbz();
+      case 'cbr':
+        return buildStoredRar4([{ name: 'page-001.png', data: PNG_SEED }]);
+      case 'fb2':
+        return Buffer.from(FB2_PROBE, 'utf-8');
       case 'pdb':
         return buildMobi({ textRecords: [Buffer.from('Probe paragraph.')], compression: 1, encoding: 1252, textLength: 16, plainPalmDoc: true });
       case 'lrf':
@@ -1758,6 +1827,10 @@ describe('native-engine pairs route through the dispatcher', () => {
       expect(buffer.toString('utf-8')).toMatch(/<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
     } else if (target === 'eps' || target === 'ps') {
       expect(buffer.toString('latin1').split('\n')[0]).toBe(target === 'eps' ? '%!PS-Adobe-3.0 EPSF-3.0' : '%!PS-Adobe-3.0');
+    } else if (target === 'odd') {
+      const drawing = await JSZip.loadAsync(buffer);
+      expect(await drawing.file('mimetype')?.async('string')).toBe('application/vnd.oasis.opendocument.graphics');
+      expect(drawing.file('content.xml')).not.toBeNull();
     } else if (target === 'dxf') {
       const lines = buffer.toString('utf-8').trimEnd().split('\n');
       expect(lines.slice(0, 2).map((l) => l.trim())).toEqual(['0', 'SECTION']);
@@ -1800,6 +1873,15 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
+  it.skipIf(skipWithoutTools('soffice')).each(officeToMarkdown)(
+    '%s -> %s writes the text of the seed deck as LibreOffice prints it (needs soffice)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
+      expect(result.buffer.toString('utf-8').split('\n')[0]).toBe('# Enterprise Architecture & Golden VRT CI');
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
   it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToImage)(
     '%s -> %s renders with LibreOffice and Poppler (needs soffice, pdftoppm)',
     async (source, target) => {
@@ -1826,6 +1908,27 @@ describe('native-engine pairs route through the dispatcher', () => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
       expect(result.engineUsed).toBe('native-poppler');
       await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('pdftoppm', 'pdftops', 'pdftocairo')).each(pdfToPageFormat)(
+    '%s -> %s writes the rendered pages with Poppler and the page tools (needs pdftoppm, pdftops, pdftocairo)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('soffice')).each(pdfToBridgedOffice)(
+    '%s -> %s is the office suite\'s export of the document the converter writes of the PDF (needs soffice)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
+      expect(result.engineUsed).toMatch(/^native-soffice/);
+      expect(result.buffer.subarray(0, OLE_SIGNATURE.length).equals(OLE_SIGNATURE)).toBe(true);
+      expect(result.buffer.includes(Buffer.from(OLE_BODY_STREAM[target], 'utf16le'))).toBe(true);
     },
     NATIVE_TIMEOUT_MS
   );

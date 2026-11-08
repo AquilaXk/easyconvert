@@ -56,7 +56,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['abw', 'cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pages', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -313,8 +313,9 @@ describe('the targets the in-process engine writes from plain text only', () => 
     const fromText = getFormatByExtension('txt')?.targetFormats ?? [];
     const fromWordDocument = new Set(getFormatByExtension('docx')?.targetFormats);
     const notFromWordDocument = fromText.filter((target) => !fromWordDocument.has(target) && target !== 'docx');
-    // The Palm, Sony and Open eBook targets are offered for a text file too, and calibre writes them from any source.
-    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS, ...CALIBRE_EBOOK_TARGETS].sort());
+    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS].sort());
+    // The Palm, Sony and Open eBook targets are offered for a Word document as well: calibre writes them from any source.
+    expect([...CALIBRE_EBOOK_TARGETS].filter((target) => !fromWordDocument.has(target))).toEqual([]);
   });
 
   it.each([...TEXT_ONLY_TARGETS])('.%s is written from text, and the engine turns a Word document down for it', async (target) => {
@@ -355,6 +356,27 @@ describe('a PowerPoint slide show written as a PowerPoint 97-2003 file without t
     const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(slideShow, 'pps', 'ppt', {}, 'show.pps'));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  });
+});
+
+describe('a presentation written as Markdown or PostScript pictures without the office suite', () => {
+  it.each([
+    ['ppt', 'md'],
+    ['ppt', 'eps'],
+    ['pps', 'md'],
+  ])('.%s to .%s is an unavailable-engine answer (503): only the office suite prints the deck', async (source, target) => {
+    const deck = buildPptBinary({ slides: [{ shapes: [{ chars: 'Opening slide title' }] }] });
+    const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(deck, source, target, {}, `deck.${source}`));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  });
+});
+
+describe('a CSV table written as page pictures without Poppler', () => {
+  it.each(['jpg', 'png'])('.csv to .%s is an unavailable-engine answer (503): only Poppler draws the pages of the table PDF', async (target) => {
+    const run = withMissingBinary('PDFTOPPM_PATH', () => dispatchConversion(Buffer.from('city,count\nHarbourtown,3\n'), 'csv', target, {}, 'cities.csv'));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'pdftoppm' });
   });
 });
 

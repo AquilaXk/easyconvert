@@ -36,12 +36,20 @@ import { readRaster, renderPdfPage, renderSvg } from '../vector-raster';
  * `cad.truth` of bench/reference-server.py returns its strokes (blocks inserted, arrays and nested blocks expanded, hidden
  * layers left out, curves flattened) and its text, which the same ink score then compares with each output. A drawing the
  * product refuses, or one the office suite cannot import, is a `converts` row instead of a stopped run.
+ *
+ * The two generated plates also go to BMP, GIF, TIFF and EPS (entry 187 of docs/policy-decisions.md), against the office suite's
+ * export of the same DXF in the same format: a raster is decoded by ffmpeg and an EPS is drawn by Ghostscript at 300 dpi, then both
+ * are scored by the same ink rows.
  */
 
 const REFERENCE = 'soffice';
 const SAMPLES = ['plate-basic', 'plate-full'] as const;
 const TARGETS = ['svg', 'pdf', 'png'] as const;
-type Target = (typeof TARGETS)[number];
+/** Targets the two generated plates are also converted to; the public drawings are measured on the three above. */
+const PLATE_TARGETS = ['bmp', 'gif', 'tiff', 'eps'] as const;
+type Target = (typeof TARGETS)[number] | (typeof PLATE_TARGETS)[number];
+/** Resolution at which Ghostscript draws an EPS for the ink rows: the raster EPS of the product holds a picture at 300 dpi. */
+const EPS_RENDER_DPI = 300;
 /** Width the vector outputs are drawn at: the drawing fills a third of an A4 page in the reference's output. */
 const RENDER_WIDTH_PX = 2400;
 const INK_SPECS: readonly MetricSpec[] = [SPEC.inkRecall, SPEC.inkPrecision, SPEC.extentError];
@@ -101,7 +109,7 @@ export const runCad: FamilyRunner = async (ctx) => {
   };
   try {
     for (const subject of subjects) {
-      for (const target of TARGETS) {
+      for (const target of subject.sample ? TARGETS : [...TARGETS, ...PLATE_TARGETS]) {
         if (!ctx.inScope('cad', caseOf(subject, target))) continue;
         rows.push(...(await runDrawing(ctx, subject, target, shared)));
       }
@@ -139,7 +147,7 @@ async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, 
   if (sample && !ctx.quality && !speedSample('cad', sample.id)) return [];
   const caseName = caseOf(subject, target);
   const dwg = isDwgSample(sample);
-  const tools = ['ffmpeg', 'rsvg-convert', 'pdftoppm', 'pdftotext', REFERENCE, ...(sample ? ['python3', EZDXF_PSEUDO_TOOL] : []), ...(dwg ? [DWG_READER] : [])];
+  const tools = ['ffmpeg', 'rsvg-convert', 'pdftoppm', 'pdftotext', REFERENCE, ...(target === 'eps' ? ['gs'] : []), ...(sample ? ['python3', EZDXF_PSEUDO_TOOL] : []), ...(dwg ? [DWG_READER] : [])];
   const plan = ctx.plan(tools, caseName);
   if (!plan.ok) return skippedGroup('cad', caseName, specsOf(target), REFERENCE, plan);
   const { ffmpeg, pdftoppm, pdftotext, soffice } = plan.paths;
@@ -181,7 +189,9 @@ async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, 
     const picture = ctx.scratch(`drawn-${target}.png`);
     if (target === 'svg') renderSvg(rsvg, file, picture, RENDER_WIDTH_PX);
     else if (target === 'pdf') renderPdfPage(pdftoppm, file, picture, RENDER_WIDTH_PX);
-    else fs.copyFileSync(file, picture);
+    else if (target === 'png') fs.copyFileSync(file, picture);
+    else if (target === 'eps') runTool(plan.paths.gs, ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-dEPSCrop', '-sDEVICE=png16m', `-r${EPS_RENDER_DPI}`, `-sOutputFile=${picture}`, file]);
+    else runTool(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', file, '-frames:v', '1', picture]);
     const score = scoreInk(readRaster(ffmpeg, picture), truth);
     const words = target === 'pdf' && hasText ? wordF1(truth.words.join(' '), runTool(pdftotext, ['-enc', 'UTF-8', file, '-']).stdout.toString('utf8')) : 0;
     return { ...score, wordF1: words };

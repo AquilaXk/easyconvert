@@ -148,12 +148,19 @@ function unpackWithOracle(archive: Buffer, extension: string, password: string |
     const file = path.join(dir, `unpack.${extension}`);
     const out = path.join(dir, 'out');
     writeFileSync(file, archive);
+    const args = ['x', '-y', `-o${out}`, ...(password === undefined ? [] : [`-p${password}`]), file];
     // Without a password the prompt gets an empty line, so a protected archive reports "Wrong password".
-    execFileSync(oracle7z(), ['x', '-y', `-o${out}`, ...(password === undefined ? [] : [`-p${password}`]), file], {
+    // 7z may exit before it reads that line, which makes the write fail with EPIPE; the exit status and
+    // stderr are still the verdict, so only that error is tolerated.
+    const run = spawnSync(oracle7z(), args, {
+      encoding: 'utf-8',
       env: ORACLE_ENV,
       ...(password === undefined ? { input: '\n' } : {}),
       stdio: password === undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
     });
+    const stdinClosedEarly = (run.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE';
+    if (run.error && !stdinClosedEarly) throw run.error;
+    if (run.status !== 0) throw new Error(`Command failed: 7z ${args.join(' ')}\n${run.stderr}${run.stdout}`);
     return new Map(listFiles(out).map((name) => [name, readFileSync(path.join(out, name))]));
   });
 }

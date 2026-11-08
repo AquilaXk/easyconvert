@@ -63,10 +63,17 @@ const CGM_PAGE_POINTS = { width: 793.7, height: 446.46 };
 const PAGE_TARGETS = ['pdf', 'png', 'svg', 'eps', 'ps'] as const;
 const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
 /**
- * The registry offers DXF, EMF and WMF for Visio drawings only. The pages of the other samples hold pictures, or clip regions
- * that the writers now cut at (sine_wave.emf and the CGM files), which the registry does not offer yet.
+ * The registry offers DXF, EMF and WMF for Visio drawings. DXF is also offered for CorelDRAW, CGM and WMF files (entry 187: every real file of
+ * them converts, a picture being left out with a warning and a clip cut; `tika-testwmf.wmf` is a picture alone on the office suite of the Linux image,
+ * which the DXF writer refuses, and is checked on its own below). EMF and WMF are not offered for them, nor DXF for EMF: the pages of
+ * these samples hold pictures, a curved clip, a dash or nothing but a picture, which the metafile writers and the DXF writer refuse.
  */
 const VISIO_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
+const DXF_TARGETS = [...PAGE_TARGETS, 'dxf'] as const;
+const METAFILE_DXF_TARGETS = [...METAFILE_PAGE_TARGETS, 'dxf'] as const;
+/** The raster pictures an EMF file is written as (entry 187): converted and read back by tests/vector-pairs.test.ts. */
+const EMF_RASTER_TARGETS = ['avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp'] as const;
+const EMF_TARGETS = [...METAFILE_PAGE_TARGETS, ...EMF_RASTER_TARGETS] as const;
 const NO_PHRASE: readonly string[] = [];
 /** The DXF extents may differ from the inked pixels by this many points: a stroke has a width the outline does not. */
 const DXF_EXTENT_TOLERANCE_POINTS = 2;
@@ -116,24 +123,24 @@ const SAMPLES: readonly SampleCase[] = [
     pagePhrases: [['busstatus', 'weekdayschedule', 'trafficcondition'], ['player', 'team', 'position']],
     inkscape: 'alike',
   },
-  { id: 'office-pb-poi.cdr', extension: 'cdr', targets: PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [['powered by', 'apache']], embeddedPictures: 1, inkscape: 'letters' },
-  { id: 'lo-fdo65220-2.cdr', extension: 'cdr', targets: PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [NO_PHRASE], inkscape: 'alike' },
+  { id: 'office-pb-poi.cdr', extension: 'cdr', targets: DXF_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [['powered by', 'apache']], embeddedPictures: 1, inkscape: 'letters' },
+  { id: 'lo-fdo65220-2.cdr', extension: 'cdr', targets: DXF_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [NO_PHRASE], inkscape: 'alike' },
   // Twelve gradient bitmaps under heavy outlines fill the page edge to edge: the renderers differ by a pixel along every edge and in the banding
   // (measured 0.75 for the SVG and above 0.8 for the rest of the chain). Inkscape draws the envelope's body dark where every other renderer draws it white
   // (measured 0.84 on a page that is otherwise the same: the page, the scale and the position of the drawing are those of Inkscape).
-  { id: 'lo-computer_mail.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 68.28, height: 71.26 }, pages: 1, pagePhrases: [], embeddedPictures: 12, inkscape: 'alike', minChainSsim: 0.7, minRendererSsim: 0.8 },
-  { id: 'lo-sine_wave.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 646.72, height: 529.03 }, pages: 1, pagePhrases: [['10 20 30 40 50 60 70 80 90 100']], inkscape: 'none' },
-  { id: 'tika-testemf.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 154.91, height: 95.98 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
-  { id: 'lo-testroundrect.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 90.23, height: 66.15 }, pages: 1, pagePhrases: [], inkscape: 'alike' },
-  { id: 'lo-visio_import_source.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 255.2, height: 106.45 }, pages: 1, pagePhrases: [['dgps rsxx2', 'each input output has individual dcdc converter']], inkscape: 'alike' },
+  { id: 'lo-computer_mail.emf', extension: 'emf', targets: EMF_TARGETS, pageSize: { width: 68.28, height: 71.26 }, pages: 1, pagePhrases: [], embeddedPictures: 12, inkscape: 'alike', minChainSsim: 0.7, minRendererSsim: 0.8 },
+  { id: 'lo-sine_wave.emf', extension: 'emf', targets: EMF_TARGETS, pageSize: { width: 646.72, height: 529.03 }, pages: 1, pagePhrases: [['10 20 30 40 50 60 70 80 90 100']], inkscape: 'none' },
+  { id: 'tika-testemf.emf', extension: 'emf', targets: EMF_TARGETS, pageSize: { width: 154.91, height: 95.98 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
+  { id: 'lo-testroundrect.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 90.23, height: 66.15 }, pages: 1, pagePhrases: [], inkscape: 'alike' },
+  { id: 'lo-visio_import_source.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 255.2, height: 106.45 }, pages: 1, pagePhrases: [['dgps rsxx2', 'each input output has individual dcdc converter']], inkscape: 'alike' },
   { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
-  { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
-  { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
+  { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
+  { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
   // The file's axis labels share one spot on the page, so the text check below reads the characters, not the order an
   // extractor lists them in. The office suite's CGM import (24.2 and 26.8 alike) places a label of vertical alignment HALF at
   // its x coordinate in y (filter/source/graphicfilter/icgm/actimpr.cxx, `DrawText`, `case TAV_HALF`), so the seven y-axis
   // labels, which share one x, share one y; set to TOP in a copy of the file they land 59.5 pt apart (policy 99).
-  { id: 'tika-plotutils-bin-cgm-v3.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
+  { id: 'tika-plotutils-bin-cgm-v3.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -517,10 +524,15 @@ const COLUMN_SPOTS: ReadonlyArray<readonly [number, number]> = [
 // Tests
 // ---------------------------------------------------------------------------
 
+/** The targets of a sample that this file converts page by page: the DXF is read by the readers below and the rasters of an EMF by tests/vector-pairs.test.ts. */
+function pageTargetsOf(sample: SampleCase): string[] {
+  return sample.targets.filter((target) => target !== 'dxf' && !(EMF_RASTER_TARGETS as readonly string[]).includes(target));
+}
+
 describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', () => {
   for (const sample of SAMPLES) {
     it(
-      `${sample.id}: converts to ${sample.targets.filter((target) => target !== 'dxf').join(', ')} and every output shows the drawing`,
+      `${sample.id}: converts to ${pageTargetsOf(sample).join(', ')} and every output shows the drawing`,
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, sample.id);
         const label = (target: string): string => `${sample.id} -> ${target}`;
@@ -541,7 +553,7 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
         const pdfPage = firstPageOfPdf(pdf, dpi);
 
         let pngPages: Buffer[] = [];
-        for (const target of sample.targets.filter((candidate) => candidate !== 'pdf' && candidate !== 'dxf')) {
+        for (const target of pageTargetsOf(sample).filter((candidate) => candidate !== 'pdf')) {
           const result = await dispatchConversion(bytes, sample.extension, target, {}, sample.id);
           const outputs = await pagesOf(result.buffer);
           if (target !== 'ps') expect(outputs.length, `${label(target)} pages`).toBe(pages.count);
@@ -710,6 +722,47 @@ describe.skipIf(toolsMissing || inkscapeMissing)('real files against Inkscape', 
       CONVERSION_TIMEOUT_MS
     );
   }
+});
+
+describe.skipIf(toolsMissing)('the DXF of a drawing, drawn again by the office suite', () => {
+  for (const sample of SAMPLES.filter((candidate) => candidate.targets.includes('dxf'))) {
+    it(
+      `${sample.id}: the office suite opens the DXF and draws the shapes of the page, and a picture is left out with a warning`,
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, sample.id);
+        const result = await dispatchConversion(bytes, sample.extension, 'dxf', {}, sample.id);
+        const outputs = await pagesOf(result.buffer);
+        expect(outputs.length, `${sample.id} pages`).toBe(sample.pages);
+        const lines = outputs[0].toString('utf-8').trimEnd().split(/\r?\n/);
+        expect(lines.slice(0, 2).map((line) => line.trim())).toEqual(['0', 'SECTION']);
+        expect(lines.slice(-2).map((line) => line.trim())).toEqual(['0', 'EOF']);
+        const warnings = (result.metadata as { warnings?: string[] } | undefined)?.warnings ?? [];
+        expect({ id: sample.id, pictureWarning: warnings.some((warning) => /pictures of page/.test(warning)) }).toEqual({ id: sample.id, pictureWarning: sample.embeddedPictures !== undefined });
+        const redrawn = sofficeConvert(outputs[0], 'out.dxf', 'pdf', (output) => output.read());
+        const ink = await inkBoxOfPdf(redrawn);
+        expect(ink.maxX, `${sample.id} the office suite draws something from the DXF`).toBeGreaterThan(ink.minX);
+      },
+      CONVERSION_TIMEOUT_MS
+    );
+  }
+});
+
+describe.skipIf(toolsMissing)('a WMF file that is a picture and nothing else, written as DXF', () => {
+  it(
+    'tika-testwmf.wmf: the picture is left out with a warning when the page holds a rectangle too, and a page of only a picture is refused with its reason',
+    async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, 'tika-testwmf.wmf');
+      const outcome = await dispatchConversion(bytes, 'wmf', 'dxf', {}, 'tika-testwmf.wmf').catch((error: unknown) => error);
+      if (outcome instanceof Error) {
+        expect(outcome).toBeInstanceOf(ConversionFailedError);
+        expect(outcome.message).toBe('The page draws no vector geometry, so there is nothing to write as DXF.');
+      } else {
+        const warnings = (outcome.metadata as { warnings?: string[] } | undefined)?.warnings ?? [];
+        expect(warnings.some((warning) => /pictures of page/.test(warning))).toBe(true);
+      }
+    },
+    CONVERSION_TIMEOUT_MS
+  );
 });
 
 describe.skipIf(toolsMissing || ezdxfMissing)('the DXF of a Visio drawing against ezdxf', () => {
