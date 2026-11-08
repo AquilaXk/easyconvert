@@ -16,14 +16,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 38
-  },
-  {
-    "file": "src/app/api/v1/convert/route.ts",
-    "rule": "complexity",
-    "function": "POST",
-    "count": 1,
-    "maxValue": 32
+    "maxValue": 37
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -36,7 +29,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 164
+    "maxValue": 162
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -50,7 +43,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 476
+    "maxValue": 466
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -95,7 +88,7 @@
     "rule": "complexity",
     "function": "dispatch",
     "count": 1,
-    "maxValue": 34
+    "maxValue": 32
   },
   {
     "file": "src/lib/api-keys/webhook-dispatcher.ts",
