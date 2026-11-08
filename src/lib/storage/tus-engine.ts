@@ -12,6 +12,7 @@ import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
 import { multipartUploadKey } from './key-namespace';
+import { registerCompletedUpload } from './retention-service';
 import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
 
 export class TusOffsetMismatchError extends Error {
@@ -46,6 +47,14 @@ export class TusUploadExceededLengthError extends Error {
   constructor(exceededBytes: number, uploadLength: number) {
     super(`Uploaded bytes (${exceededBytes}) exceed declared Upload-Length (${uploadLength})`);
     this.name = 'TusUploadExceededLengthError';
+  }
+}
+
+/** The completed upload was stored but its record could not be written, so it was removed again and the client has to send it again. */
+export class TusUploadNotRecordedError extends Error {
+  constructor(cause: unknown) {
+    super('The upload could not be recorded, so it cannot be converted. Upload the file again.', { cause });
+    this.name = 'TusUploadNotRecordedError';
   }
 }
 
@@ -336,6 +345,16 @@ function rollbackChunk(binPath: string, clientOffset: number): void {
 /** Remaining lifetime of a finished upload's object, but never less than an hour. */
 function objectTtlSeconds(session: TusSession): number {
   return Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000));
+}
+
+/** Records the completed upload under `key` (`registerCompletedUpload`); a record that cannot be written removes the object again. */
+async function recordTusUpload(key: string): Promise<void> {
+  try {
+    await registerCompletedUpload(storageProvider, key);
+  } catch (error) {
+    console.error('[tus] Could not record a completed upload, which was removed:', error);
+    throw new TusUploadNotRecordedError(error);
+  }
 }
 
 async function finalizeTusSession(session: TusSession, binPath: string): Promise<void> {
@@ -635,6 +654,7 @@ export class TusEngine {
 
         try {
           await finalizeTusSession(session, binPath);
+          await recordTusUpload(session.key);
         } catch (err) {
           // The object store did not take the upload: rewind the last chunk so the client can resend it.
           session.completed = false;

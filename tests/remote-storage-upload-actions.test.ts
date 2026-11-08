@@ -144,6 +144,34 @@ describe('/api/v1/uploads multipart actions bind a session to its declared size'
     expect(server.objects.get(init.key)?.body.equals(PDF)).toBe(true);
   });
 
+  it('records the completed upload of an account, so that a download does not register it as a one-time result', async () => {
+    const { cookie } = await loadUser('recorded');
+    const { getRetentionLedger } = await import('../src/lib/storage/retention-ledger');
+    const init = await (await initiate(cookie, { filename: 'doc.pdf', mimeType: 'application/pdf', totalSize: PDF.length })).json();
+    const put = await fetch(init.presignedUrls[0].url, { method: 'PUT', body: PDF });
+    expect(await getRetentionLedger().get(init.key)).toBeUndefined();
+
+    const res = await action(cookie, 'complete', { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: put.headers.get('etag') }] });
+
+    expect(res.status).toBe(HTTP_OK);
+    expect(await getRetentionLedger().get(init.key)).toMatchObject({ key: init.key, kind: 'account-upload' });
+    await getRetentionLedger().forget(init.key);
+  });
+
+  it('deletes an assembled upload whose bytes are not the format its name declares, as the local store and the direct route do', async () => {
+    const { cookie } = await loadUser('spoofed');
+    const { getRetentionLedger } = await import('../src/lib/storage/retention-ledger');
+    const notAPdf = Buffer.from('MZ\u0090\u0000 this is a program, not a document '.repeat(4), 'latin1');
+    const init = await (await initiate(cookie, { filename: 'doc.pdf', mimeType: 'application/pdf', totalSize: notAPdf.length })).json();
+    const put = await fetch(init.presignedUrls[0].url, { method: 'PUT', body: notAPdf });
+
+    const res = await action(cookie, 'complete', { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: put.headers.get('etag') }] });
+
+    expect(res.status).toBe(422);
+    expect(server.objects.has(init.key)).toBe(false);
+    expect(await getRetentionLedger().get(init.key)).toBeUndefined();
+  });
+
   it('answers a complete that names a different key than the session with a 400', async () => {
     const { cookie, user } = await loadUser('wrongkey');
     const init = await (await initiate(cookie, { filename: 'doc.pdf', totalSize: PDF.length })).json();

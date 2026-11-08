@@ -8,6 +8,7 @@ import type { IStorageBackend, UploadSessionInfo } from '@/lib/storage/oci-stora
 import { stripEtagQuotes } from '@/lib/storage/etag';
 import { isUploadKey } from '@/lib/storage/key-namespace';
 import { validateApiAccess, authErrorHeaders, getQuotaUsage } from '@/lib/api-keys/guard';
+import { UNRECORDED_UPLOAD_DETAIL } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { isNoSuchUploadError, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
@@ -42,7 +43,6 @@ const ANONYMOUS_PRESIGN_REFUSED =
 
 /** The detail of a failure the caller may not send again; the error itself, which can name a host or a path, stays in the log. */
 const FAILURE_DETAIL = 'Storage operation error';
-const UNRECORDED_UPLOAD_DETAIL = 'The upload could not be recorded, so it cannot be converted. Upload the file again.';
 
 const PRESIGN_UNSUPPORTED = 'Storage provider does not support presigned URLs or invalid type specified.';
 const RETAINED_DOWNLOAD_PRESIGN_REFUSED =

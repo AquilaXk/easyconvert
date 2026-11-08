@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
+import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { storageProvider } from '@/lib/storage';
@@ -174,6 +175,9 @@ export async function POST(req: NextRequest) {
       'Unprocessable Entity'
     );
   }
+
+  const unrecorded = await recordCompletedUpload(storageProvider, completedObject.key, instanceUri);
+  if (unrecorded) return unrecorded;
 
   return NextResponse.json(
     {
