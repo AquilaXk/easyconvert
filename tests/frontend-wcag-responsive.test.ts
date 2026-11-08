@@ -571,11 +571,12 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     });
     const preCodeText = visibleText(select(keysPanelDom, 'pre')[0]);
     expect(preCodeText).toContain('Authorization: Bearer $EASYCONVERT_API_KEY');
-    expect(preCodeText).toContain('https://api.easyconvert.com/api/v1/convert');
+    expect(preCodeText).toContain('/api/v1/convert');
+    expect(preCodeText).not.toContain('api.easyconvert.com');
     expect(preCodeText).not.toContain('ec_live_ab12...');
     expect(preCodeText).not.toContain('easyconvert.app');
 
-    const guideDom = render(IntegrationGuide, { sampleKeyDisplay: '$EASYCONVERT_API_KEY' });
+    const guideDom = render(IntegrationGuide, { sampleKeyDisplay: '$EASYCONVERT_API_KEY', apiOrigin: 'https://convert.example.org' });
     const guideTablist = allElements(guideDom).filter((el) => attrOf(el, 'role') === 'tablist');
     expect(guideTablist).toHaveLength(1);
     expect(attrOf(guideTablist[0], 'aria-label')).toBe('SDK language');

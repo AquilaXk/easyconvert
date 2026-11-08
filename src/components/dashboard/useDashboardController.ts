@@ -213,7 +213,7 @@ export function useApiKeysController(
     onCopy: copyToClipboard,
   };
 
-  return { state, actions, copyToClipboard };
+  return { state, actions, copyToClipboard, refresh: fetchKeysAndQuota };
 }
 
 export function useDashboardController() {
@@ -264,8 +264,41 @@ export function useDashboardController() {
   const keys = useApiKeysController(Boolean(user), reportError);
   const filesAndDlq = useFilesAndDlqController(Boolean(user), reportError);
 
+  // A conversion made through the API changes the usage, the files and the failed webhooks without this page knowing,
+  // so a tab reads its data again when it opens, and the summary and the badges when the person comes back to the page.
+  const readers: Record<DashboardTab, () => Promise<void>> = {
+    api: keys.refresh,
+    usage: keys.refresh,
+    files: filesAndDlq.fetchUserFiles,
+    dlq: filesAndDlq.fetchDlqEntries,
+  };
+  const readersRef = useRef({ ...readers, all: [keys.refresh, filesAndDlq.fetchUserFiles, filesAndDlq.fetchDlqEntries] });
+  readersRef.current = { ...readers, all: [keys.refresh, filesAndDlq.fetchUserFiles, filesAndDlq.fetchDlqEntries] };
+
+  const enabled = Boolean(user);
+  useEffect(() => {
+    if (!enabled) return;
+    const refreshAll = () => {
+      if (document.visibilityState === 'hidden') return;
+      for (const read of readersRef.current.all) void read();
+    };
+    window.addEventListener('focus', refreshAll);
+    document.addEventListener('visibilitychange', refreshAll);
+    return () => {
+      window.removeEventListener('focus', refreshAll);
+      document.removeEventListener('visibilitychange', refreshAll);
+    };
+  }, [enabled]);
+
+  const selectTab = (tab: DashboardTab) => {
+    clearActionError();
+    filesAndDlq.setInspectingDlq(null);
+    setActiveTab(tab);
+    void readersRef.current[tab]();
+  };
+
   return {
-    user, loading, activeTab, setActiveTab, actionError, clearActionError,
+    user, loading, activeTab, selectTab, actionError, clearActionError,
     handleLogout, keys, filesAndDlq,
   };
 }

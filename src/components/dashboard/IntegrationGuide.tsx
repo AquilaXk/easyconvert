@@ -17,21 +17,13 @@ const TAB_LABELS: Record<SnippetLanguage, string> = {
 
 interface IntegrationGuideProps {
   sampleKeyDisplay: string;
+  apiOrigin: string;
 }
 
-export function IntegrationGuide({ sampleKeyDisplay }: Readonly<IntegrationGuideProps>) {
-  const t = useTranslations('dashboard.guide');
-  const [codeTab, setCodeTab] = useState<SnippetLanguage>('curl');
-  const { copiedKey, copyText } = useCopyFeedback(2000);
-  const copiedSnippet = copiedKey === 'snippet';
-  const tabRefs = useRef<Record<SnippetLanguage, HTMLButtonElement | null>>({
-    curl: null,
-    node: null,
-    python: null,
-  });
-
-  const codeSnippets: Record<SnippetLanguage, string> = {
-    curl: String.raw`curl -X POST "https://api.easyconvert.com/api/v1/convert" \
+/** The code samples of the guide: each posts a file to the conversion route of `origin`, the site that serves this page. */
+export function integrationSnippets(origin: string, sampleKeyDisplay: string): Record<SnippetLanguage, string> {
+  return {
+    curl: String.raw`curl -X POST "${origin}/api/v1/convert" \
   -H "Authorization: Bearer ${sampleKeyDisplay}" \
   -F "file=@document.docx" \
   -F "targetFormat=pdf"`,
@@ -41,7 +33,7 @@ const formData = new FormData();
 formData.append('file', new Blob([fs.readFileSync('document.docx')]), 'document.docx');
 formData.append('targetFormat', 'pdf');
 
-const res = await fetch('https://api.easyconvert.com/api/v1/convert', {
+const res = await fetch('${origin}/api/v1/convert', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer ${sampleKeyDisplay}',
@@ -53,7 +45,7 @@ const result = await res.json();
 console.log(result);`,
     python: `import requests
 
-url = "https://api.easyconvert.com/api/v1/convert"
+url = "${origin}/api/v1/convert"
 headers = {"Authorization": "Bearer ${sampleKeyDisplay}"}
 with open("document.docx", "rb") as source_file:
     response = requests.post(
@@ -65,6 +57,20 @@ with open("document.docx", "rb") as source_file:
     )
 print(response.json())`,
   };
+}
+
+export function IntegrationGuide({ sampleKeyDisplay, apiOrigin }: Readonly<IntegrationGuideProps>) {
+  const t = useTranslations('dashboard.guide');
+  const [codeTab, setCodeTab] = useState<SnippetLanguage>('curl');
+  const { copiedKey, copyText } = useCopyFeedback(2000);
+  const copiedSnippet = copiedKey === 'snippet';
+  const tabRefs = useRef<Record<SnippetLanguage, HTMLButtonElement | null>>({
+    curl: null,
+    node: null,
+    python: null,
+  });
+
+  const codeSnippets = integrationSnippets(apiOrigin, sampleKeyDisplay);
 
   const handleCopySnippet = () => {
     void copyText(codeSnippets[codeTab], 'snippet');

@@ -83,7 +83,7 @@ export function AccountQuotaPanel({ user, quota, apiKeys }: Readonly<AccountQuot
             <p className="mt-1 text-xs text-ink-2">
               {quota?.resetAt
                 ? t('nextReset', {
-                    date: format.dateTime(new Date(quota.resetAt), { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }),
+                    date: format.dateTime(new Date(quota.resetAt), { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }),
                   })
                 : t('resetDaily')}
             </p>

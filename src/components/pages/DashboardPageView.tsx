@@ -19,7 +19,7 @@ export default function DashboardPageView() {
     user,
     loading,
     activeTab,
-    setActiveTab,
+    selectTab,
     actionError,
     clearActionError,
     handleLogout,
@@ -60,11 +60,7 @@ export default function DashboardPageView() {
               activeTab={activeTab}
               filesCount={filesAndDlq.userFiles.length}
               dlqCount={filesAndDlq.dlqEntries.length}
-              onSelectTab={(tab) => {
-                clearActionError();
-                filesAndDlq.setInspectingDlq(null);
-                setActiveTab(tab);
-              }}
+              onSelectTab={selectTab}
               onLogout={() => {
                 void handleLogout();
               }}
