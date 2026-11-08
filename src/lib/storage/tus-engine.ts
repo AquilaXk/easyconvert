@@ -11,6 +11,7 @@ import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
 import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
+import { StorageServiceError } from './adapters/adapter-interface';
 import { multipartUploadKey } from './key-namespace';
 import { registerCompletedUpload } from './retention-service';
 import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
@@ -50,10 +51,13 @@ export class TusUploadExceededLengthError extends Error {
   }
 }
 
-/** The completed upload was stored but its record could not be written, so it was removed again and the client has to send it again. */
-export class TusUploadNotRecordedError extends Error {
+/**
+ * The completed upload was stored but its record could not be written, so it was removed again. A store the upload needs is
+ * unavailable for now: the routes answer it as a storage error (503 with `Retry-After`), and the last chunk may be sent again.
+ */
+export class TusUploadNotRecordedError extends StorageServiceError {
   constructor(cause: unknown) {
-    super('The upload could not be recorded, so it cannot be converted. Upload the file again.', { cause });
+    super('The upload could not be recorded.', 'retention', { retryable: true }, cause);
     this.name = 'TusUploadNotRecordedError';
   }
 }

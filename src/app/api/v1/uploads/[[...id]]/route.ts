@@ -19,7 +19,6 @@ import {
   TusInvalidChecksumHeaderError,
   TusUnsupportedChecksumAlgorithmError,
   TusUploadExceededLengthError,
-  TusUploadNotRecordedError,
   TusNotFoundError,
   TusInvalidMetadataError,
 } from '@/lib/storage/tus-engine';
@@ -585,11 +584,6 @@ export const POST = admittingNewFiles(async function POST(
             'Tus-Resumable': TUS_RESUMABLE_VERSION,
           });
         }
-        if (err instanceof TusUploadNotRecordedError) {
-          return createProblemDetailsResponse(500, err.message, instanceUri, undefined, undefined, {
-            'Tus-Resumable': TUS_RESUMABLE_VERSION,
-          });
-        }
         if (err instanceof UnknownDeclaredFormatError) {
           return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, {
             'Tus-Resumable': TUS_RESUMABLE_VERSION,
@@ -800,11 +794,6 @@ export async function PATCH(
     }
     if (err instanceof TusUploadExceededLengthError) {
       return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
-        'Tus-Resumable': TUS_RESUMABLE_VERSION,
-      });
-    }
-    if (err instanceof TusUploadNotRecordedError) {
-      return createProblemDetailsResponse(500, err.message, instanceUri, undefined, undefined, {
         'Tus-Resumable': TUS_RESUMABLE_VERSION,
       });
     }

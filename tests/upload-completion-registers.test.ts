@@ -180,7 +180,7 @@ describe('an upload whose record cannot be written', () => {
     expect(JSON.stringify(body)).not.toContain('unreachable');
   });
 
-  it('is removed and refused with a 500 when the last tus chunk completes it, and the client may send that chunk again', async () => {
+  it('is removed and refused with a 503 when the last tus chunk completes it, and the client may send that chunk again', async () => {
     const user = await createUser('tus-unrecorded');
     const created = await tusPost(
       new NextRequest(`${BASE_URL}/api/v1/uploads/tus`, {
@@ -205,7 +205,8 @@ describe('an upload whose record cannot be written', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const refused = await patch();
-    expect(refused.status).toBe(500);
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get('retry-after')).not.toBeNull();
     expect(JSON.stringify(await refused.json())).not.toContain('unreachable');
 
     restoreIsolatedRetentionLedger();
