@@ -55,7 +55,7 @@ import { readCfbContainer } from './office/cfb-streams';
 import { withoutElements } from './office/xml-without';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
-import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
+import { decodeXmlBytes, openOpcPackage, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { EPUB_MAX_CHAPTER_BYTES, EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
 import { readDocxModel } from './docx-model';
 import { documentToEpub } from './document-model/epub';
@@ -5179,7 +5179,7 @@ async function readSharedStrings(zip: JSZip, budget?: InflateBudget): Promise<st
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
   const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
     ? (zipOrBuffer as JSZip)
-    : await openPackage(zipOrBuffer as Buffer | Uint8Array, 'XLSX');
+    : await openOpcPackage(zipOrBuffer as Buffer | Uint8Array, 'XLSX');
 
   const partOptions = { budget: new InflateBudget(), relationships: newRelationshipAllowance() };
 
@@ -5556,7 +5556,7 @@ async function convertXlsxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await openPackage(inputBuffer, 'XLSX');
+  const zip = await openOpcPackage(inputBuffer, 'XLSX');
   const rawSheets = await parseAllXlsxWorksheets(zip);
 
   // 1. Slicing by print area if range: 'printArea'
@@ -9027,7 +9027,7 @@ async function extractRowsForOffice(
 ): Promise<string[][]> {
   if (src === 'xlsx') {
     // A workbook that cannot be read is refused: re-reading its ZIP bytes as CSV text would answer with junk rows.
-    const zip = await openPackage(inputBuffer, 'XLSX');
+    const zip = await openOpcPackage(inputBuffer, 'XLSX');
     const allSheets = await parseAllXlsxWorksheets(zip);
     if (allSheets.length === 1) return allSheets[0].rows;
     const merged: string[][] = [];
@@ -9059,7 +9059,7 @@ export async function extractAllSheetsForOffice(
   options: ConversionOptions = {}
 ): Promise<OfficeWorksheet[]> {
   if (src === 'xlsx') {
-    const zip = await openPackage(inputBuffer, 'XLSX');
+    const zip = await openOpcPackage(inputBuffer, 'XLSX');
     return parseAllXlsxWorksheets(zip);
   }
   const rows = await extractRowsForOffice(inputBuffer, src, options);

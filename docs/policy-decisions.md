@@ -185,6 +185,7 @@ Delivery
 144. [A convert route logs one line for each refusal and failure, names every download in the `filename*` form, and a conversion sent in one request shows as converting with no share](#144-a-convert-route-logs-one-line-for-each-refusal-and-failure-names-every-download-in-the-filename-form-and-a-conversion-sent-in-one-request-shows-as-converting-with-no-share)
 186. [Redis is backed up every 6 hours to the host's data volume for 7 days, an account is erased within 2 days, and the status of the service is the Uptime workflow's public run history](#186-redis-is-backed-up-every-6-hours-to-the-hosts-data-volume-for-7-days-an-account-is-erased-within-2-days-and-the-status-of-the-service-is-the-uptime-workflows-public-run-history)
 190. [QA 2026-11-08: one-maintainer workflow](#190-qa-2026-11-08-one-maintainer-workflow)
+192. [An OpenXML workbook that holds one part name twice is refused as a typed error, and the empty files the real-world corpus expects are marked](#192-an-openxml-workbook-that-holds-one-part-name-twice-is-refused-as-a-typed-error-and-the-empty-files-the-real-world-corpus-expects-are-marked)
 
 Quality evidence
 
@@ -403,7 +404,7 @@ Security
   - Macros never affect a static render, and removing them takes untrusted code out of the renderer's reach.
 - **Trade-offs**: none for rendered output. Macro-to-macro conversions do not exist.
 - **Alternatives rejected**: failing empty inputs, which breaks batch jobs.
-- **Verified by**: the office output-check tests, and the real-world corpus gate, which accepts a zero-byte output only for the 39 corpus files that the manifest marks `emptyInput` (six Office and HTML files, 31 legacy Excel workbooks without a cell value, see entry 71, and two PDF pages with no text and no picture, see entry 49), each with the reason read from the file by a tool other than the converter, and never because the conversion declared `emptyOutput` (it does so for any blank text result) (`tests/realworld-corpus.test.ts`).
+- **Verified by**: the office output-check tests, and the real-world corpus gate, which accepts a zero-byte output only for the 41 corpus files that the manifest marks `emptyInput` (eight Office and HTML files, 31 legacy Excel workbooks without a cell value, see entry 71, and two PDF pages with no text and no picture, see entry 49), each with the reason read from the file by a tool other than the converter, and never because the conversion declared `emptyOutput` (it does so for any blank text result) (`tests/realworld-corpus.test.ts`).
 - **Revisit when**: a format is added whose macros change the rendered result.
 
 ## 9. Conversion warnings
@@ -6704,6 +6705,18 @@ Security
 - **Verified by**: `tests/subtitle-pairs.test.ts` (the eleven pairs on five authored files, each output read back and compared with the source; 11 real files of the real-world corpus (`bench/realworld/manifest.json`: FFmpeg's test suite, libass and Popcorn.js) converted to every target and compared cue for cue, and seven more that other tools wrote malformed or with times before zero, converted without a crash or an empty cue; UTF-8 with a byte order mark, UTF-16 in both byte orders, a Korean legacy code page; the refusals (a picture, a MicroDVD, WebVTT and SubRip file under another name, VobSub, binary after a good head, no cue, over the size limit, invalid UTF-16, no FFmpeg); the repairs; a file of 12,000 cues), `tests/registry-engine-conformance.test.ts` (the pairs are native-engine pairs: an unavailable engine without FFmpeg, a file with it), `tests/refusal-code-inventory.test.ts` (`InvalidSubtitleInputError` answers `malformed_input`), `tests/corpus-format-coverage.test.ts` (every format has three real samples), and the 44 rows of the video family on the Lima VM.
 - **Revisit when**: a subtitle format beyond these five is asked for (the text and structure checks take another format), a reader of SubStation Alpha styles is wanted for real ASS output (`ssa` to `ass`, styled SubRip), FFmpeg writes SubRip, WebVTT and ASS without the faults repaired here (each repair has a test that names it), or a QA decision gives subtitles a category of their own.
 
+
+## 192. An OpenXML workbook that holds one part name twice is refused as a typed error, and the empty files the real-world corpus expects are marked
+
+- **Status**: Implemented (QA 2026-11-08, TODO item "empty or wrong-format output").
+- **Decision**:
+  - **A workbook (XLSX, XLSM) whose ZIP holds one part name twice is a typed 400 error to CSV, TSV and every other target** (`openOpcPackage`): "The XLSX package holds the part … more than once, so it has no single content to read." The ZIP reader kept the last of the two entries and the cells of the first were dropped, so `duplicate-filename.xlsx` of the Apache POI test data (a sheet part twice, `v1` as a shared string and `v2` as an inline string with no `<is>`) was returned as an empty file, a success with an `emptyOutput` warning, for a workbook that does hold a cell.
+  - **The other pairs of the TODO item were checked on the real files and stay as entry 8 has them.** All 450 saved pages of the govdocs1 sample to TXT and Markdown, the 352 XLSX and 14 XLSM workbooks to CSV and TSV and the 4 DOTX templates to TXT of the real-world corpus give either text, an empty file with the `emptyOutput` warning for an input with nothing to write, or a typed refusal. The empty files not yet marked in the corpus manifest were two frameset-only pages, `govdocs1-001422.html` and `govdocs1-001781.html` (the same three frames as `govdocs1-001421.html`, which was marked); both now carry `emptyInput` with the reason. A workbook of CSV and TSV is written with every sheet, each under a `### Sheet:` line, so an empty first sheet does not hide a later one.
+- **Why**: a package that names a part twice is not valid under OPC (ECMA-376 Part 2, 10.1.2.1), and which of the two a reader sees is the reader's accident; the Apache POI reader refuses such a file for the same reason. A refusal tells the sender the file is broken, where an empty CSV says the sheet is.
+- **Trade-offs**: a workbook that Excel opens (it takes one of the entries) is refused here. Only XLSX and XLSM use the check; the other packages (DOCX, PPTX, ODF, EPUB, CBZ) read as before.
+- **Alternatives rejected**: reading the first entry instead of the last (equally arbitrary); checking every package kind (a comic archive with a repeated page name is a file people have, and the page order is the order of the entries).
+- **Verified by**: `tests/empty-output-pairs.test.ts` (HTML, XLSX, XLSM and DOTX to the text targets: empty with a warning, content written, a duplicated part refused), `tests/conversion-output-check.test.ts`, and the 450 pages, 366 workbooks and 4 templates of the corpus converted before and after (the only change is `duplicate-filename.xlsx`).
+- **Revisit when**: a real workbook that Excel opens carries a repeated part name, or the other OOXML readers are found to read one wrongly.
 
 ## 190. QA 2026-11-08: one-maintainer workflow
 

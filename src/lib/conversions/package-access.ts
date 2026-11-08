@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { readZipDirectory } from './archive-zip-reader';
 import { readZipEntryBytes } from './zip-entry-reader';
 import type { InflateBudget } from './bounded-inflate';
 import { ConversionFailedError, PayloadLimitError } from '../types';
@@ -47,6 +48,21 @@ export async function openPackage(input: Buffer | Uint8Array, format: string, pa
   } catch {
     throw new ConversionFailedError(`The ${format} file is not a valid ${packageKind}.`);
   }
+}
+
+/**
+ * Opens an Open Packaging Conventions package, which names every part once (ECMA-376 Part 2, 10.1.2.1). A package that
+ * holds a part name twice has no single part to read: the ZIP reader keeps the last entry and drops the first, so
+ * the cells or text it reads are the ones of whichever the writer put last. That is a typed 400 error.
+ */
+export async function openOpcPackage(input: Buffer | Uint8Array, format: string): Promise<JSZip> {
+  const zip = await openPackage(input, format);
+  const names = new Set<string>();
+  for (const entry of readZipDirectory(Buffer.from(input.buffer, input.byteOffset, input.byteLength), { MAX_FILES: Number.MAX_SAFE_INTEGER }).entries) {
+    if (names.has(entry.name)) throw new ConversionFailedError(`The ${format} package holds the part ${entry.name} more than once, so it has no single content to read.`);
+    names.add(entry.name);
+  }
+  return zip;
 }
 
 /**
