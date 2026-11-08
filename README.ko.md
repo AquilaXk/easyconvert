@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 변환 플랫폼입니다. **12개 카테고리**, **307개 포맷**, **2,720개 변환 쌍**에 대해 결정론적인 파일 변환을 수행합니다.
+EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 변환 플랫폼입니다. **12개 카테고리**, **307개 포맷**, **2,753개 변환 쌍**에 대해 결정론적인 파일 변환을 수행합니다.
 
 인메모리 TypeScript 바이너리 엔진, 샌드박스 격리 네이티브 도구, Lua 스크립트 기반 Redis 작업 큐, S3 및 OCI 멀티파트 오브젝트 스토리지를 결합하여 손상되거나 위조된 입력은 즉시 거부(Fail-Closed)하고 파일은 정해진 일정에 따라 삭제합니다. 변환 결과는 처음 끝까지 내려받은 뒤 10분 또는 변환 1시간 뒤에 삭제하고, 업로드는 그 파일을 읽는 마지막 작업이 끝나고 10분 뒤에 삭제합니다(정책 결정 125).
 
@@ -10,7 +10,7 @@ EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 �
 
 ## 핵심 기술 하이라이트
 
-- **12개 카테고리 307개 포맷 지원**: Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, CAD & 3D 전반에 걸쳐 `2,720`개 변환 쌍을 지원합니다.
+- **12개 카테고리 307개 포맷 지원**: Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, CAD & 3D 전반에 걸쳐 `2,753`개 변환 쌍을 지원합니다.
 - **바이너리 변환 엔진**:
   - **HWP 5.0 OLE2 CFBF**: OLE2 복합 파일 바이너리 포맷 파서 및 빌더를 통해 문단과 표 구조를 추출하고 생성합니다.
   - **Cox-de Boor 곡선**: CAD 및 벡터 경로를 위한 B-스플라인 기저 함수 평가와 베지에 곡선 평탄화를 수행합니다.

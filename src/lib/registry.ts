@@ -1545,7 +1545,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/svg+xml',
     category: 'vector',
     description: 'Scalable Vector Graphics - XML-based resolution-independent 2D vector format.',
-    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg', 'emf', 'wmf', 'cgm'],
+    targetFormats: ['png', 'jpg', 'webp', 'pdf', 'dxf', 'zip', 'eot', 'otf', 'ttf', 'woff', 'woff2', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'svg', 'emf', 'wmf', 'cgm', 'ico', 'odd', 'psd'],
     optionsSchema: { dimensions: true },
   },
   ico: {
@@ -1714,7 +1714,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/illustrator',
     category: 'image',
     description: 'Adobe Illustrator vector graphics project format.',
-    targetFormats: ['pdf', 'png', 'jpg', 'zip', 'eps', 'ps'],
+    targetFormats: ['pdf', 'png', 'jpg', 'zip', 'eps', 'ps', 'svg', 'dxf'],
   },
   eps: {
     id: 'eps',
@@ -1723,7 +1723,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/postscript',
     category: 'image',
     description: 'PostScript vector file format commonly used in commercial print houses.',
-    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp'],
+    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp', 'ico', 'odd', 'psd'],
   },
   tga: {
     id: 'tga',
@@ -2135,7 +2135,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/vnd.dwg',
     category: 'cad',
     description: 'Autodesk AutoCAD binary 2D and 3D computer-aided design format.',
-    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'jpg'],
+    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'jpg', 'bmp', 'gif', 'tiff', 'eps'],
   },
   dxf: {
     id: 'dxf',
@@ -2144,7 +2144,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/vnd.dxf',
     category: 'cad',
     description: 'AutoCAD ASCII vector drawing interchange format.',
-    targetFormats: ['pdf', 'svg', 'png', 'zip', 'jpg'],
+    targetFormats: ['pdf', 'svg', 'png', 'zip', 'jpg', 'bmp', 'gif', 'tiff', 'eps'],
   },
   step: {
     id: 'step',
@@ -2584,7 +2584,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/vnd.corel-draw',
     category: 'vector',
     description: 'CorelDRAW proprietary vector illustration and design file format.',
-    targetFormats: ['pdf', 'eps', 'png', 'ps', 'svg'],
+    targetFormats: ['pdf', 'eps', 'png', 'ps', 'svg', 'dxf'],
     optionsSchema: {dimensions:true,quality:true},
   },
   cgm: {
@@ -2594,7 +2594,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/cgm',
     category: 'vector',
     description: 'ISO standard 2D vector and raster graphics interchange format.',
-    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg'],
+    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'dxf'],
     optionsSchema: {dimensions:true},
     available: true,
   },
@@ -2615,7 +2615,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/emf',
     category: 'vector',
     description: '32-bit Windows GDI vector graphic metafile format.',
-    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg'],
+    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp'],
     optionsSchema: {dimensions:true,dpi:true},
     available: true,
   },
@@ -2626,7 +2626,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/postscript',
     category: 'vector',
     description: 'Adobe PostScript page description language vector format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'ico', 'odd', 'psd'],
     optionsSchema: {pages:true,dpi:true},
   },
   sk: {
@@ -2656,7 +2656,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/svg+xml-compressed',
     category: 'vector',
     description: 'Gzip compressed Scalable Vector Graphics document.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'emf', 'wmf'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'emf', 'wmf', 'ico', 'odd', 'psd'],
     optionsSchema: {dimensions:true,quality:true},
   },
   vsd: {
@@ -2676,7 +2676,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/wmf',
     category: 'vector',
     description: '16-bit Windows GDI vector and bitmap graphic metafile.',
-    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg'],
+    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'dxf'],
     optionsSchema: {dimensions:true},
     available: true,
   },

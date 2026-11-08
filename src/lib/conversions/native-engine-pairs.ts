@@ -8,8 +8,10 @@ import { isCalibreEbookTarget } from './calibre-ebook-targets';
  * these pairs fail with EngineUnavailableError instead of falling back to the in-process engine.
  */
 const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
+  // An Illustrator file is a PDF (or a PostScript program) that Poppler draws as SVG and the DXF writer reads.
+  'ai->dxf', 'ai->svg',
   'doc->jpg', 'doc->png', 'doc->rtf',
-  'eps->avif', 'eps->bmp', 'eps->dxf', 'eps->eps', 'eps->gif', 'eps->jpg', 'eps->pdf', 'eps->png', 'eps->ps', 'eps->svg', 'eps->tiff', 'eps->webp',
+  'eps->avif', 'eps->bmp', 'eps->dxf', 'eps->eps', 'eps->gif', 'eps->ico', 'eps->jpg', 'eps->odd', 'eps->pdf', 'eps->png', 'eps->ps', 'eps->psd', 'eps->svg', 'eps->tiff', 'eps->webp',
   'djv->avif', 'djv->bmp', 'djv->eps', 'djv->gif', 'djv->ico', 'djv->jpg', 'djv->pdf', 'djv->png', 'djv->ps', 'djv->psd', 'djv->svg', 'djv->tiff', 'djv->webp',
   'djvu->avif', 'djvu->bmp', 'djvu->eps', 'djvu->gif', 'djvu->ico', 'djvu->jpg', 'djvu->pdf', 'djvu->png', 'djvu->ps', 'djvu->psd', 'djvu->svg', 'djvu->tiff', 'djvu->webp',
   // A CSV table's page images: Poppler draws the pages of the PDF the in-process engine writes of it.
@@ -34,7 +36,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
   'oxps->avif', 'oxps->bmp', 'oxps->eps', 'oxps->gif', 'oxps->ico', 'oxps->jpg', 'oxps->pdf', 'oxps->png', 'oxps->ps', 'oxps->psd', 'oxps->svg', 'oxps->tiff', 'oxps->webp',
   'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ps', 'pdf->psd', 'pdf->svg', 'pdf->webp',
-  'ps->avif', 'ps->bmp', 'ps->dxf', 'ps->eps', 'ps->gif', 'ps->jpg', 'ps->pdf', 'ps->png', 'ps->ps', 'ps->svg', 'ps->tiff', 'ps->webp',
+  'ps->avif', 'ps->bmp', 'ps->dxf', 'ps->eps', 'ps->gif', 'ps->ico', 'ps->jpg', 'ps->odd', 'ps->pdf', 'ps->png', 'ps->ps', 'ps->psd', 'ps->svg', 'ps->tiff', 'ps->webp',
   'pot->jpg', 'pot->png', 'pot->ppt',
   'potx->jpg', 'potx->odp', 'potx->png', 'potx->ppt',
   'pps->eps', 'pps->md', 'pps->ppt',

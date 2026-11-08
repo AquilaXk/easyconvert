@@ -90,6 +90,14 @@
     "issue": 783
   },
   {
+    "file": "tika-testwmf.wmf",
+    "source": "wmf",
+    "target": "dxf",
+    "detail": "^ConversionFailedError: The page draws no vector geometry, so there is nothing to write as DXF\\.$",
+    "reason": "Only a picture: the file holds one bitmap record and no other shape, and LibreOffice 24.2.7 (the Lima VM and the CI runner) draws the page as that picture alone, so the DXF writer refuses a page of only a picture (entry 133); LibreOffice 26.8 also draws a page rectangle, and there the DXF is written with the picture left out and a warning (entry 129). The same file converts to every other target.",
+    "issue": 783
+  },
+  {
     "file": "office-slideshow-2100a8d44da546f97ab7795c500a58bed6cb655d.ppt",
     "detail": "^ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.$",
     "reason": "Damaged: its SlidePersistAtom refers to the persist id 131072 instead of 2 (two bytes swapped against the 9,728-byte `office-slideshow-single_coloured_page.ppt`, which converts), and no persist entry has that id. LibreOffice 24.2 and 26.8 refuse it and Apache POI HSLF 5.4.0 logs \"no core ID for reference ID 131072\" and skips the slide. The text is still read by the in-process reader (tests/ppt-persist-id-seed.test.ts).",

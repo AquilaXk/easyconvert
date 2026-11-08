@@ -144,5 +144,6 @@ The drill (`deploy/oci/redis-restore-drill.sh`) starts a throwaway Redis with th
 | Date | Where | Redis | Data | Backup | Restore (checksum check to a server that answers) | Result |
 | --- | --- | --- | --- | --- | --- | --- |
 | 2026-11-08 | the maintainer's Mac, rehearsal of the script and the steps | 8.10.2 | 55,052 keys, 3.5 MB dump | 1.8 s, of which 1 s is the poll interval | 0.42 s | all values, types and the expiry equal, also after a restart |
+| 2026-11-08 | the Linux test VM (Ubuntu 24.04 arm64), Redis built from the published 7.4.2 source (SHA-256 checked) | 7.4.2 | 50,000 sample accounts, 55,052 keys, 3.5 MB dump | 1.1 s | 0.35 s | all values, types and the expiry equal, also after a restart |
 
-The drill on the Linux test VM with Redis 7.4 (the version line of the stack) is the one that counts for the issue and is recorded here when it has run. The steps that need Docker (the `docker run` commands above) are not exercised by the drill; the first real restore, or a rehearsal on a second host, is their test. The human time of a restore is the ten steps, which is longer than the machine time by a wide margin.
+The drill on the Linux test VM with Redis 7.4.2 (the version line of the stack) is the one that counts, and it passed on 2026-11-08 (row above). The steps that need Docker (the `docker run` commands above) are not exercised by the drill; the first real restore, or a rehearsal on a second host, is their test. The human time of a restore is the ten steps, which is longer than the machine time by a wide margin.
