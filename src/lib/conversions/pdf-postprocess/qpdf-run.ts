@@ -106,7 +106,8 @@ export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir'
     return new PdfPostprocessError(`${action} failed: the document exceeds the ${QPDF_MEMORY_LIMIT_MB} MB memory limit.`);
   }
   if (error instanceof SandboxedTimeoutError) {
-    return new PdfPostprocessError(`${action} failed: it took longer than ${QPDF_RUN_TIMEOUT_MS / 1000} seconds.`);
+    // The limit of the run: the default, or the time that was left to the deadline of the job.
+    return new PdfPostprocessError(`${action} failed: it took longer than ${Math.ceil(error.timeoutMs / 1000)} seconds.`);
   }
   if (!(error instanceof SandboxedProcessError)) return error;
   const outOfRange = OUT_OF_RANGE_PATTERN.exec(error.stderr);
@@ -121,7 +122,14 @@ export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir'
   return new PdfPostprocessError(`${action} failed: qpdf could not process the document${reason}.`);
 }
 
-export interface QpdfInvocation {
+/** What stops a qpdf run: the signal of the job (cancel, takeover, deadline) and the time limit of the run. */
+export interface QpdfRunLimits {
+  signal?: AbortSignal;
+  /** `QPDF_RUN_TIMEOUT_MS` when omitted. A run that must end by the deadline of a job is given the time left to it. */
+  timeoutMs?: number;
+}
+
+export interface QpdfInvocation extends QpdfRunLimits {
   args: string[];
   /** Standard input of qpdf: an argument file (`@-`) or a password (`--password-file=-`). */
   stdin?: Buffer;
@@ -129,7 +137,6 @@ export interface QpdfInvocation {
   action: string;
   /** The working directory; defaults to the workspace directory. */
   cwd?: string;
-  signal?: AbortSignal;
   /** About how many bytes qpdf prints: nothing for a run that writes files, about the document for one that prints it. */
   expectedOutputBytes?: number;
 }
@@ -139,7 +146,7 @@ export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocati
   try {
     return await launchQpdf(workspace.qpdf, ['--warning-exit-0', ...invocation.args], {
       cwd: invocation.cwd ?? workspace.dir,
-      timeoutMs: QPDF_RUN_TIMEOUT_MS,
+      timeoutMs: invocation.timeoutMs ?? QPDF_RUN_TIMEOUT_MS,
       maxBuffer: workspace.maxOutputBytes + QPDF_STDERR_SLACK_BYTES,
       memoryLimitMb: QPDF_MEMORY_LIMIT_MB,
       networkIsolated: true,

@@ -15,7 +15,7 @@ import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { getGhostscriptBinaryPath } from './gs-path';
 import { qpdfListsPages, repairPageTree } from './page-tree';
-import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace } from './qpdf-run';
+import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfRunLimits } from './qpdf-run';
 
 /**
  * PDF compression with named profiles. The result is never larger than the input: when a profile gains nothing the
@@ -78,6 +78,22 @@ export interface PdfCompressRun {
   remainingMs?: number;
 }
 
+/** The clock of one compression: the signal of the job, and the moment its deadline falls (when it has one). */
+interface CompressClock extends PdfCompressRun {
+  deadlineAt?: number;
+}
+
+/**
+ * What the next program of the compression may use: the signal of the job and the time left to its deadline, at most the limit of a run.
+ * A program is not started once the job was stopped or its deadline passed.
+ */
+function limitsOf(clock: CompressClock): { signal: AbortSignal | undefined; timeoutMs: number } {
+  clock.signal?.throwIfAborted();
+  const left = clock.deadlineAt === undefined ? QPDF_RUN_TIMEOUT_MS : clock.deadlineAt - Date.now();
+  if (left <= 0) throw new PdfPostprocessError('Compression failed: it took longer than the time allowed.');
+  return { signal: clock.signal, timeoutMs: Math.min(QPDF_RUN_TIMEOUT_MS, left) };
+}
+
 export interface PdfCompressResult {
   buffer: Buffer;
   /** False when the profile gained nothing and `buffer` is the input. */
@@ -105,7 +121,7 @@ function toGhostscriptError(error: unknown, dir: string): unknown {
   return new PdfPostprocessError(`Compression failed: Ghostscript could not process the document${reason}.`);
 }
 
-async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompressRun, signal: AbortSignal | undefined): Promise<Buffer> {
+async function rewriteWithGhostscript(pdf: Buffer, preset: string, clock: CompressClock, signal: AbortSignal | undefined): Promise<Buffer> {
   const gs = getGhostscriptBinaryPath();
   if (!gs) {
     throw new EngineUnavailableError('ghostscript', 'Ghostscript (gs) is not installed or not in PATH');
@@ -113,7 +129,7 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompr
   // Ghostscript runs a file as PostScript or as PDF by its first bytes and does not look for the header, so it gets the file from the header on.
   return withQpdfWorkspace(pdfFromHeader(pdf), async (workspace) => {
     const outputPath = path.join(workspace.dir, GHOSTSCRIPT_OUTPUT_NAME);
-    const timeoutMs = Math.min(GHOSTSCRIPT_DEFAULT_TIMEOUT_MS, run.remainingMs ?? GHOSTSCRIPT_DEFAULT_TIMEOUT_MS);
+    const timeoutMs = Math.min(GHOSTSCRIPT_DEFAULT_TIMEOUT_MS, limitsOf(clock).timeoutMs);
     try {
       await launchSandboxedBinary(gs, [...GHOSTSCRIPT_FIXED_ARGS, `-dPDFSETTINGS=${preset}`, `-sOutputFile=${outputPath}`, workspace.inputPath], {
         cwd: workspace.dir,
@@ -138,9 +154,9 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompr
   });
 }
 
-async function rewriteLossless(pdf: Buffer, signal?: AbortSignal): Promise<Buffer> {
+async function rewriteLossless(pdf: Buffer, signal: AbortSignal | undefined, timeoutMs: number): Promise<Buffer> {
   return withQpdfInputFile(pdf, (workspace) =>
-    runQpdfToBuffer(workspace, { args: [...LOSSLESS_QPDF_ARGS, workspace.inputPath, '-'], action: 'Compression', signal })
+    runQpdfToBuffer(workspace, { args: [...LOSSLESS_QPDF_ARGS, workspace.inputPath, '-'], action: 'Compression', signal, timeoutMs })
   );
 }
 
@@ -153,36 +169,43 @@ type Rewrite = (pdf: Buffer, signal: AbortSignal | undefined) => Promise<Buffer>
  * reach, and qpdf's lossless rewrite would keep the loop. Only such a document discards the first rewrite and rewrites
  * the mended tree, so a healthy one waits for the rewrite alone: the question is a qpdf run of a few milliseconds beside a rewrite of tens.
  */
-async function rewriteMendingPageTree(opened: Buffer, rewrite: Rewrite, run: PdfCompressRun): Promise<{ plain: Buffer; rewritten: Buffer }> {
+async function rewriteMendingPageTree(opened: Buffer, rewrite: Rewrite, clock: CompressClock): Promise<{ plain: Buffer; rewritten: Buffer }> {
   const stop = new AbortController();
-  const rewriting = rewrite(opened, run.signal ? AbortSignal.any([run.signal, stop.signal]) : stop.signal);
+  const rewriting = rewrite(opened, clock.signal ? AbortSignal.any([clock.signal, stop.signal]) : stop.signal);
   // A rewrite that is stopped, or fails while the question is awaited, must not surface as an unhandled rejection.
   rewriting.catch(() => undefined);
-  const listed = await qpdfListsPages(opened, run.signal).catch((error: unknown) => {
+  let listed: boolean;
+  try {
+    listed = await qpdfListsPages(opened, limitsOf(clock));
+  } catch (error) {
     stop.abort();
     throw error;
-  });
+  }
   if (listed) return { plain: opened, rewritten: await rewriting };
-  const mended = await repairPageTree(opened, { knownLooping: true });
+  const mended = await repairPageTree(opened, { knownLooping: true, ...limitsOf(clock) });
   if (mended === opened) return { plain: opened, rewritten: await rewriting };
   stop.abort();
   // The stopped run has ended, and with it the files of its directory, before the next one starts.
   await rewriting.catch(() => undefined);
-  return { plain: mended, rewritten: await rewrite(mended, run.signal) };
+  return { plain: mended, rewritten: await rewrite(mended, clock.signal) };
 }
 
 /** Whether `pdf` already passes `qpdf --check` without structural warnings or errors. */
-async function isCleanPdf(pdf: Buffer): Promise<boolean> {
+async function isCleanPdf(pdf: Buffer, limits: QpdfRunLimits): Promise<boolean> {
   return withQpdfInputFile(pdf, async (workspace) => {
     try {
       await executeSandboxedBinary(workspace.qpdf, ['--check', workspace.inputPath], {
         cwd: workspace.dir,
-        timeoutMs: QPDF_RUN_TIMEOUT_MS,
+        timeoutMs: limits.timeoutMs ?? QPDF_RUN_TIMEOUT_MS,
         maxBuffer: GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES,
         networkIsolated: true,
+        signal: limits.signal,
       });
       return true;
-    } catch {
+    } catch (error) {
+      // A check that was stopped, or ran out of the time left to the job, says nothing about the document.
+      if (limits.signal?.aborted) throw limits.signal.reason ?? error;
+      if (error instanceof SandboxedTimeoutError) throw new PdfPostprocessError('Compression failed: it took longer than the time allowed.');
       return false;
     }
   });
@@ -207,18 +230,22 @@ export async function compressPdf(
   }
   assertPdfHeader(pdf);
   const preset = GHOSTSCRIPT_PRESETS[profile];
-  const rewrite: Rewrite = preset === undefined ? rewriteLossless : (input, signal) => rewriteWithGhostscript(input, preset, run, signal);
-  const { plain, rewritten } = await rewriteMendingPageTree(await openPdfForEditing(pdf, 'compress', access), rewrite, run);
+  const clock: CompressClock = { ...run, deadlineAt: run.remainingMs === undefined ? undefined : Date.now() + run.remainingMs };
+  const rewrite: Rewrite =
+    preset === undefined
+      ? (input, signal) => rewriteLossless(input, signal, limitsOf(clock).timeoutMs)
+      : (input, signal) => rewriteWithGhostscript(input, preset, clock, signal);
+  const { plain, rewritten } = await rewriteMendingPageTree(await openPdfForEditing(pdf, 'compress', access), rewrite, clock);
   if (rewritten.length < pdf.length) {
     return { buffer: rewritten, optimized: true };
   }
   // When the profile gained nothing, return the input (with its page tree mended, if it needed that) if it is already a clean PDF; if the input has
   // damaged cross-references or streams that qpdf --check flags, fall back to the lossless qpdf rewrite so the
   // returned PDF is valid (and smaller when object streams pack a text-only document better than pdfwrite).
-  if (await isCleanPdf(plain)) {
+  if (await isCleanPdf(plain, limitsOf(clock))) {
     return { buffer: plain, optimized: false };
   }
-  const repaired = preset === undefined ? rewritten : await rewriteLossless(plain);
+  const repaired = preset === undefined ? rewritten : await rewriteLossless(plain, clock.signal, limitsOf(clock).timeoutMs);
   const best = repaired.length <= rewritten.length ? repaired : rewritten;
   return { buffer: best, optimized: best.length < pdf.length };
 }
