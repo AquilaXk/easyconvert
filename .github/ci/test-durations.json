@@ -1168,5 +1168,6 @@
   "tests/zstd-level-pins.test.ts": 1.3,
   "tests/zstd-native.test.ts": 2.6,
   "tests/zstd-optimal-ratio.test.ts": 29.2,
-  "tests/zstd-streaming-dict.test.ts": 0.6
+  "tests/zstd-streaming-dict.test.ts": 0.6,
+  "tests/office-legacy-import-filters.test.ts": 9
 }
