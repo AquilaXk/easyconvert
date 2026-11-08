@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ociStorage, OciObjectStorageService } from '../src/lib/storage/oci-storage';
 import { probeNativeEngines, executeWorkerConversion } from '../src/worker/engines';
 import { Queue, Job } from '../src/lib/queue/bullmq-engine';
@@ -34,19 +34,25 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       const testKey = `temp/test_${Date.now()}.bin`;
       const testPayload = Buffer.from('Transit ephemeral conversion payload');
 
-      // Save with 50ms TTL for testing expiration
-      ociStorage.saveObject(testKey, testPayload, 'application/octet-stream', 'test.bin', 50);
+      // A one-minute TTL: a slow runner reads the object well inside it, and the clock is moved
+      // past it instead of the test sleeping through a few milliseconds (it failed on CI at 50 ms).
+      const ttlMs = 60_000;
+      ociStorage.saveObject(testKey, testPayload, 'application/octet-stream', 'test.bin', ttlMs);
 
       const immediate = ociStorage.getObject(testKey);
       expect(immediate).toBeDefined();
       expect(immediate?.buffer.toString()).toBe('Transit ephemeral conversion payload');
 
-      // Wait for expiration
-      await new Promise((r) => setTimeout(r, 60));
-      (ociStorage as any).sweepExpiredObjects();
+      // Move the clock past the TTL (Date only, so timers and I/O run as usual) and sweep.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(Date.now() + ttlMs + 1_000);
+        expect(ociStorage.sweepExpiredObjects()).toBeGreaterThanOrEqual(1);
+        expect(ociStorage.getObject(testKey)).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
 
-      const expired = ociStorage.getObject(testKey);
-      expect(expired).toBeUndefined();
     });
   });
 

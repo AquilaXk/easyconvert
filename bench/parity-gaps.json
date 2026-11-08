@@ -6,8 +6,8 @@
       "issue": 641,
       "ratio": null,
       "note": "the 8-bit PNG writer has no adaptive row filter, so the file is larger than ImageMagick's at its defaults; the same on every PNG output (TODO.md)",
-      "recorded": 1523900,
-      "reference": 973150
+      "recorded": 1345000,
+      "reference": 895640
     },
     {
       "id": "image/jxl-delta-palette.jxl->png/bytes",

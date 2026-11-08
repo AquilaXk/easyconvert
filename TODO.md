@@ -14,7 +14,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut the `arw` GIF time: 16-to-8-bit RGBA conversion (119 ms) and LZW (52 ms).
 - Lift `screenshot.png->svg` from 0.85 to 0.90 of the reference on arm64.
 - Lift `silesia-xml.xz->tar` from 0.876 to the reference speed.
-- Give the 8-bit PNG writer adaptive filtering: level 6 gives 1,000,922 against 1,523,900 bytes on `jxl-bicycles` in 43 against 29 ms; it affects every PNG output, so measure the speed rows first.
+- Give the 8-bit PNG writer adaptive filtering: level 6 gives 1,000,922 against 1,345,000 bytes (nightly of 2026-11-09) on `jxl-bicycles` in 43 against 29 ms; it affects every PNG output, so measure the speed rows first.
 - Lift `jxl->avif` throughput from 0.87 (sandbox start plus the intermediate PNG).
 - Size thread and process counts from cgroup `cpu.max`, not `os.availableParallelism()`.
 
