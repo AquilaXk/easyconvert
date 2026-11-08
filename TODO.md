@@ -6,7 +6,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Drop `scripts/install-libraw-he.sh` and the `librawhe` stage when the distribution's LibRaw (0.23 or later) reads Nikon HE/HE* NEF (entry 195).
 - Hand the developed RAW picture to the encoder from its file, not a 75 MB buffer, to cut the DNG to PDF peak further (entry 191).
 - Keep the title and figure labels of a PDF page whose Type 3 glyphs outnumber the mapped ones (`govdocs1-002202.pdf` page 3: Poppler prints them, we leave the whole page out, policy 49).
-- Read composite fonts without a ToUnicode map through a `cmap` reader; 2.2% of glyphs are still missing.
+- PDF text still leaves out 0.10% of the glyphs of the real-world corpus (61,544 of 60.7M): 68% in Type 3 fonts, 20% in simple Type 1 fonts (`CG.Times095`, `MathematicalPi`, `CMEX10`; read their built-in encoding and glyph names), 8% in composite fonts whose subset programs carry no `cmap` or `post` (nothing to read; Poppler prints control codes there, entry 104).
 - Close the noisy-picture JPEG gap (`jxl-noise->jpg` BD-rate PSNR +5.2%; the same pixels from a PNG give the same result).
 
 ## Speed
