@@ -6,10 +6,11 @@ import { ChevronDown, Moon, Sun, X } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
+import { useViewerAccount } from '@/hooks/useViewerPlan';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import LanguageSwitcher from './LanguageSwitcher';
-import { API_LINKS, PRIMARY_LINKS, TOOL_ROUTES, type SiteLink } from './site-links';
+import { API_LINKS, primaryLinksFor, TOOL_ROUTES, type SiteLink } from './site-links';
 
 type LabelledLink = SiteLink & { key: keyof Messages['siteLinks'] };
 
@@ -79,6 +80,7 @@ export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
+  const signedIn = useViewerAccount() !== null;
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, true, onClose);
@@ -114,7 +116,7 @@ export default function MobileMenu({ onClose }: Readonly<{ onClose: () => void }
         <nav aria-label={t('mobileNavLabel')} className="flex flex-col gap-0.5">
           <CollapsibleLinks id="mobile-menu-tools" label={t('tools')} links={TOOL_ROUTES} onNavigate={onClose} />
           <CollapsibleLinks id="mobile-menu-api" label={t('api')} links={API_LINKS} onNavigate={onClose} />
-          {PRIMARY_LINKS.filter((item) => item.key !== 'apiDocs').map((item) => (
+          {primaryLinksFor(signedIn).filter((item) => item.key !== 'apiDocs').map((item) => (
             <Link key={item.key} href={item.href} onClick={onClose} className={ROW_CLASS}>
               {tLinks(item.key)}
             </Link>
