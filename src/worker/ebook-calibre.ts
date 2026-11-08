@@ -181,7 +181,7 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
     // No PID namespace of its own: the launcher of calibre's release build reads /proc/<its own id>/exe, and /proc (which the sandbox cannot remount)
     // shows the host's processes, so in a namespace it reads another process (or none) and stops with "Failed to read exe path". It keeps the user and
     // network namespaces, the resource limits and the process group kill (docs/policy-decisions.md, entry 203), and pid-init still hides the /proc entries
-    // of the other runs from it (entry 207).
+    // of the other runs from it (entry 208).
     sandboxOptions: { pidNamespace: false },
     signal: request.options.signal,
     cwd: run.dir,
