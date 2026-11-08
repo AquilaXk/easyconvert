@@ -224,7 +224,7 @@ describe('officeInputWithoutMacros', () => {
   it('strips a package declared as a plain format, from memory and from a file', async () => {
     const withMacro = await wordWithMacro();
     for (const input of [withMacro, { inputBuffer: withMacro }]) {
-      const handed = await officeInputWithoutMacros(input, 'docx');
+      const handed = await officeInputWithoutMacros(input);
       const zip = await JSZip.loadAsync(Buffer.isBuffer(handed) ? handed : handed.inputBuffer!);
       expect(names(zip).filter((name) => name.includes('vba'))).toEqual([]);
     }
@@ -232,9 +232,10 @@ describe('officeInputWithoutMacros', () => {
     try {
       const file = path.join(dir, 'input.odt');
       fs.writeFileSync(file, await openDocument(true));
-      const handed = await officeInputWithoutMacros({ inputPath: file }, 'odt');
-      expect(Buffer.isBuffer(handed) ? handed.length : 0).toBeGreaterThan(0);
-      expect(names(await JSZip.loadAsync(handed as Buffer))).not.toContain('Basic/script-lc.xml');
+      const handed = await officeInputWithoutMacros({ inputPath: file });
+      expect(Buffer.isBuffer(handed)).toBe(false);
+      expect((handed as { inputPath?: string }).inputPath).toBeUndefined();
+      expect(names(await JSZip.loadAsync((handed as { inputBuffer: Buffer }).inputBuffer))).not.toContain('Basic/script-lc.xml');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -242,12 +243,12 @@ describe('officeInputWithoutMacros', () => {
 
   it('hands over the input itself when there is nothing to remove, and does not read a file that is no package', async () => {
     const plain = await craftDocx({ body: paragraph('plain') });
-    expect(await officeInputWithoutMacros(plain, 'docx')).toBe(plain);
+    expect(await officeInputWithoutMacros(plain)).toBe(plain);
     const payload = { inputBuffer: plain };
-    expect(await officeInputWithoutMacros(payload, 'docx')).toBe(payload);
+    expect(await officeInputWithoutMacros(payload)).toBe(payload);
     const legacy = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 1, 2, 3]);
-    expect(await officeInputWithoutMacros(legacy, 'doc')).toBe(legacy);
+    expect(await officeInputWithoutMacros(legacy)).toBe(legacy);
     const missing = { inputPath: path.join(os.tmpdir(), 'macro-strip-no-such-file.docx') };
-    expect(await officeInputWithoutMacros(missing, 'docx')).toBe(missing);
+    expect(await officeInputWithoutMacros(missing)).toBe(missing);
   });
 });

@@ -211,7 +211,8 @@ describe('LibreOffice pool readiness probe fails fast with a typed error', () =>
           jobRuns++;
         }
         const outName = path.basename(inputArg).replace(/\.[^.]+$/, '.pdf');
-        fs.writeFileSync(path.join(path.dirname(inputArg), outName), Buffer.from('%PDF-1.7 stub'));
+        // The office suite writes beside nothing but the directory it is told to (`--outdir`), not next to its input.
+        fs.writeFileSync(path.join(args[args.indexOf('--outdir') + 1], outName), Buffer.from('%PDF-1.7 stub'));
       }
       return okResult();
     };

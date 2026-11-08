@@ -140,12 +140,12 @@ describe('Office Open XML variants are read like their plain formats', () => {
 
   it('hands the office suite the package of a macro-enabled document without its macro project', async () => {
     const docm = await wordVariant('application/vnd.ms-word.document.macroEnabled.main+xml', true);
-    const handed = await officeInputWithoutMacros(docm, 'docm');
+    const handed = await officeInputWithoutMacros(docm);
     const zip = await JSZip.loadAsync(handed as Buffer);
     expect(Object.keys(zip.files).filter((name) => name.includes('vbaProject'))).toEqual([]);
     expect(await zip.file('word/document.xml')!.async('string')).toContain(PARAGRAPHS[0]);
     const plain = await craftDocx({ body: paragraph('x') });
-    expect(await officeInputWithoutMacros(plain, 'docx')).toBe(plain);
+    expect(await officeInputWithoutMacros(plain)).toBe(plain);
   });
 
   it('refuses a variant without its main part with a typed error', async () => {

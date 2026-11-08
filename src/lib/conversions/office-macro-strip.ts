@@ -17,8 +17,9 @@ import { ConversionFailedError } from '../types';
  *    or `vbaData.xml`; the relationships that point at them in any part; their entries in `[Content_Types].xml`; the `sheet` of
  *    `xl/workbook.xml` that a removed macro sheet was (and the sheet indexes the defined names use); and the macro-enabled content type of the
  *    main part, which becomes the plain one so that the package is the plain format the office suite opens.
- *  - OpenDocument: the `Basic/`, `Dialogs/` and `Scripts/` directories (Basic, dialog and Python, BeanShell and JavaScript macro libraries)
- *    of the package and of its embedded objects (`Object 1/Basic/`), and their entries in `META-INF/manifest.xml`. The event bindings of the
+ *  - OpenDocument (a package with a `META-INF/manifest.xml`, whether or not it has a `mimetype` entry): the `Basic/`, `Dialogs/` and `Scripts/`
+ *    directories (Basic, dialog and Python, BeanShell and JavaScript macro libraries) of the package and of its embedded objects and
+ *    sub-documents (`Object 1/Basic/`, `subdoc/Basic/`), and their entries in `META-INF/manifest.xml`. The event bindings of the
  *    document that name a macro are left, and dangle.
  *
  * The content types and the relationships are read with the scanner the Office readers share (linear time, quotes and attribute order as
@@ -33,8 +34,9 @@ import { ConversionFailedError } from '../types';
 const CONTENT_TYPES_PART = '[Content_Types].xml';
 const ODF_MANIFEST_PART = /(^|\/)META-INF\/manifest\.xml$/;
 const ODF_MIMETYPE_PART = 'mimetype';
-/** A macro library directory of an OpenDocument package, at its root or in an embedded object (`Object 1/Basic/`). */
-const ODF_MACRO_PATH = /^(Object [^/]+\/)?(Basic|Dialogs|Scripts)(\/|$)/;
+const ODF_MANIFEST_ROOT = 'META-INF/manifest.xml';
+/** A macro library directory of an OpenDocument package, at its root or in an embedded object or sub-document (`Object 1/Basic/`, `subdoc/Basic/`). */
+const ODF_MACRO_PATH = /(^|\/)(Basic|Dialogs|Scripts)(\/|$)/;
 const OOXML_MACRO_CONTENT_TYPE = /^application\/vnd\.ms-(office\.vba|word\.vbaData|excel\.(intl)?macrosheet)/i;
 const OOXML_MACRO_PART_NAME = /(^|\/)(vbaProject(Signature)?\.bin|vbaData\.xml)$/i;
 const OOXML_MACRO_RELATIONSHIP_TYPE = /\/(vbaProject|vbaProjectSignature|wordVbaData|xlMacrosheet|xlIntlMacrosheet)$/i;
@@ -229,7 +231,8 @@ async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<Stri
 }
 
 async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promise<StripOutcome> {
-  if (!zip.file(ODF_MIMETYPE_PART) || !zip.file('META-INF/manifest.xml')) return 'unchanged';
+  // The manifest is what makes a package an OpenDocument one for the office suite, which loads a package without a `mimetype` entry as well.
+  if (!zip.file(ODF_MANIFEST_ROOT)) return 'unchanged';
   assertEntryCount(zip);
   const macroEntries: string[] = [];
   const manifests: string[] = [];
@@ -248,7 +251,8 @@ async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promi
   }
   for (const name of macroEntries) zip.remove(name);
   // The first entry of an OpenDocument package is its mimetype, stored: a reader finds the type by the bytes after the header.
-  zip.file(ODF_MIMETYPE_PART, await zip.file(ODF_MIMETYPE_PART)!.async('nodebuffer'), { compression: 'STORE' });
+  const mimetype = zip.file(ODF_MIMETYPE_PART);
+  if (mimetype) zip.file(ODF_MIMETYPE_PART, await mimetype.async('nodebuffer'), { compression: 'STORE' });
   return 'dropped';
 }
 

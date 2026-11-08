@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
 import { readPersistedOutput } from './persisted-output';
 import { stagedOutputPath } from '../lib/storage/temp-file';
-import { getMimeType } from './worker-output';
+import { findOfficeOutput, getMimeType, resolveOfficeInputContext } from './worker-output';
 import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
@@ -638,27 +638,6 @@ export class LibreOfficePoolManager {
     } catch {}
   }
 
-  private prepareInputPath(
-    jobSubdir: string,
-    src: string,
-    input: Buffer | { inputPath?: string; outputPath?: string; inputBuffer?: Buffer }
-  ): string {
-    if (Buffer.isBuffer(input)) {
-      const inputPath = path.join(jobSubdir, `input.${src}`);
-      fs.writeFileSync(inputPath, input);
-      return inputPath;
-    }
-    if (input.inputPath && fs.existsSync(input.inputPath)) {
-      return input.inputPath;
-    }
-    if (input.inputBuffer) {
-      const inputPath = path.join(jobSubdir, `input.${src}`);
-      fs.writeFileSync(inputPath, input.inputBuffer);
-      return inputPath;
-    }
-    throw new Error('LibreOffice pool conversion received invalid input payload');
-  }
-
   private buildPersistedResult(
     tempOutputPath: string,
     targetFormat: string,
@@ -723,7 +702,7 @@ export class LibreOfficePoolManager {
 
     try {
       fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
-      const inputPath = this.prepareInputPath(jobSubdir, src, input);
+      const { inputPath } = resolveOfficeInputContext(input, src, jobSubdir);
       // The slot's profile is shared by its jobs, and the suite writes its settings back when it ends: the fixed settings are written again
       // before every job, so what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
       writeOfficeProfile(worker.userProfileDir);
@@ -758,10 +737,8 @@ export class LibreOfficePoolManager {
         }
       );
 
-      const matches = fs
-        .readdirSync(jobSubdir)
-        .filter((f) => f.startsWith('input.') && !f.endsWith(`.${src}`));
-      if (matches.length === 0) {
+      const produced = findOfficeOutput(jobSubdir);
+      if (produced === undefined) {
         hasError = true;
         throw new Error(
           `LibreOffice execution completed without producing expected output file for target format "${tgt}"`
@@ -769,7 +746,7 @@ export class LibreOfficePoolManager {
       }
 
       return this.buildPersistedResult(
-        path.join(jobSubdir, matches[0]),
+        produced,
         tgt,
         baseName,
         startTime,
