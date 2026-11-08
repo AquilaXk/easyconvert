@@ -14,5 +14,21 @@
     "url": "https://raw.pixls.us/data/Sigma/SIGMA%20SD15/_SDI5651.X3F",
     "sha256": "e9bf8ca29bb9c533b764a4af7830bcf029ee6792323bad3e4179d0e5c29389c0",
     "bytes": 16373048
+  },
+  {
+    "format": "nef",
+    "variant": "zf",
+    "filename": "DSC_0043.NEF",
+    "url": "https://raw.pixls.us/data/Nikon/Z%20f/DSC_0043.NEF",
+    "sha256": "98d6ca8e6c98048ca7ffed68ccaeda7b2b9f03807f0d320d97d5678db21748c2",
+    "bytes": 13462016
+  },
+  {
+    "format": "nef",
+    "variant": "z9he",
+    "filename": "Nikon_-_NIKON_Z_9_-_14bit_compressed_(Lossy_High_Efficiency).NEF",
+    "url": "https://raw.pixls.us/data/Nikon/Z%209/Nikon_-_NIKON_Z_9_-_14bit_compressed_(Lossy_High_Efficiency).NEF",
+    "sha256": "be91bac25573adf7ec6320a542105d87b4fb9c956d7b620ec90d57ac2ae6c3f0",
+    "bytes": 24839168
   }
 ]
