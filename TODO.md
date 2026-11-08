@@ -20,7 +20,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Product and API
 - Dashboard: render the first view on the server (2.3 s spinner today); the key form's terms checkbox stays (policy 146), drop it only with a policy change.
-- Tool pages the references have and our API already supports: archive create/extract, PNG/JPG compress, PDF split/rotate, PDF/A.
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security

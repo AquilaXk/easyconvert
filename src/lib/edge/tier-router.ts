@@ -10,6 +10,7 @@
  */
 
 import { ConversionOptions } from '../types';
+import { isImageCompression } from '../image-compression';
 import { mergeIntervals, pageCountOfIntervals, type PageInterval } from '../conversions/page-intervals';
 import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isAudioStreamPair, isStreamableAudioPair, type RawPcmOptions } from './workers/opfs-audio';
@@ -522,6 +523,11 @@ function largeFileCloudReason(opfsAvailable: boolean, fitsOpfs: boolean): string
     : 'Large file exceeds client RAM and OPFS is unavailable in this browser';
 }
 
+/** The canvas converts the pair, and the pair is not a compression: only the server encoders shrink a PNG or a JPG. */
+function canvasConverts(src: string, tgt: string): boolean {
+  return isPureCanvasConvertible(src, tgt) && !isImageCompression(src, tgt);
+}
+
 /**
  * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
  */
@@ -619,7 +625,7 @@ export function resolveConversionTier(
 
   const canvasAvailable = capabilities?.hasCanvas ?? isCanvasSupported();
   if (
-    isPureCanvasConvertible(src, tgt) &&
+    canvasConverts(src, tgt) &&
     canvasAvailable &&
     !isWasmFilterRequested &&
     !isWebGpuRequested

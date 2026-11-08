@@ -25,6 +25,7 @@ import {
   PayloadLimitError,
 } from '../types';
 import {
+  type ArchiveExtractionLimits,
   type ListedArchiveEntry,
   NativeRenameUnsupportedError,
   UnreadableArchiveError,
@@ -45,6 +46,7 @@ import {
   exceedsArchiveRatio,
   unpackedBytesCap,
 } from './archive-extraction-safety';
+import { gunzipWithLimits } from './archive-gunzip';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
 import { withExtractionNotes } from './archive-alternate-streams';
 import { isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
@@ -498,6 +500,9 @@ function makeExtractedTreeAccessible(root: string): void {
   }
 }
 
+/** The caps a caller passes, else the defaults of the job graph and the API. */
+const limitsOrDefault = (limits?: ArchiveExtractionLimits): ArchiveExtractionLimits => limits ?? ARCHIVE_SECURITY_LIMITS;
+
 export const ARCHIVE_SECURITY_LIMITS = {
   MAX_FILES: 50_000,
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
@@ -545,16 +550,19 @@ export async function extractZipArchive(
     skipLinks?: boolean;
     onSkippedLinks?: (names: string[]) => void;
     collisionPolicy?: ArchiveCollisionPolicy;
+    /** The caps of this extraction; a caller that holds the files in memory for an answer sets tighter ones than the defaults. */
+    limits?: ArchiveExtractionLimits;
   } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   assertArchivePasswordSafe(options.password);
+  const limits = limitsOrDefault(options.limits);
 
   // An archive with an encrypted central directory cannot be parsed here, so the header scan decides first; an entry
   // flagged encrypted only in the central directory (the authority) still sends the archive to the password path.
   let directory: ZipDirectory | undefined;
   let isEncrypted = isZipBufferEncrypted(zipBuffer);
   if (!isEncrypted) {
-    directory = readZipDirectory(zipBuffer, ARCHIVE_SECURITY_LIMITS);
+    directory = readZipDirectory(zipBuffer, limits);
     isEncrypted = zipDirectoryHasEncryptedEntry(directory);
   }
   if (isEncrypted) {
@@ -581,8 +589,8 @@ export async function extractZipArchive(
           extractDir,
           cwd: workDir,
           timeoutMs: 60000,
-          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          limits: ARCHIVE_SECURITY_LIMITS,
+          maxBuffer: limits.MAX_UNCOMPRESSED_SIZE,
+          limits,
           label: 'ZIP archive',
           password: options.password,
           skipLinks: options.skipLinks,
@@ -614,8 +622,8 @@ export async function extractZipArchive(
     }
   }
 
-  const files = await readZipFiles(zipBuffer, directory ?? readZipDirectory(zipBuffer, ARCHIVE_SECURITY_LIMITS), {
-    limits: ARCHIVE_SECURITY_LIMITS,
+  const files = await readZipFiles(zipBuffer, directory ?? readZipDirectory(zipBuffer, limits), {
+    limits,
     select: (name) => matchArchiveGlob(name, options.entries),
     skipLinks: options.skipLinks,
     onSkippedLinks: options.onSkippedLinks,
@@ -1329,6 +1337,8 @@ interface TarReaderOptions {
    * for a caller that only describes the archive; otherwise the name is refused.
    */
   reportUnsafeNames?: boolean;
+  /** The caps of the read: entry count and uncompressed bytes. */
+  limits?: ArchiveExtractionLimits;
 }
 
 /**
@@ -1357,8 +1367,10 @@ class TarReader {
   private readonly listing: ListedArchiveEntry[] | null;
   private readonly ignoreLinks: boolean;
   private readonly reportUnsafeNames: boolean;
+  private readonly limits: ArchiveExtractionLimits;
 
   constructor(private readonly tarBuffer: Buffer, options: TarReaderOptions = {}) {
+    this.limits = limitsOrDefault(options.limits);
     this.listing = options.listing ?? null;
     this.ignoreLinks = options.ignoreLinks === true;
     this.reportUnsafeNames = options.reportUnsafeNames === true;
@@ -1373,7 +1385,7 @@ class TarReader {
       if (!this.nextHeader()) break;
       this.processHeader();
       // A listing past the entry cap is already refused by the policy; reading on would only grow it.
-      if (this.listing !== null && this.listing.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) break;
+      if (this.listing !== null && this.listing.length > this.limits.MAX_FILES) break;
     }
     if (this.localPax.size > 0 || this.longName !== null || this.longLink !== null) {
       throw tarReadError('extension header is not followed by an entry');
@@ -1441,9 +1453,9 @@ class TarReader {
 
   private checkBomb(size: number): void {
     this.totalSize += size;
-    if (this.totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+    if (this.totalSize > this.limits.MAX_UNCOMPRESSED_SIZE) {
       throw tarBombError(
-        `uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        `uncompressed size exceeds limit of ${this.limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(this.limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`
       );
     }
   }
@@ -1569,8 +1581,8 @@ class TarReader {
     if (type === null) throw tarReadError(`unsupported typeflag ${JSON.stringify(typeflag)}`);
 
     const bodySize = this.entryBodySize(type, headerSize, context.paxSize);
-    if (this.entries.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-      throw tarBombError(`file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+    if (this.entries.length >= this.limits.MAX_FILES) {
+      throw tarBombError(`file count exceeds limit of ${this.limits.MAX_FILES}`);
     }
     let body = type === 'file' ? this.takeBody(bodySize) : EMPTY_TAR_BODY;
 
@@ -1643,7 +1655,7 @@ export function listTarEntries(tarBuffer: Buffer): ListedArchiveEntry[] {
  * whose name is not a plain relative path throws an UnsafeArchiveError that names it, unless `reportUnsafeNames` asks for the
  * name as it is stored, its links neither resolved nor tracked (an inspection, which describes the archive and writes nothing).
  */
-export function readTarEntries(tarBuffer: Buffer, options: Pick<TarReaderOptions, 'ignoreLinks' | 'reportUnsafeNames'> = {}): TarEntry[] {
+export function readTarEntries(tarBuffer: Buffer, options: Pick<TarReaderOptions, 'ignoreLinks' | 'reportUnsafeNames' | 'limits'> = {}): TarEntry[] {
   return new TarReader(tarBuffer, options).read();
 }
 
@@ -1655,12 +1667,12 @@ export function readTarEntries(tarBuffer: Buffer, options: Pick<TarReaderOptions
  */
 export function extractTarArchive(
   tarBuffer: Buffer,
-  options: { entries?: string[] } = {}
+  options: { entries?: string[]; limits?: ArchiveExtractionLimits } = {}
 ): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
   const copies = new Map<Buffer, Buffer>();
 
-  for (const entry of readTarEntries(tarBuffer)) {
+  for (const entry of readTarEntries(tarBuffer, { limits: options.limits })) {
     if (entry.type !== 'file' && entry.type !== 'hardlink') continue;
     if (!matchArchiveGlob(entry.filename, options.entries)) continue;
     let copy = copies.get(entry.buffer);
@@ -1728,8 +1740,9 @@ export function getUnrarBinaryPath(): string | null {
 
 export function extractRarArchive(
   rarBuffer: Buffer,
-  options: { password?: string; entries?: string[] } = {}
+  options: { password?: string; entries?: string[]; limits?: ArchiveExtractionLimits } = {}
 ): { filename: string; buffer: Buffer }[] {
+  const limits = limitsOrDefault(options.limits);
   if (!rarBuffer || rarBuffer.length < 14) {
     throw new CorruptStreamError('Invalid RAR archive: buffer too small');
   }
@@ -1784,9 +1797,9 @@ export function extractRarArchive(
       };
       // unrar writes an entry that climbs out of the directory, or is absolute, below the directory instead, so the stored names
       // are read first (`lb` prints them bare, one per line) and an unsafe one refuses the archive before anything is extracted.
-      assertListedNamesSafe(runUnrar(['lb', ...pwArgs, tmpFile], listingBufferLimit(ARCHIVE_SECURITY_LIMITS)).toString('utf-8'), ARCHIVE_SECURITY_LIMITS);
+      assertListedNamesSafe(runUnrar(['lb', ...pwArgs, tmpFile], listingBufferLimit(limits)).toString('utf-8'), limits);
       // -idq keeps error text on stderr so a password failure can be told from other failures.
-      runUnrar(['x', '-idq', '-y', ...pwArgs, tmpFile, extractDir], ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+      runUnrar(['x', '-idq', '-y', ...pwArgs, tmpFile, extractDir], limits.MAX_UNCOMPRESSED_SIZE);
 
       const extracted: { filename: string; buffer: Buffer }[] = [];
       let totalUncompressedSize = 0;
@@ -1799,16 +1812,20 @@ export function extractRarArchive(
           if (entry.isDirectory()) {
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
-            if (extracted.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-              throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+            if (extracted.length >= limits.MAX_FILES) {
+              throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${limits.MAX_FILES}`);
+            }
+            // The size is read from the file system first, so that a file past the cap is never read into memory.
+            totalUncompressedSize += fs.statSync(fullPath).size;
+            if (totalUncompressedSize > limits.MAX_UNCOMPRESSED_SIZE) {
+              throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`);
             }
             const buf = fs.readFileSync(fullPath);
-            totalUncompressedSize += buf.length;
-            if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-              throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+            if (totalUncompressedSize > limits.MAX_UNCOMPRESSED_SIZE) {
+              throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`);
             }
-            if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
-              throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+            if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, limits.MAX_RATIO)) {
+              throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`);
             }
             const sanitized = canonicalEntryPath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
@@ -1864,8 +1881,8 @@ export function extractRarArchive(
     }
 
     if (headType === 0x74 && offset + 32 <= rarBuffer.length) {
-      if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      if (files.length >= limits.MAX_FILES) {
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${limits.MAX_FILES}`);
       }
 
       const packSize = rarBuffer.readUInt32LE(offset + 7);
@@ -1874,9 +1891,9 @@ export function extractRarArchive(
       const method = rarBuffer[offset + 25];
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
 
-      if (unpSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      if (unpSize > limits.MAX_UNCOMPRESSED_SIZE) {
         throw new DecompressionLimitError(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+          `Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`
         );
       }
 
@@ -1907,11 +1924,11 @@ export function extractRarArchive(
         }
 
         totalUncompressedSize += fileBuf.length;
-        if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-          throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+        if (totalUncompressedSize > limits.MAX_UNCOMPRESSED_SIZE) {
+          throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`);
         }
-        if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
-          throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+        if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, limits.MAX_RATIO)) {
+          throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`);
         }
 
         if (sanitizedName && matchArchiveGlob(sanitizedName, options.entries)) {
@@ -2799,11 +2816,11 @@ export function listSevenZipEntries(sevenZipBuffer: Buffer): SevenZipListing {
   );
 }
 
-function sevenZipReadLimits(): SevenZipReadLimits {
+function sevenZipReadLimits(limits: ArchiveExtractionLimits = ARCHIVE_SECURITY_LIMITS): SevenZipReadLimits {
   return {
-    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
-    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+    maxFiles: limits.MAX_FILES,
+    maxUncompressedBytes: limits.MAX_UNCOMPRESSED_SIZE,
+    maxRatio: limits.MAX_RATIO,
   };
 }
 
@@ -2815,10 +2832,11 @@ function sevenZipReadLimits(): SevenZipReadLimits {
  * UnsafeArchiveError, or with `skipLinks` is left out and reported through `onSkippedLinks`.
  */
 export function extract7zArchive(sevenZipBuffer: Buffer, options: SevenZipExtractOptions = {}): { filename: string; buffer: Buffer }[] {
+  const limits = limitsOrDefault(options.limits);
   const entries = readSevenZipArchive(
     sevenZipBuffer,
-    createSevenZipFolderDecoder({ password: options.password, maxOutputBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE }),
-    sevenZipReadLimits()
+    createSevenZipFolderDecoder({ password: options.password, maxOutputBytes: limits.MAX_UNCOMPRESSED_SIZE }),
+    sevenZipReadLimits(limits)
   );
   return selectSevenZipFiles(entries, options);
 }
@@ -2857,6 +2875,8 @@ export async function extract7zArchiveAsync(
 }
 
 interface SevenZipExtractOptions {
+  /** The caps of this extraction; the defaults are ARCHIVE_SECURITY_LIMITS. */
+  limits?: ArchiveExtractionLimits;
   password?: string;
   entries?: string[];
   skipLinks?: boolean;
@@ -2888,76 +2908,9 @@ function selectSevenZipFiles(entries: SevenZipEntry[], options: SevenZipExtractO
   return files;
 }
 
-/**
- * Safely decompresses Gzip stream with real-time chunk-level threshold enforcement.
- * Eliminates upfront synchronous heap buffering to defend against gzip decompression bombs.
- */
-export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const gunzip = zlib.createGunzip();
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    let destroyed = false;
-
-    const cleanup = () => {
-      chunks.length = 0;
-    };
-
-    gunzip.on('data', (chunk: Buffer) => {
-      if (destroyed) return;
-      totalBytes += chunk.length;
-
-      // 1. Guard against absolute uncompressed size bomb
-      if (totalBytes > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        destroyed = true;
-        cleanup();
-        gunzip.destroy();
-        return reject(
-          new DecompressionLimitError(
-            `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-          )
-        );
-      }
-
-      // 2. Guard against compression ratio bomb (evaluated beyond the shared ratio floor)
-      if (exceedsArchiveRatio(totalBytes, inputBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
-        destroyed = true;
-        cleanup();
-        gunzip.destroy();
-        return reject(
-          new DecompressionLimitError(
-            `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-          )
-        );
-      }
-
-      chunks.push(chunk);
-    });
-
-    gunzip.on('end', () => {
-      if (destroyed) return;
-      // Final ratio check on the whole stream (the same floor, so it cannot disagree with the running check)
-      if (exceedsArchiveRatio(totalBytes, inputBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
-        cleanup();
-        return reject(
-          new DecompressionLimitError(
-            `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-          )
-        );
-      }
-      resolve(Buffer.concat(chunks));
-    });
-
-    gunzip.on('error', (err) => {
-      if (!destroyed) {
-        cleanup();
-        reject(err);
-      }
-    });
-
-    gunzip.end(inputBuffer);
-  });
-}
+/** Gunzips under real-time caps on the bytes produced and the ratio (`archive-gunzip.ts`); the caps default to the archive security limits. */
+export const gunzipStreamingWithLimits = (inputBuffer: Buffer, limits: ArchiveExtractionLimits = ARCHIVE_SECURITY_LIMITS): Promise<Buffer> =>
+  gunzipWithLimits(inputBuffer, limits);
 
 let resolvedZipPath: string | null = null;
 export function getZipBinaryPath(): string | null {

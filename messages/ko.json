@@ -791,6 +791,26 @@
         "fileInputLabel": "글자를 읽을 파일 선택",
         "heading": "글자를 읽을 파일을 선택해 주세요",
         "selectFile": "파일 선택"
+      },
+      "archiveCreate": {
+        "fileInputLabel": "묶을 파일 선택",
+        "heading": "묶을 파일을 선택해 주세요",
+        "selectFile": "파일 선택"
+      },
+      "archiveExtract": {
+        "fileInputLabel": "풀 압축 파일 선택",
+        "heading": "압축 파일을 선택해 주세요",
+        "selectFile": "파일 선택"
+      },
+      "splitPdf": {
+        "fileInputLabel": "나눌 PDF 선택",
+        "heading": "나눌 PDF를 선택해 주세요",
+        "selectFile": "파일 선택"
+      },
+      "rotatePdf": {
+        "fileInputLabel": "돌릴 PDF 선택",
+        "heading": "돌릴 PDF를 선택해 주세요",
+        "selectFile": "파일 선택"
       }
     },
     "dropzone": {
@@ -1184,6 +1204,7 @@
     "converting": "변환 중...",
     "convert": "변환하기",
     "row": {
+      "unchanged": "이미 최적화돼 있어요",
       "uploadingLabel": "{name} 업로드 중",
       "convertingLabel": "{name} 변환 중",
       "uploading": "업로드 중...",
@@ -1201,6 +1222,62 @@
     },
     "label": "변환할 파일"
   },
+  "tools": {
+    "label": "작업 파일",
+    "actions": {
+      "merge": "병합",
+      "archive-create": "압축하기",
+      "archive-extract": "풀기",
+      "split": "나누기",
+      "rotate": "돌리기"
+    },
+    "running": "처리하는 중이에요",
+    "status": {
+      "ready": "파일 {count}개가 준비됐어요",
+      "needTwo": "PDF를 두 개 이상 올려 주세요",
+      "done": "완료했어요",
+      "skipped": "{count}개는 이 도구에서 쓸 수 없는 형식이라 제외했어요",
+      "oversize": "올릴 수 없는 파일이 있어요"
+    },
+    "row": {
+      "moveUp": "{name} 위로 옮기기",
+      "moveDown": "{name} 아래로 옮기기",
+      "remove": "{name} 삭제"
+    },
+    "result": {
+      "label": "결과",
+      "downloadAll": "모두 받기",
+      "files": "파일 {count}개",
+      "startOver": "처음부터",
+      "downloadName": "{name} 내려받기"
+    },
+    "options": {
+      "label": "{tool} 옵션",
+      "format": {
+        "label": "압축 형식",
+        "zip": "ZIP",
+        "7z": "7Z",
+        "tarGz": "TAR.GZ"
+      },
+      "split": {
+        "label": "나누는 방법",
+        "every": "페이지마다 나누기",
+        "ranges": "범위로 나누기",
+        "rangesLabel": "페이지 범위",
+        "rangesHint": "1-3,5",
+        "rangesHelp": "쉼표로 나눈 범위마다 파일이 하나씩 만들어져요."
+      },
+      "rotate": {
+        "label": "방향",
+        "r90": "시계 방향으로 90도",
+        "r180": "180도",
+        "r270": "시계 반대 방향으로 90도",
+        "pagesLabel": "페이지",
+        "pagesHint": "모든 페이지",
+        "pagesHelp": "비워 두면 모든 페이지를 돌려요. 예: 1-3,5"
+      }
+    }
+  },
   "siteLinks": {
     "pdfConverter": "PDF 변환기",
     "imageConverter": "이미지 변환기",
@@ -1210,7 +1287,14 @@
     "spreadsheetConverter": "스프레드시트 변환기",
     "pdfOcr": "PDF OCR",
     "compressPdf": "PDF 압축",
+    "compressPng": "PNG 압축",
+    "compressJpg": "JPG 압축",
     "mergePdf": "PDF 병합",
+    "splitPdf": "PDF 나누기",
+    "rotatePdf": "PDF 회전",
+    "convertToPdfA": "PDF/A로 변환",
+    "archiveCreate": "압축 파일 만들기",
+    "archiveExtract": "압축 풀기",
     "formats": "파일 형식",
     "apiDocs": "API 문서",
     "dashboard": "대시보드",
@@ -1298,6 +1382,22 @@
     "compress": {
       "title": "{format} 압축",
       "description": "{format} 파일의 크기를 온라인에서 줄여요."
+    },
+    "archiveCreate": {
+      "title": "압축 파일 만들기",
+      "description": "여러 파일을 하나의 압축 파일로 묶어요."
+    },
+    "archiveExtract": {
+      "title": "압축 풀기",
+      "description": "ZIP, 7Z, RAR, TAR 압축 파일을 풀어서 안의 파일을 받아요."
+    },
+    "splitPdf": {
+      "title": "PDF 나누기",
+      "description": "PDF를 페이지별로 나눠요."
+    },
+    "rotatePdf": {
+      "title": "PDF 회전",
+      "description": "PDF 페이지를 원하는 방향으로 돌려요."
     },
     "saveWebsiteAsPdf": {
       "title": "웹사이트 PDF 저장",
@@ -1748,6 +1848,8 @@
       "file_required": "변환할 파일을 선택해 주세요.",
       "multipart_required": "파일을 올바른 형태로 보내지 못했어요. 페이지를 새로 고친 뒤 다시 시도해 주세요.",
       "empty_file": "비어 있는 파일이에요.",
+      "too_few_files": "파일이 너무 적어요. 두 개 이상 올려 주세요.",
+      "too_many_files": "한 번에 올릴 수 있는 파일 수를 넘었어요.",
       "target_required": "변환할 형식을 선택해 주세요.",
       "unknown_format": "파일 이름으로는 형식을 알 수 없어요. 확장자를 확인해 주세요.",
       "invalid_options": "변환 설정을 읽지 못했어요. 설정을 초기화한 뒤 다시 시도해 주세요.",

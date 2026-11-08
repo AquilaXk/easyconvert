@@ -252,6 +252,10 @@ describe('converter slug pages name one canonical URL', () => {
     ['ko', 'png-to-jpg', '/ko/png-to-jpg', '/png-to-jpg'],
     ['en', 'Video-Converter', '/video-converter', '/ko/video-converter'],
     ['en', 'pdf-ocr', '/pdf-ocr', '/ko/pdf-ocr'],
+    ['en', 'compress-png', '/compress-png', '/ko/compress-png'],
+    ['ko', 'compress-jpg', '/ko/compress-jpg', '/compress-jpg'],
+    ['en', 'split-pdf', '/split-pdf', '/ko/split-pdf'],
+    ['ko', 'create-zip-archive', '/ko/create-zip-archive', '/create-zip-archive'],
   ])('names the page of the parsed format as the canonical of %s %s, and the other locale as its alternate', async (locale, slug, canonical, other) => {
     const { alternates } = await generateMetadata({ params: Promise.resolve({ locale, slug }) });
     const [english, korean] = locale === 'en' ? [canonical, other] : [other, canonical];

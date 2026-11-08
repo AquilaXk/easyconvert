@@ -19,7 +19,7 @@ export const PAGE_NAMESPACES = {
   layout: [],
   home: [...CHROME, ...WORKBENCH, 'features', 'home'],
   converter: [
-    ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',
+    ...CHROME, ...WORKBENCH, 'converterPage', 'slugPages', 'tools', 'formatDetail', 'formatSpecs', 'formatDescriptions', 'infoPages',
   ],
   auth: [...CHROME, 'auth', 'errors'],
   dashboard: [...CHROME, 'dashboard', 'errors'],

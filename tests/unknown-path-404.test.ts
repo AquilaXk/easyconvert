@@ -70,7 +70,7 @@ const NO_PAGE: Record<string, readonly string[]> = {
   'a word that names a category the registry does not have': ['word-converter', 'excel-converter', 'powerpoint-converter', 'photo-converter', 'picture-converter', 'music-converter'],
   'the OCR page under a name other than its own': ['ocr', 'ocr-pdf', 'pdf-to-ocr', 'ocr-to-pdf'],
   'a utility page of a format its operation does not run': [
-    'merge-xyz', 'merge-docx', 'merge-jpg', 'merge-txt', 'compress-gif', 'compress-docx', 'compress-xyz', 'compress-png', 'compress-jpg', 'merge-', 'compress-',
+    'merge-xyz', 'merge-docx', 'merge-jpg', 'merge-txt', 'compress-gif', 'compress-docx', 'compress-xyz', 'compress-webp', 'merge-', 'compress-',
   ],
   'the status page and the unit converter, which the site no longer has': ['status', 'unit-converter', 'lbs-to-kg', 'kg-to-lbs', 'feet-to-meters', 'meters-to-feet'],
   'a name that lowercases to a page name only by Unicode rules (the Kelvin sign is the capital of k)': ['lbs-to-\u212Ag', '\u212Ag-to-lbs', 'm\u212Av-to-mp4', 'm\u212Av-converter'],
@@ -85,7 +85,7 @@ const PAGE: Record<string, readonly string[]> = {
   'a format converted to itself or to its other name': ['jpeg-to-jpg', 'jfif-to-jpg', 'mp4-to-mp4', 'pdf-to-pdf', 'png-to-png', 'tif-to-tiff'],
   'the converter of a format or a category': ['pdf-converter', 'jpeg-converter', 'tar.gz-converter', 'video-converter', 'image-converter', 'document-converter', 'data-converter', 'Video-Converter'],
   'the OCR page': ['pdf-ocr'],
-  'a utility page of a format its operation runs': ['merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'],
+  'a utility page of a format its operation runs': ['merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'],
   'a site page': ['security', 'about', 'contact', 'accessibility'],
 };
 
@@ -180,8 +180,8 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
     expect(parseConverterSlug('presentation-converter')).toMatchObject({ copy: { kind: 'format', name: { kind: 'category', id: 'presentation' } } });
   });
 
-  it('gives merge and compress pages to the formats of the job graph operation behind them that the registry converts to themselves, and no other', () => {
-    const operations = { merge: MERGE_FORMATS, compress: new Set(OPTIMIZABLE_FORMATS) };
+  it('gives merge and compress pages to the formats of the operation behind them (the job graph operation, and PNG and JPG for compress) that the registry converts to themselves, and no other', () => {
+    const operations = { merge: MERGE_FORMATS, compress: new Set([...OPTIMIZABLE_FORMATS, 'png', 'jpg']) };
     const wrong: string[] = [];
     for (const [utility, formats] of Object.entries(operations)) {
       for (const id of ids) {
@@ -189,7 +189,8 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
       }
     }
     expect(wrong).toEqual([]);
-    expect(parseConverterSlug('compress-png')).toBeNull();
+    expect(parseConverterSlug('compress-png')).toMatchObject({ canonicalPath: '/compress-png', sourceFormat: 'png', targetFormat: 'png' });
+    expect(parseConverterSlug('compress-jpg')).toMatchObject({ canonicalPath: '/compress-jpg', sourceFormat: 'jpg', targetFormat: 'jpg' });
     expect(parseConverterSlug('compress-pdf')).not.toBeNull();
   });
 
@@ -206,7 +207,7 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
       ...ids.map((id) => `${id}-converter`),
       ...Object.keys(CATEGORY_WORDS).map((word) => `${word}-converter`),
       ...listedPairs.map(([source, target]) => `${source}-to-${target}`),
-      'pdf-ocr', 'merge-pdf', 'compress-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot',
+      'pdf-ocr', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot',
     ];
     const wrong: string[] = [];
     for (const slug of slugs) {

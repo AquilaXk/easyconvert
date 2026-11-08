@@ -135,6 +135,11 @@ export function localizeSlugCopy(t: SlugCopyTranslator, parsed: ParsedSlug, loca
       return { title: t('merge.title', { format: copy.format.toUpperCase() }), description: t('merge.description', { format: copy.format.toUpperCase() }) };
     case 'compress':
       return { title: t('compress.title', { format: copy.format.toUpperCase() }), description: t('compress.description', { format: copy.format.toUpperCase() }) };
+    case 'archiveCreate':
+    case 'archiveExtract':
+    case 'splitPdf':
+    case 'rotatePdf':
+      return { title: t(`${copy.kind}.title`), description: t(`${copy.kind}.description`) };
     case 'saveWebsiteAsPdf':
       return { title: t('saveWebsiteAsPdf.title'), description: t('saveWebsiteAsPdf.description') };
     case 'websiteScreenshot':

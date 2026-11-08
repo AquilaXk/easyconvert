@@ -66,6 +66,8 @@ export const CONVERSION_REFUSAL_CODES = [
   'multipart_required',
   'file_required',
   'empty_file',
+  'too_few_files',
+  'too_many_files',
   'target_required',
   'unknown_format',
   'invalid_options',

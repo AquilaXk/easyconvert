@@ -52,6 +52,8 @@ export interface PdfMergeAccess {
   passwords?: ReadonlyArray<string | null | undefined>;
   /** True when the caller states they may edit every encrypted input, which lifts the owner restrictions of all of them. */
   confirmEditRights?: boolean;
+  /** Stops the merge between two inputs when it fires: a merge in this process cannot be stopped inside one input. */
+  signal?: AbortSignal;
 }
 
 /** The input as a document whose pages can be listed; the parser meets a page tree that loops while it lists them. */
@@ -72,6 +74,7 @@ async function readMergeInput(plain: Buffer): Promise<PDFDocument> {
 export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess = {}): Promise<Buffer> {
   const mergedPdf = await PDFDocument.create();
   for (const [index, buf] of buffers.entries()) {
+    access.signal?.throwIfAborted();
     const plain = await openPdfForEditing(buf, 'merge', {
       password: access.passwords?.[index] ?? undefined,
       confirmEditRights: access.confirmEditRights,

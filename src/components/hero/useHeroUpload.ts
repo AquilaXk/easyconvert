@@ -3,9 +3,10 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import type { PageToolKind } from '@/lib/slug-info-pages';
 
 /** The pages that do something other than convert a file, whose upload card says so. */
-export type HeroOperation = 'merge' | 'compress' | 'ocr';
+export type HeroOperation = 'merge' | 'compress' | 'ocr' | PageToolKind;
 
 /** The id of the page's file input, which the file bar's "add files" opens. */
 export const MAIN_FILE_INPUT_ID = 'main-file-input';

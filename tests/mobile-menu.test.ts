@@ -76,7 +76,7 @@ describe('the mobile menu', () => {
     await act(async () => tools.click());
     expect(tools.getAttribute('aria-expanded')).toBe('true');
     expect(sheet.querySelector('#mobile-menu-tools')?.hasAttribute('hidden')).toBe(false);
-    expect(sheet.querySelectorAll('#mobile-menu-tools a')).toHaveLength(9);
+    expect(sheet.querySelectorAll('#mobile-menu-tools a')).toHaveLength(16);
   });
 
   it('keeps Tab and Shift+Tab inside the sheet', async () => {

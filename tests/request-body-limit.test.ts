@@ -7,6 +7,7 @@ import { SINGLE_REQUEST_BODY_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { POST as convertPost } from '../src/app/api/convert/route';
 import { POST as batchPost } from '../src/app/api/convert/batch/route';
+import { POST as toolPost } from '../src/app/api/tools/merge/route';
 
 type MiddlewareFn = (request: NextRequest) => Response | Promise<Response>;
 
@@ -324,6 +325,7 @@ describe('a route that takes a file whole refuses a malformed length itself', ()
   it.each([
     ['/api/convert', convertPost],
     ['/api/convert/batch', batchPost],
+    ['/api/tools/merge', toolPost],
     ['/api/v1/convert', v1ConvertPost],
   ])('%s answers 413 for a body declared past one request before it authenticates or reads the form', async (route, post) => {
     const res = await post(declaring(route, String(SINGLE_REQUEST_BODY_MAX_BYTES + 1)));

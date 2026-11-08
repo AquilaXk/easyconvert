@@ -36,6 +36,7 @@ import {
   rotatePdfPages,
 } from '../../conversions';
 import type { PdfAccess } from '../../conversions/pdf-access';
+import type { ArchiveExtractionLimits } from '../../conversions/archive-extraction-safety';
 import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import { gunzipStreamingWithLimits } from '../../conversions/archive';
@@ -909,24 +910,25 @@ async function resolveInputArtifacts(graphId: string, node: GraphNode, providedA
   return graphScheduler.getNodeOutputs(graphId, node.input);
 }
 
-async function extractGraphArchiveEntries(
+export async function extractGraphArchiveEntries(
   effectiveFilename: string,
   archiveBuffer: Buffer,
-  entries?: string[]
+  entries?: string[],
+  limits?: ArchiveExtractionLimits
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   const lowerFilename = effectiveFilename.toLowerCase();
   const ext = lowerFilename.endsWith('.tar.gz')
     ? 'tar.gz'
     : path.extname(lowerFilename).replace(/^\./, '');
   if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-    const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer) : archiveBuffer;
-    return extractTarArchive(uncompressed, { entries });
+    const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer, limits) : archiveBuffer;
+    return extractTarArchive(uncompressed, { entries, limits });
   }
   if (ext === '7z') {
-    return extract7zArchive(archiveBuffer, { entries });
+    return extract7zArchive(archiveBuffer, { entries, limits });
   }
   if (ext === 'rar') {
-    return extractRarArchive(archiveBuffer, { entries });
+    return extractRarArchive(archiveBuffer, { entries, limits });
   }
-  return extractZipArchive(archiveBuffer, { entries });
+  return extractZipArchive(archiveBuffer, { entries, limits });
 }

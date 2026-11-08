@@ -300,7 +300,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4108
+    "maxValue": 4061
   },
   {
     "file": "src/lib/conversions/archive.ts",
