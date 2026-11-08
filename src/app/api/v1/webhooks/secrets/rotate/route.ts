@@ -72,6 +72,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // 4. Rotate secret in enterprise WebhookSecretStore
   const store = getWebhookSecretStore();
+  // A key that has no record yet signs with the secret it was created with: that secret becomes the record the rotation then
+  // moves to the previous one, so the first rotation has a grace period too. An endpoint record never takes the key's secret.
+  if (apiKeyId && targetId === apiKeyId) {
+    const currentSecret = (await redisKeyStore.listApiKeys(auth.user.id)).find((key) => key.id === apiKeyId)?.webhookSecret;
+    if (currentSecret) await store.seedPrimarySecretIfAbsent(auth.user.id, targetId, currentSecret);
+  }
   const rotationResult = await store.rotateSecret(auth.user.id, targetId, graceSeconds);
 
   // 5. Keep redisKeyStore in sync if apiKeyId was provided
