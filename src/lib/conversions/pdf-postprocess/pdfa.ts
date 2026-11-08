@@ -20,6 +20,8 @@ import { pdfFromHeader } from '../../format-signatures';
 import { resolveBinaryPath } from './utils';
 import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 import { normalisePdfADates } from './pdfa-dates';
+import { writeOfficeProfile } from '../../../worker/libreoffice-profile';
+import { officeImportFilterArgs } from '../office/office-suite-sources';
 
 /**
  * Locate LibreOffice binary on the host or in container.
@@ -288,6 +290,7 @@ export async function convertToPdfA(
     const filterDef = `pdf:draw_pdf_Export:${JSON.stringify(buildPdfExportFilterData({ pdfa: { conformance } }))}`;
     // A private profile per job: concurrent jobs must not share (or lock) the default profile.
     const profileDir = path.join(workDir, 'profile');
+    writeOfficeProfile(profileDir);
     try {
       await executeSandboxedBinary(
         soffice,
@@ -297,6 +300,7 @@ export async function convertToPdfA(
           '--nofirststartwizard',
           '--nologo',
           `-env:UserInstallation=file://${profileDir}`,
+          ...officeImportFilterArgs('pdf'),
           '--convert-to',
           filterDef,
           '--outdir',

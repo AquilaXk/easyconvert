@@ -257,6 +257,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY native/qpdf-runner/ /src/qpdf-runner/
 RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
+# pid-init (native/pid-init, about 120 lines of C) starts every sandboxed program in a PID namespace of its own, with the program as PID 2, so one
+# run cannot see or signal another. It needs the same C compiler and nothing else, so it is built here.
+COPY native/pid-init/ /src/pid-init/
+RUN /src/pid-init/build.sh /usr/local/bin/pid-init
 
 # ==============================================================================
 # Stage 4c: sharp's libvips (libvips-cpp.so) with the codecs built for speed
@@ -507,6 +511,10 @@ RUN ! ldd /usr/local/bin/cad-convert | grep -q 'not found' \
 # cannot be loaded or has no job entry (--check prints its version).
 COPY --from=qpdfrunner /usr/local/bin/qpdf-runner /usr/local/bin/qpdf-runner
 RUN qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+
+# pid-init (built in the qpdfrunner stage). Run without arguments it prints its usage and exits 2; that line is the sign that it starts.
+COPY --from=qpdfrunner /usr/local/bin/pid-init /usr/local/bin/pid-init
+RUN pid-init 2>&1 | grep -q '^usage: pid-init'
 
 # MIDI renderer: FluidSynth (LGPL, run unmodified as a separate sandboxed program) turns a Standard MIDI File into sound with the General MIDI
 # SoundFont of timgm6mb-soundfont (6 MB, GPL-2 data that the program only reads), which the Debian alternatives link default-GM.sf2 names.

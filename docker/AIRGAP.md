@@ -135,7 +135,7 @@ The child needs the egress rule above. A deployment with no egress for the worke
 
 **Status**: option (a) chosen; option (b) is the fallback. To be confirmed on the target arm64 host with `scripts/verify-worker-container.sh`.
 
-**Context**: the worker container drops all capabilities (no `SYS_ADMIN`), sets `no-new-privileges`, and runs read-only. Each native child still starts through `unshare -r -n` (user and network namespaces, optionally PID and mount). Creating a user namespace needs no capability, but Docker's default seccomp profile denies `clone`, `unshare` and `setns` with namespace flags unless the container holds `CAP_SYS_ADMIN`. With the default profile and `STRICT_SANDBOX=true`, every native conversion is refused with 503 (`SandboxUnavailableError`); it never runs unsandboxed.
+**Context**: the worker container drops all capabilities (no `SYS_ADMIN`), sets `no-new-privileges`, and runs read-only. Each native child still starts through `unshare -r -n -- pid-init --` (user, network and PID namespaces, optionally mount). Creating a user namespace needs no capability, but Docker's default seccomp profile denies `clone`, `unshare` and `setns` with namespace flags unless the container holds `CAP_SYS_ADMIN`. With the default profile and `STRICT_SANDBOX=true`, every native conversion is refused with 503 (`SandboxUnavailableError`); it never runs unsandboxed.
 
 **Options**:
 
@@ -144,7 +144,7 @@ The child needs the egress rule above. A deployment with no egress for the worke
 
 **Decision**: (a). It changes one seccomp profile and nothing else about the container, and the sandbox code path stays the one the tests exercise.
 
-**Deviations from the default profile**, all stricter: `ptrace`, `process_vm_readv` and `process_vm_writev` are denied outright (the default allows them on kernels 4.8 and later), as are `io_uring_*` and every call the default gates on a capability (none is granted here). `mount` stays denied, so a child cannot mount a fresh `/proc`; a private PID namespace therefore renumbers the child but does not hide host `/proc` entries.
+**Deviations from the default profile**, all stricter: `ptrace`, `process_vm_readv` and `process_vm_writev` are denied outright (the default allows them on kernels 4.8 and later), as are `io_uring_*` and every call the default gates on a capability (none is granted here). `mount` stays denied, so a child cannot mount a fresh `/proc`; its private PID namespace (`pid-init`, entry 197) therefore stops it signalling or naming another run's processes but does not hide their `/proc` entries.
 
 **Fallback to (b)** when the host kernel forbids unprivileged user namespaces (`user.max_user_namespaces=0` or a distribution policy that blocks them) or the platform cannot load a custom seccomp profile. Strict mode then refuses conversions with 503 until the runner exists; it does not fall back to running unsandboxed.
 

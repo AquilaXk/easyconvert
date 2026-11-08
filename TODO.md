@@ -24,13 +24,12 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security
+- Close the window in which pid-init's PID 1 is started after its parent died (PDEATHSIG is set after the fork, and the parent's death is not seen until the pipe is polled): rare, needs a poll of the report pipe.
+- Hide the `/proc` entries of other runs from a sandboxed program: it cannot signal them any more, but still reads their command line and status (no `/proc` mount is allowed in the container).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
-- Give sandboxed jobs their own PID namespace or a distinct uid; `kill(sibling, 0)` succeeds today.
-- Run the office suite with a fixed profile: macros off, link updates off, `file:` reads restricted.
-- Pass the declared `--infilter` for every office input, and strip macros by content, not extension.
-- Run ffprobe through the process sandbox with rlimits, asynchronously.
-- Make the qpdf steps in `compress.ts` honour the job abort signal and deadline.
+- Pass the declared `--infilter` for the legacy binary Office formats (`doc`, `xls`, `ppt`, their templates, `wps`, `pdb`): the suite has one filter per generation behind each extension, so a fixed name fails on older files.
+- Make the remaining ffprobe runs asynchronous: the audio channel, sample rate and stream count probes of the argument builders (`probeScalar`), the HDR and empty-output probes, and the run that explains a failed probe; they run in the sandbox with limits but hold the event loop.
 - Make the PDF guard walk `/Parent` resources, count draws, and cover encrypted PDFs.
 - Fix graph start recovery so queued node jobs are cancelled even when the cancel fails.
 

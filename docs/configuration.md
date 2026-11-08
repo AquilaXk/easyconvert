@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 150 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 151 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -322,6 +322,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `VTRACER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PIXELS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAD_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `PID_INIT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `QPDF_RUNNER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `QPDF_RUNNER_LIB` | file or directory path | none | no | web, worker |
 | `FONTFORGE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -367,6 +368,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `VTRACER_PATH`: Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).
 - `VTRACER_PIXELS_PATH`: Path of the vtracer-pixels executable (scripts/vtracer-pixels), the vtracer front-end that reads the raw pixels the worker decoded; searched in the standard locations when unset. When it is found it traces those pictures instead of the vtracer executable; the SVG is the same.
 - `CAD_CONVERT_PATH`: Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).
+- `PID_INIT_PATH`: Path of the `pid-init` executable (native/pid-init) that starts every sandboxed program in a PID namespace of its own, so that one run cannot see or signal another; searched in the standard locations when unset. Without it, or when the host does not allow a PID namespace, programs run in the user and network namespaces only.
 - `QPDF_RUNNER_PATH`: Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.
 - `QPDF_RUNNER_LIB`: Path of the libqpdf shared library handed to `qpdf-runner` (`--lib`); the runner loads the system libqpdf when unset.
 - `FONTFORGE_PATH`: Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).

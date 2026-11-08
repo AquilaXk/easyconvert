@@ -32,7 +32,7 @@ import { outputSizeError } from './media-empty-output';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
 import { type MediaInput, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
-import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
+import { type FfprobePath, probeInput, probeInputAsync, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
 import {
@@ -136,30 +136,61 @@ export function getFfprobePath(): string | null {
  * Returns `options.duration` when finite and positive, or 0 if ffprobe is unavailable or parsing fails.
  */
 export function probeMediaDuration(input: MediaInput, options?: ConversionOptions, ffmpegBin?: string | null): number {
-  const overrideDuration =
+  const early = durationWithoutProbe(input, options);
+  if (early.known !== undefined) return early.known;
+  try {
+    const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
+    if (!ffprobe) return early.override ?? 0;
+    // The probe runs even when the caller states the duration: it is also the check of the pixel limit.
+    const probed = probeInput(input, ffprobe as FfprobePath).durationSec ?? 0;
+    return early.override ?? probed;
+  } catch (err) {
+    return durationAfterProbeError(err, early.override);
+  }
+}
+
+/**
+ * `probeMediaDuration` without holding the event loop while ffprobe runs, with the same answers and the same errors. The probe it
+ * makes is remembered, so the planner and the argument builders that probe the same input afterwards find it. The signal of the job stops it.
+ */
+export async function probeMediaDurationAsync(input: MediaInput, options?: ConversionOptions, ffmpegBin?: string | null, signal?: AbortSignal): Promise<number> {
+  const early = durationWithoutProbe(input, options);
+  if (early.known !== undefined) return early.known;
+  try {
+    const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
+    if (!ffprobe) return early.override ?? 0;
+    const probed = (await probeInputAsync(input, ffprobe as FfprobePath, signal)).durationSec ?? 0;
+    return early.override ?? probed;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return durationAfterProbeError(err, early.override);
+  }
+}
+
+/** The duration a file states without a probe (an override, a WAVE or MP4 header, a missing file), and the override that wins over a probe. */
+function durationWithoutProbe(input: MediaInput, options?: ConversionOptions): { known?: number; override?: number } {
+  const override =
     typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0
       ? options.duration
       : undefined;
   const wav = readWavPcmInfo(input.path);
-  if (wav !== null) return overrideDuration ?? wav.durationSeconds;
+  if (wav !== null) return { known: override ?? wav.durationSeconds };
   const header = readMp4Layout(input.path);
   if (header !== null) {
     for (const stream of header.streams) {
       if (stream.width !== undefined && stream.height !== undefined) assertInputPixels(stream.width, stream.height);
     }
-    if (header.durationSec !== undefined) return overrideDuration ?? header.durationSec;
+    if (header.durationSec !== undefined) return { known: override ?? header.durationSec };
   }
-  if (!fs.existsSync(input.path)) return overrideDuration ?? 0;
-  try {
-    const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
-    if (!ffprobe) return overrideDuration ?? 0;
-    const probed = probeInput(input, ffprobe as FfprobePath).durationSec ?? 0;
-    return overrideDuration ?? probed;
-  } catch (err) {
-    if (err instanceof InputPixelLimitError) throw err;
-    rethrowSandboxUnavailable(err);
-    return overrideDuration ?? 0;
-  }
+  if (!fs.existsSync(input.path)) return { known: override ?? 0 };
+  return { override };
+}
+
+/** What a probe error means for the duration: the pixel limit and a missing sandbox are refusals, any other failure is an unknown duration. */
+function durationAfterProbeError(err: unknown, override: number | undefined): number {
+  if (err instanceof InputPixelLimitError) throw err;
+  rethrowSandboxUnavailable(err);
+  return override ?? 0;
 }
 
 export { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs };
@@ -419,7 +450,7 @@ async function executeFfmpegTranscode(
   try {
     const input = openMediaInput(inputPath, src);
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
-    const durationSeconds = probeMediaDuration(input, options, ffmpegBin);
+    const durationSeconds = await probeMediaDurationAsync(input, options, ffmpegBin, options.signal);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
     const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
       runFfmpegTranscode(ffmpegBin, ffmpegArgs, {
@@ -510,7 +541,7 @@ async function executeFfmpegThumbnails(
 
   try {
     const input = openMediaInput(inputPath, src);
-    probeMediaDuration(input, options, ffmpegBin);
+    await probeMediaDurationAsync(input, options, ffmpegBin, options.signal);
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
       const outputPath = path.join(tmpDir, `easyconvert_thumb_${Date.now()}_${token}_${i}.${actualTgt}`);
@@ -585,7 +616,7 @@ export async function packageHlsDashMedia(
 
   try {
     const input = openMediaInput(inputPath, src);
-    probeMediaDuration(input, options, ffmpegBin);
+    await probeMediaDurationAsync(input, options, ffmpegBin, options.signal);
     const source = probePackagingSource(input, ffmpegBin);
     const args = buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
     await runFfmpeg(ffmpegBin, args, {

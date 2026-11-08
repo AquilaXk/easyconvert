@@ -21,8 +21,8 @@ import {
   assertAllowedLibreOfficeFilter,
   buildPdfExportFilterData,
 } from '../lib/conversions/pdf-export-options';
-import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
-import { writeKeepExcelObjectsSetting } from './libreoffice-profile';
+import { officeImportFilterArgs, officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
+import { writeOfficeProfile } from './libreoffice-profile';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
 export { ALLOWED_LIBREOFFICE_FILTERS, ALLOWED_LIBREOFFICE_FILTERS_BY_TARGET };
@@ -182,14 +182,15 @@ export function resolveLibreOfficeFilter(
 }
 
 /**
- * The `-env:UserInstallation` argument of a run in the temporary directory `tempDir`, with the profile prepared for what the options ask: a
- * run that keeps embedded Excel objects gets the setting written first, and is never a run of the pool, whose profiles other jobs share. The
+ * The `-env:UserInstallation` argument of a run in the temporary directory `tempDir`, followed by the import filter of the declared source
+ * format (none for a format the suite detects itself), with the profile written first: the settings of every
+ * run, and for a run that keeps embedded Excel objects that setting too (such a run is never a run of the pool, whose profiles other jobs share). The
  * run's temporary files go into the same directory (`TMPDIR`, where the run is started), which is removed with it, so a run that is killed
  * leaves nothing in the shared temporary directory.
  */
-export function standaloneProfileArgument(tempDir: string, options: WorkerEngineOptions): string {
-  if (options.keepEmbeddedExcelObjects) writeKeepExcelObjectsSetting(`${tempDir}/user`);
-  return `-env:UserInstallation=file://${tempDir}/user`;
+export function standaloneProfileArguments(tempDir: string, options: WorkerEngineOptions, sourceFormat: string): string[] {
+  writeOfficeProfile(`${tempDir}/user`, { keepEmbeddedExcelObjects: options.keepEmbeddedExcelObjects });
+  return [`-env:UserInstallation=file://${tempDir}/user`, ...officeImportFilterArgs(sourceFormat)];
 }
 
 /**
@@ -299,6 +300,8 @@ export class LibreOfficePoolManager {
     const id = `worker-${crypto.randomUUID().slice(0, 8)}`;
     const userProfileDir = createWorkerSandboxDir(`libreoffice_profile_${id}_`);
     const workDir = createWorkerSandboxDir(`libreoffice_work_${id}_`);
+    // The profile every job of the slot shares holds the fixed settings from its first start (the pre-warm below).
+    writeOfficeProfile(userProfileDir);
 
     const worker: LibreOfficeWorker = {
       id,
@@ -398,6 +401,7 @@ export class LibreOfficePoolManager {
     try {
       profileDir = createWorkerSandboxDir(`libreoffice_probe_profile_${probeId}_`);
       workDir = createWorkerSandboxDir(`libreoffice_probe_work_${probeId}_`);
+      writeOfficeProfile(profileDir);
       const inputPath = path.join(workDir, READINESS_PROBE_INPUT_NAME);
       const outputPath = path.join(workDir, READINESS_PROBE_OUTPUT_NAME);
       const args = [
@@ -720,6 +724,9 @@ export class LibreOfficePoolManager {
     try {
       fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
       const inputPath = this.prepareInputPath(jobSubdir, src, input);
+      // The slot's profile is shared by its jobs, and the suite writes its settings back when it ends: the fixed settings are written again
+      // before every job, so what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
+      writeOfficeProfile(worker.userProfileDir);
 
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
@@ -730,6 +737,7 @@ export class LibreOfficePoolManager {
         '--nofirststartwizard',
         '--nologo',
         `-env:UserInstallation=file://${worker.userProfileDir}`,
+        ...officeImportFilterArgs(src),
         '--convert-to',
         filterSpec,
         '--outdir',

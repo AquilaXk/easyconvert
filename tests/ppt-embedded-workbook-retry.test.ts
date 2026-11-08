@@ -124,13 +124,14 @@ describe('the second run of a presentation the first run ended without a verdict
 });
 
 describe('the profile of a run that keeps the Excel objects', () => {
-  it('holds the one setting, in the file the office suite reads', () => {
+  it('holds its setting beside the fixed settings of every run, in the file the office suite reads', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'keep-excel-'));
     try {
       writeKeepExcelObjectsSetting(root);
       const settings = fs.readFileSync(path.join(root, 'user', 'registrymodifications.xcu'), 'utf-8');
       expect(settings).toContain('oor:path="/org.openoffice.Office.Common/Filter/Microsoft/Import"');
-      expect(settings.match(/<prop /g)).toHaveLength(1);
+      // The six fixed settings of every run (tests/libreoffice-fixed-profile.test.ts) and this one.
+      expect(settings.match(/<prop /g)).toHaveLength(7);
       expect(settings).toMatch(/oor:name="ExcelToCalc"[^>]*><value>false<\/value>/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
