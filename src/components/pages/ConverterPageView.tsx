@@ -68,6 +68,9 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
     [targetForReverse]
   );
 
+  // A converter page shows its title alone (QA 2026-11-08: visitors found the "converts X to Y, also to Z" sentence noise); the
+  // sentence stays the page's meta description. Tool pages keep theirs, since it says what the tool does with the files.
+  const visibleIntro = parsed.copy.kind === 'pair' || parsed.copy.kind === 'format' ? undefined : copy.description;
   return (
     <div className="flex flex-col min-h-screen">
       <Header />
@@ -79,7 +82,7 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
             sourceFormat={queue[0].sourceFormat}
             targetFormat={queueTarget}
             pageTitle={copy.title}
-            pageDescription={copy.description}
+            pageDescription={visibleIntro}
           />
         ) : (
           <PairHero
@@ -87,7 +90,7 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
             dailyLimit={dailyLimit}
             tiles={tiles}
             title={copy.title}
-            description={copy.description}
+            description={visibleIntro}
             operation={operationOf(parsed.copy.kind)}
           />
         )}
