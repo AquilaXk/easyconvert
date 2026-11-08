@@ -33,7 +33,7 @@ export function plainText(raw: string, kind: SubtitleKind): string {
   const braced = kind === 'srt' || kind === 'vtt' ? /\{\\[^}]*\}/g : /\{[^}]*\}/g;
   // SubStation Alpha writes a brace that is text as `\{` and `\}`; the escape is set aside while the blocks are removed.
   const unescaped = kind === 'ass' || kind === 'ssa' ? raw.replace(/\\\{/g, '\u0001').replace(/\\\}/g, '\u0002') : raw;
-  const withoutMarkup = unescaped.replace(braced, '').replace(/<[^>]*>/g, '').replace(/\u0001/g, '{').replace(/\u0002/g, '}');
+  const withoutMarkup = unescaped.replace(braced, '').replace(/<[^>]*>/g, '').replaceAll('\u0001', '{').replaceAll('\u0002', '}');
   const escaped = kind === 'ass' || kind === 'ssa' ? withoutMarkup.replace(/\\[Nn]/g, ' ').replace(/\\h/g, ' ') : withoutMarkup;
   return escaped
     .replace(/&(?:amp|lt|gt|nbsp|lrm|rlm|quot|apos);/g, (entity) => ENTITIES[entity])

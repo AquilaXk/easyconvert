@@ -316,7 +316,7 @@ export function repairSubtitleOutput(text: string, target: string, source: strin
   }
   if (SUBSTATION_SOURCES.has(source)) body = body.split('\n').map((line) => replaceBraceBlocks(line, true, () => '')).join('\n');
   if (source === 'vtt') body = body.replace(/\\h/g, '\u00A0');
-  const all = body.replace(/\u0001/g, '{').replace(/\u0002/g, '}').split('\n');
+  const all = body.replaceAll('\u0001', '{').replaceAll('\u0002', '}').split('\n');
   const next = nextNonBlankLines(all);
   const kept: string[] = [];
   let inCue = false;
