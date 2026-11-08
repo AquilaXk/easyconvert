@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { Clock, Plus } from 'lucide-react';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
@@ -96,6 +96,13 @@ interface ApiKeysPanelProps {
   actions: ApiKeysPanelActions;
 }
 
+const subscribeToNothing = () => () => undefined;
+
+/** The origin this page is served from, which the code samples call; empty on the server, where this panel is never drawn. */
+function useSiteOrigin(): string {
+  return useSyncExternalStore(subscribeToNothing, () => window.location.origin, () => '');
+}
+
 export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
   const {
     apiKeys,
@@ -111,6 +118,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
     acceptedTerms,
   } = state;
   const t = useTranslations('dashboard.keys');
+  const siteOrigin = useSiteOrigin();
   const sampleKeyDisplay = generatedSecret || '$EASYCONVERT_API_KEY';
 
   return (
@@ -174,7 +182,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
         />
       </div>
 
-      <IntegrationGuide sampleKeyDisplay={sampleKeyDisplay} />
+      <IntegrationGuide sampleKeyDisplay={sampleKeyDisplay} apiOrigin={siteOrigin} />
     </div>
   );
 }
