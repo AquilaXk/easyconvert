@@ -179,7 +179,26 @@ export const runRaw: FamilyRunner = async (ctx) => {
   return rows;
 };
 
-async function runSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: ClassRows): Promise<BenchRow[]> {
+/**
+ * Runs `measure` with a scratch directory of its own, removed when it ends. A sample is developed to a 16-bit TIFF of up to 270 MB and
+ * encoded at four quality points: kept until the run ends, the files of some forty samples fill 10 GB of disk, and the next `dcraw_emu` write
+ * is then cut short without an exit code (LibRaw does not check its writes), which the product refuses as a short intermediate image.
+ */
+export async function withSampleScratch<T>(ctx: FamilyContext, name: string, measure: (scratch: (file: string) => string) => Promise<T>): Promise<T> {
+  const dir = ctx.scratch(`${name}-files`);
+  fs.mkdirSync(dir);
+  try {
+    return await measure((file) => path.join(dir, file));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function runSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: ClassRows): Promise<BenchRow[]> {
+  return withSampleScratch(ctx, subject.name, (scratch) => measureSample({ ...ctx, scratch }, subject, file, tools, classRows));
+}
+
+async function measureSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: ClassRows): Promise<BenchRow[]> {
   const { name, format, sample } = subject;
   const input = fs.readFileSync(file);
   const developed = (label: string): string => {
