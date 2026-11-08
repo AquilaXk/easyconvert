@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { isProcessRunning } from './helpers/process-state';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -99,14 +100,8 @@ describe.skipIf(compilerMissing || namespacesMissing)('pid-init', () => {
     const [program] = children(init);
     expect(fs.readFileSync(`/proc/${program}/cmdline`, 'utf8')).toContain('sleep');
     process.kill(child.pid!, 'SIGKILL');
-    const alive = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    // A killed process that nobody has reaped yet is a zombie, not a running one: the helper reads its state instead of signalling it.
+    const alive = isProcessRunning;
     const end = Date.now() + 5000;
     while ((alive(init) || alive(program)) && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     expect({ init: alive(init), program: alive(program) }).toEqual({ init: false, program: false });
