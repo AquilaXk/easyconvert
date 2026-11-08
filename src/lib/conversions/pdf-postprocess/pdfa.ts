@@ -310,7 +310,7 @@ export async function convertToPdfA(
         {
           timeoutMs: SOFFICE_TIMEOUT_MS,
           cwd: workDir,
-          env: { SAL_USE_VCLPLUGIN: 'svp' },
+          env: { HOME: workDir, TMPDIR: workDir, SAL_USE_VCLPLUGIN: 'svp' },
           networkIsolated: true,
         }
       );

@@ -138,6 +138,88 @@ describe('mendPageTree', () => {
   });
 });
 
+/** A deterministic generator of numbers in [0, 1): the same graphs on every run. */
+function sequence(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+describe('mendPageTree on graphs of nodes that list each other, a page twice, or a node no page is left in', () => {
+  const FIRST_ID = 10;
+  const idOf = (index: number): string => ref(FIRST_ID + index);
+
+  /** Every page the root reaches by any route, counted once per page object. */
+  function reachablePages(isNode: readonly boolean[], kids: readonly number[][]): Set<number> {
+    const seen = new Set<number>();
+    const pages = new Set<number>();
+    for (const stack = [0]; stack.length > 0; ) {
+      const at = stack.pop()!;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      if (isNode[at]) stack.push(...kids[at]);
+      else pages.add(at);
+    }
+    return pages;
+  }
+
+  it('leaves 2,000 random graphs as trees whose /Count is the number of page references below each node, with no page lost', () => {
+    const faults: string[] = [];
+    for (let seed = 1; seed <= 2000; seed += 1) {
+      const next = sequence(seed);
+      const size = 3 + Math.floor(next() * 7);
+      const isNode = Array.from({ length: size }, (_, index) => index === 0 || next() < 0.45);
+      const kids = isNode.map((node) => (node ? Array.from({ length: Math.floor(next() * 4) }, () => Math.floor(next() * size)) : []));
+      const objects: Record<string, PdfJsonObject> = {
+        trailer: { value: { '/Root': ref(CATALOG) } },
+        [`obj:${ref(CATALOG)}`]: { value: { '/Type': '/Catalog', '/Pages': idOf(0) } },
+      };
+      isNode.forEach((node, index) => {
+        objects[`obj:${idOf(index)}`] = { value: node ? { '/Type': '/Pages', '/Kids': kids[index].map(idOf), '/Count': 99 } : { '/Type': '/Page' } };
+      });
+      const mended = mendPageTree(objects);
+      const after = (index: number) => (mended.get(`obj:${idOf(index)}`) ?? objects[`obj:${idOf(index)}`].value) as Record<string, unknown>;
+      const visits = new Array<number>(size).fill(0);
+      const keptPages = new Set<number>();
+      const countBelow = (index: number, ancestors: readonly number[]): number => {
+        if (!isNode[index]) {
+          keptPages.add(index);
+          return 1;
+        }
+        if (ancestors.includes(index)) {
+          faults.push(`seed ${seed}: node ${index} is its own ancestor`);
+          return 0;
+        }
+        visits[index] += 1;
+        const below = (after(index)['/Kids'] as string[]).reduce((sum, kid) => sum + countBelow(Number(kid.split(' ')[0]) - FIRST_ID, [...ancestors, index]), 0);
+        if (after(index)['/Count'] !== below) faults.push(`seed ${seed}: node ${index} says ${String(after(index)['/Count'])} and holds ${below}`);
+        return below;
+      };
+      countBelow(0, []);
+      if (visits.some((times) => times > 1)) faults.push(`seed ${seed}: a node is listed twice`);
+      const before = [...reachablePages(isNode, kids)].sort();
+      if (JSON.stringify([...keptPages].sort()) !== JSON.stringify(before)) faults.push(`seed ${seed}: pages ${before.join(',')} became ${[...keptPages].sort().join(',')}`);
+    }
+    expect(faults).toEqual([]);
+  });
+
+  it('keeps a page that is listed twice below a looping node as two pages, as qpdf reads it (a copy of the page for the second entry)', () => {
+    const objects = objectList({ [ROOT]: { kids: [ref(4)], count: 2 }, 4: { kids: [ref(ROOT), ref(3), ref(3)], count: 2 } }, [3]);
+    const mended = mendPageTree(objects);
+    expect(kidsAndCount(mended, 4)).toEqual({ kids: [ref(3), ref(3)], count: 2 });
+    expect(mended.has(`obj:${ref(ROOT)}`)).toBe(false);
+  });
+
+  it('drops a node whose every child another node holds, and counts the pages once, at the first holder', () => {
+    const objects = objectList({ [ROOT]: { kids: [ref(4), ref(5)], count: 2 }, 4: { kids: [ref(6)], count: 1 }, 5: { kids: [ref(6)], count: 1 }, 6: { kids: [ref(3)], count: 1 } }, [3]);
+    const mended = mendPageTree(objects);
+    expect(kidsAndCount(mended, ROOT)).toEqual({ kids: [ref(4)], count: 1 });
+    expect(mended.has(`obj:${ref(4)}`)).toBe(false);
+  });
+});
+
 const toolsMissing = skipWithoutTools('qpdf', 'pdftotext', 'pdfinfo');
 const ghostscriptMissing = skipUnless('Ghostscript (gs)', getGhostscriptBinaryPath() !== null);
 const PAGE_TEXT = 'Ring page text';
