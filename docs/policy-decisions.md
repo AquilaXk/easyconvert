@@ -191,6 +191,7 @@ Delivery
 195. [A Nikon NEF with High Efficiency compression is developed by a pinned LibRaw development snapshot run as a separate program, and every other camera file keeps the distribution's LibRaw](#195-a-nikon-nef-with-high-efficiency-compression-is-developed-by-a-pinned-libraw-development-snapshot-run-as-a-separate-program-and-every-other-camera-file-keeps-the-distributions-libraw)
 196. [Subtitle formats are a catalogue category of their own, and the home format tiles start on DOCX to PDF](#196-subtitle-formats-are-a-catalogue-category-of-their-own-and-the-home-format-tiles-start-on-docx-to-pdf)
 197. [Every sandboxed program runs in a PID namespace of its own, started by pid-init so that it is PID 2; office input is opened with a fixed LibreOffice profile, the declared import filter, and without macros found by content; ffprobe and the qpdf steps of the compression keep the limits and the signal of the job](#197-every-sandboxed-program-runs-in-a-pid-namespace-of-its-own-started-by-pid-init-so-that-it-is-pid-2-office-input-is-opened-with-a-fixed-libreoffice-profile-the-declared-import-filter-and-without-macros-found-by-content-ffprobe-and-the-qpdf-steps-of-the-compression-keep-the-limits-and-the-signal-of-the-job)
+199. [A converter page shows its title alone, and the sign-up prompt sits under the login button](#199-a-converter-page-shows-its-title-alone-and-the-sign-up-prompt-sits-under-the-login-button)
 
 Quality evidence
 
@@ -6865,3 +6866,16 @@ Security
 - **Alternatives rejected**: `unshare -p --fork` alone (the program as PID 1, above); a distinct user ID per run (needs `newuidmap` and a range of subordinate IDs in the container, which the worker does not have and the seccomp profile does not allow); `bwrap --unshare-pid` (another dependency with its own mount setup, which the profile denies); a Node helper as PID 1 (a runtime started for every program).
 - **Verified by**: `tests/sandbox-isolation.test.ts` (a run cannot find or signal a sibling run, with an opt-out run as the control; what a run left running ends with it; the memory is read from the program), `tests/pid-init.test.ts` (the program is PID 2, exit statuses, SIGKILL/SIGSEGV/SIGXFSZ re-raised, 126/127, the tree ends with the process outside), `tests/qpdf-runner.test.ts`, `tests/pdf-compress-qpdf-limits.test.ts`, and the container check 10 of `scripts/verify-worker-container.sh`.
 - **Revisit when**: the worker image gets a way to mount `/proc` in a namespace of its own, or a program of the sandbox needs to run as PID 1.
+
+## 199. A converter page shows its title alone, and the sign-up prompt sits under the login button
+
+- **Status**: Implemented, decided 2026-11-08 (QA approval of visitor feedback).
+- **Decision**:
+  - **A pair page and a format page show their title with no sentence under it** (`ConverterPageView`, `PairHero`). The sentence "converts X to Y online, also to A, B and C" stays the page's meta description for search results. Tool pages (merge, compress, OCR) keep their sentence, since it says what the tool does with the files.
+  - **No small "also to HTML, MD, EPUB" line either**: the target tile lists every target of the source, and the format card links to the format page that lists them all.
+  - **The "no account? sign up" prompt (and "have an account? log in") sits under the submit button** of the auth card (`AuthPageView`).
+- **Why**: Visitors read the sentence under "DOCX → PDF converter" as the title said again. Both reference converters do put a sentence there, but it repeats the title (one has a typo in it), and neither lists other targets near the title; one places the sign-up prompt under the button, the other under the title.
+- **Trade-offs**: The hero is shorter and says less on a pair whose name a visitor may not know; the format cards below still describe both formats.
+- **Alternatives rejected**: a small grey line naming other targets (repeats what the target tile offers); keeping the reference sentence (visitor feedback).
+- **Verified by**: `tests/slug-copy.test.ts`, `tests/pair-page-tiles.test.ts`, the auth page tests, and before/after screenshots QA approved.
+- **Revisit when**: search traffic to pair pages drops after the change, or visitors ask which other formats a page converts to.
