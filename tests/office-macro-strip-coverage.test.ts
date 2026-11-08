@@ -142,7 +142,7 @@ describe('officeInputWithoutMacros keeps the family of a template or slide show'
   it.each([
     ['dotm', WORD_MACRO_TEMPLATE, WORD_TEMPLATE],
     ['docm', 'application/vnd.ms-word.document.macroEnabled.main+xml', WORD_MAIN],
-  ])('strips a .%s to the macro-free content type of its own kind', async (variant, mainType, expected) => {
+  ])('strips a .%s to the macro-free content type of its own kind', async (_variant, mainType, expected) => {
     const buffer = await wordPackage({
       mainType,
       types: `<Override PartName="/word/macros.bin" ContentType="${VBA_TYPE}"/>`,
@@ -152,7 +152,6 @@ describe('officeInputWithoutMacros keeps the family of a template or slide show'
     const handed = (await officeInputWithoutMacros(buffer)) as Buffer;
     expect(await readText(handed, '[Content_Types].xml')).toContain(`PartName="/word/document.xml" ContentType="${expected}"`);
     expect(names(await JSZip.loadAsync(handed)).filter((name) => name.includes('macros'))).toEqual([]);
-    expect(variant).toBeTruthy();
   });
 });
 

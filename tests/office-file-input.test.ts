@@ -85,8 +85,10 @@ describe.skipIf(sofficeMissing)('the real office suite given a file of the store
     ['the pool', {}],
     ['a run of its own', { keepEmbeddedExcelObjects: true }],
   ])('converts a .docx held as <digest>.bin through %s', async (_name, options) => {
-    const result = await convertWithHeadlessOffice({ inputPath: storedFile(await docx()) }, 'docx', 'pdf', { ...options, throwOnUnavailable: true }, 'letter.docx');
+    const stored = storedFile(await docx());
+    const result = await convertWithHeadlessOffice({ inputPath: stored }, 'docx', 'pdf', { ...options, throwOnUnavailable: true }, 'letter.docx');
     expect(result?.buffer.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(fs.readFileSync(stored).equals(await docx())).toBe(true);
     if (result?.filePath) fs.rmSync(result.filePath, { force: true });
   }, REAL_TIMEOUT_MS);
 
