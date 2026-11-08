@@ -158,6 +158,21 @@ export async function discardUpload(storage: DeletableStorage, key: string, now:
   return true;
 }
 
+/**
+ * Takes the file under `key` out of service at once, for the account that deleted it: the object is removed whatever its
+ * record says (a job that reads it as its input loses it), and the record is forgotten, so a download answers 404 as for a
+ * file that never was. A store that fails to delete leaves the record, so the same call can be made again; an object that is
+ * already gone is not an error.
+ */
+export async function eraseOwnedFile(storage: DeletableStorage, key: string): Promise<void> {
+  await bounded(`Deleting "${key}"`, () => storage.deleteObject(key));
+  await getRetentionLedger()
+    .forget(key)
+    .catch((error: unknown) => {
+      console.warn(`[Retention] Could not forget the record of the deleted file "${key}"; the sweep does:`, error);
+    });
+}
+
 /** Stores a result that lives for the undelivered time and registers it, so that the sweep and the download route know it. */
 export async function saveRetainedResult(
   storage: ResultStorage,
