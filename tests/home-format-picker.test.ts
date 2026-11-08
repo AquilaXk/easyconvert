@@ -57,6 +57,13 @@ async function choose(button: Element, format: string) {
 }
 
 describe('the home page format picker', () => {
+  it('starts on DOCX to PDF instead of two empty tiles, and opens no page for it', async () => {
+    const host = await mount();
+    expect(host.querySelector('[data-testid=hero-source-format-btn]')?.getAttribute('aria-label')).toBe('Source format DOCX');
+    expect(host.querySelector('[data-testid=hero-target-format-btn]')?.getAttribute('aria-label')).toBe('Target format PDF');
+    expect(push).not.toHaveBeenCalled();
+  });
+
   it('opens the page of the pair once a source and a target are chosen', async () => {
     const host = await mount();
     await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'pdf');

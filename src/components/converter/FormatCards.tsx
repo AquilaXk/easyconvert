@@ -16,7 +16,7 @@ export function FormatCards({ ids }: Readonly<{ ids: readonly [string] | readonl
   return (
     <section
       aria-label={t('formatCardsLabel')}
-      className={`max-w-7xl mx-auto px-6 mb-14 grid grid-cols-1 gap-4 ${linked ? 'md:grid-cols-2' : ''}`}
+      className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-14 grid grid-cols-1 gap-4 ${linked ? 'md:grid-cols-2' : ''}`}
     >
       {ids.map((id) => {
         const name = id.toUpperCase();
@@ -24,7 +24,7 @@ export function FormatCards({ ids }: Readonly<{ ids: readonly [string] | readonl
         return (
           <div key={id} className="flex items-start gap-4 border border-rule bg-surface/40 p-5 sm:p-6 min-w-0">
             <span className="inline-flex size-11 shrink-0 items-center justify-center rounded-xs border border-accent/20 bg-accent/10 text-accent-ink">
-              <FormatIcon format={id} className="size-5" />
+              <FormatIcon format={id} className="size-6" />
             </span>
             <div className="min-w-0 flex-1">
               <h2 className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-base text-ink">

@@ -28,6 +28,11 @@ export const PRIMARY_LINKS = [
   { key: 'dashboard', href: '/dashboard' },
 ] as const satisfies readonly SiteLink[];
 
+/** The primary links a visitor can use: the dashboard is for a signed-in person only. */
+export function primaryLinksFor(signedIn: boolean): Array<(typeof PRIMARY_LINKS)[number]> {
+  return PRIMARY_LINKS.filter((item) => signedIn || item.key !== 'dashboard');
+}
+
 /** What the mobile menu's collapsed API group holds. */
 export const API_LINKS = [
   { key: 'apiDocs', href: '/api-docs' },

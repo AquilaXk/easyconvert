@@ -2877,7 +2877,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
 }, SUBTITLE_DEFINITIONS);
 
 export const CATEGORY_LABELS: Record<FormatCategory, string> = {
-  image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video', audio: 'Audio', ebook: 'Ebooks',
+  image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video', audio: 'Audio', subtitle: 'Subtitles', ebook: 'Ebooks',
   spreadsheet: 'Spreadsheets', presentation: 'Presentations', data: 'Data & Tables', vector: 'Vector', font: 'Fonts', cad: 'CAD & 3D',
 };
 export const CATEGORY_ORDER = Object.keys(CATEGORY_LABELS) as FormatCategory[];

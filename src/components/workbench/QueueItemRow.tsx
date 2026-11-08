@@ -140,7 +140,7 @@ export default function QueueItemRow({
   return (
     <div className="rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 grid grid-cols-[2.75rem_minmax(0,1fr)_auto] lg:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-3 min-w-0">
       <div className="size-11 flex items-center justify-center rounded-xs bg-sunken">
-        <FormatIcon format={item.sourceFormat} className="size-5 text-ink-3" />
+        <FormatIcon format={item.sourceFormat} className="size-6 text-ink-3" />
       </div>
       <div className="min-w-0">
         <p className="text-[15px] font-semibold text-ink truncate" title={item.name}>
@@ -155,7 +155,7 @@ export default function QueueItemRow({
 
       <div className="col-span-3 row-start-2 border-t border-rule pt-3 lg:col-span-1 lg:col-start-3 lg:row-start-1 lg:border-0 lg:pt-0 flex items-center flex-wrap gap-2 lg:gap-2.5">
         <span className="inline-flex items-center gap-1.5 min-h-9 px-2.5 rounded-xs bg-sunken text-sm font-semibold text-ink">
-          <FormatIcon format={item.sourceFormat} className="size-3.5 text-ink-3" />
+          <FormatIcon format={item.sourceFormat} className="size-[19px] text-ink-3" />
           {sourceLabel}
         </span>
         <ArrowRight aria-hidden="true" className="size-4 text-ink-3 shrink-0" />

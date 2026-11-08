@@ -1,7 +1,7 @@
 import type { FormatCategory } from './types';
 
-/** A word a slug names a category of the registry by (`/video-converter`): the id of the category. */
-export type CategoryWord = FormatCategory;
+/** A word a slug names a category of the registry by (`/video-converter`): the id of the category. The subtitle category is grouped in the catalogue only; it has no page of its own (docs/policy-decisions.md, entry 196). */
+export type CategoryWord = Exclude<FormatCategory, 'subtitle'>;
 
 /** The words a slug names a category by, the categories of the registry: the format its page converts and the word its title shows. */
 export const CATEGORY_WORDS: Readonly<Record<CategoryWord, { format: string; display: string }>> = {

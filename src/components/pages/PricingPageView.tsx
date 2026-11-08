@@ -38,9 +38,9 @@ export default function PricingPageView({ anonymousDaily }: Readonly<{ anonymous
       <Header />
       <main id="main-content" className="flex-1">
         <section className="pt-10 pb-8 lg:pt-14">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center lg:text-left">
+          <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center lg:text-left">
             <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{t('title')}</h1>
-            <p className="mt-5 max-w-2xl text-base sm:text-lg sm:leading-relaxed text-ink-3 mx-auto lg:mx-0">{t('intro')}</p>
+            <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{t('intro')}</p>
           </div>
         </section>
 

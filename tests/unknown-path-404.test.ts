@@ -164,8 +164,10 @@ describe('the parser reads a pair as a page exactly when the registry offers it'
   });
 
   it('finds the converter page of every registered format and of every category the registry has, and no other converter page', () => {
-    const categories = new Set(Object.values(FORMAT_REGISTRY).map((definition) => definition.category));
+    // Subtitles are a group of the format catalogue, not a converter page of their own category.
+    const categories = new Set(Object.values(FORMAT_REGISTRY).map((definition) => definition.category).filter((category) => category !== 'subtitle'));
     expect(Object.keys(CATEGORY_WORDS).sort()).toEqual([...categories].sort());
+    expect(parseConverterSlug('subtitle-converter')).toBeNull();
     for (const id of ids) expect(parseConverterSlug(`${id}-converter`), `${id}-converter`).toMatchObject({ canonicalPath: `/${id}-converter` });
     for (const word of categories) expect(parseConverterSlug(`${word}-converter`), `${word}-converter`).toMatchObject({ canonicalPath: `/${word}-converter` });
   });

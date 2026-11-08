@@ -82,7 +82,9 @@
 
 @layer base {
   /* In-page anchors land below the sticky header. */
+  /* Pages with and without a scrollbar keep the same width, so the centred header does not move between them. */
   html {
+    scrollbar-gutter: stable;
     scroll-padding-top: calc(var(--header-height) + 0.5rem);
     accent-color: rgb(var(--c-accent));
   }

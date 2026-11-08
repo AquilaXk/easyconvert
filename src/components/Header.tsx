@@ -9,13 +9,15 @@ import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
-import { PRIMARY_LINKS, TOOL_ROUTES } from './site-links';
+import { primaryLinksFor, TOOL_ROUTES } from './site-links';
+import { useViewerAccount } from '@/hooks/useViewerPlan';
 
 export default function Header() {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
+  const signedIn = useViewerAccount() !== null;
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
@@ -98,7 +100,7 @@ export default function Header() {
               )}
             </div>
 
-            {PRIMARY_LINKS.map((item) => (
+            {primaryLinksFor(signedIn).map((item) => (
               <Link
                 key={item.key}
                 href={item.href}

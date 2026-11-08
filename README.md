@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **308 file formats** and **2,766 conversion pairs** in **12 categories**.
+EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **308 file formats** and **2,766 conversion pairs** in **13 categories**.
 
 EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools, a Redis-backed queue with Lua scripts, and S3 or OCI multipart object storage. It fails closed on malformed or spoofed input and deletes stored files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
 
@@ -10,7 +10,7 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 
 ## Key Highlights
 
-- **308 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,766` source-to-target pairs).
+- **308 Formats Across 13 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,766` source-to-target pairs).
 - **Binary Conversion Engines**:
   - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and builder with paragraph and table extraction.
   - **Cox-de Boor Curves**: B-spline basis evaluator and Bézier flattening for CAD and vector paths.
@@ -26,16 +26,17 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 
 ---
 
-## Supported Format Matrix (12 Categories)
+## Supported Format Matrix (13 Categories)
 
 <!-- registry-stats:start -->
 | Category | Format Count | Supported Extensions |
 | :--- | ---: | :--- |
 | **Images** (`image`) | 50 | 3FR, AI, ARW, AVIF, BMP, CR2, CR3, CRW, CUR, DCR, DDS, DNG, EPS, ERF, EXR, GIF, HEIC, HEIF, ICNS, ICO, J2K, JFIF, JP2, JPEG, JPG, JXL, MOS, MRW, NEF, ORF, PBM, PCX, PEF, PGM, PNG, PNM, PPM, PSB, PSD, RAF, RAW, RW2, TGA, TIF, TIFF, WBMP, WEBP, X3F, XCF |
-| **Documents** (`document`) | 48 | ABW, ASS, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SRT, SSA, SUB, SXW, TEX, TEXT, TXT, VTT, WPD, WPS, XHTML, XML, XPS, ZABW |
+| **Documents** (`document`) | 43 | ABW, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SXW, TEX, TEXT, TXT, WPD, WPS, XHTML, XML, XPS, ZABW |
 | **Archives** (`archive`) | 44 | 7Z, ACE, ALZ, ARC, ARJ, BZ, BZ2, CAB, CPIO, DEB, DMG, EAR, GZ, IMG, ISO, JAR, LHA, LZ, LZMA, LZO, RAR, RPM, RZ, TAR, TAR.7Z, TAR.BZ, TAR.BZ2, TAR.GZ, TAR.LZO, TAR.XZ, TAR.Z, TAR.ZST, TBZ, TBZ2, TGZ, TXZ, TZ, TZO, WAR, XZ, Z, ZIP, ZST, ZSTD |
 | **Video** (`video`) | 37 | 3G2, 3GP, 3GPP, ASF, AV1, AVI, CAVS, DIVX, DV, DVR, F4V, FLV, H264, H265, HEVC, M2TS, M2V, M4V, MKV, MOD, MOV, MP4, MPEG, MPG, MTS, MXF, OGV, RM, RMVB, SWF, TS, VOB, WEBM, WEBP, WMV, WTV, XVID |
 | **Audio** (`audio`) | 29 | AAC, AC3, AIF, AIFC, AIFF, ALAC, AMR, APE, AU, CAF, DSS, DTS, FLAC, M4A, M4B, MID, MIDI, MKA, MP3, MPC, OGA, OGG, OPUS, RA, SPX, VOC, WAV, WEBA, WMA |
+| **Subtitles** (`subtitle`) | 5 | ASS, SRT, SSA, SUB, VTT |
 | **Ebooks** (`ebook`) | 24 | AZW, AZW3, AZW4, CB7, CBC, CBR, CBT, CBZ, CHM, DJV, EPUB, FB2, HTMLZ, IBOOKS, LIT, LRF, MOBI, OEB, PML, PRC, RB, SNB, TCR, TXTZ |
 | **Spreadsheets** (`spreadsheet`) | 18 | DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WKS, XLS, XLSM, XLSX, XLT, XLTX |
 | **Presentations** (`presentation`) | 18 | DPS, FODP, KEY, KEYNOTES, ODP, OTP, POT, POTX, PPS, PPSX, PPT, PPTM, PPTX, PRESENTATION, SDA, SHW, SXD, SXI |

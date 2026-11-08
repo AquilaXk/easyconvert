@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 변환 플랫폼입니다. **12개 카테고리**, **308개 포맷**, **2,766개 변환 쌍**에 대해 결정론적인 파일 변환을 수행합니다.
+EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 변환 플랫폼입니다. **13개 카테고리**, **308개 포맷**, **2,766개 변환 쌍**에 대해 결정론적인 파일 변환을 수행합니다.
 
 인메모리 TypeScript 바이너리 엔진, 샌드박스 격리 네이티브 도구, Lua 스크립트 기반 Redis 작업 큐, S3 및 OCI 멀티파트 오브젝트 스토리지를 결합하여 손상되거나 위조된 입력은 즉시 거부(Fail-Closed)하고 파일은 정해진 일정에 따라 삭제합니다. 변환 결과는 처음 끝까지 내려받은 뒤 10분 또는 변환 1시간 뒤에 삭제하고, 업로드는 그 파일을 읽는 마지막 작업이 끝나고 10분 뒤에 삭제합니다(정책 결정 125).
 
@@ -10,7 +10,7 @@ EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 �
 
 ## 핵심 기술 하이라이트
 
-- **12개 카테고리 308개 포맷 지원**: Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, CAD & 3D 전반에 걸쳐 `2,766`개 변환 쌍을 지원합니다.
+- **13개 카테고리 308개 포맷 지원**: Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, CAD & 3D 전반에 걸쳐 `2,766`개 변환 쌍을 지원합니다.
 - **바이너리 변환 엔진**:
   - **HWP 5.0 OLE2 CFBF**: OLE2 복합 파일 바이너리 포맷 파서 및 빌더를 통해 문단과 표 구조를 추출하고 생성합니다.
   - **Cox-de Boor 곡선**: CAD 및 벡터 경로를 위한 B-스플라인 기저 함수 평가와 베지에 곡선 평탄화를 수행합니다.
@@ -26,16 +26,17 @@ EasyConvert는 Next.js 15(App Router)와 TypeScript로 구축된 범용 파일 �
 
 ---
 
-## 지원 포맷 매트릭스 (12개 카테고리)
+## 지원 포맷 매트릭스 (13개 카테고리)
 
 <!-- registry-stats:start -->
 | Category | Format Count | Supported Extensions |
 | :--- | ---: | :--- |
 | **Images** (`image`) | 50 | 3FR, AI, ARW, AVIF, BMP, CR2, CR3, CRW, CUR, DCR, DDS, DNG, EPS, ERF, EXR, GIF, HEIC, HEIF, ICNS, ICO, J2K, JFIF, JP2, JPEG, JPG, JXL, MOS, MRW, NEF, ORF, PBM, PCX, PEF, PGM, PNG, PNM, PPM, PSB, PSD, RAF, RAW, RW2, TGA, TIF, TIFF, WBMP, WEBP, X3F, XCF |
-| **Documents** (`document`) | 48 | ABW, ASS, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SRT, SSA, SUB, SXW, TEX, TEXT, TXT, VTT, WPD, WPS, XHTML, XML, XPS, ZABW |
+| **Documents** (`document`) | 43 | ABW, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SXW, TEX, TEXT, TXT, WPD, WPS, XHTML, XML, XPS, ZABW |
 | **Archives** (`archive`) | 44 | 7Z, ACE, ALZ, ARC, ARJ, BZ, BZ2, CAB, CPIO, DEB, DMG, EAR, GZ, IMG, ISO, JAR, LHA, LZ, LZMA, LZO, RAR, RPM, RZ, TAR, TAR.7Z, TAR.BZ, TAR.BZ2, TAR.GZ, TAR.LZO, TAR.XZ, TAR.Z, TAR.ZST, TBZ, TBZ2, TGZ, TXZ, TZ, TZO, WAR, XZ, Z, ZIP, ZST, ZSTD |
 | **Video** (`video`) | 37 | 3G2, 3GP, 3GPP, ASF, AV1, AVI, CAVS, DIVX, DV, DVR, F4V, FLV, H264, H265, HEVC, M2TS, M2V, M4V, MKV, MOD, MOV, MP4, MPEG, MPG, MTS, MXF, OGV, RM, RMVB, SWF, TS, VOB, WEBM, WEBP, WMV, WTV, XVID |
 | **Audio** (`audio`) | 29 | AAC, AC3, AIF, AIFC, AIFF, ALAC, AMR, APE, AU, CAF, DSS, DTS, FLAC, M4A, M4B, MID, MIDI, MKA, MP3, MPC, OGA, OGG, OPUS, RA, SPX, VOC, WAV, WEBA, WMA |
+| **Subtitles** (`subtitle`) | 5 | ASS, SRT, SSA, SUB, VTT |
 | **Ebooks** (`ebook`) | 24 | AZW, AZW3, AZW4, CB7, CBC, CBR, CBT, CBZ, CHM, DJV, EPUB, FB2, HTMLZ, IBOOKS, LIT, LRF, MOBI, OEB, PML, PRC, RB, SNB, TCR, TXTZ |
 | **Spreadsheets** (`spreadsheet`) | 18 | DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WKS, XLS, XLSM, XLSX, XLT, XLTX |
 | **Presentations** (`presentation`) | 18 | DPS, FODP, KEY, KEYNOTES, ODP, OTP, POT, POTX, PPS, PPSX, PPT, PPTM, PPTX, PRESENTATION, SDA, SHW, SXD, SXI |
