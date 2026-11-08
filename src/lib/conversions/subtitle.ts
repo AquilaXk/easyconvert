@@ -71,6 +71,8 @@ export const MAX_SUBTITLE_CUES = 100_000;
 export const MAX_SUBTITLE_LINE_BREAKS = 100_000;
 /** Lines of the file: 100,000 cues of four lines each is 400,000. */
 export const MAX_SUBTITLE_LINES = 500_000;
+/** Characters of one line: a cue line of a film has under 100, a karaoke or drawing line of typeset ASS a few thousand. FFmpeg took over 2 minutes on a line of 3,000,000 characters that followed many line breaks. */
+export const MAX_SUBTITLE_LINE_CHARS = 20_000;
 /** The largest frame number of a MicroDVD file: about 11 days at 100 frames per second, and well inside what FFmpeg reads as an integer. */
 const MAX_MICRODVD_FRAME = 100_000_000;
 
@@ -169,8 +171,10 @@ export function prepareSubtitleInput(input: Buffer, source: SubtitleFormat): Pre
   }
   const cues = countSubtitleCues(source, text);
   if (cues > MAX_SUBTITLE_CUES) throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_CUES} cues; this one has ${cues}.`);
-  const lines = text.split('\n').length;
-  if (lines > MAX_SUBTITLE_LINES) throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_LINES} lines; this one has ${lines}.`);
+  const lines = text.split('\n');
+  if (lines.length > MAX_SUBTITLE_LINES) throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_LINES} lines; this one has ${lines.length}.`);
+  const longest = lines.reduce((most, line) => Math.max(most, line.length), 0);
+  if (longest > MAX_SUBTITLE_LINE_CHARS) throw new PayloadLimitError(`A line of a .${source} subtitle file has at most ${MAX_SUBTITLE_LINE_CHARS} characters; this file has one of ${longest}.`);
   const lineBreaks = countTextLineBreaks(text, source);
   if (lineBreaks > MAX_SUBTITLE_LINE_BREAKS) {
     throw new PayloadLimitError(`A .${source} subtitle file holds at most ${MAX_SUBTITLE_LINE_BREAKS} line breaks inside its cues; this one has ${lineBreaks}.`);
@@ -211,6 +215,12 @@ export function subtitleFfmpegArguments(inputArgs: readonly string[], outputPath
 }
 
 const CUE_TIMING = /^\s*(?:\d+:)?\d{1,2}:\d{2}[.,]\d{3}[ \t]*-->/;
+/** A timing line is short; only the start of a line is tested, so a line of a million characters costs no more than a short one. */
+const TIMING_PREFIX_CHARS = 200;
+
+function isTimingLine(line: string): boolean {
+  return CUE_TIMING.test(line.slice(0, TIMING_PREFIX_CHARS));
+}
 
 /** For each line, the index of the first line from it on that holds something other than white space (the number of lines when none does). */
 function nextNonBlankLines(all: readonly string[]): number[] {
@@ -222,7 +232,7 @@ function nextNonBlankLines(all: readonly string[]): number[] {
 
 /** Whether the lines from `next` on are the end of a cue: the file ends, a timing line follows, or a cue identifier or number and then a timing line. */
 function cueEndsAt(all: readonly string[], next: number): boolean {
-  return next >= all.length || CUE_TIMING.test(all[next]) || (next + 1 < all.length && CUE_TIMING.test(all[next + 1]));
+  return next >= all.length || isTimingLine(all[next]) || (next + 1 < all.length && isTimingLine(all[next + 1]));
 }
 
 /**
@@ -310,11 +320,18 @@ export function repairSubtitleOutput(text: string, target: string, source: strin
   const next = nextNonBlankLines(all);
   const kept: string[] = [];
   let inCue = false;
+  // A run of empty lines has one answer, found once for the run.
+  let decidedFor = -1;
+  let decidedEnds = false;
   for (let at = 0; at < all.length; at++) {
     const line = all[at];
-    if (CUE_TIMING.test(line)) inCue = true;
+    if (isTimingLine(line)) inCue = true;
     else if (inCue && line.trim() === '') {
-      if (!cueEndsAt(all, next[at])) continue;
+      if (decidedFor !== next[at]) {
+        decidedFor = next[at];
+        decidedEnds = cueEndsAt(all, decidedFor);
+      }
+      if (!decidedEnds) continue;
       inCue = false;
     }
     kept.push(line);

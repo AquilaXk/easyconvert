@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import iconv from 'iconv-lite';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { MAX_SUBTITLE_BYTES, MAX_SUBTITLE_CUES, MAX_SUBTITLE_LINE_BREAKS, MAX_SUBTITLE_LINES, prepareSubtitleInput, repairSubtitleOutput } from '../src/lib/conversions/subtitle';
+import { MAX_SUBTITLE_BYTES, MAX_SUBTITLE_CUES, MAX_SUBTITLE_LINE_BREAKS, MAX_SUBTITLE_LINE_CHARS, MAX_SUBTITLE_LINES, prepareSubtitleInput, repairSubtitleOutput } from '../src/lib/conversions/subtitle';
 import { FORMAT_REGISTRY, getFormatByExtension, isFormatCompatibleWithMagicBytes } from '../src/lib/registry';
 import { countSubtitleCues, SUBTITLE_FORMATS, type SubtitleFormat } from '../src/lib/subtitle-structure';
 import { EngineUnavailableError, FileExtensionSpoofError, InvalidSubtitleInputError, PayloadLimitError } from '../src/lib/types';
@@ -229,6 +229,17 @@ describe('crafted files cost time in proportion to their size', () => {
     expect(await expectNoHang('empty lines', () => repairSubtitleOutput(written, 'srt', 'ass'))).toBe(`${TIMING}a\nb\n`);
   });
 
+  it('decides a run of 99,999 empty lines once when a line of 500,000 digits follows it', async () => {
+    const written = `${TIMING}a${'\n'.repeat(99_999)}${'1'.repeat(500_000)}\n`;
+    expect(await expectNoHang('empty lines before a long line', () => repairSubtitleOutput(written, 'srt', 'ass'))).toBe(`${TIMING}a\n${'1'.repeat(500_000)}\n`);
+  });
+
+  it('refuses a line over the length limit with the 413 of the other limits, before FFmpeg', () => {
+    const header = '[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
+    const long = `${header}${DIALOGUE}a${'\\N'.repeat(99_999)}${'1'.repeat(500_000)}\n`;
+    expect(() => prepareSubtitleInput(Buffer.from(long), 'ass')).toThrow(new RegExp(`at most ${MAX_SUBTITLE_LINE_CHARS} characters`));
+  });
+
   it('removes and escapes blocks in braces in one pass on a line of 200,000 open braces', async () => {
     const open = '{'.repeat(200_000);
     expect(await expectNoHang('removed blocks', () => repairSubtitleOutput(`${TIMING}${open}\n`, 'srt', 'ass'))).toBe(`${TIMING}${open}\n`);
@@ -251,7 +262,8 @@ describe('crafted files cost time in proportion to their size', () => {
     });
     expect(outcome).toMatchObject({ name: 'PayloadLimitError', status: 413, message: expect.stringContaining(`at most ${MAX_SUBTITLE_CUES} cues`) });
     const header = '[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
-    const breaks = `${header}${DIALOGUE}a${'\\N'.repeat(MAX_SUBTITLE_LINE_BREAKS + 1)}b\n`;
+    // Twelve lines of 9,000 breaks each: under the length limit of a line, over the limit of breaks.
+    const breaks = `${header}${`${DIALOGUE}a${'\\N'.repeat(9_000)}b\n`.repeat(12)}`;
     expect(() => prepareSubtitleInput(Buffer.from(breaks), 'ass')).toThrow(new RegExp(`at most ${MAX_SUBTITLE_LINE_BREAKS} line breaks`));
     const lines = `${TIMING}a${'\n'.repeat(MAX_SUBTITLE_LINES + 1)}b\n`;
     expect(() => prepareSubtitleInput(Buffer.from(lines), 'srt')).toThrow(new RegExp(`at most ${MAX_SUBTITLE_LINES} lines`));
@@ -274,12 +286,12 @@ describe.skipIf(ffmpegMissing)('crafted files through the dispatcher', () => {
     expect(readSubtitle('vtt', text).map((cue) => [cue.startMs, cue.endMs])).toEqual([[42, 10_010], [10_010, 15_015]]);
   });
 
-  it('converts an ASS cue of 99,000 line breaks with the empty lines removed', async () => {
+  it('converts ASS cues of 99,000 line breaks together with the empty lines removed', async () => {
     const header = '[Script Info]\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
-    const input = Buffer.from(`${header}Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,a${'\\N'.repeat(99_000)}b\n`);
+    const input = Buffer.from(`${header}${'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,a' + '\\N'.repeat(9_000) + 'b\n'}`.repeat(11));
     const { text } = await expectNoHang('99,000 line breaks', () => convert(input, 'ass', 'srt'));
-    expect(readSubtitle('srt', text).map((cue) => cue.text)).toEqual(['a b']);
-    expect(text.split('\n').filter((line) => line.trim() === '').length).toBeLessThan(4);
+    expect(readSubtitle('srt', text).map((cue) => cue.text)).toEqual(Array.from({ length: 11 }, () => 'a b'));
+    expect(text.split('\n').filter((line) => line.trim() === '').length).toBeLessThan(15);
   });
 
   it('answers a reader failure with a fixed sentence that names no path and no address', async () => {
