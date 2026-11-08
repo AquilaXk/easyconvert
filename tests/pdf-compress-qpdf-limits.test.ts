@@ -23,7 +23,7 @@ vi.mock('../src/lib/conversions/pdf-postprocess/qpdf-runner', async (importOrigi
       // As the launcher does: a run that is asked for after the job was stopped is not started.
       if (options.signal?.aborted) throw options.signal.reason;
       // A "document" that is no smaller than the input, so that the profile gains nothing and the later steps run.
-      return { stdout: Buffer.from(STAND_IN_PDF), stderr: Buffer.alloc(0), exitCode: 0, durationMs: 0, sandboxed: true, sandboxType: 'unshare' };
+      return { stdout: Buffer.from(STAND_IN_PDF), stderr: Buffer.alloc(0), exitCode: 0, durationMs: 0, sandboxed: true, sandboxType: 'host' };
     }),
   };
 });
@@ -67,7 +67,7 @@ vi.mock('../src/lib/security/sandbox-launcher', async (importOriginal) => {
       if (options.signal?.aborted) throw options.signal.reason;
       const output = args.find((arg) => arg.startsWith('-sOutputFile='))!.slice('-sOutputFile='.length);
       fs.writeFileSync(output, STAND_IN_PDF);
-      return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0, durationMs: 0, sandboxed: true, sandboxType: 'unshare' };
+      return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0, durationMs: 0, sandboxed: true, sandboxType: 'host' };
     }),
   };
 });
