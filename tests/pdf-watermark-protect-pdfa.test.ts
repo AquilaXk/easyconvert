@@ -521,6 +521,8 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
 
       const cancelSpy = vi.fn(async () => undefined);
       const arrayBufferSpy = vi.fn(async () => new ArrayBuffer(0));
+      // The export checks the address before it opens the stored file; the stand-in host has no public address, so the check is stubbed with the fetch.
+      const addressSpy = vi.spyOn(safeFetchModule, 'assertPublicOutboundUrl').mockResolvedValue(undefined);
       const safeFetchSpy = vi.spyOn(safeFetchModule, 'safeFetch').mockResolvedValue({
         ok: true,
         status: 200,
@@ -556,6 +558,7 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
         expect(arrayBufferSpy).not.toHaveBeenCalled();
       } finally {
         safeFetchSpy.mockRestore();
+        addressSpy.mockRestore();
       }
     });
   });

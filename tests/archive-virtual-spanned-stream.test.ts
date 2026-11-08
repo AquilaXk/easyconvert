@@ -22,6 +22,9 @@ import {
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { skipUnless } from './helpers/strict-skip';
 
+/** How long the close of a destroyed part's file may take before the test calls it a hang. */
+const PART_CLOSE_HANG_GUARD_MS = 10_000;
+
 describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)', () => {
   // Helper to create temporary directory for file-based tests
   function createTempDir(): string {
@@ -246,8 +249,9 @@ describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)'
         // Explicitly destroy stream early
         stream.destroy(new Error('Early cancellation'));
 
-        // Wait a microtask tick for cleanup handlers to execute
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        // The part's file closes on the I/O thread: wait for its close event (a loaded runner takes longer than a fixed tick), up to a hang guard.
+        const closeDeadline = Date.now() + PART_CLOSE_HANG_GUARD_MS;
+        while (!destroyedFired && Date.now() < closeDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
 
         expect(stream.destroyed).toBe(true);
         expect(destroyedFired).toBe(true);
