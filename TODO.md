@@ -23,9 +23,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security
-- Keep the history of converted files (`recordUserFile`, `listUserFiles`, `deleteUserFile`) in Redis, the store the other account data uses, and record a queue job's result when it completes: today only the synchronous `/api/v1/convert` writes it, in one process's memory and `user-files.json`, so a worker's results are not listed and a delete is exact only in the process that holds the record (`forgetUsage` and `scripts/erase-account.ts` must cover the Redis copy).
-- List a user's graphs in `GET /api/queue/jobs` and `GET /api/v1/jobs`: the node jobs are hidden now (the graph is the job), but graph state has no per-user index, so a graph is read only by its id.
-- Seed the rotation store with the API key's current webhook secret when `POST /api/v1/webhooks/secrets/rotate` rotates a key that has no record yet, so the first rotation keeps the old secret as the previous one for the grace period (today only the second rotation does).
+- Record the final outputs of a finished graph in the history of converted files (`recordJobResultInHistory` skips graph nodes, so only plain queue jobs and synchronous conversions are listed there today).
 - Hide the `/proc` entries of other runs from a sandboxed program: it cannot signal them any more, but still reads their command line and status (no `/proc` mount is allowed in the container).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.

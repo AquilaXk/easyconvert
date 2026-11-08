@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
+import { graphScheduler, type GraphExecutionState } from '@/lib/queue/graph';
+import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { nodeJobCancelRefusal } from '@/lib/queue/graph/node-jobs';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
@@ -14,14 +15,7 @@ import { resultAvailability } from '@/lib/storage/retention-service';
 
 export const dynamic = 'force-dynamic';
 
-const PERCENT = 100;
 const JOBS_PATH = '/api/v1/jobs';
-const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>([
-  'completed',
-  'failed',
-  'cancelled',
-  'skipped',
-]);
 
 /** Stored text is masked again on the way out: rows written by older versions may still quote a secret. */
 function maskedText(text: string | undefined): string | undefined {
@@ -235,15 +229,6 @@ async function cancelJobRequest(req: NextRequest, context: RouteContext) {
   });
 }
 
-
-/** Percentage of graph nodes that reached a terminal state. */
-function graphProgress(state: GraphExecutionState): number {
-  if (state.totalNodes === 0) {
-    return 0;
-  }
-  const finished = Object.values(state.nodes).filter((n) => TERMINAL_NODE_STATUSES.has(n.status)).length;
-  return Math.round((finished / state.totalNodes) * PERCENT);
-}
 
 /** Cancels a graph job, which has no queue job of its own. */
 async function cancelGraphJob(jobId: string, userId: string, instanceUri: string) {

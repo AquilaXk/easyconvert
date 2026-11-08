@@ -1,13 +1,15 @@
 import Redis, { ReplyError } from 'ioredis';
 import type { GraphNode, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
-import type {
-  GraphExecutionState,
-  GraphMetadata,
-  IGraphScheduler,
-  NodeCompletionResult,
-  NodeFailureResult,
-  SealedJobGraph,
+import {
+  MAX_INDEXED_GRAPHS_PER_USER,
+  type GraphExecutionState,
+  type GraphMetadata,
+  type GraphStatus,
+  type IGraphScheduler,
+  type NodeCompletionResult,
+  type NodeFailureResult,
+  type SealedJobGraph,
 } from './scheduler-types';
 import {
   INIT_GRAPH_LUA_SCRIPT,
@@ -16,8 +18,11 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
   FORGET_ENDED_GRAPH_LUA_SCRIPT,
+  INDEX_USER_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
 import { endedJobRetentionMs } from '../enqueue';
+import { JOB_DEADLINE_CEILING_MS } from '../../config/schema';
+import { isAnonymousUserId } from '../../auth/anonymous-identity';
 import { assertSealedFor, cancelGraphNodeJob, cancelGraphNodeJobOrLog, enqueueGraphNodeJob, graphNodeJobId, graphNodeJobMetadata, queueReadyNodesOrCancel, type StartingGraphScheduler } from './node-jobs';
 import { graphInputKeys } from './input-cleanup';
 import { maskTaskRecords } from './sealed-nodes';
@@ -39,7 +44,7 @@ export interface RedisGraphSchedulerOptions {
 }
 
 /** The Redis commands this scheduler sends. */
-const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem', 'del', 'hget', 'scan']);
+const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem', 'del', 'hget', 'scan', 'zrevrange', 'zrem']);
 const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
 
 /**
@@ -91,6 +96,30 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     };
   }
 
+  /** The sorted set of the graphs of `userId`, scored by creation time; the `{userId}` tag puts it in one slot, and `erase-account` finds it with the rest of the account's keys. */
+  userGraphsKey(userId: string): string {
+    return `${this.keyPrefix}user_graphs:{${userId}}`;
+  }
+
+  /**
+   * Adds the graph to the index of its owner, after its state is stored, so an indexed graph always has a state. The index holds
+   * a graph as long as its state can live (its deadline, then the retention of an ended job) and at most
+   * MAX_INDEXED_GRAPHS_PER_USER graphs. A graph without an account owner is not indexed: no list names it.
+   */
+  private async indexGraph(graphId: string, ownerUserId: string | undefined, createdAt: number): Promise<void> {
+    if (!ownerUserId || isAnonymousUserId(ownerUserId)) return;
+    await this.redisClient.eval(
+      INDEX_USER_GRAPH_LUA_SCRIPT,
+      1,
+      this.userGraphsKey(ownerUserId),
+      graphId,
+      String(createdAt),
+      String(Date.now()),
+      String(endedJobRetentionMs() + JOB_DEADLINE_CEILING_MS),
+      String(MAX_INDEXED_GRAPHS_PER_USER)
+    );
+  }
+
   async initGraph(graphId: string, graph: SealedJobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
     assertSealedFor(graphId, graph);
     const k = this.graphKeys(graphId);
@@ -138,6 +167,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       JSON.stringify(nodes),
       String(createdAt)
     );
+    await this.indexGraph(graphId, meta.ownerUserId, createdAt);
     await this.drainOutbox(graphId);
     const state = await this.getGraphState(graphId);
     if (!state) {
@@ -291,6 +321,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
   async recoverStart(graphId: string): Promise<Recovery<GraphExecutionState>> {
     const state = await this.getGraphState(graphId);
     if (!state) return RECOVERY_UNKNOWN;
+    // A start that threw after it stored the graph may not have indexed it.
+    await this.indexGraph(graphId, state.ownerUserId, state.createdAt);
     return queueReadyNodesOrCancel(state, this);
   }
 
@@ -339,6 +371,37 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       cursor = next;
     } while (cursor !== '0');
     return [...graphIds].sort((a, b) => a.localeCompare(b));
+  }
+
+  async listGraphsOfUser(userId: string, limit: number, statuses?: readonly GraphStatus[]): Promise<GraphExecutionState[]> {
+    if (limit <= 0) return [];
+    const index = this.userGraphsKey(userId);
+    const ids = await this.redisClient.zrevrange(index, 0, MAX_INDEXED_GRAPHS_PER_USER - 1);
+    const listed: GraphExecutionState[] = [];
+    const vanished: string[] = [];
+    // The index knows no status, so a page that a filter thins reads the next graphs, a page at a time, until it is full.
+    for (let at = 0; at < ids.length && listed.length < limit; at += limit) {
+      const page = ids.slice(at, at + limit);
+      const states = await Promise.all(page.map((graphId) => this.readIndexedGraph(graphId)));
+      states.forEach((state, position) => {
+        if (state === undefined) vanished.push(page[position]);
+        else if (state && state.ownerUserId === userId && (!statuses || statuses.includes(state.status))) listed.push(state);
+      });
+    }
+    // A graph whose state expired leaves the index; the index is also pruned whenever a graph is added.
+    if (vanished.length > 0) await this.redisClient.zrem(index, ...vanished).catch(() => undefined);
+    return listed.slice(0, limit);
+  }
+
+  /** The state of an indexed graph: undefined when it expired, null when its record is damaged (logged; the list goes on without it). */
+  private async readIndexedGraph(graphId: string): Promise<GraphExecutionState | undefined | null> {
+    try {
+      return await this.getGraphState(graphId);
+    } catch (err) {
+      if (!(err instanceof GraphStateCorruptError)) throw err;
+      console.error(`[GraphScheduler] Graph ${graphId} is left out of a list because its record is damaged:`, err);
+      return null;
+    }
   }
 
   async deleteGraph(graphId: string): Promise<boolean> {

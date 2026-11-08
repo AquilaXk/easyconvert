@@ -296,7 +296,8 @@ export const conversionPaths = {
     },
     get: {
       summary: 'List Conversion Jobs',
-      description: 'Returns asynchronous conversion jobs created by the authenticated user. Requires "convert:read" scope.',
+      description:
+        'Returns the asynchronous conversion jobs and job graphs of the authenticated user, newest first, at most `limit`. A graph is listed once, under its own id (`GET /api/v1/jobs/{id}` answers for it, with its nodes); the node jobs it queues are not listed. A running graph reports the status `active`, and answers to the `waiting` and `active` filters. Requires "convert:read" scope.',
       operationId: 'listJobsV1',
       security: requireScope('convert:read'),
       parameters: [
@@ -311,7 +312,7 @@ export const conversionPaths = {
           name: 'limit',
           in: 'query',
           required: false,
-          schema: { type: 'integer', default: 50 },
+          schema: { type: 'integer', default: 50, minimum: 1, maximum: 100 },
         },
       ],
       responses: {
