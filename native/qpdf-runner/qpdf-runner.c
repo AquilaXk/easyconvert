@@ -12,9 +12,11 @@
 // of the qpdf program.
 //
 // Each job gets what a program started through the worker's sandbox gets, and nothing from any other job:
-//   - a user namespace and a network namespace of its own, made in the child after the fork and before the library sees a byte of
-//     the document (the equivalent of `unshare -r -n`); a child that cannot make them runs nothing and says so (kind SETUP), and
-//     the caller falls back to starting the program the way it always has;
+//   - a user namespace, a network namespace and a PID namespace of its own, made in the child after the fork and before the library
+//     sees a byte of the document (the equivalent of `unshare -r -n -p`), so a job cannot see or signal another; a child that cannot
+//     make them runs nothing and says so (kind SETUP), and the caller falls back to starting the program the way it always has.
+//     The job is PID 2 of its namespace (see enter_job_process), because the kernel does not deliver to PID 1 a signal it has no
+//     handler for, and the limits a job is judged by are signals;
 //   - the seccomp filter, the capabilities and the limits of this process, which the child inherits, plus no_new_privs, no core
 //     dump, and the address-space, file-size and CPU limits of the request;
 //   - its own session and process group, the environment of the request only, standard input from the request, standard output
@@ -40,9 +42,9 @@
 // A request it cannot take, a frame of a type it does not know and a frame past 4 MiB (dropped as it arrives) are answered `rejected` and the
 // frames after them are served; only a length that cannot hold the type and the id ends the runner (status 2), as it leaves nothing to find
 // the next frame by. The runner ends when standard input closes, taking the jobs with it.
-// A job ends when its first process has exited and the streams are closed; it is cut short by its time limit, a cancel or the output cap,
-// and one whose streams something it started keeps open is ended EXIT_GRACE_MS after the first process, with that process's result.
-// Whatever else the job started is killed with its group when the job ends.
+// A job ends when its first process has exited and the streams are closed; it is cut short by its time limit, a cancel or the output cap.
+// Whatever else the job started ends with its first process, which is PID 2 of the PID namespace of the job (PID 1 leaves when the
+// first process has), and is killed with its group at the latest when the job ends.
 
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -362,11 +364,12 @@ static bool write_text_file(const char *path, const char *text) {
   return w == (ssize_t)n;
 }
 
-/* The equivalent of `unshare -r -n`: a user namespace that maps the user to root inside it, and an empty network namespace. */
+/* The equivalent of `unshare -r -n -p`: a user namespace that maps the user to root inside it, an empty network namespace, and a PID
+   namespace that holds the children of this process from now on (this process stays in the one it was in). */
 static bool enter_namespaces(void) {
   uid_t uid = geteuid();
   gid_t gid = getegid();
-  if (unshare(CLONE_NEWUSER | CLONE_NEWNET) != 0) return false;
+  if (unshare(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWPID) != 0) return false;
   char map[64];
   /* The process must be dumpable for its own uid_map, gid_map and setgroups files to belong to it. */
   prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
@@ -411,6 +414,72 @@ static void child_fail(int code) {
   _exit(SETUP_EXIT_STATUS);
 }
 
+/* Ends this process the way the job ended: by the same signal when it died of one, with the same status when it exited. */
+static void end_like(int wstatus) {
+  if (WIFSIGNALED(wstatus)) {
+    int sig = WTERMSIG(wstatus);
+    struct rlimit no_core = {0, 0};
+    setrlimit(RLIMIT_CORE, &no_core);
+    signal(sig, SIG_DFL);
+    sigset_t only;
+    sigemptyset(&only);
+    sigaddset(&only, sig);
+    sigprocmask(SIG_UNBLOCK, &only, NULL);
+    kill(getpid(), sig);
+    _exit(128 + sig);
+  }
+  _exit(WEXITSTATUS(wstatus));
+}
+
+/* Makes the job a process of the PID namespace this process has just made, and returns in the job only. The job is PID 2: PID 1 is a
+   process that reaps what is left without a parent and reports the wait status of the job, so the job dies of its signals (the file size
+   limit, a fault, an abort) as it does anywhere else. This process stays outside the namespace, which is the process the runner waits for
+   and kills with its group, and ends in the same way as the job. */
+static void enter_job_process(void) {
+  int report[2];
+  if (pipe2(report, O_CLOEXEC) != 0) child_fail(SETUP_NAMESPACE);
+  pid_t init = fork();
+  if (init < 0) child_fail(SETUP_NAMESPACE);
+  if (init == 0) {
+    /* PID 1: dies with the process outside, and with it the namespace and the job. */
+    prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
+    pid_t job = fork();
+    if (job < 0) child_fail(SETUP_NAMESPACE);
+    if (job == 0) {
+      close(report[0]);
+      close(report[1]);
+      /* The job dies with PID 1, as PID 1 dies with the process outside. */
+      prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
+      return;
+    }
+    close(report[0]);
+    int wstatus = 0;
+    for (;;) {
+      pid_t ended = waitpid(-1, &wstatus, 0);
+      if (ended == job) break;
+      if (ended < 0 && errno != EINTR) _exit(SETUP_EXIT_STATUS);
+    }
+    ssize_t written;
+    do {
+      written = write(report[1], &wstatus, sizeof wstatus);
+    } while (written < 0 && errno == EINTR);
+    _exit(0);
+  }
+  close(report[1]);
+  int wstatus = 0;
+  ssize_t got;
+  do {
+    got = read(report[0], &wstatus, sizeof wstatus);
+  } while (got < 0 && errno == EINTR);
+  int init_status = 0;
+  while (waitpid(init, &init_status, 0) < 0 && errno == EINTR) {
+  }
+  if (got == (ssize_t)sizeof wstatus) end_like(wstatus);
+  /* PID 1 ended without a report: it was killed, or the job could not be started. */
+  if (WIFSIGNALED(init_status)) end_like(init_status);
+  _exit(WIFEXITED(init_status) ? WEXITSTATUS(init_status) : SETUP_EXIT_STATUS);
+}
+
 /* Runs in the forked child; never returns. `in_fd`, `out_fd`, `err_fd` and `status_fd` are the child's ends of the pipes. */
 static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int status_fd) {
   child_status_fd = status_fd;
@@ -435,6 +504,9 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
   prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
   /* The parent may have died between the fork and here. */
   if (getppid() == 1) _exit(SETUP_EXIT_STATUS);
+  /* The maps are written; from here no process of the same user can read this one or the processes it makes through /proc/<pid>/mem. */
+  prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+  enter_job_process();
   if (!apply_limits(r)) child_fail(SETUP_LIMITS);
   if (chdir(r->cwd) != 0) child_fail(SETUP_CHDIR);
   clearenv();

@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HomeFormatPicker from './workbench/HomeFormatPicker';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
-import { formatsSubtitle, formatsTitle } from './workbench/hero-copy';
+import { formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload, type HeroOperation } from './hero/useHeroUpload';
 import type { PairTiles } from './hero/usePairTiles';
 
@@ -47,9 +47,9 @@ interface PairHeroProps {
   dailyLimit: number;
   /** The pair the tiles name, which the page holds so that it outlives the queue. */
   tiles: PairTiles;
-  /** The page's own title and intro, shown until the tiles name another pair. */
+  /** The page's own title and intro, shown until the tiles name another pair. A converter page has no intro: its title says what it does. */
   title: string;
-  description: string;
+  description?: string;
   /** What the page does with the files when it does not convert them: merge, compress or recognise text. */
   operation?: HeroOperation;
 }
@@ -70,9 +70,7 @@ export function PairHero({ onFilesSelected, dailyLimit, tiles, title, descriptio
         <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
           <div className="text-center lg:text-left lg:max-w-2xl">
             <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{changed ? formatsTitle(t, source, target) : title}</h1>
-            <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">
-              {changed ? formatsSubtitle(t, source, target) : description}
-            </p>
+            {!changed && description && <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{description}</p>}
           </div>
           <div className="mt-8 lg:mt-0 flex justify-center shrink-0">
             <HeroFormatTiles

@@ -290,6 +290,26 @@ export function getProcessRssMb(pid: number): number | null {
   return null;
 }
 
+/**
+ * The process to read the memory of for a run: the one `proc.pid` names, or the program itself when `levels` processes that hold
+ * little (the `unshare` and `pid-init` it was started through) stand above it, each the only child of the one before.
+ */
+export function memoryWatchPid(pid: number, levels: number): number {
+  if (levels === 0 || process.platform !== 'linux') return pid;
+  let current = pid;
+  for (let level = 0; level < levels; level++) {
+    try {
+      const [child] = fs.readFileSync(`/proc/${current}/task/${current}/children`, 'utf-8').trim().split(/\s+/);
+      const childPid = Number(child);
+      if (!Number.isInteger(childPid) || childPid <= 0) return current;
+      current = childPid;
+    } catch {
+      return current;
+    }
+  }
+  return current;
+}
+
 export interface PrlimitCapability {
   available: boolean;
   path: string;
@@ -356,21 +376,84 @@ export interface UnshareCapability {
   path: string;
   args: string[];
   supportsNetNamespace: boolean;
+  /** The `pid-init` program (native/pid-init) that runs a program in a PID namespace of its own on this host, or '' when it cannot. */
+  pidInitPath: string;
+}
+
+export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
+const PID_INIT_CANDIDATES = ['/usr/local/bin/pid-init', '/usr/bin/pid-init'];
+
+/** The `pid-init` executable: the one `PID_INIT_PATH` names, or the first of the standard places. */
+function findPidInit(): string | null {
+  const custom = process.env[PID_INIT_PATH_ENV];
+  if (custom !== undefined) return custom && fs.existsSync(custom) ? custom : null;
+  return PID_INIT_CANDIDATES.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
 
 let unshareCapability: UnshareCapability | null = null;
+/** When `pid-init` was last tried, and whether the degrade it led to has been said. */
+let pidInitTriedAt = 0;
+let pidInitDegradeSaid = false;
+/** How long a host that could not give a PID namespace goes without one before it is tried again (a probe that failed on a cold start or under load is not a fact about the host). */
+export const PID_INIT_REPROBE_MS = 60_000;
+const PID_INIT_PROBE_TIMEOUT_MS = 2_000;
 
 export function resetUnshareCapabilityCache(): void {
   unshareCapability = null;
+  pidInitTriedAt = 0;
+  pidInitDegradeSaid = false;
+}
+
+/** Says once that runs go without a PID namespace, and why; a program that can signal its siblings is not something to find out from a test. */
+function sayPidInitDegraded(reason: string): void {
+  if (pidInitDegradeSaid) return;
+  pidInitDegradeSaid = true;
+  console.warn(`[sandbox] Programs run without a PID namespace of their own: ${reason}. A run can signal the other runs of this worker until it is fixed; the host is tried again every ${PID_INIT_REPROBE_MS / 1000} seconds.`);
+}
+
+/** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does. */
+function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
+  pidInitTriedAt = Date.now();
+  const pidInit = findPidInit();
+  if (pidInit === null) {
+    sayPidInitDegraded(`no pid-init program was found (${PID_INIT_PATH_ENV}, ${PID_INIT_CANDIDATES.join(', ')})`);
+    return '';
+  }
+  try {
+    execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
+    pidInitDegradeSaid = false;
+    return pidInit;
+  } catch {
+    sayPidInitDegraded(`${pidInit} could not start a program in a PID namespace (a seccomp profile or kernel setting that denies it, or a host too busy to answer in ${PID_INIT_PROBE_TIMEOUT_MS} ms)`);
+    return '';
+  }
+}
+
+/**
+ * Adds the `pid-init` program when it can run a program here, with the namespaces of `base` around it. A host may allow the user and
+ * network namespaces and not a PID namespace (a seccomp profile that lets `clone` make the first two only), and a host without the
+ * program has none to offer; runs there go without a PID namespace, which is said once and tried again after `PID_INIT_REPROBE_MS`.
+ */
+function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath'>): UnshareCapability {
+  return { ...base, pidInitPath: probePidInit(base) };
+}
+
+/** The capability, with a host that went without `pid-init` tried again once `PID_INIT_REPROBE_MS` have passed since it was last tried. */
+function withPidInitRetried(capability: UnshareCapability): UnshareCapability {
+  if (!capability.available || capability.pidInitPath !== '' || Date.now() - pidInitTriedAt < PID_INIT_REPROBE_MS) return capability;
+  return { ...capability, pidInitPath: probePidInit(capability) };
 }
 
 /**
  * Probes the operating system to determine whether Linux unshare can actually create network namespaces.
  */
 export function getUnshareCapability(): UnshareCapability {
-  if (unshareCapability !== null) return unshareCapability;
+  if (unshareCapability !== null) {
+    unshareCapability = withPidInitRetried(unshareCapability);
+    return unshareCapability;
+  }
   if (process.platform !== 'linux') {
-    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false };
+    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '' };
     return unshareCapability;
   }
 
@@ -380,20 +463,20 @@ export function getUnshareCapability(): UnshareCapability {
       // First probe -r -n (unprivileged user + net namespace)
       try {
         execFileSync(p, ['-r', '-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-        unshareCapability = { available: true, path: p, args: ['-r', '-n'], supportsNetNamespace: true };
+        unshareCapability = withPidInitProbe({ available: true, path: p, args: ['-r', '-n'], supportsNetNamespace: true });
         return unshareCapability;
       } catch {}
 
       // Second probe -n (net namespace, requires CAP_SYS_ADMIN)
       try {
         execFileSync(p, ['-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-        unshareCapability = { available: true, path: p, args: ['-n'], supportsNetNamespace: true };
+        unshareCapability = withPidInitProbe({ available: true, path: p, args: ['-n'], supportsNetNamespace: true });
         return unshareCapability;
       } catch {}
     }
   }
 
-  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false };
+  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '' };
   return unshareCapability;
 }
 
@@ -508,6 +591,26 @@ function effectiveRlimitsOf(rlimits: SandboxedRlimitsOptions | undefined, memory
 }
 
 /**
+ * How a run gets a PID namespace. Unless the caller chose otherwise (and the host can make one) every run gets its own: without it a run
+ * reaches the other runs of the worker with kill(2), as they share one user ID. pid-init runs the program as PID 2 of the namespace, so
+ * it dies of its signals as it does outside one; `pidNamespace: true` is the program as PID 1 (`unshare -p --fork`), `false` is none.
+ * `wrapper` goes between the `unshare` options and the program; `levelsAboveProgram` counts the processes the program stands below.
+ */
+function pidIsolationOf(
+  unshare: UnshareCapability | undefined,
+  isolationArgs: string[] | undefined,
+  options: UnshareIsolationOptions
+): { wrapper: string[]; levelsAboveProgram: number } {
+  if (!isolationArgs) return { wrapper: [], levelsAboveProgram: 0 };
+  if (options.pidNamespace) {
+    if (!isolationArgs.includes('--kill-child')) isolationArgs.push('--kill-child');
+    return { wrapper: [], levelsAboveProgram: 1 };
+  }
+  if (options.pidNamespace === undefined && unshare?.pidInitPath) return { wrapper: [unshare.pidInitPath, '--'], levelsAboveProgram: 2 };
+  return { wrapper: [], levelsAboveProgram: 0 };
+}
+
+/**
  * Resolves the final execution command, wrapping with unshare namespace isolation
  * when networkIsolated is requested and running on a supported Linux host with unshare capabilities.
  */
@@ -524,7 +627,7 @@ export function resolveSandboxedCommand(
         maxFileSize?: number;
         rlimits?: SandboxedRlimitsOptions;
       }
-): { binary: string; args: string[]; wrapped: boolean } {
+): { binary: string; args: string[]; wrapped: boolean; levelsAboveProgram: number } {
   let networkIsolated = true;
   let sandboxOptions: UnshareIsolationOptions = {};
   let strictIsolation = process.env.STRICT_SANDBOX === 'true';
@@ -548,6 +651,7 @@ export function resolveSandboxedCommand(
   const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
   const unshare = process.platform === 'linux' && networkIsolated ? getUnshareCapability() : undefined;
   const isolationArgs = unshare?.available ? buildUnshareIsolationArgs(unshare, sandboxOptions) : undefined;
+  const pid = pidIsolationOf(unshare, isolationArgs, sandboxOptions);
   const capPrlimit = getPrlimitCapability();
   if (effectiveRlimits.nproc !== undefined && !(isolationArgs?.includes('-r') && capPrlimit.available)) {
     throw sandboxUnavailable('The task limit of a run is kept only by prlimit in a user namespace of its own (unshare -r), which this host cannot give the run; the program is not started.');
@@ -578,8 +682,9 @@ export function resolveSandboxedCommand(
     if (isolationArgs) {
       return {
         binary: unshare.path,
-        args: [...isolationArgs, '--', finalBinary, ...finalArgs],
+        args: [...isolationArgs, '--', ...pid.wrapper, finalBinary, ...finalArgs],
         wrapped: true,
+        levelsAboveProgram: pid.levelsAboveProgram,
       };
     } else if (strictIsolation) {
       // Typed for the API (503, retryable) and thrown before any spawn: no caller may run the tool unwrapped.
@@ -591,7 +696,7 @@ export function resolveSandboxedCommand(
     );
   }
 
-  return { binary: finalBinary, args: finalArgs, wrapped: isWrapped };
+  return { binary: finalBinary, args: finalArgs, wrapped: isWrapped, levelsAboveProgram: 0 };
 }
 
 /** The refusal of a host that cannot confine a program, counted for the metrics. */
@@ -930,7 +1035,7 @@ export async function executeSandboxedBinary(
     if (effectiveMemoryLimitMb && effectiveMemoryLimitMb > 0) {
       memoryInterval = setInterval(() => {
         if (!proc.pid || isSettled) return;
-        const rssMb = getProcessRssMb(proc.pid);
+        const rssMb = getProcessRssMb(memoryWatchPid(proc.pid, resolvedCmd.levelsAboveProgram));
         if (rssMb !== null && rssMb > effectiveMemoryLimitMb) {
           settle(() => {
             killProcessGroup(proc.pid, 'SIGKILL');

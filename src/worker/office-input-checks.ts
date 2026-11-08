@@ -10,6 +10,7 @@ import { maxDocumentMediaBytes } from '../lib/conversions/office/media-limits';
 import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
+import { stripOfficeMacros } from '../lib/conversions/office-macro-strip';
 import { ZIP_LOCAL_HEADER_SIGNATURE, startsWithBytes } from '../lib/conversions/package-access';
 import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
@@ -32,16 +33,40 @@ function isOfficeMediaEntry(name: string): boolean {
     OFFICE_IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext))
   );
 }
+/** Whether the first bytes of the input are those of a ZIP local file header; a file that is not there is not one. */
+function isZipPackage(input: Buffer | WorkerVfsPayload): boolean {
+  if (Buffer.isBuffer(input)) return startsWithBytes(input, ZIP_LOCAL_HEADER_SIGNATURE);
+  if (input.inputBuffer) return startsWithBytes(input.inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE);
+  if (input.inputPath === undefined) return false;
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(input.inputPath, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const head = Buffer.alloc(ZIP_LOCAL_HEADER_SIGNATURE.length);
+    return fs.readSync(descriptor, head, 0, head.length, 0) === head.length && startsWithBytes(head, ZIP_LOCAL_HEADER_SIGNATURE);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 /**
- * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
- * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
+ * The package the office suite is handed: the document without the macros it holds, whatever its format is called. A package is
+ * searched by content (`stripOfficeMacros`): a `.docx` with a `vbaProject.bin` and an `.odt` with a Basic library lose them as a `.docm`
+ * does. A macro-enabled variant is also written as the plain package of its family. Inputs that are not in memory are handed over as
+ * they are, and so is a package without macros (the very buffer, not a copy).
  */
 export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload, src: string): Promise<Buffer | WorkerVfsPayload> {
+  // Only a ZIP package can hold the macros searched for, so a file of another kind (a legacy binary document, text) is not read for this.
+  if (!isZipPackage(input) && OOXML_VARIANT_FAMILY[src] === undefined) return input;
+  const buffer = inputAsBuffer(input);
+  if (buffer === undefined) return input;
   const family = OOXML_VARIANT_FAMILY[src];
-  const buffer = family === undefined ? undefined : inputAsBuffer(input);
-  if (family === undefined || buffer === undefined) return input;
-  const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
-  return plain.droppedMacros ? plain.buffer : input;
+  const plain = family === undefined ? undefined : await ooxmlVariantAsPlainPackage(buffer, src, family);
+  const stripped = await stripOfficeMacros(plain?.droppedMacros ? plain.buffer : buffer);
+  return plain?.droppedMacros || stripped.buffer !== buffer ? stripped.buffer : input;
 }
 /**
  * The input as a buffer when it is held in memory, or is a file of at most `maxBytes` that exists; undefined for a larger or missing file,

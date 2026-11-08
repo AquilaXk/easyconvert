@@ -56,7 +56,7 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import {
-  probeMediaDuration,
+  probeMediaDurationAsync,
   computeMediaTimeoutMs,
   computePackagingTimeoutMs,
   plannedRungCount,
@@ -130,7 +130,7 @@ import {
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
-import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter, standaloneProfileArgument } from './libreoffice-pool';
+import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -414,7 +414,7 @@ async function runHeadlessOffice(
           '--norestore',
           '--nofirststartwizard',
           '--nologo',
-          standaloneProfileArgument(tempDir, options),
+          ...standaloneProfileArguments(tempDir, options, src),
           '--convert-to',
           filterSpec,
           '--outdir',
@@ -489,7 +489,7 @@ export async function convertWithNativeFfmpeg(
       const media = openMediaInput(inputPath, src);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-      const durationSeconds = probeMediaDuration(media, options, ffmpegBin);
+      const durationSeconds = await probeMediaDurationAsync(media, options, ffmpegBin, options.signal);
       const timeout = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {

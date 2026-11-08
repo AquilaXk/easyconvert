@@ -279,14 +279,16 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       }
     });
 
-    it('starts the job the way the sandbox starts a program: own session, working directory, environment, no extra descriptors, limits', async () => {
+    it('starts the job the way the sandbox starts a program: own session, PID namespace, working directory, environment, no extra descriptors, limits', async () => {
       const state = qpdfRunnerState();
       const result = await run(['facts'], { env: { EXTRA_FOR_TEST: 'visible' }, memoryLimitMb: 512, maxFileSize: 123_456_789, rlimits: { cpuSeconds: 77 } });
       const job = facts(result.stdout);
-      const pid = Number(job.get('pid'));
-      expect(Number(job.get('ppid'))).toBe(state.pid);
-      expect(Number(job.get('sid'))).toBe(pid);
-      expect(Number(job.get('pgid'))).toBe(pid);
+      // PID 2 of a PID namespace of its own, under PID 1; the session and the group are those of the process outside it, which the job cannot name.
+      expect(Number(job.get('pid'))).toBe(2);
+      expect(Number(job.get('ppid'))).toBe(1);
+      expect(Number(job.get('sid'))).toBe(0);
+      expect(Number(job.get('pgid'))).toBe(0);
+      expect(state.pid).toBeGreaterThan(2);
       expect(job.get('uid')).toBe('0');
       expect(job.get('cwd')).toBe(fs.realpathSync(scratch));
       expect(job.get('no_new_privs')).toBe('1');
@@ -301,6 +303,22 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       const env = result.stdout.toString('utf8').split('\n').filter((line) => line.startsWith('env: ')).map((line) => line.slice(5)).sort();
       const expected = Object.entries(getSanitizedEnvironment({ EXTRA_FOR_TEST: 'visible' }, true)).map(([k, v]) => `${k}=${v}`).sort();
       expect(env).toEqual(expected);
+    });
+
+    it('leads the session and the group of every job from outside its PID namespace, and gives it a namespace of its own', async () => {
+      const state = qpdfRunnerState();
+      const holder = run(['sleep', '2']);
+      await until(() => childrenOf(state.pid!).length === 1);
+      const [child] = childrenOf(state.pid!);
+      // /proc/<pid>/stat: pid (comm) state ppid pgrp session ...
+      const stat = fs.readFileSync(`/proc/${child}/stat`, 'utf8').replace(/^.*\) /, '').split(' ');
+      expect({ ppid: Number(stat[1]), pgrp: Number(stat[2]), session: Number(stat[3]) }).toEqual({ ppid: state.pid, pgrp: child, session: child });
+      // Below it: PID 1 of the namespace of the job, and the job as PID 2 (the last number of NSpid is the id inside the innermost namespace).
+      const [init] = childrenOf(child);
+      const [job] = childrenOf(init);
+      const innerId = (pid: number): string => /^NSpid:\s+\d+\s+(\d+)$/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))![1];
+      expect({ init: innerId(init), job: innerId(job) }).toEqual({ init: '1', job: '2' });
+      await holder;
     });
 
     it('hands standard input to the job', async () => {
@@ -395,59 +413,29 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
     });
 
     describe('a job whose first process returned and whose descendant is still running', () => {
-      const pidOf = async (file: string): Promise<number> => {
-        await until(() => fs.existsSync(file) && fs.readFileSync(file, 'utf8').trim() !== '');
-        return Number(fs.readFileSync(file, 'utf8'));
-      };
-
-      it('ends at the time limit of the job, the descendant killed with it, and other jobs go on', async () => {
-        const pidFile = path.join(scratch, 'held-until-timeout.pid');
-        const bystander = run(['sleep', '1']);
+      // The first process is PID 2 of the namespace of the job; when it has returned PID 1 leaves, and the namespace takes everything the
+      // job started with it. So the job ends with the result of its first process at once, however long the descendant meant to hold the streams.
+      it.each(['hold', 'daemon'])('ends with the result of its first process at once, the descendant (%s) dying with the PID namespace', async (mode) => {
+        const pidFile = path.join(scratch, `descendant-${mode}.pid`);
         const started = Date.now();
-        // The first process returns 0 at once; its descendant keeps the standard streams of the job open for 30 seconds.
-        const error = await run(['fork-sleep', pidFile, '30', 'hold'], { timeoutMs: 600 }).catch((e: unknown) => e);
-        expect(error).toBeInstanceOf(SandboxedTimeoutError);
-        expect(Date.now() - started).toBeLessThan(4000);
-        const descendant = await pidOf(pidFile);
-        await until(() => !alive(descendant), 3000);
-        expect((await bystander).stdout.toString('utf8')).toContain('sleeping');
-        expect((await run(['echo-stdin'], { stdin: Buffer.from('still serving') })).stdout.toString('utf8')).toBe('still serving');
+        const result = await run(['fork-sleep', pidFile, '30', mode], { timeoutMs: 20_000 });
+        expect(result.exitCode).toBe(0);
+        expect(Date.now() - started, 'the streams the descendant held did not delay the job').toBeLessThan(800);
+        // The pid the probe wrote is the one the namespace gave the descendant, which no process outside can use.
+        expect(Number(fs.readFileSync(pidFile, 'utf8'))).toBe(3);
       }, 30_000);
 
-      it('is stopped by the caller too: the abort kills the descendant', async () => {
-        const pidFile = path.join(scratch, 'held-until-abort.pid');
+      it('is stopped by the caller while its first process runs: the abort ends everything the job started', async () => {
         const controller = new AbortController();
-        const running = run(['fork-sleep', pidFile, '30', 'hold'], { timeoutMs: 60_000, signal: controller.signal });
+        const running = run(['sleep', '30'], { timeoutMs: 60_000, signal: controller.signal });
         running.catch(() => undefined);
-        const descendant = await pidOf(pidFile);
-        await sleep(200); // the first process has returned by now, and the job has not ended
-        const started = Date.now();
+        const state = qpdfRunnerState();
+        await until(() => childrenOf(state.pid!).length > 0);
+        const [child] = childrenOf(state.pid!);
+        const members = [child, ...childrenOf(child)];
         controller.abort(new Error('job cancelled'));
         await expect(running).rejects.toThrow('job cancelled');
-        expect(Date.now() - started).toBeLessThan(2000);
-        await until(() => !alive(descendant), 1000);
-      }, 30_000);
-
-      it('ends with the result of its first process once the streams stay open past the grace, and the descendant is killed', async () => {
-        const pidFile = path.join(scratch, 'held-past-grace.pid');
-        const started = Date.now();
-        const result = await run(['fork-sleep', pidFile, '30', 'hold'], { timeoutMs: 20_000 });
-        const waited = Date.now() - started;
-        expect(result.exitCode).toBe(0);
-        expect(waited).toBeGreaterThanOrEqual(900);
-        expect(waited).toBeLessThan(4000);
-        const descendant = await pidOf(pidFile);
-        await until(() => !alive(descendant), 3000);
-      }, 30_000);
-
-      it('ends with the result of its first process when the descendant has closed the streams, and the descendant is killed', async () => {
-        const pidFile = path.join(scratch, 'daemon.pid');
-        const started = Date.now();
-        const result = await run(['fork-sleep', pidFile, '30', 'daemon'], { timeoutMs: 20_000 });
-        expect(result.exitCode).toBe(0);
-        expect(Date.now() - started).toBeLessThan(4000);
-        const descendant = await pidOf(pidFile);
-        await until(() => !alive(descendant), 3000);
+        await until(() => members.every((pid) => !alive(pid)), 2000);
       }, 30_000);
     });
 

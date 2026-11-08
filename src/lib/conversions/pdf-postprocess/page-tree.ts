@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PdfPostprocessError } from '../../types';
-import { runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
+import { runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfRunLimits, type QpdfWorkspace } from './qpdf-run';
 
 /**
  * Mending a page tree that reaches one of its own nodes a second time.
@@ -119,9 +119,9 @@ export function mendPageTree(objects: PdfJsonObjects): Map<string, JsonDictionar
 }
 
 /** Whether qpdf can list the pages of the document; it cannot when the page tree loops. */
-async function listsPages(workspace: QpdfWorkspace, signal?: AbortSignal): Promise<boolean> {
+async function listsPages(workspace: QpdfWorkspace, limits: QpdfRunLimits = {}): Promise<boolean> {
   try {
-    await runQpdf(workspace, { args: ['--show-pages', workspace.inputPath], action: 'Reading the pages', signal });
+    await runQpdf(workspace, { args: ['--show-pages', workspace.inputPath], action: 'Reading the pages', ...limits });
     return true;
   } catch (error) {
     if (error instanceof PdfPostprocessError) return false;
@@ -130,8 +130,8 @@ async function listsPages(workspace: QpdfWorkspace, signal?: AbortSignal): Promi
 }
 
 /** Whether qpdf lists the pages of `pdf`; false when it refuses them: a page tree that loops, or a document too damaged to read. */
-export function qpdfListsPages(pdf: Buffer, signal?: AbortSignal): Promise<boolean> {
-  return withQpdfInputFile(pdf, (workspace) => listsPages(workspace, signal));
+export function qpdfListsPages(pdf: Buffer, limits: QpdfRunLimits = {}): Promise<boolean> {
+  return withQpdfInputFile(pdf, (workspace) => listsPages(workspace, limits));
 }
 
 interface QpdfExport {
@@ -142,14 +142,15 @@ interface QpdfExport {
  * `pdf` with its page tree mended (see the top of this file), or `pdf` itself when qpdf reads its pages (unless `knownLooping` says a run of qpdf has just refused them), the tree has no
  * node to mend, or qpdf cannot describe the objects within `maxExportBytes`. The pages, their content and every other object stay as they are; qpdf writes the change.
  */
-export async function repairPageTree(pdf: Buffer, options: { maxExportBytes?: number; knownLooping?: boolean } = {}): Promise<Buffer> {
+export async function repairPageTree(pdf: Buffer, options: QpdfRunLimits & { maxExportBytes?: number; knownLooping?: boolean } = {}): Promise<Buffer> {
   return withQpdfWorkspace(pdf, async (workspace) => {
-    if (options.knownLooping !== true && (await listsPages(workspace))) return pdf;
+    const limits: QpdfRunLimits = { signal: options.signal, timeoutMs: options.timeoutMs };
+    if (options.knownLooping !== true && (await listsPages(workspace, limits))) return pdf;
     const action = 'Mending the page tree';
     const exportLimit = { ...workspace, maxOutputBytes: options.maxExportBytes ?? PAGE_TREE_EXPORT_LIMIT_BYTES };
     let described: Awaited<ReturnType<typeof runQpdf>>;
     try {
-      described = await runQpdf(exportLimit, { args: [...EXPORT_ARGS, workspace.inputPath], action, expectedOutputBytes: workspace.inputBytes });
+      described = await runQpdf(exportLimit, { args: [...EXPORT_ARGS, workspace.inputPath], action, expectedOutputBytes: workspace.inputBytes, ...limits });
     } catch (error) {
       // An export past its limit is not read: the document is left as it is, and the steps after this one answer as they would without it.
       if (error instanceof PdfPostprocessError) return pdf;
@@ -161,6 +162,6 @@ export async function repairPageTree(pdf: Buffer, options: { maxExportBytes?: nu
     const update = { version: JSON_VERSION, qpdf: [exported[0], Object.fromEntries([...mended].map(([key, value]) => [key, { value }]))] };
     const updatePath = path.join(workspace.dir, UPDATE_FILE);
     fs.writeFileSync(updatePath, JSON.stringify(update), { mode: 0o600 });
-    return runQpdfToBuffer(workspace, { args: [`--update-from-json=${updatePath}`, workspace.inputPath, '-'], action });
+    return runQpdfToBuffer(workspace, { args: [`--update-from-json=${updatePath}`, workspace.inputPath, '-'], action, ...limits });
   });
 }

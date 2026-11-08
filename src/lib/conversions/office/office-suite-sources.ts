@@ -100,6 +100,75 @@ const APPLICATION_OF_READING_FORMAT: Readonly<Record<string, OfficeSuiteApplicat
   odd: 'draw',
 };
 
+/**
+ * The import filter of the office suite for each declared format (`soffice --infilter=<name>`), so that the suite opens a file with the
+ * importer of the format it was declared and checked as, and never with the one its own type detection picks from the bytes. A file that
+ * is not what it was declared as is then refused instead of being read by another importer. The names are those of the filter registry
+ * of the installation (`registry/*.xcd`; `tests/office-import-filters.test.ts` reads them from it). A macro enabled variant has its
+ * macros removed before the suite sees it (`officeInputWithoutMacros`) and is opened as the plain format.
+ *
+ * Absent on purpose: the legacy binary Word, Excel and PowerPoint formats and their templates (`doc`, `xls`, `ppt` and the rest of
+ * their extensions) and Works (`wps`), because the suite has one filter for each generation of the format behind one extension and a file
+ * of an older generation is refused by the newest filter; the Palm databases (`pdb`, three filters) and the text formats (`txt`, `csv`,
+ * `tsv`, `md`, `html`), whose filters need an encoding or separators; the metafiles (`emf`, `wmf`, `cgm`), which the graphic filters
+ * import; and a format the installed suite has no filter for (`qpw`, `dps`). Those are opened by the suite's type detection, as before.
+ */
+export const OFFICE_IMPORT_FILTERS: Readonly<Record<string, string>> = {
+  docx: 'MS Word 2007 XML',
+  docm: 'MS Word 2007 XML',
+  dotx: 'MS Word 2007 XML Template',
+  dotm: 'MS Word 2007 XML Template',
+  xlsx: 'Calc MS Excel 2007 XML',
+  xlsm: 'Calc MS Excel 2007 XML',
+  xltx: 'Calc MS Excel 2007 XML Template',
+  xltm: 'Calc MS Excel 2007 XML Template',
+  pptx: 'Impress MS PowerPoint 2007 XML',
+  pptm: 'Impress MS PowerPoint 2007 XML',
+  potx: 'Impress MS PowerPoint 2007 XML Template',
+  potm: 'Impress MS PowerPoint 2007 XML Template',
+  ppsx: 'Impress MS PowerPoint 2007 XML AutoPlay',
+  ppsm: 'Impress MS PowerPoint 2007 XML AutoPlay',
+  odt: 'writer8',
+  ott: 'writer8_template',
+  ods: 'calc8',
+  ots: 'calc8_template',
+  odp: 'impress8',
+  otp: 'impress8_template',
+  odg: 'draw8',
+  rtf: 'Rich Text Format',
+  sxw: 'StarOffice XML (Writer)',
+  sxc: 'StarOffice XML (Calc)',
+  sxi: 'StarOffice XML (Impress)',
+  sxd: 'StarOffice XML (Draw)',
+  sdw: 'StarOffice_Writer',
+  sdc: 'StarOffice_Spreadsheet',
+  sda: 'StarOffice_Drawing',
+  wpd: 'WordPerfect',
+  lwp: 'LotusWordPro',
+  abw: 'AbiWord',
+  zabw: 'AbiWord',
+  pages: 'Apple Pages',
+  numbers: 'Apple Numbers',
+  key: 'Apple Keynote',
+  vsd: 'Visio Document',
+  cdr: 'Corel Draw Document',
+  pub: 'Publisher Document',
+  lrf: 'BroadBand eBook',
+  pdf: 'draw_pdf_import',
+};
+
+/** The import filter the office suite is told to open a file of `format` with, or undefined for a format it detects itself (see OFFICE_IMPORT_FILTERS). */
+export function officeImportFilter(format: string): string | undefined {
+  const lower = format.toLowerCase();
+  return Object.hasOwn(OFFICE_IMPORT_FILTERS, lower) ? OFFICE_IMPORT_FILTERS[lower] : undefined;
+}
+
+/** The `soffice` arguments that name the import filter of a declared format: none for a format the suite detects itself. */
+export function officeImportFilterArgs(format: string): string[] {
+  const filter = officeImportFilter(format);
+  return filter === undefined ? [] : [`--infilter=${filter}`];
+}
+
 /** Every source format of this table: the formats only the office suite reads and the aliases. */
 export const OFFICE_SUITE_SOURCE_FORMATS: readonly string[] = [...Object.keys(OFFICE_SUITE_ONLY_SOURCES), ...Object.keys(OFFICE_FORMAT_ALIAS)];
 
