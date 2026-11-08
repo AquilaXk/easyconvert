@@ -227,6 +227,19 @@ export const PRE_OLE2_WORD_SIGNATURES: readonly (readonly number[])[] = [
 ];
 
 /**
+ * JPEG XL (ISO/IEC 18181-1 and 18181-2): a bare codestream opens with the marker pair FF 0A, a file in the ISO base media container with
+ * the 12-byte signature box `JXL ` (length 12, then 0D 0A 87 0A, the line-ending check of the PNG signature). shared-mime-info and libmagic
+ * list both.
+ */
+export const JXL_CODESTREAM_SIGNATURE: readonly number[] = [0xff, 0x0a];
+export const JXL_CONTAINER_SIGNATURE: readonly number[] = [0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a];
+
+/** Whether the buffer opens with either JPEG XL signature. */
+export function isJxl(buf: Uint8Array): boolean {
+  return startsWithBytes(buf, JXL_CODESTREAM_SIGNATURE) || startsWithBytes(buf, JXL_CONTAINER_SIGNATURE);
+}
+
+/**
  * Formats that open with a fixed byte string no other kind shares, by the MIME type the registry sniffs for them (the
  * signatures of the format specifications, as listed by shared-mime-info and libmagic). The executable signatures (ELF, DOS
  * and Windows PE) are the security gate of the spoof check.
@@ -241,6 +254,8 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
   { mime: 'image/tiff', prefix: [0x49, 0x49, 0x2b, 0x00] },
   { mime: 'image/tiff', prefix: [0x4d, 0x4d, 0x00, 0x2a] },
   { mime: 'image/tiff', prefix: [0x4d, 0x4d, 0x00, 0x2b] },
+  { mime: 'image/jxl', prefix: JXL_CODESTREAM_SIGNATURE },
+  { mime: 'image/jxl', prefix: JXL_CONTAINER_SIGNATURE },
   { mime: 'application/x-7z-compressed', prefix: [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c] },
   { mime: 'application/gzip', prefix: [0x1f, 0x8b] },
   { mime: 'application/x-bzip2', prefix: [0x42, 0x5a, 0x68] },
@@ -667,6 +682,7 @@ const NON_CFBF_MIME_EXTENSIONS: Readonly<Record<string, ReadonlySet<string>>> = 
 };
 
 const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
+  jxl: isJxl,
   djvu: isDjvu,
   djv: isDjvu,
   emf: isEmf,

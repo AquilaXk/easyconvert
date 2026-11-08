@@ -42,6 +42,7 @@ libheif-plugin-libde265
 libheif-plugin-x265
 libheif-plugin-aomenc
 libopenjp2-tools
+libjxl-tools
 libimage-exiftool-perl
 libtiff-tools
 pngcheck

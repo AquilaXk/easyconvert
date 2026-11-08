@@ -1,12 +1,12 @@
 {
-  "formatCount": 302,
+  "formatCount": 303,
   "categoryCount": 12,
-  "pairCount": 2742,
+  "pairCount": 2755,
   "categories": [
     {
       "id": "image",
       "label": "Images",
-      "count": 49,
+      "count": 50,
       "formats": [
         "3fr",
         "ai",
@@ -33,6 +33,7 @@
         "jp2",
         "jpeg",
         "jpg",
+        "jxl",
         "mos",
         "mrw",
         "nef",
@@ -84,6 +85,7 @@
         "jp2",
         "jpeg",
         "jpg",
+        "jxl",
         "mos",
         "mrw",
         "nef",

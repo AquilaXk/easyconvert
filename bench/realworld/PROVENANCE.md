@@ -47,6 +47,7 @@ manifest's `sources` array holds the same statements.
 | `libarchive-tests` | A GitHub Actions workflow file (YAML) of the libarchive repository | BSD 2-clause (`COPYING`) | 1 |
 | `libheif-examples` | HEIF and HEIC example files of the libheif test data | LGPL 3.0 for the library, MIT for the sample applications (`COPYING`) | 4 |
 | `nokia-heif-conformance` | HEIF conformance file candidates published by Nokia Technologies | The repository states no licence for the files; they are generated with Nokia's HEIF software (Nokia HEIF License 2.1 in `nokiatech/heif`) | 2 |
+| `libjxl-conformance` | JPEG XL conformance bitstreams of the libjxl project at a pinned commit: bare codestreams and ISOBMFF containers with animation, orientation, ICC profiles, 10 and 12 bit samples, alpha and JPEG reconstruction; only the test cases that the README of `testcases/` marks CC0 | BSD 3-clause for the repository (`LICENSE`); CC0 1.0 for the source images of the eight test cases used (`testcases/README.md`) | 8: jxl |
 | `av1-avif-files` | An AVIF example of the Link-U set of the AV1 image format specification repository | CC-BY-SA 4.0 (`testFiles/Link-U/README.md`) | 1 |
 | `libavif-tests` | The Gradle wrapper jar of the libavif repository | Apache License 2.0 (Gradle) | 1 |
 | `kaitai-samples` | RPM packages and a WAV file from the Kaitai Struct sample library | CC0 1.0 per file (each file has a `.license` companion in REUSE format) | 3 |

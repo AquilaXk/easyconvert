@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **302 file formats** and **2,742 conversion pairs** in **12 categories**.
+EasyConvert is a file conversion platform built with Next.js 15 (App Router) and TypeScript. It converts files across **303 file formats** and **2,755 conversion pairs** in **12 categories**.
 
 EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools, a Redis-backed queue with Lua scripts, and S3 or OCI multipart object storage. It fails closed on malformed or spoofed input and deletes stored files on a fixed schedule: a result 10 minutes after its first complete download or 1 hour after conversion, and an upload 10 minutes after the last job that reads it (policy decision 125).
 
@@ -10,7 +10,7 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 
 ## Key Highlights
 
-- **302 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,742` source-to-target pairs).
+- **303 Formats Across 12 Categories**: Supports Images, Documents, Archives, Video, Audio, Ebooks, Spreadsheets, Presentations, Data & Tables, Vector, Fonts, and CAD & 3D (`2,755` source-to-target pairs).
 - **Binary Conversion Engines**:
   - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and builder with paragraph and table extraction.
   - **Cox-de Boor Curves**: B-spline basis evaluator and Bézier flattening for CAD and vector paths.
@@ -31,7 +31,7 @@ EasyConvert combines in-memory TypeScript binary engines, sandboxed native tools
 <!-- registry-stats:start -->
 | Category | Format Count | Supported Extensions |
 | :--- | ---: | :--- |
-| **Images** (`image`) | 49 | 3FR, AI, ARW, AVIF, BMP, CR2, CR3, CRW, CUR, DCR, DDS, DNG, EPS, ERF, EXR, GIF, HEIC, HEIF, ICNS, ICO, J2K, JFIF, JP2, JPEG, JPG, MOS, MRW, NEF, ORF, PBM, PCX, PEF, PGM, PNG, PNM, PPM, PSB, PSD, RAF, RAW, RW2, TGA, TIF, TIFF, WBMP, WEBP, X3F, XCF |
+| **Images** (`image`) | 50 | 3FR, AI, ARW, AVIF, BMP, CR2, CR3, CRW, CUR, DCR, DDS, DNG, EPS, ERF, EXR, GIF, HEIC, HEIF, ICNS, ICO, J2K, JFIF, JP2, JPEG, JPG, JXL, MOS, MRW, NEF, ORF, PBM, PCX, PEF, PGM, PNG, PNM, PPM, PSB, PSD, RAF, RAW, RW2, TGA, TIF, TIFF, WBMP, WEBP, X3F, XCF |
 | **Documents** (`document`) | 43 | ABW, DJVU, DOC, DOCM, DOCX, DOT, DOTX, EML, FODT, HOCR, HTM, HTML, HWP, HWPX, LATEX, LOG, LWP, MAN, MD, MSG, ODD, ODG, ODT, OTT, OXPS, PAGES, PDB, PDF, PDFA, PUB, RST, RTF, SDW, SXW, TEX, TEXT, TXT, WPD, WPS, XHTML, XML, XPS, ZABW |
 | **Archives** (`archive`) | 44 | 7Z, ACE, ALZ, ARC, ARJ, BZ, BZ2, CAB, CPIO, DEB, DMG, EAR, GZ, IMG, ISO, JAR, LHA, LZ, LZMA, LZO, RAR, RPM, RZ, TAR, TAR.7Z, TAR.BZ, TAR.BZ2, TAR.GZ, TAR.LZO, TAR.XZ, TAR.Z, TAR.ZST, TBZ, TBZ2, TGZ, TXZ, TZ, TZO, WAR, XZ, Z, ZIP, ZST, ZSTD |
 | **Video** (`video`) | 37 | 3G2, 3GP, 3GPP, ASF, AV1, AVI, CAVS, DIVX, DV, DVR, F4V, FLV, H264, H265, HEVC, M2TS, M2V, M4V, MKV, MOD, MOV, MP4, MPEG, MPG, MTS, MXF, OGV, RM, RMVB, SWF, TS, VOB, WEBM, WEBP, WMV, WTV, XVID |
@@ -95,7 +95,7 @@ easyconvert/
 │       │   ├── bullmq-engine.ts     # Redis Lua queue adapter & in-memory engine
 │       │   └── conversion-queue.ts  # Queue manager & job lifecycle coordinator
 │       ├── storage/                 # Local, S3, and OCI object storage backends
-│       ├── registry.ts              # 302 canonical format definitions & options
+│       ├── registry.ts              # 303 canonical format definitions & options
 │       ├── registry-stats.ts        # Computed format, category, and pair statistics
 │       ├── slug-parser.ts           # Dynamic route slug parser ([source]-to-[target])
 │       └── types.ts                 # TypeScript schemas & queue contracts

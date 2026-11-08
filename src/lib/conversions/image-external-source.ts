@@ -4,6 +4,7 @@ import { ConversionFailedError, type ConversionOptions, type ConversionResult } 
 import { convertImage } from './image';
 import { withLegacyDdsPixelFormat } from './image-dds-header';
 import { decodeWithMagick, type MagickSource } from './image-magick-cli';
+import { decodeWithDjxl } from './image-jxl-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
 import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
 
@@ -86,6 +87,7 @@ export function withUprightExifOrientation(png: Buffer): Buffer {
  */
 export async function decodeExternalImage(input: Buffer, format: string, signal?: AbortSignal): Promise<ExternalDecoded | null> {
   if (OPENJPEG_FORMATS.has(format)) return { buffer: await decodeWithOpenJpeg(input, signal), format: 'png' };
+  if (format === 'jxl') return { buffer: await decodeWithDjxl(input, signal), format: 'png' };
   if (format === 'xcf') return decodeWithMagick(input, { coder: 'xcf', label: 'XCF', result: { kind: 'canvas', ...xcfCanvas(input) } }, signal);
   const magick = MAGICK_BY_FORMAT.get(format);
   if (magick !== undefined) {

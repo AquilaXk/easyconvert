@@ -66,6 +66,8 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'libraw-bin (raw-identify)', tool: 'raw-identify' },
   { name: 'libopenjp2-tools (opj_compress)', tool: 'opj_compress' },
   { name: 'libopenjp2-tools (opj_decompress)', tool: 'opj_decompress' },
+  { name: 'libjxl-tools (cjxl)', tool: 'cjxl' },
+  { name: 'libjxl-tools (djxl)', tool: 'djxl' },
   { name: 'libheif-examples (heif-convert)', tool: 'heif-convert' },
   { name: 'woff2 (woff2_decompress)', tool: 'woff2_decompress' },
   { name: 'woff2 (woff2_info)', tool: 'woff2_info' },

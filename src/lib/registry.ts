@@ -2,9 +2,7 @@ import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionS
 import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
-  // ==========================================
   // 1. AUDIO (24 formats)
-  // ==========================================
   mp3: {
     id: 'mp3',
     name: 'MP3 Audio',
@@ -236,9 +234,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['wav', 'mp3', 'ogg', 'zip'],
   },
 
-  // ==========================================
   // 2. VIDEO (30 formats)
-  // ==========================================
   mp4: {
     id: 'mp4',
     name: 'MP4 Video',
@@ -506,9 +502,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['gif', 'mp4', 'png', 'zip'],
   },
 
-  // ==========================================
   // 3. DOCUMENT & OFFICE (35 formats)
-  // ==========================================
   pdf: {
     id: 'pdf',
     name: 'PDF Document',
@@ -851,9 +845,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     optionsSchema: { ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
 
-  // ==========================================
   // 4. EBOOK (18 formats)
-  // ==========================================
   epub: {
     id: 'epub',
     name: 'Electronic Publication (EPUB)',
@@ -1017,9 +1009,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   },
 
-  // ==========================================
   // 5. SPREADSHEET & DATA (26 formats)
-  // ==========================================
   csv: {
     id: 'csv',
     name: 'CSV Tabular Data',
@@ -1277,9 +1267,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['json', 'csv', 'tsv', 'yaml', 'xlsx', 'ods', 'pdf', 'txt', 'xml', 'html', 'ndjson', 'xls'],
   },
 
-  // ==========================================
   // 6. PRESENTATION (18 formats)
-  // ==========================================
   pptx: {
     id: 'pptx',
     name: 'Microsoft PowerPoint (PPTX)',
@@ -1444,9 +1432,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['pdf', 'pptx', 'zip'],
   },
 
-  // ==========================================
   // 7. IMAGE (42 formats)
-  // ==========================================
   png: {
     id: 'png',
     name: 'PNG Image',
@@ -1585,6 +1571,16 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     description: 'High Efficiency Image File Format standardized by MPEG.',
     targetFormats: ['jpg', 'png', 'webp', 'pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff'],
     optionsSchema: { background: true, quality: true, ocrEnabled: true, ocrLanguage: true },
+  },
+  jxl: {
+    id: 'jxl',
+    name: 'JPEG XL',
+    extension: 'jxl',
+    mimeType: 'image/jxl',
+    category: 'image',
+    description: 'JPEG XL (ISO/IEC 18181) image, lossy or lossless, with wide colour, high bit depth, transparency and animation.',
+    targetFormats: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
+    optionsSchema: { background: true, quality: true },
   },
   psd: {
     id: 'psd',
@@ -1844,9 +1840,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['png', 'jpg', 'zip'],
   },
 
-  // ==========================================
   // 8. ARCHIVE (18 formats)
-  // ==========================================
   zip: {
     id: 'zip',
     name: 'ZIP Archive',
@@ -2043,9 +2037,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['zip', 'tar'],
   },
 
-  // ==========================================
   // 9. FONT & CAD (16 formats)
-  // ==========================================
   ttf: {
     id: 'ttf',
     name: 'TrueType Font (TTF)',
@@ -2213,9 +2205,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['ttf', 'woff', 'woff2', 'zip'],
   },
 
-  // ==========================================
   // 11. EXPANDED UNIVERSAL FORMAT MATRIX (66 formats)
-  // ==========================================
   'tar.bz2': {
     id: 'tar.bz2',
     name: 'Bzip2 Compressed Tarball',
