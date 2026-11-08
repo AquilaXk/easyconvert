@@ -76,22 +76,15 @@ describe('triggers', () => {
     expect(workflow.permissions).toEqual({ contents: 'read' });
     for (const [name, job] of Object.entries(workflow.jobs)) {
       for (const [scope, level] of Object.entries(job.permissions ?? {})) {
-        if (name !== 'report') expect(level, `${name}: ${scope}`).not.toBe('write');
+        expect(level, `${name}: ${scope}`).not.toBe('write');
       }
     }
   });
 
-  it('reports a failed run through the workflow the nightly run uses, with the same condition and permissions', () => {
-    const report = workflow.jobs.report;
-    expect(report.uses).toBe('./.github/workflows/report-failure.yml');
-    expect([...(report.needs ?? [])].sort()).toEqual(['gate', 'plan', 'shard']);
-    expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
-    expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
-    const nightly = parse(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'nightly.yml'), 'utf-8')) as Workflow;
-    expect(nightly.jobs.report.uses).toBe(report.uses);
-    expect(nightly.jobs.report.if).toBe(report.if);
-    expect(nightly.jobs.report.permissions).toEqual(report.permissions);
+  it('opens no issue: a failed run shows in Actions and in the run summary', () => {
+    expect(workflow.jobs.report).toBeUndefined();
   });
+
 });
 
 describe('shards', () => {

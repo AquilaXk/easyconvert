@@ -223,7 +223,7 @@ Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by
 - `NEW` or `GREW` lines name the file, function, rule, and measured value of a smell above the baseline. Fix the code; do not raise the baseline.
 - `GONE` or improved lines mean you removed a smell. Run `npm run guard:code-smells -- --update` and commit the smaller baseline in the same change. `--update` refuses to raise any entry.
 - A hot codec loop that must stay may keep its entry; add an optional `reason` field to that baseline entry. `--update` preserves it.
-- On pull requests CI also runs `npm run guard:code-smells -- --check-base <base baseline file>`: the baseline may not exceed the base branch's, summed per file and rule (a rename passes). Pushes to main skip this comparison.
+- CI also runs `npm run guard:code-smells -- --check-base <base baseline file>` against the commit a push replaces (or the base of a pull request): the baseline may not exceed it, summed per file and rule (a rename passes).
 
 - **Deterministic Test Suite**: Vitest unit, integration, and drift tests verify RFC compliance, mathematical basis functions, OLE2 CFBF structures, OpenAPI contracts, and memory safety.
 - **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers trigger HTTP 400 or 422 responses.
@@ -234,7 +234,11 @@ Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by
 
 ## Policy decisions
 
-Conversion and product policies, such as output defaults, limits, engines, and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same pull request that changes a policy.
+Conversion and product policies, such as output defaults, limits, engines, and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same commit that changes a policy.
+
+## Maintenance
+
+One maintainer. Changes go straight to `main` and CI runs on every push. Remaining work is listed in `TODO.md`. A release is tagged per deploy with a short hand-written note (see `docs/deploy-oci.md`, "Releases").
 
 ## Licensing
 

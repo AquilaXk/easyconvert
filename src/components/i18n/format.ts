@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
-import { byteMagnitude } from '@/lib/format-bytes';
+import { byteMagnitude, displayByteUnit } from '@/lib/format-bytes';
 import { fileTooLargeFacts, PLAN_MAX_FILE_BYTES, type Plan } from '@/lib/plan-limits';
 
 /**
@@ -8,19 +8,19 @@ import { fileTooLargeFacts, PLAN_MAX_FILE_BYTES, type Plan } from '@/lib/plan-li
  * that depends on one runs again only when the language changes.
  */
 
-/** Writes a byte count as `formatBytes` does (IEC units, one decimal), with the number in the page's locale. */
+/** Writes a byte count as `formatBytesForDisplay` does (1024 multiples shown as KB, MB and GB, one decimal), with the number in the page's locale. */
 export function useFormatBytes(): (bytes: number) => string {
   const format = useFormatter();
   return useCallback(
     (bytes: number) => {
       const { value, unit } = byteMagnitude(bytes);
-      return `${format.number(value, { maximumFractionDigits: 1 })} ${unit}`;
+      return `${format.number(value, { maximumFractionDigits: 1 })} ${displayByteUnit(unit)}`;
     },
     [format]
   );
 }
 
-/** The line under the drop zone, for example `Up to 1 GiB per file`. */
+/** The line under the drop zone, for example `Up to 1 GB per file`. */
 export function useFileLimitCopy(): (plan: Plan) => string {
   const t = useTranslations('plans');
   const formatBytes = useFormatBytes();

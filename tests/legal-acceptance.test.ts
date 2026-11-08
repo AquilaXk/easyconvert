@@ -48,7 +48,7 @@ describe('sign-up records the accepted terms version', () => {
     const answer = await signUp({ acceptedTermsVersion: TERMS_VERSION });
     expect(answer.status).toBe(200);
     const stored = await redisUserStore.findByEmail('reader@legal.test');
-    expect(stored?.acceptedTermsVersion).toBe('2026-11-03');
+    expect(stored?.acceptedTermsVersion).toBe(TERMS_VERSION);
   });
 
   it.each([

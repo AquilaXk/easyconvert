@@ -2,83 +2,14 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { Sun, Moon, ChevronDown, Menu, X } from 'lucide-react';
+import { Sun, Moon, ChevronDown, Menu } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
-import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
+import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
 import { PRIMARY_LINKS, TOOL_ROUTES } from './site-links';
-
-function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
-  const t = useTranslations('header');
-  const tLinks = useTranslations('siteLinks');
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useModalDialog(dialogRef, true, onClose);
-
-  return (
-    <dialog
-      ref={dialogRef}
-      aria-label={t('menuLabel')}
-      className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-md p-0 bg-surface text-ink border border-rule shadow-elev-2"
-    >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-rule">
-        <BrandLogo size="sm" />
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t('closeMenu')}
-          className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors cursor-pointer"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      <div className="p-4 space-y-4 overflow-y-auto max-h-[calc(100dvh-6rem)]">
-        <nav aria-label={t('mobileNavLabel')} className="flex flex-col gap-1">
-          {PRIMARY_LINKS.map((item) => (
-            <Link
-              key={item.key}
-              href={item.href}
-              onClick={onClose}
-              className="min-h-[44px] px-3 inline-flex items-center rounded-sm text-sm font-semibold text-ink hover:bg-sunken transition-colors"
-            >
-              {tLinks(item.key)}
-            </Link>
-          ))}
-        </nav>
-
-        <div className="pt-3 border-t border-rule">
-          <p className="px-3 pb-1.5 text-xs font-semibold uppercase tracking-wider text-ink-3">
-            {t('tools')}
-          </p>
-          <div className="grid grid-cols-1 gap-0.5">
-            {TOOL_ROUTES.map((tool) => (
-              <Link
-                key={tool.key}
-                href={tool.href}
-                onClick={onClose}
-                className="min-h-[44px] px-3 inline-flex items-center rounded-sm text-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors"
-              >
-                {tLinks(tool.key)}
-              </Link>
-            ))}
-          </div>
-        </div>
-
-        <div className="pt-3 border-t border-rule">
-          <LanguageSwitcher />
-        </div>
-
-        <div className="pt-3 border-t border-rule">
-          <UserNav mobile onItemClick={onClose} />
-        </div>
-      </div>
-    </dialog>
-  );
-}
 
 export default function Header() {
   const t = useTranslations('header');
@@ -88,6 +19,15 @@ export default function Header() {
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  const menuWasOpen = useRef(false);
+
+  // The sheet is a modal dialog that makes the page inert while it stands, so focus goes back to the menu button once it is gone.
+  useEffect(() => {
+    if (menuWasOpen.current && !isMobileMenuOpen) menuButtonRef.current?.focus();
+    menuWasOpen.current = isMobileMenuOpen;
+  }, [isMobileMenuOpen]);
 
   useEffect(() => {
     if (!isToolsOpen) return;
@@ -191,6 +131,7 @@ export default function Header() {
           </div>
 
           <button
+            ref={menuButtonRef}
             type="button"
             onClick={() => setIsMobileMenuOpen(true)}
             aria-label={t('openMenu')}
@@ -202,7 +143,7 @@ export default function Header() {
         </div>
       </div>
 
-      {isMobileMenuOpen && <MobileMenuDialog onClose={() => setIsMobileMenuOpen(false)} />}
+      {isMobileMenuOpen && <MobileMenu onClose={() => setIsMobileMenuOpen(false)} />}
     </header>
   );
 }

@@ -18,7 +18,7 @@ You can stop using EasyConvert at any time. To delete your account, send a reque
 
 Your files stay yours. You give us only the permission we need to convert them and to deliver the result to you. Your files are processed by machines. We do not look at them, and we do not use them for anything else.
 
-We delete your files and results on the schedule in the [Privacy Policy](/privacy). We do not make backups of your files. Keep a copy of every file you send to EasyConvert.
+We delete your files and results on the schedule in the [Privacy Policy](/privacy). We do not make backups of uploaded files or results. The only backups are the short-lived backups of account and job records that the Privacy Policy describes. Keep a copy of every file you send to EasyConvert.
 
 You are responsible for the files and the links you send. You must have the right to convert them.
 

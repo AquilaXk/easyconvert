@@ -756,7 +756,8 @@
     "tools": "Tools",
     "menuLabel": "Navigation menu",
     "openMenu": "Open menu",
-    "closeMenu": "Close menu"
+    "closeMenu": "Close menu",
+    "api": "API"
   },
   "hero": {
     "fileInputLabel": "Select files to convert",
@@ -831,6 +832,22 @@
       "copiedAnnouncement": "Copied API example to clipboard",
       "copyLabel": "Copy API example",
       "explore": "Explore the API"
+    },
+    "quality": {
+      "heading": "High-Quality Conversions",
+      "intro": "Output quality is something we measure, not something we claim.",
+      "measured": {
+        "heading": "Measured against reference tools",
+        "body": "Every night we convert the same test files with our converters and with established ones, and compare quality and speed."
+      },
+      "options": {
+        "heading": "Settings that fit the format",
+        "body": "The options change with the file you choose, such as image quality, audio bitrate or video resolution."
+      },
+      "formats": {
+        "heading": "Hundreds of formats",
+        "body": "{formats} formats in {categories} categories, from everyday documents and photos to camera RAW, CAD drawings and fonts."
+      }
     }
   },
   "infoPages": {
@@ -943,6 +960,10 @@
     "emailVerification": {
       "title": "Confirm Email Address | EasyConvert",
       "description": "Confirm the email address of your EasyConvert account."
+    },
+    "pricing": {
+      "title": "Pricing | EasyConvert",
+      "description": "EasyConvert is free to use. See the limits of the free plan: conversions a day, file size, simultaneous conversions, processing time and how long files are kept."
     }
   },
   "options": {
@@ -1196,7 +1217,9 @@
     "acceptableUse": "Acceptable Use",
     "security": "Security",
     "accessibility": "Accessibility",
-    "contact": "Contact"
+    "contact": "Contact",
+    "pricing": "Pricing",
+    "apiKeys": "API keys"
   },
   "slugPages": {
     "info": {
@@ -1465,6 +1488,78 @@
       "invalid_key_settings": "Check the key's settings: a name, scope, address list or expiry date is not valid.",
       "invalid_grace_period": "Choose a grace period between 0 seconds and 7 days.",
       "key_create_failed": "Could not create the API key. Try again in a moment."
+    }
+  },
+  "pricing": {
+    "title": "Pricing",
+    "intro": "EasyConvert is free. There is one plan today, and these are its limits.",
+    "plan": {
+      "name": "Free",
+      "tagline": "For everyday conversions, testing and small projects.",
+      "price": "$0",
+      "cta": "Sign up"
+    },
+    "limitsHeading": "Limits",
+    "limits": {
+      "daily": {
+        "label": "Conversions",
+        "value": "{daily} a day"
+      },
+      "fileSize": {
+        "label": "Max file size",
+        "value": "{fileSize}"
+      },
+      "concurrent": {
+        "label": "Simultaneous conversions",
+        "value": "{concurrent}"
+      },
+      "processing": {
+        "label": "Max processing time",
+        "value": "{processing, plural, one {# minute} other {# minutes}}"
+      },
+      "deletion": {
+        "label": "File deletion",
+        "value": "{deletion, plural, one {# minute} other {# minutes}} after download"
+      }
+    },
+    "includedHeading": "What is included",
+    "features": {
+      "formats": "Every format and conversion on the site",
+      "api": "Access to the API with an API key from your account",
+      "noCard": "No credit card needed"
+    },
+    "paidNote": "No paid plans are on sale yet. If that changes, the plans and their prices will be listed here.",
+    "faqHeading": "Frequently asked questions",
+    "faq": {
+      "daily": {
+        "question": "How many conversions can I run?",
+        "answer": "{anonymous, plural, one {# conversion} other {# conversions}} a day without an account and {daily, plural, one {# conversion} other {# conversions}} a day with a free account. The count starts again every day at midnight UTC. Conversions that run in your browser use none of our servers and are not counted."
+      },
+      "account": {
+        "question": "Do I need an account?",
+        "answer": "No. You can convert files without signing in. An account gives you the dashboard and API keys."
+      },
+      "limits": {
+        "question": "What other limits apply?",
+        "answer": "A file can be up to {fileSize}. You can run {concurrent} conversions at the same time, and one conversion can run for up to {processing, plural, one {# minute} other {# minutes}}."
+      },
+      "deletion": {
+        "question": "When are my files deleted?",
+        "answer": "A converted file is deleted {deletion, plural, one {# minute} other {# minutes}} after you download it, or an hour after the conversion if you never download it. An uploaded file is deleted {deletion, plural, one {# minute} other {# minutes}} after the last job that reads it ends."
+      },
+      "api": {
+        "question": "Can I use the API for free?",
+        "answer": "Yes. Create an API key in your account and send requests to it. API requests count against the same {daily, plural, one {# conversion} other {# conversions}} a day."
+      },
+      "paid": {
+        "question": "Will there be paid plans?",
+        "answer": "None are on sale yet, so there is nothing to buy and no price to pay. If we add paid plans with higher limits, they will be listed on this page."
+      }
+    },
+    "cta": {
+      "heading": "Ready to get started?",
+      "body": "Convert up to {anonymous, plural, one {# file} other {# files}} a day, no account and no credit card needed.",
+      "button": "Convert a file"
     }
   }
 }

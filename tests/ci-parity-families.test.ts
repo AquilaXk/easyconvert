@@ -190,7 +190,7 @@ describe('classifying changed paths', () => {
   });
 
   it('leaves unrelated files at the repository root and under .github alone', () => {
-    expect(classify('README.md', 'tsconfig.json', 'docker-compose.yml', '.github/workflows/nightly.yml', '.github/PULL_REQUEST_TEMPLATE.md', 'docker/AIRGAP.md')).toEqual({
+    expect(classify('README.md', 'tsconfig.json', 'docker-compose.yml', '.github/workflows/nightly.yml', 'docker/AIRGAP.md')).toEqual({
       benchmarked: [],
       unmapped: [],
       unclassified: [],

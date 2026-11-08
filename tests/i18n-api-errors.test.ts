@@ -80,7 +80,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(body).toMatchObject({ plan: 'free', sizeBytes: 3 * 1024 ** 3, limitBytes: PLAN_MAX_FILE_BYTES.free });
     const korean = worded(useProblemWording, 'ko', body, status);
     expectKorean(korean, 'plan limit');
-    expect(korean).toContain('3 GiB');
+    expect(korean).toContain('3 GB');
     expect(korean).not.toContain(body.detail as string);
   });
 
@@ -88,8 +88,8 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ type: `${PROBLEM}quota-exceeded`, detail: 'The daily limit of 50 conversions is used up. It resets at midnight UTC.', dailyLimit: 50 }, '50'],
       [{ type: `${PROBLEM}upload-budget-exceeded`, detail: 'Up to 3 uploads may be open at once without an account.', refusal: 'open-uploads', limit: 3 }, '3'],
-      [{ type: `${PROBLEM}upload-budget-exceeded`, detail: 'Without an account, uploads may total 2 GiB a day.', refusal: 'daily-bytes', limitBytes: 2 * 1024 ** 3 }, '2 GiB'],
-      [{ type: `${PROBLEM}payload-too-large`, detail: 'The request body is too large.', maxRequestBytes: SINGLE_REQUEST_BODY_MAX_BYTES }, `${SINGLE_REQUEST_BODY_MAX_BYTES / 2 ** 20} MiB`],
+      [{ type: `${PROBLEM}upload-budget-exceeded`, detail: 'Without an account, uploads may total 2 GiB a day.', refusal: 'daily-bytes', limitBytes: 2 * 1024 ** 3 }, '2 GB'],
+      [{ type: `${PROBLEM}payload-too-large`, detail: 'The request body is too large.', maxRequestBytes: SINGLE_REQUEST_BODY_MAX_BYTES }, `${SINGLE_REQUEST_BODY_MAX_BYTES / 2 ** 20} MB`],
     ];
     for (const [body, number] of cases) {
       const korean = worded(useProblemWording, 'ko', body, 429);
@@ -103,7 +103,7 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
     expect(body).toMatchObject({ refusal: 'daily-bytes', limitBytes: 10 * 1024 ** 3, plan: 'pro' });
 
     const korean = worded(useProblemWording, 'ko', body, status);
-    expect(korean).toContain('10 GiB');
+    expect(korean).toContain('10 GB');
     expect(korean).toContain('링크 가져오기');
     expect(korean).not.toContain('계정 없이');
   });
@@ -132,10 +132,10 @@ describe('typed problems carry their numbers as fields, worded per locale', () =
   it('words a file larger than what the day has left for link imports by what is left, in both locales', async () => {
     const { status, body } = await bodyOf(importLargerThanLeftResponse(30 * 1024 ** 2, '/api/fetch-url', 'free'));
     expect(body).toMatchObject({ refusal: 'larger-than-left', leftBytes: 30 * 1024 ** 2, plan: 'free' });
-    expect(worded(useProblemWording, 'en', body, status)).toContain('30 MiB');
+    expect(worded(useProblemWording, 'en', body, status)).toContain('30 MB');
     const korean = worded(useProblemWording, 'ko', body, status);
     expectKorean(korean, 'larger than left');
-    expect(korean).toContain('30 MiB');
+    expect(korean).toContain('30 MB');
     expect(korean).not.toContain('모두 썼어요');
   });
 

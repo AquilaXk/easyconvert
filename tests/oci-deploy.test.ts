@@ -460,7 +460,7 @@ describe('deploy workflow', () => {
     for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml', '.github/workflows/deploy-oci.yml', '.dockerignore', 'deploy/oci/deploy.sh', 'docker-compose.prod.yml']) {
       expect(triggers(file), file).toBe(true);
     }
-    for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md', 'CHANGELOG.md', '.github/RELEASE_TEMPLATE.md', '.github/PULL_REQUEST_TEMPLATE.md']) {
+    for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md', 'CHANGELOG.md']) {
       expect(triggers(file), file).toBe(false);
     }
   });
@@ -1724,12 +1724,8 @@ describe('operations document and policy entry', () => {
     expect(changelog).toContain('semver.org/spec/v2.0.0.html');
     const unreleased = changelog.slice(changelog.indexOf('## [Unreleased]'));
     expect([...unreleased.matchAll(/^### (.+)$/gm)].map((match) => match[1])).toEqual(['Added', 'Changed', 'Fixed', 'Security']);
-    const template = read('.github/RELEASE_TEMPLATE.md');
-    expect([...template.matchAll(/^## (.+)$/gm)].map((match) => match[1])).toEqual([
-      'Highlights', 'Security', 'Added', 'Changed', 'Fixed', 'Removed / Deprecated', 'Known limitations', 'Operations', 'Full changelog',
-    ]);
-    const sections = template.split(/^## /m).slice(1);
-    for (const section of sections) expect(section, section.split('\n')[0]).toMatch(/<!--[\s\S]+-->/);
+    // A release gets a short hand-written note, not a template (entry 190).
+    expect(existsSync(path.join(ROOT, '.github', 'RELEASE_TEMPLATE.md'))).toBe(false);
   });
 
   it('records the hosting and storage decision as entry 122', () => {

@@ -23,7 +23,7 @@ The host nginx terminates TLS for `convert.aquilaxk.site` and proxies to `127.0.
 | `deploy/oci/deploy.sh` | Deploy, rollback, reconcile, guard and sweep, run by the workflow (needs bash 4.4 or later; the host has 5.2) |
 | `deploy/oci/env-allowlist.txt` | The keys the env secret may carry |
 | `.github/workflows/deploy-oci.yml` | Image build on main and the manual deploy |
-| `CHANGELOG.md`, `.github/RELEASE_TEMPLATE.md` | The changelog and the template of the release notes written for each deploy ("Releases" below) |
+| `CHANGELOG.md` | The changelog; each deploy gets a short hand-written release note ("Releases" below) |
 
 Nothing here touches the other service's paths (`/opt/easysubway`, its nginx site, its cluster, its runner).
 
@@ -189,11 +189,11 @@ What the command does not touch expires on its own. The edge server log keeps th
 
 ## Releases
 
-One version per production deploy, never one per pull request. The rule and its reasons are in entry 122 of `docs/policy-decisions.md`.
+One version per production deploy. The rule and its reasons are in entry 122 of `docs/policy-decisions.md`.
 
 - **Number.** Beta releases are `0.y.z`. Raise `y` for a planned deploy batch and `z` for an urgent hotfix deploy. The first beta is `v0.1.0`, published as a pre-release. `1.0.0` comes when every conversion feature and the frontend are complete.
 - **Build.** A version names a deploy, a build is named by its image tag `sha-<commit>`. The release notes name the tag that was deployed.
-- **Before the deploy.** Move the `Unreleased` entries of `CHANGELOG.md` under the new version and its date, in a pull request. Copy `.github/RELEASE_TEMPLATE.md` into the body of the GitHub release, write each section by hand (leave out a section with nothing to say but keep the order) and create the tag on the commit that was deployed.
+- **Before the deploy.** Move the `Unreleased` entries of `CHANGELOG.md` under the new version and its date, in a commit on `main`. Create the tag on the commit that was deployed and write the GitHub release note by hand: a few lines on what changed for users, the deployed image tag and anything to do on the host. There is no template.
 
 ## Scaling later
 

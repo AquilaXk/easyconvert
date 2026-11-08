@@ -1,6 +1,6 @@
 import { useTranslations } from 'next-intl';
 import { SYNC_CONVERSION_MAX_BYTES } from '@/lib/api/file-size-limit';
-import { formatBytes } from '@/lib/format-bytes';
+import { formatBytesForDisplay } from '@/lib/format-bytes';
 import { SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import CodeBlock from './CodeBlock';
 import { DOC, richText } from './doc-text';
@@ -10,7 +10,7 @@ export default function QuickstartGuide({ origin }: Readonly<{ origin: string }>
   const t = useTranslations('apiDocs');
   const heading = (id: string) => t(`quickstart.headings.${id}` as 'quickstart.headings.create-a-key');
   const copy = { copyLabel: t('operation.copy'), copiedLabel: t('operation.copied') };
-  const values = { ...richText, syncMax: formatBytes(SYNC_CONVERSION_MAX_BYTES), requestMax: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES) };
+  const values = { ...richText, syncMax: formatBytesForDisplay(SYNC_CONVERSION_MAX_BYTES), requestMax: formatBytesForDisplay(SINGLE_REQUEST_FILE_MAX_BYTES) };
   const p = (key: Parameters<typeof t.rich>[0]) => <p className={DOC.p}>{t.rich(key, values)}</p>;
   const step = (key: Parameters<typeof t.rich>[0]) => <li className={DOC.listItem}>{t.rich(key, values)}</li>;
 

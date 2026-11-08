@@ -756,7 +756,8 @@
     "tools": "도구",
     "menuLabel": "탐색 메뉴",
     "openMenu": "메뉴 열기",
-    "closeMenu": "메뉴 닫기"
+    "closeMenu": "메뉴 닫기",
+    "api": "API"
   },
   "hero": {
     "fileInputLabel": "변환할 파일 선택",
@@ -831,6 +832,22 @@
       "copiedAnnouncement": "API 예시를 클립보드에 복사했어요",
       "copyLabel": "API 예시 복사",
       "explore": "API 살펴보기"
+    },
+    "quality": {
+      "heading": "높은 변환 품질",
+      "intro": "변환 품질은 말로 주장하지 않고 직접 측정해요.",
+      "measured": {
+        "heading": "기존 변환 도구와 비교해 측정해요",
+        "body": "매일 밤 같은 테스트 파일을 우리 변환기와 이미 널리 쓰이는 변환기로 각각 변환해서 품질과 속도를 비교해요."
+      },
+      "options": {
+        "heading": "형식에 맞는 설정",
+        "body": "이미지 품질, 오디오 비트레이트, 영상 해상도처럼 고른 파일에 맞춰 옵션이 달라져요."
+      },
+      "formats": {
+        "heading": "수백 가지 형식",
+        "body": "{categories}개 분류에 걸친 {formats}개 형식을 지원해요. 일상적인 문서와 사진부터 카메라 RAW, CAD 도면, 글꼴까지 다뤄요."
+      }
     }
   },
   "infoPages": {
@@ -943,6 +960,10 @@
     "emailVerification": {
       "title": "이메일 주소 확인 | EasyConvert",
       "description": "EasyConvert 계정의 이메일 주소를 확인해요."
+    },
+    "pricing": {
+      "title": "요금 | EasyConvert",
+      "description": "EasyConvert는 무료로 쓸 수 있어요. 하루 변환 횟수, 파일 크기, 동시 변환 수, 처리 시간, 파일 보관 시간 같은 무료 플랜의 한도를 확인해 보세요."
     }
   },
   "options": {
@@ -1196,7 +1217,9 @@
     "acceptableUse": "이용 제한 정책",
     "security": "보안",
     "accessibility": "접근성",
-    "contact": "문의"
+    "contact": "문의",
+    "pricing": "요금",
+    "apiKeys": "API 키"
   },
   "slugPages": {
     "info": {
@@ -1788,6 +1811,78 @@
       "invalid_key_settings": "API 키 설정을 확인해 주세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있어요.",
       "invalid_grace_period": "유예 시간은 0초에서 7일 사이로 정해 주세요.",
       "key_create_failed": "API 키를 만들지 못했어요. 잠시 후 다시 시도해 주세요."
+    }
+  },
+  "pricing": {
+    "title": "요금",
+    "intro": "EasyConvert는 무료예요. 지금은 플랜이 하나뿐이고, 한도는 아래와 같아요.",
+    "plan": {
+      "name": "무료",
+      "tagline": "일상적인 변환, 테스트, 작은 프로젝트를 위한 플랜이에요.",
+      "price": "0원",
+      "cta": "회원가입"
+    },
+    "limitsHeading": "한도",
+    "limits": {
+      "daily": {
+        "label": "변환 횟수",
+        "value": "하루 {daily}회"
+      },
+      "fileSize": {
+        "label": "파일 최대 크기",
+        "value": "{fileSize}"
+      },
+      "concurrent": {
+        "label": "동시 변환",
+        "value": "{concurrent}개"
+      },
+      "processing": {
+        "label": "최대 처리 시간",
+        "value": "{processing}분"
+      },
+      "deletion": {
+        "label": "파일 삭제",
+        "value": "내려받고 {deletion}분 뒤"
+      }
+    },
+    "includedHeading": "포함된 기능",
+    "features": {
+      "formats": "사이트의 모든 형식과 변환",
+      "api": "계정에서 만든 API 키로 API 사용",
+      "noCard": "신용카드 없이 사용"
+    },
+    "paidNote": "아직 판매 중인 유료 플랜은 없어요. 생기면 플랜과 가격을 이 페이지에 안내할게요.",
+    "faqHeading": "자주 묻는 질문",
+    "faq": {
+      "daily": {
+        "question": "변환을 몇 번까지 할 수 있나요?",
+        "answer": "계정이 없으면 하루 {anonymous}회, 무료 계정이면 하루 {daily}회까지 할 수 있어요. 횟수는 매일 UTC 자정에 다시 시작해요. 브라우저에서 처리하는 변환은 우리 서버를 쓰지 않아서 횟수에 세지 않아요."
+      },
+      "account": {
+        "question": "계정이 꼭 있어야 하나요?",
+        "answer": "아니요. 로그인하지 않아도 파일을 변환할 수 있어요. 계정이 있으면 대시보드와 API 키를 쓸 수 있어요."
+      },
+      "limits": {
+        "question": "다른 한도도 있나요?",
+        "answer": "파일은 {fileSize}까지 올릴 수 있어요. 동시에 {concurrent}개까지 변환할 수 있고, 변환 하나는 최대 {processing}분 동안 실행돼요."
+      },
+      "deletion": {
+        "question": "파일은 언제 삭제되나요?",
+        "answer": "변환한 파일은 내려받고 {deletion}분 뒤에 삭제돼요. 내려받지 않으면 변환하고 1시간 뒤에 삭제돼요. 올린 파일은 그 파일을 쓰는 마지막 작업이 끝나고 {deletion}분 뒤에 삭제돼요."
+      },
+      "api": {
+        "question": "API도 무료로 쓸 수 있나요?",
+        "answer": "네, 계정에서 API 키를 만들어 요청을 보내면 돼요. API 요청도 같은 하루 {daily}회 한도에 포함돼요."
+      },
+      "paid": {
+        "question": "유료 플랜이 생기나요?",
+        "answer": "아직 판매 중인 유료 플랜은 없어서 살 것도, 낼 요금도 없어요. 한도가 더 높은 유료 플랜을 추가하면 이 페이지에 안내할게요."
+      }
+    },
+    "cta": {
+      "heading": "지금 시작해 보세요",
+      "body": "계정도 신용카드도 없이 하루 {anonymous}개까지 파일을 변환할 수 있어요.",
+      "button": "파일 변환하기"
     }
   }
 }
