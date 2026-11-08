@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { EngineUnavailableError, RawDecodeError } from '../lib/types';
+import { olderThanSource } from '../lib/workers/compiled-worker';
 
 export interface InProcessDecoded {
   width: number;
@@ -41,7 +42,6 @@ function resolveWorkerEntry(): WorkerEntry {
     path.join(process.cwd(), 'dist', `${WORKER_FILE}.js`),
   ];
   const compiled = compiledCandidates.find((candidate) => fs.existsSync(candidate));
-  if (compiled) return { kind: 'compiled', file: compiled };
 
   const sourceCandidates = [
     path.join(__dirname, `${WORKER_FILE}.ts`),
@@ -54,6 +54,7 @@ function resolveWorkerEntry(): WorkerEntry {
   } catch {
     tsxApi = null;
   }
+  if (compiled && !(tsxApi && olderThanSource(compiled, source))) return { kind: 'compiled', file: compiled };
   if (source && tsxApi) {
     return { kind: 'source', bootstrap: `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});` };
   }

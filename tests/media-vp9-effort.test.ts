@@ -140,47 +140,47 @@ function flagValue(args: string[], flag: string): string {
   return args[args.indexOf(flag) + 1];
 }
 
-function webmArgs(input: string, options: object = {}, target = 'webm'): string[] {
-  return buildFfmpegArguments(openMediaInput(input, 'mp4'), `/tmp/out.${target}`, target, { disableHwaccel: true, ...options } as never, requireOracleTool('ffmpeg'));
+async function webmArgs(input: string, options: object = {}, target = 'webm'): Promise<string[]> {
+  return await buildFfmpegArguments(openMediaInput(input, 'mp4'), `/tmp/out.${target}`, target, { disableHwaccel: true, ...options } as never, requireOracleTool('ffmpeg'));
 }
 
 describe.skipIf(skip)('the arguments of a VP9 encode', () => {
-  it('give a 30 s 1080p60 clip the realtime deadline and a 3 s one of the same picture the good deadline', { timeout: FIXTURE_TIMEOUT_MS }, () => {
-    const long = webmArgs(blackMp4('fhd60-30s.mp4', '1920x1080', 60, 30));
+  it('give a 30 s 1080p60 clip the realtime deadline and a 3 s one of the same picture the good deadline', { timeout: FIXTURE_TIMEOUT_MS }, async () => {
+    const long = await webmArgs(blackMp4('fhd60-30s.mp4', '1920x1080', 60, 30));
     expect(flagValue(long, '-deadline')).toBe('realtime');
     expect(flagValue(long, '-cpu-used')).toBe('5');
     expect(flagValue(long, '-row-mt')).toBe('1');
     expect(flagValue(long, '-tile-columns')).toBe('2');
-    const short = webmArgs(blackMp4('fhd60-3s.mp4', '1920x1080', 60, 3));
+    const short = await webmArgs(blackMp4('fhd60-3s.mp4', '1920x1080', 60, 3));
     expect(flagValue(short, '-deadline')).toBe('good');
     expect(flagValue(short, '-cpu-used')).toBe('2');
   });
 
-  it('size the deadline against the stage limit of the job: a 30 s 1080p30 clip is good by default and realtime under a 100 s limit', { timeout: FIXTURE_TIMEOUT_MS }, () => {
+  it('size the deadline against the stage limit of the job: a 30 s 1080p30 clip is good by default and realtime under a 100 s limit', { timeout: FIXTURE_TIMEOUT_MS }, async () => {
     const input = blackMp4('fhd30-30s-stage.mp4', '1920x1080', 30, 30);
-    expect(flagValue(webmArgs(input), '-deadline')).toBe('good');
-    expect(flagValue(webmArgs(input, { timeoutMs: 100_000 }), '-deadline')).toBe('realtime');
+    expect(flagValue(await webmArgs(input), '-deadline')).toBe('good');
+    expect(flagValue(await webmArgs(input, { timeoutMs: 100_000 }), '-deadline')).toBe('realtime');
   });
 
-  it('decide the same for VP9 in an MP4 or Matroska file', { timeout: FIXTURE_TIMEOUT_MS }, () => {
+  it('decide the same for VP9 in an MP4 or Matroska file', { timeout: FIXTURE_TIMEOUT_MS }, async () => {
     const input = blackMp4('fhd60-30s-b.mp4', '1920x1080', 60, 30);
     for (const target of ['mp4', 'mkv']) {
-      const args = webmArgs(input, { video: { codec: 'vp9' } }, target);
+      const args = await webmArgs(input, { video: { codec: 'vp9' } }, target);
       expect(args[args.indexOf('-c:v') + 1], target).toBe('libvpx-vp9');
       expect(flagValue(args, '-deadline'), target).toBe('realtime');
     }
   });
 
-  it('keep the good deadline when the request changes the size or the frame rate, and for the other codecs', { timeout: FIXTURE_TIMEOUT_MS }, () => {
+  it('keep the good deadline when the request changes the size or the frame rate, and for the other codecs', { timeout: FIXTURE_TIMEOUT_MS }, async () => {
     const input = blackMp4('fhd60-30s-c.mp4', '1920x1080', 60, 30);
-    expect(flagValue(webmArgs(input, { video: { scale: { width: 1280, height: 720 } } }), '-deadline')).toBe('good');
-    expect(flagValue(webmArgs(input, { video: { fps: 24 } }), '-deadline')).toBe('good');
-    expect(webmArgs(input, { video: { codec: 'av1' } })).not.toContain('-deadline');
+    expect(flagValue(await webmArgs(input, { video: { scale: { width: 1280, height: 720 } } }), '-deadline')).toBe('good');
+    expect(flagValue(await webmArgs(input, { video: { fps: 24 } }), '-deadline')).toBe('good');
+    expect(await webmArgs(input, { video: { codec: 'av1' } })).not.toContain('-deadline');
   });
 
-  it('keep the good deadline for both passes of a two-pass encode, which the realtime deadline cannot do', { timeout: FIXTURE_TIMEOUT_MS }, () => {
+  it('keep the good deadline for both passes of a two-pass encode, which the realtime deadline cannot do', { timeout: FIXTURE_TIMEOUT_MS }, async () => {
     const input = blackMp4('fhd60-30s-d.mp4', '1920x1080', 60, 30);
-    const passes = buildTwoPassArguments(
+    const passes = await buildTwoPassArguments(
       openMediaInput(input, 'mp4'),
       '/tmp/out.webm',
       'webm',
@@ -191,9 +191,9 @@ describe.skipIf(skip)('the arguments of a VP9 encode', () => {
     for (const args of passes) expect(flagValue(args, '-deadline')).toBe('good');
   });
 
-  it('count the frames of a plain MP4 from its header, as ffprobe counts its packets', { timeout: FIXTURE_TIMEOUT_MS }, () => {
+  it('count the frames of a plain MP4 from its header, as ffprobe counts its packets', { timeout: FIXTURE_TIMEOUT_MS }, async () => {
     const input = blackMp4('fhd60-count.mp4', '1920x1080', 60, 5);
-    const layout = probeStreamLayout(openMediaInput(input, 'mp4'), resolveFfprobeBinary(undefined));
+    const layout = await probeStreamLayout(openMediaInput(input, 'mp4'), resolveFfprobeBinary(undefined));
     const counted = execFileSync(
       requireOracleTool('ffprobe'),
       ['-v', 'error', '-count_packets', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', input],
@@ -209,7 +209,7 @@ describe.skipIf(skip)('the arguments of a VP9 encode', () => {
     { timeout: FIXTURE_TIMEOUT_MS },
     async (ctx) => {
       const sample = await requireRealworldSample(ctx, HDR_CLIP);
-      const args = webmArgs(sample.path);
+      const args = await webmArgs(sample.path);
       expect(flagValue(args, '-deadline')).toBe('realtime');
       expect(flagValue(args, '-cpu-used')).toBe('5');
       expect(flagValue(args, '-pix_fmt')).toBe('yuv420p');

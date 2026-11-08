@@ -355,22 +355,15 @@ function ffprobeRlimits(timeoutMs: number): SandboxedRlimitsOptions {
   };
 }
 
-/** Runs ffprobe over `input` in the sandbox, with `args` before the input and the input opened as mediaInputArgs opens it. */
-export function runFfprobe(ffprobe: string, args: readonly string[], input: MediaInput, limits: ToolLimits): ToolRun {
-  const probeArgs = [...args, ...mediaInputArgs(input)];
-  assertGuardedInputs(probeArgs);
-  return runSandboxedSync(ffprobe, probeArgs, limits, ffprobeRlimits(limits.timeoutMs));
-}
-
-/** The limits of an asynchronous ffprobe run: those of a synchronous one, and the signal of the job. */
+/** The limits of an ffprobe run: its time and output, and the signal of the job. */
 export interface AsyncToolLimits extends ToolLimits {
   signal?: AbortSignal;
 }
 
 /**
- * Runs ffprobe over `input` like `runFfprobe`, without holding the event loop for the length of the run: the same sandbox, the same
- * limits, and the signal of the job stops it. As there, a sandbox that cannot be had is thrown (SandboxUnavailableError) before
- * a process starts, a stop is thrown as its reason, and every other failure is a value.
+ * Runs ffprobe over `input` in the sandbox, with `args` before the input and the input opened as mediaInputArgs opens it, without holding
+ * the event loop for the length of the run; the signal of the job stops it. A sandbox that cannot be had is thrown
+ * (SandboxUnavailableError) before a process starts, a stop is thrown as its reason, and every other failure is a value.
  */
 export async function runFfprobeAsync(ffprobe: string, args: readonly string[], input: MediaInput, limits: AsyncToolLimits): Promise<ToolRun> {
   const probeArgs = [...args, ...mediaInputArgs(input)];

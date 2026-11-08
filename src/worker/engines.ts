@@ -56,7 +56,7 @@ import {
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import {
-  probeMediaDurationAsync,
+  probeMediaDuration,
   computeMediaTimeoutMs,
   computePackagingTimeoutMs,
   plannedRungCount,
@@ -490,7 +490,7 @@ export async function convertWithNativeFfmpeg(
       const media = openMediaInput(inputPath, src);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-      const durationSeconds = await probeMediaDurationAsync(media, options, ffmpegBin, options.signal);
+      const durationSeconds = await probeMediaDuration(media, options, ffmpegBin, options.signal);
       const timeout = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
@@ -498,7 +498,7 @@ export async function convertWithNativeFfmpeg(
         for (let i = 0; i < options.thumbnail.at.length; i++) {
           const ts = options.thumbnail.at[i];
           const partOut = path.join(tempDir, `output_${i}.${tgt}`);
-          const partArgs = buildFfmpegArguments(media, partOut, tgt, options, ffmpegBin, ts);
+          const partArgs = await buildFfmpegArguments(media, partOut, tgt, options, ffmpegBin, ts);
           await runFfmpeg(ffmpegBin, partArgs, {
             cwd: tempDir,
             timeoutMs: timeout,
@@ -535,8 +535,8 @@ export async function convertWithNativeFfmpeg(
         const outputDir = path.join(tempDir, 'packaged');
         fs.mkdirSync(outputDir, { recursive: true });
 
-        const source = probePackagingSource(media, ffmpegBin);
-        const args = buildHlsDashArguments(media, outputDir, packaging, ffmpegBin, source);
+        const source = await probePackagingSource(media, ffmpegBin);
+        const args = await buildHlsDashArguments(media, outputDir, packaging, ffmpegBin, source);
         await runFfmpeg(ffmpegBin, args, {
           cwd: outputDir,
           timeoutMs: computePackagingTimeoutMs(
@@ -586,10 +586,10 @@ export async function convertWithNativeFfmpeg(
 
       if (isTwoPassRequested(options)) {
         // The pass logs go to the job's sandbox directory (the working directory), which is removed with it.
-        const passes = buildTwoPassArguments(media, tempOutputPath, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        const passes = await buildTwoPassArguments(media, tempOutputPath, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
         await runTwoPass(passes, twoPassBudgetMs(timeout), runFfmpegWith);
       } else {
-        const args = buildFfmpegArguments(media, tempOutputPath, tgt, options, ffmpegBin, undefined, loudnessStage);
+        const args = await buildFfmpegArguments(media, tempOutputPath, tgt, options, ffmpegBin, undefined, loudnessStage);
         try {
           await runTranscode(args);
         } catch (err) {
@@ -600,7 +600,7 @@ export async function convertWithNativeFfmpeg(
           if (!hardwareEncoderFailed || options.signal?.aborted) {
             throw err;
           }
-          const softwareArgs = buildFfmpegArguments(
+          const softwareArgs = await buildFfmpegArguments(
             media, tempOutputPath, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
           );
           try {
@@ -611,7 +611,7 @@ export async function convertWithNativeFfmpeg(
         }
       }
 
-      assertOutputWritten(tempOutputPath, media, ffmpegBin, tgt);
+      await assertOutputWritten(tempOutputPath, media, ffmpegBin, tgt);
 
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = await handOffOutput(tempOutputPath, tgt, options, vfsPayload);
@@ -625,7 +625,7 @@ export async function convertWithNativeFfmpeg(
       );
       transcoded.metadata = {
         ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
-        ...describeDroppedStreams(media, tgt, options, ffmpegBin),
+        ...(await describeDroppedStreams(media, tgt, options, ffmpegBin)),
       };
       return transcoded;
     });

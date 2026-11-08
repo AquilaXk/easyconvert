@@ -191,10 +191,10 @@ describe('media fail-open regressions', () => {
     const inputPath = makeHdrInput('hdr-reject.mp4');
     const input = fs.readFileSync(inputPath);
     for (const video of [{ codec: 'h264' as const }, { codec: 'hevc' as const, profile: 'main' }]) {
-      const build = () =>
-        buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', { disableHwaccel: true, toneMap: 'none', video });
-      expect(build).toThrow(InvalidMediaOptionError);
-      expect(build).toThrow(HDR_ERROR);
+      const build = async () =>
+        await buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', { disableHwaccel: true, toneMap: 'none', video });
+      await expect(build).rejects.toThrow(InvalidMediaOptionError);
+      await expect(build).rejects.toThrow(HDR_ERROR);
 
       // The explicit native path surfaces the typed option error unchanged.
       const attempt = convertMedia(input, 'mp4', 'mp4', { useFfmpeg: true, disableHwaccel: true, toneMap: 'none', video }, 'hdr-reject');
@@ -227,7 +227,7 @@ describe('media fail-open regressions', () => {
     expect(video.color_transfer).toBe('smpte2084');
   }, 120_000);
 
-  oracleTest('rejects HDR input for an 8-bit target with toneMap none when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], () => {
+  oracleTest('rejects HDR input for an 8-bit target with toneMap none when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], async () => {
     const input = makeHdrInput('hdr-hw-reject.mp4');
     const cases: Array<{ encoders: string[]; codec: 'h264' | 'hevc' }> = [
       { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'h264' },
@@ -237,14 +237,14 @@ describe('media fail-open regressions', () => {
     for (const [i, { encoders, codec }] of cases.entries()) {
       resetHardwareAccelerationCache();
       const fakeFfmpeg = makeHardwareFfmpeg(`hw-reject-${i}`, encoders);
-      const build = () =>
-        buildFfmpegArguments(openMediaInput(input, 'mp4'), path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', { toneMap: 'none', video: { codec } }, fakeFfmpeg);
-      expect(build).toThrow(InvalidMediaOptionError);
-      expect(build).toThrow(HDR_ERROR);
+      const build = async () =>
+        await buildFfmpegArguments(openMediaInput(input, 'mp4'), path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', { toneMap: 'none', video: { codec } }, fakeFfmpeg);
+      await expect(build).rejects.toThrow(InvalidMediaOptionError);
+      await expect(build).rejects.toThrow(HDR_ERROR);
     }
   }, 120_000);
 
-  oracleTest('encodes a 10-bit profile in software even when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], () => {
+  oracleTest('encodes a 10-bit profile in software even when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], async () => {
     const input = makeHdrInput('hdr-hw-tenbit.mp4');
     const cases: Array<{ encoders: string[]; codec: 'h264' | 'hevc'; profile: string; probeProfile: string }> = [
       { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'h264', profile: 'high10', probeProfile: 'High 10' },
@@ -255,7 +255,7 @@ describe('media fail-open regressions', () => {
       resetHardwareAccelerationCache();
       const fakeFfmpeg = makeHardwareFfmpeg(`hw-tenbit-${i}`, encoders);
       const output = path.join(workDir, `hw-tenbit-${i}.mp4`);
-      const args = buildFfmpegArguments(openMediaInput(input, 'mp4'), output, 'mp4', { video: { codec, profile } }, fakeFfmpeg);
+      const args = await buildFfmpegArguments(openMediaInput(input, 'mp4'), output, 'mp4', { video: { codec, profile } }, fakeFfmpeg);
 
       // Hardware encoders here receive no -profile:v and may only take 8-bit surfaces.
       for (const enc of encoders) {
@@ -277,19 +277,19 @@ describe('media fail-open regressions', () => {
 
   const hasDri = DRI_RENDER_NODES.some((node) => fs.existsSync(node));
   // skip-ok: hardware capability: the VAAPI path exists only on a host with a DRM render node.
-  it.skipIf(!hasDri)('never routes HDR input through the 8-bit VAAPI upload path', () => {
+  it.skipIf(!hasDri)('never routes HDR input through the 8-bit VAAPI upload path', async () => {
     const ffmpeg = getOracleToolPath('ffmpeg');
     if (!ffmpeg) {
       throw new Error('ffmpeg is required for the VAAPI regression on a host with a DRI render node');
     }
     const input = makeHdrInput('hdr-vaapi.mp4');
     const fakeFfmpeg = makeHardwareFfmpeg('hw-vaapi', ['h264_vaapi', 'hevc_vaapi']);
-    const build8 = () =>
-      buildFfmpegArguments(openMediaInput(input, 'mp4'), path.join(workDir, 'vaapi-8.mp4'), 'mp4', { video: { codec: 'hevc' } }, fakeFfmpeg);
-    expect(build8).toThrow(HDR_ERROR);
+    const build8 = async () =>
+      await buildFfmpegArguments(openMediaInput(input, 'mp4'), path.join(workDir, 'vaapi-8.mp4'), 'mp4', { video: { codec: 'hevc' } }, fakeFfmpeg);
+    await expect(build8).rejects.toThrow(HDR_ERROR);
 
     resetHardwareAccelerationCache();
-    const args = buildFfmpegArguments(
+    const args = await buildFfmpegArguments(
       openMediaInput(input, 'mp4'), path.join(workDir, 'vaapi-10.mp4'), 'mp4', { video: { codec: 'hevc', profile: 'main10' } }, fakeFfmpeg
     );
     expect(args).not.toContain('hevc_vaapi');

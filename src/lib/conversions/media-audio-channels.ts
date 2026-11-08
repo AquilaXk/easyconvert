@@ -44,23 +44,23 @@ function assertFixedChannels(tgt: string, spec: AudioTargetSpec, channels: numbe
 }
 
 /** Requested channel count, or the selected input track's own count when the caller set none. */
-function channelsToWrite(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): number | undefined {
+async function channelsToWrite(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): Promise<number | undefined> {
   const requested = requestedChannelCount(options);
   if (requested !== undefined || !fs.existsSync(input.path)) return requested;
   const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
   return probeAudioChannels(input, resolveFfprobeBinary(ffmpegBin), track);
 }
 
-function assertMaxChannels(
+async function assertMaxChannels(
   tgt: string,
   spec: AudioTargetSpec,
   options: ConversionOptions,
   input: MediaInput,
   ffmpegBin?: string | null
-): void {
+): Promise<void> {
   if (spec.maxChannels === undefined) return;
   // A source wider than the encoder is mixed down by the target's own layout (see implicitDownmixFilter); without one it is refused.
-  const channels = spec.downmixLayout !== undefined ? requestedChannelCount(options) : channelsToWrite(options, input, ffmpegBin);
+  const channels = spec.downmixLayout !== undefined ? requestedChannelCount(options) : await channelsToWrite(options, input, ffmpegBin);
   if (channels !== undefined && channels > spec.maxChannels) {
     throw new InvalidMediaOptionError(
       `The '${tgt}' target supports at most ${spec.maxChannels} audio channels, but ${channels} would be written; request fewer channels or a downmix.`
@@ -69,15 +69,15 @@ function assertMaxChannels(
 }
 
 /** Rejects a channel count that the target's encoder cannot honour, before ffmpeg runs. */
-export function assertChannelLimits(
+export async function assertChannelLimits(
   tgt: string,
   spec: AudioTargetSpec,
   options: ConversionOptions,
   input: MediaInput,
   ffmpegBin?: string | null
-): void {
+): Promise<void> {
   assertFixedChannels(tgt, spec, requestedChannelCount(options));
-  assertMaxChannels(tgt, spec, options, input, ffmpegBin);
+  await assertMaxChannels(tgt, spec, options, input, ffmpegBin);
 }
 
 /**
@@ -90,23 +90,23 @@ export function assertChannelLimits(
  * loud content. AC-3 does not: its encoder takes floating-point samples too, and the unnormalised mix is the one that
  * `ffmpeg -c:a ac3` writes with no filter, which leaves the front channels and the LFE of a 7.1 track at their own level.
  */
-function implicitDownmixFilter(
+async function implicitDownmixFilter(
   spec: AudioTargetSpec,
   options: ConversionOptions,
   input: MediaInput,
   ffmpegBin?: string | null
-): string | undefined {
+): Promise<string | undefined> {
   if (spec.maxChannels === undefined || spec.downmixLayout === undefined || requestedChannelCount(options) !== undefined) return undefined;
-  const channels = channelsToWrite(options, input, ffmpegBin);
+  const channels = await channelsToWrite(options, input, ffmpegBin);
   if (channels === undefined || channels <= spec.maxChannels) return undefined;
   return spec.normalisedDownmix ? `aresample=ochl=${spec.downmixLayout}:rematrix_maxval=1.0` : `aresample=ochl=${spec.downmixLayout}`;
 }
 
-function bs775Filter(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): string {
+async function bs775Filter(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): Promise<string> {
   const sevenOne =
     options.audio?.channels === SEVEN_ONE_CHANNELS ||
     options.audioChannels === '7.1' ||
-    (fs.existsSync(input.path) && probeAudioChannels(input, resolveFfprobeBinary(ffmpegBin)) === SEVEN_ONE_CHANNELS);
+    (fs.existsSync(input.path) && (await probeAudioChannels(input, resolveFfprobeBinary(ffmpegBin))) === SEVEN_ONE_CHANNELS);
   return sevenOne ? BS775_SEVEN_ONE : BS775_FIVE_ONE;
 }
 
@@ -114,16 +114,16 @@ function bs775Filter(options: ConversionOptions, input: MediaInput, ffmpegBin?: 
  * The `-ac` arguments and audio filters that give the output its channels: the target's fixed count, else the BS.775 downmix the
  * caller asked for, else the count or layout the caller named, else the mix of a source wider than the encoder.
  */
-export function planAudioChannels(
+export async function planAudioChannels(
   spec: AudioTargetSpec | undefined,
   specEncoderInUse: boolean,
   options: ConversionOptions,
   input: MediaInput,
   ffmpegBin?: string | null
-): AudioChannelPlan {
+): Promise<AudioChannelPlan> {
   if (spec?.fixedChannels !== undefined) return { args: ['-ac', String(spec.fixedChannels)], filters: [] };
   if (options.audio?.downmix === 'itu-r-bs775') {
-    return { args: ['-ac', String(DOWNMIX_CHANNELS)], filters: [bs775Filter(options, input, ffmpegBin)] };
+    return { args: ['-ac', String(DOWNMIX_CHANNELS)], filters: [await bs775Filter(options, input, ffmpegBin)] };
   }
   if (options.audio?.channels) {
     if (!ALLOWED_CHANNEL_COUNTS.includes(options.audio.channels)) {
@@ -134,6 +134,6 @@ export function planAudioChannels(
   if (options.audioChannels && Object.hasOwn(CHANNELS_BY_LAYOUT_NAME, options.audioChannels)) {
     return { args: ['-ac', String(CHANNELS_BY_LAYOUT_NAME[options.audioChannels])], filters: [] };
   }
-  const mix = spec && specEncoderInUse ? implicitDownmixFilter(spec, options, input, ffmpegBin) : undefined;
+  const mix = spec && specEncoderInUse ? await implicitDownmixFilter(spec, options, input, ffmpegBin) : undefined;
   return { args: [], filters: mix === undefined ? [] : [mix] };
 }

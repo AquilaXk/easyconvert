@@ -47,7 +47,7 @@ describe.skipIf(skip)('a media file of another container than its name says', ()
       expect(ffprobeValue(sample.path, 'format=format_name')).toBe(container);
       const input = openMediaInput(sample.path, format);
       expect(input.demuxers).toContain(container);
-      expect(probeInput(input, resolveFfprobeBinary()).streams.length).toBeGreaterThan(0);
+      expect((await probeInput(input, resolveFfprobeBinary())).streams.length).toBeGreaterThan(0);
     });
 
     it(`converts ${id} (.${format}) to ${target}`, async (ctx) => {
@@ -84,7 +84,7 @@ describe.skipIf(skip)('an ordinary Program Stream under .mpg and .mpeg', () => {
       expect(input.demuxers).toContain('mpegts');
       const opened = execFileSync(requireOracleTool('ffprobe'), ['-v', 'error', '-show_entries', 'format=format_name', '-of', 'csv=p=0', ...mediaInputArgs(input)], { encoding: 'utf-8' });
       expect(opened.trim()).toBe('mpeg');
-      expect(probeInput(input, resolveFfprobeBinary()).streams.length).toBeGreaterThan(0);
+      expect((await probeInput(input, resolveFfprobeBinary())).streams.length).toBeGreaterThan(0);
     });
   }
 });

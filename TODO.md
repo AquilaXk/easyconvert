@@ -28,10 +28,8 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
 - Pass the declared `--infilter` for the legacy binary Office formats (`doc`, `xls`, `ppt`, their templates, `wps`, `pdb`): the suite has one filter per generation behind each extension, so a fixed name fails on older files.
-- Make the remaining ffprobe runs asynchronous: the audio channel, sample rate and stream count probes of the argument builders (`probeScalar`), the HDR and empty-output probes, and the run that explains a failed probe; they run in the sandbox with limits but hold the event loop.
 
 ## Tests and CI
-- Make the PDF text and RAW hosts skip a compiled worker in `dist/` that is older than its source, or have vitest use the source: a stale `dist/pdf-text-worker.js` (2026-11-05) made local tests run last week's PDF code in the main checkout on 2026-11-09.
 - Stabilise the `lzma-decoder` timing and `ocr-pdf-concurrency` guards; both fail every nightly.
 - Fix the flakes `job-input-deletion` and `upload-completion-receipt`.
 - Split the parity quality job by family; RAW hits the 60-minute cap from a cold cache.

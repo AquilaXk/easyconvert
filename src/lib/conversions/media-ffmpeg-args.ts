@@ -354,14 +354,14 @@ function assertTwoPassSupported(options: ConversionOptions, tgt: string, codec: 
 }
 
 /** The output length cap in seconds, checked against the input when it can be read. */
-function resolveOutputDuration(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): number | undefined {
+async function resolveOutputDuration(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): Promise<number | undefined> {
   const duration = options.duration;
   if (duration === undefined) return undefined;
   if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > MAX_OUTPUT_DURATION_SEC) {
     throw new InvalidMediaOptionError(`Invalid duration ${String(duration)}. Must be more than 0 and at most ${MAX_OUTPUT_DURATION_SEC} seconds.`);
   }
   if (fs.existsSync(input.path)) {
-    const sourceDuration = probeInputDuration(input, resolveFfprobeBinary(ffmpegBin));
+    const sourceDuration = await probeInputDuration(input, resolveFfprobeBinary(ffmpegBin));
     if (duration > sourceDuration + DURATION_EPSILON_SEC) {
       throw new InvalidMediaOptionError(`Invalid duration ${duration}: the input lasts ${sourceDuration.toFixed(3)} seconds.`);
     }
@@ -591,15 +591,15 @@ function assertSampleRateLimits(tgt: string, spec: AudioTargetSpec, sampleRate: 
  * Rejects a sample rate or channel count that the target's encoder cannot honour, before ffmpeg
  * runs. The limits describe the target's own encoder, so they apply unless the caller swaps the codec.
  */
-function assertEncoderLimits(
+async function assertEncoderLimits(
   tgt: string,
   spec: AudioTargetSpec,
   options: ConversionOptions,
   input: MediaInput,
   ffmpegBin?: string | null
-): void {
+): Promise<void> {
   assertSampleRateLimits(tgt, spec, options.audio?.sampleRate ?? options.audioSampleRate);
-  assertChannelLimits(tgt, spec, options, input, ffmpegBin);
+  await assertChannelLimits(tgt, spec, options, input, ffmpegBin);
 }
 
 /**
@@ -607,12 +607,12 @@ function assertEncoderLimits(
  * selected audio stream (the first by default) is mapped explicitly. An input without that stream
  * throws instead of producing an empty or video-carrying file.
  */
-function audioOnlyStreamArgs(
+async function audioOnlyStreamArgs(
   tgt: string,
   input: MediaInput,
   options: ConversionOptions,
   ffmpegBin?: string | null
-): string[] {
+): Promise<string[]> {
   const track = options.audio?.track;
   if (track === 'all') {
     throw new InvalidMediaOptionError(`The '${tgt}' target holds a single audio stream; audio.track 'all' is not supported.`);
@@ -622,7 +622,7 @@ function audioOnlyStreamArgs(
     throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
   }
   if (fs.existsSync(input.path)) {
-    const available = probeAudioStreamCount(input, resolveFfprobeBinary(ffmpegBin));
+    const available = await probeAudioStreamCount(input, resolveFfprobeBinary(ffmpegBin));
     if (available === 0) {
       throw new NoAudioStreamError(`The input has no audio stream, so it cannot be converted to '${tgt}'.`);
     }
@@ -642,12 +642,12 @@ function audioOnlyStreamArgs(
 export type LoudnessStage = { kind: 'measure' } | { kind: 'apply'; measurement: LoudnessMeasurement };
 
 /** Arguments of the loudness measuring pass: the audio of the conversion through loudnorm, to a null sink. */
-export function buildLoudnessMeasureArguments(
+export async function buildLoudnessMeasureArguments(
   input: MediaInput,
   tgt: string,
   options: ConversionOptions,
   ffmpegBin?: string | null
-): string[] {
+): Promise<string[]> {
   return buildFfmpegArguments(input, '', tgt, options, ffmpegBin, undefined, { kind: 'measure' });
 }
 
@@ -656,7 +656,7 @@ export function buildLoudnessMeasureArguments(
  * reads its statistics. Both read and write the pass log `logPrefix` in the process's working directory, so
  * the caller runs them in a job directory it removes afterwards. A request that is not two-pass is rejected.
  */
-export function buildTwoPassArguments(
+export async function buildTwoPassArguments(
   input: MediaInput,
   outputPath: string,
   tgt: string,
@@ -664,13 +664,13 @@ export function buildTwoPassArguments(
   ffmpegBin: string | null | undefined,
   logPrefix: string,
   loudnessStage?: LoudnessStage
-): [string[], string[]] {
+): Promise<[string[], string[]]> {
   if (!isTwoPassRequested(options)) {
     throw new InvalidMediaOptionError('Two-pass arguments were requested without rateControl.twoPass.');
   }
   const build = (pass: 1 | 2) =>
     buildFfmpegArguments(input, outputPath, tgt, options, ffmpegBin, undefined, loudnessStage, { pass, logPrefix });
-  return [build(1), build(2)];
+  return [await build(1), await build(2)];
 }
 
 /**
@@ -680,7 +680,7 @@ export function buildTwoPassArguments(
  * An `audio.loudness` request needs a `loudnessStage`: the measuring pass (see buildLoudnessMeasureArguments)
  * and then this call with the measurement, so a normalisation is never applied from invented numbers.
  */
-export function buildFfmpegArguments(
+export async function buildFfmpegArguments(
   input: MediaInput,
   outputPath: string,
   tgt: string,
@@ -689,7 +689,7 @@ export function buildFfmpegArguments(
   overrideTimestamp?: string,
   loudnessStage?: LoudnessStage,
   passStage?: TwoPassStage
-): string[] {
+): Promise<string[]> {
   const globalArgs: string[] = ['-y'];
   const inputArgs: string[] = [];
   const outputArgs: string[] = [];
@@ -774,7 +774,7 @@ export function buildFfmpegArguments(
   if (passStage && !PASS_LOG_PREFIX_PATTERN.test(passStage.logPrefix)) {
     throw new ConversionFailedError(`Invalid pass log prefix "${passStage.logPrefix}".`);
   }
-  const outputDuration = resolveOutputDuration(options, input, ffmpegBin);
+  const outputDuration = await resolveOutputDuration(options, input, ffmpegBin);
   if (outputDuration !== undefined) {
     outputArgs.push('-t', String(outputDuration));
   }
@@ -818,7 +818,7 @@ export function buildFfmpegArguments(
   const specEncoderInUse =
     audioSpec !== undefined && (!options.audio?.codec || AUDIO_CODEC_MAP[options.audio.codec] === audioSpec.encoder);
   if (audioSpec && specEncoderInUse) {
-    assertEncoderLimits(tgt, audioSpec, options, input, ffmpegBin);
+    await assertEncoderLimits(tgt, audioSpec, options, input, ffmpegBin);
   }
 
   // Stream mapping
@@ -827,7 +827,7 @@ export function buildFfmpegArguments(
   // A missing input file (argument-only callers) keeps the earlier selection rules.
   const inputLayout =
     !audioSpec && isVideo && fs.existsSync(input.path)
-      ? probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin))
+      ? await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin))
       : undefined;
   const inputStreams = inputLayout?.streams;
   const burnRequested = options.subtitles?.mode === 'burn';
@@ -851,7 +851,7 @@ export function buildFfmpegArguments(
   let streamPlan: StreamMapPlan | undefined;
   let audioOnlyMapArgs: string[] = [];
   if (audioSpec) {
-    audioOnlyMapArgs = audioOnlyStreamArgs(tgt, input, options, ffmpegBin);
+    audioOnlyMapArgs = await audioOnlyStreamArgs(tgt, input, options, ffmpegBin);
     outputArgs.push(...audioOnlyMapArgs);
   } else if (inputStreams) {
     const chapters = inputLayout?.chapters;
@@ -1021,7 +1021,7 @@ export function buildFfmpegArguments(
           );
         }
         assertZscaleAvailable(ffmpegBin);
-        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin)));
+        hdrToSdr = planVideoToneMap(transfer, toneMapMode, await probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin)));
       }
     }
 
@@ -1361,7 +1361,7 @@ export function buildFfmpegArguments(
     // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
     audioFilters.push(AUDIO_SYNC_FILTER);
   }
-  const channelPlan = planAudioChannels(audioSpec, specEncoderInUse, options, input, ffmpegBin);
+  const channelPlan = await planAudioChannels(audioSpec, specEncoderInUse, options, input, ffmpegBin);
   audioFilters.push(...channelPlan.filters);
   audioFormatArgs.push(...channelPlan.args);
 
@@ -1379,7 +1379,7 @@ export function buildFfmpegArguments(
     // The caller set no rate: an input the encoder codes natively keeps its rate (a forced rate makes libopus
     // code a band the signal does not have), and one it cannot code is brought into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-    const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(input, resolveFfprobeBinary(ffmpegBin), track));
+    const resampleRate = resampleRateFor(audioSpec, await probeAudioSampleRate(input, resolveFfprobeBinary(ffmpegBin), track));
     if (resampleRate !== undefined) {
       audioFormatArgs.push('-ar', String(resampleRate));
     }
@@ -1500,11 +1500,11 @@ export interface PackagingSource {
 }
 
 /** Probes the first video stream (exact frame rate, displayed size, duration) and whether the input has audio. */
-export function probePackagingSource(input: MediaInput, ffmpegBin?: string | null): PackagingSource {
+export async function probePackagingSource(input: MediaInput, ffmpegBin?: string | null): Promise<PackagingSource> {
   const ffprobe = resolveFfprobeBinary(ffmpegBin);
   return {
-    geometry: probeVideoGeometry(input, ffprobe),
-    hasAudio: probeAudioChannels(input, ffprobe) > 0,
+    geometry: await probeVideoGeometry(input, ffprobe),
+    hasAudio: (await probeAudioChannels(input, ffprobe)) > 0,
   };
 }
 
@@ -1583,13 +1583,13 @@ function segmentKeyframeArgs(codec: string, rungIndex: number, gopFrames: number
  * left out the input file is probed here. The ladder is cut to what the source can fill and every rung
  * gets a capped peak rate, so the declared BANDWIDTH holds.
  */
-export function buildHlsDashArguments(
+export async function buildHlsDashArguments(
   input: MediaInput,
   outputDir: string,
   packaging: MediaPackagingOptions,
   ffmpegBin?: string | null,
   source?: PackagingSource
-): string[] {
+): Promise<string[]> {
   if (!packaging || !packaging.format) {
     throw new InvalidMediaOptionError('Packaging format is required ("hls" or "dash").');
   }
@@ -1639,7 +1639,7 @@ export function buildHlsDashArguments(
     );
   }
 
-  const probed = source ?? probePackagingSource(input, ffmpegBin);
+  const probed = source ?? (await probePackagingSource(input, ffmpegBin));
   const ladder = capLadderToSource(requestedLadder, probed.geometry);
   const hasAudio = probed.hasAudio;
   const { fpsNum, fpsDen } = probed.geometry;

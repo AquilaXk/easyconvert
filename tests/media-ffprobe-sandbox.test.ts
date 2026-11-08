@@ -82,9 +82,9 @@ afterEach(() => {
 describe.skipIf(skipUnless('unprivileged namespaces (unshare -r -n)', ON_LINUX && getUnshareCapability().available))(
   'ffprobe under STRICT_SANDBOX with the namespace sandbox available',
   () => {
-    it('starts ffprobe in a network namespace of its own, as the mapped root of a user namespace (unshare -r -n)', () => {
+    it('starts ffprobe in a network namespace of its own, as the mapped root of a user namespace (unshare -r -n)', async () => {
       vi.stubEnv('STRICT_SANDBOX', 'true');
-      expect(() => probeInput(openMediaInput(SAMPLE_MP4_PATH, 'mp4'), path.join(spyDir, 'ffprobe') as FfprobePath)).toThrow();
+      await expect(probeInput(openMediaInput(SAMPLE_MP4_PATH, 'mp4'), path.join(spyDir, 'ffprobe') as FfprobePath)).rejects.toThrow();
       const probes = spawnedTools().filter((line) => line.startsWith('ffprobe '));
       expect(probes.length).toBeGreaterThan(0);
       const ownNetwork = readlinkSync('/proc/self/ns/net');

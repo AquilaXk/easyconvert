@@ -229,15 +229,15 @@ describe.skipIf(skip)('the probe that tells an empty input from another cause of
     return out;
   }
 
-  it('gives the plain empty-output error, not the named refusal, for a file with no audio stream', () => {
+  it('gives the plain empty-output error, not the named refusal, for a file with no audio stream', async () => {
     const videoOnly = generate('video-only.mkv', ['-f', 'lavfi', '-i', 'color=c=black:size=64x64:rate=5:duration=1', '-c:v', 'ffv1']);
-    expect(audioPacketsAtStart(openMediaInput(videoOnly, 'mkv'), ffprobe)).toBeUndefined();
-    const error = emptyOutputError(openMediaInput(videoOnly, 'mkv'), requireOracleTool('ffmpeg'), 'aac');
+    expect(await audioPacketsAtStart(openMediaInput(videoOnly, 'mkv'), ffprobe)).toBeUndefined();
+    const error = await emptyOutputError(openMediaInput(videoOnly, 'mkv'), requireOracleTool('ffmpeg'), 'aac');
     expect(error).not.toBeInstanceOf(EmptyAudioInputError);
     expect(error.message).toBe('FFmpeg output is empty (0 bytes) for mkv -> aac');
   });
 
-  it('reads one packet of a long file: ffprobe counts thousands in it, the probe stops at the first', () => {
+  it('reads one packet of a long file: ffprobe counts thousands in it, the probe stops at the first', async () => {
     const long = generate('long.wav', ['-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=44100:duration=${LONG_SECONDS}`, '-ac', '2', '-c:a', 'pcm_s16le']);
     const counted = spawnSync(
       requireOracleTool('ffprobe'),
@@ -245,13 +245,13 @@ describe.skipIf(skip)('the probe that tells an empty input from another cause of
       { encoding: 'utf8' }
     );
     expect(Number(counted.stdout.trim())).toBeGreaterThan(MANY_PACKETS);
-    expect(audioPacketsAtStart(openMediaInput(long, 'wav'), ffprobe)).toBe(1);
-    expect(emptyOutputError(openMediaInput(long, 'wav'), requireOracleTool('ffmpeg'), 'aac')).not.toBeInstanceOf(EmptyAudioInputError);
+    expect(await audioPacketsAtStart(openMediaInput(long, 'wav'), ffprobe)).toBe(1);
+    expect(await emptyOutputError(openMediaInput(long, 'wav'), requireOracleTool('ffmpeg'), 'aac')).not.toBeInstanceOf(EmptyAudioInputError);
   });
 
-  it('reports zero packets for an audio stream with none', () => {
+  it('reports zero packets for an audio stream with none', async () => {
     const emptyFile = path.join(workDir, 'empty.wav');
     fs.writeFileSync(emptyFile, wav(new Int16Array(0)));
-    expect(audioPacketsAtStart(openMediaInput(emptyFile, 'wav'), ffprobe)).toBe(0);
+    expect(await audioPacketsAtStart(openMediaInput(emptyFile, 'wav'), ffprobe)).toBe(0);
   });
 });

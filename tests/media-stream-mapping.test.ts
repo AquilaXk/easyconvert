@@ -294,30 +294,30 @@ describe('stream mapping plan (pure)', () => {
 });
 
 describe('frame rate and audio sync arguments', () => {
-  const base = (video: object, extra: object = {}) =>
-    buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, ...extra, video: { codec: 'h264', ...video } } as never);
+  const base = async (video: object, extra: object = {}) =>
+    await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, ...extra, video: { codec: 'h264', ...video } } as never);
 
-  it('keeps variable frame rate with -fps_mode passthrough when no rate is requested', () => {
-    const args = base({});
+  it('keeps variable frame rate with -fps_mode passthrough when no rate is requested', async () => {
+    const args = await base({});
     expect(args[args.indexOf('-fps_mode') + 1]).toBe('passthrough');
     expect(args).not.toContain('-r');
   });
 
-  it('uses only the fps filter when a rate is requested, from video.fps or the legacy videoFps', () => {
-    for (const args of [base({ fps: 24 }), base({}, { videoFps: 24 })]) {
+  it('uses only the fps filter when a rate is requested, from video.fps or the legacy videoFps', async () => {
+    for (const args of [await base({ fps: 24 }), await base({}, { videoFps: 24 })]) {
       expect(args.indexOf('-r')).toBe(-1);
       expect(args.indexOf('-fps_mode')).toBe(-1);
       expect(args[args.indexOf('-vf') + 1]).toContain('fps=24');
     }
   });
 
-  it('rejects a frame rate outside 0..240 instead of ignoring it', () => {
-    expect(() => base({ fps: 0 })).toThrow(InvalidMediaOptionError);
-    expect(() => base({ fps: 1000 })).toThrow(InvalidMediaOptionError);
+  it('rejects a frame rate outside 0..240 instead of ignoring it', async () => {
+    await expect(async () => await base({ fps: 0 })).rejects.toThrow(InvalidMediaOptionError);
+    await expect(async () => await base({ fps: 1000 })).rejects.toThrow(InvalidMediaOptionError);
   });
 
-  it('resamples re-encoded audio to start at zero, before any other audio filter', () => {
-    const args = base({}, { audio: { codec: 'aac', volume: 50 } });
+  it('resamples re-encoded audio to start at zero, before any other audio filter', async () => {
+    const args = await base({}, { audio: { codec: 'aac', volume: 50 } });
     expect(args[args.indexOf('-filter:a') + 1]).toBe('aresample=async=1:first_pts=0,volume=0.5');
   });
 });

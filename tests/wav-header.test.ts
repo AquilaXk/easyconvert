@@ -164,7 +164,7 @@ describe('probes against ffprobe', () => {
     () => {
       const ffprobe = getOracleToolPath('ffprobe')!;
       for (const item of CASES) {
-        withTempFile(item.bytes, (file) => {
+        withTempFile(item.bytes, async (file) => {
           const reported = execFileSync(ffprobe, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file], { encoding: 'utf8' });
           const streams = execFileSync(ffprobe, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'default=nw=1:nk=1', file], {
             encoding: 'utf8',
@@ -174,8 +174,8 @@ describe('probes against ffprobe', () => {
           const info = readWavPcmInfo(file);
           expect(info, item.name).not.toBeNull();
           expect(Math.abs((info?.durationSeconds ?? 0) - Number.parseFloat(reported)), item.name).toBeLessThan(DURATION_TOLERANCE_S);
-          expect(probeMediaDuration(openMediaInput(file, 'wav'))).toBe(info?.durationSeconds);
-          expect(probeAudioStreamCount(openMediaInput(file, 'wav'), ffprobe as never), item.name).toBe(streams);
+          expect(await probeMediaDuration(openMediaInput(file, 'wav'))).toBe(info?.durationSeconds);
+          expect(await probeAudioStreamCount(openMediaInput(file, 'wav'), ffprobe as never), item.name).toBe(streams);
         });
       }
     },

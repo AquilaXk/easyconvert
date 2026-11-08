@@ -17,16 +17,16 @@ const VIDEO_CONTAINER_TARGETS: ReadonlySet<string> = new Set<VideoContainer>(['m
  * target is not a video container (an audio or image target keeps one kind of stream by definition) or the
  * request does not map streams (a thumbnail or a subtitle extraction).
  */
-export function describeDroppedStreams(
+export async function describeDroppedStreams(
   input: MediaInput,
   tgt: string,
   options: ConversionOptions,
   ffmpegBin: string | null | undefined
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const mapsStreams =
     VIDEO_CONTAINER_TARGETS.has(tgt) && !options.thumbnail && options.subtitles?.mode !== 'extract' && fs.existsSync(input.path);
   if (!mapsStreams) return {};
-  const layout = probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin));
+  const layout = await probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin));
   const plan = planStreamMapping({
     streams: layout.streams,
     container: tgt as VideoContainer,

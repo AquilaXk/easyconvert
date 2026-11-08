@@ -237,15 +237,15 @@ describe('the tone mapping plan of an HDR picture', () => {
   oracleTest(
     'is the same whether the header or ffprobe says the picture is PQ',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       requireEncoders('libx264');
       const mp4 = make('pq-plan.mp4', [
         ...VIDEO_IN, '-vf', 'setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       ]);
       const mkv = make('pq-plan.mkv', ['-i', mp4, '-c', 'copy']);
       const ffmpeg = ffmpegListingZscale();
-      const viaHeader = buildFfmpegArguments(openMediaInput(mp4, 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg);
-      const viaProbe = buildFfmpegArguments(openMediaInput(mkv, 'mkv'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg);
+      const viaHeader = await buildFfmpegArguments(openMediaInput(mp4, 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg);
+      const viaProbe = await buildFfmpegArguments(openMediaInput(mkv, 'mkv'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg);
       expect(toneMapFilter(viaHeader)).toContain('zscale=t=linear');
       expect(toneMapFilter(viaHeader)).toBe(toneMapFilter(viaProbe));
     },
@@ -255,9 +255,9 @@ describe('the tone mapping plan of an HDR picture', () => {
   oracleTest(
     'is not built for an SDR picture',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       const ffmpeg = ffmpegListingZscale();
-      const args = buildFfmpegArguments(openMediaInput(plainMp4(), 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg);
+      const args = await buildFfmpegArguments(openMediaInput(plainMp4(), 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, ffmpeg);
       // The picture is 160x120 and nothing changes its size: the encoder gets it as it is, through no filter at all.
       expect(args.filter((arg) => arg === '-vf' || arg === '-filter_complex')).toEqual([]);
       // The picture goes straight to the encoder in the one pixel format it is asked for.
@@ -288,14 +288,14 @@ describe('the filter that keeps a picture size even', () => {
   oracleTest(
     'is left out for a picture the header gives an even size and nothing resizes, and kept otherwise',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       const out = path.join(workDir, 'o.mp4');
-      expect(filterOf(buildFfmpegArguments(openMediaInput(plainMp4(), 'mp4'), out, 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBeUndefined();
+      expect(filterOf(await buildFfmpegArguments(openMediaInput(plainMp4(), 'mp4'), out, 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBeUndefined();
       // An odd picture is cut to an even size. The oracle first: the source really is odd.
       const odd = oddMkv();
       const oddFacts = probeFile(tool('ffprobe'), odd).streams[0];
       expect([oddFacts.width, oddFacts.height, oddFacts.pix_fmt]).toEqual([161, 121, 'yuv444p']);
-      expect(filterOf(buildFfmpegArguments(openMediaInput(oddMkv(), 'mkv'), out, 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      expect(filterOf(await buildFfmpegArguments(openMediaInput(oddMkv(), 'mkv'), out, 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
       // A resize, a crop or a display aspect may produce an odd size from an even one: the filter stays after them.
       const even = plainMp4();
       for (const options of [
@@ -303,7 +303,7 @@ describe('the filter that keeps a picture size even', () => {
         { video: { crop: { w: 101, h: 75, x: 0, y: 0 } } },
         { videoResolution: '360p' },
       ]) {
-        const filter = filterOf(buildFfmpegArguments(openMediaInput(even, 'mp4'), out, 'mp4', { disableHwaccel: true, ...options } as never, tool('ffmpeg')));
+        const filter = filterOf(await buildFfmpegArguments(openMediaInput(even, 'mp4'), out, 'mp4', { disableHwaccel: true, ...options } as never, tool('ffmpeg')));
         expect(filter, JSON.stringify(options)).toMatch(/,scale=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2$/);
       }
     },
@@ -361,12 +361,12 @@ describe('the filter that keeps a picture size even', () => {
   oracleTest(
     'is kept for a picture with a clean aperture, and the encode of it succeeds with an even picture',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       const source = apertureMp4();
       // The oracle: ffprobe still lists the file as one picture and the aperture box really is in the file.
       expect(fs.readFileSync(source).includes('clap', 0, 'latin1')).toBe(true);
       const out = path.join(workDir, 'aperture-out.mp4');
-      const args = buildFfmpegArguments(openMediaInput(source, 'mp4'), out, 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
+      const args = await buildFfmpegArguments(openMediaInput(source, 'mp4'), out, 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
       expect(filterOf(args)).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
       execFileSync(tool('ffmpeg'), ['-v', 'error', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
       const stream = probeFile(tool('ffprobe'), out).streams[0];
@@ -381,7 +381,7 @@ describe('the filter that keeps a picture size even', () => {
     TEST_TIMEOUT_MS
   );
 
-  it('is kept for a stream a prober lists with frame cropping side data', () => {
+  it('is kept for a stream a prober lists with frame cropping side data', async () => {
     const dir = path.join(workDir, 'fake-cropping');
     fs.mkdirSync(dir, { recursive: true });
     const report = JSON.stringify({
@@ -393,18 +393,18 @@ describe('the filter that keeps a picture size even', () => {
     fs.writeFileSync(path.join(dir, 'ffmpeg'), `#!/bin/sh\nexec '${getOracleToolPath('ffmpeg') ?? 'ffmpeg'}' "$@"\n`, { mode: 0o755 });
     const input = path.join(workDir, 'cropped-stream.mkv');
     fs.writeFileSync(input, Buffer.alloc(64));
-    const args = buildFfmpegArguments(openMediaInput(input, 'mkv'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, path.join(dir, 'ffmpeg'));
+    const args = await buildFfmpegArguments(openMediaInput(input, 'mkv'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, path.join(dir, 'ffmpeg'));
     expect(filterOf(args)).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
   });
 
   oracleTest(
     'changes nothing in the picture: the encode without it decodes to the frames the same encode with it writes',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       requireEncoders('libx264');
       const source = plainMp4();
       const without = path.join(workDir, 'even-without.mp4');
-      const args = buildFfmpegArguments(openMediaInput(source, 'mp4'), without, 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
+      const args = await buildFfmpegArguments(openMediaInput(source, 'mp4'), without, 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
       expect(args).not.toContain('-vf');
       execFileSync(tool('ffmpeg'), ['-v', 'error', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
       const withFilter = path.join(workDir, 'even-with.mp4');
@@ -428,7 +428,7 @@ describe('the filter that keeps a picture size even', () => {
     ['ffmpeg', 'ffprobe'],
     async () => {
       const out = path.join(workDir, 'odd-out.mp4');
-      const args = buildFfmpegArguments(openMediaInput(oddMkv(), 'mkv'), out, 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
+      const args = await buildFfmpegArguments(openMediaInput(oddMkv(), 'mkv'), out, 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
       execFileSync(tool('ffmpeg'), ['-v', 'error', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
       const stream = probeFile(tool('ffprobe'), out).streams[0];
       expect([stream.width, stream.height]).toEqual([160, 120]);
@@ -484,14 +484,14 @@ describe('the duration that bounds a job', () => {
   oracleTest(
     'comes from the movie header of a plain MP4 and agrees with ffprobe',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       const source = plainMp4();
       const recorder = recordingBinaries('duration');
       const reported = Number(
         execFileSync(tool('ffprobe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', source], { encoding: 'utf-8' })
       );
       const before = recorder.calls().length;
-      expect(Math.abs(probeMediaDuration(openMediaInput(source, 'mp4'), {}, recorder.ffmpeg) - reported)).toBeLessThan(DURATION_TOLERANCE_S);
+      expect(Math.abs(await probeMediaDuration(openMediaInput(source, 'mp4'), {}, recorder.ffmpeg) - reported)).toBeLessThan(DURATION_TOLERANCE_S);
       expect(recorder.calls().length).toBe(before);
     },
     TEST_TIMEOUT_MS
@@ -502,9 +502,9 @@ describe('the arguments of a plain MP4 to H.264 conversion', () => {
   oracleTest(
     'map the picture and the sound the header lists and add no argument for streams that do not exist',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       const source = plainMp4();
-      const args = buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, tool('ffmpeg'));
+      const args = await buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, tool('ffmpeg'));
       const maps = args.flatMap((arg, i) => (arg === '-map' ? [args[i + 1]] : []));
       expect(maps).toEqual(['0:0', '0:1']);
       expect(args).toContain('libx264');
@@ -512,9 +512,9 @@ describe('the arguments of a plain MP4 to H.264 conversion', () => {
     }
   );
 
-  it('are built for an input that is not there without asking for streams', () => {
+  it('are built for an input that is not there without asking for streams', async () => {
     const absent = path.join(workDir, 'absent.mp4');
-    const args = buildFfmpegArguments(openMediaInput(absent, 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, null);
+    const args = await buildFfmpegArguments(openMediaInput(absent, 'mp4'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, null);
     expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-protocol_whitelist', 'file', '-f', 'mov', '-i', absent]);
     expect(args.filter((arg) => arg === '-map')).toEqual([]);
   });
@@ -545,11 +545,11 @@ describe('the hardware encoder probe of a video conversion', () => {
   oracleTest(
     'a request that disables hardware encoders opens no hardware session',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       resetHardwareAccelerationCache();
       const source = plainMp4();
       const binaries = nvencListingBinaries('disabled');
-      const args = buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'hw-off.mp4'), 'mp4', { disableHwaccel: true }, binaries.ffmpeg);
+      const args = await buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'hw-off.mp4'), 'mp4', { disableHwaccel: true }, binaries.ffmpeg);
       expect(args).toContain('libx264');
       expect(binaries.sessionProbes()).toBe(0);
       resetHardwareAccelerationCache();
@@ -560,12 +560,12 @@ describe('the hardware encoder probe of a video conversion', () => {
   oracleTest(
     'opens each hardware session once per binary, however many conversions follow',
     ['ffmpeg', 'ffprobe'],
-    () => {
+    async () => {
       resetHardwareAccelerationCache();
       const source = plainMp4();
       const binaries = nvencListingBinaries('enabled');
       for (let conversion = 0; conversion < 3; conversion++) {
-        buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, `hw-on-${conversion}.mp4`), 'mp4', {}, binaries.ffmpeg);
+        await buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, `hw-on-${conversion}.mp4`), 'mp4', {}, binaries.ffmpeg);
       }
       expect(binaries.sessionProbes()).toBe(1);
       expect(binaries.encoderLists()).toBe(1);

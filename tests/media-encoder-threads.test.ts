@@ -121,9 +121,9 @@ describe('the arguments of a software encode', () => {
     vi.restoreAllMocks();
   });
 
-  function build(codec: string, video: Record<string, unknown> = {}, extra: Record<string, unknown> = {}): string[] {
+  async function build(codec: string, video: Record<string, unknown> = {}, extra: Record<string, unknown> = {}): Promise<string[]> {
     makeSource();
-    return buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'out.mp4'), 'mp4', { disableHwaccel: true, video: { codec, ...video }, ...extra } as never, tool());
+    return await buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'out.mp4'), 'mp4', { disableHwaccel: true, video: { codec, ...video }, ...extra } as never, tool());
   }
 
   function threadsOf(args: string[]): string[] {
@@ -133,9 +133,9 @@ describe('the arguments of a software encode', () => {
   oracleTest(
     'give x264 the threads of the host for a short picture, once, as an output option',
     ['ffmpeg'],
-    () => {
+    async () => {
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
-      const args = build('h264');
+      const args = await build('h264');
       expect(threadsOf(args)).toEqual(['16']);
       expect(args.indexOf('-threads')).toBeGreaterThan(args.indexOf('libx264'));
       expect(args.indexOf('-threads')).toBeGreaterThan(args.indexOf('-i'));
@@ -146,12 +146,12 @@ describe('the arguments of a software encode', () => {
   oracleTest(
     'leave x264 to choose on a host with as many cores as it can use, and when a filter changes the size',
     ['ffmpeg'],
-    () => {
+    async () => {
       vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
-      expect(threadsOf(build('h264'))).toEqual([]);
+      expect(threadsOf(await build('h264'))).toEqual([]);
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
-      expect(threadsOf(build('h264', { scale: { width: 160, height: 120 } }))).toEqual([]);
-      expect(threadsOf(build('h264', {}, { aspectRatio: '1:1' }))).toEqual([]);
+      expect(threadsOf(await build('h264', { scale: { width: 160, height: 120 } }))).toEqual([]);
+      expect(threadsOf(await build('h264', {}, { aspectRatio: '1:1' }))).toEqual([]);
     },
     TEST_TIMEOUT_MS
   );
@@ -159,11 +159,11 @@ describe('the arguments of a software encode', () => {
   oracleTest(
     'give x265 its frame threads for a constant-quality encode',
     ['ffmpeg'],
-    () => {
+    async () => {
       for (const cores of [4, 12]) {
         vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
-        expect(threadsOf(build('hevc', { rateControl: { mode: 'crf', crf: 28 } })), `${cores} cores`).toEqual(['6']);
-        expect(threadsOf(build('hevc')), `${cores} cores`).toEqual(['6']);
+        expect(threadsOf(await build('hevc', { rateControl: { mode: 'crf', crf: 28 } })), `${cores} cores`).toEqual(['6']);
+        expect(threadsOf(await build('hevc')), `${cores} cores`).toEqual(['6']);
       }
     },
     TEST_TIMEOUT_MS
@@ -172,11 +172,11 @@ describe('the arguments of a software encode', () => {
   oracleTest(
     'leave both encoders to choose when a bitrate holds the rate, where more threads weaken the estimate',
     ['ffmpeg'],
-    () => {
+    async () => {
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
       for (const codec of ['h264', 'hevc']) {
-        expect(threadsOf(build(codec, { rateControl: { mode: 'vbr', bitrateK: 800 } }))).toEqual([]);
-        expect(threadsOf(build(codec, { rateControl: { mode: 'crf', crf: 28, maxBitrateK: 900 } }))).toEqual([]);
+        expect(threadsOf(await build(codec, { rateControl: { mode: 'vbr', bitrateK: 800 } }))).toEqual([]);
+        expect(threadsOf(await build(codec, { rateControl: { mode: 'crf', crf: 28, maxBitrateK: 900 } }))).toEqual([]);
       }
     },
     TEST_TIMEOUT_MS
@@ -185,9 +185,9 @@ describe('the arguments of a software encode', () => {
   oracleTest(
     'add no thread option to a VP9 encode',
     ['ffmpeg'],
-    () => {
+    async () => {
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
-      expect(threadsOf(build('vp9'))).toEqual([]);
+      expect(threadsOf(await build('vp9'))).toEqual([]);
     },
     TEST_TIMEOUT_MS
   );
@@ -195,11 +195,11 @@ describe('the arguments of a software encode', () => {
   oracleTest(
     'add no thread option to either pass of a two-pass encode, whose passes must agree',
     ['ffmpeg'],
-    () => {
+    async () => {
       makeSource();
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
       for (const codec of ['h264', 'hevc']) {
-        const passes = buildTwoPassArguments(
+        const passes = await buildTwoPassArguments(
           openMediaInput(source, 'mp4'), path.join(workDir, 'out.mp4'), 'mp4',
           { disableHwaccel: true, video: { codec, rateControl: { mode: 'vbr', bitrateK: 800, twoPass: true } } } as never,
           tool(), 'pass'
@@ -221,8 +221,8 @@ describe('the threads the encoders really start', () => {
   });
 
   /** Our arguments for `input`, run at info level so the encoder reports the thread counts it started. */
-  function ourRun(codec: 'h264' | 'hevc', output: string, input: string = source): string {
-    const args = buildFfmpegArguments(openMediaInput(input, 'mp4'), output, 'mp4', { disableHwaccel: true, video: { codec, rateControl: { mode: 'crf', crf: CRF } } }, tool());
+  async function ourRun(codec: 'h264' | 'hevc', output: string, input: string = source): Promise<string> {
+    const args = await buildFfmpegArguments(openMediaInput(input, 'mp4'), output, 'mp4', { disableHwaccel: true, video: { codec, rateControl: { mode: 'crf', crf: CRF } } }, tool());
     const run = spawnSync(tool(), ['-hide_banner', '-nostdin', '-loglevel', 'info', ...args], { encoding: 'utf8' });
     if (run.status !== 0) throw new Error(run.stderr);
     return run.stderr;
@@ -231,14 +231,14 @@ describe('the threads the encoders really start', () => {
   oracleTest(
     'x264 starts the threads asked for, and x265 starts that many frame threads',
     ['ffmpeg'],
-    () => {
+    async () => {
       requireEncoders('libx264', 'libx265');
       makeSource();
       // A host of 12 cores is assumed whatever this one is, so the counts asked for do not depend on the machine.
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
-      const x264Log = ourRun('h264', path.join(workDir, 'ours-h264.mp4'));
+      const x264Log = await ourRun('h264', path.join(workDir, 'ours-h264.mp4'));
       expect(x264Log).toMatch(/ threads=16 lookahead_threads=\d+ /);
-      const x265Log = ourRun('hevc', path.join(workDir, 'ours-hevc.mp4'));
+      const x265Log = await ourRun('hevc', path.join(workDir, 'ours-hevc.mp4'));
       expect(x265Log).toMatch(/frame threads \/ pool features\s*: 6 \//);
     },
     TEST_TIMEOUT_MS
@@ -256,12 +256,12 @@ describe('the threads the encoders really start', () => {
   oracleTest(
     'x265 at six frame threads gives the picture quality and size of the two it starts on a host of four cores',
     ['ffmpeg'],
-    () => {
+    async () => {
       requireEncoders('libx265');
       makeSource(comparisonSource, COMPARISON_SECONDS);
       vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
       const ours = path.join(workDir, 'threads-ours.mp4');
-      ourRun('hevc', ours, comparisonSource);
+      await ourRun('hevc', ours, comparisonSource);
       const reference = path.join(workDir, 'threads-ref.mp4');
       execFileSync(
         tool(),
@@ -290,12 +290,12 @@ describe('the threads the encoders really start', () => {
     oracleTest(
       `${row.codec}: the picture and size are the reference encoder's at its own thread defaults`,
       ['ffmpeg', 'ffprobe'],
-      () => {
+      async () => {
         requireEncoders('libx264', 'libx265');
         makeSource(comparisonSource, COMPARISON_SECONDS);
         vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
         const ours = path.join(workDir, `quality-${row.codec}.mp4`);
-        ourRun(row.codec, ours, comparisonSource);
+        await ourRun(row.codec, ours, comparisonSource);
         const reference = path.join(workDir, `quality-ref-${row.codec}.mp4`);
         execFileSync(tool(), ['-v', 'error', '-y', '-i', comparisonSource, ...row.reference, '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference], {
           stdio: ['ignore', 'ignore', 'pipe'],

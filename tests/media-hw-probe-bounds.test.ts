@@ -132,29 +132,30 @@ describe('probe cache', () => {
 });
 
 describe('video codec names', () => {
-  const build = (codec: string) =>
-    buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+  const build = async (codec: string) =>
+    await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
       disableHwaccel: true,
       video: { codec } as never,
     });
 
-  it('treats h265 as an alias of hevc', () => {
-    const args = build('h265');
+  it('treats h265 as an alias of hevc', async () => {
+    const args = await build('h265');
     expect(args[args.indexOf('-c:v') + 1]).toBe('libx265');
   });
 
-  it('rejects an unknown video codec instead of encoding h264', () => {
-    expect(() => build('h266')).toThrow(InvalidMediaOptionError);
-    expect(() => build('divx')).toThrow(/divx/);
+  it('rejects an unknown video codec instead of encoding h264', async () => {
+    await expect(async () => await build('h266')).rejects.toThrow(InvalidMediaOptionError);
+    await expect(async () => await build('divx')).rejects.toThrow(/divx/);
   });
 
-  it('applies the same alias and check to the legacy videoCodec option', () => {
-    const legacy = (codec: string) =>
-      buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+  it('applies the same alias and check to the legacy videoCodec option', async () => {
+    const legacy = async (codec: string) =>
+      await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         videoCodec: codec as never,
       });
-    expect(legacy('h265')[legacy('h265').indexOf('-c:v') + 1]).toBe('libx265');
-    expect(() => legacy('mpeg2')).toThrow(InvalidMediaOptionError);
+    const legacyArgs = await legacy('h265');
+    expect(legacyArgs[legacyArgs.indexOf('-c:v') + 1]).toBe('libx265');
+    await expect(async () => await legacy('mpeg2')).rejects.toThrow(InvalidMediaOptionError);
   });
 });

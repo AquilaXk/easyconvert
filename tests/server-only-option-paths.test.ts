@@ -299,17 +299,17 @@ describe('a packaging manifest name is a bare file name with the extension of it
       expect(result.problem?.invalidParams?.map((param) => param.name)).toContain('packaging.masterPlaylistName');
     });
 
-    it(`the argument builder refuses ${label}`, () => {
-      expect(() => buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', packaging as never, 'ffmpeg', PACKAGING_SOURCE)).toThrowError(InvalidMediaOptionError);
+    it(`the argument builder refuses ${label}`, async () => {
+      await expect(buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', packaging as never, 'ffmpeg', PACKAGING_SOURCE)).rejects.toThrowError(InvalidMediaOptionError);
     });
   }
 
-  it('accepts a bare name and writes the manifest inside the output directory', () => {
+  it('accepts a bare name and writes the manifest inside the output directory', async () => {
     expect(validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'hls', masterPlaylistName: 'Main_v2-1.m3u8' } }).ok).toBe(true);
     expect(validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'dash', masterPlaylistName: 'stream.mpd' } }).ok).toBe(true);
-    const dash = buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', { format: 'dash', masterPlaylistName: 'stream.mpd' }, 'ffmpeg', PACKAGING_SOURCE);
+    const dash = await buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', { format: 'dash', masterPlaylistName: 'stream.mpd' }, 'ffmpeg', PACKAGING_SOURCE);
     expect(dash.at(-1)).toBe(path.join('/tmp/out', 'stream.mpd'));
-    const hls = buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', { format: 'hls', masterPlaylistName: 'Main_v2-1.m3u8' }, 'ffmpeg', PACKAGING_SOURCE);
+    const hls = await buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', { format: 'hls', masterPlaylistName: 'Main_v2-1.m3u8' }, 'ffmpeg', PACKAGING_SOURCE);
     expect(hls[hls.indexOf('-master_pl_name') + 1]).toBe('Main_v2-1.m3u8');
   });
 });
@@ -383,9 +383,9 @@ describe('a path in a filtergraph is escaped by the FFmpeg filtergraph rules', (
     });
   }
 
-  it('the burn filter names the file through the filename option', () => {
+  it('the burn filter names the file through the filename option', async () => {
     const vf = (args: string[]) => args[args.indexOf('-vf') + 1];
-    const args = buildFfmpegArgumentsForBurn("/tmp/sub's:a,b.srt");
+    const args = await buildFfmpegArgumentsForBurn("/tmp/sub's:a,b.srt");
     expect(parsedFilterFilename(vf(args)).filename).toBe("/tmp/sub's:a,b.srt");
   });
 
@@ -407,8 +407,8 @@ describe('a path in a filtergraph is escaped by the FFmpeg filtergraph rules', (
   );
 });
 
-function buildFfmpegArgumentsForBurn(subtitlePath: string): string[] {
-  return buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
+async function buildFfmpegArgumentsForBurn(subtitlePath: string): Promise<string[]> {
+  return await buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
     disableHwaccel: true,
     subtitles: { mode: 'burn', input: subtitlePath },
   });

@@ -32,7 +32,7 @@ import { outputSizeError } from './media-empty-output';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
 import { type MediaInput, openMediaInput, runFfmpeg, runFfmpegSync } from './media-process';
-import { type FfprobePath, probeInput, probeInputAsync, resolveFfprobeBinary } from './media-ffprobe';
+import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
 import {
@@ -132,34 +132,17 @@ export function getFfprobePath(): string | null {
 
 /**
  * Duration of an audio/video file in seconds, which bounds how long a job may run, and video stream dimension validation
- * against `maxInputPixels`: read from the header of a WAVE file or a plain MP4 when present, otherwise from `ffprobe`.
- * Returns `options.duration` when finite and positive, or 0 if ffprobe is unavailable or parsing fails.
+ * against `maxInputPixels`: read from the header of a WAVE file or a plain MP4 when present, otherwise from `ffprobe`, without holding
+ * the event loop while it runs. Returns `options.duration` when finite and positive, or 0 if ffprobe is unavailable or parsing fails.
+ * The probe it makes is remembered, so the planner and the argument builders that probe the same input afterwards find it. The signal of the job stops it.
  */
-export function probeMediaDuration(input: MediaInput, options?: ConversionOptions, ffmpegBin?: string | null): number {
+export async function probeMediaDuration(input: MediaInput, options?: ConversionOptions, ffmpegBin?: string | null, signal?: AbortSignal): Promise<number> {
   const early = durationWithoutProbe(input, options);
   if (early.known !== undefined) return early.known;
   try {
     const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
     if (!ffprobe) return early.override ?? 0;
-    // The probe runs even when the caller states the duration: it is also the check of the pixel limit.
-    const probed = probeInput(input, ffprobe as FfprobePath).durationSec ?? 0;
-    return early.override ?? probed;
-  } catch (err) {
-    return durationAfterProbeError(err, early.override);
-  }
-}
-
-/**
- * `probeMediaDuration` without holding the event loop while ffprobe runs, with the same answers and the same errors. The probe it
- * makes is remembered, so the planner and the argument builders that probe the same input afterwards find it. The signal of the job stops it.
- */
-export async function probeMediaDurationAsync(input: MediaInput, options?: ConversionOptions, ffmpegBin?: string | null, signal?: AbortSignal): Promise<number> {
-  const early = durationWithoutProbe(input, options);
-  if (early.known !== undefined) return early.known;
-  try {
-    const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
-    if (!ffprobe) return early.override ?? 0;
-    const probed = (await probeInputAsync(input, ffprobe as FfprobePath, signal)).durationSec ?? 0;
+    const probed = (await probeInput(input, ffprobe as FfprobePath, signal)).durationSec ?? 0;
     return early.override ?? probed;
   } catch (err) {
     if (signal?.aborted) throw err;
@@ -450,7 +433,7 @@ async function executeFfmpegTranscode(
   try {
     const input = openMediaInput(inputPath, src);
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
-    const durationSeconds = await probeMediaDurationAsync(input, options, ffmpegBin, options.signal);
+    const durationSeconds = await probeMediaDuration(input, options, ffmpegBin, options.signal);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
     const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
       runFfmpegTranscode(ffmpegBin, ffmpegArgs, {
@@ -467,13 +450,13 @@ async function executeFfmpegTranscode(
       // Pass logs live in a job directory of their own, removed whether the passes succeed or fail.
       const passDir = fs.mkdtempSync(path.join(tmpDir, 'easyconvert_pass_'));
       try {
-        const passes = buildTwoPassArguments(input, outputPath, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        const passes = await buildTwoPassArguments(input, outputPath, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
         await runTwoPass(passes, twoPassBudgetMs(timeoutMs), (passArgs, limitMs) => runFfmpegWith(passArgs, limitMs, passDir));
       } finally {
         fs.rmSync(passDir, { recursive: true, force: true });
       }
     } else {
-      const args = buildFfmpegArguments(input, outputPath, tgt, options, ffmpegBin, undefined, loudnessStage);
+      const args = await buildFfmpegArguments(input, outputPath, tgt, options, ffmpegBin, undefined, loudnessStage);
       try {
         await runTranscode(args);
       } catch (err) {
@@ -486,7 +469,7 @@ async function executeFfmpegTranscode(
         if (!hardwareEncoderFailed || options.signal?.aborted) {
           throw err;
         }
-        const softwareArgs = buildFfmpegArguments(
+        const softwareArgs = await buildFfmpegArguments(
           input, outputPath, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
         );
         try {
@@ -498,7 +481,7 @@ async function executeFfmpegTranscode(
     }
 
     const outputBuffer = fs.readFileSync(outputPath);
-    const outputFailure = outputSizeError(outputBuffer.length, input, ffmpegBin, tgt);
+    const outputFailure = await outputSizeError(outputBuffer.length, input, ffmpegBin, tgt);
     if (outputFailure) throw outputFailure;
     return {
       buffer: outputBuffer,
@@ -507,7 +490,7 @@ async function executeFfmpegTranscode(
       size: outputBuffer.length,
       metadata: {
         ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
-        ...describeDroppedStreams(input, tgt, options, ffmpegBin),
+        ...(await describeDroppedStreams(input, tgt, options, ffmpegBin)),
       },
     };
   } finally {
@@ -541,13 +524,13 @@ async function executeFfmpegThumbnails(
 
   try {
     const input = openMediaInput(inputPath, src);
-    await probeMediaDurationAsync(input, options, ffmpegBin, options.signal);
+    await probeMediaDuration(input, options, ffmpegBin, options.signal);
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
       const outputPath = path.join(tmpDir, `easyconvert_thumb_${Date.now()}_${token}_${i}.${actualTgt}`);
       createdFiles.push(outputPath);
 
-      const args = buildFfmpegArguments(input, outputPath, actualTgt, options, ffmpegBin, ts);
+      const args = await buildFfmpegArguments(input, outputPath, actualTgt, options, ffmpegBin, ts);
       await runFfmpeg(ffmpegBin, args, {
         timeoutMs: 30000,
         maxBuffer: 50 * 1024 * 1024,
@@ -616,9 +599,9 @@ export async function packageHlsDashMedia(
 
   try {
     const input = openMediaInput(inputPath, src);
-    await probeMediaDurationAsync(input, options, ffmpegBin, options.signal);
-    const source = probePackagingSource(input, ffmpegBin);
-    const args = buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
+    await probeMediaDuration(input, options, ffmpegBin, options.signal);
+    const source = await probePackagingSource(input, ffmpegBin);
+    const args = await buildHlsDashArguments(input, outputDir, packaging, ffmpegBin, source);
     await runFfmpeg(ffmpegBin, args, {
       cwd: outputDir,
       timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)),

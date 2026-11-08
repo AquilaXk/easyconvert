@@ -2,13 +2,13 @@ import { chmodSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type FfprobePath, probeInput, probeInputAsync, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
-import { openMediaInput, runFfprobe, runFfprobeAsync } from '../src/lib/conversions/media-process';
+import { type FfprobePath, probeInput, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
+import { openMediaInput, runFfprobeAsync } from '../src/lib/conversions/media-process';
 import * as sandbox from '../src/lib/security/process-sandbox';
 
 /**
  * ffprobe reads every upload before FFmpeg does. It runs in the namespace sandbox with an address space, a file size, a CPU time and no
- * core file, and the probe of a conversion is asked without holding the event loop: the process runs beside it, and the signal of the job
+ * core file, and every probe is asked without holding the event loop: the process runs beside it, and the signal of the job
  * ends it. The ffprobe here is a script that logs its starts and answers (or waits) as told, so what is read is what the sandbox was asked.
  */
 
@@ -50,14 +50,11 @@ afterEach(() => vi.unstubAllEnvs());
 const media = () => openMediaInput(SAMPLE_MP4_PATH, 'mp4');
 
 describe('the limits of an ffprobe run', () => {
-  it('asks for an address space, a file size, a CPU time and no core file, asynchronously and synchronously', async () => {
+  it('asks for an address space, a file size, a CPU time and no core file', async () => {
     writeProbe(`echo '${PROBE_JSON}'`);
     await runFfprobeAsync(ffprobe, ['-v', 'error'], media(), { timeoutMs: 10_000, maxBuffer: 1024 * 1024 });
     const asked = vi.mocked(sandbox.executeSandboxedBinary).mock.calls[0][2];
     expect(asked).toMatchObject({ networkIsolated: true, timeoutMs: 10_000, rlimits: { asBytes: 2 * GIB, fsizeBytes: 1024 * 1024, cpuSeconds: 12, coreBytes: 0 } });
-    runFfprobe(ffprobe, ['-v', 'error'], media(), { timeoutMs: 10_000, maxBuffer: 1024 * 1024 });
-    const resolved = vi.mocked(sandbox.resolveSandboxedCommand).mock.calls.at(-1)![2] as { rlimits?: unknown; networkIsolated?: boolean };
-    expect(resolved).toMatchObject({ networkIsolated: true, rlimits: { asBytes: 2 * GIB, fsizeBytes: 1024 * 1024, cpuSeconds: 12, coreBytes: 0 } });
   });
 
   it('answers a failed run as a value with the words of ffprobe, and a missing sandbox as an error', async () => {
@@ -70,13 +67,13 @@ describe('the limits of an ffprobe run', () => {
   });
 });
 
-describe('probeInputAsync', () => {
+describe('probeInput', () => {
   it('leaves the event loop running while ffprobe runs', async () => {
     writeProbe(`sleep 0.4; echo '${PROBE_JSON}'`);
     let ticks = 0;
     const timer = setInterval(() => (ticks += 1), 20);
     try {
-      const probe = await probeInputAsync(media(), ffprobe);
+      const probe = await probeInput(media(), ffprobe);
       expect(probe.durationSec).toBe(3.5);
     } finally {
       clearInterval(timer);
@@ -88,56 +85,35 @@ describe('probeInputAsync', () => {
   it('is remembered for the probeInput that follows, which starts no process', async () => {
     writeProbe(`echo '${PROBE_JSON}'`);
     const input = media();
-    const first = await probeInputAsync(input, ffprobe);
+    const first = await probeInput(input, ffprobe);
     expect(starts()).toBe(1);
-    expect(probeInput(input, ffprobe)).toBe(first);
-    expect(await probeInputAsync(input, ffprobe)).toBe(first);
+    expect(await probeInput(input, ffprobe)).toBe(first);
+    expect(await probeInput(input, ffprobe)).toBe(first);
     expect(starts()).toBe(1);
   });
 
-  it('hands its failure to the probeInput that follows once, instead of running the failed probe again', async () => {
+  it('does not remember a failure: the next ask runs the probe again', async () => {
     writeProbe('echo "Invalid data found" >&2; exit 1');
     const input = media();
-    const failure = await probeInputAsync(input, ffprobe).catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
-    // The probe, and the run that looks for the reason the codec is missing (media-decode-failures), which is made when the probe fails.
-    const afterAsync = starts();
-    expect(afterAsync).toBeGreaterThanOrEqual(1);
-    expect(() => probeInput(input, ffprobe)).toThrow((failure as Error).message);
-    expect(starts()).toBe(afterAsync);
-    // Once: the next ask runs the probe.
-    expect(() => probeInput(input, ffprobe)).toThrow();
-    expect(starts()).toBeGreaterThan(afterAsync);
-  });
-
-  it('keeps the failures nobody asked for in a bounded list, oldest first, and drops the ones that expired', async () => {
-    writeProbe('echo "Invalid data found" >&2; exit 1');
-    const files = Array.from({ length: 20 }, (_, index) => {
-      const file = path.join(dir, `clip-${index}.mp4`);
-      writeFileSync(file, readFileSync(SAMPLE_MP4_PATH));
-      return openMediaInput(file, 'mp4');
-    });
-    for (const input of files) await probeInputAsync(input, ffprobe).catch(() => undefined);
-    const before = starts();
-    // The newest failures are still handed on (no process); the oldest were evicted, so asking for one runs the probe again.
-    expect(() => probeInput(files[19], ffprobe)).toThrow();
-    expect(starts()).toBe(before);
-    expect(() => probeInput(files[0], ffprobe)).toThrow();
-    expect(starts()).toBeGreaterThan(before);
+    await expect(probeInput(input, ffprobe)).rejects.toThrow();
+    const afterFirst = starts();
+    expect(afterFirst).toBeGreaterThanOrEqual(1);
+    await expect(probeInput(input, ffprobe)).rejects.toThrow();
+    expect(starts()).toBeGreaterThan(afterFirst);
   });
 
   /** Well under the 30 s the stand-in probe sleeps, and the floor of a hang guard on a loaded runner. */
   const PROBE_HANG_GUARD_MS = 10_000;
-  it('is ended by the signal of the job, with its reason, and leaves nothing to hand on', async () => {
+  it('is ended by the signal of the job, with its reason, and remembers nothing', async () => {
     writeProbe('sleep 30');
     const controller = new AbortController();
     const started = Date.now();
-    const probing = probeInputAsync(media(), ffprobe, controller.signal);
+    const probing = probeInput(media(), ffprobe, controller.signal);
     setTimeout(() => controller.abort(new Error('job cancelled')), 100);
     await expect(probing).rejects.toThrow('job cancelled');
     // The probe sleeps 30 s; ending far below that shows the signal ended it.
     expect(Date.now() - started).toBeLessThan(PROBE_HANG_GUARD_MS);
     writeProbe(`echo '${PROBE_JSON}'`);
-    expect(probeInput(media(), ffprobe).durationSec).toBe(3.5);
+    expect((await probeInput(media(), ffprobe)).durationSec).toBe(3.5);
   });
 });
