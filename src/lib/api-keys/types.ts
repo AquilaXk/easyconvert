@@ -93,6 +93,21 @@ export interface UserConversionFile {
   expiresAt: number;
 }
 
+/** What a converted file's history record is made from; the store adds the creation time and the expiry. */
+export interface UserConversionFileInput {
+  /** The record id; made up when absent. A job's result is recorded under the job id, so recording it again changes nothing. */
+  id?: string;
+  userId: string;
+  fileName: string;
+  fromFormat: string;
+  toFormat: string;
+  size: number;
+  downloadUrl: string;
+  storageKey?: string;
+  /** How long the record is kept; the time an undelivered result is kept when absent. */
+  ttlMs?: number;
+}
+
 export interface WebhookDlqEntry {
   id: string;
   originalDeliveryId: string;

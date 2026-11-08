@@ -121,7 +121,7 @@ export async function eraseAccount(plan: AccountErasurePlan): Promise<AccountEra
     await getWebhookSecretStore().deleteSecretRecord(userId, keyId);
   }
   await webhookDispatcher.clearDlq(userId);
-  redisKeyStore.forgetUsage(userId);
+  await redisKeyStore.forgetUsage(userId);
   const client = redisKeyStore.getRedisClient();
   if (client && plan.taggedKeys.length > 0) await client.del(...plan.taggedKeys);
   await deleteAuthTokensOfUser(userId);

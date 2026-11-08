@@ -6,6 +6,7 @@ import { redisKeyStore } from '../api-keys/redis-key-store';
 import { leaseToHandedOffWork } from '../api-keys/hand-off';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob } from './node-processor';
+import { recordJobResultInHistory } from './job-history';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
@@ -90,6 +91,8 @@ export function attachJobLifecycleListeners(
           );
         }
       }
+
+      await recordJobResultInHistory(job, result);
 
       // Asynchronous Webhook Notification
       if (job.data?.webhookUrl) {

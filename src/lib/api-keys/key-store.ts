@@ -5,7 +5,7 @@ import { hmacSha256, sha256 } from '../auth/crypto';
 import { redisUserStore } from '../auth/redis-user-store';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
 import type { User, UserTier } from '../auth/types';
-import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
+import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile, UserConversionFileInput } from './types';
 import { isIpAllowed } from './ip-utils';
 import { TIER_LIMITS, getAnonymousDailyLimit } from '../plan-limits';
 import { globalSharedObjects } from '../storage/shared-store';
@@ -601,16 +601,7 @@ export class KeyStore {
     };
   }
 
-  public async recordUserFile(data: {
-    userId: string;
-    fileName: string;
-    fromFormat: string;
-    toFormat: string;
-    size: number;
-    downloadUrl: string;
-    storageKey?: string;
-    ttlMs?: number;
-  }): Promise<UserConversionFile> {
+  public async recordUserFile(data: UserConversionFileInput): Promise<UserConversionFile> {
     this.ensureInitialized();
 
     const now = Date.now();
@@ -641,7 +632,7 @@ export class KeyStore {
     }
 
     const file: UserConversionFile = {
-      id: crypto.randomUUID(),
+      id: data.id ?? crypto.randomUUID(),
       userId: data.userId,
       fileName: data.fileName,
       fromFormat: data.fromFormat,
@@ -702,7 +693,7 @@ export class KeyStore {
   }
 
   /** Removes the daily conversion counts and file listings of `userId` kept in this process, and answers how many it removed. */
-  public forgetUsage(userId: string): number {
+  public async forgetUsage(userId: string): Promise<number> {
     this.ensureInitialized();
     const owned = [...this.dailyUsage.keys()].filter((dateKey) => dateKey.startsWith(`${userId}:`));
     owned.forEach((dateKey) => this.dailyUsage.delete(dateKey));
