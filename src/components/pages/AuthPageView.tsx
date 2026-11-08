@@ -50,19 +50,6 @@ function LoginFormContent() {
         <h1 className="text-xl font-semibold text-ink">
           {activeTab === 'login' ? t('loginHeading') : t('registerHeading')}
         </h1>
-        <p className="mt-1 text-base text-ink-3">
-          {t.rich(activeTab === 'login' ? 'switchToRegister' : 'switchToLogin', {
-            link: (chunks) => (
-              <button
-                type="button"
-                onClick={() => handleTabSwitch(otherTab)}
-                className="font-medium text-accent-ink hover:underline rounded-xs"
-              >
-                {chunks}
-              </button>
-            ),
-          })}
-        </p>
       </div>
 
       <div className="mt-6">
@@ -117,6 +104,19 @@ function LoginFormContent() {
             void handleSubmit(event);
           }}
         />
+        <p className="mt-6 text-center text-sm text-ink-3">
+          {t.rich(activeTab === 'login' ? 'switchToRegister' : 'switchToLogin', {
+            link: (chunks) => (
+              <button
+                type="button"
+                onClick={() => handleTabSwitch(otherTab)}
+                className="font-medium text-accent-ink hover:underline rounded-xs"
+              >
+                {chunks}
+              </button>
+            ),
+          })}
+        </p>
       </div>
     </div>
   );
