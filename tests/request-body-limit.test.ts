@@ -5,6 +5,8 @@ import { NextRequest } from 'next/server';
 import { SMALL_REQUEST_BODY_MAX_BYTES, partBodyVerdict, requestBodyVerdict } from '../src/lib/api/request-body-limit';
 import { SINGLE_REQUEST_BODY_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
+import { POST as convertPost } from '../src/app/api/convert/route';
+import { POST as batchPost } from '../src/app/api/convert/batch/route';
 
 type MiddlewareFn = (request: NextRequest) => Response | Promise<Response>;
 
@@ -219,5 +221,15 @@ describe('a route that takes a file whole refuses a malformed length itself', ()
     const res = await v1ConvertPost(declaring('/api/v1/convert', '12x'));
     expect(res.status).toBe(400);
     expect((await res.json()).detail).toBe('The Content-Length header is not a whole number of bytes.');
+  });
+
+  it.each([
+    ['/api/convert', convertPost],
+    ['/api/convert/batch', batchPost],
+    ['/api/v1/convert', v1ConvertPost],
+  ])('%s answers 413 for a body declared past one request before it authenticates or reads the form', async (route, post) => {
+    const res = await post(declaring(route, String(SINGLE_REQUEST_BODY_MAX_BYTES + 1)));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({ status: 413, maxRequestBytes: SINGLE_REQUEST_BODY_MAX_BYTES, instance: route });
   });
 });
