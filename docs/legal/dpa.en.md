@@ -46,7 +46,7 @@ We tell you without undue delay after we become aware of a personal data breach 
 
 ## 7. Return and deletion at the end
 
-At the end of the service, you choose whether we return the personal data to you or delete it. Your results are returned to you by their download until they are deleted. The personal data is deleted on the schedule in section 3 of the [Privacy Policy](/privacy), and you can ask through the [contact page](/contact) for its deletion before that time. We do not keep copies, unless a law requires us to keep the data.
+At the end of the service, you choose whether we return the personal data to you or delete it. Your results are returned to you by their download until they are deleted. The personal data is deleted on the schedule in section 3 of the [Privacy Policy](/privacy), and you can ask through the [contact page](/contact) for its deletion before that time. We do not keep copies, except the backups of account and job records that section 3 of the Privacy Policy describes, which are deleted at most 7 days after they were made, and unless a law requires us to keep the data.
 
 ## 8. Information and audits
 
