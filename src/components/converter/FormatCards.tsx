@@ -16,7 +16,7 @@ export function FormatCards({ ids }: Readonly<{ ids: readonly [string] | readonl
   return (
     <section
       aria-label={t('formatCardsLabel')}
-      className={`max-w-7xl mx-auto px-6 mb-14 grid grid-cols-1 gap-4 ${linked ? 'md:grid-cols-2' : ''}`}
+      className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-14 grid grid-cols-1 gap-4 ${linked ? 'md:grid-cols-2' : ''}`}
     >
       {ids.map((id) => {
         const name = id.toUpperCase();
