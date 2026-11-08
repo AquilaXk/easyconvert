@@ -848,11 +848,22 @@ function requireMatrix(matrices: Map<string, CamfMatrix>, name: string, elements
   return matrix.values;
 }
 
+/**
+ * White balance names the calibration may use for the one the file header names. An SD15 header says "Daylight" while its calibration
+ * lists the entries of that white balance as "Sunlight"; the reader of the open-source x3f tools makes the same exchange when a
+ * "Daylight" finds no entry (`x3f_get_camf_matrix_for_wb` in `src/x3f_meta.c`, "Workaround for bug in SD1").
+ */
+function calibrationWhiteBalances(whiteBalance: string): string[] {
+  return whiteBalance === 'Daylight' ? ['Daylight', 'Sunlight'] : [whiteBalance];
+}
+
 /** Name of the CAMF entry holding `suffix` for the white balance, whatever the camera model prefix is. */
 function findWhiteBalanceEntry(matrices: Map<string, CamfMatrix>, whiteBalance: string, suffix: string): string {
-  const wanted = `${whiteBalance}${suffix}`;
-  for (const name of matrices.keys()) {
-    if (name.endsWith(wanted) && /^\w*$/.test(name.slice(0, name.length - wanted.length))) return name;
+  for (const candidate of calibrationWhiteBalances(whiteBalance)) {
+    const wanted = `${candidate}${suffix}`;
+    for (const name of matrices.keys()) {
+      if (name.endsWith(wanted) && /^\w*$/.test(name.slice(0, name.length - wanted.length))) return name;
+    }
   }
   throw new RawDecodeError(`Sigma X3F file has no ${suffix} calibration for the "${whiteBalance}" white balance`);
 }
