@@ -75,6 +75,18 @@ runs:
         path: /opt/libredwg
         key: libredwg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-libredwg.sh') }}
 
+    # The Nikon High Efficiency decoder is built from the LibRaw commit pinned in scripts/install-libraw-he.sh, so its hash is the key.
+    - name: Prepare the Nikon High Efficiency decoder directory
+      shell: bash
+      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/libraw-he
+
+    - name: Restore the cached Nikon High Efficiency decoder build
+      id: libraw-he-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: /opt/libraw-he
+        key: libraw-he-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-libraw-he.sh') }}
+
     # The XPS renderer is built from the GhostPDL release archive pinned in scripts/install-ghostxps.sh, so its hash is the key.
     - name: Prepare the XPS renderer directory
       shell: bash
@@ -142,6 +154,7 @@ runs:
         APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
         LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}
+        LIBRAW_HE_CACHE_HIT: ${{ steps.libraw-he-cache.outputs.cache-hit }}
         GHOSTXPS_CACHE_HIT: ${{ steps.ghostxps-cache.outputs.cache-hit }}
         AVIFENC_CACHE_HIT: ${{ steps.avifenc-cache.outputs.cache-hit }}
         DJVULIBRE_CACHE_HIT: ${{ steps.djvulibre-cache.outputs.cache-hit }}

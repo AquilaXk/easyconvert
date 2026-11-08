@@ -8,6 +8,7 @@
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
 #   calibre   the ebook converter the ebook benchmark compares against and the writer of the MOBI, AZW3, PDB, LRF and OEB tests, from its release archive checked against a pinned SHA-256
 #   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
+#   libraw   the Nikon High Efficiency NEF decoder (a separate dcraw_emu), built from the LibRaw commit pinned in scripts/install-libraw-he.sh, or the cached build
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   vtracer  the raster to SVG tracers: the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh), and the
 #            front-end for raw pixels built from the pinned source with the pinned Rust toolchain (scripts/install-vtracer-pixels.sh)
@@ -21,7 +22,7 @@
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
 #
-# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, GHOSTXPS_CACHE_HIT, DJVULIBRE_CACHE_HIT and S3_TEST_SERVER (true or false). With
+# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, LIBRAW_HE_CACHE_HIT, GHOSTXPS_CACHE_HIT, DJVULIBRE_CACHE_HIT and S3_TEST_SERVER (true or false). With
 # S3_TEST_SERVER=true also S3_IMAGE_CACHE_DIR and the STORAGE_TEST_S3_* variables of the job.
 #
 # Sourcing the file defines the functions and runs nothing, which is how the tests exercise the limits.
@@ -63,6 +64,7 @@ declare -A task_limit_seconds=(
   [epubcheck]=120
   [calibre]=240
   [libredwg]=300
+  [libraw]=300
   [ghostxps]=300
   [vtracer]=300
   [avifenc]=360
@@ -80,6 +82,8 @@ configure() {
   export verapdf_dir=/opt/verapdf
   export libredwg_cache_hit="${LIBREDWG_CACHE_HIT:-false}"
   export libredwg_dir=/opt/libredwg
+  export libraw_he_cache_hit="${LIBRAW_HE_CACHE_HIT:-false}"
+  export libraw_he_dir=/opt/libraw-he
   export ghostxps_cache_hit="${GHOSTXPS_CACHE_HIT:-false}"
   export ghostxps_dir=/opt/ghostxps
   export avifenc_cache_hit="${AVIFENC_CACHE_HIT:-false}"
@@ -113,7 +117,7 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps vtracer avifenc raw)
+  tasks=(apt pip verapdf epubcheck calibre libredwg libraw ghostxps vtracer avifenc raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -216,6 +220,18 @@ task_libredwg() {
     dwg2dxf --version
   else
     sudo scripts/install-libredwg.sh "$libredwg_dir"
+  fi
+}
+
+# Nikon NEF files with High Efficiency compression are developed by the `dcraw_emu` of a pinned LibRaw development snapshot (LGPL-2.1 or
+# CDDL-1.0, an unmodified separate program), built from the commit in scripts/install-libraw-he.sh, which checks the commit hash before
+# anything in it is built. It is installed as `dcraw_emu_he` beside the distribution's `dcraw_emu`, which every other file keeps. The build is
+# cached by the hash of that script.
+task_libraw() {
+  if [ "$libraw_he_cache_hit" = true ] && [ -x "$libraw_he_dir/bin/dcraw_emu" ]; then
+    sudo ln -sf "$libraw_he_dir/bin/dcraw_emu" /usr/local/bin/dcraw_emu_he
+  else
+    sudo scripts/install-libraw-he.sh "$libraw_he_dir"
   fi
 }
 
@@ -349,7 +365,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_vtracer task_avifenc task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_libraw task_ghostxps task_vtracer task_avifenc task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {
