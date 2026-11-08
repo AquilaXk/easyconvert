@@ -50,7 +50,7 @@ import {
   PipelineTaskSchema,
   JobGraphSchema,
 } from '@/lib/api/contracts';
-import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { readMultipartForm } from '@/lib/api/multipart-body';
 import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
@@ -189,16 +189,9 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     idempotencyCtx = precheck.context;
   }
 
-  const reply = async (res: NextResponse | Response) => {
-    if (idempotencyCtx) {
-      if (res.status >= 500) {
-        await idempotencyCtx.abort();
-      } else {
-        await idempotencyCtx.complete(res);
-      }
-    }
-    return res;
-  };
+  // Only a success is kept under the key, and the answer stands whatever the idempotency store does: a store failure after
+  // a conversion was charged must not turn its success into an error the client would retry, and pay for again.
+  const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
 
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
   if (quota.remaining <= 0) return reply(conversionRefusalResponse(conversionsUsedUp(auth.user, quota, 1), instanceUri));
@@ -217,7 +210,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     // stored as the answer of the idempotency key: the same request may succeed once a job has finished.
     const room = await mayEnqueue(auth.user.id, auth.user.tier);
     if (!room.allowed) {
-      if (idempotencyCtx) await idempotencyCtx.abort();
+      await releaseKey(idempotencyCtx, instanceUri);
       return concurrencyLimitResponse(room.limit, instanceUri);
     }
     const contentType = req.headers.get('content-type') || '';
@@ -668,9 +661,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
     };
     return reply(await withReservedUnit(unit.reservationId, (reserved) => queueReserved(submission, reserved)));
   } catch (error: unknown) {
-    if (idempotencyCtx) {
-      await idempotencyCtx.abort();
-    }
+    await releaseKey(idempotencyCtx, instanceUri);
     if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
       return fail(400, 'A URL or header is too large to store securely.');
     }

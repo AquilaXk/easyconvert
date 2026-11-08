@@ -35,7 +35,7 @@ import { DATA_URI_MAX_BYTES, SYNC_CONVERSION_MAX_BYTES, withinSingleRequest } fr
 import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
-import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import {
   ArchiveEntryCollisionError,
@@ -186,21 +186,9 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     idempotencyCtx = precheck.context;
   }
 
-  // The answer stands whatever the idempotency store does: a store failure after a conversion was charged must not turn
-  // its success into an error the client would retry, and pay for again.
-  const reply = async (res: NextResponse | Response) => {
-    if (!idempotencyCtx) return res;
-    try {
-      if (res.status >= 500) {
-        await idempotencyCtx.abort();
-      } else {
-        await idempotencyCtx.complete(res);
-      }
-    } catch (storeError) {
-      console.error('[v1/convert] The idempotency store could not record the answer; it is answered without a replay:', storeError);
-    }
-    return res;
-  };
+  // Only a success is kept under the key, and the answer stands whatever the idempotency store does: a store failure after
+  // a conversion was charged must not turn its success into an error the client would retry, and pay for again.
+  const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
 
   // Obtain rate-limiting context and construct IETF RateLimit headers
   const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
@@ -217,7 +205,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
   try {
     const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
     if (!slot.granted) {
-      if (idempotencyCtx) await idempotencyCtx.abort();
+      await releaseKey(idempotencyCtx, instanceUri);
       return concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders);
     }
     releaseSlot = slot.release;
@@ -285,9 +273,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     return await withReservedUnit(unit.reservationId, (reserved) => convertReserved(conversion, reserved));
   } catch (err: unknown) {
     trace.cause = err;
-    if (idempotencyCtx) {
-      await idempotencyCtx.abort();
-    }
+    await releaseKey(idempotencyCtx, instanceUri);
     const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
     if (deadlineProblem) return deadlineProblem;
     if (err instanceof PdfPostprocessError) {
