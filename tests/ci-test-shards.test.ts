@@ -115,8 +115,12 @@ describe('files without a recorded duration', () => {
 });
 
 describe('how complete the duration table is', () => {
-  /** Files that may wait for the next refresh from the CI reports before the plan is judged stale. */
-  const MAX_UNRECORDED_SHARE = 0.05;
+  /**
+   * Files that may wait for the next refresh from the CI reports before the plan is judged stale. At 5% a table 52 files short passed, and two of
+   * them (the document and presentation pairs, about 4 minutes each alone and 8 when they share a runner) were planned at the median and landed in one shard, which
+   * the 15-minute limit of the job then cancelled on every run.
+   */
+  const MAX_UNRECORDED_SHARE = 0.02;
 
   it('lists the files that have no entry', () => {
     expect(unrecordedFiles(['tests/a.test.ts', 'tests/b.test.ts'], { 'tests/a.test.ts': 3 })).toEqual(['tests/b.test.ts']);
