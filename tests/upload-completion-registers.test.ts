@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
@@ -213,5 +215,39 @@ describe('an upload whose record cannot be written', () => {
     const retried = await patch();
     expect(retried.status).toBe(204);
     await expectRegisteredAsUpload(retried.headers.get('X-Storage-Key')!, user, 'account-upload');
+  });
+
+  it('refuses a staged tus file that is shorter than the upload declared, and stores and records nothing', async () => {
+    const user = await createUser('tus-short');
+    const head = TEXT.subarray(0, 10);
+    const created = await tusPost(
+      new NextRequest(`${BASE_URL}/api/v1/uploads/tus`, {
+        method: 'POST',
+        headers: { 'Tus-Resumable': '1.0.0', 'Upload-Length': String(TEXT.length), 'Upload-Metadata': serializeTusMetadata({ filename: 'tus-short.txt', filetype: 'text/plain' }), ...asUser(user) },
+      }),
+      { params: Promise.resolve({}) }
+    );
+    const id = created.headers.get('Location')!.split('/').pop()!;
+    const patch = (offset: number, bytes: Buffer) =>
+      tusPatch(
+        new NextRequest(`${BASE_URL}/api/v1/uploads/tus/${id}`, {
+          method: 'PATCH',
+          headers: { 'Tus-Resumable': '1.0.0', 'Content-Type': 'application/offset+octet-stream', 'Upload-Offset': String(offset), ...asUser(user) },
+          body: stream(bytes),
+          duplex: 'half',
+        } as never),
+        { params: Promise.resolve({ id: [id] }) }
+      );
+    expect((await patch(0, head)).status).toBe(204);
+    const staged = path.resolve(process.env.EASYCONVERT_STORAGE_DIR || path.resolve(process.cwd(), '.easyconvert/storage'), 'tus', `${id}.bin`);
+    fs.rmSync(staged);
+
+    const refused = await patch(head.length, TEXT.subarray(head.length));
+
+    expect(refused.status).toBe(400);
+    expect(refused.headers.get('X-Storage-Key')).toBeNull();
+    const key = `conversions/${user.id}/${id}_tus-short.txt`;
+    expect(await storageProvider.stat(key)).toBeNull();
+    expect(await getRetentionLedger().get(key)).toBeUndefined();
   });
 });
