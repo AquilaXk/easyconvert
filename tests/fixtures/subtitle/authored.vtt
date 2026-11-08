@@ -1,0 +1,20 @@
+WEBVTT
+
+NOTE This file was written by hand for the tests.
+
+1
+00:01.000 --> 00:03.500
+Hello, world!
+Second <i>line</i>
+
+00:04.001 --> 00:06.999 align:start
+한국어 자막 &amp; 이모지 😀
+
+00:05.000 --> 00:08.000
+Overlaps the second cue
+
+01:02.345 --> 01:05.000
+<c.top>Top of the picture</c>
+
+01:02:03.456 --> 01:02:05.000
+Over an hour in: {braces} stay

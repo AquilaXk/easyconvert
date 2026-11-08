@@ -16,11 +16,8 @@ import {
   ComplexScriptRequiresNativeEngineError,
   MediaPackagingOptions,
   UnsupportedTargetError,
-  RawDecodeError,
-  UnsupportedRawCompressionError,
-  InvalidRawSensorError,
-  RawEngineRequiredError,
-  PdfPasswordRequiredError,
+  RawDecodeError, UnsupportedRawCompressionError, InvalidRawSensorError,
+  RawEngineRequiredError, PdfPasswordRequiredError,
 } from '../lib/types';
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
@@ -83,6 +80,7 @@ import { convertPostScript, type PostScriptJob } from './postscript-render';
 import { convertDjvu } from './djvu-render';
 import { convertXps, type XpsJob } from './xps-render';
 import { convertWithCalibre } from './ebook-calibre';
+import { convertSubtitle, isSubtitlePair } from './subtitle-route';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
@@ -2155,6 +2153,7 @@ async function convertWithOfficeSuiteRoutes(
   assertConversionOptionsObject(options, targetFormat);
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
+  if (isSubtitlePair(request.src, request.tgt)) return convertSubtitle(request, resolveBinary(BINARY_PATHS.ffmpeg, process.env.FFMPEG_PATH), assertNotSpoofedFileVfs);
   if (isCalibreEbookTarget(request.tgt)) {
     assertNotSpoofedFileVfs(input, request.src, originalFilename);
     return convertWithCalibre(OFFICE_SUITE_DEPS, request, resolveBinary(BINARY_PATHS.ebookConvert, process.env.EBOOK_CONVERT_PATH));

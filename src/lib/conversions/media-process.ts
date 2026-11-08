@@ -21,7 +21,7 @@ const PROTOCOL_WHITELIST = 'file';
 
 /**
  * The FFmpeg demuxers each media source format may be read with, by registry id (the audio and video formats, the animated
- * images the registry converts to video, and the subtitle files a conversion adds). One name is forced with `-f`; several (a
+ * images the registry converts to video, and the subtitle files a conversion reads or adds). One name is forced with `-f`; several (a
  * format whose files come in more than one container or bitstream) are passed as `-format_whitelist`, and FFmpeg's own probe
  * picks among them. No entry names a demuxer of REFERENCE_INPUT_FORMATS.
  *
@@ -103,6 +103,7 @@ export const MEDIA_INPUT_DEMUXERS: Readonly<Record<string, readonly string[]>> =
   ass: ['ass'],
   ssa: ['ass'],
   vtt: ['webvtt'],
+  sub: ['microdvd'],
 };
 
 /** The demuxer of a container whose signature the upload check sniffs; it decides over the declared format. */

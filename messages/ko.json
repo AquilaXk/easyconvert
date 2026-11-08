@@ -1613,7 +1613,12 @@
     "pml": "Palm eReader용 마크업 언어로 서식을 지정한 전자책이에요.",
     "txtz": "메타데이터를 함께 ZIP으로 묶은 UTF-8 일반 텍스트 전자책 컨테이너예요.",
     "oeb": "구형 전자책 형식인 Open eBook Publication Structure예요.",
-    "et": "Kingsoft WPS Office 통합 문서 스프레드시트 형식이에요."
+    "et": "Kingsoft WPS Office 통합 문서 스프레드시트 형식이에요.",
+    "srt": "번호와 시작·종료 시각, 텍스트로 이루어진 SubRip 자막 파일이에요.",
+    "vtt": "HTML5 동영상에서 쓰는 W3C 표준 웹 자막 형식(WebVTT)이에요.",
+    "ass": "스타일과 위치, 시간 효과를 지정할 수 있는 Advanced SubStation Alpha 자막이에요.",
+    "ssa": "ASS의 전신인 SubStation Alpha 자막 형식이에요.",
+    "sub": "프레임 번호로 시간을 지정하는 MicroDVD 텍스트 자막이에요."
   },
   "errors": {
     "generic": {

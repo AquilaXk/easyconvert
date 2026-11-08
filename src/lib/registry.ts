@@ -1,4 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
+import { SUBTITLE_DEFINITIONS } from './registry-subtitles';
 import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(Object.create(null) as Record<string, FormatDefinition>, {
@@ -2883,7 +2884,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['html', 'pdf', 'jpg', 'png', 'csv', 'ods', 'xls', 'xlsx'],
     optionsSchema: {delimiter:true,hasHeaders:true,sheetIndex:true},
   },
-});
+}, SUBTITLE_DEFINITIONS);
 
 export const CATEGORY_LABELS: Record<FormatCategory, string> = {
   image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video', audio: 'Audio', ebook: 'Ebooks',
@@ -3169,7 +3170,6 @@ export function isFormatCompatibleWithMagicBytes(
   if (!buffer || buffer.length === 0) return true;
   const cleanExt = declaredExtensionOrFormatId.toLowerCase().replace(/^\./, '').trim();
   const sniffed = sniffMimeTypeFromMagicBytes(buffer);
-
 
   // Reject executable binaries immediately (Security Gate)
   if (sniffed === 'application/x-elf' || sniffed === 'application/x-dosexec') {

@@ -38,6 +38,7 @@ import { buildPptBinary } from './helpers/ppt-binary-builder';
 import { ensureSample } from '../bench/corpora';
 import { pinnedDwgSample } from './helpers/dwg-samples';
 import { isOfficeSuiteOnlySource, officeReadingFormat } from '../src/lib/conversions/office/office-suite-sources';
+import { countSubtitleCues, isSubtitleFormat, type SubtitleFormat } from '../src/lib/subtitle-structure';
 import { realworldSampleBytes } from './helpers/realworld-sample';
 import { singlePage } from './helpers/djvu-builder';
 
@@ -700,6 +701,12 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   yaml: ['xls'],
   yml: ['xls'],
+  // Subtitles: FFmpeg reads SubRip, WebVTT, ASS, SSA and MicroDVD and writes SubRip, WebVTT and ASS (policy entry 188).
+  srt: ['ass', 'vtt'],
+  vtt: ['ass', 'srt'],
+  ass: ['srt', 'vtt'],
+  ssa: ['srt', 'vtt'],
+  sub: ['ass', 'srt', 'vtt'],
 };
 
 /**
@@ -1566,7 +1573,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   );
   const allPartPairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
   /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
-  const pairs = allPartPairs.filter(([, target]) => !isCalibreEbookTarget(target));
+  const pairs = allPartPairs.filter(([source, target]) => !isCalibreEbookTarget(target) && !isSubtitleFormat(source));
+  /** The subtitle pairs are FFmpeg's: the sandbox, the file checks and the independent read-back are proven by tests/subtitle-pairs.test.ts. */
+  const subtitlePairs = allPartPairs.filter(([source]) => isSubtitleFormat(source));
   const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
   const MARKDOWN_TARGET = 'md';
   const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && pair[1] !== MARKDOWN_TARGET && authorable(pair));
@@ -1584,6 +1593,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
     if (isCalibreEbookTarget(target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
+    if (isSubtitleFormat(source)) return { envVar: 'FFMPEG_PATH', engineName: 'ffmpeg' };
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
     if (DJVU_SOURCES.has(source)) return { envVar: 'DDJVU_PATH', engineName: 'ddjvu' };
@@ -1698,6 +1708,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Input that passes the magic-byte check; the missing engine rejects it before any parsing. */
   async function missingEngineInput(source: string): Promise<Buffer> {
     if (SEEDS[source]) return fixture(SEEDS[source]);
+    if (isSubtitleFormat(source)) return fixture(`subtitle/authored.${source}`);
     if (TABLE_TEXT_SEEDS[source] !== undefined) return Buffer.from(TABLE_TEXT_SEEDS[source]);
     if (DOCUMENT_TEXT_SEEDS[source] !== undefined) return Buffer.from(DOCUMENT_TEXT_SEEDS[source]);
     if (PACKAGE_VARIANTS.has(source)) return realInput(source);
@@ -1860,6 +1871,16 @@ describe('native-engine pairs route through the dispatcher', () => {
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName });
   });
+
+  it.skipIf(skipWithoutTools('ffmpeg')).each(subtitlePairs)(
+    '%s -> %s converts with FFmpeg (needs ffmpeg)',
+    async (source, target) => {
+      const result = await dispatchConversion(fixture(`subtitle/authored.${source}`), source, target, {}, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-ffmpeg');
+      expect(countSubtitleCues(target as SubtitleFormat, result.buffer.toString('utf-8'))).toBeGreaterThan(0);
+    },
+    NATIVE_TIMEOUT_MS
+  );
 
   it.skipIf(skipWithoutTools('soffice')).each(officeToOffice)(
     '%s -> %s converts with LibreOffice (needs soffice)',
