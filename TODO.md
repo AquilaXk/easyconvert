@@ -30,7 +30,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Run ffprobe through the process sandbox with rlimits, asynchronously.
 - Make the qpdf steps in `compress.ts` honour the job abort signal and deadline.
 - Make the PDF guard walk `/Parent` resources, count draws, and cover encrypted PDFs.
-- Restore the link-import charge that a failed write loses (up to 4 MiB).
 - Fix graph start recovery so queued node jobs are cancelled even when the cancel fails.
 
 ## Tests and CI
