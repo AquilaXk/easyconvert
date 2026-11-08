@@ -542,15 +542,14 @@ continuous benchmarking (`bench/speed-history.ts`):
 The report has separate sections: failing rows, tracked rows (with issue, ratio and interval), rows now at parity, then
 the rows at or above the reference and the rows not evaluated.
 
-**The `security` exemption** (`scripts/ci-parity-policy.mjs`): a pull request labelled `security` that links an issue
-(`Closes #N`, `Refs #N`, ...) is excused from the parity verdict only. Tests, the guard, lint, build, the container and
-conformance still run, and a metric worse than our own baseline still fails. The job then posts one comment listing the
-rows below the reference and their gap issue, and opens or updates one `parity-gap` issue per family.
+**No exemption** (`scripts/ci-parity-policy.mjs`): a row below the reference, a metric worse than our own baseline, a
+run without strict mode or a failed benchmark fails the job. The job opens no issue and posts no comment; the rows are in
+the job summary.
 
-`ci.yml` wires this into `verify`: `parity-quality` runs on every push to a pull request that changes a conversion
-family. Speed parity is not a pull request check (docs/policy-decisions.md, entry 123): the nightly workflow runs the
-full parity benchmark on every family and case on `main`, and a failing night lists the commits since the last good one
-in the `nightly-regression` issue.
+`ci.yml` wires this into `verify`: `parity-quality` runs on every push to `main` that changes a conversion family, compared
+with the commit the push replaces. Speed parity is not measured there (docs/policy-decisions.md, entry 123): the nightly
+workflow runs the full parity benchmark on every family and case on `main`, and a failing night is a failed run in
+Actions, which GitHub emails to the owner.
 
 ## Refreshing recorded numbers from CI
 
@@ -649,8 +648,7 @@ npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
   the seventh chosen by the date (the hash of the id modulo 7 against the days since 1970-01-01 modulo 7), so seven nights cover the
   corpus once. Every night also runs the canary: one file of every format and producer class, and every file listed in
   `bench/realworld/regression/failed-before.json`. `merge --record-failures` adds the files that failed in a run to that list; it is
-  a reviewed commit. A failed run opens the `nightly-regression` issue or comments on the open one, through the same reusable
-  workflow as the nightly run (`.github/workflows/report-failure.yml`).
+  a reviewed commit. A failed run is a failed run in Actions; the run summary lists each file by verdict.
 - **Verdicts and gate:** as for the real-world corpus (crash, hang, bad output, refusal), and also against the last full run on
   `main`: the merge job downloads its result set (the `regression-baseline` artifact, kept 90 days) and any job that was `ok`
   there and is not now is listed under "Converted before, not now" and fails the run, even when no reference tool can open the file.

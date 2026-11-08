@@ -43,8 +43,6 @@ const ROOT = path.resolve(__dirname, '..');
 const read = (...parts: string[]): string => readFileSync(path.join(ROOT, ...parts), 'utf-8');
 const ci = parse(read('.github', 'workflows', 'ci.yml')) as Workflow;
 const nightly = parse(read('.github', 'workflows', 'nightly.yml')) as Workflow;
-const automergeText = read('.github', 'workflows', 'automerge.yml');
-const automerge = parse(automergeText) as Workflow;
 
 const stepNamed = (job: Job, name: string): Step => {
   const found = job.steps.find((step) => step.name === name || step.id === name);
@@ -60,12 +58,13 @@ const runOf = (job: Job, name: string): string => {
 const quality = ci.jobs['parity-quality'];
 
 describe('the trigger', () => {
-  it('runs once per head commit: no label event starts the pull request workflow', () => {
+  it('runs on every push to main; no label event starts the pull request workflow', () => {
+    expect(ci.on.push).toEqual({ branches: ['main'] });
     const types = (ci.on.pull_request as { types: string[] }).types;
     expect(types).toEqual(['opened', 'synchronize', 'reopened']);
   });
 
-  it('measures speed in no pull request workflow', () => {
+  it('measures speed in no push or pull request workflow', () => {
     const timing = Object.entries(ci.jobs).flatMap(([name, job]) => (job.steps ?? []).filter((step) => (step.run ?? '').includes('--speed-only')).map((step) => `${name}: ${step.name}`));
     expect(timing).toEqual([]);
     expect(Object.keys(ci.jobs).filter((name) => name.includes('speed'))).toEqual([]);
@@ -89,9 +88,10 @@ describe('parity-quality', () => {
     expect(quality.env?.MALLOC_ARENA_MAX).toBe('2');
   });
 
-  it('backs the quality entries a change adds or edits with the gap file and the baseline of the first parent of the tested merge', () => {
+  it('backs the quality entries a change adds or edits with the gap file and the baseline of the commit a push replaces, or of the first parent of the tested merge', () => {
     const base = stepNamed(quality, 'base');
     expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
+    expect(base.env?.PUSH_BEFORE_SHA).toBe('${{ github.event.before }}');
     expect(base.run).toContain('git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json');
     expect(base.run).toContain('git show "$parent:bench/baseline.json" > ab-base-files/baseline.json');
     expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
@@ -133,13 +133,12 @@ describe('parity-quality', () => {
     expect(bench).toContain('exit 0');
     const policy = quality.steps.find((step) => step.uses?.startsWith('actions/github-script@'));
     expect(policy?.if).toBeUndefined();
-    expect(String(policy?.with?.script)).toContain("scope: 'quality'");
     expect(String(policy?.with?.script)).toContain('applyParityVerdict');
     expect(String(policy?.with?.script)).toContain('bench-results/parity-verdict.json');
   });
 
-  it('may comment and open issues, and may read the repository', () => {
-    expect(quality.permissions).toEqual({ contents: 'read', issues: 'write', 'pull-requests': 'write' });
+  it('only reads the repository: it opens no issue and posts no comment', () => {
+    expect(quality.permissions).toEqual({ contents: 'read' });
     expect(ci.permissions).toEqual({ contents: 'read' });
   });
 });
@@ -284,9 +283,10 @@ describe('the verify gate with the quality job', () => {
     expect(gate({ benchChanged: 'false', quality: 'success' })).toBe(1);
   });
 
-  only('expects no parity job on a push to main, and fails if one ran', () => {
+  only('judges a push to main the same way: parity quality is expected when a conversion family changed', () => {
     expect(gate({ event: 'push', benchChanged: 'false', quality: 'skipped' })).toBe(0);
-    expect(gate({ event: 'push', benchChanged: 'false', quality: 'success' })).toBe(1);
+    expect(gate({ event: 'push', benchChanged: 'true', quality: 'success' })).toBe(0);
+    expect(gate({ event: 'push', benchChanged: 'true', quality: 'skipped' })).toBe(1);
   });
 
   only('fails when the change filter itself failed', () => {
@@ -353,7 +353,7 @@ describe('the step that maps changed paths to families', () => {
       eventBase = sh('git', ['rev-parse', 'HEAD'], origin).stdout;
     }
     const base = options.baseSha === undefined ? eventBase : (options.baseSha ?? '');
-    const result = sh('bash', ['-eo', 'pipefail', '-c', script], checkout, { ...stepEnv, EVENT_NAME: options.event ?? 'pull_request', PR_BASE_SHA: base, GITHUB_OUTPUT: output });
+    const result = sh('bash', ['-eo', 'pipefail', '-c', script], checkout, { ...stepEnv, EVENT_NAME: options.event ?? 'pull_request', PR_BASE_SHA: base, PUSH_BEFORE_SHA: base, GITHUB_OUTPUT: output });
     const parsed = Object.fromEntries(
       readFileSync(output, 'utf-8')
         .split('\n')
@@ -387,9 +387,16 @@ describe('the step that maps changed paths to families', () => {
     expect(outputs(['src/lib/conversions/zstd-encoder.ts'], { laterMain: ['src/lib/conversions/dispatch.ts'] }).outputs).toEqual({ families: 'compression', unmapped: '', changed: 'true' });
   });
 
-  only('fails open without a comparable base commit, and has nothing to say for a push', () => {
-    expect(outputs([], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
+  only('compares a push with the commit it replaces', () => {
+    expect(outputs(['src/lib/conversions/zstd-encoder.ts'], { event: 'push' }).outputs).toEqual({ families: 'compression', unmapped: '', changed: 'true' });
+    expect(outputs(['docs/guide.md'], { event: 'push' }).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
+  });
+
+  only('fails open without a comparable base commit: a pull request with no base, and a push with no or an all-zero before', () => {
+    const everything = { families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector', unmapped: '', changed: 'true' };
+    expect(outputs([], { baseSha: null }).outputs).toEqual(everything);
+    expect(outputs([], { event: 'push', baseSha: null }).outputs).toEqual(everything);
+    expect(outputs([], { event: 'push', baseSha: '0'.repeat(40) }).outputs).toEqual(everything);
   });
 
   it('is exposed as outputs of the changes job', () => {
@@ -398,23 +405,6 @@ describe('the step that maps changed paths to families', () => {
       bench_unmapped: '${{ steps.families.outputs.unmapped }}',
       bench_changed: '${{ steps.families.outputs.changed }}',
     });
-  });
-});
-
-describe('the automerge workflow', () => {
-  it('leaves the gate to verify: it never merges directly, only arms squash auto-merge', () => {
-    const merges = Object.values(automerge.jobs)
-      .flatMap((job) => job.steps.map((step) => step.run ?? ''))
-      .flatMap((run) => run.match(/gh pr merge.*/g) ?? []);
-    expect(merges).toHaveLength(2);
-    expect(merges.every((command) => /--auto|--disable-auto/.test(command))).toBe(true);
-    expect(automergeText).toContain('Speed parity is not a merge requirement');
-  });
-
-  it('is armed by the automerge label, which starts no check run of its own', () => {
-    const labelsIn = (condition: string): string[] => [...new Set([...condition.matchAll(/'(automerge|security)'/g)].map((match) => match[1]))];
-    expect(labelsIn(String(automerge.jobs.enable.if))).toEqual(['automerge']);
-    expect((ci.on.pull_request as { types: string[] }).types).not.toContain('labeled');
   });
 });
 
@@ -545,14 +535,5 @@ describe('the nightly run', () => {
     expect(dryRun.run).toContain('bench/refresh-speed.ts bench-results');
     expect(dryRun.run).not.toContain('--write');
     expect(speedJob.steps.indexOf(dryRun)).toBeLessThan(speedJob.steps.indexOf(upload as Step));
-  });
-
-  it('reports a failing night through the existing nightly-regression issue', () => {
-    const report = nightly.jobs.report;
-    expect([...(report.needs as string[])]).toEqual(expect.arrayContaining(['bench', 'bench-parity-quality', 'bench-parity-speed']));
-    expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
-    expect(report.uses).toBe('./.github/workflows/report-failure.yml');
-    const reusable = parse(read('.github', 'workflows', 'report-failure.yml')) as { jobs: { report: { steps: Step[] } } };
-    expect(String(reusable.jobs.report.steps[0].with?.script)).toContain("const label = 'nightly-regression'");
   });
 });

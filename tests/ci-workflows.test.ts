@@ -52,7 +52,6 @@ const read = (file: string): string => readFileSync(file, 'utf-8');
 const ciText = read(path.join(WORKFLOWS, 'ci.yml'));
 const nightlyText = read(path.join(WORKFLOWS, 'nightly.yml'));
 const regressionText = read(path.join(WORKFLOWS, 'regression-corpus.yml'));
-const reportText = read(path.join(WORKFLOWS, 'report-failure.yml'));
 const setupText = read(SETUP_ACTION);
 const TEST_SAMPLES_ACTION = './.github/actions/test-samples';
 const testSamples = parse(read(path.join(ROOT, '.github', 'actions', 'test-samples', 'action.yml'))) as { runs: { steps: Step[] } };
@@ -64,7 +63,6 @@ const fetchesTestSamplesBeforeVitest = (steps: Step[]): boolean => {
 const ci = parse(ciText) as Workflow;
 const nightly = parse(nightlyText) as Workflow;
 const regression = parse(regressionText) as Workflow;
-const reportFailure = parse(reportText) as Workflow & { jobs: Record<string, Job> };
 const setup = parse(setupText) as { inputs?: Record<string, { default?: string; required?: boolean }>; runs: { steps: Step[] } };
 
 /** The longest a job may be allowed to run: a hung job must not hold a runner for hours. */
@@ -88,7 +86,7 @@ describe('concurrency and triggers of ci.yml', () => {
     expect(ci.concurrency?.['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}");
   });
 
-  it('runs on pushes to main only, so a pull request commit is not built twice', () => {
+  it('runs on every push to main, and on a pull request when one is proposed', () => {
     expect(ci.on.push).toEqual({ branches: ['main'] });
     // No label decides a verdict of this workflow, so a label change does not run it again.
     expect(ci.on.pull_request).toEqual({ branches: ['main'], types: ['opened', 'synchronize', 'reopened'] });
@@ -103,7 +101,6 @@ describe.each([
   ['ci.yml', ci],
   ['nightly.yml', nightly],
   ['regression-corpus.yml', regression],
-  ['report-failure.yml', reportFailure],
 ])('jobs of %s', (_name, workflow) => {
   it('has a timeout-minutes on every job that runs steps (a job that calls a workflow gets its limit from the called one)', () => {
     for (const [name, job] of Object.entries(workflow.jobs)) {
@@ -225,104 +222,11 @@ describe('the nightly workflow', () => {
     expect(fetchesTestSamplesBeforeVitest(nightly.jobs.perf.steps)).toBe(true);
   });
 
-  it('opens or updates one nightly-regression issue when a job fails, through the workflow it shares with the regression corpus run', () => {
-    const report = nightly.jobs.report;
-    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'bench-parity-quality', 'bench-parity-speed', 'licenses', 'perf', 'realworld', 'realworld-gate', 'sharp-libvips']);
-    expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
-    expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
-    expect(report.uses).toBe('./.github/workflows/report-failure.yml');
-    expect(report.steps).toBeUndefined();
-  });
-
-  it('keeps the issue reporting in one reusable workflow with the permissions to do it', () => {
-    expect(reportFailure.on).toEqual({ workflow_call: null });
-    const report = reportFailure.jobs.report;
-    expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
-    expect(report['timeout-minutes']).toBe(10);
-    const script = String(report.steps[0].with?.script);
-    expect(script).toContain("const label = 'nightly-regression'");
-    expect(script).toContain("const title = 'Nightly regression'");
-    expect(script).toContain('github.rest.issues.create(');
-    expect(script).toContain('github.rest.issues.createComment(');
-    expect(script).toContain('actions/runs/${context.runId}');
-    expect(script).toContain('job.html_url');
-    expect(Object.keys(reportFailure.jobs)).toEqual(['report']);
-  });
-
-  describe('the suspects a failing run names', () => {
-    const script = String(reportFailure.jobs.report.steps[0].with?.script);
-    const run = Object.getPrototypeOf(async () => undefined).constructor as new (...args: string[]) => (...values: unknown[]) => Promise<void>;
-    const SHA = 'c'.repeat(40);
-
-    /** Runs the report script against a stand-in client; returns the body of the issue it opened. */
-    async function report(lastGood: { id: number; head_sha: string; html_url: string } | undefined | null, commits: string[]): Promise<string> {
-      let body = '';
-      const github = {
-        paginate: async () => [{ name: 'bench-parity-speed', conclusion: 'failure', html_url: 'https://example.invalid/job' }],
-        rest: {
-          actions: {
-            listJobsForWorkflowRun: () => undefined,
-            getWorkflowRun: async () => ({ data: { workflow_id: 7, head_branch: 'main' } }),
-            listWorkflowRuns: async (query: { status: string; branch: string; workflow_id: number; event: string }) => {
-              if (lastGood === null) throw new Error('rate limited');
-              expect(query).toMatchObject({ status: 'success', branch: 'main', workflow_id: 7, event: 'schedule' });
-              return { data: { workflow_runs: lastGood ? [lastGood] : [] } };
-            },
-          },
-          repos: {
-            compareCommitsWithBasehead: async ({ basehead }: { basehead: string }) => {
-              expect(basehead).toBe(`${lastGood?.head_sha}...${SHA}`);
-              return {
-                data: {
-                  html_url: 'https://example.invalid/compare',
-                  total_commits: commits.length,
-                  commits: commits.map((title, index) => ({ sha: `${index}`.padStart(40, 'a'), html_url: `https://example.invalid/${index}`, commit: { message: `${title}\n\nbody` } })),
-                },
-              };
-            },
-          },
-          issues: {
-            listForRepo: async () => ({ data: [] }),
-            createLabel: async () => undefined,
-            createComment: async () => undefined,
-            create: async (issue: { body: string }) => {
-              body = issue.body;
-            },
-          },
-        },
-      };
-      const context = { repo: { owner: 'o', repo: 'r' }, serverUrl: 'https://example.invalid', runId: 1, sha: SHA };
-      await new run('github', 'context', script)(github, context);
-      return body;
+  it('opens no issue and posts no comment: a failing night shows as a failed run in Actions', () => {
+    for (const [name, workflow] of [['nightly.yml', nightly], ['regression-corpus.yml', regression]] as const) {
+      expect(workflow.jobs.report, name).toBeUndefined();
     }
-
-    it('lists the commits since the last successful run of the workflow on the branch, newest first', async () => {
-      const body = await report({ id: 5, head_sha: 'b'.repeat(40), html_url: 'https://example.invalid/run/5' }, ['Older change', 'Newer change']);
-      expect(body).toContain('Commits since the last successful run ([5](https://example.invalid/run/5) on bbbbbbb, [compare](https://example.invalid/compare)):');
-      expect(body.indexOf('Newer change')).toBeGreaterThan(-1);
-      expect(body.indexOf('Newer change')).toBeLessThan(body.indexOf('Older change'));
-      expect(body).not.toContain('body');
-    });
-
-    it('caps the list and points at the compare view for the rest', async () => {
-      const body = await report({ id: 5, head_sha: 'b'.repeat(40), html_url: 'https://example.invalid/run/5' }, Array.from({ length: 60 }, (_, index) => `Change ${index}`));
-      expect(body).toContain('Change 59');
-      expect(body).toContain('Change 10');
-      expect(body).not.toMatch(/`Change 9`$/m);
-      expect(body).toContain('- and 10 older commits in the compare view');
-    });
-
-    it('still opens the issue when the suspects cannot be listed', async () => {
-      const body = await report(null, []);
-      expect(body.split('\n').filter((line) => line.startsWith('Suspects'))).toEqual(['Suspects could not be listed: rate limited']);
-    });
-
-    it('says so when there is no earlier good run, or when it was on the same commit', async () => {
-      expect((await report(undefined, [])).split('\n').at(-1)).toBe('No earlier successful run on this branch: every commit up to this one is a suspect.');
-      expect((await report({ id: 5, head_sha: SHA, html_url: 'https://example.invalid/run/5' }, [])).split('\n').at(-1)).toBe(
-        'The last successful run was on this same commit (ccccccc): the change is in the runner or a tool, not in a commit.'
-      );
-    });
+    expect(existsSync(path.join(WORKFLOWS, 'report-failure.yml'))).toBe(false);
   });
 
   it('runs the real-world corpus in ten cached shards and gates on their merged report', () => {
@@ -429,7 +333,6 @@ describe('third-party actions', () => {
     ...stepsOf(ci).map(({ job, step }) => ({ where: `ci.yml ${job}`, uses: step.uses })),
     ...stepsOf(nightly).map(({ job, step }) => ({ where: `nightly.yml ${job}`, uses: step.uses })),
     ...stepsOf(regression).map(({ job, step }) => ({ where: `regression-corpus.yml ${job}`, uses: step.uses })),
-    ...stepsOf(reportFailure).map(({ job, step }) => ({ where: `report-failure.yml ${job}`, uses: step.uses })),
     ...setup.runs.steps.map((step) => ({ where: 'ci-setup', uses: step.uses })),
   ].filter((entry): entry is { where: string; uses: string } => typeof entry.uses === 'string' && !entry.uses.startsWith('./'));
 
@@ -443,7 +346,7 @@ describe('third-party actions', () => {
   });
 
   it('carry the version they pin in a comment', () => {
-    for (const text of [ciText, nightlyText, regressionText, reportText, setupText]) {
+    for (const text of [ciText, nightlyText, regressionText, setupText]) {
       const pinned = text.split('\n').map((line) => line.trim().replace(/^- /, '')).filter((line) => line.startsWith('uses:') && !line.startsWith('uses: ./'));
       expect(pinned.length).toBeGreaterThan(0);
       for (const line of pinned) expect(line).toMatch(SHA_PINNED_COMMENT);
@@ -461,10 +364,10 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 28 on a runner and 4 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(32);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
-    expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
+  it('reads every job of every workflow file: 24 on a runner and 2 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(26);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(24);
+    expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(2);
   });
 
   it('points every local uses, of a job and of a step, at a file of this repository (a step names the folder of its action.yml)', () => {
@@ -773,55 +676,6 @@ describe('the verify gate of ci.yml', () => {
   });
 });
 
-describe('the automerge workflow', () => {
-  const automerge = parse(read(path.join(WORKFLOWS, 'automerge.yml'))) as Workflow;
-  const step = automerge.jobs.enable.steps.find((s) => s.name === 'Enable squash auto-merge');
-
-  it('passes the title and body through the environment, not into the script', () => {
-    expect(step?.env?.PR_TITLE).toBe('${{ github.event.pull_request.title }}');
-    expect(step?.env?.PR_BODY).toBe('${{ github.event.pull_request.body }}');
-    expect(step?.run ?? '').not.toContain('github.event.pull_request');
-  });
-
-  it.skipIf(skipUnless('bash', spawnSync('bash', ['--version']).status === 0))(
-    'squashes with the PR title and a body without tool attribution lines',
-    () => {
-      const dir = mkdtempSync(path.join(tmpdir(), 'automerge-'));
-      const bin = path.join(dir, 'bin');
-      mkdirSync(bin);
-      // A stand-in gh records its arguments and the body file it was given.
-      writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/args"\nwhile [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$RUNNER_TEMP/body"; shift; done\n', { mode: 0o755 });
-      const body = [
-        '## Summary',
-        '',
-        '- Fix the reader.',
-        'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>',
-        'Claude-Session: https://claude.ai/code/session_x',
-        '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
-        'https://claude.ai/code/session_x',
-        'Co-authored-by: Jane Doe <jane@example.org>',
-        '',
-        '---',
-        '_Generated by [Claude Code](https://claude.ai/code/session_x)_',
-        '',
-        '---',
-        '_Generated by [Claude Code](https://claude.ai/code)_',
-      ].join('\n');
-      const result = spawnSync('bash', ['-e', '-c', step?.run ?? ''], {
-        env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP: dir, PR_NUMBER: '42', PR_TITLE: 'Fix the reader', PR_BODY: body, GITHUB_REPOSITORY: 'o/r' },
-        encoding: 'utf-8',
-      });
-      expect(result.status, result.stderr).toBe(0);
-      const args = readFileSync(path.join(dir, 'args'), 'utf-8').split('\n');
-      expect(args.slice(0, 6)).toEqual(['pr', 'merge', '42', '--repo', 'o/r', '--auto']);
-      expect(args).toContain('--squash');
-      expect(args[args.indexOf('--subject') + 1]).toBe('Fix the reader (#42)');
-      expect(readFileSync(path.join(dir, 'body'), 'utf-8')).toBe('## Summary\n\n- Fix the reader.\nCo-authored-by: Jane Doe <jane@example.org>\n\n\n');
-      rmSync(dir, { recursive: true, force: true });
-    }
-  );
-});
-
 describe('the pinned 7-Zip the corpus and the speed rows run the product with', () => {
   const PINNED_ACTION = './.github/actions/pinned-7zip';
   const actionText = read(path.join(ROOT, '.github', 'actions', 'pinned-7zip', 'action.yml'));
@@ -878,7 +732,7 @@ describe('the pinned 7-Zip the corpus and the speed rows run the product with', 
   });
 });
 
-describe('files of the base that a pull request job compares with', () => {
+describe('files of the base that a job compares with', () => {
   const MERGE_PARENT = `parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"`;
 
   it('are read from the first parent of the tested merge, never from the base branch as it is now', () => {

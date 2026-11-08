@@ -223,7 +223,7 @@ npm start
 
 ## 정책 결정
 
-출력 기본값, 한도, 엔진, 품질 게이트 같은 변환·제품 정책은 근거와 트레이드오프와 함께 [docs/policy-decisions.md](docs/policy-decisions.md)에 기록합니다. 정책을 바꾸는 pull request에서 이 문서도 함께 갱신합니다.
+출력 기본값, 한도, 엔진, 품질 게이트 같은 변환·제품 정책은 근거와 트레이드오프와 함께 [docs/policy-decisions.md](docs/policy-decisions.md)에 기록합니다. 정책을 바꾸는 커밋에서 이 문서도 함께 갱신합니다.
 
 ## 라이선스 및 오픈소스 고지 (Licensing)
 
