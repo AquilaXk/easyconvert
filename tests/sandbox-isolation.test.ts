@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { promisify } from 'node:util';
 import { executeSandboxedBinary, getUnshareCapability, memoryWatchPid } from '../src/lib/security/process-sandbox';
+import { isProcessRunning } from './helpers/process-state';
 import { skipUnless } from './helpers/strict-skip';
 
 // The PID namespace is off by default (src/lib/security/process-sandbox.ts); these tests are about it, so they turn it on.
@@ -90,14 +91,8 @@ async function waitForMarkedPid(): Promise<number> {
   throw new Error('the sibling run did not start');
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** Whether `pid` runs: a zombie left after a kill counts as gone (tests/helpers/process-state.ts). */
+const isAlive = isProcessRunning;
 
 interface Listener {
   port: number;

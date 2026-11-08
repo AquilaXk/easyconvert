@@ -34,7 +34,7 @@ describe('whether a test asks if a process is still running', () => {
   it('sees a signal of 0 where one is written, so the scan above is not empty by accident', () => {
     expect(probes(path.join(TESTS, 'process-state.test.ts'))).toEqual(['process-state.test.ts:11: process.kill(pid, 0);']);
     expect(probes(path.join(TESTS, 'sandbox-isolation.test.ts'))).toEqual([
-      'sandbox-isolation.test.ts:48: try { process.kill(parentPid, 0); } catch (err) { parentVisible = err.code === \'EPERM\'; }',
+      'sandbox-isolation.test.ts:49: try { process.kill(parentPid, 0); } catch (err) { parentVisible = err.code === \'EPERM\'; }',
     ]);
   });
 });
