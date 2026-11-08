@@ -3,7 +3,7 @@ import { ArrowRight, Check } from 'lucide-react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import { Link } from '@/i18n/navigation';
-import { formatBytes } from '@/lib/format-bytes';
+import { formatBytesForDisplay } from '@/lib/format-bytes';
 import {
   DEFAULT_FREE_CONCURRENCY,
   DELIVERED_FILE_RETENTION_MINUTES,
@@ -21,7 +21,7 @@ function limitValues(anonymousDaily: number) {
   return {
     daily: FREE_DAILY_CONVERSIONS,
     anonymous: anonymousDaily,
-    fileSize: formatBytes(PLAN_MAX_FILE_BYTES.free),
+    fileSize: formatBytesForDisplay(PLAN_MAX_FILE_BYTES.free),
     concurrent: DEFAULT_FREE_CONCURRENCY,
     processing: FREE_PROCESSING_MINUTES,
     deletion: DELIVERED_FILE_RETENTION_MINUTES,

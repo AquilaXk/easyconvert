@@ -9,7 +9,7 @@ import {
   FREE_PROCESSING_MINUTES,
   PLAN_MAX_FILE_BYTES,
 } from '../src/lib/plan-limits';
-import { formatBytes } from '../src/lib/format-bytes';
+import { formatBytesForDisplay } from '../src/lib/format-bytes';
 import { headings, links, renderDom, select, visibleText } from './helpers/rendered-dom';
 import { testMessages } from './helpers/intl-messages';
 import { CONFIG_SCHEMA } from '../src/lib/config/schema';
@@ -23,7 +23,7 @@ describe('the pricing page', () => {
   it('shows the limits of the free plan as plan-limits holds them', () => {
     const text = visibleText(page('en'));
     expect(text).toContain(`${FREE_DAILY_CONVERSIONS} a day`);
-    expect(text).toContain(formatBytes(PLAN_MAX_FILE_BYTES.free));
+    expect(text).toContain(formatBytesForDisplay(PLAN_MAX_FILE_BYTES.free));
     expect(text).toContain(`Simultaneous conversions ${DEFAULT_FREE_CONCURRENCY}`);
     expect(text).toContain(`${FREE_PROCESSING_MINUTES} minutes`);
     expect(text).toContain(`${DELIVERED_FILE_RETENTION_MINUTES} minutes after download`);

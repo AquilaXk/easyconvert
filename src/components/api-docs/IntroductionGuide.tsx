@@ -1,7 +1,7 @@
 import { useTranslations } from 'next-intl';
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
 import { SYNC_CONVERSION_MAX_BYTES } from '@/lib/api/file-size-limit';
-import { formatBytes } from '@/lib/format-bytes';
+import { formatBytesForDisplay } from '@/lib/format-bytes';
 import {
   API_KEY_BURST_LIMITS,
   DEFAULT_FREE_CONCURRENCY,
@@ -32,9 +32,9 @@ export default function IntroductionGuide({ origin }: Readonly<{ origin: string 
     burst: API_KEY_BURST_LIMITS.free.capacity,
     perSecond: API_KEY_BURST_LIMITS.free.refillRate,
     concurrent: DEFAULT_FREE_CONCURRENCY,
-    requestMax: formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES),
-    fileMax: formatBytes(PLAN_MAX_FILE_BYTES.free),
-    syncMax: formatBytes(SYNC_CONVERSION_MAX_BYTES),
+    requestMax: formatBytesForDisplay(SINGLE_REQUEST_FILE_MAX_BYTES),
+    fileMax: formatBytesForDisplay(PLAN_MAX_FILE_BYTES.free),
+    syncMax: formatBytesForDisplay(SYNC_CONVERSION_MAX_BYTES),
   };
   const p = (key: Parameters<typeof t.rich>[0]) => <p className={DOC.p}>{t.rich(key, values)}</p>;
 

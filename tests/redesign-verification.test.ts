@@ -415,7 +415,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // The real limits are stated once, under the upload card, and no separate coloured strip repeats them
-    expect(phrasesMissing(text, ['Up to 1 GiB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
+    expect(phrasesMissing(text, ['Up to 1 GB per file', '10 conversions a day', 'Files deleted automatically'])).toEqual([]);
     expect(phrasesPresent(text, ['Free, 10 server conversions a day', 'Encrypted Ephemeral Processing', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
