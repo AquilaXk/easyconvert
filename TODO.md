@@ -19,6 +19,11 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Size thread and process counts from cgroup `cpu.max`, not `os.availableParallelism()`.
 
 ## Product and API
+- Dashboard code samples call `https://api.easyconvert.com`; use the site's own base URL.
+- Dashboard tabs show stale usage and files after a conversion until the page reloads; refetch on tab open and after actions.
+- Dashboard 'next reset' shows 00:00 local time; the reset is 00:00 UTC (09:00 KST).
+- Dashboard: render the first view on the server (2.3 s spinner today), drop the second terms checkbox on key creation, hide the mobile tab scrollbar and the empty top rule.
+- Tool pages the references have and our API already supports: archive create/extract, PNG/JPG compress, PDF split/rotate, PDF/A.
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security
