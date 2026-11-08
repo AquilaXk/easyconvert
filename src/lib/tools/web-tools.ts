@@ -3,12 +3,13 @@ import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 import {
   create7zArchiveAsync,
-  inspectArchive,
   createTarArchive,
   createZipArchive,
   rotatePdfPages,
   splitPdfPages,
 } from '../conversions';
+import { ARCHIVE_SECURITY_LIMITS } from '../conversions/archive';
+import type { ArchiveExtractionLimits } from '../conversions/archive-extraction-safety';
 import { mergePdfBuffers } from '../jobs';
 import { ARCHIVE_CREATE_FORMATS } from '../jobs/graph-operations';
 import { extractGraphArchiveEntries } from '../queue/graph/node-executor';
@@ -27,7 +28,7 @@ import {
   type WebToolOptions,
 } from './tool-names';
 import type { ConversionRefusalCode } from '../refusal-codes';
-import type { PdfRotateOptions } from '../types';
+import { ConversionFailedError, type PdfRotateOptions } from '../types';
 
 const gzip = promisify(zlib.gzip);
 
@@ -202,20 +203,25 @@ async function createArchive(files: readonly WebToolFile[], format: string, sign
 }
 
 /** The names an unpacked archive lists: the leaf of each entry, kept clear of the others, as the job graph names its outputs. */
+/** The caps of an extraction for an answer: the entries and the inflated bytes the answer lists, counted as they are unpacked. */
+export const WEB_EXTRACTION_LIMITS: ArchiveExtractionLimits = {
+  MAX_FILES: MAX_EXTRACTED_ENTRIES,
+  MAX_UNCOMPRESSED_SIZE: MAX_EXTRACTED_BYTES,
+  MAX_RATIO: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+};
+
 function tooLargeToList(): WebToolRefusal {
   return new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', `The files in the archive are larger than the ${MAX_EXTRACTED_BYTES / (1024 * 1024)} MiB one answer lists.`);
 }
 
-/**
- * Refuses an archive that declares more than the answer lists before it is unpacked, so that a listing too large for the
- * answer is not first unpacked whole: the readers' own limits (500 MiB) still bound an archive whose headers understate.
- */
-async function assertListable(name: string, buffer: Buffer): Promise<void> {
-  const inspected = await inspectArchive(buffer, { filename: name });
-  if (inspected.totalEntries > MAX_EXTRACTED_ENTRIES) {
-    throw new WebToolRefusal(HTTP_PAYLOAD_TOO_LARGE, 'input_over_limit', `The archive holds ${inspected.totalEntries} files; at most ${MAX_EXTRACTED_ENTRIES} are listed.`);
+/** The files of an archive, unpacked under the caps of the answer; a TAR that passes them is a 413 as the other formats are. */
+async function unpacked(archive: WebToolFile): Promise<{ filename: string; buffer: Buffer }[]> {
+  try {
+    return await extractGraphArchiveEntries(archive.name, archive.buffer, undefined, WEB_EXTRACTION_LIMITS);
+  } catch (error) {
+    if (error instanceof ConversionFailedError && error.message.startsWith('Archive bomb detected')) throw tooLargeToList();
+    throw error;
   }
-  if (inspected.totalUncompressedBytes > MAX_EXTRACTED_BYTES) throw tooLargeToList();
 }
 
 export function fileOutput(filename: string, mimeType: string, buffer: Buffer): WebToolOutput {
@@ -257,9 +263,7 @@ export async function runWebTool(tool: WebTool, files: readonly WebToolFile[], o
     case 'archive-create':
       return createArchive(files, options.format ?? DEFAULT_ARCHIVE_FORMAT, signal);
     case 'archive-extract':
-      await assertListable(first.name, first.buffer);
-      signal?.throwIfAborted();
-      return { kind: 'entries', entries: listedEntries(await extractGraphArchiveEntries(first.name, first.buffer)) };
+      return { kind: 'entries', entries: listedEntries(await unpacked(first)) };
     case 'split':
       return fileOutput(`${base}-split.zip`, 'application/zip', await splitPdfPages(first.buffer, options.split, {}, base, signal));
     case 'rotate':

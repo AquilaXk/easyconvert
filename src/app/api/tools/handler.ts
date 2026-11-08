@@ -11,6 +11,7 @@ import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import { formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { refusalCodeOf } from '@/lib/refusal-codes';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-details';
 import type { User } from '@/lib/auth/types';
@@ -54,7 +55,7 @@ function toolErrorResponse(error: unknown, instanceUri: string): NextResponse {
   if (deadlineProblem) return deadlineProblem;
   const limitStatus = payloadLimitStatus(error);
   if (limitStatus !== null) {
-    return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
+    return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, { code: refusalCodeOf(error) });
   }
   return typedFailureProblem(error, instanceUri);
 }
