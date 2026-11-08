@@ -29,8 +29,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
 - Pass the declared `--infilter` for the legacy binary Office formats (`doc`, `xls`, `ppt`, their templates, `wps`, `pdb`): the suite has one filter per generation behind each extension, so a fixed name fails on older files.
 - Make the remaining ffprobe runs asynchronous: the audio channel, sample rate and stream count probes of the argument builders (`probeScalar`), the HDR and empty-output probes, and the run that explains a failed probe; they run in the sandbox with limits but hold the event loop.
-- Make the PDF guard walk `/Parent` resources, count draws, and cover encrypted PDFs.
-- Fix graph start recovery so queued node jobs are cancelled even when the cancel fails.
 
 ## Tests and CI
 - Make the PDF text and RAW hosts skip a compiled worker in `dist/` that is older than its source, or have vitest use the source: a stale `dist/pdf-text-worker.js` (2026-11-05) made local tests run last week's PDF code in the main checkout on 2026-11-09.

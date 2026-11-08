@@ -45,7 +45,7 @@ import { itNeedsOneUnitLeftForEveryCaller } from './helpers/unit-left-identities
 import { itChargesAGraphOnlyThroughItsScheduler } from './helpers/graph-charge-cases';
 import { itLeasesHandedOffWork, itLeasesReservations } from './helpers/reservation-lease-cases';
 import { itRecoversAGraphStart } from './helpers/graph-start-recovery-cases';
-import { sealGraph } from '../src/lib/queue/graph/node-jobs';
+import { GRAPH_NODE_CANCEL_ATTEMPTS, sealGraph } from '../src/lib/queue/graph/node-jobs';
 
 /**
  * The quota is Lua scripts over real keys, so what a request is charged is checked on a real Redis server, through the
@@ -761,7 +761,8 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
         const failure = await scheduler.onNodeFailed(graphId, 'up', 'the upload is gone');
 
         expect(failure.graphFailed).toBe(true);
-        expect(cancelNode).toHaveBeenCalledTimes(2);
+        // The cancel that threw is tried again, GRAPH_NODE_CANCEL_ATTEMPTS times in all, and the other job is cancelled once.
+        expect(cancelNode).toHaveBeenCalledTimes(GRAPH_NODE_CANCEL_ATTEMPTS + 1);
         expect(failure.cancelledJobIds).toEqual([`${graphId}:right`]);
       } finally {
         await connection.quit();
