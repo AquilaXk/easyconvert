@@ -16,6 +16,7 @@
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
 #   9. xz (the .xz encoder and decoder of the archive conversions) is installed and round-trips inside the sandbox, also under the worker's own address-space caps
+#  10. pid-init runs a program as PID 2 of a PID namespace of its own, under this container's seccomp profile, and the program cannot see or signal a sibling process
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -402,6 +403,29 @@ elif TMPDIR="$work_dir" verify-imagemagick-policy "$magick_bin" /etc/easyconvert
   pass "ImageMagick lists only the repository policy for $(id -un)"
 else
   fail "the ImageMagick policy does not verify for $(id -un): $(head -c 300 "$work_dir/magick-policy.out")"
+fi
+
+# --- 10. pid-init --------------------------------------------------------------------------------------
+# Every sandboxed program is started as `unshare -r -n -- pid-init -- <program>`, which puts it in a PID namespace of its own (PID 2, with pid-init's
+# init as PID 1), so it can neither see nor signal the other runs of the worker. Without pid-init, or where the profile does not let `clone` make a PID
+# namespace, the worker still runs programs in the user and network namespaces, and one run can signal another. The sibling here is a process of this
+# script, which the program can signal from outside a PID namespace (the control) and cannot from inside one.
+if ! command -v pid-init >/dev/null 2>&1; then
+  fail "pid-init is not installed: sandboxed programs share the PID space of the worker"
+else
+  sleep 30 &
+  sibling_pid=$!
+  if ! kill -0 "$sibling_pid" 2>/dev/null; then
+    fail "the sibling process of the pid-init check did not start"
+  else
+    pid_output="$(unshare -r -n -- pid-init -- sh -c "echo \"\$\$ \$PPID\"; kill -0 $sibling_pid 2>/dev/null && echo sibling-visible || echo sibling-hidden" 2>&1)"
+    if [ "$pid_output" = "$(printf '2 1\nsibling-hidden')" ]; then
+      pass "pid-init ran a program as PID 2 of a PID namespace that does not hold its siblings"
+    else
+      fail "pid-init did not give the program a PID namespace of its own: $(printf '%s' "$pid_output" | tr '\n' ' ' | head -c 300)"
+    fi
+  fi
+  kill "$sibling_pid" 2>/dev/null
 fi
 
 if [ "$failures" -eq 0 ]; then

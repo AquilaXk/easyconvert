@@ -152,6 +152,9 @@ task_apt() {
   # --check loads the library and prints its version, which is the sign that the runner can serve the PDF operations.
   sudo "$action_path/../../../native/qpdf-runner/build.sh" /usr/local/bin/qpdf-runner || return 1
   qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "qpdf-runner does not load libqpdf" >&2; return 1; }
+  # pid-init (native/pid-init) starts every sandboxed program in a PID namespace of its own; run without arguments it prints its usage.
+  sudo "$action_path/../../../native/pid-init/build.sh" /usr/local/bin/pid-init || return 1
+  pid-init 2>&1 | grep -q '^usage: pid-init' || { echo "pid-init does not start" >&2; return 1; }
 }
 
 # DjVu input is drawn by djvulibre built from the Debian source of 3.5.28 with two patches (scripts/install-djvulibre.sh), against the

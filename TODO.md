@@ -24,7 +24,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 ## Operations and security
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
-- Give sandboxed jobs their own PID namespace or a distinct uid; `kill(sibling, 0)` succeeds today.
 - Run the office suite with a fixed profile: macros off, link updates off, `file:` reads restricted.
 - Pass the declared `--infilter` for every office input, and strip macros by content, not extension.
 - Bound multipart bodies before `req.formData()` in the convert and batch routes.

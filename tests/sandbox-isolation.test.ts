@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
 import { promisify } from 'node:util';
-import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
+import { executeSandboxedBinary, getUnshareCapability, memoryWatchPid } from '../src/lib/security/process-sandbox';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -44,6 +45,56 @@ let parentVisible = true;
 try { process.kill(parentPid, 0); } catch (err) { parentVisible = err.code === 'EPERM'; }
 console.log(JSON.stringify({ pid: process.pid, parentVisible }));
 `;
+
+const SIBLING_MARKER = 'sandbox-sibling-marker';
+const LEFTOVER_MARKER = 'sandbox-leftover-marker';
+const SIBLING_LIFETIME_MS = 25_000;
+const SIBLING_START_WAIT_MS = 10_000;
+const POLL_MS = 50;
+
+/** What a run reports about the host PID of a sibling run: whether kill(pid, 0) finds it, and what a SIGTERM to it did. */
+const SIBLING_SCRIPT = `
+const target = Number(process.argv[1]);
+const result = {};
+for (const [name, signal] of [['probe', 0], ['term', 'SIGTERM']]) {
+  try { process.kill(target, signal); result[name] = 'delivered'; } catch (err) { result[name] = err.code; }
+}
+console.log(JSON.stringify(result));
+`;
+
+/** Host PIDs of the processes whose command line starts with `program` and holds the marker (by default the node of a sibling run, not the wrappers around it). */
+function findMarkedPids(marker = SIBLING_MARKER, program = process.execPath): number[] {
+  const found: number[] = [];
+  for (const entry of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const argv = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf-8').split('\0');
+      if (argv[0] === program && argv.includes(marker)) found.push(Number(entry));
+    } catch {
+      // The process ended while the directory was read.
+    }
+  }
+  return found;
+}
+
+async function waitForMarkedPid(): Promise<number> {
+  const deadline = Date.now() + SIBLING_START_WAIT_MS;
+  while (Date.now() < deadline) {
+    const [pid] = findMarkedPids();
+    if (pid !== undefined) return pid;
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+  throw new Error('the sibling run did not start');
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface Listener {
   port: number;
@@ -133,5 +184,75 @@ describe.skipIf(skipUnless('unprivileged user, network and PID namespaces (unsha
       },
       TEST_TIMEOUT_MS
     );
+    // skip-ok: pid-init (native/pid-init) is built by the image and the CI setup; skipUnless fails the run under ORACLE_STRICT_MODE=1 without it.
+    describe.skipIf(skipUnless('pid-init (the PID namespace of every run)', getUnshareCapability().pidInitPath !== ''))('a sibling run of the same worker', () => {
+      let siblingEnd: AbortController | undefined;
+      let sibling: Promise<unknown> | undefined;
+
+      afterEach(async () => {
+        siblingEnd?.abort();
+        await sibling;
+        siblingEnd = undefined;
+        sibling = undefined;
+      });
+
+      async function startSibling(): Promise<number> {
+        siblingEnd = new AbortController();
+        sibling = executeSandboxedBinary(process.execPath, ['-e', `setTimeout(() => {}, ${SIBLING_LIFETIME_MS})`, SIBLING_MARKER], {
+          timeoutMs: SIBLING_LIFETIME_MS + CHILD_TIMEOUT_MS,
+          signal: siblingEnd.signal,
+        }).catch(() => undefined);
+        return waitForMarkedPid();
+      }
+
+      it(
+        'control: a run that opts out of the PID namespace finds the sibling and can signal it',
+        async () => {
+          const siblingPid = await startSibling();
+          const run = await executeSandboxedBinary(process.execPath, ['-e', SIBLING_SCRIPT, String(siblingPid)], {
+            timeoutMs: CHILD_TIMEOUT_MS,
+            sandboxOptions: { pidNamespace: false },
+          });
+          expect(JSON.parse(run.stdout.toString('utf-8'))).toEqual({ probe: 'delivered', term: 'delivered' });
+        },
+        TEST_TIMEOUT_MS
+      );
+
+      it(
+        'a sandboxed run cannot find the sibling or signal it, and the sibling keeps running',
+        async () => {
+          const siblingPid = await startSibling();
+          const run = await executeSandboxedBinary(process.execPath, ['-e', SIBLING_SCRIPT, String(siblingPid)], {
+            timeoutMs: CHILD_TIMEOUT_MS,
+          });
+          expect(JSON.parse(run.stdout.toString('utf-8'))).toEqual({ probe: 'ESRCH', term: 'ESRCH' });
+          expect(isAlive(siblingPid)).toBe(true);
+        },
+        TEST_TIMEOUT_MS
+      );
+      it(
+        'reads the memory of the program, not of the processes it was started through',
+        async () => {
+          const programPid = await startSibling();
+          const [wrapper] = findMarkedPids(SIBLING_MARKER, getUnshareCapability().pidInitPath);
+          expect(wrapper, 'the pid-init process of the sibling').toBeDefined();
+          expect(memoryWatchPid(wrapper, 1)).not.toBe(programPid);
+          expect(memoryWatchPid(wrapper, 2)).toBe(programPid);
+        },
+        TEST_TIMEOUT_MS
+      );
+
+      it(
+        'ends what a run left running when the run ends',
+        async () => {
+          const leaver = `require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, ${SIBLING_LIFETIME_MS})', '${LEFTOVER_MARKER}'], { stdio: 'ignore', detached: true }).unref();`;
+          await executeSandboxedBinary(process.execPath, ['-e', leaver], { timeoutMs: CHILD_TIMEOUT_MS });
+          const deadline = Date.now() + SIBLING_START_WAIT_MS;
+          while (findMarkedPids(LEFTOVER_MARKER).length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+          expect(findMarkedPids(LEFTOVER_MARKER)).toEqual([]);
+        },
+        TEST_TIMEOUT_MS
+      );
+    });
   }
 );
