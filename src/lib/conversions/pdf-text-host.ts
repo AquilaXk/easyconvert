@@ -5,6 +5,7 @@ import { setFlagsFromString } from 'node:v8';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { EngineUnavailableError } from '../types';
+import { olderThanSource } from '../workers/compiled-worker';
 import {
   PDF_TEXT_DEADLINE_ENV,
   PDF_TEXT_DEADLINE_MS,
@@ -128,7 +129,6 @@ function poolLimit(): number {
 function resolveWorkerEntry(): WorkerEntry {
   const compiledCandidates = [path.join(__dirname, `${WORKER_FILE}.js`), path.join(process.cwd(), 'dist', `${WORKER_FILE}.js`)];
   const compiled = compiledCandidates.find((candidate) => fs.existsSync(candidate));
-  if (compiled) return { kind: 'compiled', file: compiled };
 
   const sourceCandidates = [
     path.join(__dirname, `${WORKER_FILE}.ts`),
@@ -141,6 +141,7 @@ function resolveWorkerEntry(): WorkerEntry {
   } catch {
     tsxApi = null;
   }
+  if (compiled && !(tsxApi && olderThanSource(compiled, source))) return { kind: 'compiled', file: compiled };
   if (source && tsxApi) {
     return { kind: 'source', bootstrap: `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});` };
   }

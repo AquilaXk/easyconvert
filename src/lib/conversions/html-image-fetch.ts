@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { getSanitizedEnvironment, killProcessGroup, resolveSandboxedCommand } from '../security/process-sandbox';
 import { EngineUnavailableError } from '../types';
+import { olderThanSource } from '../workers/compiled-worker';
 import {
   FRAME_PREFIX_BYTES,
   IMAGE_FETCH_LIMITS,
@@ -70,10 +71,6 @@ function resolveChildEntry(): ChildEntry {
   const compiled = [path.join(__dirname, `${CHILD_FILE}.js`), path.join(process.cwd(), 'dist', `${CHILD_FILE}.js`)].find((candidate) =>
     fs.existsSync(candidate)
   );
-  if (compiled) {
-    childEntry = { binary: process.execPath, args: [heap, compiled] };
-    return childEntry;
-  }
   const source = [path.join(__dirname, `${CHILD_FILE}.ts`), path.join(process.cwd(), 'src', 'lib', 'conversions', `${CHILD_FILE}.ts`)].find(
     (candidate) => fs.existsSync(candidate)
   );
@@ -82,6 +79,10 @@ function resolveChildEntry(): ChildEntry {
     tsxApi = createRequire(path.join(process.cwd(), 'package.json')).resolve(TSX_REGISTER_SPECIFIER);
   } catch {
     tsxApi = null;
+  }
+  if (compiled && !(tsxApi && olderThanSource(compiled, source))) {
+    childEntry = { binary: process.execPath, args: [heap, compiled] };
+    return childEntry;
   }
   if (source && tsxApi) {
     const bootstrap = `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});`;

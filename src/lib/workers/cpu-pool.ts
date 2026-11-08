@@ -17,6 +17,7 @@ import {
 } from '../types';
 import { Woff2LimitError } from '../conversions/font-woff2-primitives';
 import { CONVERSION_REFUSAL_CODES, isCodeOf, type ConversionRefusalCode } from '../refusal-codes';
+import { olderThanSource } from './compiled-worker';
 
 /**
  * A bounded pool of worker threads for CPU-bound encoders, so that one large conversion cannot stall the event loop of
@@ -134,7 +135,6 @@ function rehydrate(failure: WorkerFailure): Error {
 export function resolveCpuWorkerEntry(): WorkerEntry {
   const compiledCandidates = [path.join(__dirname, `${WORKER_FILE}.js`), path.join(process.cwd(), 'dist', `${WORKER_FILE}.js`)];
   const compiled = compiledCandidates.find((candidate) => fs.existsSync(candidate));
-  if (compiled) return { kind: 'compiled', file: compiled };
 
   const sourceCandidates = [path.join(__dirname, `${WORKER_FILE}.ts`), path.join(process.cwd(), 'src', 'lib', 'workers', `${WORKER_FILE}.ts`)];
   const source = sourceCandidates.find((candidate) => fs.existsSync(candidate));
@@ -144,6 +144,7 @@ export function resolveCpuWorkerEntry(): WorkerEntry {
   } catch {
     tsxApi = null;
   }
+  if (compiled && !(tsxApi && olderThanSource(compiled, source))) return { kind: 'compiled', file: compiled };
   if (source && tsxApi) {
     return { kind: 'source', bootstrap: `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});` };
   }
