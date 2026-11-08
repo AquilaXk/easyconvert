@@ -41,6 +41,7 @@ import { validatePageRangeSyntax } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
+import { listVisibleJobs } from '@/lib/queue/user-jobs';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
 import {
@@ -900,12 +901,7 @@ async function listJobs(req: NextRequest) {
     : validStates;
 
   // Query indexed jobs strictly belonging to the authenticated user (Tenant Boundary Isolation)
-  const userJobs = await conversionQueue.getJobsByUser(
-    auth.user.id,
-    requestedStates.length > 0 ? requestedStates : validStates,
-    limit,
-    0
-  );
+  const userJobs = await listVisibleJobs(auth.user.id, requestedStates.length > 0 ? requestedStates : validStates, limit);
 
   return NextResponse.json({
     success: true,

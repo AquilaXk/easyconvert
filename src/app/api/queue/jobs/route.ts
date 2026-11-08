@@ -22,6 +22,7 @@ import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
+import { listVisibleJobs } from '@/lib/queue/user-jobs';
 import { respondOnce } from '@/lib/api/with-idempotency';
 import type { User } from '@/lib/auth/types';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES } from '@/lib/plan-limits';
@@ -372,7 +373,7 @@ async function listOwnJobs(req: NextRequest) {
     states = [statusFilter];
   }
 
-  const ownJobs = await conversionQueue.getJobsByUser(callerId, states, MAX_LISTED_JOBS, 0);
+  const ownJobs = await listVisibleJobs(callerId, states, MAX_LISTED_JOBS);
   const jobSummaries = ownJobs.map((j) => ({
     id: j.id,
     name: j.name,
