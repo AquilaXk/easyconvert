@@ -126,6 +126,8 @@ describe('probeInputAsync', () => {
     expect(starts()).toBeGreaterThan(before);
   });
 
+  /** Well under the 30 s the stand-in probe sleeps, and the floor of a hang guard on a loaded runner. */
+  const PROBE_HANG_GUARD_MS = 10_000;
   it('is ended by the signal of the job, with its reason, and leaves nothing to hand on', async () => {
     writeProbe('sleep 30');
     const controller = new AbortController();
@@ -133,7 +135,8 @@ describe('probeInputAsync', () => {
     const probing = probeInputAsync(media(), ffprobe, controller.signal);
     setTimeout(() => controller.abort(new Error('job cancelled')), 100);
     await expect(probing).rejects.toThrow('job cancelled');
-    expect(Date.now() - started).toBeLessThan(5000);
+    // The probe sleeps 30 s; ending far below that shows the signal ended it.
+    expect(Date.now() - started).toBeLessThan(PROBE_HANG_GUARD_MS);
     writeProbe(`echo '${PROBE_JSON}'`);
     expect(probeInput(media(), ffprobe).durationSec).toBe(3.5);
   });

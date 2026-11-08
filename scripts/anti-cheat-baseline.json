@@ -723,27 +723,6 @@
   {
     "rule": "G7-ABSOLUTE-TIME-BOUND",
     "file": "tests/qpdf-runner.test.ts",
-    "symbol": "ends at the time limit of the job, the descendant killed with it, and other jobs go on",
-    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
-    "owningWP": "CI-TIMING"
-  },
-  {
-    "rule": "G7-ABSOLUTE-TIME-BOUND",
-    "file": "tests/qpdf-runner.test.ts",
-    "symbol": "is stopped by the caller too: the abort kills the descendant",
-    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
-    "owningWP": "CI-TIMING"
-  },
-  {
-    "rule": "G7-ABSOLUTE-TIME-BOUND",
-    "file": "tests/qpdf-runner.test.ts",
-    "symbol": "ends with the result of its first process when the descendant has closed the streams, and the descendant is killed",
-    "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
-    "owningWP": "CI-TIMING"
-  },
-  {
-    "rule": "G7-ABSOLUTE-TIME-BOUND",
-    "file": "tests/qpdf-runner.test.ts",
     "symbol": "<module>",
     "reason": "not measured here: the case needs a tool that is not installed on the audit machine, or it does not read a clock the audit could see",
     "owningWP": "CI-TIMING"

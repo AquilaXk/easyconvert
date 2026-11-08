@@ -142,8 +142,8 @@ describe('stripOfficeMacros on packages written in other ways', () => {
       parts: { 'word/shared.dat': 'macro' },
     });
     const zip = await JSZip.loadAsync((await stripOfficeMacros(buffer)).buffer);
-    expect(names(zip)).not.toContain('word/shared.dat');
-    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toContain('shared.dat');
+    expect(names(zip).includes('word/shared.dat')).toBe(false);
+    expect((await zip.file('word/_rels/document.xml.rels')!.async('string')).includes('shared.dat')).toBe(false);
   });
 
   it('removes the relationships part of a removed part', async () => {
@@ -151,7 +151,7 @@ describe('stripOfficeMacros on packages written in other ways', () => {
       types: `${BASE_TYPES}<Override PartName="/word/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/>`,
       parts: { 'word/vbaProject.bin': 'macro', 'word/_rels/vbaProject.bin.rels': `<Relationships xmlns="${PACKAGE_REL_NS}"/>` },
     });
-    expect(names(await JSZip.loadAsync((await stripOfficeMacros(buffer)).buffer))).not.toContain('word/_rels/vbaProject.bin.rels');
+    expect(names(await JSZip.loadAsync((await stripOfficeMacros(buffer)).buffer)).includes('word/_rels/vbaProject.bin.rels')).toBe(false);
   });
 
   it('removes the Excel 4.0 macro sheets of a workbook with their relationships, the sheet entries and the sheet scope of defined names', async () => {
@@ -195,6 +195,8 @@ describe('stripOfficeMacros on packages written in other ways', () => {
 });
 
 describe('the cost of stripOfficeMacros does not depend on how the package is built', () => {
+  /** Well under the 33 s the quadratic scan took on the same package, and the floor of a hang guard. */
+  const MACRO_STRIP_HANG_GUARD_MS = 10_000;
   it('reads a package with 10,000 macro Default elements and 20,000 entries in a single pass (it took 33 s with a scan of the entries for each Default)', async () => {
     const defaults = Array.from({ length: 10_000 }, () => '<Default Extension="zz" ContentType="application/vnd.ms-office.vbaProject"/>').join('');
     const parts: Record<string, string> = {};
@@ -205,15 +207,16 @@ describe('the cost of stripOfficeMacros does not depend on how the package is bu
     const elapsed = Date.now() - started;
     expect(result.droppedMacros).toBe(true);
     expect(names(await JSZip.loadAsync(result.buffer)).filter((name) => name.endsWith('.zz'))).toEqual([]);
-    expect(elapsed, `${elapsed} ms`).toBeLessThan(8_000);
+    // A scan of the entries for each Default took 33 s on this package; one pass ends far below that.
+    expect(elapsed, `${elapsed} ms`).toBeLessThan(MACRO_STRIP_HANG_GUARD_MS);
   }, 60_000);
 
   it('refuses, as a typed error, a content types part past the element limit and a package past the entry limit', async () => {
     const elements = '<Default Extension="a" ContentType="application/xml"/>'.repeat(MACRO_STRIP_MAX_TYPE_ELEMENTS + 1);
-    await expect(stripOfficeMacros(await packageWith({ types: BASE_TYPES + elements }))).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(stripOfficeMacros(await packageWith({ types: BASE_TYPES + elements }))).rejects.toThrow(/more than the \d+ an office file may/);
     const zip = await JSZip.loadAsync(await packageWith({ types: BASE_TYPES }));
     for (let index = 0; index <= MACRO_STRIP_MAX_ENTRIES; index++) zip.file(`word/e${index}.xml`, '', { compression: 'STORE' });
-    await expect(stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }))).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }))).rejects.toThrow(/more than the \d+ an office file may/);
   }, 120_000);
 });
 

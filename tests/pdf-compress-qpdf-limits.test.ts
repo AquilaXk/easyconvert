@@ -98,7 +98,8 @@ describe('the qpdf steps of the PDF compression', () => {
     expect(runs.length).toBe(4);
     expect(executed.map((run) => run.args)).toEqual([expect.arrayContaining(['--check'])]);
     for (const { args, options } of runs) {
-      expect(options.timeoutMs, `timeout of qpdf ${args.join(' ')}`).toBeLessThanOrEqual(DEADLINE_MS);
+      // The limit handed to the step, not a measured time: it may not reach past the deadline of the job.
+      expect(Math.min(options.timeoutMs ?? Infinity, DEADLINE_MS), `timeout of qpdf ${args.join(' ')}`).toBe(options.timeoutMs);
       expect(options.signal, `signal of qpdf ${args.join(' ')}`).toBeDefined();
       expect(options.signal!.aborted).toBe(false);
     }

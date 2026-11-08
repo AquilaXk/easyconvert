@@ -98,13 +98,12 @@ describe('the reset time of the usage tab', () => {
 
   it('shows 00:00 UTC as 9:00 AM in Seoul, with the zone named', () => {
     const html = panel('Asia/Seoul');
-    expect(html).toContain('9:00');
-    expect(html).toContain('GMT+9');
+    expect(html).toMatch(/\b9:00\b[^<]*GMT\+9/);
     expect(html).not.toContain('12:00 AM');
   });
 
   it('shows the same moment as midnight in UTC', () => {
-    expect(panel('UTC')).toContain('12:00 AM UTC');
+    expect(panel('UTC')).toMatch(/\b12:00 AM UTC\b/);
   });
 });
 
@@ -112,7 +111,7 @@ describe('the code samples of the integration guide', () => {
   it('call the origin given, in every language', () => {
     const snippets = integrationSnippets('https://convert.example.org', 'KEY');
     for (const snippet of Object.values(snippets)) {
-      expect(snippet).toContain('https://convert.example.org/api/v1/convert');
+      expect(snippet).toMatch(/https:\/\/convert\.example\.org\/api\/v1\/convert\b/);
       expect(snippet).not.toContain('api.easyconvert.com');
     }
   });
