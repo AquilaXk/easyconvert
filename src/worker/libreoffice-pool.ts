@@ -724,6 +724,9 @@ export class LibreOfficePoolManager {
     try {
       fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
       const inputPath = this.prepareInputPath(jobSubdir, src, input);
+      // The slot's profile is shared by its jobs, and the suite writes its settings back when it ends: the fixed settings are written again
+      // before every job, so what one job changed in the profile (or a macro or link setting a document managed to set) does not reach the next.
+      writeOfficeProfile(worker.userProfileDir);
 
       const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);

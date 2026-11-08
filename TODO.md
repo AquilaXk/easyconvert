@@ -22,6 +22,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security
+- Close the window in which pid-init's PID 1 is started after its parent died (PDEATHSIG is set after the fork, and the parent's death is not seen until the pipe is polled): rare, needs a poll of the report pipe.
 - Hide the `/proc` entries of other runs from a sandboxed program: it cannot signal them any more, but still reads their command line and status (no `/proc` mount is allowed in the container).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.

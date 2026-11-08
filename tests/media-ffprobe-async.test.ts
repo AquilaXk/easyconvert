@@ -110,6 +110,22 @@ describe('probeInputAsync', () => {
     expect(starts()).toBeGreaterThan(afterAsync);
   });
 
+  it('keeps the failures nobody asked for in a bounded list, oldest first, and drops the ones that expired', async () => {
+    writeProbe('echo "Invalid data found" >&2; exit 1');
+    const files = Array.from({ length: 20 }, (_, index) => {
+      const file = path.join(dir, `clip-${index}.mp4`);
+      writeFileSync(file, readFileSync(SAMPLE_MP4_PATH));
+      return openMediaInput(file, 'mp4');
+    });
+    for (const input of files) await probeInputAsync(input, ffprobe).catch(() => undefined);
+    const before = starts();
+    // The newest failures are still handed on (no process); the oldest were evicted, so asking for one runs the probe again.
+    expect(() => probeInput(files[19], ffprobe)).toThrow();
+    expect(starts()).toBe(before);
+    expect(() => probeInput(files[0], ffprobe)).toThrow();
+    expect(starts()).toBeGreaterThan(before);
+  });
+
   it('is ended by the signal of the job, with its reason, and leaves nothing to hand on', async () => {
     writeProbe('sleep 30');
     const controller = new AbortController();

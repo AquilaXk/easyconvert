@@ -361,7 +361,7 @@ export async function probeInputAsync(input: MediaInput, ffprobe: FfprobePath, s
     await markUndecodableAudioAsync(ffprobe, input, probe.streams, raw, signal);
     return remember(identity, probe);
   } catch (error) {
-    if (identity !== undefined && !signal?.aborted && !(error instanceof SandboxUnavailableError)) primedFailures.set(identity, { error, at: Date.now() });
+    if (identity !== undefined && !signal?.aborted && !(error instanceof SandboxUnavailableError)) rememberPrimedFailure(identity, error);
     throw error;
   }
 }
@@ -369,6 +369,15 @@ export async function probeInputAsync(input: MediaInput, ffprobe: FfprobePath, s
 /** Failures of `probeInputAsync`, by input, each thrown once by the next `probeInput` of the same input if that comes within `PRIMED_FAILURE_TTL_MS`. */
 const primedFailures = new Map<string, { error: unknown; at: number }>();
 const PRIMED_FAILURE_TTL_MS = 10_000;
+
+/** Keeps a failure for the next `probeInput`: failures that expired are dropped first, and at most `PROBE_CACHE_ENTRIES` are kept, the oldest going first. */
+function rememberPrimedFailure(identity: string, error: unknown): void {
+  const now = Date.now();
+  for (const [key, failure] of primedFailures) if (now - failure.at > PRIMED_FAILURE_TTL_MS) primedFailures.delete(key);
+  primedFailures.delete(identity);
+  while (primedFailures.size >= PROBE_CACHE_ENTRIES) primedFailures.delete(primedFailures.keys().next().value as string);
+  primedFailures.set(identity, { error, at: now });
+}
 
 function rethrowPrimedFailure(identity: string | undefined): void {
   if (identity === undefined) return;

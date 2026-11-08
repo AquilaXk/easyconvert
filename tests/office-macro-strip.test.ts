@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
-import { stripOfficeMacros } from '../src/lib/conversions/office-macro-strip';
+import { MACRO_STRIP_MAX_ENTRIES, MACRO_STRIP_MAX_TYPE_ELEMENTS, stripOfficeMacros } from '../src/lib/conversions/office-macro-strip';
+import { ConversionFailedError } from '../src/lib/types';
 import { officeInputWithoutMacros } from '../src/worker/office-input-checks';
 import { craftDocx, paragraph } from './helpers/docx-craft';
 
@@ -103,6 +104,117 @@ describe('stripOfficeMacros', () => {
     const damaged = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('damaged')]);
     expect(await stripOfficeMacros(damaged)).toEqual({ buffer: damaged, droppedMacros: false });
   });
+});
+
+/** A Word package whose content types and document relationships are the given markup, with the given extra parts. */
+async function packageWith(options: { types: string; relationships?: string; parts?: Record<string, string> }): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await craftDocx({ body: paragraph('Body text') }));
+  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="${TYPES_NS}">${options.types}</Types>`);
+  if (options.relationships !== undefined) {
+    zip.file('word/_rels/document.xml.rels', `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PACKAGE_REL_NS}">${options.relationships}</Relationships>`);
+  }
+  for (const [name, text] of Object.entries(options.parts ?? {})) zip.file(name, text);
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+const BASE_TYPES = `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${WORD_MAIN}"/>`;
+
+describe('stripOfficeMacros on packages written in other ways', () => {
+  it('removes a part that an Override or a Relationship names in the open-and-close form, with single quotes, attributes in any order and a ">" in a value', async () => {
+    const buffer = await packageWith({
+      types: `${BASE_TYPES}<Override ContentType='application/vnd.ms-office.vbaProject' PartName='/word/a.dat'></Override><Override Note="a > b" PartName="/word/b.dat" ContentType="application/vnd.ms-office.vbaProject" ></Override >`,
+      relationships: `<Relationship Id="r1" Note="x>y" Type="${VBA_RELATIONSHIP}" Target="a.dat"></Relationship><Relationship Target='b.dat' Id='r2' Type='${VBA_RELATIONSHIP}'></Relationship>`,
+      parts: { 'word/a.dat': 'macro a', 'word/b.dat': 'macro b' },
+    });
+    const result = await stripOfficeMacros(buffer);
+    const zip = await JSZip.loadAsync(result.buffer);
+    expect(result.droppedMacros).toBe(true);
+    expect(names(zip).filter((name) => name.endsWith('.dat'))).toEqual([]);
+    expect(await zip.file('[Content_Types].xml')!.async('string')).not.toMatch(/vbaProject|\.dat/);
+    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toMatch(/vbaProject|\.dat/);
+    expect(await zip.file('[Content_Types].xml')!.async('string')).toContain(`PartName="/word/document.xml" ContentType="${WORD_MAIN}"`);
+  });
+
+  it('removes a part that another relationship also points at, even when that relationship has another type and comes first', async () => {
+    const buffer = await packageWith({
+      types: BASE_TYPES,
+      relationships: `<Relationship Id="r0" Type="http://example.org/other" Target="shared.dat"/><Relationship Id="r1" Type="${VBA_RELATIONSHIP}" Target="shared.dat"/>`,
+      parts: { 'word/shared.dat': 'macro' },
+    });
+    const zip = await JSZip.loadAsync((await stripOfficeMacros(buffer)).buffer);
+    expect(names(zip)).not.toContain('word/shared.dat');
+    expect(await zip.file('word/_rels/document.xml.rels')!.async('string')).not.toContain('shared.dat');
+  });
+
+  it('removes the relationships part of a removed part', async () => {
+    const buffer = await packageWith({
+      types: `${BASE_TYPES}<Override PartName="/word/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/>`,
+      parts: { 'word/vbaProject.bin': 'macro', 'word/_rels/vbaProject.bin.rels': `<Relationships xmlns="${PACKAGE_REL_NS}"/>` },
+    });
+    expect(names(await JSZip.loadAsync((await stripOfficeMacros(buffer)).buffer))).not.toContain('word/_rels/vbaProject.bin.rels');
+  });
+
+  it('removes the Excel 4.0 macro sheets of a workbook with their relationships, the sheet entries and the sheet scope of defined names', async () => {
+    const zip = new JSZip();
+    const sheetType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
+    zip.file('[Content_Types].xml', `<Types xmlns="${TYPES_NS}"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="${sheetType}"/><Override PartName="/xl/macrosheets/sheet2.xml" ContentType="application/vnd.ms-excel.macrosheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="${sheetType}"/></Types>`);
+    zip.file('xl/workbook.xml', '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="A" sheetId="1" r:id="rId1"/><sheet name="Macro" sheetId="2" r:id="rId2"/><sheet name="C" sheetId="3" r:id="rId3"/></sheets><definedNames><definedName name="n0" localSheetId="0">A!$A$1</definedName><definedName name="n1" localSheetId="1">Macro!$A$1</definedName><definedName name="n2" localSheetId="2">C!$A$1</definedName></definedNames></workbook>');
+    zip.file('xl/_rels/workbook.xml.rels', `<Relationships xmlns="${PACKAGE_REL_NS}"><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2006/relationships/xlMacrosheet" Target="macrosheets/sheet2.xml"/><Relationship Id="rId3" Type="x/worksheet" Target="worksheets/sheet3.xml"/></Relationships>`);
+    for (const sheet of ['worksheets/sheet1.xml', 'macrosheets/sheet2.xml', 'worksheets/sheet3.xml']) zip.file(`xl/${sheet}`, '<worksheet/>');
+    const result = await stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer' }));
+    const out = await JSZip.loadAsync(result.buffer);
+    expect(result.droppedMacros).toBe(true);
+    expect(names(out).filter((name) => name.includes('macrosheet'))).toEqual([]);
+    const workbook = await out.file('xl/workbook.xml')!.async('string');
+    expect(workbook).not.toContain('Macro');
+    expect(workbook).toContain('<sheet name="A" sheetId="1" r:id="rId1"/>');
+    expect(workbook).toContain('<sheet name="C" sheetId="3" r:id="rId3"/>');
+    expect(workbook).toContain('<definedName name="n0" localSheetId="0">');
+    expect(workbook).not.toContain('name="n1"');
+    // The defined name of the sheet after the removed one follows its sheet to index 1.
+    expect(workbook).toContain('<definedName name="n2" localSheetId="1">');
+    expect(await out.file('xl/_rels/workbook.xml.rels')!.async('string')).not.toContain('acrosheet');
+    expect(await out.file('[Content_Types].xml')!.async('string')).not.toContain('acrosheet');
+  });
+
+  it('removes the Basic and script libraries of an embedded object of an OpenDocument file, by path segment', async () => {
+    const zip = await JSZip.loadAsync(await openDocument(false));
+    zip.file('META-INF/manifest.xml', ODF_MANIFEST('<manifest:file-entry manifest:full-path="Object 1/Basic/Standard/m.xml" manifest:media-type="text/xml"/><manifest:file-entry manifest:full-path="Object 1/Scripts/py/x.py" manifest:media-type=""/><manifest:file-entry manifest:full-path="MyBasic/keep.xml" manifest:media-type="text/xml"/>'));
+    zip.file('Object 1/Basic/Standard/m.xml', '<m/>');
+    zip.file('Object 1/Scripts/py/x.py', 'x');
+    zip.file('Object 1/content.xml', '<c/>');
+    zip.file('MyBasic/keep.xml', '<keep/>');
+    zip.file('Pictures/Scripts-notes.png', 'png');
+    const result = await stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+    const out = await JSZip.loadAsync(result.buffer);
+    expect(names(out).sort()).toEqual(['META-INF/manifest.xml', 'MyBasic/keep.xml', 'Object 1/content.xml', 'Pictures/Scripts-notes.png', 'content.xml', 'mimetype']);
+    const manifest = await out.file('META-INF/manifest.xml')!.async('string');
+    expect(manifest).toContain('MyBasic/keep.xml');
+    expect(manifest).not.toMatch(/Object 1\/(Basic|Scripts)/);
+  });
+});
+
+describe('the cost of stripOfficeMacros does not depend on how the package is built', () => {
+  it('reads a package with 10,000 macro Default elements and 20,000 entries in a single pass (it took 33 s with a scan of the entries for each Default)', async () => {
+    const defaults = Array.from({ length: 10_000 }, () => '<Default Extension="zz" ContentType="application/vnd.ms-office.vbaProject"/>').join('');
+    const parts: Record<string, string> = {};
+    for (let index = 0; index < 20_000; index++) parts[`word/p${index}.${index % 2 === 0 ? 'zz' : 'xml'}`] = 'x';
+    const buffer = await packageWith({ types: BASE_TYPES + defaults, parts });
+    const started = Date.now();
+    const result = await stripOfficeMacros(buffer);
+    const elapsed = Date.now() - started;
+    expect(result.droppedMacros).toBe(true);
+    expect(names(await JSZip.loadAsync(result.buffer)).filter((name) => name.endsWith('.zz'))).toEqual([]);
+    expect(elapsed, `${elapsed} ms`).toBeLessThan(8_000);
+  }, 60_000);
+
+  it('refuses, as a typed error, a content types part past the element limit and a package past the entry limit', async () => {
+    const elements = '<Default Extension="a" ContentType="application/xml"/>'.repeat(MACRO_STRIP_MAX_TYPE_ELEMENTS + 1);
+    await expect(stripOfficeMacros(await packageWith({ types: BASE_TYPES + elements }))).rejects.toBeInstanceOf(ConversionFailedError);
+    const zip = await JSZip.loadAsync(await packageWith({ types: BASE_TYPES }));
+    for (let index = 0; index <= MACRO_STRIP_MAX_ENTRIES; index++) zip.file(`word/e${index}.xml`, '', { compression: 'STORE' });
+    await expect(stripOfficeMacros(await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }))).rejects.toBeInstanceOf(ConversionFailedError);
+  }, 120_000);
 });
 
 describe('officeInputWithoutMacros', () => {

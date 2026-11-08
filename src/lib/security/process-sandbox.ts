@@ -391,32 +391,67 @@ function findPidInit(): string | null {
 }
 
 let unshareCapability: UnshareCapability | null = null;
+/** When `pid-init` was last tried, and whether the degrade it led to has been said. */
+let pidInitTriedAt = 0;
+let pidInitDegradeSaid = false;
+/** How long a host that could not give a PID namespace goes without one before it is tried again (a probe that failed on a cold start or under load is not a fact about the host). */
+export const PID_INIT_REPROBE_MS = 60_000;
+const PID_INIT_PROBE_TIMEOUT_MS = 2_000;
 
 export function resetUnshareCapabilityCache(): void {
   unshareCapability = null;
+  pidInitTriedAt = 0;
+  pidInitDegradeSaid = false;
+}
+
+/** Says once that runs go without a PID namespace, and why; a program that can signal its siblings is not something to find out from a test. */
+function sayPidInitDegraded(reason: string): void {
+  if (pidInitDegradeSaid) return;
+  pidInitDegradeSaid = true;
+  console.warn(`[sandbox] Programs run without a PID namespace of their own: ${reason}. A run can signal the other runs of this worker until it is fixed; the host is tried again every ${PID_INIT_REPROBE_MS / 1000} seconds.`);
+}
+
+/** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does. */
+function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): string {
+  pidInitTriedAt = Date.now();
+  const pidInit = findPidInit();
+  if (pidInit === null) {
+    sayPidInitDegraded(`no pid-init program was found (${PID_INIT_PATH_ENV}, ${PID_INIT_CANDIDATES.join(', ')})`);
+    return '';
+  }
+  try {
+    execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
+    pidInitDegradeSaid = false;
+    return pidInit;
+  } catch {
+    sayPidInitDegraded(`${pidInit} could not start a program in a PID namespace (a seccomp profile or kernel setting that denies it, or a host too busy to answer in ${PID_INIT_PROBE_TIMEOUT_MS} ms)`);
+    return '';
+  }
 }
 
 /**
  * Adds the `pid-init` program when it can run a program here, with the namespaces of `base` around it. A host may allow the user and
  * network namespaces and not a PID namespace (a seccomp profile that lets `clone` make the first two only), and a host without the
- * program has none to offer; runs there go without a PID namespace.
+ * program has none to offer; runs there go without a PID namespace, which is said once and tried again after `PID_INIT_REPROBE_MS`.
  */
 function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath'>): UnshareCapability {
-  const pidInit = findPidInit();
-  if (pidInit === null) return { ...base, pidInitPath: '' };
-  try {
-    execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-    return { ...base, pidInitPath: pidInit };
-  } catch {
-    return { ...base, pidInitPath: '' };
-  }
+  return { ...base, pidInitPath: probePidInit(base) };
+}
+
+/** The capability, with a host that went without `pid-init` tried again once `PID_INIT_REPROBE_MS` have passed since it was last tried. */
+function withPidInitRetried(capability: UnshareCapability): UnshareCapability {
+  if (!capability.available || capability.pidInitPath !== '' || Date.now() - pidInitTriedAt < PID_INIT_REPROBE_MS) return capability;
+  return { ...capability, pidInitPath: probePidInit(capability) };
 }
 
 /**
  * Probes the operating system to determine whether Linux unshare can actually create network namespaces.
  */
 export function getUnshareCapability(): UnshareCapability {
-  if (unshareCapability !== null) return unshareCapability;
+  if (unshareCapability !== null) {
+    unshareCapability = withPidInitRetried(unshareCapability);
+    return unshareCapability;
+  }
   if (process.platform !== 'linux') {
     unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '' };
     return unshareCapability;

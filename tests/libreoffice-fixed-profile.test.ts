@@ -70,6 +70,32 @@ describe('the fixed office profile', () => {
     expect(registry(`${keep}/user`)).toContain('ExcelToCalc');
   });
 
+  it('is written again before every job of a pool slot, so one job cannot hand a changed profile to the next', async () => {
+    const seen: string[] = [];
+    let slotProfile = '';
+    const executor = async (_binary: string, args: string[], _options?: SandboxedExecutionOptions): Promise<SandboxedExecutionResult> => {
+      const installation = args.find((arg) => arg.startsWith('-env:UserInstallation=file://'))!.slice('-env:UserInstallation=file://'.length);
+      slotProfile = installation;
+      if (args.includes('--convert-to')) {
+        seen.push(registry(installation));
+        // The suite writes its settings back when it ends: this job leaves macros allowed and links always updated.
+        fs.writeFileSync(path.join(installation, 'user', 'registrymodifications.xcu'), registry(installation).replace('<value>3</value>', '<value>0</value>').replace(/<value>2<\/value>/g, '<value>0</value>'));
+        fs.writeFileSync(path.join(args[args.indexOf('--outdir') + 1], 'input.pdf'), '%PDF-1.4\n');
+      }
+      return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0, durationMs: 0, sandboxed: true, sandboxType: 'host' };
+    };
+    const pool = new LibreOfficePoolManager({ minWorkers: 0, maxWorkers: 1, enabled: true, sofficePath: '/mock/soffice', executor, readinessProbe: false });
+    try {
+      await pool.convert(Buffer.from('one'), 'docx', 'pdf', {}, 'one.docx');
+      expect(registry(slotProfile)).toContain('<value>0</value>');
+      await pool.convert(Buffer.from('two'), 'docx', 'pdf', {}, 'two.docx');
+      expect(seen).toHaveLength(2);
+      for (const xcu of seen) expectFixedSettings(xcu);
+    } finally {
+      await pool.shutdown();
+    }
+  });
+
   it('is in place before the pre-warm run and the conversion of a pool slot, and the conversion names the import filter', async () => {
     const calls: Array<{ args: string[]; profile: string | undefined }> = [];
     const executor = async (_binary: string, args: string[], _options?: SandboxedExecutionOptions): Promise<SandboxedExecutionResult> => {
