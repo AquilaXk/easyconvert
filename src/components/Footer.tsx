@@ -37,7 +37,7 @@ export default function Footer() {
                     <li key={link.key}>
                       <Link
                         href={link.href}
-                        className="inline-flex items-center rounded-xs text-sm font-medium text-accent-ink hover:underline transition-colors"
+                        className="inline-flex min-h-6 items-center rounded-xs text-sm font-medium text-accent-ink hover:underline transition-colors"
                       >
                         {tLinks(link.key)}
                       </Link>

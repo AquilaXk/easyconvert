@@ -145,6 +145,11 @@ function QueueFileBar({
   const zipFailed = useTranslations('errors.queue')('zipFailed');
   const barRef = useRef<HTMLDivElement>(null);
   usePublishedHeight(barRef, '--queue-bar-height');
+  // The Convert button leaves the bar when the queue settles and takes keyboard focus with it: hand focus to the first download.
+  useEffect(() => {
+    if (!allDone || document.activeElement !== document.body) return;
+    document.querySelector<HTMLElement>('a[download]')?.focus();
+  }, [allDone]);
   return (
     <div ref={barRef} data-queue-bar className="sticky bottom-0 z-30 border-t border-rule bg-surface">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row md:items-center gap-3">

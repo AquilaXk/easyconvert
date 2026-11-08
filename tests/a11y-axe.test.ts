@@ -144,3 +144,39 @@ describe('the audit itself', () => {
     expect(found.filter((id) => id === 'button-name' || id === 'image-alt').sort()).toEqual(['button-name', 'image-alt']);
   });
 });
+
+describe('keyboard and target-size guards that jsdom can see', () => {
+  const mount = async (locale: TestLocale, page: () => ReactNode) => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root?.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC' }, page()));
+    });
+  };
+
+  it('keeps the visually hidden file input out of the Tab order, so no focus stop is invisible', async () => {
+    await mount('ko', () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CONVERSIONS }));
+    expect(document.querySelector<HTMLInputElement>('input[type="file"]')?.tabIndex).toBe(-1);
+  });
+
+  it('gives every footer link a 24 px minimum height (WCAG 2.5.8)', async () => {
+    await mount('en', () => createElement(Footer));
+    const links = Array.from(document.querySelectorAll('footer nav a'));
+    expect(links.length).toBeGreaterThan(0);
+    expect(links.filter((a) => !a.classList.contains('min-h-6'))).toEqual([]);
+  });
+
+  it('hands keyboard focus to the first download when the queue settles and the Convert button leaves', async () => {
+    const props = { onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onAddMoreFiles: noop, onImportFile: noop, onDownloadAllZip: noop };
+    const converting = [queueItem({ status: 'converting', progress: 64 })];
+    const done = [queueItem({ status: 'completed', progress: 100, resultUrl: 'blob:result', resultSize: 2048 })];
+    const queue = (items: ConversionQueueItem[], isConverting: boolean) => createElement(ConversionQueue, { items, isConverting, ...props });
+    await mount('en', () => queue(converting, true));
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      root?.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC' }, queue(done, false)));
+    });
+    expect(document.activeElement?.matches('a[download]')).toBe(true);
+  });
+});

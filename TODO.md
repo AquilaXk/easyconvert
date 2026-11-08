@@ -20,7 +20,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Product and API
 - Dashboard: render the first view on the server (2.3 s spinner today); the key form's terms checkbox stays (policy 146), drop it only with a policy change.
-- Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
 
 ## Operations and security
 - Keep the history of converted files (`recordUserFile`, `listUserFiles`, `deleteUserFile`) in Redis, the store the other account data uses, and record a queue job's result when it completes: today only the synchronous `/api/v1/convert` writes it, in one process's memory and `user-files.json`, so a worker's results are not listed and a delete is exact only in the process that holds the record (`forgetUsage` and `scripts/erase-account.ts` must cover the Redis copy).

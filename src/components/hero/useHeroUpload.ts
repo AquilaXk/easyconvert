@@ -51,6 +51,7 @@ export function useHeroUpload(
     type: 'file',
     multiple: true,
     className: 'sr-only',
+    tabIndex: -1,
     'aria-label': operation ? t(`operations.${operation}.fileInputLabel`) : t('fileInputLabel'),
     onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
       const { files } = event.target;

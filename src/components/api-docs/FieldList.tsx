@@ -23,7 +23,7 @@ export default function FieldList({ fields }: Readonly<{ fields: readonly DocFie
           {field.description && <p className="mt-3 text-sm text-ink">{renderInlineCode(field.description, DOC.smallCode)}</p>}
           {field.children.length > 0 && (
             <details className="mt-3 rounded-sm border border-rule p-3">
-              <summary className="inline-flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+              <summary className="inline-flex min-h-6 items-center gap-1.5 text-sm text-ink-3 hover:text-ink cursor-pointer list-none [&::-webkit-details-marker]:hidden">
                 <ChevronDown className="size-4 transition-transform [details[open]>summary>&]:rotate-180" aria-hidden="true" />
                 {t('childProperties')}
               </summary>
