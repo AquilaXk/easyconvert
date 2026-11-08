@@ -206,3 +206,26 @@ describe('the webhook of a graph that ends', () => {
     expect(dispatched.mock.calls[0][4]).toEqual({ ownerUserId: user.id, ownerKeyId: undefined });
   });
 });
+
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
+describe.skipIf(!process.env.REDIS_URL)('the key that owns the webhook of a graph, kept in Redis', () => {
+  it('is read back from the stored graph, and is absent for a graph with a webhook of its own', async () => {
+    const { graphScheduler } = await import('../src/lib/queue/graph');
+    const graph = (graphId: string) =>
+      sealGraph(graphId, {
+        failurePolicy: 'fail_fast' as const,
+        nodes: { upload: { op: 'import.upload' as const, storageKey: `uploads/${graphId}/in.csv` } },
+      });
+    vi.spyOn(webhookDispatcher, 'dispatch').mockResolvedValue({ success: true, totalAttempts: 1 } as never);
+    const inherited = `graph_redis_key_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const own = `graph_redis_own_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+
+    await graphScheduler.initGraph(inherited, graph(inherited), { ownerUserId: user.id, webhookUrl: HOOK_URL, webhookSecret: STALE_SECRET, webhookKeyId: keyId });
+    await graphScheduler.initGraph(own, graph(own), { ownerUserId: user.id, webhookUrl: HOOK_URL, webhookSecret: 'whsec_mine' });
+
+    expect((await graphScheduler.getGraphState(inherited))?.webhookKeyId).toBe(keyId);
+    expect((await graphScheduler.getGraphState(own))?.webhookKeyId).toBeUndefined();
+    await graphScheduler.onNodeFailed(inherited, 'upload', 'upload failed');
+    expect(vi.mocked(webhookDispatcher.dispatch).mock.calls[0][4]).toMatchObject({ ownerKeyId: keyId });
+  });
+});
