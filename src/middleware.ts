@@ -40,8 +40,8 @@ const PROBLEM_LENGTH_REQUIRED = 'https://api.easyconvert.io/problems/length-requ
 const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
 const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
 
-// Liveness endpoint: stays reachable in degraded (unattributed or undeclared) trust modes.
-const HEALTH_PATH = '/api/health';
+// Readiness (/api/health) and liveness (/api/health/live) probes: stay reachable in degraded (unattributed or undeclared) trust modes.
+const HEALTH_PATHS = new Set(['/api/health', '/api/health/live']);
 const HEALTH_METHODS = new Set(['GET', 'HEAD']);
 
 // Fast Edge-compatible in-memory rate limiter per Edge worker instance
@@ -279,7 +279,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
     return pathname === '/' ? rootLocaleAnswer(request) : pageLocaleAnswer(request);
   }
 
-  const isHealthProbe = pathname === HEALTH_PATH && HEALTH_METHODS.has(request.method.toUpperCase());
+  const isHealthProbe = HEALTH_PATHS.has(pathname) && HEALTH_METHODS.has(request.method.toUpperCase());
 
   // Edge barrier identity. The middleware cannot see the socket peer, so attribution follows the deployment
   // contract in src/lib/security/client-ip.ts: forwarding headers count only behind a declared proxy, and an
@@ -326,7 +326,7 @@ export function middleware(request: NextRequest): NextResponse | Promise<NextRes
   }
   if (resolved.source === 'unattributed') {
     warnUnattributedOnce();
-    // Liveness probes must not drain (or be starved by) the bucket every unattributed client shares.
+    // Health probes must not drain (or be starved by) the bucket every unattributed client shares.
     if (isHealthProbe) return NextResponse.next();
   }
   const clientIp = rateLimitKey(clientIpKey(resolved));

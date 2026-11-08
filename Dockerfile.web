@@ -79,8 +79,10 @@ COPY --chown=easyconvert:easyconvert next.config.mjs ./next.config.mjs
 
 EXPOSE 3000
 
+# Liveness, not readiness: the container is unhealthy only when the process stops serving. A Redis or storage outage is /api/health's
+# to report, and deploy/oci/deploy.sh still waits for that answer before it calls a release started.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl --fail --silent --show-error --max-time 8 http://127.0.0.1:3000/api/health > /dev/null || exit 1
+    CMD curl --fail --silent --show-error --max-time 8 http://127.0.0.1:3000/api/health/live > /dev/null || exit 1
 
 # Process init wrapper (tini) is the inherited ENTRYPOINT. The server runs as the unprivileged user of the worker image.
 CMD ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]

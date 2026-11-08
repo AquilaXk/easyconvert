@@ -24,6 +24,7 @@ C() { docker compose --project-name easyconvert --project-directory /opt/easycon
 | Last lines of a service (`web`, `worker`, `redis`) | `C logs --no-color --tail 200 worker` |
 | Which release runs | `readlink /opt/easyconvert/current; cat /opt/easyconvert/current/images.env` |
 | Readiness, as the Uptime workflow reads it | `curl -s http://127.0.0.1:8090/api/health` |
+| Liveness, as the container health check reads it (the process serves; no Redis, storage or worker is asked; loopback only) | `curl -s http://127.0.0.1:8090/api/health/live` |
 | Disk | `df -h /var/lib/easysubway-data; /opt/easyconvert/bin/deploy.sh guard` |
 | Metrics of the web process | `C exec -T web node -e "fetch('http://127.0.0.1:9464/metrics').then(r=>r.text()).then(console.log)"` |
 | Metrics of a worker | the same with `worker` and port 9465 |

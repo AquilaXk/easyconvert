@@ -106,6 +106,15 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
     expect(countStatuses(other).limited).toBe(REQUESTS_PER_SHARED_PROBE - SHARED_BURST_CAPACITY);
   });
 
+  it('GET and HEAD /api/health/live are exempt from the shared unattributed bucket too', async () => {
+    const middleware = await loadMiddleware();
+    const responses: Response[] = [];
+    for (let i = 0; i < REQUESTS_PER_SHARED_PROBE; i++) {
+      responses.push(middleware(apiRequest({}, '/api/health/live', i % 2 === 0 ? 'GET' : 'HEAD')));
+    }
+    expect(countStatuses(responses).limited).toBe(0);
+  });
+
   it('health requests from an attributable client are still rate limited per client', async () => {
     vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
     const middleware = await loadMiddleware();
@@ -237,6 +246,7 @@ describe('edge middleware client-IP attribution (rate-limit bypass regression)',
       const middleware = await loadMiddleware();
       expect(middleware(apiRequest({}, '/api/health')).status).toBe(200);
       expect(middleware(apiRequest({}, '/api/health', 'HEAD')).status).toBe(200);
+      expect(middleware(apiRequest({}, '/api/health/live')).status).toBe(200);
       expect(middleware(apiRequest({}, '/')).status).toBe(200);
       expect(middleware(apiRequest({}, '/api/health', 'POST')).status).toBe(503);
       vi.restoreAllMocks();

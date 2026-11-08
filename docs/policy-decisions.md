@@ -187,6 +187,7 @@ Delivery
 190. [QA 2026-11-08: one-maintainer workflow](#190-qa-2026-11-08-one-maintainer-workflow)
 191. [A Sigma SD15 X3F is read with its Sunlight calibration when the header says Daylight, a developed RAW picture is rewritten in the buffer it was read into, and a Nikon high-efficiency NEF stays refused until a released LibRaw reads it](#191-a-sigma-sd15-x3f-is-read-with-its-sunlight-calibration-when-the-header-says-daylight-a-developed-raw-picture-is-rewritten-in-the-buffer-it-was-read-into-and-a-nikon-high-efficiency-nef-stays-refused-until-a-released-libraw-reads-it)
 192. [An OpenXML workbook that holds one part name twice is refused as a typed error, and the empty files the real-world corpus expects are marked](#192-an-openxml-workbook-that-holds-one-part-name-twice-is-refused-as-a-typed-error-and-the-empty-files-the-real-world-corpus-expects-are-marked)
+194. [The web container's health check asks a liveness route that touches no dependency; `/api/health` stays the readiness probe](#194-the-web-containers-health-check-asks-a-liveness-route-that-touches-no-dependency-apihealth-stays-the-readiness-probe)
 
 Quality evidence
 
@@ -6781,3 +6782,17 @@ Security
 - **Alternatives rejected**: reading the first entry instead of the last (equally arbitrary); checking every package kind (a comic archive with a repeated page name is a file people have, and the page order is the order of the entries).
 - **Verified by**: `tests/empty-output-pairs.test.ts` (HTML, XLSX, XLSM and DOTX to the text targets: empty with a warning, content written, a duplicated part refused), `tests/conversion-output-check.test.ts`, and the 450 pages, 366 workbooks and 4 templates of the corpus converted before and after (the only change is `duplicate-filename.xlsx`).
 - **Revisit when**: a real workbook that Excel opens carries a repeated part name, or the other OOXML readers are found to read one wrongly.
+
+## 194. The web container's health check asks a liveness route that touches no dependency; `/api/health` stays the readiness probe
+
+- **Status**: Implemented (QA 2026-11-08, TODO item "split a liveness route from /api/health").
+- **Decision**:
+  - **`GET /api/health/live` answers 200 `{"status":"alive"}` while the process serves requests.** It imports nothing but the framework and reads nothing of the request, so Redis, storage and the worker cannot turn it red. `GET /api/health` keeps its readiness meaning (Redis PING, storage, advisory tools; 503 when a required dependency is down) and is what the Uptime workflow and `deploy/oci/deploy.sh` still ask.
+  - **The `HEALTHCHECK` of `Dockerfile.web` asks the liveness route.** `deploy.sh` still waits for the readiness answer of `/api/health` for up to 150 seconds before it calls a release started, so a release whose Redis or storage is down is still rolled back.
+  - **The edge middleware treats both paths as health probes:** `GET` and `HEAD` are exempt from the shared bucket of unattributed clients and stay up while the client-IP trust mode is undeclared. A client that is attributable is limited per client as before.
+  - **The route sits under `/api/health/`, so the host proxy's 404 for that prefix already keeps it on the loopback port**; `nginx-easyconvert.conf` is unchanged.
+- **Why**: a container health check is a restart signal, and restarting the web process does not repair Redis or storage; a readiness check there makes a dependency outage look like a dead web container (and, with `up --wait`, delays or fails a start for a reason that is not the web process). Separate liveness and readiness probes are the usual practice for container platforms.
+- **Trade-offs**: `docker ps` no longer shows a web container as unhealthy while Redis is down; the Uptime workflow and `deploy.sh` are where that shows. The liveness route proves the HTTP server answers, not that the event loop is free of long synchronous work beyond the check's 8 second timeout.
+- **Alternatives rejected**: `/api/livez` (a second prefix to block at the proxy); keeping one route with a query switch (a probe URL that changes meaning by query is easy to misconfigure).
+- **Verified by**: `tests/health-live-route.test.ts` (200 with the readiness probes and the key guard replaced by modules that fail when loaded, and the route's imports), `tests/middleware-client-ip-rate-limit.test.ts` (the exemptions of the two paths), `tests/oci-deploy.test.ts` (the `HEALTHCHECK` asks `/api/health/live`).
+- **Revisit when**: the platform restarts containers on an unhealthy status and a stuck event loop needs to be caught, which would call for a probe that checks event-loop lag.

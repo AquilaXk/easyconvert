@@ -5,7 +5,8 @@ import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 import { formatBytes } from '@/lib/format-bytes';
 import { PAID_PLANS_ON_SALE, PLAN_MAX_FILE_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
-import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
+import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE, RATE_LIMITED_PROBLEM_TYPE } from '@/lib/api/problem-details';
+import { QUOTA_EXCEEDED_PROBLEM_TYPE, type ConversionRefusalCode } from '@/lib/refusal-codes';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   MAX_INPUT_PIXELS_CEILING,
@@ -65,6 +66,84 @@ export const createProblemResponse = (description: string) => ({
   content: {
     'application/problem+json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
     'application/json': { schema: { $ref: '#/components/schemas/ProblemDetails' } },
+  },
+});
+
+/**
+ * The `code` values `POST /api/v1/convert` puts on the problem of a typed failure (src/lib/api/typed-failure-response.ts), by status: the
+ * `refusalCode` of the error class, answered with the status the class declares (400 without one, 503 for a missing tool). A test
+ * reads the error classes under src/ and fails when this table and the classes disagree (tests/openapi-convert-contract.test.ts).
+ */
+export const V1_CONVERT_CODES = {
+  400: ['conversion_failed', 'input_over_limit', 'invalid_pages', 'malformed_input', 'option_not_supported', 'spoofed_file', 'unsafe_archive', 'unsupported_input', 'unsupported_pair'],
+  // `archive_entry_collision` is also a 422 but its answer carries no `code` on this route, so it is not listed here.
+  422: ['conversion_failed', 'empty_file', 'encrypted_input', 'input_over_limit', 'invalid_password', 'malformed_input', 'missing_volume', 'option_not_supported', 'password_required', 'timeout', 'unsupported_input', 'unsupported_method'],
+  503: ['engine_unavailable'],
+} as const satisfies Record<number, readonly ConversionRefusalCode[]>;
+
+const CODED_PROBLEM_SCHEMA = (codes: readonly string[]) => ({
+  allOf: [
+    { $ref: '#/components/schemas/ProblemDetails' },
+    { type: 'object', properties: { code: { type: 'string', enum: [...codes], description: 'The cause of the refusal, stable across releases.' } } },
+  ],
+});
+
+/** Problem response whose `code` is one of `codes` (the error class that decided the answer names it). */
+export const createCodedProblemResponse = (description: string, codes: readonly string[]) => ({
+  description,
+  content: {
+    'application/problem+json': { schema: CODED_PROBLEM_SCHEMA(codes) },
+    'application/json': { schema: CODED_PROBLEM_SCHEMA(codes) },
+  },
+});
+
+/** The same, for a status that can also carry the PDF/A validation problem. */
+export const createCodedPdfaProblemResponse = (description: string, codes: readonly string[]) => {
+  const schema = { oneOf: [CODED_PROBLEM_SCHEMA(codes), { $ref: '#/components/schemas/PdfaValidationProblem' }] };
+  return { description, content: { 'application/problem+json': { schema }, 'application/json': { schema } } };
+};
+
+/** Headers of a 429 of the convert routes, as `buildRateLimitHeaders` and the guard send them (src/lib/api/rate-limit.ts). */
+export const RATE_LIMIT_RESPONSE_HEADERS = {
+  'Retry-After': {
+    description: 'Seconds to wait before the request is repeated (RFC 9110 delay-seconds, at least 1). Sent with every 429 except a `quota-exceeded` that leaves some conversions (a batch that needs more than are left); there it is the time to the daily reset at midnight UTC when none is left, and for `concurrency-limit` it is 5.',
+    schema: { type: 'integer', minimum: 1 },
+  },
+  RateLimit: { description: 'The day\'s quota as `limit=<n>, remaining=<n>, reset=<seconds>`. Sent with `quota-exceeded`, and on `POST /api/v1/convert` with every 429 its guard answers.', schema: { type: 'string' } },
+  'RateLimit-Limit': { description: 'Conversions the caller\'s tier allows per day.', schema: { type: 'integer' } },
+  'RateLimit-Remaining': { description: 'Conversions left today.', schema: { type: 'integer' } },
+  'RateLimit-Reset': { description: 'Seconds until the daily quota resets.', schema: { type: 'integer' } },
+  'RateLimit-Policy': { description: 'The quota window, for example `10;w=86400;comment="anonymous daily quota"`.', schema: { type: 'string' } },
+  'X-RateLimit-Limit': { description: 'Legacy copy of `RateLimit-Limit`.', schema: { type: 'integer' } },
+  'X-RateLimit-Remaining': { description: 'Legacy copy of `RateLimit-Remaining`.', schema: { type: 'integer' } },
+  'X-RateLimit-Reset': { description: 'Legacy copy of `RateLimit-Reset`.', schema: { type: 'integer' } },
+} as const;
+
+const TOO_MANY_REQUESTS_SCHEMA = {
+  allOf: [
+    { $ref: '#/components/schemas/ProblemDetails' },
+    {
+      type: 'object',
+      properties: {
+        dailyLimit: { type: 'integer', description: '`quota-exceeded` only: conversions the tier allows per day.' },
+        remaining: { type: 'integer', description: '`quota-exceeded` only: conversions left today.' },
+        requiredUnits: { type: 'integer', description: '`quota-exceeded` only: conversions the request needs.' },
+        limit: { type: 'integer', description: '`concurrency-limit` only: conversions the account may have in flight.' },
+      },
+    },
+  ],
+};
+
+/** The 429 of a convert route: the three problem types it answers with and the headers each sends. */
+export const createTooManyRequestsResponse = (extra: string) => ({
+  description:
+    `Too Many Requests, by problem type. \`${RATE_LIMITED_PROBLEM_TYPE}\`: the burst limit of the API key, of the client address or of the edge is spent; wait \`Retry-After\` seconds. ` +
+    `\`${QUOTA_EXCEEDED_PROBLEM_TYPE}\`: the day's conversions are used up or too few are left (\`dailyLimit\`, \`remaining\`, \`requiredUnits\` in the body, the quota headers, and \`Retry-After\` until the reset when none is left). ` +
+    `\`https://api.easyconvert.io/problems/concurrency-limit\`: the account already has the most conversions in flight its tier allows, 5 for anonymous and free callers (\`limit\` in the body, \`Retry-After\` 5); the request takes no quota.${extra}`,
+  headers: RATE_LIMIT_RESPONSE_HEADERS,
+  content: {
+    'application/problem+json': { schema: TOO_MANY_REQUESTS_SCHEMA },
+    'application/json': { schema: TOO_MANY_REQUESTS_SCHEMA },
   },
 });
 

@@ -20,8 +20,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Product and API
 - Finish WCAG 2.1 AA in a real browser: contrast, target size, focus order, 200% zoom.
-- Fix the OpenAPI 422 list, the 429 response and the v1 `code` of the convert routes.
-- Split a dependency-free liveness route from the `/api/health` readiness route.
 
 ## Operations and security
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).

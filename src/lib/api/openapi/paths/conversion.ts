@@ -6,6 +6,10 @@ import {
   createPathParameter,
   PDFA_ENGINE_NOTE,
   PDFA_PROBLEM_DESCRIPTION,
+  createCodedPdfaProblemResponse,
+  createCodedProblemResponse,
+  createTooManyRequestsResponse,
+  V1_CONVERT_CODES,
   createPdfaProblemResponse,
   INPUT_PIXEL_LIMIT_DESCRIPTION,
   createProblemResponse,
@@ -154,20 +158,25 @@ export const conversionPaths = {
             },
           },
         },
-        '400': createProblemResponse('Invalid input format, missing parameter, a text field such as `options` sent as a file, an unsupported conversion pair, or a body declared `multipart/form-data` that cannot be parsed.'),
+        '400': createCodedProblemResponse('Invalid input format, missing parameter, a text field such as `options` sent as a file, an unsupported conversion pair, or a body declared `multipart/form-data` that cannot be parsed.', V1_CONVERT_CODES[400]),
         '401': createProblemResponse('Missing, expired, or invalid API key.'),
         '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:write" scope.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
-        '422': createPdfaProblemResponse(
-          `An idempotency key was reused with a different request payload or parameters, or the document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`
+        '422': createCodedPdfaProblemResponse(
+          'The request is understood and refused. Problem type `https://api.easyconvert.io/problems/idempotency-key-reused`: an idempotency key was reused with a different request payload or parameters. ' +
+            'Problem type `https://api.easyconvert.io/problems/unprocessable-entity`, or `.../option-not-supported` for an option that is planned and not yet supported: `options` fail the contract (the fields in `invalidParams`). ' +
+            'Or the file is intact but the engine cannot convert it: the document is encrypted, password protected or DRM protected so its text cannot be read, an archive uses a method no engine here decodes, a CAD or font file the readers refuse, an audio file with no samples, or the conversion overran its CPU limit; these name the cause in `code`. ' +
+            'An archive whose entry names collide when unpacked is also a 422, titled "Archive Entry Collision", with no `code`. ' +
+            PDFA_PROBLEM_DESCRIPTION,
+          V1_CONVERT_CODES[422]
         ),
         '411': createProblemResponse(LENGTH_REQUIRED_DESCRIPTION),
         '413': createProblemResponse(`${REQUEST_PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '415': createProblemResponse('The body is not `multipart/form-data`.'),
-        '429': createProblemResponse('Rate limit or daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
+        '429': createTooManyRequestsResponse(''),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
-        '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+        '503': createCodedProblemResponse(`The quota store is offline (problem type \`https://api.easyconvert.io/problems/service-unavailable\`, no \`code\`, \`Retry-After\` 5). Or, with the \`code\` "engine_unavailable" and \`Retry-After\` 5: ${ENGINE_UNAVAILABLE_DESCRIPTION}`, V1_CONVERT_CODES[503]),
         '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },

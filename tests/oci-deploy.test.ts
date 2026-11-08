@@ -339,7 +339,7 @@ describe('Dockerfile.web', () => {
     expect(web).not.toMatch(/^USER root/m);
     expect(web).toMatch(/--chown=easyconvert:easyconvert/);
     expect(web).toMatch(/^CMD \["node", "node_modules\/next\/dist\/bin\/next", "start"/m);
-    expect(web).toContain('/api/health');
+    expect(web).toMatch(/HEALTHCHECK[^\n]*\\\n\s*CMD curl[^\n]*http:\/\/127\.0\.0\.1:3000\/api\/health\/live >/);
   });
 });
 
