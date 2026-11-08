@@ -369,7 +369,7 @@ async function completeLocalUpload(
   const completedObject = await objectStorage.completeMultipart(session.key, session.uploadId, parts);
   forgetUploadParts(session.uploadId);
 
-  const unrecorded = await recordCompletedUpload(objectStorage, completedObject.key, instanceUri);
+  const unrecorded = await recordCompletedUpload(storageProvider, completedObject.key, instanceUri);
   if (unrecorded) return unrecorded;
   return NextResponse.json({
     success: true,
