@@ -2155,7 +2155,7 @@
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 446
+    "maxValue": 445
   },
   {
     "file": "src/lib/queue/node-processor.ts",

@@ -118,14 +118,15 @@ export class InMemoryGraphScheduler implements IGraphScheduler, StartingGraphSch
     return queueReadyNodesOrCancel(state, this);
   }
 
-  async onNodeStarted(graphId: string, nodeId: NodeId): Promise<void> {
+  async onNodeStarted(graphId: string, nodeId: NodeId): Promise<boolean> {
     const data = this.graphs.get(graphId);
-    if (!data) return;
-    const nodeState = data.state.nodes[nodeId];
-    if (nodeState && nodeState.status === 'waiting') {
+    const nodeState = data?.state.nodes[nodeId];
+    if (!data || data.state.status !== 'running' || !nodeState || !RUNNABLE_NODE_STATUSES.has(nodeState.status)) return false;
+    if (nodeState.status === 'waiting') {
       nodeState.status = 'active';
       nodeState.startedAt = Date.now();
     }
+    return true;
   }
 
   async onNodeCompleted(
