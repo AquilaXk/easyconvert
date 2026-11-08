@@ -99,7 +99,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
   it('derives REGISTRY_STATS and CATEGORIES directly from FORMAT_REGISTRY with zero stale counts', () => {
     const allFormats = getAllFormats();
     expect(REGISTRY_STATS.formatCount).toBe(allFormats.length);
-    expect(REGISTRY_STATS.formatCount).toBe(302);
+    expect(REGISTRY_STATS.formatCount).toBe(303);
     expect(REGISTRY_STATS.categoryCount).toBe(12);
     expect(CATEGORIES).toHaveLength(12);
     expect(CATEGORIES.map((c) => c.id)).toEqual([...CATEGORY_ORDER]);

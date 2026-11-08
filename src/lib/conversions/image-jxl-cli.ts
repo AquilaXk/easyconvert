@@ -40,10 +40,10 @@ const BOX_LENGTH_LARGE = 1;
 const BOX_LENGTH_TO_END = 0;
 const CODESTREAM_BOX_TYPE = 'jxlc';
 const PARTIAL_CODESTREAM_BOX_TYPE = 'jxlp';
-/** A partial codestream box starts with a 32-bit index, whose top bit marks the last box (18181-2 section 3.4). */
+/** A partial codestream box starts with a 32-bit index, whose top bit marks the last box. */
 const PARTIAL_INDEX_BYTES = 4;
 
-/** The SizeHeader is at most 68 bits (18181-1 section 6.2): `small`, a 2-bit selector and 30 bits twice, and the 3-bit ratio. */
+/** The SizeHeader is at most 68 bits: `small`, a 2-bit selector and 30 bits twice, and the 3-bit ratio. */
 const SIZE_HEADER_BYTES = 9;
 const HEADER_BYTES_READ = JXL_CODESTREAM_SIGNATURE.length + SIZE_HEADER_BYTES;
 /** `small` pictures state their sides in multiples of 8 (5 bits each); the others in one of four fields after a 2-bit selector. */
@@ -52,7 +52,7 @@ const SMALL_SIDE_STEP = 8;
 const SIDE_SELECTOR_BITS = 2;
 const SIDE_FIELD_BITS: readonly number[] = [9, 13, 18, 30];
 const RATIO_BITS = 3;
-/** The aspect ratios a header can name instead of the width (18181-1 table of `ratio`): width = height * numerator / denominator. */
+/** The aspect ratios a header can name instead of the width (18181-1): width = height * numerator / denominator. */
 const ASPECT_RATIOS: readonly (readonly [number, number])[] = [[1, 1], [12, 10], [4, 3], [3, 2], [16, 9], [5, 4], [2, 1]];
 
 /** Largest sample of the PNG the decoder writes is 16 bits of four channels. */
@@ -61,7 +61,7 @@ const OUTPUT_OVERHEAD_BYTES = 64 * 1024;
 
 const headerError = (): ConversionFailedError => new ConversionFailedError(`Invalid image: the ${JXL_LABEL} header could not be decoded`);
 
-/** Reads fields of a bit string, least significant bit first (18181-1 section 9.2.2); a read past its end is a header that cannot be decoded. */
+/** Reads fields of a bit string, least significant bit first; a read past its end is a header that cannot be decoded. */
 class BitReader {
   private position = 0;
 
@@ -120,7 +120,7 @@ function codestreamHead(file: Buffer): Buffer | null {
 }
 
 /**
- * Width and height the SizeHeader of a JPEG XL picture states (18181-1 section 6.2), read without decoding anything. The picture
+ * Width and height the SizeHeader of a JPEG XL picture states, read without decoding anything. The picture
  * `djxl` writes has the sides swapped when the header's orientation is a quarter turn, which changes neither the pixel count nor the limit.
  */
 export function declaredJxlSize(file: Buffer): { width: number; height: number } {

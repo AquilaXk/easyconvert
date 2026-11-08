@@ -1,7 +1,7 @@
 import { JXL_CODESTREAM_SIGNATURE, JXL_CONTAINER_SIGNATURE } from '../../src/lib/format-signatures';
 
 /**
- * JPEG XL headers written bit by bit from the layout of ISO/IEC 18181-1 (the SizeHeader, section 6.2: `small`, the height, a 3-bit
+ * JPEG XL headers written bit by bit from the layout of ISO/IEC 18181-1 (the SizeHeader: `small`, the height, a 3-bit
  * aspect ratio, the width when the ratio is 0) and 18181-2 (the box layout of the container). Bits are packed least significant first.
  */
 

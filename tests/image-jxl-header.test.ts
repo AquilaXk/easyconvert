@@ -7,7 +7,7 @@ import { jxlCodestream, jxlContainer, jxlSizeHeader } from './helpers/jxl-builde
 /**
  * JPEG XL (ISO/IEC 18181-1) is recognised by its two signatures, the bare codestream (FF 0A) and the ISOBMFF container (a
  * 12-byte `JXL ` box), and its size is read from the SizeHeader without decoding anything. The headers here are written bit by bit from the
- * layout of the specification (the SizeHeader of 18181-1 section 6.2 and the box layout of 18181-2 section 3); the real files of the
+ * layout of the specification (the SizeHeader of 18181-1 and the box layout of 18181-2); the real files of the
  * conformance set are read in image-jxl-decode.test.ts.
  */
 
