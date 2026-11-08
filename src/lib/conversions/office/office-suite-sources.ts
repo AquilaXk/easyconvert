@@ -108,10 +108,11 @@ const APPLICATION_OF_READING_FORMAT: Readonly<Record<string, OfficeSuiteApplicat
  * macros removed before the suite sees it (`officeInputWithoutMacros`) and is opened as the plain format.
  *
  * Absent on purpose: the legacy binary Word, Excel and PowerPoint formats and their templates (`doc`, `xls`, `ppt` and the rest of
- * their extensions) and Works (`wps`), because the suite has one filter for each generation of the format behind one extension and a file
- * of an older generation is refused by the newest filter; the Palm databases (`pdb`, three filters) and the text formats (`txt`, `csv`,
- * `tsv`, `md`, `html`), whose filters need an encoding or separators; the metafiles (`emf`, `wmf`, `cgm`), which the graphic filters
- * import; and a format the installed suite has no filter for (`qpw`, `dps`). Those are opened by the suite's type detection, as before.
+ * their extensions), Works (`wps`) and the Palm databases (`pdb`), because the suite has one filter for each generation of the format behind
+ * one extension and a file of an older generation is refused by the newest filter; their filter is chosen from the file by
+ * `officeInputFilterArgs` (`legacy-import-filter.ts`). Also absent: the text formats (`txt`, `csv`, `tsv`, `md`, `html`), whose filters need an
+ * encoding or separators; the metafiles (`emf`, `wmf`, `cgm`), which the graphic filters import; and a format the installed suite has no
+ * filter for (`qpw`, `dps`). Those are opened by the suite's type detection, as before.
  */
 export const OFFICE_IMPORT_FILTERS: Readonly<Record<string, string>> = {
   docx: 'MS Word 2007 XML',

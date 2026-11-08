@@ -87,7 +87,7 @@ describe('officeImportFilter', () => {
   it('names a filter for a declared format, in any letter case, and none for a format the suite detects itself', () => {
     expect(officeImportFilter('DOCX')).toBe('MS Word 2007 XML');
     expect(officeImportFilterArgs('odp')).toEqual(['--infilter=impress8']);
-    for (const detected of ['doc', 'xls', 'ppt', 'wps', 'pdb', 'txt', 'csv', 'html', 'emf', 'constructor', '__proto__']) {
+    for (const detected of ['txt', 'csv', 'html', 'emf', 'constructor', '__proto__']) {
       expect(officeImportFilterArgs(detected), detected).toEqual([]);
     }
   });

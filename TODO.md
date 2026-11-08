@@ -27,7 +27,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Hide the `/proc` entries of other runs from a sandboxed program: it cannot signal them any more, but still reads their command line and status (no `/proc` mount is allowed in the container).
 - Install the Redis backup timer on the host on or after 2026-12-08 (30-day notice of the new privacy text).
 - Add alerts on SLO burn, queue age and worker restarts, linked to `docs/operations/alerts.md`.
-- Pass the declared `--infilter` for the legacy binary Office formats (`doc`, `xls`, `ppt`, their templates, `wps`, `pdb`): the suite has one filter per generation behind each extension, so a fixed name fails on older files.
 
 ## Tests and CI
 - Stabilise the `lzma-decoder` timing and `ocr-pdf-concurrency` guards; both fail every nightly.
