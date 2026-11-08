@@ -16,7 +16,8 @@
 //     sees a byte of the document (the equivalent of `unshare -r -n -p`), so a job cannot see or signal another; a child that cannot
 //     make them runs nothing and says so (kind SETUP), and the caller falls back to starting the program the way it always has.
 //     The job is PID 2 of its namespace (see enter_job_process), because the kernel does not deliver to PID 1 a signal it has no
-//     handler for, and the limits a job is judged by are signals;
+//     handler for, and the limits a job is judged by are signals; the job also cannot read the command line or the status of another
+//     process in /proc (a Landlock ruleset, see hide_other_processes), which the PID namespace does not hide;
 //   - the seccomp filter, the capabilities and the limits of this process, which the child inherits, plus no_new_privs, no core
 //     dump, and the address-space, file-size and CPU limits of the request;
 //   - its own session and process group, the environment of the request only, standard input from the request, standard output
@@ -47,6 +48,7 @@
 // first process has), and is killed with its group at the latest when the job ends.
 
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -364,6 +366,94 @@ static bool write_text_file(const char *path, const char *text) {
   return w == (ssize_t)n;
 }
 
+/* ---------------------------------------------------------------------------------------------------------------------------
+ * The /proc entries of the other jobs
+ * ------------------------------------------------------------------------------------------------------------------------ */
+
+/* A PID namespace hides nothing in /proc: it is the container's own mount, which shows every process by its number outside the namespace, and
+   it cannot be mounted again here (the worker's seccomp profile has no mount call, and a container's /proc has masked paths). So a job is put
+   under a Landlock ruleset that handles reading and writing files and allows both below every entry of / but /proc and below every entry of
+   /proc but the numbered directories, /proc/self (the job itself) among them: the command line, the status and the OOM score of any other
+   process, the runner and the other jobs included, are refused with EACCES. The same code is in native/pid-init/pid-init.c. A host that
+   cannot make the ruleset (Landlock off, or a profile that denies it) runs the job without it. */
+/* The Landlock interface (Linux 5.13), declared here so that the build does not depend on the version of the kernel headers. */
+#ifndef __NR_landlock_create_ruleset
+#define __NR_landlock_create_ruleset 444
+#define __NR_landlock_add_rule 445
+#define __NR_landlock_restrict_self 446
+#endif
+#define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
+#define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
+#define LANDLOCK_RULE_PATH_BENEATH 1
+struct landlock_ruleset_attr_v1 {
+  uint64_t handled_access_fs;
+};
+struct landlock_path_beneath_attr_v1 {
+  uint64_t allowed_access;
+  int32_t parent_fd;
+} __attribute__((packed));
+
+/* Allows reading and writing files below `path`. An entry that is not there (a dangling link, a process that ended) or that this process may
+   not look at adds nothing; any other failure (out of descriptors, a refused rule) returns -1, because a rule that is missing takes a whole
+   directory away from the program and the ruleset must not be put in force then. */
+static int allow_below(int ruleset, const char *path) {
+  int fd = open(path, O_PATH | O_CLOEXEC);
+  if (fd < 0) return errno == ENOENT || errno == EACCES || errno == ELOOP || errno == ENOTDIR || errno == ENXIO ? 0 : -1;
+  struct landlock_path_beneath_attr_v1 rule = {.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE, .parent_fd = fd};
+  int added = (int)syscall(__NR_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
+  close(fd);
+  return added;
+}
+
+static int is_number(const char *name) {
+  if (*name == '\0') return 0;
+  for (; *name; name++) {
+    if (*name < '0' || *name > '9') return 0;
+  }
+  return 1;
+}
+
+/* Allows every entry of `parent`: all but "proc" for the root directory, and all but the process numbers for /proc. */
+static int allow_entries(int ruleset, const char *parent, int proc_entries) {
+  DIR *directory = opendir(parent);
+  if (directory == NULL) return -1;
+  int result = 0;
+  struct dirent *entry;
+  while ((entry = readdir(directory)) != NULL) {
+    const char *name = entry->d_name;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+    if (proc_entries ? is_number(name) : strcmp(name, "proc") == 0) continue;
+    char path[512];
+    if (snprintf(path, sizeof path, "%s/%s", strcmp(parent, "/") == 0 ? "" : parent, name) >= (int)sizeof path) continue;
+    if (allow_below(ruleset, path) != 0) {
+      result = -1;
+      break;
+    }
+  }
+  closedir(directory);
+  return result;
+}
+
+/* Takes away the reading and writing of /proc/<number> of every process but the program itself. Returns 0 when the ruleset is in force. */
+static int hide_other_processes(void) {
+  struct landlock_ruleset_attr_v1 handled = {.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE};
+  int ruleset = (int)syscall(__NR_landlock_create_ruleset, &handled, sizeof handled, 0);
+  if (ruleset < 0) return -1;
+  int result = -1;
+  /* "self" is a link to the directory of this process, so the entries of /proc that are not numbers include its own. */
+  if (allow_entries(ruleset, "/", 0) == 0 && allow_entries(ruleset, "/proc", 1) == 0) {
+    result = (int)syscall(__NR_landlock_restrict_self, ruleset, 0);
+    if (result != 0 && errno == EPERM && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 0) {
+      /* Without the capability to administer its user namespace a process must give up the ability to gain privileges first. */
+      prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+      result = (int)syscall(__NR_landlock_restrict_self, ruleset, 0);
+    }
+  }
+  close(ruleset);
+  return result;
+}
+
+
 /* The equivalent of `unshare -r -n -p`: a user namespace that maps the user to root inside it, an empty network namespace, and a PID
    namespace that holds the children of this process from now on (this process stays in the one it was in). */
 static bool enter_namespaces(void) {
@@ -507,6 +597,7 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
   /* The maps are written; from here no process of the same user can read this one or the processes it makes through /proc/<pid>/mem. */
   prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
   enter_job_process();
+  hide_other_processes();
   if (!apply_limits(r)) child_fail(SETUP_LIMITS);
   if (chdir(r->cwd) != 0) child_fail(SETUP_CHDIR);
   clearenv();

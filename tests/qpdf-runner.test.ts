@@ -279,6 +279,22 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       }
     });
 
+    it('refuses a job the command line, the status and the OOM score of any other process, and leaves it its own and the system-wide entries', async () => {
+      const state = qpdfRunnerState();
+      for (const other of [state.pid!, process.pid]) {
+        const lines = (await run(['procs', String(other)])).stdout.toString('utf8').trim().split('\n');
+        expect(lines).toEqual([
+          'other cmdline: Permission denied',
+          'other status: Permission denied',
+          'other oom_score_adj: Permission denied',
+          '/proc/self/status: ok',
+          '/proc/self/limits: ok',
+          '/proc/meminfo: ok',
+          '/proc/sys/kernel/pid_max: ok',
+        ]);
+      }
+    });
+
     it('starts the job the way the sandbox starts a program: own session, PID namespace, working directory, environment, no extra descriptors, limits', async () => {
       const state = qpdfRunnerState();
       const result = await run(['facts'], { env: { EXTRA_FOR_TEST: 'visible' }, memoryLimitMb: 512, maxFileSize: 123_456_789, rlimits: { cpuSeconds: 77 } });

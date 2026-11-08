@@ -543,7 +543,7 @@ const SCHEMA_ENTRIES = [
   {
     name: 'SANDBOX_PID_NAMESPACE',
     area: 'security',
-    description: 'Set to `false` to start sandboxed programs without the PID namespace of their own that `pid-init` gives them (on by default). calibre always runs outside it: its launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount.',
+    description: 'Set to `false` to start sandboxed programs without `pid-init` (on by default): without the PID namespace of their own, and without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs. calibre and veraPDF always run outside the PID namespace: calibre\'s launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount; they still get the ruleset.',
     kind: { type: 'boolean' },
     default: true,
     requiredInProduction: false,
@@ -1425,7 +1425,7 @@ const SCHEMA_ENTRIES = [
   toolPath('VTRACER_PATH', 'Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).', BOTH),
   toolPath('VTRACER_PIXELS_PATH', 'Path of the vtracer-pixels executable (scripts/vtracer-pixels), the vtracer front-end that reads the raw pixels the worker decoded; searched in the standard locations when unset. When it is found it traces those pictures instead of the vtracer executable; the SVG is the same.', BOTH),
   toolPath('CAD_CONVERT_PATH', 'Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).', BOTH),
-  toolPath('PID_INIT_PATH', 'Path of the `pid-init` executable (native/pid-init) that starts every sandboxed program in a PID namespace of its own, so that one run cannot see or signal another; searched in the standard locations when unset. Without it, or when the host does not allow a PID namespace, programs run in the user and network namespaces only.', BOTH),
+  toolPath('PID_INIT_PATH', 'Path of the `pid-init` executable (native/pid-init) that starts every sandboxed program in a PID namespace of its own, so that one run cannot see or signal another, and refuses them the /proc entries of the other runs (Landlock); searched in the standard locations when unset. Without it, or when the host does not allow a PID namespace, programs run in the user and network namespaces only.', BOTH),
   toolPath('QPDF_RUNNER_PATH', 'Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.', BOTH),
   toolResourcePath(
     'QPDF_RUNNER_LIB',
